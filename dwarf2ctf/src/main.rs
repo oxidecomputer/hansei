@@ -8,11 +8,14 @@ use gimli::{
     DebuggingInformationEntry, Dwarf, EndianSlice, EntriesCursor, Reader, RunTimeEndian, Unit,
     UnitHeader,
 };
+use object::write::elf::Writer;
+use object::write::{Object as WriteObject, SectionId, SymbolFlags, SymbolScope, SymbolSection};
+use object::{Architecture, BinaryFormat, Endianness, SectionKind};
 use object::{Object, ObjectSection, ObjectSymbol, ObjectSymbolTable, SymbolKind};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default)]
 struct RelocationMap(object::read::RelocationMap);
@@ -246,6 +249,8 @@ impl<'a> CtfWriter<'a> {
             self.write_type(&mut type_data, &ctf_type)?;
         }
 
+        let mut text_ct = 0usize;
+        let mut data_ct = 0usize;
         let mut obj_data = Vec::new();
         let mut func_data = Vec::new();
         for symbol in self.object.symbols() {
@@ -272,13 +277,14 @@ impl<'a> CtfWriter<'a> {
 
             match symbol.kind() {
                 SymbolKind::Text => {
+                    text_ct += 1;
                     let Some(func_info) = funcs.get(symbol_name) else {
-                        dbg!(symbol);
                         let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
                         func_data.write_u16::<LittleEndian>(info)?;
                         continue;
                     };
 
+                    eprintln!("TARGET_FN AT IDX {}", text_ct - 1);
                     let vlen = func_info.args.len() as u16;
                     let info = ctf_type_info(CTF_K_FUNCTION, false, vlen);
                     func_data.write_u16::<LittleEndian>(info)?;
@@ -290,6 +296,7 @@ impl<'a> CtfWriter<'a> {
                     }
                 }
                 SymbolKind::Data => {
+                    data_ct += 1;
                     let Some((idx, _)) = self
                         .types
                         .iter()
@@ -304,38 +311,10 @@ impl<'a> CtfWriter<'a> {
                 _ => {}
             }
         }
-
-        // let mut func_data = Vec::new();
-        // for (return_type, args, is_varargs) in self.types.iter().filter_map(|t| match t {
-        //     CtfType::Function {
-        //         name: _,
-        //         return_type,
-        //         args,
-        //         is_varargs,
-        //     } => Some((*return_type, args, *is_varargs)),
-        //     _ => None,
-        // }) {
-        //     let mut vlen = args.len() as u16;
-        //     if is_varargs {
-        //         vlen += 1;
-        //     }
-        //     let info = ctf_type_info(CTF_K_FUNCTION, false, vlen);
-        //     func_data.write_u16::<LittleEndian>(info)?;
-        //     func_data.write_u16::<LittleEndian>(return_type)?;
-
-        //     // Write argument types
-        //     for &arg in args {
-        //         func_data.write_u16::<LittleEndian>(arg)?;
-        //     }
-
-        //     if is_varargs {
-        //         func_data.write_u16::<LittleEndian>(0)?;
-        //     }
-        // }
-        dbg!(obj_data.len(), func_data.len());
+        eprintln!("FUNCTIONS FOUND: {text_ct}");
+        eprintln!("OBJECTS FOUND: {data_ct}");
 
         let objtoff = lbloff; // No labels
-
         let funcoff = objtoff + obj_data.len() as u32;
         let func_data_end = funcoff + func_data.len() as u32;
         let func_padding = func_data_end % 4;
@@ -1281,10 +1260,9 @@ fn main() -> Result<()> {
     let parsed_function_info = parser.get_dwarf_offsets(function_info)?;
     let ctf_buffer = parser.writer.generate_ctf(parsed_function_info)?;
 
-    // Write to output file
-    let output_path = format!("{}_ctf.bin", args.source_elf.display());
-    fs::write(&output_path, &ctf_buffer)?;
-    println!("Written to: {}", output_path);
+    let out_path = format!("{}_ctf.bin", args.source_elf.display());
+    fs::write(&out_path, &ctf_buffer)?;
+    println!("Wrote CTF to '{out_path}'");
 
     Ok(())
 }
