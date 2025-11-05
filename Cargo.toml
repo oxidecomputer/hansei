@@ -1,0 +1,9 @@
+[workspace]
+resolver = "3"
+members = ["durin", "dwarf2ctf"]
+
+[workspace.dependencies]
+#gimli = "0.32.3"
+
+[profile.release]
+debug = true
