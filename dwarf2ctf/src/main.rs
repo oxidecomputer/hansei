@@ -5,31 +5,20 @@ use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use gimli::{
     Attribute, AttributeValue, DW_AT_name, DW_AT_type, DW_TAG_formal_parameter, DW_TAG_subprogram,
-    DebuggingInformationEntry, Dwarf, EndianSlice, EntriesCursor, Reader, RunTimeEndian, Unit,
-    UnitHeader,
+    DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian, Unit, UnitHeader,
 };
-use object::write::elf::Writer;
-use object::write::{Object as WriteObject, SectionId, SymbolFlags, SymbolScope, SymbolSection};
-use object::{Architecture, BinaryFormat, Endianness, SectionKind};
-use object::{Object, ObjectSection, ObjectSymbol, ObjectSymbolTable, SymbolKind};
+use object::elf::{SHN_UNDEF, STT_FUNC, STT_OBJECT};
+use object::read::elf::ElfFile64;
+use object::{Endianness, Object, ObjectSection, ObjectSymbol};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
-
-#[derive(Debug, Default)]
-struct RelocationMap(object::read::RelocationMap);
-
-#[derive(Default)]
-struct Section<'data> {
-    data: std::borrow::Cow<'data, [u8]>,
-    relocations: RelocationMap,
-}
+use std::io::{self, Write};
+use std::path::PathBuf;
 
 // CTF Constants
 const CTF_MAGIC: u16 = 0xcff1;
 const CTF_VERSION: u8 = 2;
-const CTF_F_COMPRESS: u8 = 0x01; // Not compressed for simplicity
+const CTF_F_COMPRESS: u8 = 0x01;
 
 // CTF Type Kinds
 const CTF_K_UNKNOWN: u16 = 0;
@@ -164,7 +153,6 @@ struct FunctionInfo<R: Reader<Offset = usize>> {
 
 #[derive(Clone, Debug)]
 struct ParsedFunctionInfo {
-    name: String,
     return_type: u16,
     args: Vec<u16>,
 }
@@ -209,16 +197,16 @@ impl StringTable {
 
 // CTF Writer
 struct CtfWriter<'a> {
-    object: &'a object::File<'a>,
+    elf: &'a ElfFile64<'a>,
     types: Vec<CtfType>,
     strings: StringTable,
     type_map: HashMap<gimli::UnitOffset, u16>, // DWARF offset to CTF type ID
 }
 
 impl<'a> CtfWriter<'a> {
-    fn new(object: &'a object::File<'a>) -> Self {
+    fn new(elf: &'a ElfFile64<'a>) -> Self {
         CtfWriter {
-            object,
+            elf,
             types: Vec::new(),
             strings: StringTable::new(),
             type_map: HashMap::new(),
@@ -253,30 +241,31 @@ impl<'a> CtfWriter<'a> {
         let mut data_ct = 0usize;
         let mut obj_data = Vec::new();
         let mut func_data = Vec::new();
-        for symbol in self.object.symbols() {
-            // Skip if not an object or function (STT_OBJECT or STT_FUNCTION)
-            if !matches!(symbol.kind(), SymbolKind::Data | SymbolKind::Text) {
+        for symbol in self.elf.symbols() {
+            let symbol_header = symbol.elf_symbol();
+            let st_type = symbol_header.st_type();
+
+            if !matches!(st_type, STT_OBJECT | STT_FUNC) {
                 continue;
             }
 
-            // Skip if section index is undefined (SHN_UNDEF)
-            if symbol.section_index().is_none() {
+            if symbol_header.st_shndx.get(Endianness::Little) == SHN_UNDEF {
                 continue;
             }
 
-            // Get the symbol name
-            let symbol_name = match symbol.name() {
-                Ok(name) => name,
-                Err(_) => continue, // Skip if name offset is zero or invalid
-            };
+            // Precisely match CTF requirements, a non-zero name should still be included even if
+            // we can't retrieve it.
+            if symbol_header.st_name.get(Endianness::Little) == 0 {
+                continue;
+            }
+            let symbol_name = symbol.name().unwrap_or("<unknown>");
 
-            // Skip empty, _START_ and _END_ markers
-            if symbol_name.is_empty() || symbol_name == "_START_" || symbol_name == "_END_" {
+            if symbol_name == "_START_" || symbol_name == "_END_" {
                 continue;
             }
 
-            match symbol.kind() {
-                SymbolKind::Text => {
+            match st_type {
+                STT_FUNC => {
                     text_ct += 1;
                     let Some(func_info) = funcs.get(symbol_name) else {
                         let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
@@ -295,7 +284,7 @@ impl<'a> CtfWriter<'a> {
                         func_data.write_u16::<LittleEndian>(dbg!(arg))?;
                     }
                 }
-                SymbolKind::Data => {
+                STT_OBJECT => {
                     data_ct += 1;
                     let Some((idx, _)) = self
                         .types
@@ -520,16 +509,14 @@ impl<'a> CtfWriter<'a> {
 // DWARF Parser
 struct DwarfParser<'a, R: Reader<Offset = usize>> {
     dwarf: &'a Dwarf<R>,
-    fns: Vec<FunctionInfo<R>>,
     writer: CtfWriter<'a>,
 }
 
 impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
-    fn new(object: &'a object::File<'a>, dwarf: &'a Dwarf<R>) -> Self {
+    fn new(elf: &'a ElfFile64<'a>, dwarf: &'a Dwarf<R>) -> Self {
         DwarfParser {
             dwarf,
-            fns: Vec::new(),
-            writer: CtfWriter::new(object),
+            writer: CtfWriter::new(elf),
         }
     }
 
@@ -960,7 +947,6 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         }
 
         let entry = node.entry();
-        // Check if this is a subprogram (function)
         if entry.tag() == DW_TAG_subprogram {
             // TODO CORRECTNESS: Skip inline instances - only look at concrete or abstract instances
             let is_inline = entry
@@ -1100,7 +1086,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         let mut parsed_funcs = HashMap::new();
 
         for func in funcs {
-            println!("Found function: {}", func.name);
+            println!("Function: {}", func.name);
             println!("  Arguments: {:?}", func.args);
             println!("  Return Type: {:?}", func.return_type_offset);
 
@@ -1123,14 +1109,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 args.push(arg_type_id);
             }
 
-            parsed_funcs.insert(
-                func.name.clone(),
-                ParsedFunctionInfo {
-                    name: func.name,
-                    return_type,
-                    args,
-                },
-            );
+            parsed_funcs.insert(func.name.clone(), ParsedFunctionInfo { return_type, args });
         }
 
         Ok(parsed_funcs)
@@ -1190,8 +1169,9 @@ fn main() -> Result<()> {
 
     let source_bytes = fs::read(&args.source_elf)
         .with_context(|| format!("failed to read {}", args.source_elf.display()))?;
-    let source = object::File::parse(&*source_bytes)?;
-    let source_symbols: HashSet<_> = source.symbols().filter_map(|s| s.name().ok()).collect();
+    // let source_elf = object::File::parse(&*source_bytes)?;
+    let source_elf = ElfFile64::<object::Endianness>::parse(&*source_bytes)?;
+    let source_symbols: HashSet<_> = source_elf.symbols().filter_map(|s| s.name().ok()).collect();
 
     let missing_fns: Vec<_> = fns
         .iter()
@@ -1240,7 +1220,7 @@ fn main() -> Result<()> {
     };
 
     let dwarf = Dwarf::load(&load_section)?;
-    let mut parser = DwarfParser::new(&debug_file, &dwarf);
+    let mut parser = DwarfParser::new(&source_elf, &dwarf);
 
     let function_info = parser
         .find_functions_by_name(&mut symbols)
