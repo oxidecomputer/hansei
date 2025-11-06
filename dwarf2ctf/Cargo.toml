@@ -9,5 +9,6 @@ byteorder = "1.5"
 clap = { version = "4.5.51", features = ["derive"] }
 flate2 = "1.1.5"
 gimli = "0.32"
-object = { version = "0.37.3", features = ["write"] }
-rustc-demangle = "0.1.26"
+goblin = "0.10.3"
+object = { version = "0.37.3", features = ["build","write"] }
+scroll = "0.13.0"
