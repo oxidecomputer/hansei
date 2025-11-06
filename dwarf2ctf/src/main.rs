@@ -271,7 +271,8 @@ impl<'a> CtfWriter<'a> {
             match sym.st_type() {
                 STT_FUNC => {
                     text_ct += 1;
-                    let Some(func_info) = funcs.get(symbol_name) else {
+                    // Trim the hash to match against different builds.
+                    let Some(func_info) = funcs.get(trim_hash(symbol_name)) else {
                         let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
                         func_data.write_u16::<LittleEndian>(info)?;
                         continue;
@@ -1113,7 +1114,11 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 args.push(arg_type_id);
             }
 
-            parsed_funcs.insert(func.name.clone(), ParsedFunctionInfo { return_type, args });
+            // Trim hash so we can match against different build hashes.
+            parsed_funcs.insert(
+                trim_hash(&func.name).to_string(),
+                ParsedFunctionInfo { return_type, args },
+            );
         }
 
         Ok(parsed_funcs)
