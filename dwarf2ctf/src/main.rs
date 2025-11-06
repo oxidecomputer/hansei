@@ -1,20 +1,19 @@
 use anyhow::{Context, Result};
-use byteorder::{LittleEndian, WriteBytesExt};
 use clap::Parser;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use gimli::{
-    Attribute, AttributeValue, DW_AT_name, DW_AT_type, DW_TAG_formal_parameter, DW_TAG_subprogram,
+    Attribute, AttributeValue, DW_AT_type, DW_TAG_formal_parameter, DW_TAG_subprogram,
     DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian, Unit, UnitHeader,
 };
 use goblin::elf::{
     self as elf, Elf,
     header::{EI_CLASS, ELFCLASS64, Header},
     program_header::ProgramHeader,
-    section_header::{SHN_LORESERVE, SHN_UNDEF, SHT_NOBITS, SHT_NULL, SectionHeader},
-    sym::{STT_FUNC, STT_OBJECT, Sym},
+    section_header::{SHN_UNDEF, SHT_NOBITS, SHT_NULL, SectionHeader},
+    sym::{STT_FUNC, STT_OBJECT},
 };
-use scroll::{LE, Pwrite};
+use scroll::{IOwrite, LE, Pwrite};
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -231,7 +230,7 @@ impl<'a> CtfWriter<'a> {
     }
 
     fn generate_ctf(&mut self, funcs: HashMap<String, ParsedFunctionInfo>) -> Result<Vec<u8>> {
-        let mut buffer = Vec::new();
+        let mut out = Vec::new();
 
         let lbloff = 0u32;
 
@@ -243,8 +242,6 @@ impl<'a> CtfWriter<'a> {
             self.write_type(&mut type_data, &ctf_type)?;
         }
 
-        let mut text_ct = 0usize;
-        let mut data_ct = 0usize;
         let mut obj_data = Vec::new();
         let mut func_data = Vec::new();
         for sym in &self.elf.syms {
@@ -270,43 +267,38 @@ impl<'a> CtfWriter<'a> {
 
             match sym.st_type() {
                 STT_FUNC => {
-                    text_ct += 1;
                     // Trim the hash to match against different builds.
                     let Some(func_info) = funcs.get(trim_hash(symbol_name)) else {
                         let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
-                        func_data.write_u16::<LittleEndian>(info)?;
+                        func_data.iowrite_with(info, LE)?;
                         continue;
                     };
 
-                    eprintln!("TARGET_FN AT IDX {}", text_ct - 1);
                     let vlen = func_info.args.len() as u16;
                     let info = ctf_type_info(CTF_K_FUNCTION, false, vlen);
-                    func_data.write_u16::<LittleEndian>(info)?;
-                    func_data.write_u16::<LittleEndian>(func_info.return_type)?;
+                    func_data.iowrite_with(info, LE)?;
+                    func_data.iowrite_with(func_info.return_type, LE)?;
 
                     // Write argument types
                     for &arg in &func_info.args {
-                        func_data.write_u16::<LittleEndian>(dbg!(arg))?;
+                        func_data.iowrite_with(arg, LE)?;
                     }
                 }
                 STT_OBJECT => {
-                    data_ct += 1;
                     let Some((idx, _)) = self
                         .types
                         .iter()
                         .enumerate()
                         .find(|(_, t)| t.name() == symbol_name)
                     else {
-                        obj_data.write_u16::<LittleEndian>(0)?;
+                        obj_data.iowrite_with(0u16, LE)?;
                         continue;
                     };
-                    obj_data.write_u16::<LittleEndian>(idx as u16)?;
+                    obj_data.iowrite_with(idx as u16, LE)?;
                 }
                 _ => {}
             }
         }
-        eprintln!("FUNCTIONS FOUND: {text_ct}");
-        eprintln!("OBJECTS FOUND: {data_ct}");
 
         let objtoff = lbloff; // No labels
         let funcoff = objtoff + obj_data.len() as u32;
@@ -334,41 +326,29 @@ impl<'a> CtfWriter<'a> {
             strlen,
         };
 
-        // Write preamble
-        buffer.write_u16::<LittleEndian>(header.preamble.magic)?;
-        buffer.write_u8(header.preamble.version)?;
-        buffer.write_u8(header.preamble.flags)?;
+        out.iowrite_with(header.preamble.magic, LE)?;
+        out.iowrite_with(header.preamble.version, LE)?;
+        out.iowrite_with(header.preamble.flags, LE)?;
 
-        // Write rest of header
-        buffer.write_u32::<LittleEndian>(header.parlabel)?;
-        buffer.write_u32::<LittleEndian>(header.parname)?;
-        buffer.write_u32::<LittleEndian>(header.lbloff)?;
-        buffer.write_u32::<LittleEndian>(header.objtoff)?;
-        buffer.write_u32::<LittleEndian>(header.funcoff)?;
-        buffer.write_u32::<LittleEndian>(header.typeoff)?;
-        buffer.write_u32::<LittleEndian>(header.stroff)?;
-        buffer.write_u32::<LittleEndian>(header.strlen)?;
+        out.iowrite_with(header.parlabel, LE)?;
+        out.iowrite_with(header.parname, LE)?;
+        out.iowrite_with(header.lbloff, LE)?;
+        out.iowrite_with(header.objtoff, LE)?;
+        out.iowrite_with(header.funcoff, LE)?;
+        out.iowrite_with(header.typeoff, LE)?;
+        out.iowrite_with(header.stroff, LE)?;
+        out.iowrite_with(header.strlen, LE)?;
 
-        let mut encoder = ZlibEncoder::new(&mut buffer, Compression::fast());
+        let mut encoder = ZlibEncoder::new(&mut out, Compression::fast());
 
-        // Write object section
         encoder.write_all(&obj_data)?;
-
-        // Write function section
         encoder.write_all(&func_data)?;
-
-        // Write function padding
         encoder.write_all(&vec![0u8; func_padding as usize])?;
-
-        // Write type section
         encoder.write_all(&type_data)?;
-
-        // Write string section
         encoder.write_all(self.strings.data())?;
-
         encoder.finish()?;
 
-        Ok(buffer)
+        Ok(out)
     }
 
     fn write_type(&mut self, buffer: &mut Vec<u8>, ctf_type: &CtfType) -> Result<()> {
@@ -381,13 +361,10 @@ impl<'a> CtfWriter<'a> {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_INTEGER, true, 0);
 
-                // Write ctf_stype_t
-                buffer.write_u32::<LittleEndian>(name_offset)?;
-                buffer.write_u16::<LittleEndian>(info)?;
-                buffer.write_u16::<LittleEndian>(*size as u16)?;
-
-                // Write integer encoding
-                buffer.write_u32::<LittleEndian>(*encoding)?;
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(*size as u16, LE)?;
+                buffer.iowrite_with(*encoding, LE)?;
             }
 
             CtfType::Float {
@@ -398,56 +375,55 @@ impl<'a> CtfWriter<'a> {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_FLOAT, true, 0);
 
-                buffer.write_u32::<LittleEndian>(name_offset)?;
-                buffer.write_u16::<LittleEndian>(info)?;
-                buffer.write_u16::<LittleEndian>(*size as u16)?;
-
-                buffer.write_u32::<LittleEndian>(*encoding)?;
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(*size as u16, LE)?;
+                buffer.iowrite_with(*encoding, LE)?;
             }
 
             CtfType::Pointer { name, target_type } => {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_POINTER, false, 0);
 
-                buffer.write_u32::<LittleEndian>(name_offset)?;
-                buffer.write_u16::<LittleEndian>(info)?;
-                buffer.write_u16::<LittleEndian>(*target_type)?;
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(*target_type, LE)?;
             }
 
             CtfType::Typedef { name, target_type } => {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_TYPEDEF, false, 0);
 
-                buffer.write_u32::<LittleEndian>(name_offset)?;
-                buffer.write_u16::<LittleEndian>(info)?;
-                buffer.write_u16::<LittleEndian>(*target_type)?;
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(*target_type, LE)?;
             }
 
             CtfType::Const { name, target_type } => {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_CONST, false, 0);
 
-                buffer.write_u32::<LittleEndian>(name_offset)?;
-                buffer.write_u16::<LittleEndian>(info)?;
-                buffer.write_u16::<LittleEndian>(*target_type)?;
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(*target_type, LE)?;
             }
 
             CtfType::Volatile { name, target_type } => {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_VOLATILE, false, 0);
 
-                buffer.write_u32::<LittleEndian>(name_offset)?;
-                buffer.write_u16::<LittleEndian>(info)?;
-                buffer.write_u16::<LittleEndian>(*target_type)?;
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(*target_type, LE)?;
             }
 
             CtfType::Restrict { name, target_type } => {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_RESTRICT, false, 0);
 
-                buffer.write_u32::<LittleEndian>(name_offset)?;
-                buffer.write_u16::<LittleEndian>(info)?;
-                buffer.write_u16::<LittleEndian>(*target_type)?;
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(*target_type, LE)?;
             }
 
             CtfType::Function {
@@ -463,18 +439,18 @@ impl<'a> CtfWriter<'a> {
                 }
                 let info = ctf_type_info(CTF_K_FUNCTION, true, vlen);
 
-                buffer.write_u32::<LittleEndian>(name_offset)?;
-                buffer.write_u16::<LittleEndian>(info)?;
-                buffer.write_u16::<LittleEndian>(*return_type)?;
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(*return_type, LE)?;
 
                 // Write argument types
                 for &arg in args {
-                    buffer.write_u16::<LittleEndian>(arg)?;
+                    buffer.iowrite_with(arg, LE)?;
                 }
 
                 // Write varargs marker if needed
                 if *is_varargs {
-                    buffer.write_u16::<LittleEndian>(0)?;
+                    buffer.iowrite_with(0u16, LE)?;
                 }
             }
 
@@ -486,24 +462,24 @@ impl<'a> CtfWriter<'a> {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_STRUCT, true, members.len() as u16);
 
-                buffer.write_u32::<LittleEndian>(name_offset)?;
-                buffer.write_u16::<LittleEndian>(info)?;
-                buffer.write_u16::<LittleEndian>(*size as u16)?;
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(*size as u16, LE)?;
 
                 // Write members
                 for member in members {
                     let member_name_offset = self.strings.add_string(&member.name);
-                    buffer.write_u32::<LittleEndian>(member_name_offset)?;
-                    buffer.write_u16::<LittleEndian>(member.type_id)?;
-                    buffer.write_u16::<LittleEndian>(member.offset_bits as u16)?;
+                    buffer.iowrite_with(member_name_offset, LE)?;
+                    buffer.iowrite_with(member.type_id, LE)?;
+                    buffer.iowrite_with(member.offset_bits as u16, LE)?;
                 }
             }
 
             CtfType::Unknown => {
                 let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
-                buffer.write_u32::<LittleEndian>(0)?;
-                buffer.write_u16::<LittleEndian>(info)?;
-                buffer.write_u16::<LittleEndian>(0)?;
+                buffer.iowrite_with(0u32, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(0u16, LE)?;
             }
         }
 
@@ -626,11 +602,11 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             IntType::Bool => ctf_int_data(CTF_INT_BOOL, 0, bit_size),
         };
 
-        let ctf_type = dbg!(CtfType::Integer {
+        let ctf_type = CtfType::Integer {
             name,
             size: byte_size,
             encoding,
-        });
+        };
         Ok(self.writer.add_type(offset, ctf_type))
     }
 
@@ -1395,7 +1371,8 @@ fn main() -> Result<()> {
 
     let source_bytes = fs::read(&args.source_elf)
         .with_context(|| format!("failed to read {}", args.source_elf.display()))?;
-    let source_elf = Elf::parse(&source_bytes).context("parsing ELF")?;
+    let source_elf = Elf::parse(&source_bytes)
+        .with_context(|| format!("failed to parse {} as ELF", args.source_elf.display()))?;
 
     let source_symbols: HashSet<_> = source_elf
         .syms
@@ -1432,7 +1409,8 @@ fn main() -> Result<()> {
 
     let debug_data = fs::read(&args.debug_elf)
         .with_context(|| format!("failed to read {}", args.debug_elf.display()))?;
-    let debug_elf = Elf::parse(&debug_data).context("parsing ELF")?;
+    let debug_elf = Elf::parse(&debug_data)
+        .with_context(|| format!("failed to parse {} as ELF", args.debug_elf.display()))?;
 
     // Determine endianness from the object file
     if !debug_elf.little_endian {
