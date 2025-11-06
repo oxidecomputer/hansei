@@ -7,9 +7,24 @@ use gimli::{
     Attribute, AttributeValue, DW_AT_name, DW_AT_type, DW_TAG_formal_parameter, DW_TAG_subprogram,
     DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian, Unit, UnitHeader,
 };
+use goblin::elf::{
+    self as elf, Elf,
+    header::{EI_CLASS, ELFCLASS64, Header},
+    program_header::ProgramHeader,
+    section_header::{
+        SHN_LORESERVE, SHT_NOBITS, SHT_NULL, SHT_REL, SHT_RELA, SHT_SYMTAB, SectionHeader,
+    },
+    sym::Sym,
+};
 use object::elf::{SHN_UNDEF, STT_FUNC, STT_OBJECT};
 use object::read::elf::ElfFile64;
-use object::{Endianness, Object, ObjectSection, ObjectSymbol};
+use object::write::{self, Object as WriteObject, SectionId, SymbolId};
+use object::{
+    Architecture, BinaryFormat, Endianness, SectionKind, SymbolFlags, SymbolKind, SymbolScope,
+};
+use object::{Object, ObjectSection, ObjectSymbol};
+use scroll::{Pread, Pwrite, ctx::TryIntoCtx};
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
@@ -1118,16 +1133,12 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
 #[derive(clap::Parser)]
 struct Args {
-    /// The core dump to be analyzed.
-    // #[clap(long, short)]
-    // core: PathBuf,
-
     // TODO: Handle core dumps
     /// The original binary that triggered the core dump.
     #[clap(long, short)]
     source_elf: PathBuf,
 
-    /// The core dump's corresponding ELF file with debug symbols.
+    /// The corresponding ELF file with debug symbols.
     #[clap(long, short)]
     debug_elf: PathBuf,
 
@@ -1135,6 +1146,10 @@ struct Args {
     /// These will be read from stdin if this flag is not passed.
     #[clap(long, short)]
     fns: Vec<String>,
+
+    /// Path to write updated ELF to.
+    #[clap(long, short)]
+    output: PathBuf,
 }
 
 fn trim_hash(sym: &str) -> &str {
@@ -1145,6 +1160,527 @@ fn trim_hash(sym: &str) -> &str {
         return sym;
     };
     &sym[..hash_start]
+}
+
+fn write_elf(ctf_buffer: &[u8], src_elf: &ElfFile64, src_bytes: &[u8]) -> Result<Vec<u8>> {
+    //let mut builder = object::build::elf::Builder::read(src_bytes)?;
+    //let ctf_section = builder.sections.add();
+
+    //ctf_section.name = ".SUNW_ctf".into();
+    //ctf_section.data = object::build::elf::SectionData::Data(ctf_buffer.into());
+    //ctf_section.sh_addralign = 4;
+
+    //let mut output = Vec::new();
+    //builder.write(&mut output)?;
+
+    // Create new output object
+    let mut output = WriteObject::new(
+        BinaryFormat::Elf,
+        src_elf.architecture(),
+        src_elf.endianness(),
+    );
+
+    // Map section indices: input -> output
+    let mut sections = HashMap::new();
+
+    // Copy all sections
+    for section in src_elf.sections() {
+        let name = section.name().unwrap_or("<unnamed>");
+
+        // Skip sections that shouldn't be copied or are handled specially
+        if name.is_empty() || name == "*UND*" {
+            continue;
+        }
+
+        let name = section.name()?.as_bytes().to_vec();
+        if name.is_empty() {
+            continue;
+        }
+
+        let kind = section.kind();
+        let id = output.add_section(
+            vec![],
+            name,
+            kind,
+            //match kind {
+            //    object::SectionKind::Text => write::SectionKind::Text,
+            //    object::SectionKind::Data => write::SectionKind::Data,
+            //    object::SectionKind::ReadOnlyData => write::SectionKind::ReadOnlyData,
+            //    object::SectionKind::UninitializedData => write::SectionKind::UninitializedData,
+            //    object::SectionKind::Unknown => write::SectionKind::Unknown,
+            //    object::SectionKind::ReadOnlyDataWithRel => write::SectionKind::ReadOnlyDataWithRel,
+            //    object::SectionKind::Common => write::SectionKind::Common,
+            //    object::SectionKind::Tls => write::SectionKind::Tls,
+            //    object::SectionKind::TlsVariables => write::SectionKind::TlsVariables,
+            //    object::SectionKind::UninitializedTls => write::SectionKind::UninitializedTls,
+            //    object::SectionKind::ReadOnlyString => write::SectionKind::ReadOnlyString,
+            //    object::SectionKind::Tls => write::SectionKind::Tls,
+            //    object::SectionKind::Tls => write::SectionKind::Tls,
+            //    _ => write::SectionKind::Other,
+            //},
+        );
+
+        // BSS sections don't have data in the file, only at runtime
+        if kind != object::SectionKind::UninitializedData {
+            output
+                .section_mut(id)
+                .set_data(section.data()?.to_vec(), section.align());
+        }
+        sections.insert(section.index(), id);
+    }
+
+    for symbol in src_elf.symbols() {
+        let name = symbol.name().unwrap_or("");
+
+        // Skip undefined symbols (they'll be added as needed)
+        if symbol.is_undefined() && name.is_empty() {
+            continue;
+        }
+
+        if !name.is_empty() {
+            println!("  Symbol: {} ({:?})", name, symbol.kind());
+        }
+
+        // Determine section
+        let section = if let Some(section_index) = symbol.section_index() {
+            let idx = sections[&section_index];
+            write::SymbolSection::Section(idx)
+        } else {
+            write::SymbolSection::Undefined
+        };
+
+        output.add_symbol(write::Symbol {
+            name: symbol
+                .name()
+                .context("failed to get symbol name")?
+                .as_bytes()
+                .to_vec(),
+            value: symbol.address(),
+            size: symbol.size(),
+            kind: symbol.kind(),
+            scope: symbol.scope(),
+            weak: symbol.is_weak(),
+            section,
+            flags: write::SymbolFlags::None,
+        });
+    }
+    //Copy segments (program headers)
+    //Note: object crate handles this automatically when writing
+
+    //Map to track section index translation
+    // let mut section_map: HashMap<usize, SectionId> = HashMap::new();
+    // let mut symtab_section: Option<SectionId> = None;
+
+    // // First pass: create all sections except CTF
+    // for (idx, section) in src_elf.sections().enumerate() {
+    //     let name = section.name()?;
+
+    //     let section_id = out_obj.add_section(
+    //         Vec::new(),
+    //         name.as_bytes().to_vec(),
+    //         match section.kind() {
+    //             SectionKind::Text => object::write::SectionKind::Text,
+    //             SectionKind::Data => object::write::SectionKind::Data,
+    //             SectionKind::ReadOnlyData => object::write::SectionKind::ReadOnlyData,
+    //             SectionKind::UninitializedData => object::write::SectionKind::UninitializedData,
+    //             SectionKind::Common => object::write::SectionKind::Common,
+    //             SectionKind::Tls => object::write::SectionKind::Tls,
+    //             SectionKind::TlsVariables => object::write::SectionKind::Tls,
+    //             SectionKind::Note => object::write::SectionKind::Note,
+    //             _ => object::write::SectionKind::Unknown,
+    //         },
+    //     );
+
+    //     let out_section = out_obj.section_mut(section_id);
+
+    //     // Set section data
+    //     out_section.set_data(section.data()?.to_vec(), section.align());
+
+    //     // Track section mapping
+    //     section_map.insert(idx, section_id);
+
+    //     // Track symbol table
+    //     if section.kind() == SectionKind::Metadata && name == ".symtab" {
+    //         symtab_section = Some(section_id);
+    //     }
+    // }
+
+    // // Copy symbols and update their section indices
+    // for symbol in src_elf.symbols() {
+    //     let name = symbol.name()?;
+    //     let section = symbol
+    //         .section_index()
+    //         .and_then(|idx| section_map.get(&idx.0).copied());
+
+    //     let _symbol_id = out_obj.add_symbol(write::Symbol {
+    //         name: name.as_bytes().to_vec(),
+    //         value: symbol.address(),
+    //         size: symbol.size(),
+    //         kind: match symbol.kind() {
+    //             SymbolKind::Text => SymbolKind::Text,
+    //             SymbolKind::Data => SymbolKind::Data,
+    //             SymbolKind::Section => SymbolKind::Section,
+    //             SymbolKind::File => SymbolKind::File,
+    //             SymbolKind::Tls => SymbolKind::Tls,
+    //             _ => SymbolKind::Unknown,
+    //         },
+    //         scope: if symbol.is_global() {
+    //             SymbolScope::Dynamic
+    //         } else if symbol.is_local() {
+    //             SymbolScope::Compilation
+    //         } else {
+    //             SymbolScope::Linkage
+    //         },
+    //         weak: symbol.is_weak(),
+    //         section: write::SymbolSection::Section(section.unwrap()),
+    //         flags: SymbolFlags::None,
+    //     });
+    // }
+
+    // Add CTF section
+    let ctf_section_id =
+        output.add_section(Vec::new(), b".SUNW_ctf".to_vec(), write::SectionKind::Debug);
+
+    let ctf_section = output.section_mut(ctf_section_id);
+    ctf_section.set_data(ctf_buffer, 4);
+    // Link to symbol table (note: object crate may handle this differently)
+
+    // Write the ELF file
+    let output = output.write().context("failed to write ELF")?;
+
+    Ok(output)
+}
+
+/// Return the rewritten ELF bytes.
+/// - `src`: source ELF file bytes
+/// - `opts`: new CTF + compression flag
+pub fn add_or_replace_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
+    // Parse & basic checks
+    let elf = Elf::parse(src).context("parsing ELF")?;
+    if elf.header.e_ident[EI_CLASS] != ELFCLASS64 {
+        anyhow::bail!("Only ELF64 is implemented in this example");
+    }
+    if !elf.little_endian {
+        anyhow::bail!("Only little-endian is implemented in this example");
+    }
+
+    let ehdr: Header = elf.header;
+    let phdrs: Vec<ProgramHeader> = elf.program_headers.into_iter().collect();
+
+    // Build translation map: drop existing .SUNW_ctf only; keep section order otherwise
+    let mut sec_xlate = vec![-1i32; elf.section_headers.len()];
+    let mut next_idx = 1i32; // 0 is the null section
+    for (i, sh) in elf.section_headers.iter().enumerate() {
+        let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or_default();
+        sec_xlate[i] = if name == ".SUNW_ctf" {
+            -1
+        } else {
+            let r = next_idx;
+            next_idx += 1;
+            r
+        };
+    }
+
+    // Locate .symtab / .dynsym by TYPE (not by entsize)
+    let mut symtab_src_i: Option<usize> = None;
+    let mut dynsym_src_i: Option<usize> = None;
+    for (i, sh) in elf.section_headers.iter().enumerate() {
+        match sh.sh_type {
+            SHT_SYMTAB if symtab_src_i.is_none() => symtab_src_i = Some(i),
+            elf::section_header::SHT_DYNSYM if dynsym_src_i.is_none() => dynsym_src_i = Some(i),
+            _ => {}
+        }
+    }
+    // Translate those indices to *destination* indices (post-drop)
+    let symtab_dst_idx = symtab_src_i.and_then(|i| translate_index(&sec_xlate, i));
+    let dynsym_dst_idx = dynsym_src_i.and_then(|i| translate_index(&sec_xlate, i));
+
+    // Choose link target for .SUNW_ctf: prefer .symtab, else .dynsym
+    let link_target: u32 = if let Some(s) = symtab_dst_idx {
+        s
+    } else if let Some(d) = dynsym_dst_idx {
+        d
+    } else {
+        anyhow::bail!("no SHT_SYMTAB or SHT_DYNSYM present to link .SUNW_ctf");
+    };
+
+    // New shstrtab = old + ".SUNW_ctf\0"
+    //let mut shstr_bytes = Vec::new();
+    //for section in &elf.section_headers {
+    //    let name = elf.shdr_strtab.get_at(section.sh_name).unwrap_or("");
+    //    shstr_bytes.extend_from_slice(name.as_bytes());
+    //}
+    //let ctf_name_off = shstr_bytes.len();
+    //shstr_bytes.extend_from_slice(".SUNW_ctf\0".as_bytes());
+    let shstr_src_i = elf.header.e_shstrndx as usize;
+    let shstr_sh = elf
+        .section_headers
+        .get(shstr_src_i)
+        .ok_or_else(|| anyhow::anyhow!("bad e_shstrndx: {}", shstr_src_i))?;
+
+    let shstr_off = shstr_sh.sh_offset as usize;
+    let shstr_len = shstr_sh.sh_size as usize;
+    if shstr_off
+        .checked_add(shstr_len)
+        .is_none_or(|end| end > src.len())
+    {
+        anyhow::bail!(
+            "original .shstrtab out of range: off={} len={} file={}",
+            shstr_off,
+            shstr_len,
+            src.len()
+        );
+    }
+
+    // Start with the *raw* .shstrtab contents (not goblin’s parsed view).
+    let mut shstr_bytes = src[shstr_off..shstr_off + shstr_len].to_vec();
+
+    // Append the new section name.
+    let ctf_name_off = shstr_bytes.len();
+    shstr_bytes.extend_from_slice(b".SUNW_ctf\0");
+
+    // Collect kept sections; remap sh_link, sh_info (REL/RELA); capture data slices
+    struct Keep<'a> {
+        shdr: SectionHeader,
+        data: Option<&'a [u8]>,
+        name_off: usize,
+    }
+    let mut keep: Vec<Keep<'_>> = Vec::with_capacity(elf.section_headers.len());
+    for (i, sh) in elf.section_headers.iter().enumerate() {
+        if sec_xlate[i] < 0 {
+            continue; // we're dropping .SUNW_ctf only
+        }
+        let mut new_sh = sh.clone();
+
+        // Remap sh_link
+        if new_sh.sh_link != 0 && (new_sh.sh_link as usize) < sec_xlate.len() {
+            let mapped = sec_xlate[new_sh.sh_link as usize];
+            new_sh.sh_link = if mapped < 0 { 1 } else { mapped as u32 };
+        }
+        // Remap REL/RELA sh_info
+        if new_sh.sh_type == SHT_REL || new_sh.sh_type == SHT_RELA {
+            if new_sh.sh_info != 0 && (new_sh.sh_info as usize) < sec_xlate.len() {
+                let mapped = sec_xlate[new_sh.sh_info as usize];
+                new_sh.sh_info = if mapped < 0 { 1 } else { mapped as u32 };
+            }
+        }
+
+        // Capture section payload (if not NOBITS)
+        let data = if new_sh.sh_type != SHT_NOBITS && new_sh.sh_size != 0 {
+            let start = new_sh.sh_offset as usize;
+            let end = start
+                .checked_add(new_sh.sh_size as usize)
+                .ok_or_else(|| anyhow::anyhow!("section size overflow"))?;
+            Some(&src[start..end])
+        } else {
+            None
+        };
+
+        keep.push(Keep {
+            shdr: new_sh.clone(),
+            name_off: new_sh.sh_name,
+            data,
+        });
+    }
+
+    // ---- Lay out destination ------------------------------------------------
+    // Layout: [Ehdr][Phdrs][kept sections...][.SUNW_ctf][.shstrtab(new)][pad][Shdrs]
+    let mut out = vec![0; ehdr.e_ehsize as usize]; // space for Ehdr
+
+    // Reserve PHDR bytes (unchanged content; we’ll write them later)
+    if ehdr.e_phnum > 0 {
+        let phdr_bytes = (ehdr.e_phentsize as usize) * (ehdr.e_phnum as usize);
+        out.resize(out.len() + phdr_bytes, 0);
+    }
+    let mut cur_off = out.len();
+
+    // Section header vector (index 0 = NULL)
+    let mut new_shdrs: Vec<SectionHeader> = Vec::with_capacity(keep.len() + 2);
+    new_shdrs.push(SectionHeader {
+        sh_name: 0,
+        sh_type: SHT_NULL,
+        sh_flags: 0,
+        sh_addr: 0,
+        sh_offset: 0,
+        sh_size: 0,
+        sh_link: 0,
+        sh_info: 0,
+        sh_addralign: 0,
+        sh_entsize: 0,
+    });
+
+    // Copy kept sections' data; recompute sh_offset (packed)
+    for sec in &keep {
+        let mut sh = sec.shdr.clone();
+        let addralign = sh.sh_addralign.max(1);
+        align_up(addralign, &mut cur_off, &mut out);
+        sh.sh_offset = cur_off as u64;
+
+        if sh.sh_type != SHT_NOBITS
+            && let Some(data) = sec.data
+        {
+            out.extend_from_slice(data);
+            cur_off += data.len();
+        }
+        sh.sh_name = sec.name_off;
+        new_shdrs.push(sh);
+    }
+
+    // Append new .SUNW_ctf
+    let mut ctf_sh = SectionHeader {
+        sh_name: ctf_name_off,
+        sh_type: elf::section_header::SHT_PROGBITS,
+        sh_flags: 0,
+        sh_addr: 0,
+        sh_offset: 0, // set below
+        sh_size: ctf_data.len() as u64,
+        sh_link: link_target,
+        sh_info: 0,
+        sh_addralign: 4,
+        sh_entsize: 0,
+    };
+    align_up(ctf_sh.sh_addralign, &mut cur_off, &mut out);
+    ctf_sh.sh_offset = cur_off as u64;
+    out.extend_from_slice(ctf_data);
+    cur_off += ctf_data.len();
+    new_shdrs.push(ctf_sh);
+
+    // Rewrite .shstrtab contents (translate index)
+    let new_shstr_i = translate_index(&sec_xlate, elf.header.e_shstrndx as usize)
+        .context("translating .shstrtab index")? as usize;
+    let shstr_align = new_shdrs[new_shstr_i].sh_addralign.max(1);
+    align_up(shstr_align, &mut cur_off, &mut out);
+    new_shdrs[new_shstr_i].sh_offset = cur_off as u64;
+    new_shdrs[new_shstr_i].sh_size = shstr_bytes.len() as u64;
+    out.extend_from_slice(&shstr_bytes);
+    cur_off += shstr_bytes.len();
+
+    // Patch st_shndx in any present symbol tables (.symtab and/or .dynsym)
+    if let Some(sym_i) = new_shdrs.iter().position(|sh| sh.sh_type == SHT_SYMTAB) {
+        rewrite_symtab_section_indices(&mut out, &new_shdrs[sym_i], &sec_xlate)
+            .context("patching st_shndx in .symtab")?;
+    }
+    if let Some(dyn_i) = new_shdrs
+        .iter()
+        .position(|sh| sh.sh_type == elf::section_header::SHT_DYNSYM)
+    {
+        rewrite_symtab_section_indices(&mut out, &new_shdrs[dyn_i], &sec_xlate)
+            .context("patching st_shndx in .dynsym")?;
+    }
+
+    // Emit section header table (aligned)
+    let align = core::mem::size_of::<u64>() as u64;
+    align_up(align, &mut cur_off, &mut out);
+
+    let shdr_size = size_of::<SectionHeader>();
+    let shdr_bytes = new_shdrs.len() * shdr_size;
+    let start = out.len();
+    out.resize(start + shdr_bytes, 0);
+
+    // Now write each SectionHeader into the reserved region.
+
+    let e_shoff = cur_off as u64;
+    let mut woff = start; // equals e_shoff as usize
+    for sh in &new_shdrs {
+        out.gwrite(sh.clone(), &mut cur_off)
+            .context("writing section header")?;
+    }
+
+    // Patch ELF header and PHDRs
+    {
+        let mut new_ehdr = ehdr;
+        new_ehdr.e_phoff = if phdrs.is_empty() {
+            0
+        } else {
+            core::mem::size_of::<Header>() as u64
+        };
+        new_ehdr.e_shoff = e_shoff;
+        new_ehdr.e_shnum = new_shdrs.len() as u16;
+        new_ehdr.e_shstrndx = new_shstr_i as u16;
+
+        out.pwrite_with(new_ehdr, 0, scroll::LE)
+            .context("writing ELF header")?;
+    }
+    if !phdrs.is_empty() {
+        let mut off = core::mem::size_of::<Header>();
+        for ph in &phdrs {
+            out.gwrite(ph.clone(), &mut off)
+                .context("writing program header")?;
+        }
+    }
+
+    Ok(out)
+}
+
+fn align_up(align: u64, cur_off: &mut usize, out: &mut Vec<u8>) {
+    if align > 0 {
+        let r = *cur_off as u64 % align;
+        if r != 0 {
+            let pad = (align - r) as usize;
+            out.extend(std::iter::repeat_n(0u8, pad));
+            *cur_off += pad;
+        }
+    }
+}
+
+fn translate_index(map: &[i32], old: usize) -> Option<u32> {
+    let m = *map.get(old)?;
+    Some(if m < 0 { 1 } else { m as u32 })
+}
+
+fn rewrite_symtab_section_indices(
+    out: &mut [u8],
+    symtab_sh: &SectionHeader,
+    sec_xlate: &[i32],
+) -> anyhow::Result<()> {
+    use core::mem::size_of;
+
+    // Compute a sane entry size. Some linkers set sh_entsize = 0 or odd values.
+    let hard_sz = size_of::<Sym>();
+    let entsize = {
+        let es = symtab_sh.sh_entsize as usize;
+        if es == 0 || es < hard_sz { hard_sz } else { es }
+    };
+
+    // Compute how many complete entries actually fit in the section payload.
+    let sec_off = symtab_sh.sh_offset as usize;
+    let sec_len = symtab_sh.sh_size as usize;
+    if sec_off
+        .checked_add(sec_len)
+        .map_or_else(|| true, |end| end > out.len())
+    {
+        anyhow::bail!(
+            "symbol table range out of bounds: off={} size={} out_len={}",
+            sec_off,
+            sec_len,
+            out.len()
+        );
+    }
+    let count = sec_len / entsize;
+
+    // Walk symbols; only remap indices that are not reserved (like the C code).
+    // Note: SHN_XINDEX (0xffff) is reserved and would need SHT_SYMTAB_SHNDX
+    // handling; we mirror the C behavior and skip reserved values.
+    for i in 0..count {
+        let off = sec_off + i * entsize;
+
+        // Read the fixed-size Sym at the start of this entry.
+        // Even if entsize > size_of::<Sym>(), Sym is the leading layout.
+        let mut sym: Sym = scroll::Pread::pread(out, off)
+            .map_err(|e| anyhow::anyhow!("sym read @{}: {}", off, e))?;
+
+        if sym.st_shndx < SHN_LORESERVE as usize {
+            let old = sym.st_shndx;
+            let mapped = sec_xlate.get(old).copied().unwrap_or(-1);
+            sym.st_shndx = if mapped < 0 { 1 } else { mapped as usize };
+            scroll::Pwrite::pwrite(out, sym, off)
+                .map_err(|e| anyhow::anyhow!("sym write @{}: {}", off, e))?;
+        }
+
+        // If entsize > size_of::<Sym>(), there may be padding or vendor data.
+        // We leave it untouched.
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1179,7 +1715,7 @@ fn main() -> Result<()> {
         .collect();
 
     for missing in &missing_fns {
-        println!("'{missing}' was not found in {}", args.source_elf.display());
+        eprintln!("'{missing}' was not found in {}", args.source_elf.display());
     }
     if !missing_fns.is_empty() {
         std::process::exit(1);
@@ -1200,8 +1736,8 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    let debug_data = fs::read(args.debug_elf)
-        .with_context(|| format!("failed to read {}", args.source_elf.display()))?;
+    let debug_data = fs::read(&args.debug_elf)
+        .with_context(|| format!("failed to read {}", args.debug_elf.display()))?;
     let debug_file = object::File::parse(&*debug_data)?;
 
     // Determine endianness from the object file
@@ -1240,9 +1776,19 @@ fn main() -> Result<()> {
     let parsed_function_info = parser.get_dwarf_offsets(function_info)?;
     let ctf_buffer = parser.writer.generate_ctf(parsed_function_info)?;
 
-    let out_path = format!("{}_ctf.bin", args.source_elf.display());
-    fs::write(&out_path, &ctf_buffer)?;
-    println!("Wrote CTF to '{out_path}'");
+    //let updated_elf = write_elf(&ctf_buffer, &source_elf, &source_bytes)?;
+    let updated_elf = add_or_replace_sunw_ctf(&source_bytes, &ctf_buffer)?;
+
+    fs::write(&args.output, &updated_elf)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&args.output, fs::Permissions::from_mode(0o755))?;
+    }
+
+    //let out_path = format!("{}_ctf.bin", args.source_elf.display());
+    //fs::write(&out_path, &ctf_buffer)?;
+    //println!("Wrote CTF to '{out_path}'");
 
     Ok(())
 }
