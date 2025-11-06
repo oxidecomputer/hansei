@@ -952,6 +952,10 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 && let Ok(name_str) = name.to_string_lossy()
                 && let Some(symbol) = functions.get_mut(trim_hash(name_str.as_ref()))
             {
+                if symbol.found {
+                    return Ok(false);
+                }
+
                 symbol.found = true;
                 let unit_name = unit
                     .name
@@ -1361,6 +1365,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     let fns = if args.fns.is_empty() {
+        eprintln!("Reading function names from stdin...");
         io::read_to_string(io::stdin())?
             .lines()
             .map(ToOwned::to_owned)
@@ -1431,7 +1436,7 @@ fn main() -> Result<()> {
             }
         }
 
-        // Return empty slice if section not found
+        // Section not found.
         Ok(EndianSlice::new(&[], endian))
     };
 
@@ -1444,7 +1449,7 @@ fn main() -> Result<()> {
 
     let missing_symbols: Vec<_> = symbols.values().filter(|s| !s.found).collect();
     for missing in &missing_symbols {
-        println!(
+        eprintln!(
             "\nFunction '{}' not found in any compilation unit",
             missing.mangled,
         );
@@ -1456,7 +1461,6 @@ fn main() -> Result<()> {
     let parsed_function_info = parser.get_dwarf_offsets(function_info)?;
     let ctf_buffer = parser.writer.generate_ctf(parsed_function_info)?;
 
-    //let updated_elf = write_elf(&ctf_buffer, &source_elf, &source_bytes)?;
     let updated_elf = add_sunw_ctf(&source_bytes, &ctf_buffer)?;
 
     fs::write(&args.output, &updated_elf)?;
