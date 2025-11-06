@@ -1127,13 +1127,19 @@ struct Args {
 }
 
 fn trim_hash(sym: &str) -> &str {
-    if !sym.ends_with('E') {
+    if !sym.starts_with("_ZN") || !sym.ends_with('E') {
         return sym;
     }
+
     let Some(hash_start) = sym.rfind("17h") else {
         return sym;
     };
-    &sym[..hash_start]
+
+    let no_hash = &sym[..hash_start];
+
+    no_hash
+        .trim_start_matches("_ZN")
+        .trim_start_matches(|c: char| c.is_ascii_digit())
 }
 
 /// Copy the source Elf and insert the CTF data into it.
