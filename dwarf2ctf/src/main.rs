@@ -3,21 +3,21 @@ use clap::Parser;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use gimli::{
-    Attribute, AttributeValue, DW_AT_type, DW_TAG_formal_parameter, DW_TAG_subprogram,
+    Attribute, AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram,
     DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian, Unit, UnitHeader,
 };
-use goblin::elf::{
-    self as elf, Elf,
-    header::{EI_CLASS, ELFCLASS64, Header},
-    program_header::ProgramHeader,
-    section_header::{SHN_UNDEF, SHT_NOBITS, SHT_NULL, SectionHeader},
-    sym::{STT_FUNC, STT_OBJECT},
+use goblin::elf::header::{EI_CLASS, ELFCLASS64, Header};
+use goblin::elf::section_header::{
+    SHN_UNDEF, SHT_DYNSYM, SHT_NOBITS, SHT_NULL, SHT_PROGBITS, SHT_SYMTAB, SectionHeader,
 };
+use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
+use goblin::elf::{self, Elf};
+use memmap2::Mmap;
 use scroll::{IOwrite, LE, Pwrite};
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::{self, Write};
+use std::fs::{self, File};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 // CTF Constants
@@ -242,6 +242,17 @@ impl<'a> CtfWriter<'a> {
             self.write_type(&mut type_data, &ctf_type)?;
         }
 
+        for (name, func) in &funcs {
+            println!("Function: {}", name);
+            println!("  Arguments:");
+            for arg in &func.args {
+                let ty = &self.types[(*arg - 1) as usize];
+                println!("    {ty:?}");
+            }
+            let ret_ty = &self.types[func.return_type as usize];
+            println!("  Return Type: {ret_ty:?}");
+        }
+
         let mut obj_data = Vec::new();
         let mut func_data = Vec::new();
         for sym in &self.elf.syms {
@@ -253,12 +264,11 @@ impl<'a> CtfWriter<'a> {
                 continue;
             }
 
-            // Precisely match CTF requirements, a non-zero name should still be included even if
-            // we can't retrieve it.
             if sym.st_name == 0 {
                 continue;
             }
 
+            // A non-zero name should still be included even if we can't retrieve it.
             let symbol_name = self.elf.strtab.get_at(sym.st_name).unwrap_or("<unknown>");
 
             if symbol_name == "_START_" || symbol_name == "_END_" {
@@ -525,7 +535,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         let (_, entry) = entries.next_dfs()?.context("No entry at offset")?;
 
         let type_id = match entry.tag() {
-            gimli::DW_TAG_base_type => self.parse_base_type(unit, entry, offset)?,
+            gimli::DW_TAG_base_type => self.parse_base_type(entry, offset)?,
             gimli::DW_TAG_pointer_type => self.parse_pointer_type(unit, entry, offset)?,
             gimli::DW_TAG_typedef => self.parse_typedef(unit, entry, offset)?,
             gimli::DW_TAG_const_type => self.parse_const_type(unit, entry, offset)?,
@@ -543,7 +553,6 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
     fn parse_base_type(
         &mut self,
-        unit: &Unit<R>,
         entry: &DebuggingInformationEntry<R>,
         offset: gimli::UnitOffset,
     ) -> Result<u16> {
@@ -640,13 +649,20 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         offset: gimli::UnitOffset,
     ) -> Result<u16> {
         let mut target_offset = None;
+        let mut name = String::new();
 
         let mut attrs = entry.attrs();
         while let Some(attr) = attrs.next()? {
-            if attr.name() == DW_AT_type
-                && let AttributeValue::UnitRef(off) = attr.value()
-            {
-                target_offset = Some(off);
+            match attr.name() {
+                gimli::DW_AT_name => {
+                    name = self.get_attr_string(&attr)?;
+                }
+                gimli::DW_AT_type => {
+                    if let AttributeValue::UnitRef(off) = attr.value() {
+                        target_offset = Some(off);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -656,10 +672,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             0 // void pointer
         };
 
-        let ctf_type = CtfType::Pointer {
-            name: String::new(),
-            target_type,
-        };
+        let ctf_type = CtfType::Pointer { name, target_type };
         Ok(self.writer.add_type(offset, ctf_type))
     }
 
@@ -704,13 +717,20 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         offset: gimli::UnitOffset,
     ) -> Result<u16> {
         let mut target_offset = None;
+        let mut name = String::new();
 
         let mut attrs = entry.attrs();
         while let Some(attr) = attrs.next()? {
-            if attr.name() == DW_AT_type
-                && let AttributeValue::UnitRef(off) = attr.value()
-            {
-                target_offset = Some(off);
+            match attr.name() {
+                gimli::DW_AT_name => {
+                    name = self.get_attr_string(&attr)?;
+                }
+                gimli::DW_AT_type => {
+                    if let AttributeValue::UnitRef(off) = attr.value() {
+                        target_offset = Some(off);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -720,10 +740,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             0
         };
 
-        let ctf_type = CtfType::Const {
-            name: String::new(),
-            target_type,
-        };
+        let ctf_type = CtfType::Const { name, target_type };
         Ok(self.writer.add_type(offset, ctf_type))
     }
 
@@ -734,13 +751,20 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         offset: gimli::UnitOffset,
     ) -> Result<u16> {
         let mut target_offset = None;
+        let mut name = String::new();
 
         let mut attrs = entry.attrs();
         while let Some(attr) = attrs.next()? {
-            if attr.name() == DW_AT_type
-                && let AttributeValue::UnitRef(off) = attr.value()
-            {
-                target_offset = Some(off);
+            match attr.name() {
+                gimli::DW_AT_name => {
+                    name = self.get_attr_string(&attr)?;
+                }
+                gimli::DW_AT_type => {
+                    if let AttributeValue::UnitRef(off) = attr.value() {
+                        target_offset = Some(off);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -750,10 +774,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             0
         };
 
-        let ctf_type = CtfType::Volatile {
-            name: String::new(),
-            target_type,
-        };
+        let ctf_type = CtfType::Volatile { name, target_type };
         Ok(self.writer.add_type(offset, ctf_type))
     }
 
@@ -764,13 +785,20 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         offset: gimli::UnitOffset,
     ) -> Result<u16> {
         let mut target_offset = None;
+        let mut name = String::new();
 
         let mut attrs = entry.attrs();
         while let Some(attr) = attrs.next()? {
-            if attr.name() == DW_AT_type
-                && let AttributeValue::UnitRef(off) = attr.value()
-            {
-                target_offset = Some(off);
+            match attr.name() {
+                gimli::DW_AT_name => {
+                    name = self.get_attr_string(&attr)?;
+                }
+                gimli::DW_AT_type => {
+                    if let AttributeValue::UnitRef(off) = attr.value() {
+                        target_offset = Some(off);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -780,10 +808,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             0
         };
 
-        let ctf_type = CtfType::Restrict {
-            name: String::new(),
-            target_type,
-        };
+        let ctf_type = CtfType::Restrict { name, target_type };
         Ok(self.writer.add_type(offset, ctf_type))
     }
 
@@ -1126,6 +1151,7 @@ struct Args {
     output: PathBuf,
 }
 
+/// Remove the build hash
 fn trim_hash(sym: &str) -> &str {
     if !sym.starts_with("_ZN") || !sym.ends_with('E') {
         return sym;
@@ -1135,23 +1161,11 @@ fn trim_hash(sym: &str) -> &str {
         return sym;
     };
 
-    let no_hash = &sym[..hash_start];
-
-    no_hash
-        .trim_start_matches("_ZN")
-        .trim_start_matches(|c: char| c.is_ascii_digit())
+    &sym[..hash_start]
 }
 
 /// Copy the source Elf and insert the CTF data into it.
-pub fn add_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
-    // Parse & basic checks
-    let elf = Elf::parse(src).context("parsing ELF")?;
-    if elf.header.e_ident[EI_CLASS] != ELFCLASS64 {
-        anyhow::bail!("Only ELF64 is supported");
-    }
-    if !elf.little_endian {
-        anyhow::bail!("Only little-endian is supported");
-    }
+pub fn add_sunw_ctf(src: &[u8], elf: &Elf, ctf_data: &[u8]) -> Result<Vec<u8>> {
     if elf
         .section_headers
         .iter()
@@ -1160,8 +1174,8 @@ pub fn add_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
         anyhow::bail!("source binary already has a .SUNW_ctf section");
     }
 
-    let ehdr: Header = elf.header;
-    let phdrs: Vec<ProgramHeader> = elf.program_headers.into_iter().collect();
+    let ehdr = elf.header;
+    let phdrs = elf.program_headers.to_vec();
 
     // --- Prepare shstrtab: copy RAW bytes and append ".SUNW_ctf\0" ---
     let shstr_src_i = ehdr.e_shstrndx as usize;
@@ -1192,11 +1206,11 @@ pub fn add_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
     let symtab_idx = elf
         .section_headers
         .iter()
-        .position(|sh| sh.sh_type == elf::section_header::SHT_SYMTAB);
+        .position(|sh| sh.sh_type == SHT_SYMTAB);
     let dynsym_idx = elf
         .section_headers
         .iter()
-        .position(|sh| sh.sh_type == elf::section_header::SHT_DYNSYM);
+        .position(|sh| sh.sh_type == SHT_DYNSYM);
 
     let link_target = symtab_idx
         .or(dynsym_idx)
@@ -1204,7 +1218,7 @@ pub fn add_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
         as u32;
 
     // --- Lay out the new file ---
-    // [Ehdr][Phdrs][all original sections (but .shstrtab -> new bytes)][.SUNW_ctf][padding][Shdrs]
+    // [Ehdr][Phdrs][all original sections (with updated .shstrtab)][.SUNW_ctf][padding][Shdrs]
     let mut out = vec![0; ehdr.e_ehsize as usize]; // reserve Ehdr
 
     if ehdr.e_phnum > 0 {
@@ -1214,7 +1228,7 @@ pub fn add_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
     let cur_off = &mut out.len();
 
     // Build new section headers: index 0 = NULL, then every original section in the same order
-    let mut new_shdrs: Vec<SectionHeader> = Vec::with_capacity(elf.section_headers.len() + 2);
+    let mut new_shdrs = Vec::with_capacity(elf.section_headers.len() + 2);
     new_shdrs.push(SectionHeader {
         sh_name: 0,
         sh_type: SHT_NULL,
@@ -1241,7 +1255,7 @@ pub fn add_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
                 nsh.sh_size = shstr_bytes.len() as u64;
                 out.resize(out.len() + shstr_bytes.len(), 0);
                 out.gwrite(&*shstr_bytes, cur_off)
-                    .context("failed to write new shstrtab")?;
+                    .context("write new shstrtab")?;
             } else if nsh.sh_size != 0 {
                 // copy original payload
                 let start = sh.sh_offset as usize;
@@ -1259,7 +1273,7 @@ pub fn add_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
                 }
                 out.resize(out.len() + sh.sh_size as usize, 0);
                 out.gwrite_with(&src[start..end], cur_off, ())
-                    .context("failed to write section header")?;
+                    .context("write section header")?;
             }
         }
         // Keep sh_name as-is for existing sections (strings still valid; we only appended)
@@ -1269,7 +1283,7 @@ pub fn add_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
     // Append new .SUNW_ctf section (after all originals)
     let mut ctf_sh = SectionHeader {
         sh_name: ctf_name_off, // offset in *new* shstrtab
-        sh_type: elf::section_header::SHT_PROGBITS,
+        sh_type: SHT_PROGBITS,
         sh_flags: 0,
         sh_addr: 0,
         sh_offset: 0, // set after alignment
@@ -1312,7 +1326,7 @@ pub fn add_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
         new_ehdr.e_phoff = if phdrs.is_empty() {
             0
         } else {
-            core::mem::size_of::<Header>() as u64
+            size_of::<Header>() as u64
         };
         new_ehdr.e_shoff = e_shoff as u64;
         new_ehdr.e_shnum = new_shdrs.len() as u16;
@@ -1328,20 +1342,6 @@ pub fn add_sunw_ctf(src: &[u8], ctf_data: &[u8]) -> Result<Vec<u8>> {
         for ph in &phdrs {
             out.gwrite_with(ph.clone(), off, LE.into())
                 .context("write program header")?;
-        }
-    }
-
-    // Quick sanity: all sh_name must be within the *new* shstrtab size
-    let shstr_size_now = new_shdrs[shstr_src_i].sh_size as u32; // careful: new_shdrs has a NULL at 0
-    // In new_shdrs, index = original index (since we pushed NULL then looped from 1), so .shstrtab is at the same index.
-    for (i, sh) in new_shdrs.iter().enumerate().skip(1) {
-        if sh.sh_name >= shstr_size_now as usize {
-            anyhow::bail!(
-                "section [{}] sh_name (0x{:x}) beyond shstrtab size (0x{:x})",
-                i,
-                sh.sh_name,
-                shstr_size_now
-            );
         }
     }
 
@@ -1371,7 +1371,11 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     let fns = if args.fns.is_empty() {
-        eprintln!("Reading function names from stdin...");
+        // Input is not a pipe or file.
+        if io::stdin().is_terminal() {
+            eprintln!("WARNING: reading from stdin, which is a tty");
+        }
+
         io::read_to_string(io::stdin())?
             .lines()
             .map(ToOwned::to_owned)
@@ -1380,10 +1384,21 @@ fn main() -> Result<()> {
         args.fns
     };
 
-    let source_bytes = fs::read(&args.source_elf)
-        .with_context(|| format!("failed to read {}", args.source_elf.display()))?;
+    let source_file = File::open(&args.source_elf)
+        .with_context(|| format!("failed to open {}", args.source_elf.display()))?;
+    let source_bytes = unsafe {
+        Mmap::map(&source_file)
+            .with_context(|| format!("failed to mmap {}", args.source_elf.display()))?
+    };
     let source_elf = Elf::parse(&source_bytes)
         .with_context(|| format!("failed to parse {} as ELF", args.source_elf.display()))?;
+
+    if source_elf.header.e_ident[EI_CLASS] != ELFCLASS64 {
+        anyhow::bail!("Only ELF64 is supported");
+    }
+    if !source_elf.little_endian {
+        anyhow::bail!("Only little-endian files are supported");
+    }
 
     let source_symbols: HashSet<_> = source_elf
         .syms
@@ -1398,9 +1413,6 @@ fn main() -> Result<()> {
 
     for missing in &missing_fns {
         eprintln!("'{missing}' was not found in {}", args.source_elf.display());
-    }
-    if !missing_fns.is_empty() {
-        std::process::exit(1);
     }
 
     let mut symbols: HashMap<_, _> = fns
@@ -1418,12 +1430,18 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    let debug_data = fs::read(&args.debug_elf)
-        .with_context(|| format!("failed to read {}", args.debug_elf.display()))?;
-    let debug_elf = Elf::parse(&debug_data)
+    let debug_file = File::open(&args.debug_elf)
+        .with_context(|| format!("failed to open {}", args.debug_elf.display()))?;
+    let debug_bytes = unsafe {
+        Mmap::map(&debug_file)
+            .with_context(|| format!("failed to mmap {}", args.debug_elf.display()))?
+    };
+    let debug_elf = Elf::parse(&debug_bytes)
         .with_context(|| format!("failed to parse {} as ELF", args.debug_elf.display()))?;
 
-    // Determine endianness from the object file
+    if debug_elf.header.e_ident[EI_CLASS] != ELFCLASS64 {
+        anyhow::bail!("Only ELF64 is supported");
+    }
     if !debug_elf.little_endian {
         anyhow::bail!("Only little-endian files are supported");
     }
@@ -1438,7 +1456,7 @@ fn main() -> Result<()> {
             {
                 let start = sh.sh_offset as usize;
                 let end = start + sh.sh_size as usize;
-                return Ok(EndianSlice::new(&debug_data[start..end], endian));
+                return Ok(EndianSlice::new(&debug_bytes[start..end], endian));
             }
         }
 
@@ -1446,7 +1464,8 @@ fn main() -> Result<()> {
         Ok(EndianSlice::new(&[], endian))
     };
 
-    let dwarf = Dwarf::load(&loader)?;
+    let dwarf = Dwarf::load(&loader)
+        .with_context(|| format!("failed to load DWARF from {}", args.debug_elf.display()))?;
     let mut parser = DwarfParser::new(&source_elf, &dwarf);
 
     let function_info = parser
@@ -1460,25 +1479,31 @@ fn main() -> Result<()> {
             missing.mangled,
         );
     }
-    if !missing_symbols.is_empty() {
-        std::process::exit(1);
-    }
 
-    let parsed_function_info = parser.get_dwarf_offsets(function_info)?;
-    let ctf_buffer = parser.writer.generate_ctf(parsed_function_info)?;
+    let parsed_function_info = parser
+        .get_dwarf_offsets(function_info)
+        .context("failed to parse DWARF debug data")?;
 
-    let updated_elf = add_sunw_ctf(&source_bytes, &ctf_buffer)?;
+    let ctf_buffer = parser
+        .writer
+        .generate_ctf(parsed_function_info)
+        .context("failed to generate CTF")?;
 
-    fs::write(&args.output, &updated_elf)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&args.output, fs::Permissions::from_mode(0o755))?;
-    }
+    let updated_elf = add_sunw_ctf(&source_bytes, &source_elf, &ctf_buffer)
+        .context("failed to generate updated ELF")?;
 
-    //let out_path = format!("{}_ctf.bin", args.source_elf.display());
-    //fs::write(&out_path, &ctf_buffer)?;
-    //println!("Wrote CTF to '{out_path}'");
+    fs::write(&args.output, &updated_elf)
+        .with_context(|| format!("failed to write updated ELF to {}", args.output.display()))?;
+
+    let metadata = source_file
+        .metadata()
+        .with_context(|| format!("failed to stat {}", args.source_elf.display()))?;
+    fs::set_permissions(&args.output, metadata.permissions()).with_context(|| {
+        format!(
+            "failed to set permissions on updated ELF {}",
+            args.output.display()
+        )
+    })?;
 
     Ok(())
 }
