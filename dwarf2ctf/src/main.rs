@@ -5,14 +5,17 @@ use flate2::write::ZlibEncoder;
 use gimli::{
     Attribute, AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram,
     DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian, Unit, UnitHeader,
+    UnitOffset,
 };
+use goblin::elf::Elf;
 use goblin::elf::header::{EI_CLASS, ELFCLASS64, Header};
 use goblin::elf::section_header::{
     SHN_UNDEF, SHT_DYNSYM, SHT_NOBITS, SHT_NULL, SHT_PROGBITS, SHT_SYMTAB, SectionHeader,
 };
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
-use goblin::elf::{self, Elf};
 use memmap2::Mmap;
+use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::Topo;
 use scroll::{IOwrite, LE, Pwrite};
 
 use std::collections::{HashMap, HashSet};
@@ -78,7 +81,76 @@ struct CtfHeader {
     strlen: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+struct TypeGraph {
+    graph: DiGraph<CtfType, ()>,
+    type_map: HashMap<String, NodeIndex>,
+    processed_types: Vec<CtfType>,
+}
+
+impl TypeGraph {
+    fn new() -> Self {
+        Self {
+            graph: DiGraph::new(),
+            type_map: HashMap::new(),
+            processed_types: Vec::new(),
+        }
+    }
+
+    // Add a type node to the graph
+    fn add_type(&mut self, ty: CtfType) -> NodeIndex {
+        let name = ty.name().to_string();
+
+        if let Some(&idx) = self.type_map.get(&name) {
+            return idx;
+        }
+
+        let idx = self.graph.add_node(ty);
+        self.type_map.insert(name, idx);
+        idx
+    }
+
+    // Add a dependency: parent_type contains/depends on child_type
+    // Edge direction: parent -> child (parent depends on child)
+    fn add_dependency(&mut self, parent_type: &CtfType, child_type: &CtfType) {
+        let parent_idx = self.add_type(parent_type.clone());
+        let child_idx = self.add_type(child_type.clone());
+        self.graph.add_edge(parent_idx, child_idx, ());
+    }
+
+    // Process types from leaf nodes (basic types) upward
+    fn process_types(&mut self) {
+        // Use reverse topological sort to process leaves first
+        let mut topo = Topo::new(&self.graph);
+        let mut processing_order = Vec::new();
+
+        // Collect nodes in topological order
+        while let Some(node) = topo.next(&self.graph) {
+            processing_order.push(node);
+        }
+
+        // Reverse to process leaves first
+        processing_order.reverse();
+
+        // Process each type once
+        let mut processed = HashSet::new();
+        for node_idx in processing_order {
+            if processed.insert(node_idx) {
+                let type_info = &self.graph[node_idx];
+                self.add_type_to_list(type_info.clone());
+            }
+        }
+    }
+
+    // This function is called once per type, processing from leaves upward
+    fn add_type_to_list(&mut self, type_info: CtfType) {
+        // TODO actually process
+        println!("Processing type: {}", type_info.name());
+        self.processed_types.push(type_info);
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 enum CtfType {
     Integer {
         name: String,
@@ -141,7 +213,7 @@ impl CtfType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 struct CtfMember {
     name: String,
     type_id: u16,
@@ -151,8 +223,8 @@ struct CtfMember {
 #[derive(Clone, Debug)]
 struct FunctionInfo<R: Reader<Offset = usize>> {
     name: String,
-    return_type_offset: Option<gimli::UnitOffset>,
-    args: Vec<(String, gimli::UnitOffset)>,
+    return_type_offset: Option<UnitOffset>,
+    args: Vec<(String, UnitOffset)>,
     unit_header: UnitHeader<R, R::Offset>,
 }
 
@@ -205,7 +277,7 @@ struct CtfWriter<'a> {
     elf: &'a Elf<'a>,
     types: Vec<CtfType>,
     strings: StringTable,
-    type_map: HashMap<gimli::UnitOffset, u16>, // DWARF offset to CTF type ID
+    type_map: HashMap<UnitOffset, u16>, // DWARF offset to CTF type ID
 }
 
 impl<'a> CtfWriter<'a> {
@@ -218,14 +290,14 @@ impl<'a> CtfWriter<'a> {
         }
     }
 
-    fn add_type(&mut self, dwarf_offset: gimli::UnitOffset, ctf_type: CtfType) -> u16 {
+    fn add_type(&mut self, dwarf_offset: UnitOffset, ctf_type: CtfType) -> u16 {
         let type_id = (self.types.len() + 1) as u16; // CTF type IDs start at 1
         self.types.push(ctf_type);
         self.type_map.insert(dwarf_offset, type_id);
         type_id
     }
 
-    fn get_type_id(&self, dwarf_offset: gimli::UnitOffset) -> Option<u16> {
+    fn get_type_id(&self, dwarf_offset: UnitOffset) -> Option<u16> {
         self.type_map.get(&dwarf_offset).copied()
     }
 
@@ -522,7 +594,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         }
     }
 
-    fn parse_type(&mut self, unit: &Unit<R>, offset: gimli::UnitOffset) -> Result<u16> {
+    fn parse_type(&mut self, unit: &Unit<R>, offset: UnitOffset) -> Result<u16> {
         // Check if we've already parsed this type
         if let Some(type_id) = self.writer.get_type_id(offset) {
             return Ok(type_id);
@@ -532,30 +604,36 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             anyhow::bail!("type offset {offset:?} not found");
         };
 
+        // **FIX: Reserve a type ID and add placeholder BEFORE recursive parsing**
+        let type_id = (self.writer.types.len() + 1) as u16;
+        self.writer.type_map.insert(offset, type_id);
+
+        // Temporarily push Unknown as placeholder
+        self.writer.types.push(CtfType::Unknown);
+
         let (_, entry) = entries.next_dfs()?.context("No entry at offset")?;
 
-        let type_id = match entry.tag() {
-            gimli::DW_TAG_base_type => self.parse_base_type(entry, offset)?,
-            gimli::DW_TAG_pointer_type => self.parse_pointer_type(unit, entry, offset)?,
-            gimli::DW_TAG_typedef => self.parse_typedef(unit, entry, offset)?,
-            gimli::DW_TAG_const_type => self.parse_const_type(unit, entry, offset)?,
-            gimli::DW_TAG_volatile_type => self.parse_volatile_type(unit, entry, offset)?,
-            gimli::DW_TAG_restrict_type => self.parse_restrict_type(unit, entry, offset)?,
+        let ctf_type = match entry.tag() {
+            gimli::DW_TAG_base_type => self.parse_base_type(entry)?,
+            gimli::DW_TAG_pointer_type => self.parse_pointer_type(unit, entry)?,
+            gimli::DW_TAG_typedef => self.parse_typedef(unit, entry)?,
+            gimli::DW_TAG_const_type => self.parse_const_type(unit, entry)?,
+            gimli::DW_TAG_volatile_type => self.parse_volatile_type(unit, entry)?,
+            gimli::DW_TAG_restrict_type => self.parse_restrict_type(unit, entry)?,
+            gimli::DW_TAG_subroutine_type => self.parse_function_type(unit, entry)?,
             gimli::DW_TAG_structure_type => self.parse_struct_type(unit, entry, offset)?,
             _ => {
                 // Unknown type, add placeholder
-                self.writer.add_type(offset, CtfType::Unknown)
+                CtfType::Unknown
             }
         };
+
+        self.writer.types[(type_id - 1) as usize] = ctf_type;
 
         Ok(type_id)
     }
 
-    fn parse_base_type(
-        &mut self,
-        entry: &DebuggingInformationEntry<R>,
-        offset: gimli::UnitOffset,
-    ) -> Result<u16> {
+    fn parse_base_type(&mut self, entry: &DebuggingInformationEntry<R>) -> Result<CtfType> {
         let mut name = String::new();
         let mut byte_size = 0u32;
 
@@ -590,7 +668,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                             gimli::DW_ATE_unsigned_char => Some(IntType::UnsignedChar),
                             gimli::DW_ATE_float => {
                                 // For floats, we'll create a float type instead
-                                return self.parse_float_type(entry, offset, name, byte_size);
+                                return self.parse_float_type(entry, name, byte_size);
                             }
                             _ => todo!(), //ctf_int_data(0, 0, byte_size * 8),
                         };
@@ -611,21 +689,19 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             IntType::Bool => ctf_int_data(CTF_INT_BOOL, 0, bit_size),
         };
 
-        let ctf_type = CtfType::Integer {
+        Ok(CtfType::Integer {
             name,
             size: byte_size,
             encoding,
-        };
-        Ok(self.writer.add_type(offset, ctf_type))
+        })
     }
 
     fn parse_float_type(
         &mut self,
         _entry: &DebuggingInformationEntry<R>,
-        offset: gimli::UnitOffset,
         name: String,
         byte_size: u32,
-    ) -> Result<u16> {
+    ) -> Result<CtfType> {
         // Map float size to CTF float encoding
         let encoding = match byte_size {
             4 => ctf_int_data(1, 0, 32),   // CTF_FP_SINGLE
@@ -634,20 +710,18 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             _ => ctf_int_data(1, 0, byte_size * 8),
         };
 
-        let ctf_type = CtfType::Float {
+        Ok(CtfType::Float {
             name,
             size: byte_size,
             encoding,
-        };
-        Ok(self.writer.add_type(offset, ctf_type))
+        })
     }
 
     fn parse_pointer_type(
         &mut self,
         unit: &Unit<R>,
         entry: &DebuggingInformationEntry<R>,
-        offset: gimli::UnitOffset,
-    ) -> Result<u16> {
+    ) -> Result<CtfType> {
         let mut target_offset = None;
         let mut name = String::new();
 
@@ -672,16 +746,14 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             0 // void pointer
         };
 
-        let ctf_type = CtfType::Pointer { name, target_type };
-        Ok(self.writer.add_type(offset, ctf_type))
+        Ok(CtfType::Pointer { name, target_type })
     }
 
     fn parse_typedef(
         &mut self,
         unit: &Unit<R>,
         entry: &DebuggingInformationEntry<R>,
-        offset: gimli::UnitOffset,
-    ) -> Result<u16> {
+    ) -> Result<CtfType> {
         let mut name = String::new();
         let mut target_offset = None;
 
@@ -706,16 +778,14 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             0
         };
 
-        let ctf_type = CtfType::Typedef { name, target_type };
-        Ok(self.writer.add_type(offset, ctf_type))
+        Ok(CtfType::Typedef { name, target_type })
     }
 
     fn parse_const_type(
         &mut self,
         unit: &Unit<R>,
         entry: &DebuggingInformationEntry<R>,
-        offset: gimli::UnitOffset,
-    ) -> Result<u16> {
+    ) -> Result<CtfType> {
         let mut target_offset = None;
         let mut name = String::new();
 
@@ -740,16 +810,14 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             0
         };
 
-        let ctf_type = CtfType::Const { name, target_type };
-        Ok(self.writer.add_type(offset, ctf_type))
+        Ok(CtfType::Const { name, target_type })
     }
 
     fn parse_volatile_type(
         &mut self,
         unit: &Unit<R>,
         entry: &DebuggingInformationEntry<R>,
-        offset: gimli::UnitOffset,
-    ) -> Result<u16> {
+    ) -> Result<CtfType> {
         let mut target_offset = None;
         let mut name = String::new();
 
@@ -774,16 +842,14 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             0
         };
 
-        let ctf_type = CtfType::Volatile { name, target_type };
-        Ok(self.writer.add_type(offset, ctf_type))
+        Ok(CtfType::Volatile { name, target_type })
     }
 
     fn parse_restrict_type(
         &mut self,
         unit: &Unit<R>,
         entry: &DebuggingInformationEntry<R>,
-        offset: gimli::UnitOffset,
-    ) -> Result<u16> {
+    ) -> Result<CtfType> {
         let mut target_offset = None;
         let mut name = String::new();
 
@@ -808,8 +874,56 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             0
         };
 
-        let ctf_type = CtfType::Restrict { name, target_type };
-        Ok(self.writer.add_type(offset, ctf_type))
+        Ok(CtfType::Restrict { name, target_type })
+    }
+
+    fn parse_function_type(
+        &mut self,
+        unit: &Unit<R>,
+        entry: &DebuggingInformationEntry<R>,
+    ) -> Result<CtfType> {
+        let mut name = String::new();
+
+        let mut attrs = entry.attrs();
+        while let Some(attr) = attrs.next()? {
+            if attr.name() == gimli::DW_AT_name {
+                name = self.get_attr_string(&attr)?;
+            }
+        }
+
+        // DW_AT_type of a function is its return type
+        let return_type_offset = self.get_type_offset(entry)?;
+        let return_type = if let Some(ret_off) = return_type_offset {
+            self.parse_type(unit, ret_off)?
+        } else {
+            0
+        };
+
+        let mut tree = unit
+            .entries_tree(Some(entry.offset()))
+            .context("failed to get function entry tree")?;
+        let root = tree
+            .root()
+            .context("failed to get function entry tree root")?;
+
+        let mut args = Vec::new();
+
+        let mut children = root.children();
+        while let Some(child) = children.next().context("failed to get function child")? {
+            if child.entry().tag() == DW_TAG_formal_parameter
+                && let Some(type_offset) = self.get_type_offset(child.entry())?
+            {
+                let arg_ty = self.parse_type(unit, type_offset)?;
+                args.push(arg_ty);
+            }
+        }
+
+        Ok(CtfType::Function {
+            name,
+            return_type,
+            args,
+            is_varargs: false, // We assume Rust fns are never varargs.
+        })
     }
 
     fn parse_struct_type(
@@ -817,7 +931,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         unit: &Unit<R>,
         entry: &DebuggingInformationEntry<R>,
         offset: gimli::UnitOffset,
-    ) -> Result<u16> {
+    ) -> Result<CtfType> {
         let mut name = String::new();
         let mut byte_size = 0u32;
 
@@ -849,12 +963,11 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             }
         }
 
-        let ctf_type = CtfType::Struct {
+        Ok(CtfType::Struct {
             name,
             size: byte_size,
             members,
-        };
-        Ok(self.writer.add_type(offset, ctf_type))
+        })
     }
 
     fn parse_struct_member(
