@@ -231,6 +231,15 @@ impl<'a> CtfWriter<'a> {
         self.type_map.get(&dwarf_offset).copied()
     }
 
+    fn add_type_strings_recursive(&mut self, ctf_type: &CtfType) {
+        self.strings.add_string(ctf_type.name());
+        if let CtfType::Struct { members, .. } = ctf_type {
+            for member in members {
+                self.strings.add_string(&member.name);
+            }
+        }
+    }
+
     fn generate_ctf(&mut self, funcs: HashMap<String, ParsedFunctionInfo>) -> Result<Vec<u8>> {
         let mut out = Vec::new();
 
@@ -239,6 +248,11 @@ impl<'a> CtfWriter<'a> {
         // Calculate type section size and write to string table
         let mut type_data = Vec::new();
         let types = self.types.clone();
+
+        for ctf_type in &types {
+            self.add_type_strings_recursive(ctf_type);
+        }
+
         for ctf_type in types {
             self.write_type(&mut type_data, &ctf_type)?;
         }
