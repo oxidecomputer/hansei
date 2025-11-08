@@ -237,7 +237,6 @@ impl<'a> CtfWriter<'a> {
         let lbloff = 0u32;
 
         // Calculate type section size and write to string table
-        // TODO populate the string table first
         let mut type_data = Vec::new();
         let types = self.types.clone();
         for ctf_type in types {
@@ -316,7 +315,7 @@ impl<'a> CtfWriter<'a> {
         let objtoff = lbloff; // No labels
         let funcoff = objtoff + obj_data.len() as u32;
         let func_data_end = funcoff + func_data.len() as u32;
-        let func_padding = func_data_end % 4;
+        let func_padding = (4 - (func_data_end % 4)) % 4;
 
         let typeoff = func_data_end + func_padding;
         let stroff = typeoff + type_data.len() as u32;
