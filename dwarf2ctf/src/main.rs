@@ -14,11 +14,9 @@ use goblin::elf::section_header::{
 };
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
 use memmap2::Mmap;
-use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::visit::Topo;
 use scroll::{IOwrite, LE, Pwrite};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
@@ -27,35 +25,36 @@ use std::path::PathBuf;
 const CTF_MAGIC: u16 = 0xcff1;
 const CTF_VERSION: u8 = 2;
 const CTF_F_COMPRESS: u8 = 0x01;
+const CTF_MAX_VLEN: u16 = 0x3ff;
 
 // CTF Type Kinds
-const CTF_K_UNKNOWN: u16 = 0;
-const CTF_K_INTEGER: u16 = 1;
-const CTF_K_FLOAT: u16 = 2;
-const CTF_K_POINTER: u16 = 3;
-const CTF_K_ARRAY: u16 = 4;
-const CTF_K_FUNCTION: u16 = 5;
-const CTF_K_STRUCT: u16 = 6;
-const CTF_K_UNION: u16 = 7;
-const CTF_K_ENUM: u16 = 8;
-const CTF_K_FORWARD: u16 = 9;
-const CTF_K_TYPEDEF: u16 = 10;
-const CTF_K_VOLATILE: u16 = 11;
-const CTF_K_CONST: u16 = 12;
-const CTF_K_RESTRICT: u16 = 13;
+const CTF_K_UNKNOWN: u8 = 0;
+const CTF_K_INTEGER: u8 = 1;
+const CTF_K_FLOAT: u8 = 2;
+const CTF_K_POINTER: u8 = 3;
+const CTF_K_ARRAY: u8 = 4;
+const CTF_K_FUNCTION: u8 = 5;
+const CTF_K_STRUCT: u8 = 6;
+const CTF_K_UNION: u8 = 7;
+const CTF_K_ENUM: u8 = 8;
+const CTF_K_FORWARD: u8 = 9;
+const CTF_K_TYPEDEF: u8 = 10;
+const CTF_K_VOLATILE: u8 = 11;
+const CTF_K_CONST: u8 = 12;
+const CTF_K_RESTRICT: u8 = 13;
 
 // CTF Integer Encoding Flags
-const CTF_INT_SIGNED: u32 = 0x01;
-const CTF_INT_CHAR: u32 = 0x02;
-const CTF_INT_BOOL: u32 = 0x04;
+const CTF_INT_SIGNED: u8 = 0x01;
+const CTF_INT_CHAR: u8 = 0x02;
+const CTF_INT_BOOL: u8 = 0x04;
 
 // CTF Type Info Macros
-fn ctf_type_info(kind: u16, is_root: bool, vlen: u16) -> u16 {
-    ((kind & 0x1f) << 11) | (if is_root { 1 } else { 0 } << 10) | (vlen & 0x3ff)
+fn ctf_type_info(kind: u8, is_root: bool, vlen: u16) -> u16 {
+    ((kind as u16) << 11) | (if is_root { 1 } else { 0 } << 10) | (vlen & CTF_MAX_VLEN)
 }
 
-fn ctf_int_data(encoding: u32, offset: u32, bits: u32) -> u32 {
-    ((encoding & 0xff) << 24) | ((offset & 0xff) << 16) | (bits & 0xffff)
+fn ctf_int_data(encoding: u8, offset: u8, bits: u32) -> u32 {
+    ((encoding as u32) << 24) | ((offset as u32) << 16) | bits
 }
 
 // CTF Structures
@@ -81,76 +80,7 @@ struct CtfHeader {
     strlen: u32,
 }
 
-#[derive(Debug)]
-struct TypeGraph {
-    graph: DiGraph<CtfType, ()>,
-    type_map: HashMap<String, NodeIndex>,
-    processed_types: Vec<CtfType>,
-}
-
-impl TypeGraph {
-    fn new() -> Self {
-        Self {
-            graph: DiGraph::new(),
-            type_map: HashMap::new(),
-            processed_types: Vec::new(),
-        }
-    }
-
-    // Add a type node to the graph
-    fn add_type(&mut self, ty: CtfType) -> NodeIndex {
-        let name = ty.name().to_string();
-
-        if let Some(&idx) = self.type_map.get(&name) {
-            return idx;
-        }
-
-        let idx = self.graph.add_node(ty);
-        self.type_map.insert(name, idx);
-        idx
-    }
-
-    // Add a dependency: parent_type contains/depends on child_type
-    // Edge direction: parent -> child (parent depends on child)
-    fn add_dependency(&mut self, parent_type: &CtfType, child_type: &CtfType) {
-        let parent_idx = self.add_type(parent_type.clone());
-        let child_idx = self.add_type(child_type.clone());
-        self.graph.add_edge(parent_idx, child_idx, ());
-    }
-
-    // Process types from leaf nodes (basic types) upward
-    fn process_types(&mut self) {
-        // Use reverse topological sort to process leaves first
-        let mut topo = Topo::new(&self.graph);
-        let mut processing_order = Vec::new();
-
-        // Collect nodes in topological order
-        while let Some(node) = topo.next(&self.graph) {
-            processing_order.push(node);
-        }
-
-        // Reverse to process leaves first
-        processing_order.reverse();
-
-        // Process each type once
-        let mut processed = HashSet::new();
-        for node_idx in processing_order {
-            if processed.insert(node_idx) {
-                let type_info = &self.graph[node_idx];
-                self.add_type_to_list(type_info.clone());
-            }
-        }
-    }
-
-    // This function is called once per type, processing from leaves upward
-    fn add_type_to_list(&mut self, type_info: CtfType) {
-        // TODO actually process
-        println!("Processing type: {}", type_info.name());
-        self.processed_types.push(type_info);
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Debug)]
 enum CtfType {
     Integer {
         name: String,
@@ -164,23 +94,23 @@ enum CtfType {
     },
     Pointer {
         name: String,
-        target_type: u16,
+        target_type: MaybeOffset,
     },
     Typedef {
         name: String,
-        target_type: u16,
+        target_type: MaybeOffset,
     },
     Const {
         name: String,
-        target_type: u16,
+        target_type: MaybeOffset,
     },
     Volatile {
         name: String,
-        target_type: u16,
+        target_type: MaybeOffset,
     },
     Restrict {
         name: String,
-        target_type: u16,
+        target_type: MaybeOffset,
     },
     Struct {
         name: String,
@@ -189,8 +119,8 @@ enum CtfType {
     },
     Function {
         name: String,
-        return_type: u16,
-        args: Vec<u16>,
+        return_type: MaybeOffset,
+        args: Vec<MaybeOffset>,
         is_varargs: bool,
     },
     Unknown,
@@ -213,10 +143,10 @@ impl CtfType {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Debug)]
 struct CtfMember {
     name: String,
-    type_id: u16,
+    type_id: MaybeOffset,
     offset_bits: u64,
 }
 
@@ -357,6 +287,7 @@ impl<'a> CtfWriter<'a> {
                     };
 
                     let vlen = func_info.args.len() as u16;
+                    eprintln!("Argument count for {symbol_name}: {vlen}");
                     let info = ctf_type_info(CTF_K_FUNCTION, false, vlen);
                     func_data.iowrite_with(info, LE)?;
                     func_data.iowrite_with(func_info.return_type, LE)?;
@@ -433,6 +364,17 @@ impl<'a> CtfWriter<'a> {
         Ok(out)
     }
 
+    fn deref_maybe_type(&self, offset: &MaybeOffset) -> Result<u16> {
+        match offset {
+            MaybeOffset::Found(f) => Ok(*f),
+            MaybeOffset::Pending(p) => self
+                .type_map
+                .get(p)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("no type index found for {offset:?}")),
+        }
+    }
+
     fn write_type(&mut self, buffer: &mut Vec<u8>, ctf_type: &CtfType) -> Result<()> {
         match ctf_type {
             CtfType::Integer {
@@ -466,46 +408,51 @@ impl<'a> CtfWriter<'a> {
             CtfType::Pointer { name, target_type } => {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_POINTER, false, 0);
+                let target_type = self.deref_maybe_type(target_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(*target_type, LE)?;
+                buffer.iowrite_with(target_type, LE)?;
             }
 
             CtfType::Typedef { name, target_type } => {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_TYPEDEF, false, 0);
+                let target_type = self.deref_maybe_type(target_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(*target_type, LE)?;
+                buffer.iowrite_with(target_type, LE)?;
             }
 
             CtfType::Const { name, target_type } => {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_CONST, false, 0);
+                let target_type = self.deref_maybe_type(target_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(*target_type, LE)?;
+                buffer.iowrite_with(target_type, LE)?;
             }
 
             CtfType::Volatile { name, target_type } => {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_VOLATILE, false, 0);
+                let target_type = self.deref_maybe_type(target_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(*target_type, LE)?;
+                buffer.iowrite_with(target_type, LE)?;
             }
 
             CtfType::Restrict { name, target_type } => {
                 let name_offset = self.strings.add_string(name);
                 let info = ctf_type_info(CTF_K_RESTRICT, false, 0);
+                let target_type = self.deref_maybe_type(target_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(*target_type, LE)?;
+                buffer.iowrite_with(target_type, LE)?;
             }
 
             CtfType::Function {
@@ -520,13 +467,15 @@ impl<'a> CtfWriter<'a> {
                     vlen += 1;
                 }
                 let info = ctf_type_info(CTF_K_FUNCTION, true, vlen);
+                let return_type = self.deref_maybe_type(return_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(*return_type, LE)?;
+                buffer.iowrite_with(return_type, LE)?;
 
                 // Write argument types
-                for &arg in args {
+                for arg in args {
+                    let arg = self.deref_maybe_type(arg)?;
                     buffer.iowrite_with(arg, LE)?;
                 }
 
@@ -550,10 +499,15 @@ impl<'a> CtfWriter<'a> {
 
                 // Write members
                 for member in members {
+                    let type_id = self.deref_maybe_type(&member.type_id)?;
                     let member_name_offset = self.strings.add_string(&member.name);
                     buffer.iowrite_with(member_name_offset, LE)?;
-                    buffer.iowrite_with(member.type_id, LE)?;
-                    buffer.iowrite_with(member.offset_bits as u16, LE)?;
+                    buffer.iowrite_with(type_id, LE)?;
+                    if *size < 8192 {
+                        buffer.iowrite_with(member.offset_bits as u16, LE)?;
+                    } else {
+                        todo!("ctlm_offsethi/lo");
+                    }
                 }
             }
 
@@ -569,10 +523,17 @@ impl<'a> CtfWriter<'a> {
     }
 }
 
+#[derive(Clone, Debug)]
+enum MaybeOffset {
+    Found(u16),
+    Pending(UnitOffset),
+}
+
 // DWARF Parser
 struct DwarfParser<'a, R: Reader<Offset = usize>> {
     dwarf: &'a Dwarf<R>,
     writer: CtfWriter<'a>,
+    inflight_types: VecDeque<UnitOffset>,
 }
 
 impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
@@ -580,6 +541,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         DwarfParser {
             dwarf,
             writer: CtfWriter::new(elf),
+            inflight_types: VecDeque::new(),
         }
     }
 
@@ -594,22 +556,25 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         }
     }
 
-    fn parse_type(&mut self, unit: &Unit<R>, offset: UnitOffset) -> Result<u16> {
+    fn parse_type(&mut self, unit: &Unit<R>, offset: UnitOffset) -> Result<MaybeOffset> {
         // Check if we've already parsed this type
         if let Some(type_id) = self.writer.get_type_id(offset) {
-            return Ok(type_id);
+            return Ok(MaybeOffset::Found(type_id));
+        }
+
+        // We're in a type with a member that refers to itself, e.g. a linked list.
+        // We will resolve the index for this type when the first instance completes,
+        // so mark it as pending for now.
+        if self.inflight_types.contains(&offset) {
+            return Ok(MaybeOffset::Pending(offset));
         }
 
         let Ok(mut entries) = unit.entries_at_offset(offset) else {
             anyhow::bail!("type offset {offset:?} not found");
         };
 
-        // **FIX: Reserve a type ID and add placeholder BEFORE recursive parsing**
-        let type_id = (self.writer.types.len() + 1) as u16;
-        self.writer.type_map.insert(offset, type_id);
-
-        // Temporarily push Unknown as placeholder
-        self.writer.types.push(CtfType::Unknown);
+        // Track that we're in the process of adding this type.
+        self.inflight_types.push_back(offset);
 
         let (_, entry) = entries.next_dfs()?.context("No entry at offset")?;
 
@@ -628,9 +593,12 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             }
         };
 
-        self.writer.types[(type_id - 1) as usize] = ctf_type;
+        let type_id = self.writer.add_type(offset, ctf_type);
 
-        Ok(type_id)
+        // Done with this type.
+        self.inflight_types.pop_back();
+
+        Ok(MaybeOffset::Found(type_id))
     }
 
     fn parse_base_type(&mut self, entry: &DebuggingInformationEntry<R>) -> Result<CtfType> {
@@ -743,7 +711,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         let target_type = if let Some(off) = target_offset {
             self.parse_type(unit, off)?
         } else {
-            0 // void pointer
+            MaybeOffset::Found(0)
         };
 
         Ok(CtfType::Pointer { name, target_type })
@@ -775,7 +743,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         let target_type = if let Some(off) = target_offset {
             self.parse_type(unit, off)?
         } else {
-            0
+            MaybeOffset::Found(0)
         };
 
         Ok(CtfType::Typedef { name, target_type })
@@ -807,7 +775,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         let target_type = if let Some(off) = target_offset {
             self.parse_type(unit, off)?
         } else {
-            0
+            MaybeOffset::Found(0)
         };
 
         Ok(CtfType::Const { name, target_type })
@@ -839,7 +807,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         let target_type = if let Some(off) = target_offset {
             self.parse_type(unit, off)?
         } else {
-            0
+            MaybeOffset::Found(0)
         };
 
         Ok(CtfType::Volatile { name, target_type })
@@ -871,7 +839,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         let target_type = if let Some(off) = target_offset {
             self.parse_type(unit, off)?
         } else {
-            0
+            MaybeOffset::Found(0)
         };
 
         Ok(CtfType::Restrict { name, target_type })
@@ -896,7 +864,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         let return_type = if let Some(ret_off) = return_type_offset {
             self.parse_type(unit, ret_off)?
         } else {
-            0
+            MaybeOffset::Found(0)
         };
 
         let mut tree = unit
@@ -907,14 +875,21 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             .context("failed to get function entry tree root")?;
 
         let mut args = Vec::new();
+        let mut is_varargs = false;
 
         let mut children = root.children();
         while let Some(child) = children.next().context("failed to get function child")? {
-            if child.entry().tag() == DW_TAG_formal_parameter
-                && let Some(type_offset) = self.get_type_offset(child.entry())?
-            {
-                let arg_ty = self.parse_type(unit, type_offset)?;
-                args.push(arg_ty);
+            match child.entry().tag() {
+                gimli::DW_TAG_formal_parameter => {
+                    if let Some(type_offset) = self.get_type_offset(child.entry())? {
+                        let arg_ty = self.parse_type(unit, type_offset)?;
+                        args.push(arg_ty);
+                    }
+                }
+                gimli::DW_TAG_unspecified_parameters => {
+                    is_varargs = true;
+                }
+                _ => {}
             }
         }
 
@@ -922,7 +897,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             name,
             return_type,
             args,
-            is_varargs: false, // We assume Rust fns are never varargs.
+            is_varargs,
         })
     }
 
@@ -1169,6 +1144,14 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             }
         }
 
+        if !self.inflight_types.is_empty() {
+            anyhow::bail!(
+                "{} types still marked as pending after parsing completed: {:?}",
+                self.inflight_types.len(),
+                self.inflight_types,
+            );
+        }
+
         Ok(function_info)
     }
 
@@ -1219,7 +1202,11 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 self.parse_type(&unit, ret_offset)
                     .context("failed to parse return type")?
             } else {
-                0 // void
+                MaybeOffset::Found(0)
+            };
+            let return_type = match return_type {
+                MaybeOffset::Found(f) => f,
+                MaybeOffset::Pending(p) => panic!("return type offset {p:?} was not resolved"),
             };
             return_types.push(return_type);
 
@@ -1228,7 +1215,11 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 let arg_type_id = self
                     .parse_type(&unit, *arg_offset)
                     .context("failed to parse arg type")?;
-                println!("  Arg '{}': type ID {}", arg_name, arg_type_id);
+                let arg_type_id = match arg_type_id {
+                    MaybeOffset::Found(f) => f,
+                    MaybeOffset::Pending(p) => panic!("arg offset {p:?} was not resolved"),
+                };
+                println!("  Arg '{}': type ID {:?}", arg_name, arg_type_id);
                 args.push(arg_type_id);
             }
 
