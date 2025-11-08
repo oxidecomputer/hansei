@@ -306,7 +306,8 @@ impl<'a> CtfWriter<'a> {
                         obj_data.iowrite_with(0u16, LE)?;
                         continue;
                     };
-                    obj_data.iowrite_with(idx as u16, LE)?;
+                    // CTF index starts at one.
+                    obj_data.iowrite_with((idx + 1) as u16, LE)?;
                 }
                 _ => {}
             }
