@@ -488,6 +488,11 @@ impl<'a> CtfWriter<'a> {
                 if *is_varargs {
                     buffer.iowrite_with(0u16, LE)?;
                 }
+
+                // Pad vlen to an even number for alignment.
+                if !vlen.is_multiple_of(2) {
+                    buffer.iowrite_with(0u16, LE)?;
+                }
             }
 
             CtfType::Struct {
