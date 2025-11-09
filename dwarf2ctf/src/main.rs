@@ -326,7 +326,8 @@ impl<'a> CtfWriter<'a> {
             preamble: CtfPreamble {
                 magic: CTF_MAGIC,
                 version: CTF_VERSION,
-                flags: CTF_F_COMPRESS,
+                //flags: CTF_F_COMPRESS,
+                flags: 0,
             },
             parlabel: 0,
             parname: 0,
@@ -351,14 +352,19 @@ impl<'a> CtfWriter<'a> {
         out.iowrite_with(header.stroff, LE)?;
         out.iowrite_with(header.strlen, LE)?;
 
-        let mut encoder = ZlibEncoder::new(&mut out, Compression::fast());
+        //let mut encoder = ZlibEncoder::new(&mut out, Compression::fast());
 
-        encoder.write_all(&obj_data)?;
-        encoder.write_all(&func_data)?;
-        encoder.write_all(&vec![0u8; func_padding as usize])?;
-        encoder.write_all(&type_data)?;
-        encoder.write_all(self.strings.data())?;
-        encoder.finish()?;
+        //encoder.write_all(&obj_data)?;
+        //encoder.write_all(&func_data)?;
+        //encoder.write_all(&vec![0u8; func_padding as usize])?;
+        //encoder.write_all(&type_data)?;
+        //encoder.write_all(self.strings.data())?;
+        //encoder.finish()?;
+        out.write_all(&obj_data)?;
+        out.write_all(&func_data)?;
+        out.write_all(&vec![0u8; func_padding as usize])?;
+        out.write_all(&type_data)?;
+        out.write_all(self.strings.data())?;
 
         Ok(out)
     }
@@ -1610,6 +1616,8 @@ fn main() -> Result<()> {
         .writer
         .generate_ctf(parsed_function_info)
         .context("failed to generate CTF")?;
+
+    fs::write("test.ctf", &ctf_buffer)?;
 
     let updated_elf = add_sunw_ctf(&source_bytes, &source_elf, &ctf_buffer)
         .context("failed to generate updated ELF")?;
