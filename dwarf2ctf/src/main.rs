@@ -214,14 +214,14 @@ impl<'a> CtfWriter<'a> {
     fn new(elf: &'a Elf<'a>) -> Self {
         CtfWriter {
             elf,
-            types: Vec::new(),
+            types: vec![CtfType::Unknown], // Start with a null type at index 0.
             strings: StringTable::new(),
             type_map: HashMap::new(),
         }
     }
 
     fn add_type(&mut self, offset: UnitOffset, ctf_type: CtfType) -> u16 {
-        let type_id = (self.types.len() + 1) as u16; // CTF type IDs start at 1
+        let type_id = (self.types.len()) as u16;
         self.types.push(ctf_type);
         self.type_map.insert(offset, type_id);
         type_id
@@ -234,15 +234,16 @@ impl<'a> CtfWriter<'a> {
         let mut type_data = Vec::new();
         let types = self.types.clone();
 
-        for ctf_type in types {
-            self.write_type(&mut type_data, &ctf_type)?;
+        // Skip the initial placeholder item.
+        for ctf_type in types.iter().skip(1) {
+            self.write_type(&mut type_data, ctf_type)?;
         }
 
         for (name, func) in &funcs {
             println!("Function: {}", name);
             println!("  Arguments:");
             for arg in &func.args {
-                let ty = &self.types[(*arg - 1) as usize];
+                let ty = &self.types[(*arg) as usize];
                 println!("    {ty:?}");
             }
             let ret_ty = &self.types[func.return_type as usize];
@@ -302,7 +303,7 @@ impl<'a> CtfWriter<'a> {
                         continue;
                     };
                     // CTF index starts at one.
-                    obj_data.iowrite_with((idx + 1) as u16, LE)?;
+                    obj_data.iowrite_with(idx as u16, LE)?;
                 }
                 _ => {}
             }
