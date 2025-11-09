@@ -227,19 +227,6 @@ impl<'a> CtfWriter<'a> {
         type_id
     }
 
-    fn get_type_id(&self, dwarf_offset: UnitOffset) -> Option<u16> {
-        self.type_map.get(&dwarf_offset).copied()
-    }
-
-    fn add_type_strings_recursive(&mut self, ctf_type: &CtfType) {
-        self.strings.add_string(ctf_type.name());
-        if let CtfType::Struct { members, .. } = ctf_type {
-            for member in members {
-                self.strings.add_string(&member.name);
-            }
-        }
-    }
-
     fn generate_ctf(&mut self, funcs: HashMap<String, ParsedFunctionInfo>) -> Result<Vec<u8>> {
         let mut out = Vec::new();
 
@@ -248,10 +235,6 @@ impl<'a> CtfWriter<'a> {
         // Calculate type section size and write to string table
         let mut type_data = Vec::new();
         let types = self.types.clone();
-
-        for ctf_type in &types {
-            self.add_type_strings_recursive(ctf_type);
-        }
 
         for ctf_type in types {
             self.write_type(&mut type_data, &ctf_type)?;
@@ -572,13 +555,13 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
     fn parse_type(&mut self, unit: &Unit<R>, offset: UnitOffset) -> Result<MaybeOffset> {
         // Check if we've already parsed this type
-        if let Some(type_id) = self.writer.get_type_id(offset) {
-            return Ok(MaybeOffset::Found(type_id));
+        if let Some(type_id) = self.writer.type_map.get(&offset) {
+            return Ok(MaybeOffset::Found(*type_id));
         }
 
         // We're in a type with a member that refers to itself, e.g. a linked list.
         // We will resolve the index for this type when the first instance completes,
-        // so mark it as pending for now.
+        // so mark it as pending for now and don't recurse into the type again.
         if self.inflight_types.contains(&offset) {
             return Ok(MaybeOffset::Pending(offset));
         }
@@ -609,7 +592,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
         let type_id = self.writer.add_type(offset, ctf_type);
 
-        // Done with this type.
+        // Type has been fully parsed, pop it off the stack.
         self.inflight_types.pop_back();
 
         Ok(MaybeOffset::Found(type_id))
