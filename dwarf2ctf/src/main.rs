@@ -214,7 +214,15 @@ impl<'a> CtfWriter<'a> {
     fn new(elf: &'a Elf<'a>) -> Self {
         CtfWriter {
             elf,
-            types: vec![CtfType::Unknown], // Start with a null type at index 0.
+            // Start null type at index 0 and void type for functions without a return type.
+            types: vec![
+                CtfType::Unknown,
+                CtfType::Integer {
+                    name: "void".to_string(),
+                    size: 0,
+                    encoding: 0,
+                },
+            ],
             strings: StringTable::new(),
             type_map: HashMap::new(),
         }
@@ -892,7 +900,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         let return_type = if let Some(ret_off) = return_type_offset {
             self.parse_type(unit, ret_off)?
         } else {
-            MaybeOffset::Found(0)
+            MaybeOffset::Found(1)
         };
 
         let mut tree = unit
