@@ -112,6 +112,12 @@ enum CtfType {
         name: String,
         target_type: MaybeOffset,
     },
+    Array {
+        name: String,
+        element_type: MaybeOffset,
+        index_type: MaybeOffset,
+        nelems: u32,
+    },
     Struct {
         name: String,
         size: u32,
@@ -138,6 +144,7 @@ impl CtfType {
             Self::Restrict { name, .. } => name,
             Self::Struct { name, .. } => name,
             Self::Function { name, .. } => name,
+            Self::Array { name, .. } => name,
             Self::Unknown => "<unknown>",
         }
     }
@@ -504,6 +511,25 @@ impl<'a> CtfWriter<'a> {
                 }
             }
 
+            CtfType::Array {
+                name,
+                element_type,
+                index_type,
+                nelems,
+            } => {
+                let name_offset = self.strings.add_string(name);
+                let info = ctf_type_info(CTF_K_ARRAY, true, 0);
+
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(0u16, LE)?;
+                let element_id = self.deref_maybe_type(&element_type)?;
+                buffer.iowrite_with(element_id, LE)?;
+                let index_id = self.deref_maybe_type(&index_type)?;
+                buffer.iowrite_with(index_id, LE)?;
+                buffer.iowrite_with(*nelems, LE)?;
+            }
+
             CtfType::Struct {
                 name,
                 size,
@@ -604,6 +630,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             gimli::DW_TAG_const_type => self.parse_const_type(offset, unit, entry)?,
             gimli::DW_TAG_volatile_type => self.parse_volatile_type(offset, unit, entry)?,
             gimli::DW_TAG_restrict_type => self.parse_restrict_type(offset, unit, entry)?,
+            gimli::DW_TAG_array_type => self.parse_array_type(offset, unit, entry)?,
             gimli::DW_TAG_subroutine_type => self.parse_function_type(offset, unit, entry)?,
             gimli::DW_TAG_structure_type => self.parse_struct_type(offset, unit, entry)?,
             _ => {
@@ -936,6 +963,96 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             is_varargs,
         };
         Ok(MaybeOffset::Found(self.writer.add_type(offset, ctf_type)))
+    }
+
+    fn parse_array_type(
+        &mut self,
+        offset: UnitOffset,
+        unit: &Unit<R>,
+        entry: &DebuggingInformationEntry<R>,
+    ) -> Result<MaybeOffset> {
+        let mut name = String::new();
+        let mut element_type_offset = None;
+        let mut index_type_offset = None;
+        let mut count = None;
+
+        // Parse attributes of the array_type DIE
+        let mut attrs = entry.attrs();
+        while let Some(attr) = attrs.next()? {
+            match attr.name() {
+                gimli::DW_AT_name => {
+                    name = self.get_attr_string(&attr)?;
+                }
+                gimli::DW_AT_type => {
+                    if let AttributeValue::UnitRef(off) = attr.value() {
+                        element_type_offset = Some(off);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let element_type = if let Some(off) = element_type_offset {
+            self.parse_type(unit, off)?
+        } else {
+            anyhow::bail!("no element type for array");
+        };
+
+        // Parse subrange children to get array dimensions
+        let mut tree = unit
+            .entries_tree(Some(entry.offset()))
+            .context("failed to get array entry tree")?;
+        let root = tree.root().context("failed to get array entry tree root")?;
+
+        let mut children = root.children();
+        while let Some(child) = children.next().context("failed to get array child")? {
+            // TODO handle multi-dimensional arrays
+            if child.entry().tag() == gimli::DW_TAG_subrange_type {
+                (count, index_type_offset) = self.parse_subrange_count(child.entry())?;
+            }
+        }
+
+        let count = count.ok_or_else(|| anyhow::anyhow!("no count for array"))?;
+        let index_type = if let Some(off) = index_type_offset {
+            self.parse_type(unit, off)?
+        } else {
+            anyhow::bail!("no index type for array");
+        };
+
+        let ctf_type = CtfType::Array {
+            name,
+            element_type,
+            index_type,
+            nelems: count,
+        };
+        Ok(MaybeOffset::Found(self.writer.add_type(offset, ctf_type)))
+    }
+
+    fn parse_subrange_count(
+        &mut self,
+        entry: &DebuggingInformationEntry<R>,
+    ) -> Result<(Option<u32>, Option<UnitOffset>)> {
+        let mut count = None;
+        let mut index_type_offset = None;
+
+        let mut attrs = entry.attrs();
+        while let Some(attr) = attrs.next()? {
+            match attr.name() {
+                gimli::DW_AT_type => {
+                    if let AttributeValue::UnitRef(off) = attr.value() {
+                        index_type_offset = Some(off);
+                    }
+                }
+                gimli::DW_AT_count => {
+                    if let AttributeValue::Udata(val) = attr.value() {
+                        count = Some(val as u32);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok((count, index_type_offset))
     }
 
     fn parse_struct_type(
