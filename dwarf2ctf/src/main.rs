@@ -1050,16 +1050,22 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                         count = Some(val as u32);
                     }
                 }
-                gimli::DW_AT_lower_bound => {
-                    if let AttributeValue::Sdata(val) = attr.value() {
-                        lower_bound = Some(val as u32);
-                    } else if let AttributeValue::Udata(val) = attr.value() {
-                        lower_bound = Some(val as u32);
-                    }
-                }
+                gimli::DW_AT_lower_bound => match attr.value() {
+                    AttributeValue::Sdata(val) => lower_bound = Some(val as u32),
+                    AttributeValue::Udata(val) => lower_bound = Some(val as u32),
+                    AttributeValue::Data1(val) => lower_bound = Some(val as u32),
+                    AttributeValue::Data2(val) => lower_bound = Some(val as u32),
+                    AttributeValue::Data4(val) => lower_bound = Some(val),
+                    AttributeValue::Data8(val) => lower_bound = Some(val as u32),
+                    _ => {}
+                },
                 gimli::DW_AT_upper_bound => match attr.value() {
                     AttributeValue::Sdata(val) => upper_bound = Some(val as u32),
                     AttributeValue::Udata(val) => upper_bound = Some(val as u32),
+                    AttributeValue::Data1(val) => upper_bound = Some(val as u32),
+                    AttributeValue::Data2(val) => upper_bound = Some(val as u32),
+                    AttributeValue::Data4(val) => upper_bound = Some(val),
+                    AttributeValue::Data8(val) => upper_bound = Some(val as u32),
                     _ => {}
                 },
                 _ => {}
@@ -1068,7 +1074,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
         let nelems = match (count, lower_bound, upper_bound) {
             (Some(c), _, _) => Some(c),
-            (None, Some(l), Some(u)) => Some(u - l),
+            (None, Some(l), Some(u)) => Some(u - l + 1),
             _ => None,
         };
 
