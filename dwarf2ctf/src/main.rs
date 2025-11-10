@@ -199,7 +199,13 @@ impl StringTable {
 
         let offset = self.strings.len() as u32;
         self.offsets.insert(s.to_string(), offset);
-        self.strings.extend_from_slice(s.as_bytes());
+        if s.len() >= 1023 {
+            // Truncate strings to 1 KiB.
+            self.strings.extend_from_slice(&s.as_bytes()[..1020]);
+            self.strings.extend_from_slice(b"...");
+        } else {
+            self.strings.extend_from_slice(s.as_bytes());
+        }
         self.strings.push(0); // null terminator
         offset
     }
@@ -523,9 +529,9 @@ impl<'a> CtfWriter<'a> {
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
                 buffer.iowrite_with(0u16, LE)?;
-                let element_id = self.deref_maybe_type(&element_type)?;
+                let element_id = self.deref_maybe_type(element_type)?;
                 buffer.iowrite_with(element_id, LE)?;
-                let index_id = self.deref_maybe_type(&index_type)?;
+                let index_id = self.deref_maybe_type(index_type)?;
                 buffer.iowrite_with(index_id, LE)?;
                 buffer.iowrite_with(*nelems, LE)?;
             }
