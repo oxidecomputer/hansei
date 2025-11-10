@@ -1034,6 +1034,8 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
     ) -> Result<(Option<u32>, Option<UnitOffset>)> {
         let mut count = None;
         let mut index_type_offset = None;
+        let mut lower_bound = None;
+        let mut upper_bound = None;
 
         let mut attrs = entry.attrs();
         while let Some(attr) = attrs.next()? {
@@ -1048,11 +1050,29 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                         count = Some(val as u32);
                     }
                 }
+                gimli::DW_AT_lower_bound => {
+                    if let AttributeValue::Sdata(val) = attr.value() {
+                        lower_bound = Some(val as u32);
+                    } else if let AttributeValue::Udata(val) = attr.value() {
+                        lower_bound = Some(val as u32);
+                    }
+                }
+                gimli::DW_AT_upper_bound => match attr.value() {
+                    AttributeValue::Sdata(val) => upper_bound = Some(val as u32),
+                    AttributeValue::Udata(val) => upper_bound = Some(val as u32),
+                    _ => {}
+                },
                 _ => {}
             }
         }
 
-        Ok((count, index_type_offset))
+        let nelems = match (count, lower_bound, upper_bound) {
+            (Some(c), _, _) => Some(c),
+            (None, Some(l), Some(u)) => Some(u - l),
+            _ => None,
+        };
+
+        Ok((nelems, index_type_offset))
     }
 
     fn parse_struct_type(
