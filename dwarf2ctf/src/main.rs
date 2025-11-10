@@ -574,7 +574,7 @@ impl<'a> CtfWriter<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 enum MaybeOffset {
     Found(u16),
     Pending(UnitOffset),
@@ -1102,6 +1102,15 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             }
         }
 
+        // Is this a trivial tuple struct wrapping a single field?
+        // `mdb` won't show argument types in stacks if there are structs passed by value
+        // with a size <= 16.
+        if let Some(child) = members.first()
+            && members.len() == 1
+            && child.name == "__0"
+        {
+            return Ok(child.type_id);
+        }
         let ctf_type = CtfType::Struct {
             name,
             size: byte_size,
