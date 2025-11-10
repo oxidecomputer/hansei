@@ -1,5 +1,5 @@
 [package]
-name = "dwarf2ctf"
+name = "checkctf"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,7 +7,5 @@ edition = "2024"
 anyhow = { workspace = true }
 clap = { workspace = true }
 flate2 = { workspace = true }
-gimli = { workspace = true }
-goblin = { workspace = true }
 memmap2 = { workspace = true }
 scroll = { workspace = true }

@@ -1,9 +1,16 @@
 [workspace]
 resolver = "3"
-members = ["durin", "dwarf2ctf"]
+members = ["durin", "dwarf2ctf", "checkctf"]
 
 [workspace.dependencies]
-#gimli = "0.32.3"
+anyhow = "1.0"
+clap = { version = "4.5.51", features = ["derive"] }
+flate2 = "1.1.5"
+gimli = "0.32"
+goblin = "0.10.3"
+memmap2 = "0.9.9"
+scroll = { version = "0.13.0", features = ["derive"] }
+scroll_derive = "0.13.0"
 
 [profile.release]
 debug = true
