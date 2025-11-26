@@ -1,16 +1,28 @@
 [workspace]
 resolver = "3"
-members = ["durin", "dwarf2ctf", "checkctf"]
+members = [
+    "checkctf",
+    "disentangler",
+    "durin",
+    "dwarf2ctf",
+    "libproc-sys",
+    "proc",
+]
 
 [workspace.dependencies]
 anyhow = "1.0"
+bindgen = { version = "0.72", default-features = false }
 clap = { version = "4.5.51", features = ["derive"] }
+fallible-iterator = "0.3.0"
 flate2 = "1.1.5"
-gimli = "0.32"
+gimli = { version = "0.32", features = ["fallible-iterator"] }
 goblin = "0.10.3"
+libproc-sys = { path = "libproc-sys", version = "0.1.0" }
 memmap2 = "0.9.9"
+proc = { path = "proc", version = "0.1.0" }
 scroll = { version = "0.13.0", features = ["derive"] }
 scroll_derive = "0.13.0"
+thiserror = "2.0.17"
 
 [profile.release]
 debug = true

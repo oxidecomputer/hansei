@@ -1,0 +1,10 @@
+[package]
+name = "proc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gimli = { workspace = true }
+libproc-sys = { workspace = true }
+scroll = { workspace = true }
+thiserror = { workspace = true }
