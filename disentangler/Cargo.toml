@@ -11,3 +11,4 @@ gimli = { workspace = true }
 goblin = { workspace = true }
 memmap2 = { workspace = true }
 proc = { workspace = true }
+rangemap = { workspace = true }
