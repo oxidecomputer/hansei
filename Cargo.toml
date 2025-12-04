@@ -20,6 +20,7 @@ goblin = "0.10.3"
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
 memmap2 = "0.9.9"
 proc = { path = "proc", version = "0.1.0" }
+rangemap = "1.7.0"
 scroll = { version = "0.13.0", features = ["derive"] }
 scroll_derive = "0.13.0"
 thiserror = "2.0.17"

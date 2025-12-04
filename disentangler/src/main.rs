@@ -3,18 +3,21 @@ use clap::Parser;
 use fallible_iterator::FallibleIterator;
 use gimli::{
     AttributeValue, BaseAddresses, CfaRule, DW_AT_location, DW_TAG_formal_parameter,
-    DW_TAG_variable, DebuggingInformationEntry, Dwarf, EhFrame, EhFrameHdr, EndianSlice,
-    EvaluationResult, LittleEndian, ParsedEhFrameHdr, Reader, RegisterRule, Unit, UnitOffset,
-    UnwindContext, UnwindSection, Value,
+    DW_TAG_variable, DebuggingInformationEntry, Dwarf, EhFrame, EhFrameHdr, Encoding, EndianSlice,
+    EvaluationResult, Expression, LittleEndian, Location, ParsedEhFrameHdr, Piece, RegisterRule,
+    Unit, UnitHeader, UnitOffset, UnitRef, UnwindContext, UnwindSection, Value,
 };
 use goblin::elf::Elf;
 use goblin::elf::header::{EI_CLASS, ELFCLASS64};
 use goblin::elf::program_header::PT_LOAD;
 use memmap2::Mmap;
-use proc::{Core, LoadedObjectWithPath, Reg, Regs, x86_64::*};
+use proc::{Core, Reg, Regs, SymbolBuf, x86_64::*};
+use rangemap::RangeMap;
 
-use std::collections::HashMap;
+use core::fmt;
+use std::collections::HashSet;
 use std::fs::File;
+use std::io::{self, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -39,10 +42,29 @@ struct Args {
     lwp: Option<u32>,
 }
 
-fn main() -> Result<()> {
+fn main() {
     let args = Args::parse();
+    let mut stdout = io::stdout().lock();
 
-    let debug_file = args.debug_elf.as_deref().map(DebugFile::open).transpose()?;
+    if let Err(e) = exec(args, &mut stdout) {
+        if let Some(io_err) = e.downcast_ref::<io::Error>()
+            && io_err.kind() == io::ErrorKind::BrokenPipe
+        {
+            return;
+        }
+
+        let _ = writeln!(io::stderr(), "{e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
+    let debug_file = args
+        .debug_elf
+        .as_deref()
+        .map(DebugFile::open)
+        .transpose()
+        .with_context(|| format!("failed to open {}", args.debug_elf.unwrap().display()))?;
     let debug_info = debug_file
         .as_ref()
         .map(|df| df.load_debug_info())
@@ -50,39 +72,268 @@ fn main() -> Result<()> {
 
     let core = Core::open(&args.core)
         .with_context(|| format!("failed to open {} as a core", args.core.display()))?;
-    let core_mappings = core
-        .mappings()
-        .context("failed to retrieve memory mappings from core")?;
+    let addrs = AddrRanges::parse(&core).context("could not parse address mappings")?;
 
-    let exec_mapping = core_mappings
-        .first()
-        .ok_or(anyhow::anyhow!("no mappings found in core"))?;
-    let exec_bytes = load_object(exec_mapping, &core)?;
-    let executable = ObjectInfo::parse(&exec_bytes, exec_mapping.vaddr, debug_info)
-        .context("could not create unwinder for executable")?;
+    let exec_bytes = load_object(&addrs.exec_text, &core).context("failed to load executable")?;
+    let exec = ObjectInfo::parse(&exec_bytes, addrs.exec_text.start, debug_info)
+        .context("could not parse object info for executable")?;
 
-    let libc_mapping = core_mappings
-        .iter()
-        .find(|o| o.path.ends_with("libc.so.1"))
-        .ok_or(anyhow::anyhow!("no mappings found for libc"))?;
-    let libc_bytes = load_object(libc_mapping, &core)?;
-    let libc = ObjectInfo::parse(&libc_bytes, libc_mapping.vaddr, None)
-        .context("could not create unwinder for libc")?;
+    let libc_bytes = load_object(&addrs.libc_text, &core).context("failed to load libc")?;
+    let libc = ObjectInfo::parse(&libc_bytes, addrs.libc_text.start, None)
+        .context("could not parse object info for libc")?;
 
     let lwp = args.lwp.unwrap_or_else(|| core.status().active_lwp);
-    let regs = core.regs(lwp)?;
+    let initial_regs = core.regs(lwp).context("failed to get thread registers")?;
 
-    println!("LWP {lwp}");
+    writeln!(out, "LWP {lwp}")?;
+    writeln!(out, "\nInitial registers:\n{initial_regs}")?;
+
     let unwinder = Unwinder {
-        core,
-        exec_vaddr: exec_mapping.vaddr,
-        exec: executable,
-        libc_vaddr: libc_mapping.vaddr,
-        libc,
+        core: &core,
+        exec: &exec,
+        libc: &libc,
     };
-    unwinder.unwind_stack(&regs, &mut UnwindContext::new(), 16)?;
+    let frames = unwinder.unwind_stack(&initial_regs, &mut UnwindContext::new(), 16)?;
+
+    for (i, frame) in frames.iter().enumerate() {
+        frame.print_regs(out, i, &addrs, &core)?;
+
+        let pc = match i {
+            0 => frame.regs.rip,
+            _ => frame.regs.rip - 1,
+        };
+        let Some(mapping) = core.lookup_map(pc) else {
+            continue;
+        };
+        if mapping.vaddr != exec.map_addr {
+            continue;
+        }
+
+        if let Some(debug_info) = &exec.debug_info {
+            if let Some((header, offset)) = find_function_for_pc(&debug_info.dwarf, pc)? {
+                let unit = debug_info.dwarf.unit(header)?;
+                let unit_ref = UnitRef::new(&debug_info.dwarf, &unit);
+                let variables = find_variables_in_scope(&unit_ref, offset, pc, &frame.regs, &core)?;
+                if !variables.is_empty() {
+                    writeln!(out, "\nVariables:")?;
+                }
+                for var in variables {
+                    writeln!(out, "  name: {}", var.name)?;
+                    writeln!(out, "    type: {}", var.type_name.unwrap_or_default())?;
+                    writeln!(out, "    size: {}", var.size.unwrap_or_default())?;
+
+                    if let Some(pieces) = &var.parts {
+                        if !pieces.is_empty() {
+                            writeln!(out, "    parts:")?;
+                        }
+                        for piece in pieces {
+                            let name;
+                            let offset = match piece.bit_offset {
+                                Some(off) if off % 8 == 0 => off,
+                                Some(off) => {
+                                    anyhow::bail!("bit offset {off} is not on a byte boundary")
+                                }
+                                None => 0,
+                            };
+                            let value = match piece.location {
+                                Location::Empty => {
+                                    name = "<empty>".to_string();
+                                    0
+                                }
+                                Location::Register { register } => {
+                                    let reg = Reg::from(register);
+                                    if !reg.is_callee_saved() {
+                                        writeln!(out, "      %{reg}: <volatile reg unavailable>")?;
+                                        continue;
+                                    }
+                                    name = format!("%{reg}");
+                                    frame.regs[register.into()]
+                                }
+                                Location::Value { value } => {
+                                    name = "<immediate>".to_string();
+                                    value.to_u64(0)?
+                                }
+                                Location::Bytes { value } => {
+                                    name = "<const>".to_string();
+                                    eprintln!("CONST BYTES {value:?}");
+                                    0
+                                }
+                                Location::Address { address } => {
+                                    name = "   ".to_string();
+                                    address
+                                }
+                                Location::ImplicitPointer { value, byte_offset } => {
+                                    todo!();
+                                }
+                            };
+                            print_stuff(out, 6, value, &name, &addrs, &core)?;
+                        }
+                    }
+                }
+            }
+
+            // if let Some(fn_info) = debug_info.index.find_by_name_and_offset(&symbol.name, pc) {
+            //     DwarfEval::print_arguments(
+            //         pc,
+            //         frame.regs.rsp, // TODO correct?
+            //         &frame.regs,
+            //         fn_info,
+            //         &symbol.name,
+            //         &debug_info.dwarf,
+            //         &core,
+            //     )?;
+            // }
+
+            // let callee_saved = [RBX, R12, R13, R14, R15];
+
+            // for &reg in &callee_saved {
+            //     let value = regs[reg];
+
+            //     // What variables claim to live in this register at this PC?
+            //     let candidates = debug_info.locations.find_in_register(reg, pc);
+
+            //     if !candidates.is_empty() {
+            //         eprintln!("  {reg} = {value:#x} might be:");
+            //         for var in candidates {
+            //             eprintln!(
+            //                 "    - {} (from {:#x}..{:#x})",
+            //                 var.name, var.range.start, var.range.end
+            //             );
+            //         }
+            //     }
+            // }
+        }
+    }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct AddrRanges {
+    exec_text: Range<u64>,
+    exec_data: Range<u64>,
+    exec_brk: Range<u64>,
+    exec_stack: Range<u64>,
+    exec_anon: Vec<Range<u64>>,
+    exec_guard: Vec<Range<u64>>,
+    lwp_stacks: RangeMap<u64, u32>,
+    libc_text: Range<u64>,
+}
+
+impl AddrRanges {
+    pub fn parse(core: &Core) -> Result<Self> {
+        let core_mappings = core
+            .mappings()
+            .context("failed to retrieve memory mappings from core")?;
+
+        let Some(exec_text) = core_mappings.first() else {
+            anyhow::bail!("no mappings in core");
+        };
+        let Some(exec_path) = &exec_text.path else {
+            anyhow::bail!("no path for first mapping");
+        };
+        if !exec_text.is_text() {
+            anyhow::bail!("first mapping is not text");
+        }
+        let Some(exec_data) = core_mappings
+            .iter()
+            .filter(|m| m.path.as_ref().map(|p| p == exec_path).unwrap_or_default())
+            .find(|m| m.is_data())
+        else {
+            anyhow::bail!("no data mapping for executable");
+        };
+
+        let Some(libc_mapping) = core_mappings.iter().find(|o| {
+            o.path
+                .as_ref()
+                .map(|p| p.ends_with("libc.so.1"))
+                .unwrap_or_default()
+        }) else {
+            anyhow::bail!("no .text mapping found for libc");
+        };
+
+        let anon_mappings: Vec<_> = core_mappings.iter().filter(|o| o.path.is_none()).collect();
+        let (guard_mappings, anon_mappings): (Vec<_>, Vec<_>) =
+            anon_mappings.into_iter().partition(|o| o.is_guard());
+
+        let lwps = core.lwps()?;
+        let lwp_stacks: RangeMap<_, _> = lwps
+            .into_iter()
+            .map(|lwp| (lwp.stack_range, lwp.tid))
+            .collect();
+
+        let status = core.status();
+
+        Ok(AddrRanges {
+            exec_text: exec_text.range(),
+            exec_data: exec_data.range(),
+            exec_brk: status.brk_range,
+            exec_anon: anon_mappings.into_iter().map(|m| m.range()).collect(),
+            exec_guard: guard_mappings.into_iter().map(|m| m.range()).collect(),
+            exec_stack: status.stack_range,
+            lwp_stacks,
+            libc_text: libc_mapping.range(),
+        })
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+enum MappingType {
+    /// .text and .rodata, the first mapping for the executable.
+    ExecText,
+    /// .data and .bss, the second mapping for the executable.
+    ExecData,
+    /// pr_brkbase from Pstatus.
+    ExecBrk,
+    /// pr_stkbase from Pstatus.
+    ExecStk,
+    /// Mappings with MA_ANON flag set.
+    ExecAnon,
+    /// Guard pages, mappings with no flags set.
+    ExecGuard,
+    /// A LWP's stack.
+    LwpStack(u32),
+    /// .text and .rodata for libc.
+    LibcText,
+}
+
+impl fmt::Display for MappingType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExecText => write!(f, "text"),
+            Self::ExecData => write!(f, "data"),
+            Self::ExecBrk => write!(f, "heap"),
+            Self::ExecStk => write!(f, "stack"),
+            Self::ExecAnon => write!(f, "anon"),
+            Self::ExecGuard => write!(f, "guard"),
+            Self::LwpStack(tid) => write!(f, "stack[{tid}]"),
+            Self::LibcText => write!(f, "libc"),
+        }
+    }
+}
+
+impl AddrRanges {
+    pub fn mapping_type(&self, addr: u64) -> Option<MappingType> {
+        if self.exec_text.contains(&addr) {
+            Some(MappingType::ExecText)
+        } else if self.exec_data.contains(&addr) {
+            Some(MappingType::ExecData)
+        } else if self.exec_brk.contains(&addr) {
+            Some(MappingType::ExecBrk)
+        } else if self.exec_stack.contains(&addr) {
+            Some(MappingType::ExecStk)
+        } else if let Some(&tid) = self.lwp_stacks.get(&addr) {
+            Some(MappingType::LwpStack(tid))
+        } else if self.libc_text.contains(&addr) {
+            Some(MappingType::LibcText)
+        } else if self.exec_anon.iter().any(|r| r.contains(&addr)) {
+            Some(MappingType::ExecAnon)
+        } else if self.exec_guard.iter().any(|r| r.contains(&addr)) {
+            Some(MappingType::ExecGuard)
+        } else {
+            None
+        }
+    }
 }
 
 struct DebugFile {
@@ -118,47 +369,247 @@ impl DebugFile {
         };
 
         let dwarf = Dwarf::load(&loader).with_context(|| format!("failed to load DWARF"))?;
-        eprintln!("building debug index");
-        let debug_index = DebugIndex::build(&dwarf)?;
-        eprintln!("building location index");
-        let locations = LocationIndex::build(&dwarf)?;
 
-        Ok(DebugInfo {
-            dwarf,
-            index: debug_index,
-            locations,
-        })
+        Ok(DebugInfo { dwarf })
     }
 }
 
 #[derive(Debug)]
 struct DebugInfo<'a> {
     dwarf: Dwarf<Slice<'a>>,
-    index: DebugIndex,
-    locations: LocationIndex,
 }
 
-fn load_object(object_mapping: &LoadedObjectWithPath, core: &Core) -> Result<Vec<u8>> {
-    let mut buf = vec![0u8; object_mapping.size as usize];
+fn load_object(object_range: &Range<u64>, core: &Core) -> Result<Vec<u8>> {
+    let object_len = object_range.end - object_range.start;
+    let mut buf = vec![0u8; object_len as usize];
     let read_len = core
-        .pread(&mut buf, object_mapping.vaddr)
+        .pread(&mut buf, object_range.start)
         .context("failed to read libc mapping from core")?;
-    if read_len != object_mapping.size {
-        anyhow::bail!(
-            "unexpected pread len {read_len:x} reading object, expected {:x}",
-            object_mapping.size
-        );
+    if read_len != object_len {
+        anyhow::bail!("unexpected pread len {read_len:x} reading object, expected {object_len:x}");
     }
 
     Ok(buf)
 }
 
+#[derive(Debug)]
+struct Frame {
+    regs: Regs,
+    symbol: Option<SymbolBuf>,
+    modified_regs: Vec<Reg>,
+    has_cfi: bool,
+}
+
+impl Frame {
+    pub fn print_regs(
+        &self,
+        out: &mut dyn io::Write,
+        i: usize,
+        addrs: &AddrRanges,
+        core: &Core,
+    ) -> Result<()> {
+        writeln!(out, "\n{}\n", "-".repeat(20))?;
+
+        let pc = self.regs.rip;
+        if let Some(sym) = &self.symbol {
+            let function_offset = pc - sym.st_value;
+            writeln!(out, "#{i} {pc:#018x} {}+{function_offset:#x}", sym.name)?;
+        } else {
+            writeln!(out, "#{i} {pc:#018x}")?;
+        }
+
+        writeln!(out, "")?;
+        if !self.modified_regs.is_empty() {
+            writeln!(out, "Register state:")?;
+        }
+        for &reg in &self.modified_regs {
+            if reg == RBP {
+                continue;
+            }
+
+            let mut current_ptr = self.regs[reg];
+            let map_ty = addrs.mapping_type(current_ptr);
+            let desc = map_ty.map(|m| m.to_string()).unwrap_or_else(String::new);
+            write!(
+                out,
+                "  %{reg}: {current_ptr:#018x} {desc:>9} {}",
+                format_value(current_ptr)
+            )?;
+
+            match map_ty {
+                Some(MappingType::ExecText) => {
+                    if let Some(sym) = core.lookup_symbol(current_ptr) {
+                        write!(out, " {}", sym.name)?;
+                    }
+                    // Don't deref into .text
+                    continue;
+                }
+                Some(MappingType::ExecData) => {
+                    if let Some(sym) = core.lookup_symbol(current_ptr) {
+                        print!(" {}", sym.name);
+                    }
+                }
+                None => {
+                    writeln!(out, "")?;
+                    continue;
+                }
+                _ => {}
+            }
+
+            current_ptr = core.read_u64(current_ptr)?;
+
+            loop {
+                let map_ty = addrs.mapping_type(current_ptr);
+                let desc = map_ty.map(|m| m.to_string()).unwrap_or_else(String::new);
+                write!(
+                    out,
+                    "\n     -> {current_ptr:#018x} {desc:>9} {}",
+                    format_value(current_ptr)
+                )?;
+
+                match map_ty {
+                    Some(MappingType::ExecText) | Some(MappingType::LibcText) => {
+                        if let Some(sym) = core.lookup_symbol(current_ptr) {
+                            write!(out, " {}", sym.name)?;
+                        }
+                        break;
+                    }
+                    Some(MappingType::ExecData) => {
+                        if let Some(sym) = core.lookup_symbol(current_ptr) {
+                            write!(out, " {}", sym.name)?;
+                        }
+                    }
+                    None => break,
+                    _ => {}
+                }
+
+                let next_ptr = core.read_u64(current_ptr)?;
+                if current_ptr == next_ptr {
+                    break;
+                }
+                current_ptr = next_ptr;
+            }
+            writeln!(out, "")?;
+        }
+
+        if !self.has_cfi {
+            writeln!(out, "No control flow information")?;
+        }
+
+        Ok(())
+    }
+}
+
+fn print_stuff(
+    out: &mut dyn Write,
+    indent: usize,
+    current_ptr: u64,
+    name: &str,
+    addrs: &AddrRanges,
+    core: &Core,
+) -> Result<()> {
+    let mut current_ptr = current_ptr;
+    let map_ty = addrs.mapping_type(current_ptr);
+    let desc = map_ty.map(|m| m.to_string()).unwrap_or_else(String::new);
+    write!(
+        out,
+        "{}{name}: {current_ptr:#018x} {desc:>9} {}",
+        " ".repeat(indent),
+        format_value(current_ptr)
+    )?;
+
+    match map_ty {
+        Some(MappingType::ExecText) => {
+            if let Some(sym) = core.lookup_symbol(current_ptr) {
+                write!(out, " {}", sym.name)?;
+            }
+            // Don't deref into .text
+            return Ok(());
+        }
+        Some(MappingType::ExecData) => {
+            if let Some(sym) = core.lookup_symbol(current_ptr) {
+                print!(" {}", sym.name);
+            }
+        }
+        None => {
+            writeln!(out, "")?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    current_ptr = core.read_u64(current_ptr)?;
+
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current_ptr) {
+            //write!(out, "\n     [cycle detected at {current_ptr:#018x}]")?;
+            break;
+        }
+        let map_ty = addrs.mapping_type(current_ptr);
+        let desc = map_ty.map(|m| m.to_string()).unwrap_or_else(String::new);
+        write!(
+            out,
+            "\n{}-> {current_ptr:#018x} {desc:>9} {}",
+            " ".repeat(indent + 3),
+            format_value(current_ptr)
+        )?;
+
+        match map_ty {
+            Some(MappingType::ExecText) | Some(MappingType::LibcText) => {
+                if let Some(sym) = core.lookup_symbol(current_ptr) {
+                    write!(out, " {}", sym.name)?;
+                }
+                break;
+            }
+            Some(MappingType::ExecData) => {
+                if let Some(sym) = core.lookup_symbol(current_ptr) {
+                    write!(out, " {}", sym.name)?;
+                }
+            }
+            None => break,
+            _ => {}
+        }
+
+        // let next_ptr = core.read_u64(current_ptr)?;
+        // if current_ptr == next_ptr {
+        //     break;
+        // }
+        // current_ptr = next_ptr;
+    }
+    writeln!(out, "")?;
+
+    Ok(())
+}
+
+fn format_value(data: u64) -> String {
+    let chunk = data.to_ne_bytes();
+
+    let hex_dump: String = chunk
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // 'is_ascii_graphic' excludes spaces, so we check range 0x20..=0x7e
+    let ascii_dump: String = chunk
+        .iter()
+        .map(|&b| {
+            if (0x20..=0x7e).contains(&b) {
+                b as char
+            } else {
+                '.'
+            }
+        })
+        .collect();
+
+    format!("{hex_dump:<23}  |{ascii_dump}|")
+}
+
 struct Unwinder<'a> {
-    core: Core,
-    exec_vaddr: u64,
-    exec: ObjectInfo<'a>,
-    libc_vaddr: u64,
-    libc: ObjectInfo<'a>,
+    core: &'a Core,
+    exec: &'a ObjectInfo<'a>,
+    libc: &'a ObjectInfo<'a>,
 }
 
 impl<'a> Unwinder<'a> {
@@ -167,55 +618,58 @@ impl<'a> Unwinder<'a> {
         initial_regs: &Regs,
         ctx: &mut UnwindContext<usize>,
         max_frames: usize,
-    ) -> Result<Vec<(u64, Regs)>> {
-        let mut frames = vec![(initial_regs.rip, initial_regs.clone())];
+    ) -> Result<Vec<Frame>> {
+        let mut frames = Vec::new();
         let mut regs = initial_regs.clone();
-
-        let mut frm_nr = 0;
         let mut pc = regs.rip;
+
+        let initial_frame = Frame {
+            regs: regs.clone(),
+            symbol: self.core.lookup_symbol(regs.rip),
+            modified_regs: Vec::new(),
+            has_cfi: false,
+        };
+        frames.push(initial_frame);
+
         for _ in 0..max_frames {
             let mapping = self
                 .core
                 .lookup_map(pc)
                 .with_context(|| format!("no mapping found for addr {pc:#x}"))?;
-            let object = if mapping.vaddr == self.exec_vaddr {
+            let object = if mapping.vaddr == self.exec.map_addr {
                 &self.exec
-            } else if mapping.vaddr == self.libc_vaddr {
+            } else if mapping.vaddr == self.libc.map_addr {
                 &self.libc
             } else {
-                // We just handle the executable and libc, all other mappings are unhandled.
+                // We only expect the executable and libc, all other mappings are unhandled.
                 anyhow::bail!("unanticipated mapping at addr {pc:#x} - {mapping:?}")
             };
 
-            if !frm_nr == 0 {
-                // PC will point to directly after function generally, or outside the function
-                // entirely for functions without an epilogue. Adjust PC to handle this.
-                pc -= 1;
-            }
+            // PC will point to directly after function generally, or outside the function
+            // entirely for functions without an epilogue. Adjust PC to handle this.
+            pc -= 1;
 
-            match self.unwind_frame(frm_nr, pc, &regs, object, ctx) {
-                Ok(Some(prev_regs)) => {
-                    frames.push((pc, regs.clone()));
-                    let prev_pc = prev_regs.rip;
-
+            match self.unwind_frame(pc, &regs, object, ctx) {
+                Ok(Some(prev_frame)) => {
+                    let prev_pc = prev_frame.regs.rip;
                     if prev_pc == 0 || prev_pc < 0x1000 {
-                        eprintln!("Stopping unwinding with PC value {prev_pc:#x}");
+                        //eprintln!("Stopping unwinding with PC value {prev_pc:#x}");
                         break;
                     }
 
                     pc = prev_pc;
-                    regs = prev_regs.clone();
+                    regs = prev_frame.regs.clone();
+                    frames.push(prev_frame);
                 }
                 Ok(None) => {
                     println!("Unwinding complete");
                     break;
                 }
                 Err(e) => {
-                    eprintln!("Unwinding failed: {}", e);
+                    eprintln!("Unwinding failed: {e}");
                     break;
                 }
             }
-            frm_nr += 1;
         }
 
         Ok(frames)
@@ -255,21 +709,13 @@ impl<'a> Unwinder<'a> {
     /// Attempt to pop the frame to the previous function based on .eh_frame unwind info.
     pub fn unwind_frame(
         &self,
-        frm_nr: usize,
         pc: u64,
         regs: &Regs,
         object: &ObjectInfo,
         ctx: &mut UnwindContext<usize>,
-    ) -> Result<Option<Regs>> {
+    ) -> Result<Option<Frame>> {
         // We confirmed in `parse` that the table is present.
         let table = object.eh_frame_hdr.table().unwrap();
-
-        println!("\n{}\n", "-".repeat(20));
-        let symbol = self.core.lookup_symbol(pc);
-        if let Some(sym) = &symbol {
-            let function_offset = pc - sym.st_value;
-            println!("#{frm_nr} {:#018x} {}+{function_offset:#x}", pc, sym.name);
-        }
 
         let fde = match table.fde_for_address(
             &object.eh_frame,
@@ -285,10 +731,17 @@ impl<'a> Unwinder<'a> {
                 else {
                     return Ok(None);
                 };
-                println!("\n{regs}");
-                eprintln!("manually popped frame for function with no unwind information");
 
-                return Ok(Some(prev_regs));
+                let prev_symbol = self
+                    .core
+                    .lookup_symbol(prev_regs.rip)
+                    .or_else(|| self.core.lookup_symbol(prev_regs.rip - 1));
+                return Ok(Some(Frame {
+                    regs: prev_regs,
+                    symbol: prev_symbol,
+                    modified_regs: Vec::new(),
+                    has_cfi: false,
+                }));
             }
             Err(e) => {
                 return Err(e.into());
@@ -297,35 +750,15 @@ impl<'a> Unwinder<'a> {
         let row = fde.unwind_info_for_address(&object.eh_frame, &object.bases, ctx, pc)?;
         let encoding = fde.cie().encoding();
 
-        // Compute the CFA (Canonical Frame Address)
+        // Compute the CFA (Canonical Frame Address) for the previous function.
         let cfa = self.compute_cfa(regs, row.cfa(), encoding, object)?;
-        if let Some(debug_info) = &object.debug_info
-            && let Some(symbol) = &symbol
-        {
-            // If we generated the DWARF separately from the original binary, then the PC for
-            // the function in the debug info will be different. We can correct this by finding
-            // the function by name and then giving DWARF our relative offset from its expected
-            // PC. Is the unwind info valid? Maaaaaaybe?
-            let function_offset = pc - symbol.st_value;
-            if let Some(fn_info) = debug_info.index.find_by_name_and_offset(&symbol.name, pc) {
-                DwarfEval::print_arguments(
-                    pc,
-                    cfa,
-                    regs,
-                    function_offset,
-                    fn_info,
-                    &symbol.name,
-                    &debug_info.dwarf,
-                    &self.core,
-                )?;
-            }
-        }
-        println!("\n{regs}");
 
+        let mut modified_regs = Vec::new();
         let mut prev_regs = Regs::default();
         for reg in REGS {
             if let Some(value) = self.restore_register(reg, regs, cfa, &row)? {
                 prev_regs[reg] = value;
+                modified_regs.push(reg);
             }
         }
 
@@ -336,28 +769,39 @@ impl<'a> Unwinder<'a> {
         prev_regs.rsp = cfa;
         prev_regs.rip = prev_pc;
 
-        if let Some(debug_info) = &object.debug_info {
-            let callee_saved = [RBX, R12, R13, R14, R15];
+        // if let Some(debug_info) = &object.debug_info {
+        //     let callee_saved = [RBX, R12, R13, R14, R15];
 
-            for &reg in &callee_saved {
-                let value = regs[reg];
+        //     for &reg in &callee_saved {
+        //         let value = regs[reg];
 
-                // What variables claim to live in this register at this PC?
-                let candidates = debug_info.locations.find_in_register(reg, pc);
+        //         // What variables claim to live in this register at this PC?
+        //         let candidates = debug_info.locations.find_in_register(reg, pc);
 
-                if !candidates.is_empty() {
-                    eprintln!("  {reg} = {value:#x} might be:");
-                    for var in candidates {
-                        eprintln!(
-                            "    - {} (from {:#x}..{:#x})",
-                            var.name, var.range.0, var.range.1
-                        );
-                    }
-                }
-            }
-        }
+        //         if !candidates.is_empty() {
+        //             eprintln!("  {reg} = {value:#x} might be:");
+        //             for var in candidates {
+        //                 eprintln!(
+        //                     "    - {} (from {:#x}..{:#x})",
+        //                     var.name, var.range.start, var.range.end
+        //                 );
+        //             }
+        //         }
+        //     }
+        // }
 
-        Ok(Some(prev_regs))
+        let prev_symbol = self
+            .core
+            .lookup_symbol(prev_regs.rip)
+            .or_else(|| self.core.lookup_symbol(prev_regs.rip - 1));
+        let prev_frame = Frame {
+            regs: prev_regs,
+            symbol: prev_symbol,
+            modified_regs,
+            has_cfi: true,
+        };
+
+        Ok(Some(prev_frame))
     }
 
     fn restore_register(
@@ -384,21 +828,21 @@ impl<'a> Unwinder<'a> {
                 // Register saved at CFA + offset
                 let addr = (cfa as i64 + offset) as u64;
                 let val = self.core.read_u64(addr)?;
-                eprintln!("reading {reg} at offset {offset} from CFA -> {val:#x}",);
+                // eprintln!("reading {reg} at offset {offset} from CFA -> {val:#x}",);
                 Ok(Some(val))
             }
             RegisterRule::Register(other_reg) => {
-                eprintln!(
-                    "reading {reg} from reg {}: {:#x}",
-                    Reg::from(other_reg),
-                    regs[other_reg.into()]
-                );
+                // eprintln!(
+                //     "reading {reg} from reg {}: {:#x}",
+                //     Reg::from(other_reg),
+                //     regs[other_reg.into()]
+                // );
                 // Value is in another register
                 Ok(Some(regs[other_reg.into()]))
             }
             RegisterRule::ValOffset(offset) => {
+                // eprintln!("{reg} is offset value {:#x} from CFA", cfa as i64 + offset);
                 // Value is CFA + offset (not a pointer)
-                eprintln!("{reg} is offset value {:#x} from CFA", cfa as i64 + offset);
                 Ok(Some((cfa as i64 + offset) as u64))
             }
             RegisterRule::Expression(_) | RegisterRule::ValExpression(_) => {
@@ -509,6 +953,7 @@ impl<'a> Unwinder<'a> {
 
 #[derive(Debug)]
 struct ObjectInfo<'a> {
+    map_addr: u64,
     eh_frame_hdr: ParsedEhFrameHdr<Slice<'a>>,
     eh_frame: EhFrame<Slice<'a>>,
     bases: BaseAddresses,
@@ -518,7 +963,7 @@ struct ObjectInfo<'a> {
 impl<'a> ObjectInfo<'a> {
     pub fn parse(
         bytes: &'a [u8],
-        mapping_addr: u64,
+        map_addr: u64,
         debug_info: Option<DebugInfo<'a>>,
     ) -> Result<Self> {
         let elf = Elf::parse_with_opts(&bytes, &goblin::options::ParseOptions::permissive())
@@ -542,7 +987,7 @@ impl<'a> ObjectInfo<'a> {
         // Calculate ASLR slide (Load Bias)
         // mapping_addr = Runtime Address
         // vaddr        = Link-time Address
-        let load_bias = mapping_addr.wrapping_sub(vaddr);
+        let load_bias = map_addr.wrapping_sub(vaddr);
 
         let eh_phdr = elf
             .program_headers
@@ -574,7 +1019,7 @@ impl<'a> ObjectInfo<'a> {
 
         let eh_frame_addr = eh_frame_hdr.eh_frame_ptr().pointer();
         bases = bases.set_eh_frame(eh_frame_addr);
-        let eh_frame_offset = (eh_frame_addr - mapping_addr) as usize;
+        let eh_frame_offset = (eh_frame_addr - map_addr) as usize;
         if eh_frame_offset >= bytes.len() {
             anyhow::bail!(
                 ".eh_frame offset {eh_frame_offset:#x} outside the mapping with size {:#x}",
@@ -586,6 +1031,7 @@ impl<'a> ObjectInfo<'a> {
         let eh_frame = EhFrame::new(eh_frame_slice, LittleEndian);
 
         Ok(Self {
+            map_addr,
             eh_frame_hdr,
             eh_frame,
             bases,
@@ -597,9 +1043,9 @@ impl<'a> ObjectInfo<'a> {
 struct DwarfEval<'a> {
     cfa: u64,
     regs: &'a Regs,
-    function_offset: u64,
-    function_info: &'a FunctionInstance,
     symbol_name: &'a str,
+    unit_index: usize,
+    entry_offset: UnitOffset,
     dwarf: &'a Dwarf<Slice<'a>>,
     core: &'a Core,
 }
@@ -609,18 +1055,18 @@ impl<'a> DwarfEval<'a> {
         pc: u64,
         cfa: u64,
         regs: &'a Regs,
-        function_offset: u64,
-        function_info: &'a FunctionInstance,
         symbol_name: &'a str,
+        unit_index: usize,
+        entry_offset: UnitOffset,
         dwarf: &'a Dwarf<Slice<'a>>,
         core: &'a Core,
     ) -> Result<()> {
         let eval = DwarfEval {
             cfa,
             regs,
-            function_offset,
-            function_info,
             symbol_name,
+            unit_index,
+            entry_offset,
             dwarf,
             core,
         };
@@ -628,33 +1074,27 @@ impl<'a> DwarfEval<'a> {
     }
 
     pub fn exec(&self, pc: u64) -> Result<()> {
-        let header = self
-            .dwarf
-            .units()
-            .nth(self.function_info.unit_index)?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "failed to find DWARF unit {} for {}",
-                    self.function_info.unit_index,
-                    self.symbol_name
-                )
-            })?;
+        let header = self.dwarf.units().nth(self.unit_index)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "failed to find DWARF unit {} for {}",
+                self.unit_index,
+                self.symbol_name
+            )
+        })?;
 
         let unit = self.dwarf.unit(header)?;
-        let concrete = unit
-            .entry(self.function_info.entry_offset)
-            .with_context(|| {
-                anyhow::anyhow!(
-                    "failed to get DIE at offset {:?} for {}",
-                    self.function_info.entry_offset,
-                    self.symbol_name
-                )
-            })?;
+        let concrete = unit.entry(self.entry_offset).with_context(|| {
+            anyhow::anyhow!(
+                "failed to get DIE at offset {:?} for {}",
+                self.entry_offset,
+                self.symbol_name
+            )
+        })?;
 
-        let name = self
-            .get_die_name(&unit, &concrete)?
-            .unwrap_or_else(|| "<unknown>".to_string());
-        println!("{name}");
+        // let name = self
+        //     .get_die_name(&unit, &concrete)?
+        //     .unwrap_or_else(|| "<unknown>".to_string());
+        // println!("{name}");
 
         self.print_params(&unit, &concrete, pc)
     }
@@ -733,7 +1173,7 @@ impl<'a> DwarfEval<'a> {
         let location = match entry.attr(gimli::DW_AT_location)? {
             Some(attr) => attr,
             None => {
-                println!("  Arg '{}': <optimized out>", name);
+                println!("  Arg '{name}': <optimized out>");
                 return Ok(());
             }
         };
@@ -750,240 +1190,18 @@ impl<'a> DwarfEval<'a> {
                 // DWARF for libc).
                 // If this is a frame further down the stack, use `pc - 1`.
                 // (Assuming you can pass a flag or infer this, typically `pc - 1` is safer for lookups)
-                let lookup_pc = if pc > 0 { pc - 1 } else { pc };
+                // NOTE: Done above in unwind_stack
 
                 while let Some(loc) = locations.next()? {
-                    if lookup_pc >= loc.range.begin && lookup_pc < loc.range.end {
+                    let range = loc.range.begin..loc.range.end;
+                    if range.contains(&pc) {
                         valid_expr = Some(loc.data);
                         break;
                     }
                 }
 
                 let Some(expr) = valid_expr else {
-                    println!(
-                        "  Arg '{}': <optimized out / not live at PC {:#x}>",
-                        name, lookup_pc
-                    );
-                    return Ok(());
-                };
-                expr
-            }
-            e => {
-                eprintln!("Unhandled attribute {e:?}, ignoring");
-                todo!();
-                return Ok(());
-            }
-        };
-
-        let mut eval = expression.evaluation(unit.encoding());
-        let mut result = eval.evaluate()?;
-
-        while !matches!(result, gimli::EvaluationResult::Complete) {
-            match result {
-                gimli::EvaluationResult::RequiresRegister { register, .. } => {
-                    // TODO check if register is valid?
-                    let val = self.regs[register.into()];
-                    result = eval.resume_with_register(gimli::Value::Generic(val))?;
-                }
-                gimli::EvaluationResult::RequiresFrameBase => {
-                    // IMPORTANT: Some variables are at RBP + offset.
-                    // You need to calculate the CFA for this frame and return it here.
-                    // For simplicity, assuming RBP is valid FrameBase for now,
-                    // but ideally you read DW_AT_frame_base from the subprogram entry.
-                    let rbp = self.regs[RBP];
-                    result = eval.resume_with_frame_base(rbp)?;
-                }
-                // Handle memory reads if necessary (e.g. dereferencing pointers)
-                gimli::EvaluationResult::RequiresMemory { address, size, .. } => {
-                    let val = match size {
-                        8 => self.core.read_u64(address)?,
-                        4 => self.core.read_u32(address)? as u64,
-                        2 => self.core.read_u16(address)? as u64,
-                        1 => self.core.read_u8(address)? as u64,
-                        _ => anyhow::bail!("CFA had unexpected read size of {size}"),
-                    };
-                    result = eval.resume_with_memory(Value::Generic(val))?;
-                }
-                gimli::EvaluationResult::RequiresCallFrameCfa => {
-                    result = eval.resume_with_call_frame_cfa(self.cfa)?;
-                }
-                gimli::EvaluationResult::RequiresEntryValue(expr) => {
-                    // 1. The 'expr' describes where the value lived at function entry.
-                    //    (Usually just DW_OP_regN). We must evaluate this nested expression.
-                    let mut nested_eval = expr.evaluation(unit.encoding());
-                    let mut nested_result = nested_eval.evaluate()?;
-
-                    // 2. Drive the nested evaluation loop
-                    loop {
-                        match nested_result {
-                            gimli::EvaluationResult::Complete => break,
-                            gimli::EvaluationResult::RequiresRegister { register, .. } => {
-                                let val = self.regs[register.into()];
-                                nested_result =
-                                    nested_eval.resume_with_register(gimli::Value::Generic(val))?;
-                            }
-                            // Nested entry values (recursion) are technically possible but rare.
-                            // For simplicity, we break if we hit complex requirements here.
-                            _ => {
-                                println!("  Arg '{name}': <recursive entry_value>");
-                                return Ok(());
-                            }
-                        }
-                    }
-
-                    // 3. Extract the location result from the nested evaluation
-                    let entry_val = match nested_eval.result()[..] {
-                        [
-                            gimli::Piece {
-                                location: gimli::Location::Register { register },
-                                ..
-                            },
-                        ] => {
-                            let val = self.regs[register.into()];
-                            gimli::Value::Generic(val)
-                        }
-                        // Sometimes entry_value can refer to stack locations
-                        [
-                            gimli::Piece {
-                                location: gimli::Location::Address { address },
-                                ..
-                            },
-                        ] => {
-                            let val = self.core.read_u64(address)?; // Assuming 64-bit for simplicity
-                            gimli::Value::Generic(val)
-                        }
-                        _ => {
-                            println!("  Arg '{name}': <unknown entry_value location>");
-                            return Ok(());
-                        }
-                    };
-
-                    // 4. Resume the MAIN evaluation with the found value
-                    result = eval.resume_with_entry_value(entry_val)?;
-                }
-                r => {
-                    eprintln!("Unhandled EvaluationResult {r:?}, ignoring");
-                    break;
-                }
-            }
-        }
-
-        // 4. Interpret Result
-        match eval.result()[..] {
-            [
-                gimli::Piece {
-                    location: gimli::Location::Register { register },
-                    ..
-                },
-            ] => {
-                let reg = register.into();
-                let val = self.regs[reg];
-                println!("  Arg '{name}': {reg} = {val:#x}");
-            }
-            [
-                gimli::Piece {
-                    location: gimli::Location::Address { address },
-                    ..
-                },
-            ] => {
-                let value = self
-                    .core
-                    .read_u64(address)
-                    .context("failed to read stack value")?;
-                println!("  Arg '{name}': Stack({address:#x}) {value:#x}");
-            }
-            [
-                gimli::Piece {
-                    location: gimli::Location::Value { value },
-                    ..
-                },
-            ] => {
-                println!("  Arg '{name}': = {value:?}");
-            }
-            _ => println!("  Arg '{name}': <complex location>"),
-        }
-
-        Ok(())
-    }
-
-    fn print_params_for_subprogram(
-        &self,
-        pc: u64,
-        unit: &Unit<Slice<'a>>,
-        subprogram: &DebuggingInformationEntry<Slice<'a>>,
-    ) -> Result<()> {
-        let mut tree = unit.entries_tree(Some(subprogram.offset()))?;
-        let root = tree.root()?;
-        let mut children = root.children();
-
-        let name = if let Ok(Some(attr)) = subprogram.attr(gimli::DW_AT_name) {
-            self.dwarf
-                .attr_string(unit, attr.value())?
-                .to_string_lossy()
-                .to_string()
-        } else {
-            "<unknown>".to_string()
-        };
-        println!("{name}");
-
-        while let Some(child) = children.next()? {
-            if child.entry().tag() == gimli::DW_TAG_formal_parameter {
-                self.evaluate_variable(pc, unit, child.entry())?;
-            }
-        }
-        Ok(())
-    }
-
-    fn evaluate_variable(
-        &self,
-        pc: u64,
-        unit: &Unit<Slice<'a>>,
-        entry: &DebuggingInformationEntry<Slice<'a>>,
-    ) -> Result<()> {
-        // 1. Get Variable Name
-        let name = if let Ok(Some(attr)) = entry.attr(gimli::DW_AT_name) {
-            self.dwarf
-                .attr_string(unit, attr.value())?
-                .to_string_lossy()
-                .to_string()
-        } else {
-            "<anon>".to_string()
-        };
-
-        let location = match entry.attr(gimli::DW_AT_location)? {
-            Some(attr) => attr,
-            None => {
-                println!("  Arg '{}': <optimized out>", name);
-                return Ok(());
-            }
-        };
-
-        // This effectively runs a tiny VM to calculate where the data lives
-        let expression = match location.value() {
-            AttributeValue::Exprloc(expr) => expr,
-            AttributeValue::LocationListsRef(offset) => {
-                let mut locations = self.dwarf.locations(unit, offset)?;
-                let mut valid_expr = None;
-
-                // 1. Use PC - 1 for lookup (Call Site) vs PC (Return Address)
-                // If this is the top-most frame (the crash site), use `pc`. (Never the case, no
-                // DWARF for libc).
-                // If this is a frame further down the stack, use `pc - 1`.
-                // (Assuming you can pass a flag or infer this, typically `pc - 1` is safer for lookups)
-                let lookup_pc = if pc > 0 { pc - 1 } else { pc };
-
-                while let Some(loc) = locations.next()? {
-                    if lookup_pc >= loc.range.begin && lookup_pc < loc.range.end {
-                        valid_expr = Some(loc.data);
-                        break;
-                    }
-                }
-
-                let Some(expr) = valid_expr else {
-                    println!(
-                        "  Arg '{}': <optimized out / not live at PC {:#x}>",
-                        name, lookup_pc
-                    );
+                    println!("  Arg '{name}': <optimized out / not live at PC {pc:#x}>",);
                     return Ok(());
                 };
                 expr
@@ -1126,422 +1344,362 @@ impl<'a> DwarfEval<'a> {
     }
 }
 
-// We kept 'register' because it allows instant CFI checks without touching DWARF.
-#[derive(Debug)]
-pub struct VariableRecord {
-    pub range: Range<u64>,
-    pub name: String,
-    pub register: Option<u16>,    // Fast path: Cached register ID
-    pub unit_index: usize,        // Pointer to the Compilation Unit
-    pub entry_offset: UnitOffset, // Pointer to the Variable DIE
-}
-
-pub struct VarIndex {
-    records: Vec<VariableRecord>,
-}
-
-impl VarIndex {
-    pub fn build<'a>(dwarf: &Dwarf<Slice<'a>>) -> Result<Self> {
-        let mut records = Vec::new();
-        let mut units = dwarf.units();
-        let mut unit_idx = 0;
-
-        while let Some(header) = units.next()? {
-            let unit = dwarf.unit(header)?;
-            let mut entries = unit.entries();
-
-            while let Some((_, entry)) = entries.next_dfs()? {
-                if entry.tag() == gimli::DW_TAG_variable
-                    || entry.tag() == gimli::DW_TAG_formal_parameter
-                {
-                    // 1. Get Name (reusing your recursive helper)
-                    let name = get_name_recursive(dwarf, &unit, &entry).unwrap_or_default();
-                    if name.is_empty() {
-                        continue;
-                    }
-
-                    // 2. Extract ranges, but store POINTERS to the DIE, not the data
-                    extract_locations(
-                        dwarf,
-                        &unit,
-                        &entry,
-                        &name,
-                        unit_idx, // Pass the index so we can store it
-                        &mut records,
-                    )?;
-                }
-            }
-            unit_idx += 1;
-        }
-
-        records.sort_by(|a, b| a.range.start.cmp(&b.range.start));
-        Ok(Self { records })
-    }
-
-    /// Primary Use Case: Fast Register Check
-    pub fn find_var_in_reg(&self, pc: u64, reg: u16) -> Option<&str> {
-        let candidates = self.query_at_pc(pc);
-        for record in candidates {
-            if record.register == Some(reg) {
-                return Some(&record.name);
-            }
-        }
-        None
-    }
-
-    /// Helper to find candidates by PC
-    fn query_at_pc(&self, pc: u64) -> Vec<&VariableRecord> {
-        let start_idx = self.records.partition_point(|r| r.range.end <= pc);
-        let mut results = Vec::new();
-
-        for record in &self.records[start_idx..] {
-            if record.range.start > pc {
-                break;
-            }
-            if record.range.contains(&pc) {
-                results.push(record);
-            }
-        }
-        results
-    }
-
-    /// Slow Path: Fully resolve a variable's location from the DWARF
-    /// Only needed if 'register' is None (e.g., stack offsets or complex expressions)
-    pub fn resolve_location<'a>(
-        &self,
-        dwarf: &'a Dwarf<Slice<'a>>,
-        record: &VariableRecord,
-    ) -> Result<gimli::Location<Slice<'a>>> {
-        // 1. Fetch the Unit
-        let header = dwarf
-            .units()
-            .nth(record.unit_index)
-            .context("Invalid unit index")?
-            .unwrap();
-        let unit = dwarf.unit(header)?;
-
-        // 2. Fetch the DIE
-        let entry = unit.entry(record.entry_offset)?;
-
-        // 3. Re-parse the location attribute
-        let attr = entry
-            .attr_value(gimli::DW_AT_location)?
-            .context("Variable has no location attribute")?;
-
-        // 4. Find the specific expression for the PC (since DIEs can have lists)
-        // We use the record's range start to uniquely identify which list entry matched.
-        match attr {
-            AttributeValue::Exprloc(expr) => {
-                // It was a single expression, just return it
-                evaluate_expr(&expr, unit.encoding())
-            }
-            AttributeValue::LocationListsRef(offset) => {
-                let mut locations = dwarf.locations(&unit, offset)?;
-                while let Some(loc) = locations.next()? {
-                    // Match the specific range we stored in the record
-                    if loc.range.begin == record.range.start {
-                        return evaluate_expr(&loc.data, unit.encoding());
-                    }
-                }
-                anyhow::bail!("Could not re-find location list entry");
-            }
-            _ => anyhow::bail!("Unsupported location format"),
-        }
-    }
-}
-
-// --- Updated Extractor ---
-
-fn extract_locations<'a>(
+fn find_function_for_pc<'a>(
     dwarf: &Dwarf<Slice<'a>>,
-    unit: &Unit<Slice<'a>>,
-    entry: &DebuggingInformationEntry<Slice<'a>>,
-    name: &str,
-    unit_index: usize,
-    out: &mut Vec<VariableRecord>,
-) -> Result<()> {
-    let attr = match entry.attr_value(gimli::DW_AT_location)? {
-        Some(a) => a,
-        None => return Ok(()),
-    };
+    pc: u64,
+) -> Result<Option<(UnitHeader<Slice<'a>>, UnitOffset)>> {
+    let mut units = dwarf.units();
+    while let Some(header) = units.next()? {
+        let unit = dwarf.unit(header)?;
+        let unit_ref = UnitRef::new(dwarf, &unit);
 
-    // Helper closure to push a record
-    let mut push_record = |range: Range<u64>, expr: &gimli::Expression<Slice<'a>>| {
-        // We eagerly evaluate ONLY simple registers for the cache.
-        // Complex expressions are left as None in the 'register' field.
-        let reg = parse_if_simple_register(expr, unit.encoding());
-
-        out.push(VariableRecord {
-            range,
-            name: name.to_string(),
-            register: reg,
-            unit_index,
-            entry_offset: entry.offset(),
-        });
-    };
-
-    match attr {
-        AttributeValue::Exprloc(expr) => {
-            // For single expressions, valid range is technically the parent function's range.
-            // You can pass u64::MAX or the actual function range if you have it.
-            push_record(0..u64::MAX, &expr);
-        }
-        AttributeValue::LocationListsRef(offset) => {
-            let mut locations = dwarf.locations(unit, offset)?;
-            while let Some(loc) = locations.next()? {
-                push_record(loc.range.begin..loc.range.end, &loc.data);
+        // Check if PC is in this unit's range
+        let mut entries = unit.entries();
+        while let Some((_, entry)) = entries.next_dfs()? {
+            if entry.tag() == gimli::DW_TAG_subprogram {
+                if let Some(ranges) = get_die_ranges(&unit_ref, entry)? {
+                    if ranges.iter().any(|r| pc >= r.begin && pc < r.end) {
+                        return Ok(Some((header, entry.offset())));
+                    }
+                }
             }
         }
-        _ => {}
     }
+    Ok(None)
+}
+
+pub fn get_die_ranges<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+) -> Result<Option<Vec<gimli::Range>>> {
+    // First, try DW_AT_ranges for non-contiguous ranges
+    if let Some(ranges) = get_ranges_from_attr(unit, entry)? {
+        return Ok(Some(ranges));
+    }
+
+    // Fall back to DW_AT_low_pc / DW_AT_high_pc
+    get_low_high_pc(unit, entry)
+}
+
+fn get_ranges_from_attr<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+) -> Result<Option<Vec<gimli::Range>>> {
+    let ranges_attr = entry.attr_value(gimli::DW_AT_ranges)?;
+
+    let offset = match ranges_attr {
+        Some(AttributeValue::RangeListsRef(offset)) => offset,
+        //Some(AttributeValue::DebugRngListsIndex(index)) => {
+        //    // DWARF 5 uses indices into .debug_rnglists
+        //    unit.ranges_offset(index)?
+        //}
+        _ => return Ok(None),
+    };
+
+    // Need base address for the range list
+    let base_addr = get_base_address(unit, entry);
+
+    let mut ranges_iter = unit.ranges(gimli::RangeListsOffset(offset.0))?;
+    let mut ranges = Vec::new();
+
+    while let Some(range) = ranges_iter.next()? {
+        // Skip empty ranges
+        if range.begin < range.end {
+            ranges.push(range);
+        }
+    }
+
+    if ranges.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(ranges))
+    }
+}
+
+fn get_low_high_pc<'a>(
+    unit: &UnitRef<Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+) -> Result<Option<Vec<gimli::Range>>> {
+    let Some(low_pc_attr) = entry.attr_value(gimli::DW_AT_low_pc)? else {
+        return Ok(None);
+    };
+
+    let low_pc = match low_pc_attr {
+        AttributeValue::Addr(addr) => addr,
+        AttributeValue::DebugAddrIndex(index) => {
+            // DWARF 5 uses indices into .debug_addr
+            unit.address(index)?
+        }
+        _ => return Ok(None),
+    };
+
+    // DW_AT_high_pc can be an address or a length
+    let Some(high_pc_attr) = entry.attr_value(gimli::DW_AT_high_pc)? else {
+        return Ok(None);
+    };
+
+    let high_pc = match high_pc_attr {
+        AttributeValue::Addr(addr) => addr,
+        AttributeValue::DebugAddrIndex(index) => unit.address(index)?,
+        // If it's a constant, it's a length relative to low_pc
+        AttributeValue::Udata(len) => low_pc + len,
+        AttributeValue::Data1(len) => low_pc + len as u64,
+        AttributeValue::Data2(len) => low_pc + len as u64,
+        AttributeValue::Data4(len) => low_pc + len as u64,
+        AttributeValue::Data8(len) => low_pc + len,
+        AttributeValue::Sdata(len) => {
+            if len >= 0 {
+                low_pc + len as u64
+            } else {
+                return Ok(None);
+            }
+        }
+        _ => return Ok(None),
+    };
+
+    if low_pc < high_pc {
+        Ok(Some(vec![gimli::Range {
+            begin: low_pc,
+            end: high_pc,
+        }]))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Get the base address for range list interpretation.
+/// This comes from DW_AT_low_pc on the DIE or its ancestors,
+/// or from the compilation unit's base address.
+fn get_base_address<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+) -> u64 {
+    // Try DW_AT_low_pc on this entry first
+    if let Ok(Some(attr)) = entry.attr_value(gimli::DW_AT_low_pc) {
+        match attr {
+            AttributeValue::Addr(addr) => return addr,
+            AttributeValue::DebugAddrIndex(index) => {
+                if let Ok(addr) = unit.address(index) {
+                    return addr;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Fall back to unit's low_pc (set during unit parsing)
+    unit.low_pc
+}
+
+fn find_variables_in_scope<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    func_offset: gimli::UnitOffset,
+    pc: u64,
+    regs: &Regs,
+    core: &Core,
+) -> Result<Vec<VariableLocation<'a>>> {
+    let mut variables = Vec::new();
+    let mut tree = unit.entries_tree(Some(func_offset)).unwrap();
+    let root = tree.root().unwrap();
+
+    collect_variables_recursive(unit, root, pc, regs.rsp, regs, core, &mut variables)?;
+    Ok(variables)
+}
+
+fn collect_variables_recursive<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    node: gimli::EntriesTreeNode<Slice<'a>>,
+    pc: u64,
+    frame_base: u64,
+    regs: &Regs,
+    core: &Core,
+    variables: &mut Vec<VariableLocation<'a>>,
+) -> Result<()> {
+    let entry = node.entry();
+
+    // For lexical blocks, check if PC is in range before descending
+    if entry.tag() == gimli::DW_TAG_lexical_block {
+        if let Some(ranges) = get_die_ranges(unit, entry)? {
+            if !ranges.iter().any(|r| pc >= r.begin && pc < r.end) {
+                return Ok(()); // PC not in this scope
+            }
+        }
+    }
+
+    // Collect variables and parameters
+    if entry.tag() == gimli::DW_TAG_variable || entry.tag() == gimli::DW_TAG_formal_parameter {
+        if let Some(info) = read_variable_info(unit, entry, pc, frame_base, regs, core)? {
+            variables.push(info);
+        }
+        // if let Some(var) = extract_variable_info(dwarf, unit, entry, pc) {
+        //     dbg!(var);
+        //     variables.push(var);
+        // }
+    }
+
+    // Recurse into children
+    let mut children = node.children();
+    while let Some(child) = children.next()? {
+        collect_variables_recursive(unit, child, pc, frame_base, regs, core, variables)?;
+    }
+
     Ok(())
 }
 
-fn parse_if_simple_register<'a>(
-    expr: &gimli::Expression<Slice<'a>>,
-    enc: gimli::Encoding,
-) -> Option<u16> {
-    let mut eval = expr.evaluation(enc);
-    if let Ok(EvaluationResult::Complete) = eval.evaluate() {
-        if let [
+fn evaluate_expression<'a>(
+    frame_base: u64,
+    expr: Expression<Slice<'a>>,
+    encoding: Encoding,
+    regs: &Regs,
+    core: &Core,
+) -> Result<Option<u64>> {
+    let mut eval = expr.evaluation(encoding);
+    eval.set_initial_value(0); // or whatever's appropriate
+
+    loop {
+        match eval.evaluate()? {
+            gimli::EvaluationResult::Complete => break,
+            gimli::EvaluationResult::RequiresRegister {
+                register,
+                base_type,
+            } => {
+                let val = regs[register.into()];
+                eval.resume_with_register(gimli::Value::Generic(val))?;
+            }
+            gimli::EvaluationResult::RequiresFrameBase => {
+                // You need to get DW_AT_frame_base from the function DIE
+                // and evaluate it first
+                eval.resume_with_frame_base(frame_base)?;
+            }
+            gimli::EvaluationResult::RequiresMemory { address, size, .. } => {
+                // Read from core dump memory
+                let value = core.read_u64(address)?;
+                eval.resume_with_memory(gimli::Value::Generic(value))?;
+            }
+            // Handle other cases...
+            _ => return Ok(None),
+        }
+    }
+
+    let final_results = eval.result();
+
+    match final_results.get(0) {
+        Some(gimli::Piece {
+            location: gimli::Location::Address { address },
+            ..
+        }) => {
+            // In some DWARF contexts, a "Location" result implies the value IS the address.
+            Ok(Some(*address))
+        }
+        Some(gimli::Piece {
+            location: gimli::Location::Value { value },
+            ..
+        }) => {
+            // In others, it returns a Value literal.
+            match value {
+                Value::Generic(v) => Ok(Some(*v)),
+                _ => anyhow::bail!("CFA resolved to non-generic value"),
+            }
+        }
+        _ => {
+            anyhow::bail!("expression {final_results:?} did not resolve to a single address/value")
+        }
+    }
+}
+
+fn get_frame_base<'a>(
+    unit: UnitRef<'a, Slice<'a>>,
+    func_die: &DebuggingInformationEntry<Slice<'a>>,
+    pc: u64,
+    registers: &Regs,
+    core: &Core,
+    // For DW_OP_call_frame_cfa, you need the unwinder
+    cfa: u64,
+) -> Result<u64> {
+    let attr = func_die
+        .attr_value(gimli::DW_AT_frame_base)?
+        .ok_or(anyhow::anyhow!("no frame base attr"))?;
+
+    let expression = match attr {
+        gimli::AttributeValue::Exprloc(expr) => expr,
+        gimli::AttributeValue::LocationListsRef(offset) => {
+            // Walk the location list to find entry for our PC
+            let mut locations = unit.locations(offset)?;
+            let mut found_expr = None;
+
+            while let Some(entry) = locations.next()? {
+                if pc >= entry.range.begin && pc < entry.range.end {
+                    found_expr = Some(entry.data);
+                    break;
+                }
+            }
+            found_expr.ok_or(anyhow::anyhow!("PC not in location list"))?
+        }
+        _ => anyhow::bail!("unexpected expression form {attr:?}"),
+    };
+
+    evaluate_frame_base_expr(cfa, expression, unit.encoding(), registers, core)
+}
+
+fn evaluate_frame_base_expr<'a>(
+    cfa: u64,
+    expr: Expression<Slice<'a>>,
+    encoding: Encoding,
+    regs: &Regs,
+    core: &Core,
+) -> Result<u64> {
+    let mut eval = expr.evaluation(encoding);
+
+    loop {
+        match eval.evaluate()? {
+            gimli::EvaluationResult::Complete => break,
+
+            gimli::EvaluationResult::RequiresRegister { register, .. } => {
+                let val = regs[register.into()];
+                eval.resume_with_register(gimli::Value::Generic(val))?;
+            }
+
+            gimli::EvaluationResult::RequiresCallFrameCfa => {
+                eval.resume_with_call_frame_cfa(cfa)?;
+            }
+
+            gimli::EvaluationResult::RequiresMemory { address, size, .. } => {
+                // Rare for frame base, but possible
+                let val = core.read_u64(address)?;
+                eval.resume_with_memory(gimli::Value::Generic(val))?;
+            }
+
+            other => {
+                anyhow::bail!("unexpected eval result {other:?}")
+            }
+        }
+    }
+
+    // Frame base should evaluate to a single address
+    let pieces = eval.result();
+    match pieces.as_slice() {
+        [
+            gimli::Piece {
+                location: gimli::Location::Address { address },
+                ..
+            },
+        ] => Ok(*address),
+        [
             gimli::Piece {
                 location: gimli::Location::Register { register },
                 ..
             },
-        ] = eval.result().as_slice()
-        {
-            return Some(register.0);
+        ] => {
+            // DW_OP_reg<N> case — frame base IS the register value
+            let reg = *register;
+            Ok(regs[reg.into()])
         }
-    }
-    None
-}
-
-// Dummy helper for compilation context
-fn evaluate_expr<'a>(
-    expr: &gimli::Expression<Slice<'a>>,
-    enc: gimli::Encoding,
-) -> Result<gimli::Location<Slice<'a>>> {
-    todo!();
-    // In real code this runs the state machine.
-    // For this example we just return a placeholder Result.
-    Ok(gimli::Location::Register {
-        register: gimli::Register(0),
-    })
-}
-
-fn get_name_recursive<R: Reader>(
-    _: &Dwarf<R>,
-    _: &Unit<R>,
-    _: &DebuggingInformationEntry<R>,
-) -> Option<String> {
-    todo!();
-    Some("foo".to_string())
-}
-
-/// A single concrete instance of a function (either a real subprogram or an inlined copy)
-#[derive(Clone, Debug)]
-pub struct FunctionInstance {
-    pub unit_index: usize,
-    pub entry_offset: UnitOffset,
-
-    /// If Some, this is an inlined instance - look here for name/params
-    pub abstract_origin: Option<UnitOffset>,
-
-    /// Address ranges where this code lives (start, end)
-    pub ranges: Vec<Range<u64>>,
-}
-
-impl FunctionInstance {
-    pub fn contains_pc(&self, pc: u64) -> bool {
-        self.ranges.iter().any(|r| r.contains(&pc))
-    }
-
-    pub fn start_address(&self) -> u64 {
-        self.ranges.first().map(|r| r.start).unwrap_or(0)
-    }
-}
-
-/// Index entry: name -> all instances of that function
-#[derive(Debug, Default)]
-struct NameEntry {
-    /// The abstract/declaration DIE (if any) - has param names/types
-    abstract_die: Option<(usize, UnitOffset)>, // (unit_index, offset)
-
-    /// All concrete instances, sorted by start address
-    instances: Vec<FunctionInstance>,
-}
-
-#[derive(Debug)]
-pub struct DebugIndex {
-    /// Map: "stripped name" -> entry
-    by_name: HashMap<String, NameEntry>,
-
-    /// All instances sorted by start address for PC lookup
-    by_address: Vec<FunctionInstance>,
-}
-
-impl DebugIndex {
-    pub fn build<'a>(dwarf: &Dwarf<Slice<'a>>) -> Result<Self> {
-        let mut by_name: HashMap<String, NameEntry> = HashMap::new();
-        let mut all_instances: Vec<FunctionInstance> = Vec::new();
-
-        // First pass: collect abstract origins (declarations) and their names
-        // We need this because inlined_subroutine only has abstract_origin ref
-        let mut abstract_origins: HashMap<(usize, UnitOffset), String> = HashMap::new();
-
-        let mut units = dwarf.units();
-        let mut unit_idx = 0;
-
-        while let Some(header) = units.next()? {
-            let unit = dwarf.unit(header)?;
-            let mut entries = unit.entries();
-
-            while let Some((_, entry)) = entries.next_dfs()? {
-                match entry.tag() {
-                    gimli::DW_TAG_subprogram => {
-                        let name = get_entry_name(dwarf, &unit, entry)?;
-                        let Some(name) = name else { continue };
-
-                        let is_abstract = matches!(
-                            entry.attr_value(gimli::DW_AT_inline)?,
-                            Some(AttributeValue::Inline(
-                                gimli::DW_INL_inlined | gimli::DW_INL_declared_inlined
-                            ))
-                        );
-
-                        let offset = entry.offset();
-
-                        // Store for abstract_origin lookups
-                        abstract_origins.insert((unit_idx, offset), name.clone());
-
-                        let name_entry = by_name.entry(name).or_default();
-
-                        if is_abstract {
-                            // Just a declaration - no code here
-                            name_entry.abstract_die = Some((unit_idx, offset));
-                        } else {
-                            // Concrete subprogram with actual code
-                            let ranges = get_entry_ranges(dwarf, &unit, entry)?;
-                            if !ranges.is_empty() {
-                                let instance = FunctionInstance {
-                                    unit_index: unit_idx,
-                                    entry_offset: offset,
-                                    abstract_origin: None,
-                                    ranges,
-                                };
-                                name_entry.instances.push(instance.clone());
-                                all_instances.push(instance);
-                            }
-                        }
-                    }
-
-                    gimli::DW_TAG_inlined_subroutine => {
-                        // Get the abstract origin to find the name
-                        let origin = match entry.attr_value(gimli::DW_AT_abstract_origin)? {
-                            Some(AttributeValue::UnitRef(o)) => o,
-                            _ => continue,
-                        };
-
-                        let ranges = get_entry_ranges(dwarf, &unit, entry)?;
-                        if ranges.is_empty() {
-                            continue;
-                        }
-
-                        let instance = FunctionInstance {
-                            unit_index: unit_idx,
-                            entry_offset: entry.offset(),
-                            abstract_origin: Some(origin),
-                            ranges,
-                        };
-
-                        // We'll resolve the name after the pass
-                        // For now, store with a placeholder key
-                        all_instances.push(instance.clone());
-
-                        // Try to find the name from abstract_origins we've seen
-                        if let Some(name) = abstract_origins.get(&(unit_idx, origin)) {
-                            by_name
-                                .entry(name.clone())
-                                .or_default()
-                                .instances
-                                .push(instance);
-                        }
-                        // If not found, the abstract might be in a different unit
-                        // or we haven't seen it yet - we'd need a second pass
-                        // or store and resolve later
-                    }
-
-                    _ => {}
-                }
-            }
-            unit_idx += 1;
-        }
-
-        // Sort instances by address for efficient PC lookup
-        all_instances.sort_by_key(|i| i.start_address());
-
-        // Sort each name's instances by address
-        for entry in by_name.values_mut() {
-            entry.instances.sort_by_key(|i| i.start_address());
-        }
-
-        Ok(Self {
-            by_name,
-            by_address: all_instances,
-        })
-    }
-
-    /// Find all function instances containing a PC (handles nested inlines)
-    pub fn find_at_pc(&self, pc: u64) -> Vec<&FunctionInstance> {
-        // Binary search to find starting point
-        let start = self.by_address.partition_point(|i| i.start_address() <= pc);
-
-        // Check instances that could contain this PC
-        // Need to look backwards since we want instances that START before pc
-        let mut results = Vec::new();
-
-        for instance in &self.by_address[..start] {
-            if instance.contains_pc(pc) {
-                results.push(instance);
-            }
-        }
-
-        // Also check a few after in case of edge cases with ranges
-        for instance in self.by_address.get(start..).unwrap_or(&[]).iter().take(10) {
-            if instance.start_address() > pc {
-                break;
-            }
-            if instance.contains_pc(pc) {
-                results.push(instance);
-            }
-        }
-
-        results
-    }
-    pub fn find_by_name_and_offset(&self, name: &str, offset: u64) -> Option<&FunctionInstance> {
-        let entry = self.by_name.get(name)?;
-
-        // If only one instance, use it
-        if entry.instances.len() == 1 {
-            return entry.instances.first();
-        }
-
-        // Otherwise find one where offset fits within its size
-        entry
-            .instances
-            .iter()
-            .find(|inst| inst.ranges.iter().any(|r| r.contains(&offset)))
-    }
-
-    /// Get the abstract DIE for a function (for param names/types)
-    pub fn get_abstract_die(&self, name: &str) -> Option<(usize, UnitOffset)> {
-        self.by_name.get(name)?.abstract_die
+        _ => anyhow::bail!("not an address"),
     }
 }
 
 fn get_entry_name<'a>(
-    dwarf: &Dwarf<Slice<'a>>,
-    unit: &Unit<Slice<'a>>,
+    unit: &UnitRef<'a, Slice<'a>>,
     entry: &DebuggingInformationEntry<Slice<'a>>,
 ) -> Result<Option<String>> {
     let attr = if let Ok(Some(attr)) = entry.attr(gimli::DW_AT_linkage_name) {
@@ -1552,13 +1710,12 @@ fn get_entry_name<'a>(
         return Ok(None);
     };
 
-    let name = dwarf.attr_string(unit, attr.value())?;
+    let name = unit.attr_string(attr.value())?;
     Ok(Some(name.to_string_lossy().to_string()))
 }
 
 fn get_entry_ranges<'a>(
-    dwarf: &Dwarf<Slice<'a>>,
-    unit: &Unit<Slice<'a>>,
+    unit: &UnitRef<'a, Slice<'a>>,
     entry: &DebuggingInformationEntry<Slice<'a>>,
 ) -> Result<Vec<Range<u64>>> {
     let mut ranges = Vec::new();
@@ -1577,14 +1734,14 @@ fn get_entry_ranges<'a>(
     // Try DW_AT_ranges
     if let Some(attr) = entry.attr_value(gimli::DW_AT_ranges)? {
         let offset = match attr {
-            AttributeValue::RangeListsRef(o) => dwarf.ranges_offset_from_raw(unit, o),
+            AttributeValue::RangeListsRef(o) => unit.ranges_offset_from_raw(o),
             AttributeValue::SecOffset(o) => {
-                dwarf.ranges_offset_from_raw(unit, gimli::RawRangeListsOffset(o))
+                unit.ranges_offset_from_raw(gimli::RawRangeListsOffset(o))
             }
             _ => return Ok(ranges),
         };
 
-        let mut range_iter = dwarf.ranges(unit, offset)?;
+        let mut range_iter = unit.ranges(offset)?;
         while let Some(range) = range_iter.next()? {
             ranges.push(range.begin..range.end);
         }
@@ -1593,231 +1750,296 @@ fn get_entry_ranges<'a>(
     Ok(ranges)
 }
 
-/// A variable/parameter that's live at some address range
-#[derive(Clone, Debug)]
-pub struct LiveVariable {
+#[derive(Debug)]
+pub struct VariableLocation<'a> {
     pub name: String,
-    pub unit_index: usize,
-    pub die_offset: UnitOffset,
-    /// Where is this variable located? Register number or stack offset
-    pub location: VariableLocation,
-    /// PC range where this location is valid
-    pub range: (u64, u64),
+    pub type_name: Option<String>,
+    pub parts: Option<Vec<Piece<Slice<'a>>>>,
+    pub size: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
-pub enum VariableLocation {
-    Register(u16),
-    FrameOffset(i64), // CFA + offset
-    Address(u64),
-    EntryValue(u16), // Register at function entry
-    Complex,
+pub fn read_variable_info<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+    pc: u64,
+    frame_base: u64,
+    regs: &Regs,
+    core: &Core,
+) -> Result<Option<VariableLocation<'a>>> {
+    let Some(name) = get_name(unit, entry)? else {
+        return Ok(None);
+    };
+    let (type_name, size) = get_type_name_and_size(unit, entry)?;
+    let address = evaluate_location(unit, entry, pc, frame_base, regs, core)?;
+
+    Ok(Some(VariableLocation {
+        name,
+        type_name,
+        parts: address,
+        size,
+    }))
 }
 
-/// Index: register -> variables located in that register, sorted by start address
-#[derive(Debug, Default)]
-pub struct LocationIndex {
-    by_register: HashMap<Reg, Vec<LiveVariable>>,
-    by_address: Vec<LiveVariable>,
+fn get_name<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+) -> Result<Option<String>> {
+    let attr = match entry.attr_value(gimli::DW_AT_name)? {
+        Some(a) => a,
+        None => return Ok(None),
+    };
+
+    match attr {
+        AttributeValue::String(s) => Ok(Some(s.to_string_lossy().into_owned())),
+        AttributeValue::DebugStrRef(offset) => {
+            let s = unit.string(offset)?;
+            Ok(Some(s.to_string_lossy().into_owned()))
+        }
+        _ => Ok(None),
+    }
 }
 
-impl LocationIndex {
-    pub fn build<'a>(dwarf: &Dwarf<Slice<'a>>) -> Result<Self> {
-        let mut index = LocationIndex::default();
+fn get_type_name_and_size<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+) -> Result<(Option<String>, Option<u64>)> {
+    let type_offset = match entry.attr_value(gimli::DW_AT_type)? {
+        Some(AttributeValue::UnitRef(offset)) => offset,
+        _ => return Ok((None, None)),
+    };
 
-        let mut units = dwarf.units();
-        let mut unit_idx = 0;
+    // Navigate to the type DIE
+    let mut entries = unit.entries_at_offset(type_offset)?;
+    entries.next_entry()?;
+    let type_entry = match entries.current() {
+        Some(e) => e,
+        None => return Ok((None, None)),
+    };
 
-        while let Some(header) = units.next()? {
-            let unit = dwarf.unit(header)?;
-            let mut entries = unit.entries();
+    // Chase through typedefs, const, volatile, etc. to get the underlying type name
+    let (name, size) = resolve_type_name(unit, type_entry)?;
 
-            while let Some((_, entry)) = entries.next_dfs()? {
-                let tag = entry.tag();
-                if tag != DW_TAG_formal_parameter && tag != DW_TAG_variable {
-                    continue;
+    Ok((name, size))
+}
+
+fn resolve_type_name<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+) -> Result<(Option<String>, Option<u64>)> {
+    let tag = entry.tag();
+
+    // Get size from this DIE if present
+    let size = entry
+        .attr_value(gimli::DW_AT_byte_size)?
+        .and_then(|v| v.udata_value());
+
+    // Try to get name directly
+    if let Some(name) = get_name(unit, entry)? {
+        return Ok((Some(format_type_name(tag, &name)), size));
+    }
+
+    // For modifiers, chase the DW_AT_type reference
+    match tag {
+        gimli::DW_TAG_pointer_type => {
+            let (inner, _) = get_referenced_type_name(unit, entry)?;
+            let name = match inner {
+                Some(n) => format!("*{}", n),
+                None => "*void".to_string(),
+            };
+            Ok((Some(name), size))
+        }
+        gimli::DW_TAG_reference_type => {
+            let (inner, _) = get_referenced_type_name(unit, entry)?;
+            let name = match inner {
+                Some(n) => format!("&{}", n),
+                None => "&?".to_string(),
+            };
+            Ok((Some(name), size))
+        }
+        gimli::DW_TAG_const_type => {
+            let (inner, inner_size) = get_referenced_type_name(unit, entry)?;
+            let name = match inner {
+                Some(n) => format!("const {}", n),
+                None => "const ?".to_string(),
+            };
+            Ok((Some(name), size.or(inner_size)))
+        }
+        gimli::DW_TAG_volatile_type => {
+            let (inner, inner_size) = get_referenced_type_name(unit, entry)?;
+            let name = match inner {
+                Some(n) => format!("volatile {}", n),
+                None => "volatile ?".to_string(),
+            };
+            Ok((Some(name), size.or(inner_size)))
+        }
+        gimli::DW_TAG_restrict_type => {
+            let (inner, inner_size) = get_referenced_type_name(unit, entry)?;
+            Ok((inner, size.or(inner_size)))
+        }
+        gimli::DW_TAG_typedef => {
+            // For typedef, we already tried the name above
+            // Chase to underlying type
+            get_referenced_type_name(unit, entry)
+        }
+        gimli::DW_TAG_array_type => {
+            let (inner, _) = get_referenced_type_name(unit, entry)?;
+            let count = get_array_count(unit, entry)?;
+            let name = match (inner, count) {
+                (Some(n), Some(c)) => format!("[{}; {}]", n, c),
+                (Some(n), None) => format!("[{}]", n),
+                (None, Some(c)) => format!("[?; {}]", c),
+                (None, None) => "[?]".to_string(),
+            };
+            Ok((Some(name), size))
+        }
+        gimli::DW_TAG_subroutine_type => Ok((Some("fn(...)".to_string()), size)),
+        _ => Ok((None, size)),
+    }
+}
+
+fn format_type_name(tag: gimli::DwTag, name: &str) -> String {
+    match tag {
+        gimli::DW_TAG_structure_type => format!("struct {}", name),
+        gimli::DW_TAG_union_type => format!("union {}", name),
+        gimli::DW_TAG_enumeration_type => format!("enum {}", name),
+        gimli::DW_TAG_class_type => format!("class {}", name),
+        _ => name.to_string(),
+    }
+}
+
+fn get_referenced_type_name<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+) -> Result<(Option<String>, Option<u64>)> {
+    let type_offset = match entry.attr_value(gimli::DW_AT_type)? {
+        Some(AttributeValue::UnitRef(offset)) => offset,
+        _ => return Ok((None, None)),
+    };
+
+    let mut entries = unit.entries_at_offset(type_offset)?;
+    entries.next_entry()?;
+    match entries.current() {
+        Some(type_entry) => resolve_type_name(unit, type_entry),
+        None => Ok((None, None)),
+    }
+}
+
+fn get_array_count<'a>(
+    unit: &Unit<Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+) -> Result<Option<u64>, gimli::Error> {
+    let mut tree = unit.entries_tree(Some(entry.offset()))?;
+    let root = tree.root()?;
+    let mut children = root.children();
+
+    while let Some(child) = children.next()? {
+        if child.entry().tag() == gimli::DW_TAG_subrange_type {
+            if let Some(count) = child
+                .entry()
+                .attr_value(gimli::DW_AT_count)?
+                .and_then(|v| v.udata_value())
+            {
+                return Ok(Some(count));
+            }
+            if let Some(upper) = child
+                .entry()
+                .attr_value(gimli::DW_AT_upper_bound)?
+                .and_then(|v| v.udata_value())
+            {
+                let lower = child
+                    .entry()
+                    .attr_value(gimli::DW_AT_lower_bound)?
+                    .and_then(|v| v.udata_value())
+                    .unwrap_or(0);
+                return Ok(Some(upper - lower + 1));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn evaluate_location<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+    pc: u64,
+    frame_base: u64,
+    regs: &Regs,
+    core: &Core,
+) -> Result<Option<Vec<Piece<Slice<'a>>>>> {
+    let Some(loc_attr) = entry.attr_value(gimli::DW_AT_location)? else {
+        return Ok(None);
+    };
+
+    let expression = match loc_attr {
+        AttributeValue::Exprloc(expr) => expr,
+        AttributeValue::LocationListsRef(offset) => {
+            // Find the location list entry for our PC
+            let mut locs = unit.locations(offset)?;
+            let mut found = None;
+            while let Some(entry) = locs.next()? {
+                if pc >= entry.range.begin && pc < entry.range.end {
+                    found = Some(entry.data);
+                    break;
                 }
-
-                // Get name (direct or via abstract_origin)
-                let name = Self::get_var_name(dwarf, &unit, entry)?
-                    .unwrap_or_else(|| "<anon>".to_string());
-
-                let Some(location_attr) = entry.attr(DW_AT_location)? else {
-                    continue;
-                };
-
-                let die_offset = entry.offset();
-
-                // Parse location - could be single expression or location list
-                Self::parse_location(
-                    dwarf,
-                    &unit,
-                    &location_attr,
-                    &name,
-                    unit_idx,
-                    die_offset,
-                    &mut index,
-                )?;
             }
-            unit_idx += 1;
+            let Some(x) = found else {
+                eprintln!("NO LOC LIST FOUND");
+                return Ok(None);
+            };
+            x
         }
+        _ => return Ok(None),
+    };
 
-        // Sort for efficient lookup
-        for vars in index.by_register.values_mut() {
-            vars.sort_by_key(|v| v.range.0);
-        }
-        index.by_address.sort_by_key(|v| v.range.0);
+    // Evaluate the expression
+    let mut eval = expression.evaluation(unit.encoding());
 
-        Ok(index)
-    }
-
-    fn parse_location<'a>(
-        dwarf: &Dwarf<Slice<'a>>,
-        unit: &Unit<Slice<'a>>,
-        attr: &gimli::Attribute<Slice<'a>>,
-        name: &str,
-        unit_idx: usize,
-        die_offset: UnitOffset,
-        index: &mut LocationIndex,
-    ) -> Result<()> {
-        // Handle exprloc directly for simple single-location case
-        // if let AttributeValue::Exprloc(expr) = attr.value() {
-        //     if let Some(loc) = Self::parse_expression(expr.clone(), unit.encoding())? {
-        //         let var = LiveVariable {
-        //             name: name.to_string(),
-        //             unit_index: unit_idx,
-        //             die_offset,
-        //             location: loc.clone(),
-        //             range: (0, 1), // TODO FIXME
-        //         };
-        //         dbg!(&var);
-        //         Self::add_to_index(index, loc, var);
-        //     }
-        //     return Ok(());
-        // }
-
-        // For location lists, use attr_locations
-        let Some(mut locations) = dwarf.attr_locations(unit, attr.value())? else {
-            return Ok(());
-        };
-
-        while let Some(entry) = locations.next()? {
-            if let Some(loc) = Self::parse_expression(entry.data.clone(), unit.encoding())? {
-                let var = LiveVariable {
-                    name: name.to_string(),
-                    unit_index: unit_idx,
-                    die_offset,
-                    location: loc.clone(),
-                    range: (entry.range.begin, entry.range.end),
-                };
-                Self::add_to_index(index, loc, var);
+    loop {
+        match eval.evaluate()? {
+            gimli::EvaluationResult::Complete => break,
+            gimli::EvaluationResult::RequiresFrameBase => {
+                eval.resume_with_frame_base(frame_base)?;
+            }
+            gimli::EvaluationResult::RequiresRegister { register, .. } => {
+                let val = regs[register.into()];
+                eval.resume_with_register(gimli::Value::Generic(val))?;
+            }
+            gimli::EvaluationResult::RequiresMemory { address, .. } => {
+                let val = core.read_u64(address)?;
+                eval.resume_with_memory(gimli::Value::Generic(val))?;
+            }
+            gimli::EvaluationResult::RequiresRelocatedAddress(address) => {
+                eval.resume_with_relocated_address(address)?;
+            }
+            gimli::EvaluationResult::RequiresCallFrameCfa => {
+                eval.resume_with_call_frame_cfa(regs.rsp)?;
+            }
+            gimli::EvaluationResult::RequiresEntryValue(entry_expr) => {
+                let result =
+                    evaluate_expression(frame_base, entry_expr, unit.encoding(), regs, core)?
+                        .unwrap();
+                eval.resume_with_entry_value(Value::Generic(result))?;
+            }
+            e => {
+                eprintln!("ENDING EVALUATION WITH RESULT {e:?}");
+                return Ok(None);
             }
         }
-
-        Ok(())
     }
 
-    fn parse_expression<'a>(
-        expr: gimli::Expression<Slice<'a>>,
-        encoding: gimli::Encoding,
-    ) -> Result<Option<VariableLocation>> {
-        // We can't fully evaluate without runtime info, but we can
-        // peek at simple cases
-        let mut ops = expr.operations(encoding);
-
-        // Look at first operation for simple cases
-        let Some(op) = ops.next()? else {
-            return Ok(None);
-        };
-
-        use gimli::Operation::*;
-        let loc = match op {
-            Register { register } => VariableLocation::Register(register.0),
-            RegisterOffset {
-                register, offset, ..
-            } if register.0 == 6 => {
-                // RBP-relative, common for frame base
-                VariableLocation::FrameOffset(offset)
-            }
-            FrameOffset { offset } => VariableLocation::FrameOffset(offset),
-            Address { address } => VariableLocation::Address(address),
-            EntryValue { expression } => {
-                // Recursively parse the entry value expression
-                if let Some(VariableLocation::Register(r)) =
-                    Self::parse_expression(gimli::Expression(expression), encoding)?
-                {
-                    VariableLocation::EntryValue(r)
-                } else {
-                    VariableLocation::Complex
-                }
-            }
-            _ => VariableLocation::Complex,
-        };
-
-        Ok(Some(loc))
-    }
-
-    fn add_to_index(index: &mut LocationIndex, loc: VariableLocation, var: LiveVariable) {
-        match &loc {
-            VariableLocation::Register(r) => {
-                index
-                    .by_register
-                    .entry(Reg(*r))
-                    .or_default()
-                    .push(var.clone());
-            }
-            VariableLocation::EntryValue(r) => {
-                // Index by the entry register too
-                index
-                    .by_register
-                    .entry(Reg(*r))
-                    .or_default()
-                    .push(var.clone());
-            }
-            _ => {}
-        }
-        index.by_address.push(var);
-    }
-
-    fn get_var_name<'a>(
-        dwarf: &Dwarf<Slice<'a>>,
-        unit: &Unit<Slice<'a>>,
-        entry: &DebuggingInformationEntry<Slice<'a>>,
-    ) -> Result<Option<String>> {
-        if let Ok(Some(attr)) = entry.attr(gimli::DW_AT_name) {
-            let s = dwarf.attr_string(unit, attr.value())?;
-            return Ok(Some(s.to_string_lossy().to_string()));
-        }
-
-        if let Some(AttributeValue::UnitRef(origin)) =
-            entry.attr_value(gimli::DW_AT_abstract_origin)?
-        {
-            let abs = unit.entry(origin)?;
-            if let Ok(Some(attr)) = abs.attr(gimli::DW_AT_name) {
-                let s = dwarf.attr_string(unit, attr.value())?;
-                return Ok(Some(s.to_string_lossy().to_string()));
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Find all variables in a given register at a given PC
-    pub fn find_in_register(&self, reg: Reg, pc: u64) -> Vec<&LiveVariable> {
-        let Some(vars) = self.by_register.get(&reg) else {
-            return vec![];
-        };
-
-        vars.iter()
-            .filter(|v| pc >= v.range.0 && pc < v.range.1)
-            .collect()
-    }
-
-    /// Find all variables live at a PC
-    pub fn find_at_pc(&self, pc: u64) -> Vec<&LiveVariable> {
-        self.by_address
-            .iter()
-            .filter(|v| pc >= v.range.0 && pc < v.range.1)
-            .collect()
-    }
+    // Extract the address from the result
+    let pieces = eval.result();
+    Ok(Some(pieces))
+    // match pieces.as_slice() {
+    //     [
+    //         gimli::Piece {
+    //             location: gimli::Location::Address { address },
+    //             ..
+    //         },
+    //     ] => Ok(Some(*address)),
+    //     p => {
+    //         eprintln!("ENDING EVALUATION WITH UNMATCHED PIECE {p:?}");
+    //         Ok(None)
+    //     }
+    // }
 }

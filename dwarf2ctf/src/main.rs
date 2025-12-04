@@ -1539,15 +1539,9 @@ pub fn add_sunw_ctf(src: &[u8], elf: &Elf, ctf_data: &[u8]) -> Result<Vec<u8>> {
                 let start = sh.sh_offset as usize;
                 let end = start
                     .checked_add(sh.sh_size as usize)
-                    .ok_or_else(|| anyhow::anyhow!("section size overflow (index {})", i))?;
+                    .ok_or_else(|| anyhow::anyhow!("section size overflow (index {i})"))?;
                 if end > src.len() {
-                    anyhow::bail!(
-                        "section {} out of bounds: {}..{} > {}",
-                        i,
-                        start,
-                        end,
-                        src.len()
-                    );
+                    anyhow::bail!("section {i} out of bounds: {start}..{end} > {}", src.len());
                 }
                 out.resize(out.len() + sh.sh_size as usize, 0);
                 out.gwrite_with(&src[start..end], cur_off, ())

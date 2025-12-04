@@ -1,4 +1,6 @@
-use libproc_sys::{GElf_Sym, MAXPATHLEN, Plookup_by_addr, gregset_t, prmap_t, ps_prochandle};
+use libproc_sys::{
+    GElf_Sym, MAXPATHLEN, Plookup_by_addr, gregset_t, lwpstatus_t, prmap_t, ps_prochandle, stack_t,
+};
 
 use std::ffi::{CStr, CString, FromBytesUntilNulError, NulError, OsStr, c_char, c_int, c_void};
 use std::fmt;
@@ -9,42 +11,26 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{self, NonNull};
 
-const G_NOCORE: i32 = libproc_sys::G_NOCORE as i32;
-const G_FORMAT: i32 = libproc_sys::G_FORMAT as i32;
-const G_ISAINVAL: i32 = libproc_sys::G_ISAINVAL as i32;
-const G_LP64: i32 = libproc_sys::G_LP64 as i32;
-const G_NOTE: i32 = libproc_sys::G_NOTE as i32;
-
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("core architecture does not match host")]
-    Arch,
-    #[error("offset {offset} is out of bounds")]
-    BadOffset { offset: usize },
     #[error("could not convert path to C string")]
     BadPath(#[from] NulError),
-    #[error("failed to parse ELF")]
-    Elf,
-    #[error("file is not a valid ELF core")]
-    Format,
+    #[error("failed to open core: {0}")]
+    GrabFailed(&'static str),
+    #[error("failed to iterate over lwps")]
+    LwpIterFailed,
     #[error("failed to iterate over mappings")]
     MapIterFailed,
     #[error("failed to get exec name")]
     NoExecName,
     #[error("no nul byte in C string")]
     NoNul(#[from] FromBytesUntilNulError),
-    #[error("32-bit processes cannot open 64-bit cores")]
-    Lp64,
-    #[error("ELF notes in core are missing or invalid")]
-    Note,
     #[error("error: {0}")] // TODO better message
     Read(#[from] io::Error), // TODO fix name
     #[error("failed to iterate over symbols")]
     SymbolIterFailed,
-    #[error("unknown error: code {0}")]
-    Unknown(i32),
 }
 
 #[derive(Debug)]
@@ -55,6 +41,16 @@ pub struct Core {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Reg(pub u16);
 
+impl Reg {
+    pub fn is_callee_saved(&self) -> bool {
+        match self.0 {
+            3 => true,       // rbx
+            6 => true,       // rbp
+            12..=15 => true, // r12, r13, r14, r15
+            _ => false,
+        }
+    }
+}
 pub mod x86_64 {
     use super::Reg;
 
@@ -175,7 +171,7 @@ impl fmt::Display for Regs {
 
         writeln!(f, "%rip = {:#018x}", self.rip)?;
         writeln!(f, "%rbp = {:#018x}", self.rbp)?;
-        writeln!(f, "%rsp = {:#018x}", self.rsp)?;
+        write!(f, "%rsp = {:#018x}", self.rsp)?;
         Ok(())
     }
 }
@@ -309,16 +305,15 @@ impl Core {
         let handle =
             unsafe { libproc_sys::Pgrab_core(c_core_path.as_ptr(), ptr::null(), flags, &mut perr) };
         let Some(handle) = NonNull::new(handle) else {
-            let err = match perr {
-                G_NOCORE => Error::Elf,
-                G_FORMAT => Error::Format,
-                G_ISAINVAL => Error::Arch,
-                G_LP64 => Error::Lp64,
-                G_NOTE => Error::Note,
-                libproc_sys::G_STRANGE => io::Error::last_os_error().into(),
-                _ => Error::Unknown(perr),
-            };
-            return Err(err);
+            let err_msg = unsafe { libproc_sys::Pgrab_error(perr) };
+
+            // SAFETY: The implementation of Pgrab_error returns a static string.
+            let c_msg = unsafe { CStr::from_ptr(err_msg) };
+
+            // UNWRAP: We know all possible values returned by Pgrab_error are valid UTF-8.
+            let msg = c_msg.to_str().unwrap();
+
+            return Err(Error::GrabFailed(msg));
         };
         Ok(Core { handle })
     }
@@ -337,9 +332,16 @@ impl Core {
                 panic!("Pstatus returned null ptr");
             }
         };
+        let brk_start = status.pr_brkbase as u64;
+        let brk_end = brk_start + status.pr_brksize as u64;
+
+        let stack_start = status.pr_stkbase as u64;
+        let stack_end = stack_start + status.pr_stksize as u64;
 
         Status {
             active_lwp: status.pr_lwp.pr_lwpid as u32,
+            brk_range: brk_start..brk_end,
+            stack_range: stack_start..stack_end,
         }
     }
 
@@ -362,6 +364,65 @@ impl Core {
         } else {
             Err(Error::NoExecName)
         }
+    }
+
+    pub fn lwps(&self) -> Result<Vec<Lwp>> {
+        mod callback {
+            use super::*;
+
+            pub(super) struct LwpCbData {
+                pub handle: *mut ps_prochandle,
+                pub data: Vec<Lwp>,
+            }
+
+            pub extern "C" fn lwp_callback(data: *mut c_void, status: *const lwpstatus_t) -> c_int {
+                unsafe {
+                    let cb_data = &mut *(data as *mut LwpCbData);
+                    let Some(status) = status.as_ref() else {
+                        return 0;
+                    };
+
+                    let mut stack = MaybeUninit::<stack_t>::uninit();
+                    let ret = libproc_sys::Plwp_main_stack(
+                        cb_data.handle,
+                        status.pr_lwpid as u32,
+                        stack.as_mut_ptr(),
+                    );
+                    if ret != 0 {
+                        // skip
+                        return 0;
+                    }
+
+                    let stack = stack.assume_init();
+                    let stack_start = stack.ss_sp as u64;
+                    let stack_end = stack_start + stack.ss_size as u64;
+
+                    cb_data.data.push(Lwp {
+                        tid: status.pr_lwpid as u32,
+                        stack_range: stack_start..stack_end,
+                    });
+                }
+
+                0 // Continue iteration
+            }
+        }
+
+        let mut cb_data = callback::LwpCbData {
+            handle: self.handle.as_ptr(),
+            data: Vec::new(),
+        };
+        let ret = unsafe {
+            libproc_sys::Plwp_iter(
+                self.handle.as_ptr(),
+                Some(callback::lwp_callback),
+                &mut cb_data as *mut _ as *mut c_void,
+            )
+        };
+        if ret != 0 {
+            return Err(Error::LwpIterFailed);
+        }
+
+        Ok(cb_data.data)
     }
 
     pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
@@ -416,11 +477,40 @@ impl Core {
     }
 
     pub fn mappings(&self) -> Result<Mappings> {
+        mod callback {
+            use super::*;
+            pub extern "C" fn object_callback(
+                data: *mut c_void,
+                map: *const prmap_t,
+                name: *const c_char,
+            ) -> c_int {
+                unsafe {
+                    let objs = &mut *(data as *mut Vec<_>);
+                    let map_ref = &*map;
+
+                    let path = if !name.is_null() {
+                        Some(CStr::from_ptr(name).to_string_lossy().to_string())
+                    } else {
+                        None
+                    };
+
+                    objs.push(LoadedObjectWithPath {
+                        path,
+                        vaddr: map_ref.pr_vaddr as u64,
+                        size: map_ref.pr_size as u64,
+                        flags: MapFlags(map_ref.pr_mflags as u32),
+                    });
+                }
+
+                0 // Continue iteration
+            }
+        }
+
         let mut objs = Vec::new();
         let ret = unsafe {
             libproc_sys::Pmapping_iter_resolved(
                 self.handle.as_ptr(),
-                Some(callbacks::object_callback),
+                Some(callback::object_callback),
                 &mut objs as *mut _ as *mut c_void,
             )
         };
@@ -449,6 +539,42 @@ impl Core {
     }
 
     pub fn symbols<'a>(&'a self) -> Result<Vec<Symbol<'a>>> {
+        mod callback {
+            use super::*;
+
+            pub extern "C" fn symbol_callback(
+                data: *mut c_void,
+                sym: *const GElf_Sym,
+                name: *const c_char,
+            ) -> c_int {
+                unsafe {
+                    let symbols = &mut *(data as *mut Vec<_>);
+                    let Some(sym) = sym.as_ref() else {
+                        return 0;
+                    };
+
+                    if name.is_null() {
+                        return 0;
+                    }
+                    let c_str = CStr::from_ptr(name);
+                    let Ok(name) = c_str.to_str() else {
+                        return 0;
+                    };
+
+                    symbols.push(Symbol {
+                        name,
+                        st_name: sym.st_name as usize,
+                        st_info: sym.st_info,
+                        st_other: sym.st_other,
+                        st_shndx: sym.st_shndx as usize,
+                        st_value: sym.st_value,
+                        st_size: sym.st_size,
+                    });
+                }
+
+                0 // Continue iteration
+            }
+        }
         // Search for symbols in the executable only.
         const PR_OBJ_EXEC: *const c_char = ptr::null();
         let fmask = libproc_sys::TYPE_FUNC | libproc_sys::BIND_GLOBAL | libproc_sys::BIND_LOCAL;
@@ -460,7 +586,7 @@ impl Core {
                 PR_OBJ_EXEC,
                 libproc_sys::PR_SYMTAB as i32,
                 fmask as i32,
-                Some(callbacks::symbol_callback),
+                Some(callback::symbol_callback),
                 &mut symbols as *mut _ as *mut c_void,
             )
         };
@@ -517,6 +643,14 @@ impl Core {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Status {
     pub active_lwp: u32,
+    pub brk_range: Range<u64>,
+    pub stack_range: Range<u64>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Lwp {
+    pub tid: u32,
+    pub stack_range: Range<u64>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -570,10 +704,31 @@ impl IntoIterator for Mappings {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct LoadedObjectWithPath {
-    pub path: String,
+    pub path: Option<String>,
     pub vaddr: u64,
     pub size: u64,
-    pub flags: u32,
+    pub flags: MapFlags,
+}
+
+impl LoadedObjectWithPath {
+    pub fn is_text(&self) -> bool {
+        self.flags.is_read() && self.flags.is_exec()
+    }
+
+    pub fn is_data(&self) -> bool {
+        self.flags.is_read() && self.flags.is_write() && !self.flags.is_anon()
+    }
+
+    pub fn is_heap(&self) -> bool {
+        self.flags.is_read()
+            && self.flags.is_write()
+            && self.flags.is_anon()
+            && self.flags.is_break()
+    }
+
+    pub fn is_guard(&self) -> bool {
+        self.flags.0 == 0
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -595,11 +750,21 @@ impl MapFlags {
     pub fn is_shared(&self) -> bool {
         self.0 & libproc_sys::MA_SHARED > 0
     }
+
+    pub fn is_anon(&self) -> bool {
+        self.0 & libproc_sys::MA_ANON > 0
+    }
+
+    pub fn is_break(&self) -> bool {
+        self.0 & libproc_sys::MA_BREAK > 0
+    }
 }
 
 impl LoadedObjectWithPath {
     pub fn file_name(&self) -> Option<&str> {
-        self.path.rsplit_once('/').map(|(_, n)| n)
+        self.path
+            .as_ref()
+            .and_then(|p| p.rsplit_once('/').map(|(_, n)| n))
     }
 
     pub fn range(&self) -> Range<u64> {
@@ -673,71 +838,8 @@ impl Drop for Core {
     }
 }
 
-mod callbacks {
-    use super::*;
-
-    pub extern "C" fn symbol_callback(
-        data: *mut c_void,
-        sym: *const GElf_Sym,
-        name: *const c_char,
-    ) -> c_int {
-        unsafe {
-            let symbols = &mut *(data as *mut Vec<_>);
-            let Some(sym) = sym.as_ref() else {
-                return 0;
-            };
-
-            if name.is_null() {
-                return 0;
-            }
-            let c_str = CStr::from_ptr(name);
-            let Ok(name) = c_str.to_str() else {
-                return 0;
-            };
-
-            symbols.push(Symbol {
-                name,
-                st_name: sym.st_name as usize,
-                st_info: sym.st_info,
-                st_other: sym.st_other,
-                st_shndx: sym.st_shndx as usize,
-                st_value: sym.st_value,
-                st_size: sym.st_size,
-            });
-        }
-
-        0 // Continue iteration
-    }
-
-    pub extern "C" fn object_callback(
-        data: *mut c_void,
-        map: *const prmap_t,
-        name: *const c_char,
-    ) -> c_int {
-        unsafe {
-            let objs = &mut *(data as *mut Vec<_>);
-            let map_ref = &*map;
-
-            if !name.is_null() {
-                let path = CStr::from_ptr(name).to_string_lossy().to_string();
-
-                objs.push(LoadedObjectWithPath {
-                    path,
-                    vaddr: map_ref.pr_vaddr as u64,
-                    size: map_ref.pr_size as u64,
-                    flags: map_ref.pr_mflags as u32,
-                });
-            }
-        }
-
-        0 // Continue iteration
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn it_works() {
         todo!()
