@@ -1817,9 +1817,12 @@ fn get_struct_fields<'a>(
     let mut children = root.children();
 
     let mut child_count = 0;
+    let mut child_tags = Vec::new();
     while let Some(child) = children.next()? {
         child_count += 1;
-        if child.entry().tag() == DW_TAG_member {
+        let child_tag = child.entry().tag();
+        child_tags.push(child_tag);
+        if child_tag == DW_TAG_member {
             if let Some(field) = read_member_info(unit, child.entry(), effective_base, core, depth)?
             {
                 fields.push(field);
@@ -1828,7 +1831,7 @@ fn get_struct_fields<'a>(
     }
 
     if fields.is_empty() && child_count > 0 {
-        eprintln!("DEBUG get_struct_fields: found {child_count} children but no DW_TAG_member");
+        eprintln!("DEBUG get_struct_fields: found {child_count} children but no DW_TAG_member. Tags: {child_tags:?}");
     }
 
     Ok(fields)
