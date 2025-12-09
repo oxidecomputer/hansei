@@ -2387,7 +2387,8 @@ fn resolve_type_name<'a>(
                 Some(n) => format!("*{}", n),
                 None => "*void".to_string(),
             };
-            Ok((Some(name), size))
+            // Pointers are always 8 bytes on 64-bit platforms
+            Ok((Some(name), size.or(Some(8))))
         }
         gimli::DW_TAG_reference_type => {
             let (inner, _) = get_referenced_type_name(unit, entry)?;
@@ -2395,7 +2396,8 @@ fn resolve_type_name<'a>(
                 Some(n) => format!("&{}", n),
                 None => "&?".to_string(),
             };
-            Ok((Some(name), size))
+            // References are always 8 bytes on 64-bit platforms
+            Ok((Some(name), size.or(Some(8))))
         }
         gimli::DW_TAG_const_type => {
             let (inner, inner_size) = get_referenced_type_name(unit, entry)?;
@@ -2433,7 +2435,10 @@ fn resolve_type_name<'a>(
             };
             Ok((Some(name), size))
         }
-        gimli::DW_TAG_subroutine_type => Ok((Some("fn(...)".to_string()), size)),
+        gimli::DW_TAG_subroutine_type => {
+            // Function pointers are 8 bytes on 64-bit platforms
+            Ok((Some("fn(...)".to_string()), size.or(Some(8))))
+        }
         _ => Ok((None, size)),
     }
 }
