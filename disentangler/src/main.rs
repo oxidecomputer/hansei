@@ -225,11 +225,17 @@ fn is_pointer_type(type_name: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
-/// Format a u64 value with mapping type, hex dump, ASCII, and optional symbol.
+/// Format a u64 value with mapping type, hex dump, and optional symbol.
 fn format_field_value(value: u64, addrs: &AddrRanges, core: &Core) -> String {
     let map_ty = addrs.mapping_type(value);
     let desc = map_ty.map(|m| m.to_string()).unwrap_or_default();
-    let formatted = format_value(value);
+
+    let hex_dump: String = value
+        .to_ne_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // Look up symbol for text/data addresses
     let sym = match map_ty {
@@ -240,8 +246,8 @@ fn format_field_value(value: u64, addrs: &AddrRanges, core: &Core) -> String {
     };
 
     match sym {
-        Some(name) => format!("{desc:>9} {formatted} {name}"),
-        None => format!("{desc:>9} {formatted}"),
+        Some(name) => format!("{desc:>9} {hex_dump}  {name}"),
+        None => format!("{desc:>9} {hex_dump}"),
     }
 }
 
@@ -284,23 +290,12 @@ fn print_field(
             writeln!(out, "{v:#x} ({v})")?;
         }
         Some(FieldValue::Bytes(bytes)) => {
-            // Format bytes similar to format_value but for arbitrary length
             let hex_dump: String = bytes
                 .iter()
                 .map(|b| format!("{b:02x}"))
                 .collect::<Vec<_>>()
                 .join(" ");
-            let ascii_dump: String = bytes
-                .iter()
-                .map(|&b| {
-                    if (0x20..=0x7e).contains(&b) {
-                        b as char
-                    } else {
-                        '.'
-                    }
-                })
-                .collect();
-            writeln!(out, "{hex_dump}  |{ascii_dump}|")?;
+            writeln!(out, "{hex_dump}")?;
         }
         None => {
             // For pointers without a value but with dereferenced addr and nested fields
