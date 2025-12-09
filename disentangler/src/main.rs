@@ -2165,12 +2165,14 @@ fn read_member_info<'a>(
     // Read the field value if we have an address and size
     let value = match (field_addr, size) {
         (Some(addr), Some(sz)) => read_field_value(core, addr, sz),
-        (Some(_addr), None) if name == "data" => {
-            eprintln!("DEBUG: 'data' field has no size. type_name={type_name:?}");
-            None
-        }
         _ => None,
     };
+
+    if name == "data" && type_name.as_deref() == Some("struct Handle") {
+        eprintln!(
+            "DEBUG: 'data' field (Handle): base_addr={base_addr:?}, offset={offset:?}, field_addr={field_addr:?}, size={size:?}"
+        );
+    }
 
     // Get the type offset for this member to check if it's a pointer/struct
     let type_offset = entry.attr_value(DW_AT_type)?;
