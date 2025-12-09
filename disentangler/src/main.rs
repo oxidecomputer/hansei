@@ -170,7 +170,7 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
                 if !available_fields.is_empty() {
                     writeln!(out, "    fields:")?;
                     for field in available_fields {
-                        print_field(out, field, 6)?;
+                        print_field(out, field, 6, &addrs, &core)?;
                     }
                 }
             }
@@ -225,9 +225,35 @@ fn is_pointer_type(type_name: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+/// Format a u64 value with mapping type, hex dump, ASCII, and optional symbol.
+fn format_field_value(value: u64, addrs: &AddrRanges, core: &Core) -> String {
+    let map_ty = addrs.mapping_type(value);
+    let desc = map_ty.map(|m| m.to_string()).unwrap_or_default();
+    let formatted = format_value(value);
+
+    // Look up symbol for text/data addresses
+    let sym = match map_ty {
+        Some(MappingType::ExecText) | Some(MappingType::ExecData) | Some(MappingType::LibcText) => {
+            core.lookup_symbol(value).map(|s| s.name.clone())
+        }
+        _ => None,
+    };
+
+    match sym {
+        Some(name) => format!("{desc:>9} {formatted} {name}"),
+        None => format!("{desc:>9} {formatted}"),
+    }
+}
+
 /// Print a single field and its nested fields recursively.
 /// Only prints fields that have available values or dereferenced addresses.
-fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<()> {
+fn print_field(
+    out: &mut dyn Write,
+    field: &FieldInfo,
+    indent: usize,
+    addrs: &AddrRanges,
+    core: &Core,
+) -> Result<()> {
     write!(out, "{}.{}: ", " ".repeat(indent), field.name)?;
     if let Some(type_name) = &field.type_name {
         write!(out, "({type_name}) ")?;
@@ -248,23 +274,33 @@ fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<
     match &field.value {
         Some(FieldValue::Unsigned(v)) => {
             if show_deref_inline {
-                writeln!(out, "{v:#x} -> @{:#x}:", field.dereferenced_addr.unwrap())?;
-            } else if is_ptr {
-                writeln!(out, "{v:#x}")?;
+                let deref = field.dereferenced_addr.unwrap();
+                writeln!(out, "{} -> @{deref:#x}:", format_field_value(*v, addrs, core))?;
             } else {
-                writeln!(out, "{v:#x} ({v})")?;
+                writeln!(out, "{}", format_field_value(*v, addrs, core))?;
             }
         }
         Some(FieldValue::Signed(v)) => {
             writeln!(out, "{v:#x} ({v})")?;
         }
         Some(FieldValue::Bytes(bytes)) => {
-            let hex: String = bytes
+            // Format bytes similar to format_value but for arbitrary length
+            let hex_dump: String = bytes
                 .iter()
                 .map(|b| format!("{b:02x}"))
                 .collect::<Vec<_>>()
                 .join(" ");
-            writeln!(out, "[{hex}]")?;
+            let ascii_dump: String = bytes
+                .iter()
+                .map(|&b| {
+                    if (0x20..=0x7e).contains(&b) {
+                        b as char
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
+            writeln!(out, "{hex_dump}  |{ascii_dump}|")?;
         }
         None => {
             // For pointers without a value but with dereferenced addr and nested fields
@@ -278,7 +314,7 @@ fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<
 
     // Recursively print nested fields that have available data
     for nested in available_nested {
-        print_field(out, nested, indent + 2)?;
+        print_field(out, nested, indent + 2, addrs, core)?;
     }
     Ok(())
 }
