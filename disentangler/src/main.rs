@@ -2165,6 +2165,10 @@ fn read_member_info<'a>(
     // Read the field value if we have an address and size
     let value = match (field_addr, size) {
         (Some(addr), Some(sz)) => read_field_value(core, addr, sz),
+        (Some(_addr), None) if name == "data" => {
+            eprintln!("DEBUG: 'data' field has no size. type_name={type_name:?}");
+            None
+        }
         _ => None,
     };
 
