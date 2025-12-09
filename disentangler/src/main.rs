@@ -2165,11 +2165,7 @@ fn read_member_info<'a>(
     // Read the field value if we have an address and size
     let value = match (field_addr, size) {
         (Some(addr), Some(sz)) => read_field_value(core, addr, sz),
-        (Some(_addr), None) => {
-            eprintln!("DEBUG read_member_info: field '{name}' has no size, type={type_name:?}");
-            None
-        }
-        (None, _) => None,
+        _ => None,
     };
 
     // Get the type offset for this member to check if it's a pointer/struct
