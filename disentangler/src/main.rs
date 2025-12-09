@@ -218,6 +218,13 @@ fn field_has_data(field: &FieldInfo) -> bool {
         || field.nested_fields.iter().any(field_has_data)
 }
 
+/// Check if a type name represents a pointer or reference type.
+fn is_pointer_type(type_name: Option<&str>) -> bool {
+    type_name
+        .map(|t| t.starts_with("pointer ") || t.starts_with("*") || t.starts_with("&"))
+        .unwrap_or(false)
+}
+
 /// Print a single field and its nested fields recursively.
 /// Only prints fields that have available values or dereferenced addresses.
 fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<()> {
@@ -225,9 +232,16 @@ fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<
     if let Some(type_name) = &field.type_name {
         write!(out, "({type_name}) ")?;
     }
+
+    let is_ptr = is_pointer_type(field.type_name.as_deref());
+
     match &field.value {
         Some(FieldValue::Unsigned(v)) => {
-            writeln!(out, "{v:#x} ({v})")?;
+            if is_ptr {
+                writeln!(out, "{v:#x}")?;
+            } else {
+                writeln!(out, "{v:#x} ({v})")?;
+            }
         }
         Some(FieldValue::Signed(v)) => {
             writeln!(out, "{v:#x} ({v})")?;
@@ -244,15 +258,24 @@ fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<
             writeln!(out, "")?;
         }
     }
-    // Show dereferenced pointer info
+
+    // Collect nested fields that have data
+    let available_nested: Vec<_> = field
+        .nested_fields
+        .iter()
+        .filter(|f| field_has_data(f))
+        .collect();
+
+    // Show dereferenced pointer info only if there are nested fields to show
     if let Some(deref_addr) = field.dereferenced_addr {
-        writeln!(out, "{} -> @{deref_addr:#x}:", " ".repeat(indent + 2))?;
-    }
-    // Recursively print nested fields that have available data
-    for nested in &field.nested_fields {
-        if field_has_data(nested) {
-            print_field(out, nested, indent + 2)?;
+        if !available_nested.is_empty() {
+            writeln!(out, "{} -> @{deref_addr:#x}:", " ".repeat(indent + 2))?;
         }
+    }
+
+    // Recursively print nested fields that have available data
+    for nested in available_nested {
+        print_field(out, nested, indent + 2)?;
     }
     Ok(())
 }
