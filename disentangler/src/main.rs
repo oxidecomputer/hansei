@@ -164,12 +164,9 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
                 }
 
                 // Print fields if this is a struct/union (or dereferenced pointer to one)
-                // Only print fields that have available values or dereferenced addresses
-                let available_fields: Vec<_> = var
-                    .fields
-                    .iter()
-                    .filter(|f| f.value.is_some() || f.dereferenced_addr.is_some())
-                    .collect();
+                // Only print fields that have available data
+                let available_fields: Vec<_> =
+                    var.fields.iter().filter(|f| field_has_data(f)).collect();
                 if !available_fields.is_empty() {
                     writeln!(out, "    fields:")?;
                     for field in available_fields {
@@ -214,6 +211,13 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
     Ok(())
 }
 
+/// Check if a field has any available data (value, dereferenced address, or nested fields with data).
+fn field_has_data(field: &FieldInfo) -> bool {
+    field.value.is_some()
+        || field.dereferenced_addr.is_some()
+        || field.nested_fields.iter().any(field_has_data)
+}
+
 /// Print a single field and its nested fields recursively.
 /// Only prints fields that have available values or dereferenced addresses.
 fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<()> {
@@ -246,7 +250,7 @@ fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<
     }
     // Recursively print nested fields that have available data
     for nested in &field.nested_fields {
-        if nested.value.is_some() || nested.dereferenced_addr.is_some() {
+        if field_has_data(nested) {
             print_field(out, nested, indent + 2)?;
         }
     }
