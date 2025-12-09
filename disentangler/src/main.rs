@@ -2376,7 +2376,12 @@ fn resolve_type_name<'a>(
 
     // Try to get name directly
     if let Some(name) = get_name(unit, entry)? {
-        return Ok((Some(format_type_name(tag, &name)), size));
+        // For pointer and reference types without explicit size, default to 8 bytes (64-bit)
+        let effective_size = match tag {
+            gimli::DW_TAG_pointer_type | gimli::DW_TAG_reference_type => size.or(Some(8)),
+            _ => size,
+        };
+        return Ok((Some(format_type_name(tag, &name)), effective_size));
     }
 
     // For modifiers, chase the DW_AT_type reference
