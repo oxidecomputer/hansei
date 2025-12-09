@@ -3,9 +3,10 @@ use clap::Parser;
 use fallible_iterator::FallibleIterator;
 use gimli::{
     AttributeValue, BaseAddresses, CfaRule, DW_AT_abstract_origin, DW_AT_byte_size, DW_AT_count,
-    DW_AT_data_member_location, DW_AT_high_pc, DW_AT_location, DW_AT_low_pc, DW_AT_lower_bound,
-    DW_AT_name, DW_AT_ranges, DW_AT_type, DW_AT_upper_bound, DW_TAG_formal_parameter,
-    DW_TAG_lexical_block, DW_TAG_member, DW_TAG_subprogram, DW_TAG_subrange_type, DW_TAG_variable,
+    DW_AT_data_member_location, DW_AT_discr, DW_AT_discr_value, DW_AT_high_pc, DW_AT_location,
+    DW_AT_low_pc, DW_AT_lower_bound, DW_AT_name, DW_AT_ranges, DW_AT_type, DW_AT_upper_bound,
+    DW_TAG_formal_parameter, DW_TAG_lexical_block, DW_TAG_member, DW_TAG_subprogram,
+    DW_TAG_subrange_type, DW_TAG_variable, DW_TAG_variant, DW_TAG_variant_part,
     DebuggingInformationEntry, Dwarf, EhFrame, EhFrameHdr, Encoding, EndianSlice, EvaluationResult,
     Expression, LittleEndian, Location, ParsedEhFrameHdr, Piece, RegisterRule, Unit, UnitOffset,
     UnitRef, UnwindContext, UnwindSection, Value,
@@ -1816,22 +1817,19 @@ fn get_struct_fields<'a>(
     let root = tree.root()?;
     let mut children = root.children();
 
-    let mut child_count = 0;
-    let mut child_tags = Vec::new();
     while let Some(child) = children.next()? {
-        child_count += 1;
         let child_tag = child.entry().tag();
-        child_tags.push(child_tag);
         if child_tag == DW_TAG_member {
             if let Some(field) = read_member_info(unit, child.entry(), effective_base, core, depth)?
             {
                 fields.push(field);
             }
+        } else if child_tag == DW_TAG_variant_part {
+            // This is a Rust enum - traverse into the variant_part
+            let variant_fields =
+                read_enum_variant_fields(unit, child.entry(), effective_base, core, depth)?;
+            fields.extend(variant_fields);
         }
-    }
-
-    if fields.is_empty() && child_count > 0 {
-        eprintln!("DEBUG get_struct_fields: found {child_count} children but no DW_TAG_member. Tags: {child_tags:?}");
     }
 
     Ok(fields)
@@ -1878,15 +1876,138 @@ fn get_struct_fields_from_type_offset<'a>(
     let mut children = root.children();
 
     while let Some(child) = children.next()? {
-        if child.entry().tag() == DW_TAG_member {
+        let child_tag = child.entry().tag();
+        if child_tag == DW_TAG_member {
             if let Some(field) = read_member_info(unit, child.entry(), effective_base, core, depth)?
             {
                 fields.push(field);
+            }
+        } else if child_tag == DW_TAG_variant_part {
+            // This is a Rust enum - traverse into the variant_part
+            let variant_fields =
+                read_enum_variant_fields(unit, child.entry(), effective_base, core, depth)?;
+            fields.extend(variant_fields);
+        }
+    }
+
+    Ok(fields)
+}
+
+/// Read fields from a Rust enum's variant_part.
+/// This handles the DWARF representation of Rust enums:
+/// - DW_TAG_variant_part contains a discriminant (DW_AT_discr) and variants (DW_TAG_variant)
+/// - Each DW_TAG_variant has a DW_AT_discr_value and contains DW_TAG_member entries
+fn read_enum_variant_fields<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    variant_part: &DebuggingInformationEntry<Slice<'a>>,
+    base_addr: Option<u64>,
+    core: &Core,
+    depth: usize,
+) -> Result<Vec<FieldInfo>> {
+    let mut fields = Vec::new();
+
+    // Get the discriminant member to read the tag value
+    let discr_value = read_discriminant_value(unit, variant_part, base_addr, core)?;
+
+    // Now iterate through variants to find the active one
+    let mut tree = unit.entries_tree(Some(variant_part.offset()))?;
+    let root = tree.root()?;
+    let mut children = root.children();
+
+    while let Some(child) = children.next()? {
+        if child.entry().tag() == DW_TAG_variant {
+            // Check if this variant matches the discriminant
+            let variant_discr = child
+                .entry()
+                .attr_value(DW_AT_discr_value)?
+                .and_then(|v| v.udata_value());
+
+            // If we couldn't read the discriminant or it matches, show this variant's fields
+            let is_match = match (discr_value, variant_discr) {
+                (Some(actual), Some(expected)) => actual == expected,
+                // If no discriminant (like unit variant or couldn't read), we can't determine
+                // For now, just show the first variant or all variants
+                (None, _) => true,
+                (Some(_), None) => {
+                    // This variant has no discr_value, might be the "default" variant
+                    // In Rust DWARF, the default variant often has no DW_AT_discr_value
+                    true
+                }
+            };
+
+            if is_match {
+                // Read the variant name if available
+                let variant_name = get_name(unit, child.entry())?.unwrap_or_default();
+
+                // Get member fields from this variant
+                let mut variant_children = child.children();
+                while let Some(member) = variant_children.next()? {
+                    if member.entry().tag() == DW_TAG_member {
+                        if let Some(mut field) =
+                            read_member_info(unit, member.entry(), base_addr, core, depth)?
+                        {
+                            // Prefix field name with variant name if not empty
+                            if !variant_name.is_empty() {
+                                field.name = format!("{}::{}", variant_name, field.name);
+                            }
+                            fields.push(field);
+                        }
+                    }
+                }
+
+                // If we matched a specific discriminant, don't look at other variants
+                if discr_value.is_some() && variant_discr.is_some() {
+                    break;
+                }
             }
         }
     }
 
     Ok(fields)
+}
+
+/// Read the discriminant value for an enum.
+fn read_discriminant_value<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    variant_part: &DebuggingInformationEntry<Slice<'a>>,
+    base_addr: Option<u64>,
+    core: &Core,
+) -> Result<Option<u64>> {
+    // DW_AT_discr points to the discriminant member
+    let discr_ref = match variant_part.attr_value(DW_AT_discr)? {
+        Some(AttributeValue::UnitRef(offset)) => offset,
+        _ => return Ok(None), // No discriminant (might be a single-variant enum)
+    };
+
+    // Get the discriminant member
+    let mut entries = unit.entries_at_offset(discr_ref)?;
+    entries.next_entry()?;
+    let Some(discr_entry) = entries.current() else {
+        return Ok(None);
+    };
+
+    // Get the offset of the discriminant within the struct
+    let discr_offset = get_member_offset(unit, discr_entry)?;
+
+    // Get the size of the discriminant
+    let (_, discr_size) = get_type_name_and_size(unit, discr_entry)?;
+    let discr_size = discr_size.unwrap_or(1) as usize;
+
+    // Read the discriminant value from memory
+    let Some(base) = base_addr else {
+        return Ok(None);
+    };
+    let discr_addr = base + discr_offset.unwrap_or(0);
+
+    let value = match discr_size {
+        1 => core.read_u8(discr_addr)? as u64,
+        2 => core.read_u16(discr_addr)? as u64,
+        4 => core.read_u32(discr_addr)? as u64,
+        8 => core.read_u64(discr_addr)?,
+        _ => return Ok(None),
+    };
+
+    Ok(Some(value))
 }
 
 /// Chase through typedefs, const, volatile, pointers, references etc. to get the underlying
