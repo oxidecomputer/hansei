@@ -1794,13 +1794,12 @@ fn get_struct_fields<'a>(
         && tag != gimli::DW_TAG_class_type
         && tag != gimli::DW_TAG_union_type
     {
-        eprintln!("DEBUG get_struct_fields: concrete type tag is {tag}, not a struct/class/union");
+        // Base types, enumerations, pointers without struct target, etc. don't have fields
         return Ok(Vec::new());
     }
 
-    // Check if this is just a declaration (forward declaration)
+    // Check if this is just a declaration (forward declaration without definition)
     if let Some(AttributeValue::Flag(true)) = type_entry.attr_value(gimli::DW_AT_declaration)? {
-        eprintln!("DEBUG get_struct_fields: type is just a declaration (forward decl)");
         return Ok(Vec::new());
     }
 
