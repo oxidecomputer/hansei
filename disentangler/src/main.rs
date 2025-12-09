@@ -3,12 +3,12 @@ use clap::Parser;
 use fallible_iterator::FallibleIterator;
 use gimli::{
     AttributeValue, BaseAddresses, CfaRule, DW_AT_abstract_origin, DW_AT_byte_size, DW_AT_count,
-    DW_AT_high_pc, DW_AT_location, DW_AT_low_pc, DW_AT_lower_bound, DW_AT_name, DW_AT_ranges,
-    DW_AT_type, DW_AT_upper_bound, DW_TAG_formal_parameter, DW_TAG_lexical_block,
-    DW_TAG_subprogram, DW_TAG_subrange_type, DW_TAG_variable, DebuggingInformationEntry, Dwarf,
-    EhFrame, EhFrameHdr, Encoding, EndianSlice, EvaluationResult, Expression, LittleEndian,
-    Location, ParsedEhFrameHdr, Piece, RegisterRule, Unit, UnitOffset, UnitRef, UnwindContext,
-    UnwindSection, Value,
+    DW_AT_data_member_location, DW_AT_high_pc, DW_AT_location, DW_AT_low_pc, DW_AT_lower_bound,
+    DW_AT_name, DW_AT_ranges, DW_AT_type, DW_AT_upper_bound, DW_TAG_formal_parameter,
+    DW_TAG_lexical_block, DW_TAG_member, DW_TAG_subprogram, DW_TAG_subrange_type, DW_TAG_variable,
+    DebuggingInformationEntry, Dwarf, EhFrame, EhFrameHdr, Encoding, EndianSlice, EvaluationResult,
+    Expression, LittleEndian, Location, ParsedEhFrameHdr, Piece, RegisterRule, Unit, UnitOffset,
+    UnitRef, UnwindContext, UnwindSection, Value,
 };
 use goblin::elf::Elf;
 use goblin::elf::header::{EI_CLASS, ELFCLASS64};
@@ -135,8 +135,16 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
             }
             for var in variables {
                 writeln!(out, "  name: {}", var.name)?;
-                writeln!(out, "    type: {}", var.type_name.unwrap_or_default())?;
-                writeln!(out, "    size: {}", var.size.unwrap_or_default())?;
+                writeln!(
+                    out,
+                    "    type: {}",
+                    var.type_name.as_deref().unwrap_or("<unknown>")
+                )?;
+                writeln!(
+                    out,
+                    "    size: {}",
+                    var.size.map(|s| s.to_string()).unwrap_or_default()
+                )?;
 
                 if let Some(pieces) = &var.parts {
                     if !pieces.is_empty() {
@@ -146,6 +154,47 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
                         if let Some((name, value)) = frame.eval_piece(piece)? {
                             print_stuff(out, 6, value, &name, &addrs, &core)?;
                         }
+                    }
+                }
+
+                // Show dereferenced pointer info for top-level variable
+                if let Some(deref_addr) = var.dereferenced_addr {
+                    writeln!(out, "    -> @{deref_addr:#x}:")?;
+                }
+
+                // Print fields if this is a struct/union (or dereferenced pointer to one)
+                if !var.fields.is_empty() {
+                    writeln!(out, "    fields:")?;
+                    for field in &var.fields {
+                        write!(out, "      .{}: ", field.name)?;
+                        if let Some(type_name) = &field.type_name {
+                            write!(out, "({type_name}) ")?;
+                        }
+                        match &field.value {
+                            Some(FieldValue::Unsigned(v)) => {
+                                writeln!(out, "{v:#x} ({v})")?;
+                            }
+                            Some(FieldValue::Signed(v)) => {
+                                writeln!(out, "{v:#x} ({v})")?;
+                            }
+                            Some(FieldValue::Bytes(bytes)) => {
+                                let hex: String = bytes
+                                    .iter()
+                                    .map(|b| format!("{b:02x}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                writeln!(out, "[{hex}]")?;
+                            }
+                            None => {
+                                writeln!(out, "<unavailable>")?;
+                            }
+                        }
+                        // Show dereferenced pointer info
+                        if let Some(deref_addr) = field.dereferenced_addr {
+                            writeln!(out, "        -> @{deref_addr:#x}:")?;
+                        }
+                        // Recursively print nested fields
+                        print_nested_fields(out, &field.nested_fields, 8)?;
                     }
                 }
             }
@@ -183,6 +232,40 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
         // }
     }
 
+    Ok(())
+}
+
+fn print_nested_fields(out: &mut dyn Write, fields: &[FieldInfo], indent: usize) -> Result<()> {
+    for field in fields {
+        write!(out, "{}.{}: ", " ".repeat(indent), field.name)?;
+        if let Some(type_name) = &field.type_name {
+            write!(out, "({type_name}) ")?;
+        }
+        match &field.value {
+            Some(FieldValue::Unsigned(v)) => {
+                writeln!(out, "{v:#x} ({v})")?;
+            }
+            Some(FieldValue::Signed(v)) => {
+                writeln!(out, "{v:#x} ({v})")?;
+            }
+            Some(FieldValue::Bytes(bytes)) => {
+                let hex: String = bytes
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                writeln!(out, "[{hex}]")?;
+            }
+            None => {
+                writeln!(out, "<unavailable>")?;
+            }
+        }
+        // Show dereferenced pointer info
+        if let Some(deref_addr) = field.dereferenced_addr {
+            writeln!(out, "{} -> @{deref_addr:#x}:", " ".repeat(indent + 2))?;
+        }
+        print_nested_fields(out, &field.nested_fields, indent + 2)?;
+    }
     Ok(())
 }
 
@@ -513,6 +596,14 @@ fn eval_piece<'a>(
     regs: &Regs,
     core: &Core,
 ) -> Result<Option<(String, u64)>> {
+    let &Piece {
+        size_in_bits,
+        bit_offset,
+        location,
+    } = piece;
+    if size_in_bits.is_some() || bit_offset.is_some() {
+        todo!("complicated expression piece {piece:?}");
+    }
     // let offset = match piece.bit_offset {
     //     Some(off) if off % 8 == 0 => off,
     //     Some(off) => {
@@ -520,7 +611,7 @@ fn eval_piece<'a>(
     //     }
     //     None => 0,
     // };
-    match piece.location {
+    match location {
         Location::Empty => Ok(None),
         Location::Register { register } => {
             let reg = Reg::from(register);
@@ -535,12 +626,47 @@ fn eval_piece<'a>(
             Ok(Some(("<const>".to_string(), 0)))
         }
         Location::Address { address } => {
-            let value = core.read_u64(address)?;
+            let size = piece.size_in_bits.unwrap_or(64) / 8;
+            let value = match size {
+                8 => core.read_u64(address)?,
+                4 => core.read_u32(address)? as u64,
+                2 => core.read_u16(address)? as u64,
+                1 => core.read_u8(address)? as u64,
+                _ => anyhow::bail!("expression piece had unexpected read size of {size}"),
+            };
             Ok(Some(("   ".to_string(), value)))
         }
         Location::ImplicitPointer { value, byte_offset } => {
             todo!();
         }
+    }
+}
+
+/// Indicates how the variable's location was determined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocationKind {
+    /// The value is stored at a memory address (need to read from it)
+    Memory,
+    /// The value is directly available (e.g., in a register)
+    Direct,
+}
+
+/// Extract the base address from location pieces, if available.
+/// Returns the address and whether it's a memory location or direct value.
+fn get_base_address_from_pieces<'a>(
+    pieces: &[Piece<Slice<'a>>],
+    regs: &Regs,
+) -> Option<(u64, LocationKind)> {
+    if pieces.len() != 1 {
+        return None;
+    }
+    match pieces[0].location {
+        Location::Address { address } => Some((address, LocationKind::Memory)),
+        Location::Register { register } => {
+            let reg = Reg::from(register);
+            Some((regs[reg], LocationKind::Direct))
+        }
+        _ => None,
     }
 }
 
@@ -1556,11 +1682,33 @@ fn collect_variables_recursive<'a>(
 }
 
 #[derive(Debug)]
+pub struct FieldInfo {
+    pub name: String,
+    pub type_name: Option<String>,
+    pub offset: u64,
+    pub size: Option<u64>,
+    pub value: Option<FieldValue>,
+    pub nested_fields: Vec<FieldInfo>,
+    /// If this field is a pointer/ref that was dereferenced, this holds the pointee address
+    pub dereferenced_addr: Option<u64>,
+}
+
+#[derive(Debug)]
+pub enum FieldValue {
+    Unsigned(u64),
+    Signed(i64),
+    Bytes(Vec<u8>),
+}
+
+#[derive(Debug)]
 pub struct VariableLocation<'a> {
     pub name: String,
     pub type_name: Option<String>,
     pub parts: Option<Vec<Piece<Slice<'a>>>>,
     pub size: Option<u64>,
+    pub fields: Vec<FieldInfo>,
+    /// If this variable is a pointer/ref that was dereferenced, this holds the pointee address
+    pub dereferenced_addr: Option<u64>,
 }
 
 pub fn read_variable_info<'a>(
@@ -1577,12 +1725,473 @@ pub fn read_variable_info<'a>(
     let (type_name, size) = get_type_name_and_size(unit, entry)?;
     let address = evaluate_location(unit, entry, pc, frame_base, regs, core)?;
 
+    // Calculate base address and location kind for reading fields
+    let (base_addr, loc_kind) = address
+        .as_ref()
+        .and_then(|pieces| get_base_address_from_pieces(pieces, regs))
+        .map(|(addr, kind)| (Some(addr), kind))
+        .unwrap_or((None, LocationKind::Memory));
+
+    // Get the type offset to check for pointer dereferencing
+    let type_offset = entry.attr_value(DW_AT_type)?;
+
+    // Get fields and track if we dereferenced a pointer
+    let (fields, dereferenced_addr) = if let Some(AttributeValue::UnitRef(type_off)) = type_offset {
+        // Check if this is a pointer type
+        let (_, deref_addr) = resolve_type_with_deref(unit, type_off, base_addr, loc_kind, core)?;
+        let fields = get_struct_fields(unit, entry, base_addr, loc_kind, core, 0)?;
+        (fields, deref_addr)
+    } else {
+        (Vec::new(), None)
+    };
+
     Ok(Some(VariableLocation {
         name,
         type_name,
         parts: address,
         size,
+        fields,
+        dereferenced_addr,
     }))
+}
+
+/// Maximum recursion depth for nested structs
+const MAX_FIELD_DEPTH: usize = 5;
+
+/// Get struct/union/class fields from a variable's type.
+/// Also handles pointer/reference types by dereferencing them.
+fn get_struct_fields<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+    base_addr: Option<u64>,
+    loc_kind: LocationKind,
+    core: &Core,
+    depth: usize,
+) -> Result<Vec<FieldInfo>> {
+    if depth >= MAX_FIELD_DEPTH {
+        return Ok(Vec::new());
+    }
+
+    // Get the type DIE
+    let type_offset = match entry.attr_value(DW_AT_type)? {
+        Some(AttributeValue::UnitRef(offset)) => offset,
+        _ => return Ok(Vec::new()),
+    };
+
+    // Resolve through type modifiers (const, volatile, typedef, etc.) to get the concrete type
+    let (concrete_offset, deref_addr) =
+        resolve_type_with_deref(unit, type_offset, base_addr, loc_kind, core)?;
+
+    let mut entries = unit.entries_at_offset(concrete_offset)?;
+    entries.next_entry()?;
+    let Some(type_entry) = entries.current() else {
+        return Ok(Vec::new());
+    };
+
+    let tag = type_entry.tag();
+    if tag != gimli::DW_TAG_structure_type
+        && tag != gimli::DW_TAG_class_type
+        && tag != gimli::DW_TAG_union_type
+    {
+        eprintln!("DEBUG get_struct_fields: concrete type tag is {tag}, not a struct/class/union");
+        return Ok(Vec::new());
+    }
+
+    // Check if this is just a declaration (forward declaration)
+    if let Some(AttributeValue::Flag(true)) = type_entry.attr_value(gimli::DW_AT_declaration)? {
+        eprintln!("DEBUG get_struct_fields: type is just a declaration (forward decl)");
+        return Ok(Vec::new());
+    }
+
+    // Use dereferenced address if we went through a pointer, otherwise use base_addr
+    let effective_base = deref_addr.or(base_addr);
+
+    // Enumerate members
+    let mut fields = Vec::new();
+
+    // We need to use entries_tree to iterate children, but we need to be careful
+    // about borrowing. Get the offset and create a new tree.
+    let type_offset = type_entry.offset();
+    let mut tree = unit.entries_tree(Some(type_offset))?;
+    let root = tree.root()?;
+    let mut children = root.children();
+
+    let mut child_count = 0;
+    while let Some(child) = children.next()? {
+        child_count += 1;
+        if child.entry().tag() == DW_TAG_member {
+            if let Some(field) = read_member_info(unit, child.entry(), effective_base, core, depth)?
+            {
+                fields.push(field);
+            }
+        }
+    }
+
+    if fields.is_empty() && child_count > 0 {
+        eprintln!("DEBUG get_struct_fields: found {child_count} children but no DW_TAG_member");
+    }
+
+    Ok(fields)
+}
+
+/// Get fields from a type, given its offset directly (used for nested field traversal).
+/// For nested fields, we always use LocationKind::Memory since struct members are at memory addresses.
+fn get_struct_fields_from_type_offset<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    type_offset: UnitOffset,
+    base_addr: Option<u64>,
+    core: &Core,
+    depth: usize,
+) -> Result<Vec<FieldInfo>> {
+    if depth >= MAX_FIELD_DEPTH {
+        return Ok(Vec::new());
+    }
+
+    // For nested fields, the base_addr is always a memory address
+    let (concrete_offset, deref_addr) =
+        resolve_type_with_deref(unit, type_offset, base_addr, LocationKind::Memory, core)?;
+
+    let mut entries = unit.entries_at_offset(concrete_offset)?;
+    entries.next_entry()?;
+    let Some(type_entry) = entries.current() else {
+        return Ok(Vec::new());
+    };
+
+    let tag = type_entry.tag();
+    if tag != gimli::DW_TAG_structure_type
+        && tag != gimli::DW_TAG_class_type
+        && tag != gimli::DW_TAG_union_type
+    {
+        return Ok(Vec::new());
+    }
+
+    // Use dereferenced address if we went through a pointer
+    let effective_base = deref_addr.or(base_addr);
+
+    let mut fields = Vec::new();
+    let entry_offset = type_entry.offset();
+    let mut tree = unit.entries_tree(Some(entry_offset))?;
+    let root = tree.root()?;
+    let mut children = root.children();
+
+    while let Some(child) = children.next()? {
+        if child.entry().tag() == DW_TAG_member {
+            if let Some(field) = read_member_info(unit, child.entry(), effective_base, core, depth)?
+            {
+                fields.push(field);
+            }
+        }
+    }
+
+    Ok(fields)
+}
+
+/// Chase through typedefs, const, volatile, pointers, references etc. to get the underlying
+/// concrete type offset. If we go through a pointer/reference, dereference it and return
+/// the new base address.
+///
+/// `loc_kind` indicates whether `base_addr` is a memory address containing the variable,
+/// or the variable's value directly (e.g., from a register).
+///
+/// Returns (concrete_type_offset, Option<dereferenced_address>)
+fn resolve_type_with_deref<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    mut type_offset: UnitOffset,
+    base_addr: Option<u64>,
+    loc_kind: LocationKind,
+    core: &Core,
+) -> Result<(UnitOffset, Option<u64>)> {
+    let mut deref_addr: Option<u64> = None;
+    let mut current_addr = base_addr;
+    let mut current_kind = loc_kind;
+
+    loop {
+        let mut entries = unit.entries_at_offset(type_offset)?;
+        entries.next_entry()?;
+        let Some(entry) = entries.current() else {
+            break;
+        };
+
+        let tag = entry.tag();
+
+        // Handle pointer and reference types - dereference them
+        if tag == gimli::DW_TAG_pointer_type || tag == gimli::DW_TAG_reference_type {
+            if let Some(addr) = current_addr {
+                // If the location is Direct (e.g., register), the value IS the pointer.
+                // If the location is Memory, we need to read from that address to get the pointer.
+                let pointee_addr = if current_kind == LocationKind::Direct {
+                    // The value itself is the pointer
+                    addr
+                } else {
+                    // Read the pointer value from memory
+                    core.read_u64(addr)?
+                };
+
+                // Check if it's a valid pointer (not null, not obviously invalid)
+                if pointee_addr != 0 && pointee_addr > 0x1000 {
+                    deref_addr = Some(pointee_addr);
+                    current_addr = Some(pointee_addr);
+                    // After dereferencing, we now have a memory address
+                    current_kind = LocationKind::Memory;
+                } else {
+                    // Null or invalid pointer, stop here
+                    return Ok((type_offset, None));
+                }
+            }
+
+            // Get the underlying type
+            match entry.attr_value(DW_AT_type)? {
+                Some(AttributeValue::UnitRef(offset)) => {
+                    type_offset = offset;
+                    continue;
+                }
+                _ => break, // void pointer or no type info
+            }
+        }
+
+        // These are modifier tags that we should chase through (without dereferencing)
+        let is_modifier = matches!(
+            tag,
+            gimli::DW_TAG_typedef
+                | gimli::DW_TAG_const_type
+                | gimli::DW_TAG_volatile_type
+                | gimli::DW_TAG_restrict_type
+                | gimli::DW_TAG_atomic_type
+        );
+
+        if !is_modifier {
+            break;
+        }
+
+        // Get the underlying type
+        match entry.attr_value(DW_AT_type)? {
+            Some(AttributeValue::UnitRef(offset)) => {
+                type_offset = offset;
+            }
+            _ => break,
+        }
+    }
+    Ok((type_offset, deref_addr))
+}
+
+/// Chase through typedefs, const, volatile, etc. to get the underlying concrete type offset.
+/// Does NOT dereference pointers - use resolve_type_with_deref for that.
+fn resolve_to_concrete_type<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    mut type_offset: UnitOffset,
+) -> Result<UnitOffset> {
+    loop {
+        let mut entries = unit.entries_at_offset(type_offset)?;
+        entries.next_entry()?;
+        let Some(entry) = entries.current() else {
+            break;
+        };
+
+        let tag = entry.tag();
+        // These are modifier tags that we should chase through
+        let is_modifier = matches!(
+            tag,
+            gimli::DW_TAG_typedef
+                | gimli::DW_TAG_const_type
+                | gimli::DW_TAG_volatile_type
+                | gimli::DW_TAG_restrict_type
+                | gimli::DW_TAG_atomic_type
+        );
+
+        if !is_modifier {
+            break;
+        }
+
+        // Get the underlying type
+        match entry.attr_value(DW_AT_type)? {
+            Some(AttributeValue::UnitRef(offset)) => {
+                type_offset = offset;
+            }
+            _ => break,
+        }
+    }
+    Ok(type_offset)
+}
+
+/// Read information about a struct member (DW_TAG_member).
+fn read_member_info<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+    base_addr: Option<u64>,
+    core: &Core,
+    depth: usize,
+) -> Result<Option<FieldInfo>> {
+    // Get field name
+    let name = match get_name(unit, entry)? {
+        Some(n) => n,
+        None => return Ok(None), // Anonymous field, skip for now
+    };
+
+    // Get field type info
+    let (type_name, size) = get_type_name_and_size(unit, entry)?;
+
+    // Get field offset within struct
+    let offset = get_member_offset(unit, entry)?;
+
+    // Calculate the field's address
+    let field_addr = match (base_addr, offset) {
+        (Some(base), Some(off)) => Some(base + off),
+        _ => None,
+    };
+
+    // Read the field value if we have an address and size
+    let value = match (field_addr, size) {
+        (Some(addr), Some(sz)) => read_field_value(core, addr, sz),
+        _ => None,
+    };
+
+    // Get the type offset for this member to check if it's a pointer/struct
+    let type_offset = entry.attr_value(DW_AT_type)?;
+
+    // Try to get nested fields - this will dereference pointers if needed
+    // Struct members are always at memory locations, so we use LocationKind::Memory
+    let (nested_fields, dereferenced_addr) =
+        if let Some(AttributeValue::UnitRef(type_off)) = type_offset {
+            // Check if this is a pointer type and get dereferenced info
+            let (_concrete_offset, deref_addr) =
+                resolve_type_with_deref(unit, type_off, field_addr, LocationKind::Memory, core)?;
+
+            // Get fields from the (possibly dereferenced) type
+            let fields =
+                get_struct_fields_from_type_offset(unit, type_off, field_addr, core, depth + 1)?;
+
+            (fields, deref_addr)
+        } else {
+            (Vec::new(), None)
+        };
+
+    Ok(Some(FieldInfo {
+        name,
+        type_name,
+        offset: offset.unwrap_or(0),
+        size,
+        value,
+        nested_fields,
+        dereferenced_addr,
+    }))
+}
+
+/// Get the offset of a member within its containing struct.
+fn get_member_offset<'a>(
+    unit: &UnitRef<'a, Slice<'a>>,
+    entry: &DebuggingInformationEntry<Slice<'a>>,
+) -> Result<Option<u64>> {
+    let Some(attr) = entry.attr_value(DW_AT_data_member_location)? else {
+        return Ok(Some(0)); // No offset means offset 0 (e.g., first member or union)
+    };
+
+    match attr {
+        // Simple constant offset (most common case)
+        AttributeValue::Udata(offset) => Ok(Some(offset)),
+        AttributeValue::Sdata(offset) => Ok(Some(offset as u64)),
+        AttributeValue::Data1(offset) => Ok(Some(offset as u64)),
+        AttributeValue::Data2(offset) => Ok(Some(offset as u64)),
+        AttributeValue::Data4(offset) => Ok(Some(offset as u64)),
+        AttributeValue::Data8(offset) => Ok(Some(offset)),
+
+        // DWARF expression (rare, but can happen for virtual base classes, etc.)
+        AttributeValue::Exprloc(expr) => {
+            // For now, try to evaluate simple expressions
+            let mut eval = expr.evaluation(unit.encoding());
+            let result = eval.evaluate()?;
+            match result {
+                EvaluationResult::Complete => {
+                    let pieces = eval.result();
+                    if let Some(piece) = pieces.first() {
+                        match piece.location {
+                            Location::Address { address } => Ok(Some(address)),
+                            Location::Value { value } => Ok(Some(value.to_u64(0)?)),
+                            _ => Ok(None),
+                        }
+                    } else {
+                        Ok(None)
+                    }
+                }
+                _ => Ok(None), // Complex expression requiring more context
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Read a field value from memory.
+fn read_field_value(core: &Core, addr: u64, size: u64) -> Option<FieldValue> {
+    match size {
+        1 => core
+            .read_u8(addr)
+            .ok()
+            .map(|v| FieldValue::Unsigned(v as u64)),
+        2 => core
+            .read_u16(addr)
+            .ok()
+            .map(|v| FieldValue::Unsigned(v as u64)),
+        4 => core
+            .read_u32(addr)
+            .ok()
+            .map(|v| FieldValue::Unsigned(v as u64)),
+        8 => core.read_u64(addr).ok().map(FieldValue::Unsigned),
+        _ if size <= 64 => {
+            // For other sizes, read as bytes
+            let mut buf = vec![0u8; size as usize];
+            let mut offset = 0;
+            while offset < size {
+                let remaining = size - offset;
+                let chunk_size = remaining.min(8);
+                let chunk_addr = addr + offset;
+                match chunk_size {
+                    8 => {
+                        if let Ok(v) = core.read_u64(chunk_addr) {
+                            buf[offset as usize..offset as usize + 8]
+                                .copy_from_slice(&v.to_ne_bytes());
+                        } else {
+                            return None;
+                        }
+                    }
+                    4 => {
+                        if let Ok(v) = core.read_u32(chunk_addr) {
+                            buf[offset as usize..offset as usize + 4]
+                                .copy_from_slice(&v.to_ne_bytes());
+                        } else {
+                            return None;
+                        }
+                    }
+                    2 => {
+                        if let Ok(v) = core.read_u16(chunk_addr) {
+                            buf[offset as usize..offset as usize + 2]
+                                .copy_from_slice(&v.to_ne_bytes());
+                        } else {
+                            return None;
+                        }
+                    }
+                    1 => {
+                        if let Ok(v) = core.read_u8(chunk_addr) {
+                            buf[offset as usize] = v;
+                        } else {
+                            return None;
+                        }
+                    }
+                    _ => {
+                        // Read byte by byte for odd sizes
+                        for i in 0..chunk_size {
+                            if let Ok(v) = core.read_u8(chunk_addr + i) {
+                                buf[(offset + i) as usize] = v;
+                            } else {
+                                return None;
+                            }
+                        }
+                    }
+                }
+                offset += chunk_size;
+            }
+            Some(FieldValue::Bytes(buf))
+        }
+        _ => None, // Too large
+    }
 }
 
 fn get_name<'a>(
@@ -1688,7 +2297,7 @@ fn resolve_type_name<'a>(
         }
         gimli::DW_TAG_array_type => {
             let (inner, _) = get_referenced_type_name(unit, entry)?;
-            let count = get_array_count(unit, entry)?;
+            let count = get_array_count(&unit.unit, entry)?;
             let name = match (inner, count) {
                 (Some(n), Some(c)) => format!("[{}; {}]", n, c),
                 (Some(n), None) => format!("[{}]", n),
@@ -1843,16 +2452,19 @@ fn evaluate_expression<'a>(
             }
             EvaluationResult::RequiresEntryValue(entry_expr) => {
                 let pieces = evaluate_expression(entry_expr, encoding, frame_base, regs, core)?;
-                let mut value = None;
+                let mut values = Vec::new();
                 for piece in pieces {
                     if let Some((_, out)) = eval_piece(&piece, regs, core)? {
-                        value = Some(out);
+                        values.push(out);
                     }
                 }
-                let Some(value) = value else {
+                if values.len() > 1 {
+                    todo!("subexpression piece ct > 1: {values:?}");
+                }
+                let Some(value) = values.first() else {
                     return Ok(Vec::new());
                 };
-                result = eval.resume_with_entry_value(Value::Generic(value))?;
+                result = eval.resume_with_entry_value(Value::Generic(*value))?;
             }
             e => {
                 panic!("unhandled EvaluationResult {e:?}");
