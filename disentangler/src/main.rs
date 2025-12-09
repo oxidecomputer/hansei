@@ -226,7 +226,8 @@ fn is_pointer_type(type_name: Option<&str>) -> bool {
 }
 
 /// Format a u64 value with mapping type, hex dump, and optional symbol.
-fn format_field_value(value: u64, addrs: &AddrRanges, core: &Core) -> String {
+/// If `show_decimal` is true, prefix with the decimal value.
+fn format_field_value(value: u64, addrs: &AddrRanges, core: &Core, show_decimal: bool) -> String {
     let map_ty = addrs.mapping_type(value);
     let desc = map_ty.map(|m| m.to_string()).unwrap_or_default();
 
@@ -245,9 +246,15 @@ fn format_field_value(value: u64, addrs: &AddrRanges, core: &Core) -> String {
         _ => None,
     };
 
+    let decimal_prefix = if show_decimal {
+        format!("{value:<20} ")
+    } else {
+        String::new()
+    };
+
     match sym {
-        Some(name) => format!("{desc:>9} {hex_dump}  {name}"),
-        None => format!("{desc:>9} {hex_dump}"),
+        Some(name) => format!("{decimal_prefix}{desc:>9} {hex_dump}  {name}"),
+        None => format!("{decimal_prefix}{desc:>9} {hex_dump}"),
     }
 }
 
@@ -279,15 +286,17 @@ fn print_field(
 
     match &field.value {
         Some(FieldValue::Unsigned(v)) => {
+            // Show decimal for non-pointer types
+            let show_decimal = !is_ptr;
             if show_deref_inline {
                 let deref = field.dereferenced_addr.unwrap();
-                writeln!(out, "{} -> @{deref:#x}:", format_field_value(*v, addrs, core))?;
+                writeln!(out, "{} -> @{deref:#x}:", format_field_value(*v, addrs, core, show_decimal))?;
             } else {
-                writeln!(out, "{}", format_field_value(*v, addrs, core))?;
+                writeln!(out, "{}", format_field_value(*v, addrs, core, show_decimal))?;
             }
         }
         Some(FieldValue::Signed(v)) => {
-            writeln!(out, "{v:#x} ({v})")?;
+            writeln!(out, "{v:<20}           {v:#x}")?;
         }
         Some(FieldValue::Bytes(bytes)) => {
             let hex_dump: String = bytes
