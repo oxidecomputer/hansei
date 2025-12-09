@@ -225,18 +225,10 @@ fn is_pointer_type(type_name: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
-/// Format a u64 value with mapping type, hex dump, and optional symbol.
-/// If `show_decimal` is true, prefix with the decimal value.
+/// Format a u64 value with optional decimal, mapping type, and optional symbol.
 fn format_field_value(value: u64, addrs: &AddrRanges, core: &Core, show_decimal: bool) -> String {
     let map_ty = addrs.mapping_type(value);
     let desc = map_ty.map(|m| m.to_string()).unwrap_or_default();
-
-    let hex_dump: String = value
-        .to_ne_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join(" ");
 
     // Look up symbol for text/data addresses
     let sym = match map_ty {
@@ -246,15 +238,16 @@ fn format_field_value(value: u64, addrs: &AddrRanges, core: &Core, show_decimal:
         _ => None,
     };
 
-    let decimal_prefix = if show_decimal {
-        format!("{value:<20} ")
+    let decimal_part = if show_decimal {
+        format!("{value}")
     } else {
-        String::new()
+        format!("{value:#x}")
     };
 
     match sym {
-        Some(name) => format!("{decimal_prefix}{desc:>9} {hex_dump}  {name}"),
-        None => format!("{decimal_prefix}{desc:>9} {hex_dump}"),
+        Some(name) => format!("{decimal_part} {desc} {name}"),
+        None if !desc.is_empty() => format!("{decimal_part} {desc}"),
+        None => decimal_part,
     }
 }
 
@@ -299,12 +292,7 @@ fn print_field(
             writeln!(out, "{v:<20}           {v:#x}")?;
         }
         Some(FieldValue::Bytes(bytes)) => {
-            let hex_dump: String = bytes
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            writeln!(out, "{hex_dump}")?;
+            writeln!(out, "[{} bytes]", bytes.len())?;
         }
         None => {
             // For pointers without a value but with dereferenced addr and nested fields
