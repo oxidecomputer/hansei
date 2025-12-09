@@ -164,38 +164,16 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
                 }
 
                 // Print fields if this is a struct/union (or dereferenced pointer to one)
-                if !var.fields.is_empty() {
+                // Only print fields that have available values or dereferenced addresses
+                let available_fields: Vec<_> = var
+                    .fields
+                    .iter()
+                    .filter(|f| f.value.is_some() || f.dereferenced_addr.is_some())
+                    .collect();
+                if !available_fields.is_empty() {
                     writeln!(out, "    fields:")?;
-                    for field in &var.fields {
-                        write!(out, "      .{}: ", field.name)?;
-                        if let Some(type_name) = &field.type_name {
-                            write!(out, "({type_name}) ")?;
-                        }
-                        match &field.value {
-                            Some(FieldValue::Unsigned(v)) => {
-                                writeln!(out, "{v:#x} ({v})")?;
-                            }
-                            Some(FieldValue::Signed(v)) => {
-                                writeln!(out, "{v:#x} ({v})")?;
-                            }
-                            Some(FieldValue::Bytes(bytes)) => {
-                                let hex: String = bytes
-                                    .iter()
-                                    .map(|b| format!("{b:02x}"))
-                                    .collect::<Vec<_>>()
-                                    .join(" ");
-                                writeln!(out, "[{hex}]")?;
-                            }
-                            None => {
-                                writeln!(out, "<unavailable>")?;
-                            }
-                        }
-                        // Show dereferenced pointer info
-                        if let Some(deref_addr) = field.dereferenced_addr {
-                            writeln!(out, "        -> @{deref_addr:#x}:")?;
-                        }
-                        // Recursively print nested fields
-                        print_nested_fields(out, &field.nested_fields, 8)?;
+                    for field in available_fields {
+                        print_field(out, field, 6)?;
                     }
                 }
             }
@@ -236,36 +214,41 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
     Ok(())
 }
 
-fn print_nested_fields(out: &mut dyn Write, fields: &[FieldInfo], indent: usize) -> Result<()> {
-    for field in fields {
-        write!(out, "{}.{}: ", " ".repeat(indent), field.name)?;
-        if let Some(type_name) = &field.type_name {
-            write!(out, "({type_name}) ")?;
+/// Print a single field and its nested fields recursively.
+/// Only prints fields that have available values or dereferenced addresses.
+fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<()> {
+    write!(out, "{}.{}: ", " ".repeat(indent), field.name)?;
+    if let Some(type_name) = &field.type_name {
+        write!(out, "({type_name}) ")?;
+    }
+    match &field.value {
+        Some(FieldValue::Unsigned(v)) => {
+            writeln!(out, "{v:#x} ({v})")?;
         }
-        match &field.value {
-            Some(FieldValue::Unsigned(v)) => {
-                writeln!(out, "{v:#x} ({v})")?;
-            }
-            Some(FieldValue::Signed(v)) => {
-                writeln!(out, "{v:#x} ({v})")?;
-            }
-            Some(FieldValue::Bytes(bytes)) => {
-                let hex: String = bytes
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                writeln!(out, "[{hex}]")?;
-            }
-            None => {
-                writeln!(out, "<unavailable>")?;
-            }
+        Some(FieldValue::Signed(v)) => {
+            writeln!(out, "{v:#x} ({v})")?;
         }
-        // Show dereferenced pointer info
-        if let Some(deref_addr) = field.dereferenced_addr {
-            writeln!(out, "{} -> @{deref_addr:#x}:", " ".repeat(indent + 2))?;
+        Some(FieldValue::Bytes(bytes)) => {
+            let hex: String = bytes
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            writeln!(out, "[{hex}]")?;
         }
-        print_nested_fields(out, &field.nested_fields, indent + 2)?;
+        None => {
+            writeln!(out, "")?;
+        }
+    }
+    // Show dereferenced pointer info
+    if let Some(deref_addr) = field.dereferenced_addr {
+        writeln!(out, "{} -> @{deref_addr:#x}:", " ".repeat(indent + 2))?;
+    }
+    // Recursively print nested fields that have available data
+    for nested in &field.nested_fields {
+        if nested.value.is_some() || nested.dereferenced_addr.is_some() {
+            print_field(out, nested, indent + 2)?;
+        }
     }
     Ok(())
 }
