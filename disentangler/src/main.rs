@@ -1757,7 +1757,7 @@ pub fn read_variable_info<'a>(
 }
 
 /// Maximum recursion depth for nested structs
-const MAX_FIELD_DEPTH: usize = 5;
+const MAX_FIELD_DEPTH: usize = 15;
 
 /// Get struct/union/class fields from a variable's type.
 /// Also handles pointer/reference types by dereferencing them.
@@ -2167,12 +2167,6 @@ fn read_member_info<'a>(
         (Some(addr), Some(sz)) => read_field_value(core, addr, sz),
         _ => None,
     };
-
-    if name == "data" && type_name.as_deref() == Some("struct Handle") {
-        eprintln!(
-            "DEBUG: 'data' field (Handle): base_addr={base_addr:?}, offset={offset:?}, field_addr={field_addr:?}, size={size:?}"
-        );
-    }
 
     // Get the type offset for this member to check if it's a pointer/struct
     let type_offset = entry.attr_value(DW_AT_type)?;
