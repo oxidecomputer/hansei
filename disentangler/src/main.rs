@@ -235,9 +235,21 @@ fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<
 
     let is_ptr = is_pointer_type(field.type_name.as_deref());
 
+    // Collect nested fields that have data
+    let available_nested: Vec<_> = field
+        .nested_fields
+        .iter()
+        .filter(|f| field_has_data(f))
+        .collect();
+
+    // For pointers with nested fields, show the dereference on the same line
+    let show_deref_inline = is_ptr && field.dereferenced_addr.is_some() && !available_nested.is_empty();
+
     match &field.value {
         Some(FieldValue::Unsigned(v)) => {
-            if is_ptr {
+            if show_deref_inline {
+                writeln!(out, "{v:#x} -> @{:#x}:", field.dereferenced_addr.unwrap())?;
+            } else if is_ptr {
                 writeln!(out, "{v:#x}")?;
             } else {
                 writeln!(out, "{v:#x} ({v})")?;
@@ -255,21 +267,12 @@ fn print_field(out: &mut dyn Write, field: &FieldInfo, indent: usize) -> Result<
             writeln!(out, "[{hex}]")?;
         }
         None => {
-            writeln!(out, "")?;
-        }
-    }
-
-    // Collect nested fields that have data
-    let available_nested: Vec<_> = field
-        .nested_fields
-        .iter()
-        .filter(|f| field_has_data(f))
-        .collect();
-
-    // Show dereferenced pointer info only if there are nested fields to show
-    if let Some(deref_addr) = field.dereferenced_addr {
-        if !available_nested.is_empty() {
-            writeln!(out, "{} -> @{deref_addr:#x}:", " ".repeat(indent + 2))?;
+            // For pointers without a value but with dereferenced addr and nested fields
+            if show_deref_inline {
+                writeln!(out, "-> @{:#x}:", field.dereferenced_addr.unwrap())?;
+            } else {
+                writeln!(out, "")?;
+            }
         }
     }
 
