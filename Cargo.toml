@@ -5,6 +5,7 @@ members = [
     "disentangler",
     "durin",
     "dwarf2ctf",
+    "findargs",
     "libproc-sys",
     "proc",
 ]

@@ -1095,10 +1095,16 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
         let mut children = root.children();
         while let Some(child) = children.next()? {
-            if child.entry().tag() == gimli::DW_TAG_member
-                && let Some(member) = self.parse_struct_member(unit, child.entry())?
-            {
-                members.push(member);
+            match child.entry().tag() {
+                gimli::DW_TAG_member => {
+                    if let Some(member) = self.parse_struct_member(unit, child.entry())? {
+                        members.push(member);
+                    }
+                }
+                gimli::DW_TAG_variant_part => {
+                    self.parse_variant_part_members(unit, child, &mut members)?;
+                }
+                _ => {}
             }
         }
 
@@ -1117,6 +1123,95 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             members,
         };
         Ok(MaybeOffset::Found(self.writer.add_type(offset, ctf_type)))
+    }
+
+    fn parse_variant_part_members(
+        &mut self,
+        unit: &Unit<R>,
+        variant_part_node: gimli::EntriesTreeNode<R>,
+        members: &mut Vec<CtfMember>,
+    ) -> Result<()> {
+        let entry = variant_part_node.entry();
+
+        // Check for discriminant member (DW_AT_discr points to a DW_TAG_member child)
+        let mut discr_offset = None;
+        let mut attrs = entry.attrs();
+        while let Some(attr) = attrs.next()? {
+            if attr.name() == gimli::DW_AT_discr {
+                if let AttributeValue::UnitRef(off) = attr.value() {
+                    discr_offset = Some(off);
+                }
+            }
+        }
+
+        // Iterate over children of the variant_part
+        let mut children = variant_part_node.children();
+        while let Some(child) = children.next()? {
+            match child.entry().tag() {
+                gimli::DW_TAG_member => {
+                    // This is the discriminant member
+                    if let Some(member) = self.parse_struct_member(unit, child.entry())? {
+                        // Add with a descriptive name if it's the discriminant
+                        let is_discr = discr_offset.is_some_and(|off| {
+                            child.entry().offset() == off
+                        });
+                        let member = if is_discr && member.name.is_empty() {
+                            CtfMember {
+                                name: "__discr".to_string(),
+                                ..member
+                            }
+                        } else {
+                            member
+                        };
+                        members.push(member);
+                    }
+                }
+                gimli::DW_TAG_variant => {
+                    // Each variant can have members - we extract them all
+                    // For CTF, we treat this like a union overlay
+                    self.parse_variant_members(unit, child, members)?;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_variant_members(
+        &mut self,
+        unit: &Unit<R>,
+        variant_node: gimli::EntriesTreeNode<R>,
+        members: &mut Vec<CtfMember>,
+    ) -> Result<()> {
+        // Get variant name from DW_AT_name if available, otherwise use discr_value
+        let entry = variant_node.entry();
+        let mut variant_name = String::new();
+
+        let mut attrs = entry.attrs();
+        while let Some(attr) = attrs.next()? {
+            if attr.name() == gimli::DW_AT_name {
+                variant_name = self.get_attr_string(&attr)?;
+            }
+        }
+
+        // Iterate over children of the variant (which should be DW_TAG_member entries)
+        let mut children = variant_node.children();
+        while let Some(child) = children.next()? {
+            if child.entry().tag() == gimli::DW_TAG_member {
+                if let Some(mut member) = self.parse_struct_member(unit, child.entry())? {
+                    // Prefix member name with variant name if it exists
+                    if !variant_name.is_empty() && !member.name.is_empty() {
+                        member.name = format!("{}::{}", variant_name, member.name);
+                    } else if !variant_name.is_empty() {
+                        member.name = variant_name.clone();
+                    }
+                    members.push(member);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn parse_struct_member(
@@ -1143,6 +1238,9 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     match attr.value() {
                         AttributeValue::Udata(offset) => {
                             member_offset = offset;
+                        }
+                        AttributeValue::Sdata(offset) => {
+                            member_offset = offset as u64;
                         }
                         AttributeValue::Data1(offset) => {
                             member_offset = offset as u64;
@@ -1179,6 +1277,10 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 offset_bits: member_offset * 8, // DWARF offset is in bytes.
             }))
         } else {
+            eprintln!(
+                "Warning: skipping struct member '{}' - no DW_AT_type (UnitRef) found",
+                member_name
+            );
             Ok(None)
         }
     }
@@ -1423,6 +1525,10 @@ struct Args {
     /// These will be read from stdin if this flag is not passed.
     #[clap(long, short)]
     fns: Vec<String>,
+
+    /// Path to write CTF to.
+    #[clap(long, short)]
+    ctf_output: Option<PathBuf>,
 
     /// Path to write updated ELF to.
     #[clap(long, short)]
@@ -1761,7 +1867,9 @@ fn main() -> Result<()> {
         .generate_ctf(parsed_function_info)
         .context("failed to generate CTF")?;
 
-    fs::write("test.ctf", &ctf_buffer)?;
+    if let Some(ctf_path) = &args.ctf_output {
+        fs::write(ctf_path, &ctf_buffer)?;
+    }
 
     let updated_elf = add_sunw_ctf(&source_bytes, &source_elf, &ctf_buffer)
         .context("failed to generate updated ELF")?;
