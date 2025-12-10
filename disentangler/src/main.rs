@@ -175,37 +175,6 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
                 }
             }
         }
-
-        // if let Some(fn_info) = debug_info.index.find_by_name_and_offset(&symbol.name, pc) {
-        //     DwarfEval::print_arguments(
-        //         pc,
-        //         frame.regs.rsp, // TODO correct?
-        //         &frame.regs,
-        //         fn_info,
-        //         &symbol.name,
-        //         &debug_info.dwarf,
-        //         &core,
-        //     )?;
-        // }
-
-        // let callee_saved = [RBX, R12, R13, R14, R15];
-
-        // for &reg in &callee_saved {
-        //     let value = regs[reg];
-
-        //     // What variables claim to live in this register at this PC?
-        //     let candidates = debug_info.locations.find_in_register(reg, pc);
-
-        //     if !candidates.is_empty() {
-        //         eprintln!("  {reg} = {value:#x} might be:");
-        //         for var in candidates {
-        //             eprintln!(
-        //                 "    - {} (from {:#x}..{:#x})",
-        //                 var.name, var.range.start, var.range.end
-        //             );
-        //         }
-        //     }
-        // }
     }
 
     Ok(())
@@ -275,7 +244,8 @@ fn print_field(
         .collect();
 
     // For pointers with nested fields, show the dereference on the same line
-    let show_deref_inline = is_ptr && field.dereferenced_addr.is_some() && !available_nested.is_empty();
+    let show_deref_inline =
+        is_ptr && field.dereferenced_addr.is_some() && !available_nested.is_empty();
 
     match &field.value {
         Some(FieldValue::Unsigned(v)) => {
@@ -283,7 +253,11 @@ fn print_field(
             let show_decimal = !is_ptr;
             if show_deref_inline {
                 let deref = field.dereferenced_addr.unwrap();
-                writeln!(out, "{} -> @{deref:#x}:", format_field_value(*v, addrs, core, show_decimal))?;
+                writeln!(
+                    out,
+                    "{} -> @{deref:#x}:",
+                    format_field_value(*v, addrs, core, show_decimal)
+                )?;
             } else {
                 writeln!(out, "{}", format_field_value(*v, addrs, core, show_decimal))?;
             }
@@ -626,7 +600,10 @@ impl Frame {
                 Ok(Some(("<const>".to_string(), 0)))
             }
             Location::Address { address } => Ok(Some(("   ".to_string(), address))),
-            Location::ImplicitPointer { value, byte_offset } => {
+            Location::ImplicitPointer {
+                value: _,
+                byte_offset: _,
+            } => {
                 todo!();
             }
         }
@@ -678,7 +655,10 @@ fn eval_piece<'a>(
             };
             Ok(Some(("   ".to_string(), value)))
         }
-        Location::ImplicitPointer { value, byte_offset } => {
+        Location::ImplicitPointer {
+            value: _,
+            byte_offset: _,
+        } => {
             todo!();
         }
     }
@@ -812,6 +792,7 @@ fn format_value(data: u64) -> String {
     format!("{hex_dump:<23}  |{ascii_dump}|")
 }
 
+#[derive(Debug)]
 struct Unwinder<'a> {
     core: &'a Core,
     exec: &'a ObjectInfo<'a>,
