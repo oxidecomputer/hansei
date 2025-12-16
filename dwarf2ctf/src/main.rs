@@ -707,10 +707,15 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             gimli::DW_TAG_subroutine_type => self.parse_function_type(offset, unit, entry)?,
             gimli::DW_TAG_structure_type => self.parse_struct_type(offset, unit, entry)?,
             gimli::DW_TAG_union_type => self.parse_union_type(offset, unit, entry)?,
+            gimli::DW_TAG_enumeration_type => self.parse_enum_type(offset, unit, entry)?,
             other => {
-                // Unknown type, add placeholder
-                eprintln!("Warning: unhandled DWARF tag {:?}, adding Unknown type", other);
-                MaybeOffset::Found(self.writer.add_type(offset, CtfType::Unknown))
+                // Unknown type - use void as placeholder since CTF_K_UNKNOWN
+                // causes MDB to fail.
+                eprintln!(
+                    "Warning: unhandled DWARF tag {:?}, using void placeholder",
+                    other
+                );
+                MaybeOffset::Found(1) // void type
             }
         };
 
@@ -1241,6 +1246,44 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             name,
             size: byte_size,
             members,
+        };
+        Ok(MaybeOffset::Found(self.writer.add_type(offset, ctf_type)))
+    }
+
+    /// Parse DW_TAG_enumeration_type - represent as an integer type since CTF enums
+    /// are primarily for C-style enums. Rust enums with payloads are handled via
+    /// DW_TAG_variant_part in struct parsing.
+    fn parse_enum_type(
+        &mut self,
+        offset: UnitOffset,
+        _unit: &Unit<R>,
+        entry: &DebuggingInformationEntry<R>,
+    ) -> Result<MaybeOffset> {
+        let mut name = String::new();
+        let mut byte_size = 0u32;
+
+        let mut attrs = entry.attrs();
+        while let Some(attr) = attrs.next()? {
+            match attr.name() {
+                gimli::DW_AT_name => {
+                    name = self.get_attr_string(&attr)?;
+                }
+                gimli::DW_AT_byte_size => {
+                    if let AttributeValue::Udata(size) = attr.value() {
+                        byte_size = size as u32;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Represent the enum as an integer type with the same size.
+        // This allows MDB to at least know the size and treat it as a value.
+        let encoding = ctf_int_data(0, 0, byte_size * 8); // unsigned integer
+        let ctf_type = CtfType::Integer {
+            name,
+            size: byte_size,
+            encoding,
         };
         Ok(MaybeOffset::Found(self.writer.add_type(offset, ctf_type)))
     }
