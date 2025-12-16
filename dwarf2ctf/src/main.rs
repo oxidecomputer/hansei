@@ -123,6 +123,11 @@ enum CtfType {
         size: u32,
         members: Vec<CtfMember>,
     },
+    Union {
+        name: String,
+        size: u32,
+        members: Vec<CtfMember>,
+    },
     Function {
         name: String,
         return_type: MaybeOffset,
@@ -143,6 +148,7 @@ impl CtfType {
             Self::Volatile { name, .. } => name,
             Self::Restrict { name, .. } => name,
             Self::Struct { name, .. } => name,
+            Self::Union { name, .. } => name,
             Self::Function { name, .. } => name,
             Self::Array { name, .. } => name,
             Self::Unknown => "<unknown>",
@@ -578,6 +584,32 @@ impl<'a> CtfWriter<'a> {
                 }
             }
 
+            CtfType::Union {
+                name,
+                size,
+                members,
+            } => {
+                let name_offset = self.strings.add_string(name);
+                let info = ctf_type_info(CTF_K_UNION, true, members.len() as u16);
+
+                buffer.iowrite_with(name_offset, LE)?;
+                buffer.iowrite_with(info, LE)?;
+                buffer.iowrite_with(*size as u16, LE)?;
+
+                // Write members
+                for member in members {
+                    let type_id = self.deref_maybe_type(&member.type_id)?;
+                    let member_name_offset = self.strings.add_string(&member.name);
+                    buffer.iowrite_with(member_name_offset, LE)?;
+                    buffer.iowrite_with(type_id, LE)?;
+                    if *size < 8192 {
+                        buffer.iowrite_with(member.offset_bits as u16, LE)?;
+                    } else {
+                        todo!("ctlm_offsethi/lo");
+                    }
+                }
+            }
+
             CtfType::Unknown => {
                 let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
                 buffer.iowrite_with(0u32, LE)?;
@@ -655,6 +687,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             gimli::DW_TAG_array_type => self.parse_array_type(offset, unit, entry)?,
             gimli::DW_TAG_subroutine_type => self.parse_function_type(offset, unit, entry)?,
             gimli::DW_TAG_structure_type => self.parse_struct_type(offset, unit, entry)?,
+            gimli::DW_TAG_union_type => self.parse_union_type(offset, unit, entry)?,
             _ => {
                 // Unknown type, add placeholder
                 MaybeOffset::Found(self.writer.add_type(offset, CtfType::Unknown))
@@ -1134,6 +1167,51 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             return Ok(child.type_id);
         }
         let ctf_type = CtfType::Struct {
+            name,
+            size: byte_size,
+            members,
+        };
+        Ok(MaybeOffset::Found(self.writer.add_type(offset, ctf_type)))
+    }
+
+    fn parse_union_type(
+        &mut self,
+        offset: gimli::UnitOffset,
+        unit: &Unit<R>,
+        entry: &DebuggingInformationEntry<R>,
+    ) -> Result<MaybeOffset> {
+        let mut name = String::new();
+        let mut byte_size = 0u32;
+
+        let mut attrs = entry.attrs();
+        while let Some(attr) = attrs.next()? {
+            match attr.name() {
+                gimli::DW_AT_name => {
+                    name = self.get_attr_string(&attr)?;
+                }
+                gimli::DW_AT_byte_size => {
+                    if let AttributeValue::Udata(size) = attr.value() {
+                        byte_size = size as u32;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut members = Vec::new();
+        let mut tree = unit.entries_tree(Some(offset))?;
+        let root = tree.root()?;
+
+        let mut children = root.children();
+        while let Some(child) = children.next()? {
+            if child.entry().tag() == gimli::DW_TAG_member {
+                if let Some(member) = self.parse_struct_member(unit, child.entry())? {
+                    members.push(member);
+                }
+            }
+        }
+
+        let ctf_type = CtfType::Union {
             name,
             size: byte_size,
             members,
