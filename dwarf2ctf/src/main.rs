@@ -694,7 +694,11 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
         let maybe_id = match entry.tag() {
             gimli::DW_TAG_base_type => self.parse_base_type(offset, entry)?,
-            gimli::DW_TAG_pointer_type => self.parse_pointer_type(offset, unit, entry)?,
+            gimli::DW_TAG_pointer_type
+            | gimli::DW_TAG_reference_type
+            | gimli::DW_TAG_rvalue_reference_type => {
+                self.parse_pointer_type(offset, unit, entry)?
+            }
             gimli::DW_TAG_typedef => self.parse_typedef(offset, unit, entry)?,
             gimli::DW_TAG_const_type => self.parse_const_type(offset, unit, entry)?,
             gimli::DW_TAG_volatile_type => self.parse_volatile_type(offset, unit, entry)?,
@@ -703,8 +707,9 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             gimli::DW_TAG_subroutine_type => self.parse_function_type(offset, unit, entry)?,
             gimli::DW_TAG_structure_type => self.parse_struct_type(offset, unit, entry)?,
             gimli::DW_TAG_union_type => self.parse_union_type(offset, unit, entry)?,
-            _ => {
+            other => {
                 // Unknown type, add placeholder
+                eprintln!("Warning: unhandled DWARF tag {:?}, adding Unknown type", other);
                 MaybeOffset::Found(self.writer.add_type(offset, CtfType::Unknown))
             }
         };
