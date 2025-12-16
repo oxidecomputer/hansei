@@ -670,6 +670,19 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         }
     }
 
+    /// Extract a UnitOffset from a type reference attribute value.
+    /// Handles both UnitRef (unit-relative) and DebugInfoRef (absolute) references.
+    fn get_attr_type_offset(&self, unit: &Unit<R>, attr: &Attribute<R>) -> Option<UnitOffset> {
+        match attr.value() {
+            AttributeValue::UnitRef(offset) => Some(offset),
+            AttributeValue::DebugInfoRef(debug_info_offset) => {
+                // Cross-unit reference - try to convert to unit offset
+                debug_info_offset.to_unit_offset(&unit.header)
+            }
+            _ => None,
+        }
+    }
+
     fn parse_type(&mut self, unit: &Unit<R>, offset: UnitOffset) -> Result<MaybeOffset> {
         // Check if we've already parsed this type
         if let Some(type_id) = self.writer.type_map.get(&offset) {
@@ -833,9 +846,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_type => {
-                    if let AttributeValue::UnitRef(off) = attr.value() {
-                        target_offset = Some(off);
-                    }
+                    target_offset = self.get_attr_type_offset(unit, &attr);
                 }
                 _ => {}
             }
@@ -867,9 +878,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_type => {
-                    if let AttributeValue::UnitRef(off) = attr.value() {
-                        target_offset = Some(off);
-                    }
+                    target_offset = self.get_attr_type_offset(unit, &attr);
                 }
                 _ => {}
             }
@@ -901,9 +910,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_type => {
-                    if let AttributeValue::UnitRef(off) = attr.value() {
-                        target_offset = Some(off);
-                    }
+                    target_offset = self.get_attr_type_offset(unit, &attr);
                 }
                 _ => {}
             }
@@ -935,9 +942,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_type => {
-                    if let AttributeValue::UnitRef(off) = attr.value() {
-                        target_offset = Some(off);
-                    }
+                    target_offset = self.get_attr_type_offset(unit, &attr);
                 }
                 _ => {}
             }
@@ -969,9 +974,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_type => {
-                    if let AttributeValue::UnitRef(off) = attr.value() {
-                        target_offset = Some(off);
-                    }
+                    target_offset = self.get_attr_type_offset(unit, &attr);
                 }
                 _ => {}
             }
@@ -1003,7 +1006,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         }
 
         // DW_AT_type of a function is its return type
-        let return_type_offset = self.get_type_offset(entry)?;
+        let return_type_offset = self.get_type_offset(unit, entry)?;
         let return_type = if let Some(ret_off) = return_type_offset {
             self.parse_type(unit, ret_off)?
         } else {
@@ -1024,7 +1027,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         while let Some(child) = children.next().context("failed to get function child")? {
             match child.entry().tag() {
                 gimli::DW_TAG_formal_parameter => {
-                    if let Some(type_offset) = self.get_type_offset(child.entry())? {
+                    if let Some(type_offset) = self.get_type_offset(unit, child.entry())? {
                         let arg_ty = self.parse_type(unit, type_offset)?;
                         args.push(arg_ty);
                     }
@@ -1064,9 +1067,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_type => {
-                    if let AttributeValue::UnitRef(off) = attr.value() {
-                        element_type_offset = Some(off);
-                    }
+                    element_type_offset = self.get_attr_type_offset(unit, &attr);
                 }
                 _ => {}
             }
@@ -1088,7 +1089,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         while let Some(child) = children.next().context("failed to get array child")? {
             // TODO handle multi-dimensional arrays
             if child.entry().tag() == gimli::DW_TAG_subrange_type {
-                (count, index_type_offset) = self.parse_subrange_count(child.entry())?;
+                (count, index_type_offset) = self.parse_subrange_count(unit, child.entry())?;
             }
         }
 
@@ -1110,6 +1111,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
     fn parse_subrange_count(
         &mut self,
+        unit: &Unit<R>,
         entry: &DebuggingInformationEntry<R>,
     ) -> Result<(Option<u32>, Option<UnitOffset>)> {
         let mut count = None;
@@ -1119,9 +1121,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         while let Some(attr) = attrs.next()? {
             match attr.name() {
                 gimli::DW_AT_type => {
-                    if let AttributeValue::UnitRef(off) = attr.value() {
-                        index_type_offset = Some(off);
-                    }
+                    index_type_offset = self.get_attr_type_offset(unit, &attr);
                 }
                 gimli::DW_AT_count => match attr.value() {
                     AttributeValue::Sdata(val) => count = Some(val as u32),
@@ -1496,9 +1496,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     member_name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_type => {
-                    if let AttributeValue::UnitRef(type_offset) = attr.value() {
-                        member_type_offset = Some(type_offset);
-                    }
+                    member_type_offset = self.get_attr_type_offset(unit, &attr);
                 }
                 gimli::DW_AT_data_member_location => {
                     match attr.value() {
@@ -1544,7 +1542,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             }))
         } else {
             eprintln!(
-                "Warning: skipping struct member '{}' - no DW_AT_type (UnitRef) found",
+                "Warning: skipping struct member '{}' - type not found (cross-unit reference?)",
                 member_name
             );
             Ok(None)
@@ -1622,7 +1620,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 let mut args = Vec::new();
 
                 // DW_AT_type of a function is its return type
-                let return_type_offset = self.get_type_offset(entry)?;
+                let return_type_offset = self.get_type_offset(unit, entry)?;
 
                 // Get parameters
                 let mut tree = unit
@@ -1637,7 +1635,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     if child.entry().tag() == DW_TAG_formal_parameter {
                         let param_name = self.get_param_name(unit, child.entry())?;
 
-                        if let Some(type_offset) = self.get_type_offset(child.entry())? {
+                        if let Some(type_offset) = self.get_type_offset(unit, child.entry())? {
                             args.push((param_name, type_offset));
                         }
                     }
@@ -1714,14 +1712,20 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
     fn get_type_offset(
         &self,
+        unit: &Unit<R>,
         entry: &gimli::DebuggingInformationEntry<R>,
     ) -> Result<Option<gimli::UnitOffset>> {
         if let Some(type_attr) = entry
             .attr(gimli::DW_AT_type)
             .context("failed to get DW_AT_type offset")?
-            && let gimli::AttributeValue::UnitRef(offset) = type_attr.value()
         {
-            return Ok(Some(offset));
+            match type_attr.value() {
+                gimli::AttributeValue::UnitRef(offset) => return Ok(Some(offset)),
+                gimli::AttributeValue::DebugInfoRef(debug_info_offset) => {
+                    return Ok(debug_info_offset.to_unit_offset(&unit.header));
+                }
+                _ => {}
+            }
         }
         Ok(None)
     }
