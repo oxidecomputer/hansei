@@ -3,7 +3,7 @@ use clap::Parser;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use gimli::{
-    Attribute, AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram,
+    Attribute, AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram, DebugInfoOffset,
     DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian, Unit, UnitHeader,
     UnitOffset,
 };
@@ -644,19 +644,69 @@ enum MaybeOffset {
 }
 
 // DWARF Parser
+/// Represents a unit's offset range for quick lookups
+struct UnitRange {
+    start: usize,
+    end: usize,
+}
+
 struct DwarfParser<'a, R: Reader<Offset = usize>> {
     dwarf: &'a Dwarf<R>,
     writer: CtfWriter<'a>,
     inflight_types: VecDeque<UnitOffset>,
+    /// Index of unit ranges for cross-unit reference resolution
+    unit_ranges: Vec<UnitRange>,
+    /// Cache of loaded units by their start offset
+    unit_cache: HashMap<usize, Unit<R>>,
 }
 
 impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
-    fn new(elf: &'a Elf<'a>, dwarf: &'a Dwarf<R>) -> Self {
-        DwarfParser {
+    fn new(elf: &'a Elf<'a>, dwarf: &'a Dwarf<R>) -> Result<Self> {
+        // Build index of unit ranges for cross-unit reference resolution
+        let mut unit_ranges = Vec::new();
+        let mut units = dwarf.units();
+        while let Some(header) = units.next()? {
+            let start = match header.offset() {
+                gimli::UnitSectionOffset::DebugInfoOffset(off) => off.0,
+                gimli::UnitSectionOffset::DebugTypesOffset(off) => off.0,
+            };
+            let end = start + header.length_including_self();
+            unit_ranges.push(UnitRange { start, end });
+        }
+
+        Ok(DwarfParser {
             dwarf,
             writer: CtfWriter::new(elf),
             inflight_types: VecDeque::new(),
+            unit_ranges,
+            unit_cache: HashMap::new(),
+        })
+    }
+
+    /// Find the unit that contains the given DebugInfoOffset
+    fn find_unit_for_offset(&mut self, offset: DebugInfoOffset<usize>) -> Result<Option<Unit<R>>> {
+        let target = offset.0;
+
+        // Find which unit range contains this offset
+        for range in &self.unit_ranges {
+            if target >= range.start && target < range.end {
+                // Check cache first
+                if let Some(unit) = self.unit_cache.get(&range.start) {
+                    return Ok(Some(unit.clone()));
+                }
+
+                // Load the unit
+                let header = self
+                    .dwarf
+                    .debug_info
+                    .header_from_offset(DebugInfoOffset(range.start))?;
+                let unit = self.dwarf.unit(header)?;
+                self.unit_cache.insert(range.start, unit.clone());
+                return Ok(Some(unit));
+            }
         }
+
+        Ok(None)
     }
 
     fn get_attr_string(&self, attr: &Attribute<R>) -> Result<String> {
@@ -672,14 +722,45 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
     /// Extract a UnitOffset from a type reference attribute value.
     /// Handles both UnitRef (unit-relative) and DebugInfoRef (absolute) references.
+    /// For cross-unit references, returns None - use resolve_type_attr for those.
     fn get_attr_type_offset(&self, unit: &Unit<R>, attr: &Attribute<R>) -> Option<UnitOffset> {
         match attr.value() {
             AttributeValue::UnitRef(offset) => Some(offset),
             AttributeValue::DebugInfoRef(debug_info_offset) => {
-                // Cross-unit reference - try to convert to unit offset
+                // Try to convert to unit offset (works if same unit)
                 debug_info_offset.to_unit_offset(&unit.header)
             }
             _ => None,
+        }
+    }
+
+    /// Resolve a type reference attribute, handling cross-unit references.
+    /// Returns the parsed type ID.
+    fn resolve_type_attr(
+        &mut self,
+        unit: &Unit<R>,
+        attr: &Attribute<R>,
+    ) -> Result<Option<MaybeOffset>> {
+        match attr.value() {
+            AttributeValue::UnitRef(offset) => Ok(Some(self.parse_type(unit, offset)?)),
+            AttributeValue::DebugInfoRef(debug_info_offset) => {
+                // Try same unit first
+                if let Some(unit_offset) = debug_info_offset.to_unit_offset(&unit.header) {
+                    return Ok(Some(self.parse_type(unit, unit_offset)?));
+                }
+
+                // Cross-unit reference - find the right unit
+                if let Some(target_unit) = self.find_unit_for_offset(debug_info_offset)? {
+                    if let Some(unit_offset) = debug_info_offset.to_unit_offset(&target_unit.header)
+                    {
+                        return Ok(Some(self.parse_type(&target_unit, unit_offset)?));
+                    }
+                }
+
+                // Could not resolve
+                Ok(None)
+            }
+            _ => Ok(None),
         }
     }
 
@@ -1486,7 +1567,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         entry: &DebuggingInformationEntry<R>,
     ) -> Result<Option<CtfMember>> {
         let mut member_name = String::new();
-        let mut member_type_offset = None;
+        let mut member_type_id = None;
         let mut member_offset = 0u64;
 
         let mut attrs = entry.attrs();
@@ -1496,7 +1577,8 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     member_name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_type => {
-                    member_type_offset = self.get_attr_type_offset(unit, &attr);
+                    // Use resolve_type_attr to handle cross-unit references
+                    member_type_id = self.resolve_type_attr(unit, &attr)?;
                 }
                 gimli::DW_AT_data_member_location => {
                     match attr.value() {
@@ -1532,8 +1614,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             }
         }
 
-        if let Some(type_offset) = member_type_offset {
-            let type_id = self.parse_type(unit, type_offset)?;
+        if let Some(type_id) = member_type_id {
 
             Ok(Some(CtfMember {
                 name: member_name,
@@ -2114,7 +2195,7 @@ fn main() -> Result<()> {
 
     let dwarf = Dwarf::load(&loader)
         .with_context(|| format!("failed to load DWARF from {}", args.debug_elf.display()))?;
-    let mut parser = DwarfParser::new(&source_elf, &dwarf);
+    let mut parser = DwarfParser::new(&source_elf, &dwarf)?;
 
     let label = args
         .source_elf
