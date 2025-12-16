@@ -656,8 +656,6 @@ struct DwarfParser<'a, R: Reader<Offset = usize>> {
     inflight_types: VecDeque<UnitOffset>,
     /// Index of unit ranges for cross-unit reference resolution
     unit_ranges: Vec<UnitRange>,
-    /// Cache of loaded units by their start offset
-    unit_cache: HashMap<usize, Unit<R>>,
 }
 
 impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
@@ -679,29 +677,22 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             writer: CtfWriter::new(elf),
             inflight_types: VecDeque::new(),
             unit_ranges,
-            unit_cache: HashMap::new(),
         })
     }
 
     /// Find the unit that contains the given DebugInfoOffset
-    fn find_unit_for_offset(&mut self, offset: DebugInfoOffset<usize>) -> Result<Option<Unit<R>>> {
+    fn find_unit_for_offset(&self, offset: DebugInfoOffset<usize>) -> Result<Option<Unit<R>>> {
         let target = offset.0;
 
         // Find which unit range contains this offset
         for range in &self.unit_ranges {
             if target >= range.start && target < range.end {
-                // Check cache first
-                if let Some(unit) = self.unit_cache.get(&range.start) {
-                    return Ok(Some(unit.clone()));
-                }
-
                 // Load the unit
                 let header = self
                     .dwarf
                     .debug_info
                     .header_from_offset(DebugInfoOffset(range.start))?;
                 let unit = self.dwarf.unit(header)?;
-                self.unit_cache.insert(range.start, unit.clone());
                 return Ok(Some(unit));
             }
         }
