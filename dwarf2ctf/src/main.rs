@@ -221,6 +221,7 @@ struct CtfWriter<'a> {
     types: Vec<CtfType>,
     strings: StringTable,
     type_map: HashMap<UnitOffset, u16>, // DWARF offset to CTF type ID
+    label: Option<String>,
 }
 
 impl<'a> CtfWriter<'a> {
@@ -238,7 +239,12 @@ impl<'a> CtfWriter<'a> {
             ],
             strings: StringTable::new(),
             type_map: HashMap::new(),
+            label: None,
         }
+    }
+
+    fn set_label(&mut self, label: String) {
+        self.label = Some(label);
     }
 
     fn add_type(&mut self, offset: UnitOffset, ctf_type: CtfType) -> u16 {
@@ -269,6 +275,14 @@ impl<'a> CtfWriter<'a> {
             }
             let ret_ty = &self.types[func.return_type as usize];
             println!("  Return Type: {ret_ty:?}");
+        }
+
+        let mut lbl_data = Vec::new();
+        if let Some(label) = &self.label {
+            let label_name_off = self.strings.add_string(label);
+            let last_type_idx = self.types.len() as u32;
+            lbl_data.iowrite_with(label_name_off, LE)?;
+            lbl_data.iowrite_with(last_type_idx, LE)?;
         }
 
         let mut obj_data = Vec::new();
@@ -331,7 +345,7 @@ impl<'a> CtfWriter<'a> {
         }
 
         let lbloff = 0u32;
-        let objtoff = lbloff; // No labels
+        let objtoff = lbloff + lbl_data.len() as u32;
 
         // No need to pad funcoff, as the header and objects are naturally 2-byte
         // aligned.
@@ -376,12 +390,14 @@ impl<'a> CtfWriter<'a> {
 
         //let mut encoder = ZlibEncoder::new(&mut out, Compression::fast());
 
+        //encoder.write_all(&lbl_data)?;
         //encoder.write_all(&obj_data)?;
         //encoder.write_all(&func_data)?;
         //encoder.write_all(&vec![0u8; func_padding as usize])?;
         //encoder.write_all(&type_data)?;
         //encoder.write_all(self.strings.data())?;
         //encoder.finish()?;
+        out.write_all(&lbl_data)?;
         out.write_all(&obj_data)?;
         out.write_all(&func_data)?;
         out.write_all(&vec![0u8; func_padding as usize])?;
@@ -1152,9 +1168,8 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     // This is the discriminant member
                     if let Some(member) = self.parse_struct_member(unit, child.entry())? {
                         // Add with a descriptive name if it's the discriminant
-                        let is_discr = discr_offset.is_some_and(|off| {
-                            child.entry().offset() == off
-                        });
+                        let is_discr =
+                            discr_offset.is_some_and(|off| child.entry().offset() == off);
                         let member = if is_discr && member.name.is_empty() {
                             CtfMember {
                                 name: "__discr".to_string(),
@@ -1845,6 +1860,13 @@ fn main() -> Result<()> {
     let dwarf = Dwarf::load(&loader)
         .with_context(|| format!("failed to load DWARF from {}", args.debug_elf.display()))?;
     let mut parser = DwarfParser::new(&source_elf, &dwarf);
+
+    let label = args
+        .source_elf
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| args.source_elf.display().to_string());
+    parser.writer.set_label(label);
 
     let function_info = parser
         .find_functions_by_name(&mut symbols)
