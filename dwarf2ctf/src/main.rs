@@ -163,6 +163,13 @@ struct CtfMember {
     offset_bits: u64,
 }
 
+/// Information about a single Rust enum variant, used when building the tagged union.
+#[derive(Clone, Debug)]
+struct VariantInfo {
+    name: String,
+    members: Vec<CtfMember>,
+}
+
 #[derive(Clone, Debug)]
 struct FunctionInfo<R: Reader<Offset = usize>> {
     name: String,
@@ -257,6 +264,14 @@ impl<'a> CtfWriter<'a> {
         let type_id = (self.types.len()) as u16;
         self.types.push(ctf_type);
         self.type_map.insert(offset, type_id);
+        type_id
+    }
+
+    /// Add a synthetic type that doesn't correspond to a DWARF entry.
+    /// Used for creating anonymous unions/structs for Rust enum variants.
+    fn add_synthetic_type(&mut self, ctf_type: CtfType) -> u16 {
+        let type_id = (self.types.len()) as u16;
+        self.types.push(ctf_type);
         type_id
     }
 
@@ -1151,7 +1166,13 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     }
                 }
                 gimli::DW_TAG_variant_part => {
-                    self.parse_variant_part_members(unit, child, &mut members)?;
+                    self.parse_variant_part_members(
+                        unit,
+                        child,
+                        &mut members,
+                        &name,
+                        byte_size,
+                    )?;
                 }
                 _ => {}
             }
@@ -1219,11 +1240,18 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         Ok(MaybeOffset::Found(self.writer.add_type(offset, ctf_type)))
     }
 
+    /// Parse a DW_TAG_variant_part and create a proper tagged union representation.
+    /// This creates:
+    /// 1. The discriminant member
+    /// 2. A union type containing all variant payloads
+    /// 3. A member pointing to that union
     fn parse_variant_part_members(
         &mut self,
         unit: &Unit<R>,
         variant_part_node: gimli::EntriesTreeNode<R>,
         members: &mut Vec<CtfMember>,
+        parent_struct_name: &str,
+        parent_struct_size: u32,
     ) -> Result<()> {
         let entry = variant_part_node.entry();
 
@@ -1238,14 +1266,16 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             }
         }
 
-        // Iterate over children of the variant_part
+        // Collect the discriminant and all variants
+        let mut discr_member: Option<CtfMember> = None;
+        let mut variants: Vec<VariantInfo> = Vec::new();
+
         let mut children = variant_part_node.children();
         while let Some(child) = children.next()? {
             match child.entry().tag() {
                 gimli::DW_TAG_member => {
                     // This is the discriminant member
                     if let Some(member) = self.parse_struct_member(unit, child.entry())? {
-                        // Add with a descriptive name if it's the discriminant
                         let is_discr =
                             discr_offset.is_some_and(|off| child.entry().offset() == off);
                         let member = if is_discr && member.name.is_empty() {
@@ -1256,28 +1286,120 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                         } else {
                             member
                         };
-                        members.push(member);
+                        discr_member = Some(member);
                     }
                 }
                 gimli::DW_TAG_variant => {
-                    // Each variant can have members - we extract them all
-                    // For CTF, we treat this like a union overlay
-                    self.parse_variant_members(unit, child, members)?;
+                    if let Some(variant_info) = self.parse_variant_members(unit, child)? {
+                        variants.push(variant_info);
+                    }
                 }
                 _ => {}
             }
         }
 
+        // Add the discriminant member
+        if let Some(discr) = discr_member {
+            members.push(discr);
+        }
+
+        // If there are no variants with payloads, we're done
+        if variants.is_empty() {
+            return Ok(());
+        }
+
+        // Find the minimum offset among all variant members - this is where the union starts
+        let union_offset_bits = variants
+            .iter()
+            .flat_map(|v| v.members.iter())
+            .map(|m| m.offset_bits)
+            .min()
+            .unwrap_or(0);
+
+        // Create struct types for each variant and collect as union members
+        let mut union_members: Vec<CtfMember> = Vec::new();
+        let mut max_variant_size: u32 = 0;
+
+        for variant in &variants {
+            // Adjust member offsets to be relative to the union start
+            let adjusted_members: Vec<CtfMember> = variant
+                .members
+                .iter()
+                .map(|m| CtfMember {
+                    name: m.name.clone(),
+                    type_id: m.type_id.clone(),
+                    offset_bits: m.offset_bits.saturating_sub(union_offset_bits),
+                })
+                .collect();
+
+            // Calculate variant struct size from the adjusted members
+            // (This is an approximation - we use the parent struct size minus discriminant)
+            let variant_size = parent_struct_size.saturating_sub((union_offset_bits / 8) as u32);
+            max_variant_size = max_variant_size.max(variant_size);
+
+            // For single-member variants with no sub-fields, use the type directly
+            // For multi-member variants, create a struct
+            let variant_type_id = if adjusted_members.len() == 1
+                && adjusted_members[0].name.is_empty()
+                && adjusted_members[0].offset_bits == 0
+            {
+                // Single unnamed member at offset 0 - use its type directly
+                adjusted_members[0].type_id.clone()
+            } else {
+                // Create a struct for this variant's payload
+                let variant_struct_name = if parent_struct_name.is_empty() {
+                    variant.name.clone()
+                } else {
+                    format!("{}::{}", parent_struct_name, variant.name)
+                };
+
+                let variant_struct = CtfType::Struct {
+                    name: variant_struct_name,
+                    size: variant_size,
+                    members: adjusted_members,
+                };
+                MaybeOffset::Found(self.writer.add_synthetic_type(variant_struct))
+            };
+
+            union_members.push(CtfMember {
+                name: variant.name.clone(),
+                type_id: variant_type_id,
+                offset_bits: 0, // All union members are at offset 0
+            });
+        }
+
+        // Create the union type
+        let union_name = if parent_struct_name.is_empty() {
+            "__variants".to_string()
+        } else {
+            format!("{}::__variants", parent_struct_name)
+        };
+
+        let union_type = CtfType::Union {
+            name: union_name,
+            size: max_variant_size,
+            members: union_members,
+        };
+        let union_type_id = self.writer.add_synthetic_type(union_type);
+
+        // Add the union as a member of the parent struct
+        members.push(CtfMember {
+            name: "__variants".to_string(),
+            type_id: MaybeOffset::Found(union_type_id),
+            offset_bits: union_offset_bits,
+        });
+
         Ok(())
     }
 
+    /// Parse a single DW_TAG_variant and return its info.
+    /// Returns None for unit variants (variants with no payload).
     fn parse_variant_members(
         &mut self,
         unit: &Unit<R>,
         variant_node: gimli::EntriesTreeNode<R>,
-        members: &mut Vec<CtfMember>,
-    ) -> Result<()> {
-        // Get variant name from DW_AT_name if available, otherwise use discr_value
+    ) -> Result<Option<VariantInfo>> {
+        // Get variant name from DW_AT_name if available
         let entry = variant_node.entry();
         let mut variant_name = String::new();
 
@@ -1288,23 +1410,26 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             }
         }
 
-        // Iterate over children of the variant (which should be DW_TAG_member entries)
+        // Collect members of this variant
+        let mut members = Vec::new();
         let mut children = variant_node.children();
         while let Some(child) = children.next()? {
             if child.entry().tag() == gimli::DW_TAG_member {
-                if let Some(mut member) = self.parse_struct_member(unit, child.entry())? {
-                    // Prefix member name with variant name if it exists
-                    if !variant_name.is_empty() && !member.name.is_empty() {
-                        member.name = format!("{}::{}", variant_name, member.name);
-                    } else if !variant_name.is_empty() {
-                        member.name = variant_name.clone();
-                    }
+                if let Some(member) = self.parse_struct_member(unit, child.entry())? {
                     members.push(member);
                 }
             }
         }
 
-        Ok(())
+        // Skip unit variants (no payload)
+        if members.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(VariantInfo {
+            name: variant_name,
+            members,
+        }))
     }
 
     fn parse_struct_member(
