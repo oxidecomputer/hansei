@@ -50,7 +50,7 @@ const CTF_INT_BOOL: u8 = 0x04;
 
 // CTF Type Info Macros
 fn ctf_type_info(kind: u8, is_root: bool, vlen: u16) -> u16 {
-    ((kind as u16) << 11) | (if is_root { 1 } else { 0 } << 10) | (vlen & CTF_MAX_VLEN)
+    ((kind as u16) << 11) | ((if is_root { 1u16 } else { 0 }) << 10) | (vlen & CTF_MAX_VLEN)
 }
 
 fn ctf_int_data(encoding: u8, offset: u8, bits: u32) -> u32 {
@@ -1519,7 +1519,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         unit: &Unit<R>,
         variant_node: gimli::EntriesTreeNode<R>,
     ) -> Result<Option<VariantInfo>> {
-        // Get variant name from DW_AT_name if available
+        // Get variant name from DW_AT_name if available on the variant itself
         let entry = variant_node.entry();
         let mut variant_name = String::new();
 
@@ -1536,6 +1536,12 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         while let Some(child) = children.next()? {
             if child.entry().tag() == gimli::DW_TAG_member {
                 if let Some(member) = self.parse_struct_member(unit, child.entry())? {
+                    // In Rust's DWARF, the variant name is typically on the first
+                    // DW_TAG_member child, not on the DW_TAG_variant itself.
+                    // If we don't have a variant name yet, use the first member's name.
+                    if variant_name.is_empty() && !member.name.is_empty() {
+                        variant_name = member.name.clone();
+                    }
                     members.push(member);
                 }
             }
