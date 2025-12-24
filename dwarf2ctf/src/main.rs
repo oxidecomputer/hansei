@@ -711,6 +711,71 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         }
     }
 
+    /// Build the namespace path for a DIE by walking up through parent DIEs.
+    /// Returns the full path like "tokio::runtime::scheduler::multi_thread::handle"
+    fn get_namespace_path(&self, unit: &Unit<R>, offset: UnitOffset) -> Result<Vec<String>> {
+        let mut path = Vec::new();
+        let mut cursor = unit.entries();
+
+        // We need to track parent chain as we descend
+        let mut parent_stack: Vec<(UnitOffset, Option<String>)> = Vec::new();
+        let mut found_target = false;
+
+        while let Some((depth_delta, entry)) = cursor.next_dfs()? {
+            // Adjust parent stack based on depth
+            if depth_delta <= 0 {
+                for _ in 0..(-depth_delta + 1) {
+                    parent_stack.pop();
+                }
+            }
+
+            // Get name for namespace-contributing tags
+            let name = match entry.tag() {
+                gimli::DW_TAG_namespace | gimli::DW_TAG_module => {
+                    if let Some(attr) = entry.attr(gimli::DW_AT_name)? {
+                        Some(self.get_attr_string(&attr)?)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+
+            if entry.offset() == offset {
+                // Found our target - collect the namespace from parents
+                for (_, parent_name) in &parent_stack {
+                    if let Some(n) = parent_name {
+                        path.push(n.clone());
+                    }
+                }
+                found_target = true;
+                break;
+            }
+
+            parent_stack.push((entry.offset(), name));
+        }
+
+        if !found_target {
+            return Ok(Vec::new());
+        }
+
+        Ok(path)
+    }
+
+    /// Get a fully qualified type name by prepending namespace path
+    fn get_qualified_name(&self, unit: &Unit<R>, offset: UnitOffset, name: &str) -> Result<String> {
+        if name.is_empty() {
+            return Ok(String::new());
+        }
+
+        let namespace = self.get_namespace_path(unit, offset)?;
+        if namespace.is_empty() {
+            Ok(name.to_string())
+        } else {
+            Ok(format!("{}::{}", namespace.join("::"), name))
+        }
+    }
+
     /// Extract a UnitOffset from a type reference attribute value.
     /// Handles both UnitRef (unit-relative) and DebugInfoRef (absolute) references.
     /// For cross-unit references, returns None - use resolve_type_attr for those.
@@ -836,9 +901,15 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_byte_size => {
-                    if let AttributeValue::Udata(size) = attr.value() {
-                        byte_size = size as u32;
-                    }
+                    byte_size = match attr.value() {
+                        AttributeValue::Udata(size) => size as u32,
+                        AttributeValue::Data1(size) => size as u32,
+                        AttributeValue::Data2(size) => size as u32,
+                        AttributeValue::Data4(size) => size,
+                        AttributeValue::Data8(size) => size as u32,
+                        AttributeValue::Sdata(size) => size as u32,
+                        _ => byte_size,
+                    };
                 }
                 gimli::DW_AT_encoding => {
                     if let AttributeValue::Encoding(enc) = attr.value() {
@@ -1227,13 +1298,22 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_byte_size => {
-                    if let AttributeValue::Udata(size) = attr.value() {
-                        byte_size = size as u32;
-                    }
+                    byte_size = match attr.value() {
+                        AttributeValue::Udata(size) => size as u32,
+                        AttributeValue::Data1(size) => size as u32,
+                        AttributeValue::Data2(size) => size as u32,
+                        AttributeValue::Data4(size) => size,
+                        AttributeValue::Data8(size) => size as u32,
+                        AttributeValue::Sdata(size) => size as u32,
+                        _ => byte_size,
+                    };
                 }
                 _ => {}
             }
         }
+
+        // Get qualified name with namespace prefix
+        let qualified_name = self.get_qualified_name(unit, offset, &name)?;
 
         let mut members = Vec::new();
         let mut tree = unit.entries_tree(Some(offset))?;
@@ -1252,7 +1332,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                         unit,
                         child,
                         &mut members,
-                        &name,
+                        &qualified_name,
                         byte_size,
                     )?;
                 }
@@ -1270,7 +1350,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             return Ok(child.type_id);
         }
         let ctf_type = CtfType::Struct {
-            name,
+            name: qualified_name,
             size: byte_size,
             members,
         };
@@ -1293,13 +1373,22 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_byte_size => {
-                    if let AttributeValue::Udata(size) = attr.value() {
-                        byte_size = size as u32;
-                    }
+                    byte_size = match attr.value() {
+                        AttributeValue::Udata(size) => size as u32,
+                        AttributeValue::Data1(size) => size as u32,
+                        AttributeValue::Data2(size) => size as u32,
+                        AttributeValue::Data4(size) => size,
+                        AttributeValue::Data8(size) => size as u32,
+                        AttributeValue::Sdata(size) => size as u32,
+                        _ => byte_size,
+                    };
                 }
                 _ => {}
             }
         }
+
+        // Get qualified name with namespace prefix
+        let qualified_name = self.get_qualified_name(unit, offset, &name)?;
 
         let mut members = Vec::new();
         let mut tree = unit.entries_tree(Some(offset))?;
@@ -1315,7 +1404,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         }
 
         let ctf_type = CtfType::Union {
-            name,
+            name: qualified_name,
             size: byte_size,
             members,
         };
@@ -1341,9 +1430,15 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                     name = self.get_attr_string(&attr)?;
                 }
                 gimli::DW_AT_byte_size => {
-                    if let AttributeValue::Udata(size) = attr.value() {
-                        byte_size = size as u32;
-                    }
+                    byte_size = match attr.value() {
+                        AttributeValue::Udata(size) => size as u32,
+                        AttributeValue::Data1(size) => size as u32,
+                        AttributeValue::Data2(size) => size as u32,
+                        AttributeValue::Data4(size) => size,
+                        AttributeValue::Data8(size) => size as u32,
+                        AttributeValue::Sdata(size) => size as u32,
+                        _ => byte_size,
+                    };
                 }
                 _ => {}
             }
