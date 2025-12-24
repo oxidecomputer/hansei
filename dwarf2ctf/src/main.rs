@@ -1513,23 +1513,65 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             }
         }
 
-        // Add the discriminant member
-        if let Some(discr) = discr_member {
-            members.push(discr);
-        }
-
-        // If there are no variants with payloads, we're done
+        // If there are no variants with payloads, we're done (but still add discriminant)
         if variants.is_empty() {
+            if let Some(discr) = discr_member {
+                members.push(discr);
+            }
             return Ok(());
         }
 
-        // Find the minimum offset among all variant members - this is where the union starts
-        let union_offset_bits = variants
+        // Find the minimum offset among all variant members.
+        // In Rust DWARF, variant member offsets may be 0 (relative to the variant start),
+        // not relative to the struct start. We need to detect this case.
+        let min_variant_member_offset = variants
             .iter()
             .flat_map(|v| v.members.iter())
             .map(|m| m.offset_bits)
             .min()
             .unwrap_or(0);
+
+        // Get discriminant info to calculate where variant data actually starts
+        let discr_offset_bits = discr_member.as_ref().map(|d| d.offset_bits).unwrap_or(0);
+
+        // Calculate the discriminant size by looking up its CTF type
+        let discr_size_bits = if let Some(ref discr) = discr_member {
+            match &discr.type_id {
+                MaybeOffset::Found(type_id) => {
+                    // Look up the type to get its size
+                    if let Some(ctf_type) = self.writer.types.get(*type_id as usize) {
+                        match ctf_type {
+                            CtfType::Integer { size, .. } => (*size as u64) * 8,
+                            _ => 0,
+                        }
+                    } else {
+                        0
+                    }
+                }
+                MaybeOffset::Pending(_) => 0,
+            }
+        } else {
+            0
+        };
+
+        // The union should start after the discriminant if variant offsets are 0
+        // (which means they're relative to the variant, not the struct)
+        let union_offset_bits = if min_variant_member_offset == 0
+            && discr_member.is_some()
+            && discr_size_bits > 0
+        {
+            // Variant member offsets are relative to variant start, not struct start
+            // Place the union after the discriminant
+            discr_offset_bits + discr_size_bits
+        } else {
+            // Variant member offsets are already relative to struct start
+            min_variant_member_offset
+        };
+
+        // Add the discriminant member
+        if let Some(discr) = discr_member {
+            members.push(discr);
+        }
 
         // Create struct types for each variant and collect as union members
         let mut union_members: Vec<CtfMember> = Vec::new();
