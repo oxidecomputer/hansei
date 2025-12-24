@@ -1594,13 +1594,14 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             let variant_size = parent_struct_size.saturating_sub((union_offset_bits / 8) as u32);
             max_variant_size = max_variant_size.max(variant_size);
 
-            // For single-member variants with no sub-fields, use the type directly
-            // For multi-member variants, create a struct
+            // For single-member variants, use the type directly to avoid double nesting
+            // (e.g., CurrentThread = { CurrentThread = { ... } } becomes CurrentThread = { ... })
             let variant_type_id = if adjusted_members.len() == 1
-                && adjusted_members[0].name.is_empty()
                 && adjusted_members[0].offset_bits == 0
+                && (adjusted_members[0].name.is_empty()
+                    || adjusted_members[0].name == variant.name)
             {
-                // Single unnamed member at offset 0 - use its type directly
+                // Single member at offset 0 (unnamed or same name as variant) - use its type directly
                 adjusted_members[0].type_id.clone()
             } else {
                 // Create a struct for this variant's payload
