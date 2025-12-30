@@ -502,7 +502,7 @@ impl<'a> CtfValidator<'a> {
                     let encoding: u32 = self.data.gread(&mut offset)?;
 
                     let fp_encoding = (encoding >> 24) & 0xff;
-                    if fp_encoding < CTF_FP_SINGLE || fp_encoding > CTF_FP_LDIMAGRY {
+                    if !(CTF_FP_SINGLE..=CTF_FP_LDIMAGRY).contains(&fp_encoding) {
                         anyhow::bail!(
                             "Invalid float encoding {fp_encoding} for type 0x{type_id:x}"
                         );
@@ -552,7 +552,7 @@ impl<'a> CtfValidator<'a> {
                     }
 
                     if !nargs.is_multiple_of(2) {
-                        // Padding arg
+                        // Padding arg. Undocumented by man page.
                         offset += size_of::<u16>();
                     }
 

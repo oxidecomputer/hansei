@@ -2,15 +2,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use gimli::{
     Attribute, AttributeValue, DW_AT_location, DW_AT_name, DW_TAG_formal_parameter,
-    DW_TAG_subprogram, DebuggingInformationEntry, Dwarf, EndianSlice, Reader, RunTimeEndian, Unit,
-    UnitHeader, UnitOffset,
+    DW_TAG_subprogram, Dwarf, EndianSlice, Reader, RunTimeEndian,
 };
 use goblin::elf::Elf;
-use goblin::elf::header::{EI_CLASS, ELFCLASS64, Header};
-use goblin::elf::section_header::{
-    SHN_UNDEF, SHT_DYNSYM, SHT_NOBITS, SHT_NULL, SHT_PROGBITS, SHT_SYMTAB, SectionHeader,
-};
-use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
+use goblin::elf::header::{EI_CLASS, ELFCLASS64};
 use memmap2::Mmap;
 
 use std::fs::File;
