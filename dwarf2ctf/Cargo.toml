@@ -11,3 +11,8 @@ gimli = { workspace = true }
 goblin = { workspace = true }
 memmap2 = { workspace = true }
 scroll = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }

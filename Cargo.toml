@@ -12,6 +12,9 @@ members = [
 
 [workspace.dependencies]
 anyhow = "1.0"
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.14"
 bindgen = { version = "0.72", default-features = false }
 clap = { version = "4.5.51", features = ["derive"] }
 fallible-iterator = "0.3.0"
