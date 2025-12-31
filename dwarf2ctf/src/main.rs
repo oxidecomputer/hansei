@@ -2,6 +2,9 @@ mod ctf;
 mod parser;
 
 use std::collections::{HashMap, HashSet};
+
+use gimli::DebugInfoOffset;
+
 use std::fs::{self, File};
 use std::io::{self, IsTerminal};
 use std::mem::size_of;
@@ -19,6 +22,9 @@ use memmap2::Mmap;
 use scroll::{LE, Pwrite};
 
 use crate::parser::DwarfParser;
+
+/// Absolute offset of type in .debug_info.
+type GlobalTypeOffset = DebugInfoOffset<usize>;
 
 #[derive(clap::Parser)]
 #[clap(group(ArgGroup::new("output").required(true).multiple(true)))]
@@ -282,7 +288,7 @@ fn main() -> Result<()> {
 
     let dwarf = Dwarf::load(&loader)
         .with_context(|| format!("failed to load DWARF from {}", args.elf.display()))?;
-    let mut parser = DwarfParser::new(&debug_elf, &dwarf)?;
+    let mut parser = DwarfParser::build(&debug_elf, &dwarf)?;
 
     let label = args
         .elf
@@ -308,18 +314,20 @@ fn main() -> Result<()> {
 
     let mut symbols: HashMap<_, _> = fns.into_iter().map(|name| (name, false)).collect();
 
-    let function_info = parser
-        .find_functions_by_name(&mut symbols)
-        .context("error finding function in DWARF")?;
+    // Find functions and collect their type dependencies in one pass
+    let (function_info, type_deps) = parser
+        .find_functions_and_collect_types(&mut symbols)
+        .context("error finding functions and collecting types from DWARF")?;
 
     let missing_symbols: Vec<_> = symbols.iter().filter(|&(_name, found)| !found).collect();
     for (name, _) in &missing_symbols {
         eprintln!("\nFunction '{name}' not found in any compilation unit");
     }
 
+    // Build CTF types from the collected dependencies
     let parsed_function_info = parser
-        .parse_fn_info(function_info)
-        .context("failed to parse DWARF debug data")?;
+        .build_fn_info_from_deps(&function_info, &type_deps)
+        .context("failed to build types from DWARF debug data")?;
 
     let ctf_buffer = parser
         .writer

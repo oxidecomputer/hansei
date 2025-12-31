@@ -6,15 +6,16 @@ use std::io::Write;
 use anyhow::Result;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use gimli::UnitOffset;
 use goblin::elf::Elf;
+
+use crate::GlobalTypeOffset;
 use goblin::elf::section_header::SHN_UNDEF;
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
 use scroll::{IOwrite, LE};
 
 pub use types::*;
 
-use crate::parser::ParsedFunctionInfo;
+use crate::parser::CtfFunctionInfo;
 
 // String table builder
 pub struct StringTable {
@@ -71,7 +72,7 @@ pub struct CtfWriter<'a> {
     elf: &'a Elf<'a>,
     pub types: Vec<CtfType>,
     pub strings: StringTable,
-    pub type_map: HashMap<UnitOffset, u16>, // DWARF offset to CTF type ID
+    pub type_map: HashMap<GlobalTypeOffset, u16>, // DWARF offset to CTF type ID
     label: Option<String>,
 }
 
@@ -98,7 +99,7 @@ impl<'a> CtfWriter<'a> {
         self.label = Some(label);
     }
 
-    pub fn add_type(&mut self, offset: UnitOffset, ctf_type: CtfType) -> u16 {
+    pub fn add_type(&mut self, offset: GlobalTypeOffset, ctf_type: CtfType) -> u16 {
         let type_id = (self.types.len()) as u16;
         self.types.push(ctf_type);
         self.type_map.insert(offset, type_id);
@@ -113,7 +114,7 @@ impl<'a> CtfWriter<'a> {
         type_id
     }
 
-    pub fn generate_ctf(&mut self, funcs: HashMap<String, ParsedFunctionInfo>) -> Result<Vec<u8>> {
+    pub fn generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> Result<Vec<u8>> {
         let mut out = Vec::new();
 
         // Calculate type section size and write to string table
@@ -272,7 +273,7 @@ impl<'a> CtfWriter<'a> {
         buffer: &mut Vec<u8>,
         strings: &mut StringTable,
         ctf_type: &CtfType,
-        type_map: &HashMap<UnitOffset, u16>,
+        type_map: &HashMap<GlobalTypeOffset, u16>,
     ) -> Result<()> {
         let deref = |offset: &MaybeOffset| -> Result<u16> {
             match offset {
@@ -491,6 +492,7 @@ impl<'a> CtfWriter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gimli::DebugInfoOffset;
 
     // Helper to write a type and return the buffer bytes
     fn write_type(ctf_type: &CtfType) -> Vec<u8> {
@@ -502,7 +504,10 @@ mod tests {
     }
 
     // Helper to write a type with a pre-populated type_map for reference types
-    fn write_type_with_refs(ctf_type: &CtfType, type_map: &HashMap<UnitOffset, u16>) -> Vec<u8> {
+    fn write_type_with_refs(
+        ctf_type: &CtfType,
+        type_map: &HashMap<GlobalTypeOffset, u16>,
+    ) -> Vec<u8> {
         let mut buffer = Vec::new();
         let mut strings = StringTable::new();
         CtfWriter::write_type_impl(&mut buffer, &mut strings, ctf_type, type_map).unwrap();
@@ -838,7 +843,7 @@ mod tests {
 
     #[test]
     fn test_pending_offset_resolved() {
-        let offset = UnitOffset(0x100);
+        let offset = DebugInfoOffset(0x100);
         let mut type_map = HashMap::new();
         type_map.insert(offset, 42u16);
 
@@ -854,7 +859,7 @@ mod tests {
 
     #[test]
     fn test_pending_offset_unresolved_errors() {
-        let offset = UnitOffset(0x999);
+        let offset = DebugInfoOffset(0x999);
         let type_map = HashMap::new(); // empty - offset won't be found
 
         let ptr_type = CtfType::Pointer {
