@@ -1368,8 +1368,16 @@ fn stub_to_ctf_type(
                     )
                 })
                 .collect();
+            // DW_TAG_subroutine_type entries typically don't have names in DWARF,
+            // but illumos ctfdump expects CTF_K_FUNCTION types to have names.
+            // Use a synthetic name for anonymous function types.
+            let fn_name = if name.is_empty() {
+                "<anon_fn>".to_string()
+            } else {
+                name.clone()
+            };
             Ok(CtfType::Function {
-                name: name.clone(),
+                name: fn_name,
                 return_type: ret,
                 args,
                 is_varargs: *is_varargs,
@@ -2043,5 +2051,184 @@ mod tests {
         sort_members_by_offset(&mut members);
 
         assert!(members.is_empty());
+    }
+
+    /// Helper to create a minimal ELF for tests
+    fn make_test_elf() -> Vec<u8> {
+        use goblin::elf::header::*;
+        // Minimal 64-bit ELF header
+        let mut elf = vec![0u8; 64];
+        // ELF magic
+        elf[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        // 64-bit
+        elf[EI_CLASS] = ELFCLASS64;
+        // Little endian
+        elf[EI_DATA] = ELFDATA2LSB;
+        // ELF version
+        elf[EI_VERSION] = 1;
+        // Type: executable
+        elf[16] = 2;
+        // Machine: x86_64
+        elf[18] = 0x3e;
+        // ELF header size
+        elf[52] = 64;
+        elf
+    }
+
+    #[test]
+    fn test_anonymous_function_type_gets_synthetic_name() {
+        // DW_TAG_subroutine_type entries typically don't have names in DWARF.
+        // illumos ctfdump expects CTF_K_FUNCTION types to have names, so we
+        // generate a synthetic "<anon_fn>" name for anonymous function types.
+        use goblin::elf::Elf;
+
+        let mut deps = TypeDependencies::new();
+        let func_id = DebugInfoOffset(100);
+        let void_id = DebugInfoOffset(50);
+
+        deps.all_types.insert(void_id);
+        deps.all_types.insert(func_id);
+        deps.deps.insert(void_id, vec![]);
+        deps.deps.insert(func_id, vec![void_id]);
+        deps.type_locations
+            .insert(void_id, (DebugInfoOffset(0), UnitOffset(50)));
+        deps.type_locations
+            .insert(func_id, (DebugInfoOffset(0), UnitOffset(100)));
+
+        // void base type for return type
+        deps.stubs.insert(
+            void_id,
+            TypeStub::Base {
+                name: "void".to_string(),
+                byte_size: 0,
+                encoding: gimli::DW_ATE_signed,
+            },
+        );
+
+        // Anonymous function type (empty name, as comes from DWARF)
+        deps.stubs.insert(
+            func_id,
+            TypeStub::Function {
+                name: String::new(), // Empty name from DWARF
+                return_type: Some(TypeRef::SameUnit(UnitOffset(50))),
+                params: vec![],
+                is_varargs: false,
+            },
+        );
+
+        // Create a minimal ELF for the writer
+        let elf_bytes = make_test_elf();
+        let elf = Elf::parse(&elf_bytes).unwrap();
+
+        let mut writer = CtfWriter::new(&elf);
+
+        // First add the void type
+        let void_ctf = build_base_type("void", 0, gimli::DW_ATE_signed);
+        let void_ctf_id = writer.add_type(void_id, void_ctf);
+
+        // Build global type map
+        let mut global_type_map = HashMap::new();
+        global_type_map.insert(void_id, void_ctf_id);
+
+        let scc_set = HashSet::new();
+
+        // Convert the function stub
+        let func_stub = deps.stubs.get(&func_id).unwrap();
+        let result = stub_to_ctf_type(
+            func_stub,
+            func_id,
+            &deps,
+            &mut writer,
+            &global_type_map,
+            false,
+            &scc_set,
+        );
+
+        let ctf_type = result.expect("Function type conversion should succeed");
+
+        // Verify the function type has the synthetic name
+        match ctf_type {
+            CtfType::Function { name, .. } => {
+                assert_eq!(
+                    name, "<anon_fn>",
+                    "Anonymous function type should get synthetic '<anon_fn>' name"
+                );
+            }
+            _ => panic!("Expected Function type, got {:?}", ctf_type),
+        }
+    }
+
+    #[test]
+    fn test_named_function_type_keeps_name() {
+        // When a function type has a name from DWARF, it should be preserved
+        use goblin::elf::Elf;
+
+        let mut deps = TypeDependencies::new();
+        let func_id = DebugInfoOffset(100);
+        let void_id = DebugInfoOffset(50);
+
+        deps.all_types.insert(void_id);
+        deps.all_types.insert(func_id);
+        deps.deps.insert(void_id, vec![]);
+        deps.deps.insert(func_id, vec![void_id]);
+        deps.type_locations
+            .insert(void_id, (DebugInfoOffset(0), UnitOffset(50)));
+        deps.type_locations
+            .insert(func_id, (DebugInfoOffset(0), UnitOffset(100)));
+
+        deps.stubs.insert(
+            void_id,
+            TypeStub::Base {
+                name: "void".to_string(),
+                byte_size: 0,
+                encoding: gimli::DW_ATE_signed,
+            },
+        );
+
+        // Named function type
+        deps.stubs.insert(
+            func_id,
+            TypeStub::Function {
+                name: "my_callback".to_string(),
+                return_type: Some(TypeRef::SameUnit(UnitOffset(50))),
+                params: vec![],
+                is_varargs: false,
+            },
+        );
+
+        let elf_bytes = make_test_elf();
+        let elf = Elf::parse(&elf_bytes).unwrap();
+        let mut writer = CtfWriter::new(&elf);
+
+        let void_ctf = build_base_type("void", 0, gimli::DW_ATE_signed);
+        let void_ctf_id = writer.add_type(void_id, void_ctf);
+
+        let mut global_type_map = HashMap::new();
+        global_type_map.insert(void_id, void_ctf_id);
+
+        let scc_set = HashSet::new();
+
+        let func_stub = deps.stubs.get(&func_id).unwrap();
+        let result = stub_to_ctf_type(
+            func_stub,
+            func_id,
+            &deps,
+            &mut writer,
+            &global_type_map,
+            false,
+            &scc_set,
+        );
+
+        let ctf_type = result.expect("Function type conversion should succeed");
+
+        match ctf_type {
+            CtfType::Function { name, .. } => {
+                assert_eq!(
+                    name, "my_callback",
+                    "Named function type should preserve its name"
+                );
+            }
+            _ => panic!("Expected Function type, got {:?}", ctf_type),
+        }
     }
 }
