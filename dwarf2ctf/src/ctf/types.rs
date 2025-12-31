@@ -57,7 +57,7 @@ pub struct CtfHeader {
     pub strlen: u32,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MaybeOffset {
     Found(u16),
     Pending(GlobalTypeOffset),
