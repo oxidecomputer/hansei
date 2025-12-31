@@ -10,6 +10,7 @@ flate2 = { workspace = true }
 gimli = { workspace = true }
 goblin = { workspace = true }
 memmap2 = { workspace = true }
+petgraph = { workspace = true }
 scroll = { workspace = true }
 
 [dev-dependencies]

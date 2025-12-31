@@ -1,35 +1,39 @@
-mod arrays;
-mod composites;
-mod primitives;
+pub mod deps;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::ops::Range;
 
 use anyhow::{Context, Result};
 use gimli::{
-    Attribute, AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram,
-    DebuggingInformationEntry, Dwarf, Reader, UnitHeader, UnitOffset, UnitRef,
+    AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram, DebugInfoOffset,
+    DebuggingInformationEntry, Dwarf, Reader, UnitOffset, UnitRef,
 };
 use goblin::elf::Elf;
 
+use crate::GlobalTypeOffset;
 use crate::ctf::CtfWriter;
-use crate::ctf::types::{CtfType, MaybeOffset};
-
-/// Represents a unit's offset range for quick lookups
-struct UnitRange {
-    start: usize,
-    end: usize,
-}
+use deps::DependencyCollector;
 
 pub struct DwarfParser<'a, R: Reader<Offset = usize>> {
     pub dwarf: &'a Dwarf<R>,
     pub writer: CtfWriter<'a>,
-    pub inflight_types: VecDeque<UnitOffset>,
     /// Index of unit ranges for cross-unit reference resolution
-    unit_ranges: Vec<UnitRange>,
+    unit_ranges: Vec<Range<usize>>,
 }
 
 impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
-    pub fn new(elf: &'a Elf<'a>, dwarf: &'a Dwarf<R>) -> Result<Self> {
+    /// Collect type dependencies starting from multiple root offsets.
+    /// This batches dependency collection to avoid redundant work.
+    pub fn collect_type_deps_from_roots(
+        &self,
+        unit: &UnitRef<R>,
+        root_offsets: &[UnitOffset],
+    ) -> Result<deps::TypeDependencies> {
+        let collector = DependencyCollector::new(self.dwarf, &self.unit_ranges);
+        collector.collect_deps_from_roots(unit, root_offsets)
+    }
+
+    pub fn build(elf: &'a Elf<'a>, dwarf: &'a Dwarf<R>) -> Result<Self> {
         // Build index of unit ranges for cross-unit reference resolution
         let mut unit_ranges = Vec::new();
         let mut units = dwarf.units();
@@ -39,38 +43,43 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 gimli::UnitSectionOffset::DebugTypesOffset(off) => off.0,
             };
             let end = start + header.length_including_self();
-            unit_ranges.push(UnitRange { start, end });
+            unit_ranges.push(start..end);
         }
 
         Ok(DwarfParser {
             dwarf,
             writer: CtfWriter::new(elf),
-            inflight_types: VecDeque::new(),
             unit_ranges,
         })
     }
 
-    fn find_functions_recursive(
+    /// Pass 1: Find matching function offsets.
+    /// Returns offsets along with the name and return type for each match.
+    fn find_matching_subprograms(
         &self,
-        node: gimli::EntriesTreeNode<R>,
         unit: &UnitRef<R>,
         functions: &mut HashMap<String, bool>,
-        function_info: &mut Vec<FunctionInfo<R>>,
-    ) -> Result<bool> {
-        if functions.values().all(|&found| found) {
-            return Ok(true);
-        }
+    ) -> Result<Vec<(UnitOffset, String, Option<UnitOffset>)>> {
+        let mut matches = Vec::new();
 
-        let entry = node.entry();
-        if entry.tag() == DW_TAG_subprogram {
-            // TODO CORRECTNESS: Skip inline instances - only look at concrete or abstract instances
+        let mut entries = unit.entries();
+        while let Some((_delta_depth, entry)) = entries.next_dfs()? {
+            if functions.values().all(|&found| found) {
+                break;
+            }
+
+            if entry.tag() != DW_TAG_subprogram {
+                continue;
+            }
+
+            // Skip inline instances
             let is_inline = entry
                 .attr(gimli::DW_AT_inline)?
                 .and_then(|attr| attr.value().udata_value())
                 .unwrap_or(0)
                 != 0;
 
-            // TODO: DO THESE EVEN EXIST IN RUST? Skip declarations (forward declarations without definitions)
+            // Skip declarations
             let is_declaration = entry
                 .attr(gimli::DW_AT_declaration)?
                 .and_then(|attr| attr.value().udata_value())
@@ -78,7 +87,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 != 0;
 
             if is_inline || is_declaration {
-                return Ok(false);
+                continue;
             }
 
             if let Some(attr) = entry.attr(gimli::DW_AT_linkage_name)?
@@ -87,101 +96,131 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 && let Some(found) = functions.get_mut(name_str.as_ref())
             {
                 if *found {
-                    return Ok(false);
+                    continue;
                 }
 
                 *found = true;
-                let unit_name = unit
-                    .name
-                    .as_ref()
-                    .and_then(|n| n.to_string_lossy().ok())
-                    .unwrap_or_default();
-                println!("Found {name_str} in unit {unit_name}",);
-
-                let mut args = Vec::new();
-
-                // DW_AT_type of a function is its return type
                 let return_type_offset = get_type_offset(unit, entry)?;
-
-                // Get parameters
-                let mut tree = unit
-                    .entries_tree(Some(entry.offset()))
-                    .context("failed to get function entry tree")?;
-                let root = tree
-                    .root()
-                    .context("failed to get function entry tree root")?;
-
-                let mut children = root.children();
-                while let Some(child) = children.next().context("failed to get function child")? {
-                    if child.entry().tag() == DW_TAG_formal_parameter {
-                        let param_name = get_param_name(unit, child.entry())?;
-
-                        if let Some(type_offset) = get_type_offset(unit, child.entry())? {
-                            args.push((param_name, type_offset));
-                        }
-                    }
-                }
-
-                function_info.push(FunctionInfo {
-                    name: name_str.to_string(),
-                    return_type_offset,
-                    args,
-                    unit_header: unit.header.clone(),
-                });
-                return Ok(true);
+                matches.push((entry.offset(), name_str.to_string(), return_type_offset));
             }
         }
 
-        // Recursively search children
-        let mut children = node.children();
-        while let Some(child) = children.next()? {
-            if self.find_functions_recursive(child, unit, functions, function_info)? {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
+        Ok(matches)
     }
 
-    pub fn find_functions_by_name(
+    /// Pass 2: Extract parameters for matched functions.
+    fn extract_function_params(
+        &self,
+        unit: &UnitRef<R>,
+        matches: Vec<(UnitOffset, String, Option<UnitOffset>)>,
+        function_info: &mut Vec<FunctionInfo>,
+        type_roots: &mut Vec<UnitOffset>,
+    ) -> Result<()> {
+        // Get the unit's header offset for converting UnitOffset to GlobalTypeId
+        let header_offset = unit
+            .header
+            .offset()
+            .as_debug_info_offset()
+            .expect("unit should have debug_info offset");
+
+        for (offset, name, return_type_offset) in matches {
+            let unit_name = unit
+                .name
+                .as_ref()
+                .and_then(|n| n.to_string_lossy().ok())
+                .unwrap_or_default();
+            println!("Found {name} in unit {unit_name}");
+
+            // Collect return type as a root for dependency collection
+            if let Some(ret_offset) = return_type_offset {
+                type_roots.push(ret_offset);
+            }
+
+            let mut args = Vec::new();
+            let mut tree = unit
+                .entries_tree(Some(offset))
+                .context("failed to get function entry tree")?;
+            let root = tree
+                .root()
+                .context("failed to get function entry tree root")?;
+
+            let mut children = root.children();
+            while let Some(child) = children.next().context("failed to get function child")? {
+                if child.entry().tag() == DW_TAG_formal_parameter {
+                    let param_name = get_param_name(unit, child.entry())?;
+
+                    if let Some(type_offset) = get_type_offset(unit, child.entry())? {
+                        type_roots.push(type_offset);
+                        // Convert UnitOffset to GlobalTypeId
+                        let global_id = DebugInfoOffset(header_offset.0 + type_offset.0);
+                        args.push((param_name, global_id));
+                    }
+                }
+            }
+
+            // Convert return type UnitOffset to GlobalTypeId
+            let return_type_global =
+                return_type_offset.map(|off| DebugInfoOffset(header_offset.0 + off.0));
+
+            function_info.push(FunctionInfo {
+                name,
+                return_type_offset: return_type_global,
+                args,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Find functions by name and collect all type dependencies.
+    pub fn find_functions_and_collect_types(
         &self,
         functions: &mut HashMap<String, bool>,
-    ) -> Result<Vec<FunctionInfo<R>>> {
+    ) -> Result<(Vec<FunctionInfo>, deps::TypeDependencies)> {
         let mut function_info = Vec::new();
+        let mut type_deps = deps::TypeDependencies::new();
 
         let mut iter = self.dwarf.units();
         while let Some(header) = iter.next().context("failed to get next unit header")? {
             let unit = self.dwarf.unit(header).context("failed to read unit")?;
-            let unit = UnitRef::new(self.dwarf, &unit);
+            let unit_ref = UnitRef::new(self.dwarf, &unit);
 
-            let mut tree = unit
-                .entries_tree(None)
-                .context("failed to get entries tree")?;
-            let root = tree.root().context("failed to get entry tree root")?;
+            // Find function offsets in DWARF.
+            let matches = self.find_matching_subprograms(&unit_ref, functions)?;
 
-            self.find_functions_recursive(root, &unit, functions, &mut function_info)?;
+            // Extract parameters for matched functions.
+            let mut type_roots = Vec::new();
+            self.extract_function_params(&unit_ref, matches, &mut function_info, &mut type_roots)?;
+
+            // If we found functions in this unit, collect their type dependencies
+            if !type_roots.is_empty() {
+                let unit_deps = self.collect_type_deps_from_roots(&unit_ref, &type_roots)?;
+                // Merge into all_type_deps
+                type_deps.all_types.extend(unit_deps.all_types);
+                type_deps.stubs.extend(unit_deps.stubs);
+                type_deps.deps.extend(unit_deps.deps);
+                type_deps.type_locations.extend(unit_deps.type_locations);
+            }
 
             if functions.values().all(|&found| found) {
                 break;
             }
         }
 
-        if !self.inflight_types.is_empty() {
-            anyhow::bail!(
-                "{} types still marked as pending after parsing completed: {:?}",
-                self.inflight_types.len(),
-                self.inflight_types,
-            );
-        }
-
-        Ok(function_info)
+        Ok((function_info, type_deps))
     }
 
-    pub fn parse_fn_info(
+    /// Build types from pre-collected dependencies and return parsed function info.
+    /// This is the efficient path that uses dependencies collected during function finding.
+    pub fn build_fn_info_from_deps(
         &mut self,
-        funcs: Vec<FunctionInfo<R>>,
-    ) -> Result<HashMap<String, ParsedFunctionInfo>> {
-        let mut return_types = Vec::new();
+        funcs: &[FunctionInfo],
+        type_deps: &deps::TypeDependencies,
+    ) -> Result<HashMap<String, CtfFunctionInfo>> {
+        // Build all types from the collected dependencies
+        deps::build_types_from_deps(type_deps, &mut self.writer)?;
+
+        // Now look up the type IDs for each function
         let mut parsed_funcs = HashMap::new();
 
         for func in funcs {
@@ -189,169 +228,46 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             println!("  Arguments: {:?}", func.args);
             println!("  Return Type: {:?}", func.return_type_offset);
 
-            let unit = self.dwarf.unit(func.unit_header)?;
-            let unit_ref = UnitRef::new(self.dwarf, &unit);
-
             let return_type = if let Some(ret_offset) = func.return_type_offset {
-                self.parse_type(&unit_ref, ret_offset)
-                    .context("failed to parse return type")?
+                self.writer
+                    .type_map
+                    .get(&ret_offset)
+                    .copied()
+                    .context("return type not found after building types")?
             } else {
-                MaybeOffset::Found(0)
+                0 // void
             };
-            let return_type = match return_type {
-                MaybeOffset::Found(f) => f,
-                MaybeOffset::Pending(p) => panic!("return type offset {p:?} was not resolved"),
-            };
-            return_types.push(return_type);
 
             let mut args = Vec::new();
             for (arg_name, arg_offset) in &func.args {
                 let arg_type_id = self
-                    .parse_type(&unit_ref, *arg_offset)
-                    .context("failed to parse arg type")?;
-                let arg_type_id = match arg_type_id {
-                    MaybeOffset::Found(f) => f,
-                    MaybeOffset::Pending(p) => panic!("arg offset {p:?} was not resolved"),
-                };
+                    .writer
+                    .type_map
+                    .get(arg_offset)
+                    .copied()
+                    .context("arg type not found after building types")?;
                 println!("  Arg '{}': type ID {:?}", arg_name, arg_type_id);
                 args.push(arg_type_id);
             }
 
-            parsed_funcs.insert(
-                func.name.to_string(),
-                ParsedFunctionInfo { return_type, args },
-            );
+            parsed_funcs.insert(func.name.to_string(), CtfFunctionInfo { return_type, args });
         }
 
         Ok(parsed_funcs)
-    }
-
-    pub fn parse_function_type(
-        &mut self,
-        offset: UnitOffset,
-        unit: &UnitRef<R>,
-        entry: &DebuggingInformationEntry<R>,
-    ) -> Result<MaybeOffset> {
-        let mut name = String::new();
-
-        let mut attrs = entry.attrs();
-        while let Some(attr) = attrs.next()? {
-            if attr.name() == gimli::DW_AT_name {
-                name = get_attr_string(unit, &attr)?;
-            }
-        }
-
-        // DW_AT_type of a function is its return type
-        let return_type_offset = get_type_offset(unit, entry)?;
-        let return_type = if let Some(ret_off) = return_type_offset {
-            self.parse_type(unit, ret_off)?
-        } else {
-            MaybeOffset::Found(1)
-        };
-
-        let mut tree = unit
-            .entries_tree(Some(entry.offset()))
-            .context("failed to get function entry tree")?;
-        let root = tree
-            .root()
-            .context("failed to get function entry tree root")?;
-
-        let mut args = Vec::new();
-        let mut is_varargs = false;
-
-        let mut children = root.children();
-        while let Some(child) = children.next().context("failed to get function child")? {
-            match child.entry().tag() {
-                gimli::DW_TAG_formal_parameter => {
-                    if let Some(type_offset) = get_type_offset(unit, child.entry())? {
-                        let arg_ty = self.parse_type(unit, type_offset)?;
-                        args.push(arg_ty);
-                    }
-                }
-                gimli::DW_TAG_unspecified_parameters => {
-                    is_varargs = true;
-                }
-                _ => {}
-            }
-        }
-
-        let ctf_type = CtfType::Function {
-            name,
-            return_type,
-            args,
-            is_varargs,
-        };
-        Ok(MaybeOffset::Found(self.writer.add_type(offset, ctf_type)))
-    }
-
-    pub fn parse_type(&mut self, unit: &UnitRef<R>, offset: UnitOffset) -> Result<MaybeOffset> {
-        // Check if we've already parsed this type
-        if let Some(type_id) = self.writer.type_map.get(&offset) {
-            return Ok(MaybeOffset::Found(*type_id));
-        }
-
-        // We're in a type with a member that refers to itself, e.g. a linked list.
-        // We will resolve the index for this type when the first instance completes,
-        // so mark it as pending for now and don't recurse into the type again.
-        if self.inflight_types.contains(&offset) {
-            return Ok(MaybeOffset::Pending(offset));
-        }
-
-        let Ok(mut entries) = unit.entries_at_offset(offset) else {
-            anyhow::bail!("type offset {offset:?} not found");
-        };
-
-        // Track that we're in the process of adding this type.
-        self.inflight_types.push_back(offset);
-
-        let (_, entry) = entries.next_dfs()?.context("No entry at offset")?;
-
-        let maybe_id = match entry.tag() {
-            gimli::DW_TAG_base_type => self.parse_base_type(offset, unit, entry)?,
-            gimli::DW_TAG_pointer_type
-            | gimli::DW_TAG_reference_type
-            | gimli::DW_TAG_rvalue_reference_type => {
-                self.parse_pointer_type(offset, unit, entry)?
-            }
-            gimli::DW_TAG_typedef => self.parse_typedef(offset, unit, entry)?,
-            gimli::DW_TAG_const_type => self.parse_const_type(offset, unit, entry)?,
-            gimli::DW_TAG_volatile_type => self.parse_volatile_type(offset, unit, entry)?,
-            gimli::DW_TAG_restrict_type => self.parse_restrict_type(offset, unit, entry)?,
-            gimli::DW_TAG_array_type => self.parse_array_type(offset, unit, entry)?,
-            gimli::DW_TAG_subroutine_type => self.parse_function_type(offset, unit, entry)?,
-            gimli::DW_TAG_structure_type => self.parse_struct_type(offset, unit, entry)?,
-            gimli::DW_TAG_union_type => self.parse_union_type(offset, unit, entry)?,
-            gimli::DW_TAG_enumeration_type => self.parse_enum_type(offset, unit, entry)?,
-            other => {
-                // Unknown type - use void as placeholder since CTF_K_UNKNOWN
-                // causes MDB to fail.
-                eprintln!(
-                    "Warning: unhandled DWARF tag {:?}, using void placeholder",
-                    other
-                );
-                MaybeOffset::Found(1) // void type
-            }
-        };
-
-        // Type has been fully parsed, pop it off the stack.
-        self.inflight_types.pop_back();
-
-        Ok(maybe_id)
     }
 }
 
 /// Information about a function collected during DWARF scanning.
 #[derive(Clone, Debug)]
-pub struct FunctionInfo<R: Reader<Offset = usize>> {
+pub struct FunctionInfo {
     pub name: String,
-    pub return_type_offset: Option<UnitOffset>,
-    pub args: Vec<(String, UnitOffset)>,
-    pub unit_header: UnitHeader<R, R::Offset>,
+    pub return_type_offset: Option<GlobalTypeOffset>,
+    pub args: Vec<(String, GlobalTypeOffset)>,
 }
 
 /// Parsed function info with CTF type IDs.
 #[derive(Clone, Debug)]
-pub struct ParsedFunctionInfo {
+pub struct CtfFunctionInfo {
     pub return_type: u16,
     pub args: Vec<u16>,
 }
@@ -389,36 +305,4 @@ fn get_param_name<R: Reader<Offset = usize>>(
         return Ok(name.to_string_lossy()?.into_owned());
     }
     Ok(String::from("<unnamed>"))
-}
-
-/// Extract a string from a DWARF attribute.
-fn get_attr_string<R: Reader<Offset = usize>>(
-    unit: &UnitRef<R>,
-    attr: &Attribute<R>,
-) -> Result<String> {
-    match attr.value() {
-        AttributeValue::DebugStrRef(offset) => {
-            let s = unit.string(offset)?;
-            Ok(s.to_string()?.into_owned())
-        }
-        AttributeValue::String(s) => Ok(s.to_string()?.into_owned()),
-        _ => Ok(String::new()),
-    }
-}
-
-/// Extract a UnitOffset from a type reference attribute value.
-/// Handles both UnitRef (unit-relative) and DebugInfoRef (absolute) references.
-/// For cross-unit references, returns None - use resolve_type_attr for those.
-fn get_attr_type_offset<R: Reader<Offset = usize>>(
-    unit: &UnitRef<R>,
-    attr: &Attribute<R>,
-) -> Option<UnitOffset> {
-    match attr.value() {
-        AttributeValue::UnitRef(offset) => Some(offset),
-        AttributeValue::DebugInfoRef(debug_info_offset) => {
-            // Try to convert to unit offset (works if same unit)
-            debug_info_offset.to_unit_offset(&unit.header)
-        }
-        _ => None,
-    }
 }

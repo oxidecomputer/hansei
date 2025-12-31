@@ -1,4 +1,4 @@
-use gimli::UnitOffset;
+use crate::GlobalTypeOffset;
 
 // CTF Constants
 pub const CTF_MAGIC: u16 = 0xcff1;
@@ -60,7 +60,7 @@ pub struct CtfHeader {
 #[derive(Copy, Clone, Debug)]
 pub enum MaybeOffset {
     Found(u16),
-    Pending(UnitOffset),
+    Pending(GlobalTypeOffset),
 }
 
 #[derive(Clone, Debug)]
@@ -156,13 +156,6 @@ pub struct CtfMember {
     pub name: String,
     pub type_id: MaybeOffset,
     pub offset_bits: u64,
-}
-
-/// Information about a single Rust enum variant, used when building the tagged union.
-#[derive(Clone, Debug)]
-pub struct VariantInfo {
-    pub name: String,
-    pub members: Vec<CtfMember>,
 }
 
 #[cfg(test)]

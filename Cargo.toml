@@ -28,6 +28,7 @@ rangemap = "1.7.0"
 scroll = { version = "0.13.0", features = ["derive"] }
 scroll_derive = "0.13.0"
 thiserror = "2.0.17"
+petgraph = "0.7"
 
 [profile.release]
 debug = true
