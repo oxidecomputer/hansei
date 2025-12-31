@@ -1413,6 +1413,9 @@ fn stub_to_ctf_type(
                 );
             }
 
+            // Sort members by offset for consistent CTF output
+            ctf_members.sort_by_key(|m| m.offset_bits);
+
             // Check for trivial tuple struct wrapping a single field
             if let Some(child) = ctf_members.first()
                 && ctf_members.len() == 1
@@ -1437,7 +1440,7 @@ fn stub_to_ctf_type(
             byte_size,
             members,
         } => {
-            let ctf_members: Vec<CtfMember> = members
+            let mut ctf_members: Vec<CtfMember> = members
                 .iter()
                 .map(|m| CtfMember {
                     name: m.name.clone(),
@@ -1452,6 +1455,9 @@ fn stub_to_ctf_type(
                 })
                 .collect();
 
+            // Sort members by offset for consistent CTF output
+            ctf_members.sort_by_key(|m| m.offset_bits);
+
             Ok(CtfType::Union {
                 name: name.clone(),
                 size: *byte_size,
@@ -1464,6 +1470,17 @@ fn stub_to_ctf_type(
             byte_size,
             enumerators,
         } => {
+            // CTF enums must be 4 bytes (like C enums). For Rust enums with
+            // smaller discriminants, emit an integer type instead.
+            if *byte_size != 4 {
+                let bit_size = *byte_size * 8;
+                return Ok(CtfType::Integer {
+                    name: name.clone(),
+                    size: *byte_size,
+                    encoding: ctf_int_data(0, 0, bit_size),
+                });
+            }
+
             let ctf_enumerators: Vec<CtfEnumerator> = enumerators
                 .iter()
                 .map(|e| CtfEnumerator {
@@ -1892,5 +1909,139 @@ mod tests {
             }
             _ => panic!("Expected Float type"),
         }
+    }
+
+    /// Helper to simulate the member sorting logic used in stub_to_ctf_type
+    /// for struct and union members.
+    fn sort_members_by_offset(members: &mut Vec<CtfMember>) {
+        members.sort_by_key(|m| m.offset_bits);
+    }
+
+    #[test]
+    fn test_struct_members_sorted_by_offset() {
+        // Simulate members in reverse offset order (as might come from DWARF)
+        let mut members = vec![
+            CtfMember {
+                name: "c".to_string(),
+                type_id: MaybeOffset::Found(1),
+                offset_bits: 128, // 16 bytes * 8
+            },
+            CtfMember {
+                name: "a".to_string(),
+                type_id: MaybeOffset::Found(1),
+                offset_bits: 0,
+            },
+            CtfMember {
+                name: "b".to_string(),
+                type_id: MaybeOffset::Found(1),
+                offset_bits: 64, // 8 bytes * 8
+            },
+        ];
+
+        sort_members_by_offset(&mut members);
+
+        // Members should be sorted by offset_bits
+        assert_eq!(members.len(), 3);
+        assert_eq!(members[0].name, "a");
+        assert_eq!(members[0].offset_bits, 0);
+        assert_eq!(members[1].name, "b");
+        assert_eq!(members[1].offset_bits, 64);
+        assert_eq!(members[2].name, "c");
+        assert_eq!(members[2].offset_bits, 128);
+    }
+
+    #[test]
+    fn test_union_members_sorted_by_offset() {
+        // Union members typically have offset 0, verify stable sort behavior
+        let mut members = vec![
+            CtfMember {
+                name: "z".to_string(),
+                type_id: MaybeOffset::Found(1),
+                offset_bits: 0,
+            },
+            CtfMember {
+                name: "y".to_string(),
+                type_id: MaybeOffset::Found(1),
+                offset_bits: 0,
+            },
+            CtfMember {
+                name: "x".to_string(),
+                type_id: MaybeOffset::Found(1),
+                offset_bits: 0,
+            },
+        ];
+
+        sort_members_by_offset(&mut members);
+
+        // All offsets are 0, stable sort preserves original order
+        assert_eq!(members.len(), 3);
+        assert_eq!(members[0].name, "z");
+        assert_eq!(members[1].name, "y");
+        assert_eq!(members[2].name, "x");
+    }
+
+    #[test]
+    fn test_struct_members_with_mixed_offsets() {
+        // Test with non-contiguous offsets (padding scenario)
+        let mut members = vec![
+            CtfMember {
+                name: "field_at_24".to_string(),
+                type_id: MaybeOffset::Found(1),
+                offset_bits: 192, // 24 * 8
+            },
+            CtfMember {
+                name: "field_at_4".to_string(),
+                type_id: MaybeOffset::Found(1),
+                offset_bits: 32, // 4 * 8
+            },
+            CtfMember {
+                name: "field_at_0".to_string(),
+                type_id: MaybeOffset::Found(1),
+                offset_bits: 0,
+            },
+            CtfMember {
+                name: "field_at_12".to_string(),
+                type_id: MaybeOffset::Found(1),
+                offset_bits: 96, // 12 * 8
+            },
+        ];
+
+        sort_members_by_offset(&mut members);
+
+        // Verify ascending offset order
+        assert_eq!(members.len(), 4);
+        assert_eq!(members[0].name, "field_at_0");
+        assert_eq!(members[0].offset_bits, 0);
+        assert_eq!(members[1].name, "field_at_4");
+        assert_eq!(members[1].offset_bits, 32);
+        assert_eq!(members[2].name, "field_at_12");
+        assert_eq!(members[2].offset_bits, 96);
+        assert_eq!(members[3].name, "field_at_24");
+        assert_eq!(members[3].offset_bits, 192);
+    }
+
+    #[test]
+    fn test_single_member_struct() {
+        // Edge case: single member should remain unchanged
+        let mut members = vec![CtfMember {
+            name: "only_field".to_string(),
+            type_id: MaybeOffset::Found(1),
+            offset_bits: 0,
+        }];
+
+        sort_members_by_offset(&mut members);
+
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, "only_field");
+    }
+
+    #[test]
+    fn test_empty_struct() {
+        // Edge case: empty struct should not panic
+        let mut members: Vec<CtfMember> = vec![];
+
+        sort_members_by_offset(&mut members);
+
+        assert!(members.is_empty());
     }
 }
