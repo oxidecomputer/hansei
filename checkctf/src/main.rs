@@ -455,7 +455,6 @@ impl<'a> CtfValidator<'a> {
             let info: u16 = self.data.gread(&mut offset)?;
 
             let type_info = Self::decode_type_info(info);
-            dbg!(&type_info);
             let name = self
                 .validate_string_ref(name_offset, 0)
                 .context("type_name")?;
@@ -482,9 +481,9 @@ impl<'a> CtfValidator<'a> {
                     }
                     let encoding: u32 = self.data.gread(&mut offset)?;
 
-                    let enc_flags = (encoding >> 24) & 0xff;
-                    let enc_offset = (encoding >> 16) & 0xff;
-                    let enc_bits = encoding & 0xffff;
+                    let _enc_flags = (encoding >> 24) & 0xff;
+                    let _enc_offset = (encoding >> 16) & 0xff;
+                    let _enc_bits = encoding & 0xffff;
                 }
 
                 CTF_K_FLOAT => {
