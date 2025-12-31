@@ -1691,8 +1691,9 @@ fn resolve_type_ref(
     scc_set: &HashSet<GlobalTypeOffset>,
 ) -> MaybeOffset {
     let Some(type_ref) = type_ref else {
-        // No type reference - use void (type ID 0)
-        return MaybeOffset::Found(0);
+        // No type reference - use void (type ID 1)
+        // Type 0 is Unknown/reserved, type 1 is the void type in CtfWriter
+        return MaybeOffset::Found(1);
     };
 
     // Convert TypeRef to GlobalTypeId
@@ -2152,6 +2153,63 @@ mod tests {
                 assert_eq!(
                     name, "<anon_fn>",
                     "Anonymous function type should get synthetic '<anon_fn>' name"
+                );
+            }
+            _ => panic!("Expected Function type, got {:?}", ctf_type),
+        }
+    }
+
+    #[test]
+    fn test_void_return_type_uses_type_id_1() {
+        // When a function has no return type (void), it should use type ID 1 (void),
+        // not type ID 0 (unknown/reserved).
+        use goblin::elf::Elf;
+
+        let mut deps = TypeDependencies::new();
+        let func_id = DebugInfoOffset(100);
+
+        deps.all_types.insert(func_id);
+        deps.deps.insert(func_id, vec![]);
+        deps.type_locations
+            .insert(func_id, (DebugInfoOffset(0), UnitOffset(100)));
+
+        // Function type with NO return type (void)
+        deps.stubs.insert(
+            func_id,
+            TypeStub::Function {
+                name: String::new(),
+                return_type: None, // No return type = void
+                params: vec![],
+                is_varargs: false,
+            },
+        );
+
+        let elf_bytes = make_test_elf();
+        let elf = Elf::parse(&elf_bytes).unwrap();
+        let mut writer = CtfWriter::new(&elf);
+
+        let global_type_map = HashMap::new();
+        let scc_set = HashSet::new();
+
+        let func_stub = deps.stubs.get(&func_id).unwrap();
+        let result = stub_to_ctf_type(
+            func_stub,
+            func_id,
+            &deps,
+            &mut writer,
+            &global_type_map,
+            false,
+            &scc_set,
+        );
+
+        let ctf_type = result.expect("Function type conversion should succeed");
+
+        match ctf_type {
+            CtfType::Function { return_type, .. } => {
+                assert_eq!(
+                    return_type,
+                    MaybeOffset::Found(1),
+                    "Void return type should use type ID 1 (void), not 0 (unknown)"
                 );
             }
             _ => panic!("Expected Function type, got {:?}", ctf_type),
