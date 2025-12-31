@@ -1,9 +1,10 @@
 use anyhow::{Context as _, Result};
+use flate2::read::ZlibDecoder;
 use scroll::Pread;
 
-use std::collections::HashMap;
 use std::env;
 use std::fs::File;
+use std::io::Read;
 
 // CTF Format Constants
 const CTF_MAGIC: u16 = 0xcff1;
@@ -32,23 +33,23 @@ const CTF_K_CONST: u16 = 12;
 const CTF_K_RESTRICT: u16 = 13;
 
 // Integer encoding flags
-const CTF_INT_SIGNED: u32 = 0x01;
-const CTF_INT_CHAR: u32 = 0x02;
-const CTF_INT_BOOL: u32 = 0x04;
-const CTF_INT_VARARGS: u32 = 0x08;
+const _CTF_INT_SIGNED: u32 = 0x01;
+const _CTF_INT_CHAR: u32 = 0x02;
+const _CTF_INT_BOOL: u32 = 0x04;
+const _CTF_INT_VARARGS: u32 = 0x08;
 
 // Float encoding values
 const CTF_FP_SINGLE: u32 = 1;
-const CTF_FP_DOUBLE: u32 = 2;
-const CTF_FP_CPLX: u32 = 3;
-const CTF_FP_DCPLX: u32 = 4;
-const CTF_FP_LDCPLX: u32 = 5;
-const CTF_FP_LDOUBLE: u32 = 6;
-const CTF_FP_INTRVL: u32 = 7;
-const CTF_FP_DINTRVL: u32 = 8;
-const CTF_FP_LDINTRVL: u32 = 9;
-const CTF_FP_IMAGRY: u32 = 10;
-const CTF_FP_DIMAGRY: u32 = 11;
+const _CTF_FP_DOUBLE: u32 = 2;
+const _CTF_FP_CPLX: u32 = 3;
+const _CTF_FP_DCPLX: u32 = 4;
+const _CTF_FP_LDCPLX: u32 = 5;
+const _CTF_FP_LDOUBLE: u32 = 6;
+const _CTF_FP_INTRVL: u32 = 7;
+const _CTF_FP_DINTRVL: u32 = 8;
+const _CTF_FP_LDINTRVL: u32 = 9;
+const _CTF_FP_IMAGRY: u32 = 10;
+const _CTF_FP_DIMAGRY: u32 = 11;
 const CTF_FP_LDIMAGRY: u32 = 12;
 
 const HEADER_SIZE: usize = 36;
@@ -145,10 +146,6 @@ impl<'a> CtfValidator<'a> {
                 "Unsupported version: {}, expected {CTF_VERSION}",
                 header.preamble.version
             );
-        }
-
-        if header.preamble.flags & CTF_F_COMPRESS != 0 {
-            anyhow::bail!("compressed CTF not supported");
         }
 
         let str_start = HEADER_SIZE + header.stroff as usize;
@@ -382,7 +379,7 @@ impl<'a> CtfValidator<'a> {
 
                 self.validate_type_id(return_type, true)?;
 
-                let mut nargs = type_info.vlen;
+                let nargs = type_info.vlen;
                 let mut has_varargs = false;
 
                 // Read argument types
@@ -759,6 +756,15 @@ impl<'a> CtfValidator<'a> {
     }
 }
 
+fn decompress_ctf_data(compressed: &[u8]) -> Result<Vec<u8>> {
+    let mut decoder = ZlibDecoder::new(compressed);
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .context("failed to decompress CTF data")?;
+    Ok(decompressed)
+}
+
 fn hexdump(data: &[u8]) {
     println!();
     for (i, chunk) in data.chunks(16).enumerate() {
@@ -803,7 +809,30 @@ fn main() -> Result<()> {
     let filename = &args[1];
     let file = File::open(filename)?;
 
-    let data = unsafe { memmap2::Mmap::map(&file)? };
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+
+    // Check if we need to decompress
+    let data: std::borrow::Cow<[u8]> = if mmap.len() >= HEADER_SIZE {
+        let header: CtfHeader = mmap.pread(0).context("failed to read header")?;
+        if header.preamble.flags & CTF_F_COMPRESS != 0 {
+            // Decompress the data after the header
+            let compressed = &mmap[HEADER_SIZE..];
+            let decompressed = decompress_ctf_data(compressed)?;
+
+            // Create new buffer: header + decompressed data
+            let mut full_data = Vec::with_capacity(HEADER_SIZE + decompressed.len());
+            full_data.extend_from_slice(&mmap[..HEADER_SIZE]);
+            // Clear the compression flag in our copy
+            full_data[3] &= !CTF_F_COMPRESS;
+            full_data.extend_from_slice(&decompressed);
+
+            std::borrow::Cow::Owned(full_data)
+        } else {
+            std::borrow::Cow::Borrowed(&mmap[..])
+        }
+    } else {
+        std::borrow::Cow::Borrowed(&mmap[..])
+    };
 
     let mut validator = match CtfValidator::new(&data) {
         Ok(v) => v,
