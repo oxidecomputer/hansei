@@ -1172,12 +1172,6 @@ use crate::ctf::types::{
     ctf_int_data,
 };
 
-// pub struct TypeBuilder<'a> {
-//     deps: TypeDependencies,
-//     global_type_map: HashMap<GlobalTypeId, u16>,
-//     writer: CtfWriter<'a>,
-// }
-
 /// Build CTF types from collected dependencies in topological order.
 /// This is the main entry point for Phase 2.
 pub fn build_types_from_deps(deps: &TypeDependencies, writer: &mut CtfWriter) -> Result<()> {
@@ -1936,35 +1930,11 @@ mod tests {
         assert!(members.is_empty());
     }
 
-    /// Helper to create a minimal ELF for tests
-    fn make_test_elf() -> Vec<u8> {
-        use goblin::elf::header::*;
-        // Minimal 64-bit ELF header
-        let mut elf = vec![0u8; 64];
-        // ELF magic
-        elf[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
-        // 64-bit
-        elf[EI_CLASS] = ELFCLASS64;
-        // Little endian
-        elf[EI_DATA] = ELFDATA2LSB;
-        // ELF version
-        elf[EI_VERSION] = 1;
-        // Type: executable
-        elf[16] = 2;
-        // Machine: x86_64
-        elf[18] = 0x3e;
-        // ELF header size
-        elf[52] = 64;
-        elf
-    }
-
     #[test]
     fn test_anonymous_function_type_gets_synthetic_name() {
         // DW_TAG_subroutine_type entries typically don't have names in DWARF.
         // illumos ctfdump expects CTF_K_FUNCTION types to have names, so we
         // generate a synthetic "<anon_fn>" name for anonymous function types.
-        use goblin::elf::Elf;
-
         let mut deps = TypeDependencies::new();
         let func_id = DebugInfoOffset(100);
         let void_id = DebugInfoOffset(50);
@@ -1999,11 +1969,7 @@ mod tests {
             },
         );
 
-        // Create a minimal ELF for the writer
-        let elf_bytes = make_test_elf();
-        let elf = Elf::parse(&elf_bytes).unwrap();
-
-        let mut writer = CtfWriter::new(&elf);
+        let mut writer = CtfWriter::new(None);
 
         // First add the void type
         let void_ctf = build_base_type("void", 0, gimli::DW_ATE_signed);
@@ -2035,8 +2001,6 @@ mod tests {
     fn test_void_return_type_uses_type_id_1() {
         // When a function has no return type (void), it should use type ID 1 (void),
         // not type ID 0 (unknown/reserved).
-        use goblin::elf::Elf;
-
         let mut deps = TypeDependencies::new();
         let func_id = DebugInfoOffset(100);
 
@@ -2056,9 +2020,7 @@ mod tests {
             },
         );
 
-        let elf_bytes = make_test_elf();
-        let elf = Elf::parse(&elf_bytes).unwrap();
-        let mut writer = CtfWriter::new(&elf);
+        let mut writer = CtfWriter::new(None);
 
         let global_type_map = HashMap::new();
 
@@ -2082,8 +2044,6 @@ mod tests {
     #[test]
     fn test_named_function_type_keeps_name() {
         // When a function type has a name from DWARF, it should be preserved
-        use goblin::elf::Elf;
-
         let mut deps = TypeDependencies::new();
         let func_id = DebugInfoOffset(100);
         let void_id = DebugInfoOffset(50);
@@ -2117,9 +2077,7 @@ mod tests {
             },
         );
 
-        let elf_bytes = make_test_elf();
-        let elf = Elf::parse(&elf_bytes).unwrap();
-        let mut writer = CtfWriter::new(&elf);
+        let mut writer = CtfWriter::new(None);
 
         let void_ctf = build_base_type("void", 0, gimli::DW_ATE_signed);
         let void_ctf_id = writer.add_type(void_id, void_ctf);

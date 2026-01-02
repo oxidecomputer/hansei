@@ -21,7 +21,7 @@ use goblin::elf::section_header::{
 use memmap2::Mmap;
 use scroll::{LE, Pwrite};
 
-use crate::ctf::CtfOpts;
+use crate::ctf::CtfWriter;
 use crate::parser::DwarfParser;
 
 /// Absolute offset of type in .debug_info.
@@ -289,14 +289,19 @@ fn main() -> Result<()> {
 
     let dwarf = Dwarf::load(&loader)
         .with_context(|| format!("failed to load DWARF from {}", args.elf.display()))?;
-    let mut parser = DwarfParser::build(&debug_elf, &dwarf)?;
+    let mut parser = DwarfParser::build(&dwarf)?;
+    let mut writer = if args.bin_out.is_some() {
+        CtfWriter::new(Some(&debug_elf))
+    } else {
+        CtfWriter::new(None)
+    };
 
     let label = args
         .elf
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| args.elf.display().to_string());
-    parser.writer.set_label(label);
+    writer.set_label(label);
 
     let source_symbols: HashSet<_> = debug_elf
         .syms
@@ -327,17 +332,11 @@ fn main() -> Result<()> {
 
     // Build CTF types from the collected dependencies
     let parsed_function_info = parser
-        .build_fn_info_from_deps(&function_info, &type_deps)
+        .build_fn_info_from_deps(&function_info, &type_deps, &mut writer)
         .context("failed to build types from DWARF debug data")?;
 
-    let ctf_opts = if args.bin_out.is_some() {
-        CtfOpts::WithFns
-    } else {
-        CtfOpts::WithoutFns
-    };
-    let ctf_buffer = parser
-        .writer
-        .generate_ctf(parsed_function_info, ctf_opts)
+    let ctf_buffer = writer
+        .generate_ctf(parsed_function_info)
         .context("failed to generate CTF")?;
 
     if let Some(ctf_path) = &args.ctf_out {
