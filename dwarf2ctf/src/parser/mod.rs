@@ -8,7 +8,6 @@ use gimli::{
     AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram, DebugInfoOffset,
     DebuggingInformationEntry, Dwarf, Reader, UnitOffset, UnitRef,
 };
-use goblin::elf::Elf;
 
 use crate::GlobalTypeOffset;
 use crate::ctf::CtfWriter;
@@ -16,7 +15,6 @@ use deps::DependencyCollector;
 
 pub struct DwarfParser<'a, R: Reader<Offset = usize>> {
     pub dwarf: &'a Dwarf<R>,
-    pub writer: CtfWriter<'a>,
     /// Index of unit ranges for cross-unit reference resolution
     unit_ranges: Vec<Range<usize>>,
 }
@@ -33,7 +31,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         collector.collect_deps_from_roots(unit, root_offsets)
     }
 
-    pub fn build(elf: &'a Elf<'a>, dwarf: &'a Dwarf<R>) -> Result<Self> {
+    pub fn build(dwarf: &'a Dwarf<R>) -> Result<Self> {
         // Build index of unit ranges for cross-unit reference resolution
         let mut unit_ranges = Vec::new();
         let mut units = dwarf.units();
@@ -46,11 +44,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             unit_ranges.push(start..end);
         }
 
-        Ok(DwarfParser {
-            dwarf,
-            writer: CtfWriter::new(elf),
-            unit_ranges,
-        })
+        Ok(DwarfParser { dwarf, unit_ranges })
     }
 
     /// Pass 1: Find matching function offsets.
@@ -216,9 +210,10 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         &mut self,
         funcs: &[FunctionInfo],
         type_deps: &deps::TypeDependencies,
+        writer: &mut CtfWriter,
     ) -> Result<HashMap<String, CtfFunctionInfo>> {
         // Build all types from the collected dependencies
-        deps::build_types_from_deps(type_deps, &mut self.writer)?;
+        deps::build_types_from_deps(type_deps, writer)?;
 
         // Now look up the type IDs for each function
         let mut parsed_funcs = HashMap::new();
@@ -229,7 +224,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             println!("  Return Type: {:?}", func.return_type_offset);
 
             let return_type = if let Some(ret_offset) = func.return_type_offset {
-                self.writer
+                writer
                     .type_map
                     .get(&ret_offset)
                     .copied()
@@ -240,8 +235,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
             let mut args = Vec::new();
             for (arg_name, arg_offset) in &func.args {
-                let arg_type_id = self
-                    .writer
+                let arg_type_id = writer
                     .type_map
                     .get(arg_offset)
                     .copied()

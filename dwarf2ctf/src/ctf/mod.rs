@@ -67,23 +67,18 @@ impl Default for StringTable {
     }
 }
 
-// CTF Writer
 pub struct CtfWriter<'a> {
-    elf: &'a Elf<'a>,
     pub types: Vec<CtfType>,
     pub strings: StringTable,
     pub type_map: HashMap<GlobalTypeOffset, u16>, // DWARF offset to CTF type ID
+    elf: Option<&'a Elf<'a>>,
     label: Option<String>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum CtfOpts {
-    WithFns,
-    WithoutFns,
-}
-
 impl<'a> CtfWriter<'a> {
-    pub fn new(elf: &'a Elf<'a>) -> Self {
+    /// Construct a new `CtfWriter`. If `elf` is provided then function info
+    /// will be included in the generated CTF.
+    pub fn new(elf: Option<&'a Elf<'a>>) -> Self {
         CtfWriter {
             elf,
             // Start null type at index 0 and void type for functions without a return type.
@@ -120,11 +115,7 @@ impl<'a> CtfWriter<'a> {
         type_id
     }
 
-    pub fn generate_ctf(
-        &mut self,
-        funcs: HashMap<String, CtfFunctionInfo>,
-        opts: CtfOpts,
-    ) -> Result<Vec<u8>> {
+    pub fn generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> Result<Vec<u8>> {
         let mut out = Vec::new();
 
         // Calculate type section size and write to string table
@@ -157,59 +148,61 @@ impl<'a> CtfWriter<'a> {
 
         let mut obj_data = Vec::new();
         let mut func_data = Vec::new();
-        for sym in &self.elf.syms {
-            if !matches!(sym.st_type(), STT_OBJECT | STT_FUNC) {
-                continue;
-            }
+        if let Some(elf) = &self.elf {
+            for sym in &elf.syms {
+                if !matches!(sym.st_type(), STT_OBJECT | STT_FUNC) {
+                    continue;
+                }
 
-            if sym.st_shndx == SHN_UNDEF as usize {
-                continue;
-            }
+                if sym.st_shndx == SHN_UNDEF as usize {
+                    continue;
+                }
 
-            if sym.st_name == 0 {
-                continue;
-            }
+                if sym.st_name == 0 {
+                    continue;
+                }
 
-            // A non-zero name should still be included even if we can't retrieve it.
-            let symbol_name = self.elf.strtab.get_at(sym.st_name).unwrap_or("<unknown>");
+                // A non-zero name should still be included even if we can't retrieve it.
+                let symbol_name = elf.strtab.get_at(sym.st_name).unwrap_or("<unknown>");
 
-            if symbol_name == "_START_" || symbol_name == "_END_" {
-                continue;
-            }
+                if symbol_name == "_START_" || symbol_name == "_END_" {
+                    continue;
+                }
 
-            match sym.st_type() {
-                STT_FUNC => {
-                    let Some(func_info) = funcs.get(symbol_name) else {
-                        let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
+                match sym.st_type() {
+                    STT_FUNC => {
+                        let Some(func_info) = funcs.get(symbol_name) else {
+                            let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
+                            func_data.iowrite_with(info, LE)?;
+                            continue;
+                        };
+
+                        let vlen = func_info.args.len() as u16;
+                        eprintln!("Argument count for {symbol_name}: {vlen}");
+                        let info = ctf_type_info(CTF_K_FUNCTION, false, vlen);
                         func_data.iowrite_with(info, LE)?;
-                        continue;
-                    };
+                        func_data.iowrite_with(func_info.return_type, LE)?;
 
-                    let vlen = func_info.args.len() as u16;
-                    eprintln!("Argument count for {symbol_name}: {vlen}");
-                    let info = ctf_type_info(CTF_K_FUNCTION, false, vlen);
-                    func_data.iowrite_with(info, LE)?;
-                    func_data.iowrite_with(func_info.return_type, LE)?;
-
-                    // Write argument types
-                    for &arg in &func_info.args {
-                        func_data.iowrite_with(arg, LE)?;
+                        // Write argument types
+                        for &arg in &func_info.args {
+                            func_data.iowrite_with(arg, LE)?;
+                        }
                     }
+                    STT_OBJECT => {
+                        let Some((idx, _)) = self
+                            .types
+                            .iter()
+                            .enumerate()
+                            .find(|(_, t)| t.name() == symbol_name)
+                        else {
+                            obj_data.iowrite_with(0u16, LE)?;
+                            continue;
+                        };
+                        // CTF index starts at one.
+                        obj_data.iowrite_with(idx as u16, LE)?;
+                    }
+                    _ => {}
                 }
-                STT_OBJECT => {
-                    let Some((idx, _)) = self
-                        .types
-                        .iter()
-                        .enumerate()
-                        .find(|(_, t)| t.name() == symbol_name)
-                    else {
-                        obj_data.iowrite_with(0u16, LE)?;
-                        continue;
-                    };
-                    // CTF index starts at one.
-                    obj_data.iowrite_with(idx as u16, LE)?;
-                }
-                _ => {}
             }
         }
 
@@ -219,13 +212,8 @@ impl<'a> CtfWriter<'a> {
         // No need to pad funcoff, as the header and objects are naturally 2-byte
         // aligned.
         let funcoff = objtoff + obj_data.len() as u32;
-        let (func_data_end, func_padding) = if let CtfOpts::WithFns = opts {
-            let func_data_end = funcoff + func_data.len() as u32;
-            let func_padding = (4 - (func_data_end % 4)) % 4;
-            (func_data_end, func_padding)
-        } else {
-            (funcoff, funcoff)
-        };
+        let func_data_end = funcoff + func_data.len() as u32;
+        let func_padding = (4 - (func_data_end % 4)) % 4;
 
         let typeoff = func_data_end + func_padding;
         let stroff = typeoff + type_data.len() as u32;
@@ -265,9 +253,7 @@ impl<'a> CtfWriter<'a> {
 
         encoder.write_all(&lbl_data)?;
         encoder.write_all(&obj_data)?;
-        if let CtfOpts::WithFns = opts {
-            encoder.write_all(&func_data)?;
-        }
+        encoder.write_all(&func_data)?;
         encoder.write_all(&vec![0u8; func_padding as usize])?;
         encoder.write_all(&type_data)?;
         encoder.write_all(self.strings.data())?;
