@@ -4,6 +4,7 @@
 //! constructing CTF types. The resulting dependency graph can be topologically
 //! sorted for Phase 2 processing.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 
@@ -11,6 +12,7 @@ use anyhow::Result;
 use gimli::{
     AttributeValue, DebugInfoOffset, DebuggingInformationEntry, DwTag, Reader, UnitOffset, UnitRef,
 };
+use petgraph::prelude::DiGraphMap;
 
 use crate::GlobalTypeOffset;
 
@@ -178,16 +180,26 @@ impl Default for TypeDependencies {
     }
 }
 
+/// Cache mapping DIE offset to its namespace path (list of namespace names).
+type NamespaceMap = HashMap<UnitOffset, Vec<String>>;
+
 /// Dependency collector that walks DWARF without constructing CTF types.
 pub struct DependencyCollector<'a, R: Reader<Offset = usize>> {
     dwarf: &'a gimli::Dwarf<R>,
     /// Index of unit ranges for cross-unit reference resolution
     unit_ranges: &'a [Range<usize>],
+    /// Cache of namespace paths per unit (unit header offset -> namespace map).
+    /// Built lazily on first access per unit, then reused for O(1) lookups.
+    namespace_cache: RefCell<HashMap<DebugInfoOffset<usize>, NamespaceMap>>,
 }
 
 impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
     pub fn new(dwarf: &'a gimli::Dwarf<R>, unit_ranges: &'a [Range<usize>]) -> Self {
-        Self { dwarf, unit_ranges }
+        Self {
+            dwarf,
+            unit_ranges,
+            namespace_cache: RefCell::new(HashMap::new()),
+        }
     }
 
     /// Collect all type dependencies starting from multiple root offsets.
@@ -971,25 +983,32 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
 
     // --- Helper methods ---
 
-    /// Build the namespace path for a DIE by walking up through parent DIEs.
-    /// Returns the full path components like ["tokio", "runtime", "scheduler"].
-    fn get_namespace_path(&self, unit: &UnitRef<R>, offset: UnitOffset) -> Result<Vec<String>> {
-        let mut path = Vec::new();
+    /// Build namespace paths for all entries in a unit in a single DFS pass.
+    /// Returns a map from DIE offset to namespace path (list of ancestor namespace names).
+    fn build_namespace_map(&self, unit: &UnitRef<R>) -> Result<NamespaceMap> {
+        let mut map = HashMap::new();
         let mut cursor = unit.entries();
 
-        // Track parent chain as we descend
-        let mut parent_stack: Vec<(UnitOffset, Option<String>)> = Vec::new();
-        let mut found_target = false;
+        // Stack tracking namespace contribution at each depth level.
+        // Some(name) for namespace/module entries, None for others.
+        let mut depth_stack: Vec<Option<String>> = Vec::new();
 
         while let Some((depth_delta, entry)) = cursor.next_dfs()? {
-            // Adjust parent stack based on depth
+            // Adjust stack based on depth change (pop when moving up/sideways)
             if depth_delta <= 0 {
                 for _ in 0..(-depth_delta + 1) {
-                    parent_stack.pop();
+                    depth_stack.pop();
                 }
             }
 
-            // Get name for namespace-contributing tags
+            // Current namespace path is all Some values from ancestors
+            let namespace_path: Vec<String> =
+                depth_stack.iter().filter_map(|s| s.clone()).collect();
+
+            // Record namespace path for this entry
+            map.insert(entry.offset(), namespace_path);
+
+            // Determine if this entry contributes a namespace name
             let name = match entry.tag() {
                 gimli::DW_TAG_namespace | gimli::DW_TAG_module => {
                     if let Some(attr) = entry.attr(gimli::DW_AT_name)? {
@@ -1001,25 +1020,36 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
                 _ => None,
             };
 
-            if entry.offset() == offset {
-                // Found our target - collect the namespace from parents
-                for (_, parent_name) in &parent_stack {
-                    if let Some(n) = parent_name {
-                        path.push(n.clone());
-                    }
-                }
-                found_target = true;
-                break;
+            // Push this entry's contribution (None for non-namespace entries)
+            depth_stack.push(name);
+        }
+
+        Ok(map)
+    }
+
+    /// Get the namespace path for a DIE, using cached data.
+    /// Returns the full path components like ["tokio", "runtime", "scheduler"].
+    fn get_namespace_path(&self, unit: &UnitRef<R>, offset: UnitOffset) -> Result<Vec<String>> {
+        let unit_header_offset = unit.header.offset().as_debug_info_offset().unwrap();
+
+        // Check if we already have a cached map for this unit
+        {
+            let cache = self.namespace_cache.borrow();
+            if let Some(unit_map) = cache.get(&unit_header_offset) {
+                return Ok(unit_map.get(&offset).cloned().unwrap_or_default());
             }
-
-            parent_stack.push((entry.offset(), name));
         }
 
-        if !found_target {
-            return Ok(Vec::new());
-        }
+        // Build the namespace map for this unit (single DFS pass)
+        let unit_map = self.build_namespace_map(unit)?;
+        let result = unit_map.get(&offset).cloned().unwrap_or_default();
 
-        Ok(path)
+        // Cache it for future lookups in this unit
+        self.namespace_cache
+            .borrow_mut()
+            .insert(unit_header_offset, unit_map);
+
+        Ok(result)
     }
 
     /// Get a fully qualified type name by prepending namespace path.
@@ -1112,41 +1142,22 @@ pub struct TopologicalOrder {
 /// Compute topological order with SCC detection using petgraph's Tarjan algorithm.
 /// Returns SCCs in reverse topological order (dependencies before dependents).
 pub fn topological_sort(deps: &TypeDependencies) -> TopologicalOrder {
-    use petgraph::algo::tarjan_scc;
-    use petgraph::graph::{DiGraph, NodeIndex};
+    let mut graph: DiGraphMap<GlobalTypeOffset, ()> = DiGraphMap::new();
 
-    // Build a petgraph DiGraph from the dependency data
-    let mut graph: DiGraph<GlobalTypeOffset, ()> = DiGraph::new();
-
-    // Create mapping from GlobalTypeId to NodeIndex
-    let mut id_to_node: HashMap<GlobalTypeOffset, NodeIndex> = HashMap::new();
-
-    // Add all nodes
+    // Add all nodes (needed for types with no dependencies)
     for &global_id in &deps.all_types {
-        let node = graph.add_node(global_id);
-        id_to_node.insert(global_id, node);
+        graph.add_node(global_id);
     }
 
     // Add all edges
     for (&from_id, to_ids) in &deps.deps {
-        if let Some(&from_node) = id_to_node.get(&from_id) {
-            for &to_id in to_ids {
-                if let Some(&to_node) = id_to_node.get(&to_id) {
-                    graph.add_edge(from_node, to_node, ());
-                }
-            }
+        for &to_id in to_ids {
+            graph.add_edge(from_id, to_id, ());
         }
     }
 
     // Run Tarjan's SCC algorithm
-    // petgraph returns SCCs in reverse topological order (dependencies first)
-    let sccs_indices = tarjan_scc(&graph);
-
-    // Convert NodeIndex back to GlobalTypeId
-    let sccs: Vec<Vec<GlobalTypeOffset>> = sccs_indices
-        .into_iter()
-        .map(|scc| scc.into_iter().map(|node| graph[node]).collect())
-        .collect();
+    let sccs = petgraph::algo::tarjan_scc(&graph);
 
     TopologicalOrder { sccs }
 }
@@ -1196,23 +1207,12 @@ fn build_scc_types(
     writer: &mut CtfWriter,
     global_type_map: &mut HashMap<GlobalTypeOffset, u16>,
 ) -> Result<()> {
-    let is_cycle = scc.len() > 1;
-    let scc_set: HashSet<GlobalTypeOffset> = scc.iter().copied().collect();
-
     for &global_id in scc {
         let Some(stub) = deps.stubs.get(&global_id) else {
             continue;
         };
 
-        let ctf_type = stub_to_ctf_type(
-            stub,
-            global_id,
-            deps,
-            writer,
-            global_type_map,
-            is_cycle,
-            &scc_set,
-        )?;
+        let ctf_type = stub_to_ctf_type(stub, global_id, deps, writer, global_type_map)?;
 
         let type_id = writer.add_type(global_id, ctf_type);
         global_type_map.insert(global_id, type_id);
@@ -1228,8 +1228,6 @@ fn stub_to_ctf_type(
     deps: &TypeDependencies,
     writer: &mut CtfWriter,
     global_type_map: &HashMap<GlobalTypeOffset, u16>,
-    is_in_cycle: bool,
-    scc_set: &HashSet<GlobalTypeOffset>,
 ) -> Result<CtfType> {
     // Get the header offset for this type to convert TypeRefs to GlobalTypeIds
     let header_offset = deps
@@ -1246,13 +1244,7 @@ fn stub_to_ctf_type(
         } => Ok(build_base_type(name, *byte_size, *encoding)),
 
         TypeStub::Pointer { name, target } => {
-            let target_type = resolve_type_ref(
-                target.as_ref(),
-                header_offset,
-                global_type_map,
-                is_in_cycle,
-                scc_set,
-            );
+            let target_type = resolve_type_ref(target.as_ref(), header_offset, global_type_map);
             Ok(CtfType::Pointer {
                 name: name.clone(),
                 target_type,
@@ -1260,13 +1252,7 @@ fn stub_to_ctf_type(
         }
 
         TypeStub::Typedef { name, target } => {
-            let target_type = resolve_type_ref(
-                target.as_ref(),
-                header_offset,
-                global_type_map,
-                is_in_cycle,
-                scc_set,
-            );
+            let target_type = resolve_type_ref(target.as_ref(), header_offset, global_type_map);
             Ok(CtfType::Typedef {
                 name: name.clone(),
                 target_type,
@@ -1274,13 +1260,7 @@ fn stub_to_ctf_type(
         }
 
         TypeStub::Const { name, target } => {
-            let target_type = resolve_type_ref(
-                target.as_ref(),
-                header_offset,
-                global_type_map,
-                is_in_cycle,
-                scc_set,
-            );
+            let target_type = resolve_type_ref(target.as_ref(), header_offset, global_type_map);
             Ok(CtfType::Const {
                 name: name.clone(),
                 target_type,
@@ -1288,13 +1268,7 @@ fn stub_to_ctf_type(
         }
 
         TypeStub::Volatile { name, target } => {
-            let target_type = resolve_type_ref(
-                target.as_ref(),
-                header_offset,
-                global_type_map,
-                is_in_cycle,
-                scc_set,
-            );
+            let target_type = resolve_type_ref(target.as_ref(), header_offset, global_type_map);
             Ok(CtfType::Volatile {
                 name: name.clone(),
                 target_type,
@@ -1302,13 +1276,7 @@ fn stub_to_ctf_type(
         }
 
         TypeStub::Restrict { name, target } => {
-            let target_type = resolve_type_ref(
-                target.as_ref(),
-                header_offset,
-                global_type_map,
-                is_in_cycle,
-                scc_set,
-            );
+            let target_type = resolve_type_ref(target.as_ref(), header_offset, global_type_map);
             Ok(CtfType::Restrict {
                 name: name.clone(),
                 target_type,
@@ -1321,20 +1289,8 @@ fn stub_to_ctf_type(
             index_type,
             count,
         } => {
-            let element = resolve_type_ref(
-                element_type.as_ref(),
-                header_offset,
-                global_type_map,
-                is_in_cycle,
-                scc_set,
-            );
-            let index = resolve_type_ref(
-                index_type.as_ref(),
-                header_offset,
-                global_type_map,
-                is_in_cycle,
-                scc_set,
-            );
+            let element = resolve_type_ref(element_type.as_ref(), header_offset, global_type_map);
+            let index = resolve_type_ref(index_type.as_ref(), header_offset, global_type_map);
             Ok(CtfType::Array {
                 name: name.clone(),
                 element_type: element,
@@ -1349,24 +1305,10 @@ fn stub_to_ctf_type(
             params,
             is_varargs,
         } => {
-            let ret = resolve_type_ref(
-                return_type.as_ref(),
-                header_offset,
-                global_type_map,
-                is_in_cycle,
-                scc_set,
-            );
+            let ret = resolve_type_ref(return_type.as_ref(), header_offset, global_type_map);
             let args: Vec<MaybeOffset> = params
                 .iter()
-                .map(|p| {
-                    resolve_type_ref(
-                        p.type_ref.as_ref(),
-                        header_offset,
-                        global_type_map,
-                        is_in_cycle,
-                        scc_set,
-                    )
-                })
+                .map(|p| resolve_type_ref(p.type_ref.as_ref(), header_offset, global_type_map))
                 .collect();
             // DW_TAG_subroutine_type entries typically don't have names in DWARF,
             // but illumos ctfdump expects CTF_K_FUNCTION types to have names.
@@ -1395,13 +1337,7 @@ fn stub_to_ctf_type(
                 .iter()
                 .map(|m| CtfMember {
                     name: m.name.clone(),
-                    type_id: resolve_type_ref(
-                        m.type_ref.as_ref(),
-                        header_offset,
-                        global_type_map,
-                        is_in_cycle,
-                        scc_set,
-                    ),
+                    type_id: resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map),
                     offset_bits: m.offset_bytes * 8,
                 })
                 .collect();
@@ -1416,25 +1352,11 @@ fn stub_to_ctf_type(
                     header_offset,
                     writer,
                     global_type_map,
-                    is_in_cycle,
-                    scc_set,
                 );
             }
 
             // Sort members by offset for consistent CTF output
             ctf_members.sort_by_key(|m| m.offset_bits);
-
-            // Check for trivial tuple struct wrapping a single field
-            if let Some(child) = ctf_members.first()
-                && ctf_members.len() == 1
-                && child.name == "__0"
-            {
-                return Ok(CtfType::Struct {
-                    name: name.clone(),
-                    size: *byte_size,
-                    members: vec![child.clone()],
-                });
-            }
 
             Ok(CtfType::Struct {
                 name: name.clone(),
@@ -1452,13 +1374,7 @@ fn stub_to_ctf_type(
                 .iter()
                 .map(|m| CtfMember {
                     name: m.name.clone(),
-                    type_id: resolve_type_ref(
-                        m.type_ref.as_ref(),
-                        header_offset,
-                        global_type_map,
-                        is_in_cycle,
-                        scc_set,
-                    ),
+                    type_id: resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map),
                     offset_bits: m.offset_bytes * 8,
                 })
                 .collect();
@@ -1518,21 +1434,13 @@ fn build_variant_part_members(
     header_offset: DebugInfoOffset<usize>,
     writer: &mut CtfWriter,
     global_type_map: &HashMap<GlobalTypeOffset, u16>,
-    is_in_cycle: bool,
-    scc_set: &HashSet<GlobalTypeOffset>,
 ) {
     // If there are no variants with payloads, just add the discriminant
     if variant_part.variants.is_empty() {
         if let Some(discr) = &variant_part.discriminant {
             members.push(CtfMember {
                 name: discr.name.clone(),
-                type_id: resolve_type_ref(
-                    discr.type_ref.as_ref(),
-                    header_offset,
-                    global_type_map,
-                    is_in_cycle,
-                    scc_set,
-                ),
+                type_id: resolve_type_ref(discr.type_ref.as_ref(), header_offset, global_type_map),
                 offset_bits: discr.offset_bytes * 8,
             });
         }
@@ -1557,13 +1465,8 @@ fn build_variant_part_members(
 
     // Calculate discriminant size by looking up its CTF type
     let discr_size_bits = if let Some(ref discr) = variant_part.discriminant {
-        let discr_type_id = resolve_type_ref(
-            discr.type_ref.as_ref(),
-            header_offset,
-            global_type_map,
-            is_in_cycle,
-            scc_set,
-        );
+        let discr_type_id =
+            resolve_type_ref(discr.type_ref.as_ref(), header_offset, global_type_map);
         match discr_type_id {
             MaybeOffset::Found(type_id) => {
                 if let Some(CtfType::Integer { size, .. }) = writer.types.get(type_id as usize) {
@@ -1593,13 +1496,7 @@ fn build_variant_part_members(
     if let Some(discr) = &variant_part.discriminant {
         members.push(CtfMember {
             name: discr.name.clone(),
-            type_id: resolve_type_ref(
-                discr.type_ref.as_ref(),
-                header_offset,
-                global_type_map,
-                is_in_cycle,
-                scc_set,
-            ),
+            type_id: resolve_type_ref(discr.type_ref.as_ref(), header_offset, global_type_map),
             offset_bits: discr.offset_bytes * 8,
         });
     }
@@ -1615,13 +1512,7 @@ fn build_variant_part_members(
             .iter()
             .map(|m| CtfMember {
                 name: m.name.clone(),
-                type_id: resolve_type_ref(
-                    m.type_ref.as_ref(),
-                    header_offset,
-                    global_type_map,
-                    is_in_cycle,
-                    scc_set,
-                ),
+                type_id: resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map),
                 offset_bits: (m.offset_bytes * 8).saturating_sub(union_offset_bits),
             })
             .collect();
@@ -1632,7 +1523,7 @@ fn build_variant_part_members(
 
         // For single-member variants at offset 0, use the type directly
         let variant_type_id = if adjusted_members.len() == 1
-            && adjusted_members[0].offset_bits == 0
+            // && adjusted_members[0].offset_bits == 0
             && (adjusted_members[0].name.is_empty() || adjusted_members[0].name == variant.name)
         {
             adjusted_members[0].type_id
@@ -1687,8 +1578,6 @@ fn resolve_type_ref(
     type_ref: Option<&TypeRef>,
     header_offset: DebugInfoOffset<usize>,
     global_type_map: &HashMap<GlobalTypeOffset, u16>,
-    is_in_cycle: bool,
-    scc_set: &HashSet<GlobalTypeOffset>,
 ) -> MaybeOffset {
     let Some(type_ref) = type_ref else {
         // No type reference - use void (type ID 1)
@@ -1708,12 +1597,6 @@ fn resolve_type_ref(
     // Check if already in global_type_map
     if let Some(&type_id) = global_type_map.get(&global_id) {
         return MaybeOffset::Found(type_id);
-    }
-
-    // If we're in a cycle and this global_id is part of the same SCC,
-    // we need to use Pending since it hasn't been added yet
-    if is_in_cycle && scc_set.contains(&global_id) {
-        return MaybeOffset::Pending(global_id);
     }
 
     // Should have been processed already (topological order ensures this)
@@ -1815,7 +1698,6 @@ mod tests {
         deps.all_types.insert(typedef_id);
         deps.all_types.insert(ptr_id);
 
-        // deps now stores Vec<GlobalTypeId>
         deps.deps.insert(int_id, vec![]);
         deps.deps.insert(typedef_id, vec![int_id]);
         deps.deps.insert(ptr_id, vec![typedef_id]);
@@ -1922,7 +1804,7 @@ mod tests {
 
     /// Helper to simulate the member sorting logic used in stub_to_ctf_type
     /// for struct and union members.
-    fn sort_members_by_offset(members: &mut Vec<CtfMember>) {
+    fn sort_members_by_offset(members: &mut [CtfMember]) {
         members.sort_by_key(|m| m.offset_bits);
     }
 
@@ -2131,19 +2013,9 @@ mod tests {
         let mut global_type_map = HashMap::new();
         global_type_map.insert(void_id, void_ctf_id);
 
-        let scc_set = HashSet::new();
-
         // Convert the function stub
         let func_stub = deps.stubs.get(&func_id).unwrap();
-        let result = stub_to_ctf_type(
-            func_stub,
-            func_id,
-            &deps,
-            &mut writer,
-            &global_type_map,
-            false,
-            &scc_set,
-        );
+        let result = stub_to_ctf_type(func_stub, func_id, &deps, &mut writer, &global_type_map);
 
         let ctf_type = result.expect("Function type conversion should succeed");
 
@@ -2189,18 +2061,9 @@ mod tests {
         let mut writer = CtfWriter::new(&elf);
 
         let global_type_map = HashMap::new();
-        let scc_set = HashSet::new();
 
         let func_stub = deps.stubs.get(&func_id).unwrap();
-        let result = stub_to_ctf_type(
-            func_stub,
-            func_id,
-            &deps,
-            &mut writer,
-            &global_type_map,
-            false,
-            &scc_set,
-        );
+        let result = stub_to_ctf_type(func_stub, func_id, &deps, &mut writer, &global_type_map);
 
         let ctf_type = result.expect("Function type conversion should succeed");
 
@@ -2264,18 +2127,8 @@ mod tests {
         let mut global_type_map = HashMap::new();
         global_type_map.insert(void_id, void_ctf_id);
 
-        let scc_set = HashSet::new();
-
         let func_stub = deps.stubs.get(&func_id).unwrap();
-        let result = stub_to_ctf_type(
-            func_stub,
-            func_id,
-            &deps,
-            &mut writer,
-            &global_type_map,
-            false,
-            &scc_set,
-        );
+        let result = stub_to_ctf_type(func_stub, func_id, &deps, &mut writer, &global_type_map);
 
         let ctf_type = result.expect("Function type conversion should succeed");
 
