@@ -21,6 +21,7 @@ use goblin::elf::section_header::{
 use memmap2::Mmap;
 use scroll::{LE, Pwrite};
 
+use crate::ctf::CtfOpts;
 use crate::parser::DwarfParser;
 
 /// Absolute offset of type in .debug_info.
@@ -329,9 +330,14 @@ fn main() -> Result<()> {
         .build_fn_info_from_deps(&function_info, &type_deps)
         .context("failed to build types from DWARF debug data")?;
 
+    let ctf_opts = if args.bin_out.is_some() {
+        CtfOpts::WithFns
+    } else {
+        CtfOpts::WithoutFns
+    };
     let ctf_buffer = parser
         .writer
-        .generate_ctf(parsed_function_info)
+        .generate_ctf(parsed_function_info, ctf_opts)
         .context("failed to generate CTF")?;
 
     if let Some(ctf_path) = &args.ctf_out {

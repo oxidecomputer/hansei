@@ -1523,7 +1523,7 @@ fn build_variant_part_members(
 
         // For single-member variants at offset 0, use the type directly
         let variant_type_id = if adjusted_members.len() == 1
-            // && adjusted_members[0].offset_bits == 0
+            && adjusted_members[0].offset_bits == 0
             && (adjusted_members[0].name.is_empty() || adjusted_members[0].name == variant.name)
         {
             adjusted_members[0].type_id
