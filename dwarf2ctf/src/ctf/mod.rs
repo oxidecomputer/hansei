@@ -76,6 +76,12 @@ pub struct CtfWriter<'a> {
     label: Option<String>,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum CtfOpts {
+    WithFns,
+    WithoutFns,
+}
+
 impl<'a> CtfWriter<'a> {
     pub fn new(elf: &'a Elf<'a>) -> Self {
         CtfWriter {
@@ -114,7 +120,11 @@ impl<'a> CtfWriter<'a> {
         type_id
     }
 
-    pub fn generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> Result<Vec<u8>> {
+    pub fn generate_ctf(
+        &mut self,
+        funcs: HashMap<String, CtfFunctionInfo>,
+        opts: CtfOpts,
+    ) -> Result<Vec<u8>> {
         let mut out = Vec::new();
 
         // Calculate type section size and write to string table
@@ -209,8 +219,13 @@ impl<'a> CtfWriter<'a> {
         // No need to pad funcoff, as the header and objects are naturally 2-byte
         // aligned.
         let funcoff = objtoff + obj_data.len() as u32;
-        let func_data_end = funcoff + func_data.len() as u32;
-        let func_padding = (4 - (func_data_end % 4)) % 4;
+        let (func_data_end, func_padding) = if let CtfOpts::WithFns = opts {
+            let func_data_end = funcoff + func_data.len() as u32;
+            let func_padding = (4 - (func_data_end % 4)) % 4;
+            (func_data_end, func_padding)
+        } else {
+            (funcoff, funcoff)
+        };
 
         let typeoff = func_data_end + func_padding;
         let stroff = typeoff + type_data.len() as u32;
@@ -250,7 +265,9 @@ impl<'a> CtfWriter<'a> {
 
         encoder.write_all(&lbl_data)?;
         encoder.write_all(&obj_data)?;
-        encoder.write_all(&func_data)?;
+        if let CtfOpts::WithFns = opts {
+            encoder.write_all(&func_data)?;
+        }
         encoder.write_all(&vec![0u8; func_padding as usize])?;
         encoder.write_all(&type_data)?;
         encoder.write_all(self.strings.data())?;
