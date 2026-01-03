@@ -1008,9 +1008,16 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
             // Record namespace path for this entry
             map.insert(entry.offset(), namespace_path);
 
-            // Determine if this entry contributes a namespace name
+            // Determine if this entry contributes a namespace name.
+            // Include structure/union/class types so that nested types (like Rust enum
+            // variant structs) get properly qualified names, e.g. Option<u32>::Some
+            // instead of just Some.
             let name = match entry.tag() {
-                gimli::DW_TAG_namespace | gimli::DW_TAG_module => {
+                gimli::DW_TAG_namespace
+                | gimli::DW_TAG_module
+                | gimli::DW_TAG_structure_type
+                | gimli::DW_TAG_union_type
+                | gimli::DW_TAG_class_type => {
                     if let Some(attr) = entry.attr(gimli::DW_AT_name)? {
                         Some(self.get_string(unit, &attr)?)
                     } else {
