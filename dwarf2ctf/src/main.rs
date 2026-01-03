@@ -31,7 +31,6 @@ type GlobalTypeOffset = DebugInfoOffset<usize>;
 #[clap(group(ArgGroup::new("output").required(true).multiple(true)))]
 struct Args {
     /// An ELF file containing DWARF debug information.
-    #[clap(long, short)]
     elf: PathBuf,
 
     /// Functions to generate CTF for.
