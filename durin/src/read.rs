@@ -1,67 +1,3 @@
-pub mod cwrite;
-pub mod error;
-pub mod read;
-pub mod write;
-
-pub mod constants {
-    pub const CTF_F_COMPRESS: u8 = 0x01;
-
-    pub const CTF_K_UNKNOWN: u8 = 0;
-    pub const CTF_K_INTEGER: u8 = 1;
-    pub const CTF_K_FLOAT: u8 = 2;
-    pub const CTF_K_POINTER: u8 = 3;
-    pub const CTF_K_ARRAY: u8 = 4;
-    pub const CTF_K_FUNCTION: u8 = 5;
-    pub const CTF_K_STRUCT: u8 = 6;
-    pub const CTF_K_UNION: u8 = 7;
-    pub const CTF_K_ENUM: u8 = 8;
-    pub const CTF_K_FORWARD: u8 = 9;
-    pub const CTF_K_TYPEDEF: u8 = 10;
-    pub const CTF_K_VOLATILE: u8 = 11;
-    pub const CTF_K_CONST: u8 = 12;
-    pub const CTF_K_RESTRICT: u8 = 13;
-
-    pub const CTF_MAX_VLEN: u16 = 0x3ff;
-
-    pub const CTF_MAX_SIZE: u64 = 0xfffe;
-    pub const CTF_LSIZE_SENT: u64 = 0xffff;
-    pub const CTF_MAX_LSIZE: u64 = u64::MAX;
-
-    // CTF Integer Encoding Flags
-    pub const CTF_INT_SIGNED: u8 = 0x01;
-    pub const CTF_INT_CHAR: u8 = 0x02;
-    pub const CTF_INT_BOOL: u8 = 0x04;
-
-    pub const CTF_MAGIC: u16 = 0xcff1;
-    pub const CTF_VERSION: u8 = 2;
-
-    pub const MAX_TYPES: u32 = 0x7fff;
-    pub const MAX_TYPE_INDEX: u32 = 0x8000;
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum Endian {
-    Big,
-    Little,
-}
-
-impl Endian {
-    /// TODO
-    pub const NATIVE: Endian = {
-        match u16::from_ne_bytes([0, 1]) {
-            1 => Self::Big,
-            256 => Self::Little,
-            _ => unreachable!(),
-        }
-    };
-}
-
-impl Default for Endian {
-    fn default() -> Self {
-        Self::NATIVE
-    }
-}
-
 pub struct Ctf {
     preamble: Preamble,
     header: Header,
@@ -184,14 +120,4 @@ pub struct LMember {
     name: StrOffset,
     type_: TypeIndex,
     offset: u64,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        todo!();
-    }
 }

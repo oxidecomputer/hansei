@@ -13,9 +13,8 @@ members = [
 [workspace.dependencies]
 anyhow = "1.0"
 assert_cmd = "2.0"
-predicates = "3.1"
-tempfile = "3.14"
 bindgen = { version = "0.72", default-features = false }
+checkctf = { path = "checkctf", version = "0.1.0" }
 clap = { version = "4.5.51", features = ["derive"] }
 fallible-iterator = "0.3.0"
 flate2 = "1.1.5"
@@ -23,12 +22,14 @@ gimli = { version = "0.32", features = ["fallible-iterator"] }
 goblin = "0.10.3"
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
 memmap2 = "0.9.9"
+petgraph = "0.7"
+predicates = "3.1"
 proc = { path = "proc", version = "0.1.0" }
 rangemap = "1.7.0"
 scroll = { version = "0.13.0", features = ["derive"] }
 scroll_derive = "0.13.0"
+tempfile = "3.14"
 thiserror = "2.0.17"
-petgraph = "0.7"
 
 [profile.release]
 debug = true
