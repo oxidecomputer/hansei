@@ -4,4 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gimli = "0.32"
+anyhow = { workspace = true } # FIXME
+flate2 = { workspace = true }
+gimli = { workspace = true }
+goblin = { workspace = true }
+scroll = { workspace = true }
