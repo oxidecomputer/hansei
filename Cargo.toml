@@ -30,6 +30,3 @@ scroll = { version = "0.13.0", features = ["derive"] }
 scroll_derive = "0.13.0"
 tempfile = "3.14"
 thiserror = "2.0.17"
-
-[profile.release]
-debug = true
