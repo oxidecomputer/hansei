@@ -160,7 +160,7 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
 
                 // Show dereferenced pointer info for top-level variable
                 if let Some(deref_addr) = var.dereferenced_addr {
-                    writeln!(out, "    -> @{deref_addr:#x}:")?;
+                    writeln!(out, "     -> @{deref_addr:#x}:")?;
                 }
 
                 // Print fields if this is a struct/union (or dereferenced pointer to one)
@@ -168,10 +168,10 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
                 let available_fields: Vec<_> =
                     var.fields.iter().filter(|f| field_has_data(f)).collect();
                 if !available_fields.is_empty() {
-                    writeln!(out, "    fields:")?;
-                    for field in available_fields {
-                        print_field(out, field, 6, &addrs, &core)?;
-                    }
+                    // writeln!(out, "    fields:")?;
+                    // for field in available_fields {
+                    //     print_field(out, field, 6, &addrs, &core)?;
+                    // }
                 }
             }
         }
