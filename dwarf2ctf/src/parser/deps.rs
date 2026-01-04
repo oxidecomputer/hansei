@@ -1484,12 +1484,42 @@ fn build_variant_part_members(
         0
     };
 
-    // Detect niche optimization: if the discriminant offset equals the minimum variant
-    // member offset, they overlap in memory. This means the discriminant is stored in
-    // the "niche" of the payload (e.g., null pointer for Option<NonNull<T>>), not as
-    // a separate field. In this case, don't emit a separate discriminant member.
-    let is_niche_optimized = variant_part.discriminant.is_some()
-        && discr_offset_bits == min_variant_member_offset;
+    // Detect niche optimization by checking if the payload would fit after the discriminant.
+    // For non-niche enums like Option<u32>:
+    //   - discriminant at offset 0, size 4
+    //   - payload member at DWARF offset 0 (relative to variant start, i.e., after discriminant)
+    //   - struct size = 8 = discriminant (4) + payload (4)
+    // For niche-optimized enums like Option<Arc<T>>:
+    //   - discriminant at offset 0, size 8
+    //   - payload member at DWARF offset 0 (absolute, overlapping with discriminant)
+    //   - struct size = 16 = payload size (discriminant fits within)
+    //
+    // If discriminant_end + first_payload_size > struct_size, offsets must be absolute
+    // and the discriminant overlaps with the payload (niche optimization).
+    let is_niche_optimized = if variant_part.discriminant.is_some() && discr_size_bits > 0 {
+        // Get the size of the first member of any variant with payload
+        let first_member_size: u64 = variant_part
+            .variants
+            .iter()
+            .filter_map(|v| v.members.first())
+            .filter_map(|m| {
+                let type_id = resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map);
+                match type_id {
+                    MaybeOffset::Found(id) => get_ctf_type_size(writer.types.get(id as usize)?),
+                    _ => None,
+                }
+            })
+            .max()
+            .unwrap_or(0);
+
+        let discr_end_bytes = (discr_offset_bits + discr_size_bits) / 8;
+        let min_member_offset_bytes = min_variant_member_offset / 8;
+
+        // If placing payload after discriminant would exceed struct size, it's niche optimized
+        discr_end_bytes + min_member_offset_bytes + first_member_size > parent_struct_size as u64
+    } else {
+        false
+    };
 
     // Determine where the union should start
     let union_offset_bits = if is_niche_optimized {
@@ -1585,6 +1615,19 @@ fn build_variant_part_members(
         type_id: MaybeOffset::Found(union_type_id),
         offset_bits: union_offset_bits,
     });
+}
+
+/// Get the size of a CTF type in bytes, if known.
+fn get_ctf_type_size(ctf_type: &CtfType) -> Option<u64> {
+    match ctf_type {
+        CtfType::Integer { size, .. } => Some(*size as u64),
+        CtfType::Float { size, .. } => Some(*size as u64),
+        CtfType::Struct { size, .. } => Some(*size as u64),
+        CtfType::Union { size, .. } => Some(*size as u64),
+        CtfType::Enum { size, .. } => Some(*size as u64),
+        CtfType::Pointer { .. } => Some(8), // 64-bit pointers
+        _ => None,
+    }
 }
 
 /// Resolve a type reference to a MaybeOffset.
