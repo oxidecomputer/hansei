@@ -1501,13 +1501,22 @@ fn build_variant_part_members(
         let first_member_size: u64 = variant_part
             .variants
             .iter()
-            .filter_map(|v| v.members.first())
-            .filter_map(|m| {
-                let type_id = resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map);
-                match type_id {
-                    MaybeOffset::Found(id) => get_ctf_type_size(writer.types.get(id as usize)?),
-                    _ => None,
-                }
+            .filter_map(|v| {
+                v.members
+                    .iter()
+                    .map(|m| {
+                        let type_id =
+                            resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map);
+                        match type_id {
+                            MaybeOffset::Found(id) => writer
+                                .types
+                                .get(id as usize)
+                                .and_then(get_ctf_type_size)
+                                .unwrap_or(0),
+                            _ => 0,
+                        }
+                    })
+                    .max()
             })
             .max()
             .unwrap_or(0);
