@@ -221,10 +221,7 @@ impl<'a> CtfValidator<'a> {
         if self.is_child {
             // Child can reference 0x1-0x7fff (parent) or 0x8000-0xffff (own types)
             if type_id > self.max_type_id && type_id >= 0x8000 {
-                anyhow::bail!(
-                    "Type ID 0x{type_id:x} exceeds maximum 0x{:x}",
-                    self.max_type_id
-                );
+                anyhow::bail!("Type ID {type_id} exceeds maximum 0x{}", self.max_type_id);
             }
         } else {
             // Non-child can only reference 0x1-0x7fff
@@ -232,10 +229,7 @@ impl<'a> CtfValidator<'a> {
                 anyhow::bail!("Type ID 0x{type_id:x} invalid for non-child file");
             }
             if type_id > self.max_type_id {
-                anyhow::bail!(
-                    "Type ID 0x{type_id:x} exceeds maximum 0x{:x}",
-                    self.max_type_id
-                );
+                anyhow::bail!("Type ID {type_id} exceeds maximum {}", self.max_type_id);
             }
         }
 
@@ -406,7 +400,7 @@ impl<'a> CtfValidator<'a> {
                 //}
 
                 println!(
-                    "Function {}: return=0x{:x}, args={}{}, root={}",
+                    "Function {}: return={}, args={}{}, root={}",
                     func_idx,
                     return_type,
                     if has_varargs { nargs - 1 } else { nargs },
@@ -525,7 +519,7 @@ impl<'a> CtfValidator<'a> {
                     self.validate_type_id(index, false)?;
 
                     println!(
-                        ", contents=0x{:x}, index=0x{:x}, nelems={}",
+                        ", contents={}, index={}, nelems={}",
                         contents, index, nelems
                     );
                 }
@@ -583,7 +577,7 @@ impl<'a> CtfValidator<'a> {
 
                         let mn = self.validate_string_ref(member_name, 0)?;
                         self.validate_type_id(member_type, false)?;
-                        println!("  Member {mn} - Type 0x{member_type:x}: offset={member_offset}",);
+                        println!("  Member {mn} - Type {member_type}: offset={member_offset}",);
                     }
                 }
 
@@ -599,7 +593,7 @@ impl<'a> CtfValidator<'a> {
                     for i in 0..type_info.vlen {
                         let enum_offset = offset + 8 * i as usize;
                         if enum_offset + 8 > end {
-                            anyhow::bail!("Incomplete enumerator {i} at type 0x{type_id:x}");
+                            anyhow::bail!("Incomplete enumerator {i} at type {type_id}");
                         }
 
                         let enum_name: u32 = self.data.gread(&mut offset)?;
