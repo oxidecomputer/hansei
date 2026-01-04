@@ -900,19 +900,21 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
         while let Some(child) = children.next()? {
             match child.entry().tag() {
                 gimli::DW_TAG_member => {
-                    // This is the discriminant member
-                    let mut member = self.extract_member_stub(unit, child.entry())?;
-
-                    // Check if this is the explicit discriminant and give it a name if unnamed
+                    // Only treat this as the discriminant if DW_AT_discr pointed to it.
+                    // For niche-optimized enums, DW_AT_discr is absent and there is no
+                    // separate discriminant member - the discriminant is stored in the
+                    // niche of one of the variant's fields.
                     let is_discr = discr_offset.is_some_and(|off| child.entry().offset() == off);
-                    if is_discr && member.name.is_empty() {
-                        member.name = "__discr".to_string();
+                    if is_discr {
+                        let mut member = self.extract_member_stub(unit, child.entry())?;
+                        if member.name.is_empty() {
+                            member.name = "__discr".to_string();
+                        }
+                        if let Some(type_ref) = member.type_ref {
+                            deps.push(type_ref);
+                        }
+                        discriminant = Some(member);
                     }
-
-                    if let Some(type_ref) = member.type_ref {
-                        deps.push(type_ref);
-                    }
-                    discriminant = Some(member);
                 }
                 gimli::DW_TAG_variant => {
                     // Extract variant stub and collect its dependencies
