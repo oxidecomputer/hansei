@@ -1484,8 +1484,18 @@ fn build_variant_part_members(
         0
     };
 
+    // Detect niche optimization: if the discriminant offset equals the minimum variant
+    // member offset, they overlap in memory. This means the discriminant is stored in
+    // the "niche" of the payload (e.g., null pointer for Option<NonNull<T>>), not as
+    // a separate field. In this case, don't emit a separate discriminant member.
+    let is_niche_optimized = variant_part.discriminant.is_some()
+        && discr_offset_bits == min_variant_member_offset;
+
     // Determine where the union should start
-    let union_offset_bits = if min_variant_member_offset == 0
+    let union_offset_bits = if is_niche_optimized {
+        // Niche optimization: discriminant and payload share the same memory
+        min_variant_member_offset
+    } else if min_variant_member_offset == 0
         && variant_part.discriminant.is_some()
         && discr_size_bits > 0
     {
@@ -1495,13 +1505,15 @@ fn build_variant_part_members(
         min_variant_member_offset
     };
 
-    // Add the discriminant member
-    if let Some(discr) = &variant_part.discriminant {
-        members.push(CtfMember {
-            name: discr.name.clone(),
-            type_id: resolve_type_ref(discr.type_ref.as_ref(), header_offset, global_type_map),
-            offset_bits: discr.offset_bytes * 8,
-        });
+    // Add the discriminant member only if not niche-optimized
+    if !is_niche_optimized {
+        if let Some(discr) = &variant_part.discriminant {
+            members.push(CtfMember {
+                name: discr.name.clone(),
+                type_id: resolve_type_ref(discr.type_ref.as_ref(), header_offset, global_type_map),
+                offset_bits: discr.offset_bytes * 8,
+            });
+        }
     }
 
     // Create struct types for each variant and collect as union members
