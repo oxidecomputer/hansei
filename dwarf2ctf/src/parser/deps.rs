@@ -1485,57 +1485,35 @@ fn build_variant_part_members(
     };
 
     // Detect niche optimization by checking if variant members overlap with the discriminant.
-    //
-    // For non-niche enums like Option<u32>:
-    //   - discriminant at offset 0, size 4 (discr_end = 4)
-    //   - payload member __0 at DWARF offset 4 (absolute, after discriminant)
-    //   - min_variant_member_offset (4) >= discr_end (4) → no overlap → NOT niche
-    //
-    // For niche-optimized enums like Option<Arc<T>>:
-    //   - discriminant at offset 0, size 8 (discr_end = 8)
-    //   - payload member __0 at DWARF offset 0 (absolute, overlapping with discriminant)
-    //   - min_variant_member_offset (0) < discr_end (8) → overlap
-    //   - Check if it's relative offsets or true niche: discr_end + payload > struct_size?
-    //   - 8 + 16 = 24 > 16 → can't fit after discriminant → IS niche
-    let discr_end_bits = discr_offset_bits + discr_size_bits;
-
-    let is_niche_optimized = if variant_part.discriminant.is_some() && discr_size_bits > 0 {
-        // If variant members start at or after the discriminant end, no overlap, not niche
-        if min_variant_member_offset >= discr_end_bits {
-            false
-        } else {
-            // Members appear to start within the discriminant area.
-            // This could be: (a) relative offsets that need adjustment, or (b) niche optimization.
-            // To distinguish: if placing payload after discriminant would exceed struct size,
-            // the offsets must be absolute (niche optimization).
-            let largest_member_size: u64 = variant_part
-                .variants
-                .iter()
-                .filter_map(|v| {
-                    v.members
-                        .iter()
-                        .map(|m| {
-                            let type_id =
-                                resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map);
-                            match type_id {
-                                MaybeOffset::Found(id) => writer
-                                    .types
-                                    .get(id as usize)
-                                    .and_then(get_ctf_type_size)
-                                    .unwrap_or(0),
-                                _ => 0,
-                            }
-                        })
-                        .max()
-                })
-                .max()
-                .unwrap_or(0);
-
-            let discr_end_bytes = discr_end_bits / 8;
-            // If relative interpretation: payload would start at discr_end
-            // Check if discr_end + largest_payload > struct_size
-            discr_end_bytes + largest_member_size > parent_struct_size as u64
-        }
+    let is_niche_optimized: bool = if variant_part.discriminant.is_some() {
+        // Enums using a niche optimization, e.g., `Option<NonZero<u32>>`, do not have
+        // a separate discriminant. However, the DWARF still lists a discriminant:
+        //
+        //   < 3><0x0000e0a4>        DW_TAG_structure_type
+        //                             DW_AT_name                  Option<core::num::nonzero::NonZero<u64>>
+        //                             DW_AT_byte_size             0x00000008
+        //                             DW_AT_accessibility         DW_ACCESS_public
+        //                             DW_AT_alignment             0x00000008
+        //   < 4><0x0000e0ac>          DW_TAG_variant_part
+        //                             DW_AT_discr                 <0x0000e0b1>
+        //
+        // To distinguish if a discriminant struct memeber is needed, we check if any
+        // of the variant type references have a `DW_AT_data_member_location` at offset
+        // 0, which would overlap with the discriminant if that were present.
+        let member_at_zero = variant_part.variants.iter().any(|v| {
+            v.members.iter().any(|m| {
+                let type_id = resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map);
+                match type_id {
+                    MaybeOffset::Found(id) => writer
+                        .types
+                        .get(id as usize)
+                        .map(|t| t.has_member_with_zero_offset())
+                        .unwrap_or_default(),
+                    _ => false,
+                }
+            })
+        });
+        member_at_zero
     } else {
         false
     };
@@ -1544,13 +1522,6 @@ fn build_variant_part_members(
     let union_offset_bits = if is_niche_optimized {
         // Niche optimization: discriminant and payload share the same memory
         min_variant_member_offset
-    } else if min_variant_member_offset < discr_end_bits
-        && variant_part.discriminant.is_some()
-        && discr_size_bits > 0
-    {
-        // Variant member offsets are relative to variant start, not struct start
-        // (we already verified it's not niche, so offsets need adjustment)
-        discr_end_bits
     } else {
         min_variant_member_offset
     };
