@@ -33,7 +33,7 @@ struct Args {
     /// An ELF file containing DWARF debug information.
     elf: PathBuf,
 
-    /// Functions to generate CTF for.
+    /// Functions to generate CTF for parameter and return types.
     #[clap(long, short, group = "input")]
     fns: Vec<String>,
 
@@ -324,7 +324,9 @@ fn main() -> Result<()> {
     type_deps.all_types.extend(explicit_type_deps.all_types);
     type_deps.stubs.extend(explicit_type_deps.stubs);
     type_deps.deps.extend(explicit_type_deps.deps);
-    type_deps.type_locations.extend(explicit_type_deps.type_locations);
+    type_deps
+        .type_locations
+        .extend(explicit_type_deps.type_locations);
 
     let missing_symbols: Vec<_> = symbols.iter().filter(|&(_name, found)| !found).collect();
     for (name, _) in &missing_symbols {
