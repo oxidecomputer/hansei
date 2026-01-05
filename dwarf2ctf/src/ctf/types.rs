@@ -143,6 +143,13 @@ impl CtfType {
             Self::Unknown => "<unknown>",
         }
     }
+
+    pub fn has_member_with_zero_offset(&self) -> bool {
+        let CtfType::Struct { members, .. } = self else {
+            return false;
+        };
+        members.iter().any(|m| m.offset_bits == 0)
+    }
 }
 
 #[derive(Clone, Debug)]
