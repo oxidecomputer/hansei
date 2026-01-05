@@ -1062,7 +1062,7 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
     }
 
     /// Get a fully qualified type name by prepending namespace path.
-    fn get_qualified_name(
+    pub fn get_qualified_name(
         &self,
         unit: &UnitRef<R>,
         offset: UnitOffset,

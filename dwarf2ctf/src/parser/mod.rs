@@ -166,6 +166,107 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         Ok(())
     }
 
+    /// Find types by their fully qualified names (e.g., "tokio::runtime::scheduler::Handle").
+    /// Returns the collected type dependencies for all matching types.
+    pub fn find_types_by_name(
+        &self,
+        type_names: &mut HashMap<String, bool>,
+    ) -> Result<deps::TypeDependencies> {
+        let mut type_deps = deps::TypeDependencies::new();
+
+        if type_names.is_empty() {
+            return Ok(type_deps);
+        }
+
+        let mut iter = self.dwarf.units();
+        while let Some(header) = iter.next().context("failed to get next unit header")? {
+            let unit = self.dwarf.unit(header).context("failed to read unit")?;
+            let unit_ref = UnitRef::new(self.dwarf, &unit);
+
+            // Find matching types in this unit
+            let type_roots = self.find_matching_types(&unit_ref, type_names)?;
+
+            // If we found types in this unit, collect their dependencies
+            if !type_roots.is_empty() {
+                let unit_deps = self.collect_type_deps_from_roots(&unit_ref, &type_roots)?;
+                // Merge into all_type_deps
+                type_deps.all_types.extend(unit_deps.all_types);
+                type_deps.stubs.extend(unit_deps.stubs);
+                type_deps.deps.extend(unit_deps.deps);
+                type_deps.type_locations.extend(unit_deps.type_locations);
+            }
+
+            // Early exit if all types found
+            if type_names.values().all(|&found| found) {
+                break;
+            }
+        }
+
+        Ok(type_deps)
+    }
+
+    /// Find types matching the given fully qualified names in a single compilation unit.
+    fn find_matching_types(
+        &self,
+        unit: &UnitRef<R>,
+        type_names: &mut HashMap<String, bool>,
+    ) -> Result<Vec<UnitOffset>> {
+        let mut matches = Vec::new();
+        let collector = DependencyCollector::new(self.dwarf, &self.unit_ranges);
+
+        let mut entries = unit.entries();
+        while let Some((_delta_depth, entry)) = entries.next_dfs()? {
+            // Early exit if all types found
+            if type_names.values().all(|&found| found) {
+                break;
+            }
+
+            // Only check type-defining tags
+            match entry.tag() {
+                gimli::DW_TAG_structure_type
+                | gimli::DW_TAG_union_type
+                | gimli::DW_TAG_enumeration_type
+                | gimli::DW_TAG_typedef => {}
+                _ => continue,
+            }
+
+            // Get the entry's name
+            let Some(name_attr) = entry.attr(gimli::DW_AT_name)? else {
+                continue;
+            };
+            let name = match name_attr.value() {
+                AttributeValue::DebugStrRef(offset) => {
+                    unit.string(offset)?.to_string()?.into_owned()
+                }
+                AttributeValue::String(s) => s.to_string()?.into_owned(),
+                _ => continue,
+            };
+
+            if name.is_empty() {
+                continue;
+            }
+
+            // Build fully qualified name using namespace path from DWARF hierarchy
+            let qualified_name = collector.get_qualified_name(unit, entry.offset(), &name)?;
+
+            // Check if this matches any requested type
+            if let Some(found) = type_names.get_mut(&qualified_name) {
+                if !*found {
+                    *found = true;
+                    let unit_name = unit
+                        .name
+                        .as_ref()
+                        .and_then(|n| n.to_string_lossy().ok())
+                        .unwrap_or_default();
+                    println!("Found type {qualified_name} in unit {unit_name}");
+                    matches.push(entry.offset());
+                }
+            }
+        }
+
+        Ok(matches)
+    }
+
     /// Find functions by name and collect all type dependencies.
     pub fn find_functions_and_collect_types(
         &self,
