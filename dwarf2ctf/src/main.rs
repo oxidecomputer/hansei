@@ -297,7 +297,8 @@ fn main() -> Result<()> {
         .filter_map(|sym| debug_elf.strtab.get_at(sym.st_name))
         .collect();
 
-    let missing_fns: Vec<_> = fns
+    let missing_fns: Vec<_> = args
+        .fns
         .iter()
         .filter(|f| !source_symbols.contains(f.as_str()))
         .collect();
@@ -306,16 +307,33 @@ fn main() -> Result<()> {
         eprintln!("'{missing}' was not found in {}", args.elf.display());
     }
 
-    let mut symbols: HashMap<_, _> = fns.into_iter().map(|name| (name, false)).collect();
+    let mut symbols: HashMap<_, _> = args.fns.into_iter().map(|name| (name, false)).collect();
+    let mut type_names: HashMap<_, _> = args.types.into_iter().map(|name| (name, false)).collect();
 
     // Find functions and collect their type dependencies in one pass
-    let (function_info, type_deps) = parser
+    let (function_info, mut type_deps) = parser
         .find_functions_and_collect_types(&mut symbols)
         .context("error finding functions and collecting types from DWARF")?;
+
+    // Find explicitly requested types and merge their dependencies
+    let explicit_type_deps = parser
+        .find_types_by_name(&mut type_names)
+        .context("error finding types from DWARF")?;
+
+    // Merge type dependencies
+    type_deps.all_types.extend(explicit_type_deps.all_types);
+    type_deps.stubs.extend(explicit_type_deps.stubs);
+    type_deps.deps.extend(explicit_type_deps.deps);
+    type_deps.type_locations.extend(explicit_type_deps.type_locations);
 
     let missing_symbols: Vec<_> = symbols.iter().filter(|&(_name, found)| !found).collect();
     for (name, _) in &missing_symbols {
         eprintln!("\nFunction '{name}' not found in any compilation unit");
+    }
+
+    let missing_types: Vec<_> = type_names.iter().filter(|&(_name, found)| !found).collect();
+    for (name, _) in &missing_types {
+        eprintln!("\nType '{name}' not found in any compilation unit");
     }
 
     // Build CTF types from the collected dependencies
