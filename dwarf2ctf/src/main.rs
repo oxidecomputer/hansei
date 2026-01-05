@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use gimli::DebugInfoOffset;
 
 use std::fs::{self, File};
-use std::io::{self, IsTerminal};
 use std::mem::size_of;
 use std::path::PathBuf;
 
@@ -28,15 +27,19 @@ use crate::parser::DwarfParser;
 type GlobalTypeOffset = DebugInfoOffset<usize>;
 
 #[derive(clap::Parser)]
+#[clap(group(ArgGroup::new("input").required(true).multiple(true)))]
 #[clap(group(ArgGroup::new("output").required(true).multiple(true)))]
 struct Args {
     /// An ELF file containing DWARF debug information.
     elf: PathBuf,
 
     /// Functions to generate CTF for.
-    /// These will be read from stdin if this flag is not passed.
-    #[clap(long, short)]
+    #[clap(long, short, group = "input")]
     fns: Vec<String>,
+
+    /// Types to generate CTF for.
+    #[clap(long, short, group = "input")]
+    types: Vec<String>,
 
     /// Path to write CTF to.
     #[clap(long, short, group = "output")]
@@ -238,20 +241,6 @@ fn align_up(align: u64, cur_off: &mut usize, out: &mut Vec<u8>) {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-
-    let fns = if args.fns.is_empty() {
-        // Input is not a pipe or file.
-        if io::stdin().is_terminal() {
-            eprintln!("WARNING: reading from stdin, which is a tty");
-        }
-
-        io::read_to_string(io::stdin())?
-            .lines()
-            .map(ToOwned::to_owned)
-            .collect()
-    } else {
-        args.fns
-    };
 
     let debug_file =
         File::open(&args.elf).with_context(|| format!("failed to open {}", args.elf.display()))?;
