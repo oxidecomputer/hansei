@@ -45,12 +45,13 @@ impl StringTable {
 
         let offset = self.strings.len() as u32;
         self.offsets.insert(s.to_string(), offset);
+        let unspaced = s.replace(' ', "_");
         if s.len() >= 1023 {
             // Truncate strings to 1 KiB.
-            self.strings.extend_from_slice(&s.as_bytes()[..1020]);
+            self.strings.extend_from_slice(&unspaced.as_bytes()[..1020]);
             self.strings.extend_from_slice(b"...");
         } else {
-            self.strings.extend_from_slice(s.as_bytes());
+            self.strings.extend_from_slice(unspaced.as_bytes());
         }
         self.strings.push(0); // null terminator
         offset
