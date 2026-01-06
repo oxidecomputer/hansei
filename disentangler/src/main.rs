@@ -825,10 +825,15 @@ impl<'a> Unwinder<'a> {
                 break;
             }
 
-            let mapping = self
-                .core
-                .lookup_map(pc)
-                .with_context(|| format!("no mapping found for PC {pc:#x}"))?;
+            let mapping = match self.core.lookup_map(pc) {
+                Some(l) => l,
+                None => {
+                    pc -= size_of::<u64>() as u64;
+                    self.core
+                        .lookup_map(pc)
+                        .with_context(|| format!("no mapping found for PC {pc:#x}"))?
+                }
+            };
             let object = if mapping.vaddr == self.exec.map_addr {
                 &self.exec
             } else if mapping.vaddr == self.libc.map_addr {
