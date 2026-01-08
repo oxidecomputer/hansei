@@ -5,6 +5,7 @@ use flate2::read::ZlibDecoder;
 use scroll::Pread;
 use scroll::ctx::TryFromCtx;
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::str;
 
@@ -14,18 +15,29 @@ const HEADER_SIZE: usize = 36;
 pub struct CtfReader {
     pub preamble: CtfPreamble,
     pub header: CtfHeader,
-    data: Vec<u8>,
+    pub labels: Vec<CtfLabel>,
+    pub objects: Vec<TypeId>,
+    pub functions: Vec<TypeId>,
+    types: TypeTable,
+    strings: StringTable,
 }
 
 impl CtfReader {
     pub fn load(input: &[u8]) -> Result<Self> {
         let offset = &mut 0;
+
+        if input.len() < HEADER_SIZE {
+            return Err(Error::TooShort {
+                actual: input.len() as u32,
+                expected: HEADER_SIZE as u32,
+            });
+        }
         let preamble: CtfPreamble = input.gread(offset)?;
         let header: CtfHeader = input.gread(offset)?;
 
-        let expected_len = HEADER_SIZE as u32 + header.stroff + header.strlen;
+        let expected_len = header.stroff + header.strlen;
         let data = if preamble.flags.is_compressed() {
-            let mut decompressor = ZlibDecoder::new(input);
+            let mut decompressor = ZlibDecoder::new(&input[HEADER_SIZE..]);
             let mut buf = Vec::new();
 
             decompressor
@@ -49,53 +61,225 @@ impl CtfReader {
             data.to_vec()
         };
 
+        let labels = read_labels(&header, &data)?;
+        let objects = read_objects(&header, &data)?;
+        let functions = Vec::new(); // TODO
+        let types = TypeTable::load(&header, &data)?;
+        let strings = StringTable::new(&header, &data);
+
+        // TODO how expensive is this check? Do we care?
+        // If this is a real library we should make this optional.
+        validate_types(&types, &strings)?;
+
         Ok(Self {
             preamble,
             header,
-            data,
+            labels,
+            objects,
+            functions,
+            types,
+            strings,
         })
     }
 
-    pub fn labels<'a>(&'a self) -> LabelIter<'a> {
-        let label_start = self.header.lbloff as usize;
-        let label_end = self.header.objtoff as usize;
-        let data = &self.data[label_start..label_end];
-
-        LabelIter { data, offset: 0 }
+    pub fn ty<'a>(&'a self, id: TypeId) -> &'a CtfType {
+        // UNWRAP: We validate all type ids are valid during construction.
+        self.types.ty_checked(id).unwrap()
     }
 
-    pub fn objects<'a>(&'a self) -> ObjectIter<'a> {
-        let obj_start = self.header.objtoff as usize;
-        let obj_end = self.header.funcoff as usize;
-        let data = &self.data[obj_start..obj_end];
-
-        ObjectIter { data, offset: 0 }
-    }
-
-    pub fn functions<'a>(&'a self) -> u32 {
-        todo!();
-    }
-
-    pub fn types<'a>(&'a self) -> TypeIter<'a> {
-        let types_start = self.header.typeoff as usize;
-        let types_end = self.header.stroff as usize;
-        let data = &self.data[types_start..types_end];
-
-        TypeIter {
-            data,
-            offset: 0,
-            index: TypeId::default(),
+    /// Return the size of bytes of the type by id, following referenced
+    /// types as needed.
+    pub fn ty_size(&self, id: TypeId) -> u16 {
+        match self.ty(id) {
+            CtfType::Unknown { .. } => 0,
+            CtfType::Integer {
+                ty: CtfInteger { size, .. },
+                ..
+            } => *size,
+            CtfType::Float {
+                ty: CtfFloat { size, .. },
+                ..
+            } => *size,
+            CtfType::Pointer { .. } => 8,
+            CtfType::Array {
+                ty:
+                    CtfArray {
+                        element_type,
+                        nelems,
+                        ..
+                    },
+                ..
+            } => {
+                let elem_size = self.ty_size(*element_type);
+                elem_size * *nelems as u16
+            }
+            CtfType::Function { .. } => 8,
+            CtfType::Struct {
+                ty: CtfStruct { size, .. },
+                ..
+            } => *size,
+            CtfType::Union {
+                ty: CtfUnion { size, .. },
+                ..
+            } => *size,
+            CtfType::Enum {
+                ty: CtfEnum { size, .. },
+                ..
+            } => *size,
+            CtfType::Forward { .. } => 0,
+            CtfType::Typedef {
+                ty: CtfTypedef { target_type, .. },
+                ..
+            } => self.ty_size(*target_type),
+            CtfType::Volatile {
+                ty: CtfVolatile { target_type, .. },
+                ..
+            } => self.ty_size(*target_type),
+            CtfType::Const {
+                ty: CtfConst { target_type, .. },
+                ..
+            } => self.ty_size(*target_type),
+            CtfType::Restrict {
+                ty: CtfRestrict { target_type, .. },
+                ..
+            } => self.ty_size(*target_type),
         }
     }
 
-    pub fn string_table<'a>(&'a self) -> StringTable<'a> {
-        let str_start = self.header.stroff as usize;
-        let str_end = str_start + self.header.strlen as usize;
+    pub fn types<'a>(&'a self) -> &'a [CtfType] {
+        self.types.as_slice()
+    }
 
-        StringTable {
-            inner: &self.data[str_start..str_end],
+    pub fn str<'a>(&'a self, id: StrId) -> &'a str {
+        self.strings.get(id)
+    }
+}
+
+fn read_labels(header: &CtfHeader, data: &[u8]) -> Result<Vec<CtfLabel>> {
+    let labels_start = header.lbloff as usize;
+    let labels_end = header.objtoff as usize;
+    let labels_data = &data[labels_start..labels_end];
+
+    let offset = &mut 0;
+
+    let mut labels = Vec::new();
+    while *offset < labels_data.len() {
+        let label = labels_data.gread(offset)?;
+        labels.push(label);
+    }
+
+    Ok(labels)
+}
+
+fn read_objects(header: &CtfHeader, data: &[u8]) -> Result<Vec<TypeId>> {
+    let obj_start = header.objtoff as usize;
+    let obj_end = header.funcoff as usize;
+    let obj_data = &data[obj_start..obj_end];
+
+    let offset = &mut 0;
+
+    let mut objects = Vec::new();
+    while *offset < obj_data.len() {
+        let object = obj_data.gread(offset)?;
+        objects.push(object);
+    }
+
+    Ok(objects)
+}
+
+/// Iterate over types and confirm that all type and string references are
+/// valid.
+fn validate_types(types: &TypeTable, strings: &StringTable) -> Result<()> {
+    for ty in types.as_slice() {
+        let _ = ty.name_checked(strings)?;
+        match ty {
+            CtfType::Unknown { .. } => {}
+            CtfType::Integer { .. } => {}
+            CtfType::Float { .. } => {}
+            CtfType::Pointer {
+                ty: CtfPointer { target_type, .. },
+                ..
+            } => {
+                let _ = types.ty_checked(*target_type)?;
+            }
+            CtfType::Array {
+                ty:
+                    CtfArray {
+                        element_type,
+                        index_type,
+                        ..
+                    },
+                ..
+            } => {
+                let _ = types.ty_checked(*element_type)?;
+                let _ = types.ty_checked(*index_type)?;
+            }
+            CtfType::Function {
+                ty: CtfFunction {
+                    return_type, args, ..
+                },
+                ..
+            } => {
+                let _ = types.ty_checked(*return_type)?;
+                for arg in args {
+                    let _ = types.ty_checked(*arg)?;
+                }
+            }
+            CtfType::Struct {
+                ty: CtfStruct { members, .. },
+                ..
+            } => {
+                for CtfMember { name, type_id, .. } in members {
+                    let _ = strings.get_checked(*name)?;
+                    let _ = types.ty_checked(*type_id)?;
+                }
+            }
+            CtfType::Union {
+                ty: CtfUnion { members, .. },
+                ..
+            } => {
+                for CtfMember { name, type_id, .. } in members {
+                    let _ = strings.get_checked(*name)?;
+                    let _ = types.ty_checked(*type_id)?;
+                }
+            }
+            CtfType::Enum {
+                ty: CtfEnum { enumerators, .. },
+                ..
+            } => {
+                for CtfEnumerator { name, .. } in enumerators {
+                    let _ = strings.get_checked(*name)?;
+                }
+            }
+            CtfType::Forward { .. } => {}
+            CtfType::Typedef {
+                ty: CtfTypedef { target_type, .. },
+                ..
+            } => {
+                let _ = types.ty_checked(*target_type)?;
+            }
+            CtfType::Volatile {
+                ty: CtfVolatile { target_type, .. },
+                ..
+            } => {
+                let _ = types.ty_checked(*target_type)?;
+            }
+            CtfType::Const {
+                ty: CtfConst { target_type, .. },
+                ..
+            } => {
+                let _ = types.ty_checked(*target_type)?;
+            }
+            CtfType::Restrict {
+                ty: CtfRestrict { target_type, .. },
+                ..
+            } => {
+                let _ = types.ty_checked(*target_type)?;
+            }
         }
     }
+
+    Ok(())
 }
 
 impl TryFromCtx<'_, ()> for CtfPreamble {
@@ -184,29 +368,71 @@ impl TryFromCtx<'_, ()> for TypeId {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Label {
+pub struct CtfLabel {
     /// Ref to name of label.
     label: StrId,
     /// Last type associated with this label.
-    typeidx: TypeId,
+    typeidx: Option<TypeId>,
 }
 
-impl Label {
-    pub fn label<'a>(&'a self, strings: &'a StringTable) -> Result<&'a str> {
-        strings.get(self.label)
+impl CtfLabel {
+    pub fn label<'a>(&self, ctf: &'a CtfReader) -> &'a str {
+        ctf.str(self.label)
     }
 }
 
-impl TryFromCtx<'_, ()> for Label {
+impl TryFromCtx<'_, ()> for CtfLabel {
     type Error = Error;
 
     fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
         let label = from.gread(offset)?;
-        let typeidx = from.gread(offset)?;
+        let idx_int: u32 = from.gread(offset)?;
+        let typeidx = (idx_int as u16).try_into().ok();
 
         Ok((Self { label, typeidx }, *offset))
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+struct TypeTable {
+    types: Vec<CtfType>,
+}
+
+impl TypeTable {
+    pub fn load(header: &CtfHeader, data: &[u8]) -> Result<Self> {
+        let types_start = header.typeoff as usize;
+        let types_end = header.stroff as usize;
+        let types_data = &data[types_start..types_end];
+
+        let offset = &mut 0;
+        let mut id = TypeId::try_from(1).unwrap();
+
+        let mut types = Vec::new();
+        // First slot is empty, but we use Unknown as a placeholder
+        types.push(CtfType::Unknown { id: id });
+
+        while *offset < types_data.len() {
+            let ty = types_data.gread_with(offset, id)?;
+            types.push(ty);
+            let new_id = TypeId::try_from(id.get() + 1)?;
+            id = new_id;
+        }
+
+        Ok(Self { types })
+    }
+
+    pub fn ty_checked<'a>(&'a self, id: TypeId) -> Result<&'a CtfType> {
+        let Some(ty) = self.types.get(id.get() as usize) else {
+            return Err(Error::MissingType(id));
+        };
+
+        Ok(ty)
+    }
+
+    pub fn as_slice(&self) -> &[CtfType] {
+        &self.types
     }
 }
 
@@ -218,12 +444,30 @@ pub enum StringTableType {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct StringTable<'a> {
-    inner: &'a [u8],
+struct StringTable {
+    inner: Vec<u8>,
 }
 
-impl<'a> StringTable<'a> {
-    pub fn get(&'a self, id: StrId) -> Result<&'a str> {
+impl StringTable {
+    fn new(header: &CtfHeader, data: &[u8]) -> Self {
+        let str_start = header.stroff as usize;
+        let str_end = str_start + header.strlen as usize;
+
+        StringTable {
+            inner: data[str_start..str_end].to_vec(),
+        }
+    }
+
+    /// Retrieve a string from the string table.
+    fn get<'a>(&'a self, id: StrId) -> &'a str {
+        // UNWRAP: We confirm in `validate_types` that all referenced strings
+        // are valid.
+        self.get_checked(id).unwrap()
+    }
+
+    /// Retrieve a string from the string table, confirming it has a valid
+    /// index and is correctly encoded.
+    fn get_checked<'a>(&'a self, id: StrId) -> Result<&'a str> {
         let bytes = self
             .inner
             .get(id.offset() as usize..)
@@ -399,9 +643,89 @@ pub enum CtfType {
 }
 
 impl CtfType {
-    pub fn name<'a>(&self, strings: &'a StringTable) -> Result<&'a str> {
-        let index = match self {
-            Self::Unknown { .. } => return Ok(""),
+    pub fn id<'a>(&self) -> TypeId {
+        match self {
+            Self::Unknown { id } => *id,
+            Self::Integer { id, .. } => *id,
+            Self::Float { id, .. } => *id,
+            Self::Pointer { id, .. } => *id,
+            Self::Array { id, .. } => *id,
+            Self::Function { id, .. } => *id,
+            Self::Struct { id, .. } => *id,
+            Self::Union { id, .. } => *id,
+            Self::Enum { id, .. } => *id,
+            Self::Forward { id, .. } => *id,
+            Self::Typedef { id, .. } => *id,
+            Self::Volatile { id, .. } => *id,
+            Self::Const { id, .. } => *id,
+            Self::Restrict { id, .. } => *id,
+        }
+    }
+
+    pub fn kind(&self) -> TypeKind {
+        match self {
+            Self::Unknown { .. } => TypeKind::Unknown,
+            Self::Integer { .. } => TypeKind::Integer,
+            Self::Float { .. } => TypeKind::Float,
+            Self::Pointer { .. } => TypeKind::Pointer,
+            Self::Array { .. } => TypeKind::Array,
+            Self::Function { .. } => TypeKind::Function,
+            Self::Struct { .. } => TypeKind::Struct,
+            Self::Union { .. } => TypeKind::Union,
+            Self::Enum { .. } => TypeKind::Enum,
+            Self::Forward { .. } => TypeKind::Forward,
+            Self::Typedef { .. } => TypeKind::Typedef,
+            Self::Volatile { .. } => TypeKind::Volatile,
+            Self::Const { .. } => TypeKind::Const,
+            Self::Restrict { .. } => TypeKind::Restrict,
+        }
+    }
+
+    pub fn members(&self) -> &[CtfMember] {
+        match self {
+            CtfType::Struct {
+                ty: CtfStruct { members, .. },
+                ..
+            } => members.as_slice(),
+            CtfType::Union {
+                ty: CtfUnion { members, .. },
+                ..
+            } => members.as_slice(),
+            _ => &[],
+        }
+    }
+
+    /// Return all members of the `CtfType` resolved into full `CtfTypes`.
+    pub fn members_resolved<'a>(&self, ctf: &'a CtfReader) -> Vec<(&'a str, &'a CtfType)> {
+        let members = self.members();
+
+        let mut resolved = Vec::with_capacity(members.len());
+        for member in members {
+            let mem_name = ctf.str(member.name);
+            let mem_ty = ctf.ty(member.type_id);
+            resolved.push((mem_name, mem_ty));
+        }
+
+        resolved
+    }
+
+    pub fn name<'a>(&self, ctf: &'a CtfReader) -> &'a str {
+        let Some(id) = self.name_id() else {
+            return "";
+        };
+        ctf.str(id)
+    }
+
+    fn name_checked<'a>(&self, strings: &'a StringTable) -> Result<&'a str> {
+        let Some(id) = self.name_id() else {
+            return Ok("");
+        };
+        strings.get_checked(id)
+    }
+
+    fn name_id<'a>(&self) -> Option<StrId> {
+        let id = match self {
+            Self::Unknown { .. } => return None,
             Self::Integer {
                 ty: CtfInteger { name, .. },
                 ..
@@ -455,7 +779,66 @@ impl CtfType {
                 ..
             } => name,
         };
-        strings.get(*index)
+        Some(*id)
+    }
+
+    /// Return the size of bytes of the type by id, following referenced
+    /// types as needed.
+    pub fn size(&self, ctf: &CtfReader) -> u16 {
+        match self {
+            CtfType::Unknown { .. } => 0,
+            CtfType::Integer {
+                ty: CtfInteger { size, .. },
+                ..
+            } => *size,
+            CtfType::Float {
+                ty: CtfFloat { size, .. },
+                ..
+            } => *size,
+            CtfType::Pointer { .. } => 8,
+            CtfType::Array {
+                ty:
+                    CtfArray {
+                        element_type,
+                        nelems,
+                        ..
+                    },
+                ..
+            } => {
+                let elem_size = ctf.ty(*element_type).size(ctf);
+                elem_size * *nelems as u16
+            }
+            CtfType::Function { .. } => 8,
+            CtfType::Struct {
+                ty: CtfStruct { size, .. },
+                ..
+            } => *size,
+            CtfType::Union {
+                ty: CtfUnion { size, .. },
+                ..
+            } => *size,
+            CtfType::Enum {
+                ty: CtfEnum { size, .. },
+                ..
+            } => *size,
+            CtfType::Forward { .. } => 0,
+            CtfType::Typedef {
+                ty: CtfTypedef { target_type, .. },
+                ..
+            } => ctf.ty(*target_type).size(ctf),
+            CtfType::Volatile {
+                ty: CtfVolatile { target_type, .. },
+                ..
+            } => ctf.ty(*target_type).size(ctf),
+            CtfType::Const {
+                ty: CtfConst { target_type, .. },
+                ..
+            } => ctf.ty(*target_type).size(ctf),
+            CtfType::Restrict {
+                ty: CtfRestrict { target_type, .. },
+                ..
+            } => ctf.ty(*target_type).size(ctf),
+        }
     }
 }
 
@@ -728,6 +1111,16 @@ pub struct CtfRestrict {
     pub target_type: TypeId,
 }
 
+impl CtfMember {
+    pub fn name<'a>(&self, ctf: &'a CtfReader) -> &'a str {
+        ctf.str(self.name)
+    }
+
+    pub fn ty<'a>(&self, ctf: &'a CtfReader) -> &'a CtfType {
+        ctf.ty(self.type_id)
+    }
+}
+
 impl TryFromCtx<'_, ()> for CtfMember {
     type Error = Error;
 
@@ -763,75 +1156,206 @@ impl TryFromCtx<'_, ()> for CtfEnumerator {
     }
 }
 
-pub struct LabelIter<'a> {
-    data: &'a [u8],
-    offset: usize,
+pub struct TypeReader {
+    pub path: &'static [TypeInfo],
+    pub target_member: &'static str,
 }
 
-impl<'a> Iterator for LabelIter<'a> {
-    type Item = Result<Label>;
+pub struct TypeInfo {
+    pub name: &'static str,
+    pub type_kind: TypeKind,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.offset >= self.data.len() {
-            return None;
+/// Result of type traversal containing the resolved type and accumulated metadata.
+#[derive(Clone, Debug)]
+pub struct ResolvedType<'a> {
+    /// The final resolved type after following the path.
+    pub ty: &'a CtfType,
+    /// Offset in bits from the initial type to the final type.
+    pub offset_bits: u32,
+    /// Size in bytes of the final resolved type.
+    pub size_bytes: u16,
+    /// All enum metadata encountered during traversal, in order.
+    pub enums: Vec<EnumInfo<'a>>,
+}
+
+/// Complete metadata about a Rust enum encountered during type traversal.
+#[derive(Clone, Debug)]
+pub struct EnumInfo<'a> {
+    /// The CTF struct type representing the enum.
+    pub enum_struct: &'a CtfType,
+    /// Name of the enum type.
+    pub name: &'a str,
+    /// Discriminant information.
+    pub discriminant: DiscriminantInfo<'a>,
+    /// All variants in this enum.
+    pub variants: Vec<VariantInfo<'a>>,
+    /// Offset in bits from the initial type to this enum.
+    pub offset_bits: u32,
+}
+
+/// Discriminant layout information.
+#[derive(Clone, Debug)]
+pub enum DiscriminantInfo<'a> {
+    /// Standard discriminant stored as a separate field.
+    Separate {
+        /// The __discr member type (Enum or Integer).
+        ty: &'a CtfType,
+        /// Offset in bits within the enum struct.
+        offset_bits: u16,
+        /// Size in bytes of the discriminant.
+        size_bytes: u16,
+    },
+    /// Niche-optimized: no separate discriminant field.
+    Niche,
+}
+
+/// Information about a single enum variant.
+#[derive(Clone, Debug)]
+pub struct VariantInfo<'a> {
+    /// Variant name (from the union member name).
+    pub name: &'a str,
+    /// The struct type containing variant fields.
+    pub ty: &'a CtfType,
+    /// Discriminant value for this variant (from CtfEnumerator if available).
+    pub discriminant_value: Option<i32>,
+}
+
+/// Check if a type represents a Rust enum (has __variants union member).
+fn is_rust_enum(ty: &CtfType, ctf: &CtfReader) -> bool {
+    ty.kind() == TypeKind::Struct && ty.members().iter().any(|m| m.name(ctf) == "__variants")
+}
+
+/// Extract enum metadata from a Rust enum struct.
+fn extract_enum_info<'a>(
+    enum_struct: &'a CtfType,
+    ctf: &'a CtfReader,
+    offset_bits: u32,
+) -> Option<EnumInfo<'a>> {
+    let members = enum_struct.members();
+
+    // Find __variants union
+    let variants_member = members.iter().find(|m| m.name(ctf) == "__variants")?;
+    let variants_union = variants_member.ty(ctf);
+
+    // Find __discr if present (non-niche)
+    let discr_member = members.iter().find(|m| m.name(ctf) == "__discr");
+
+    let discriminant = match discr_member {
+        Some(discr) => {
+            let discr_ty = discr.ty(ctf);
+            DiscriminantInfo::Separate {
+                ty: discr_ty,
+                offset_bits: discr.offset_bits,
+                size_bytes: discr_ty.size(ctf),
+            }
         }
+        None => DiscriminantInfo::Niche,
+    };
 
-        let label = match self.data.gread(&mut self.offset) {
-            Ok(label) => label,
-            Err(e) => return Some(Err(e)),
-        };
+    // Extract variants from union, with discriminant values from enum type
+    let variants = extract_variants(variants_union, discr_member, ctf);
 
-        Some(Ok(label))
+    Some(EnumInfo {
+        enum_struct,
+        name: enum_struct.name(ctf),
+        discriminant,
+        variants,
+        offset_bits,
+    })
+}
+
+/// Extract variant info from __variants union.
+fn extract_variants<'a>(
+    variants_union: &'a CtfType,
+    discr_member: Option<&CtfMember>,
+    ctf: &'a CtfReader,
+) -> Vec<VariantInfo<'a>> {
+    // If discriminant is an enum type, build name->value map
+    let discr_values: HashMap<&str, i32> = discr_member
+        .map(|m| m.ty(ctf))
+        .and_then(|ty| match ty {
+            CtfType::Enum {
+                ty: CtfEnum { enumerators, .. },
+                ..
+            } => Some(
+                enumerators
+                    .iter()
+                    .map(|e| (ctf.str(e.name), e.value))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    variants_union
+        .members()
+        .iter()
+        .map(|m| {
+            let name = m.name(ctf);
+            VariantInfo {
+                name,
+                ty: m.ty(ctf),
+                discriminant_value: discr_values.get(name).copied(),
+            }
+        })
+        .collect()
+}
+
+impl TypeReader {
+    /// Navigate through nested types, returning just the final type.
+    /// Maintained for backward compatibility.
+    pub fn read_type<'a>(&self, initial_type: &'a CtfType, ctf: &'a CtfReader) -> Option<&'a CtfType> {
+        self.read_type_full(initial_type, ctf).map(|r| r.ty)
     }
-}
 
-pub struct ObjectIter<'a> {
-    data: &'a [u8],
-    offset: usize,
-}
+    /// Navigate through nested types, returning full metadata including
+    /// accumulated offset, size, and enum information.
+    pub fn read_type_full<'a>(
+        &self,
+        initial_type: &'a CtfType,
+        ctf: &'a CtfReader,
+    ) -> Option<ResolvedType<'a>> {
+        let mut accumulated_offset: u32 = 0;
+        let mut enums_found: Vec<EnumInfo<'a>> = Vec::new();
+        let mut the_members = initial_type.members();
 
-impl<'a> Iterator for ObjectIter<'a> {
-    type Item = Result<TypeId>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.offset >= self.data.len() {
-            return None;
+        // Check if initial type is an enum
+        if is_rust_enum(initial_type, ctf) {
+            if let Some(info) = extract_enum_info(initial_type, ctf, 0) {
+                enums_found.push(info);
+            }
         }
 
-        let id = match self.data.gread(&mut self.offset) {
-            Ok(id) => id,
-            Err(e) => return Some(Err(e)),
-        };
+        let mut iter = self.path.iter().peekable();
+        while let Some(TypeInfo { name, type_kind }) = iter.next() {
+            let member = the_members.iter().find(|m| m.name(ctf) == *name)?;
+            accumulated_offset += member.offset_bits as u32;
 
-        Some(Ok(id))
-    }
-}
+            let child_ty = member.ty(ctf);
 
-pub struct TypeIter<'a> {
-    data: &'a [u8],
-    offset: usize,
-    index: TypeId,
-}
+            // Check for enum at each step
+            if is_rust_enum(child_ty, ctf) {
+                if let Some(info) = extract_enum_info(child_ty, ctf, accumulated_offset) {
+                    enums_found.push(info);
+                }
+            }
 
-impl<'a> Iterator for TypeIter<'a> {
-    type Item = Result<CtfType>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.offset >= self.data.len() {
-            return None;
+            if iter.peek().is_some() {
+                if child_ty.kind() != *type_kind {
+                    panic!("unexpected kind {:?}", child_ty.kind());
+                }
+                the_members = child_ty.members();
+            } else {
+                return Some(ResolvedType {
+                    ty: child_ty,
+                    offset_bits: accumulated_offset,
+                    size_bytes: child_ty.size(ctf),
+                    enums: enums_found,
+                });
+            }
         }
 
-        let ty = match self.data.gread_with(&mut self.offset, self.index) {
-            Ok(ty) => ty,
-            Err(e) => return Some(Err(e)),
-        };
-        let new_index = match TypeId::try_from(self.index.get() + 1) {
-            Ok(i) => i,
-            Err(e) => return Some(Err(e)),
-        };
-
-        self.index = new_index;
-
-        Some(Ok(ty))
+        None
     }
 }
