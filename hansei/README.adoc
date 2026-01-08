@@ -1,0 +1,5 @@
+= Hansei
+
+> https://en.wikipedia.org/wiki/Hansei[Hansei] (反省; "self-reflection") is a central idea in Japanese culture, meaning to acknowledge one's own mistake and to pledge improvement.
+
+A tool to inspect where we have erred with `tokio`.
