@@ -5,7 +5,7 @@ use libproc_sys::{
 use std::ffi::{CStr, CString, FromBytesUntilNulError, NulError, OsStr, c_char, c_int, c_void};
 use std::fmt;
 use std::io;
-use std::mem::MaybeUninit;
+use std::mem::{self, MaybeUninit};
 use std::ops::Range;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -31,6 +31,8 @@ pub enum Error {
     Read(#[from] io::Error), // TODO fix name
     #[error("failed to iterate over symbols")]
     SymbolIterFailed,
+    #[error("failed to fill whole buffer")]
+    UnexpectedEof,
 }
 
 #[derive(Debug)]
@@ -441,6 +443,14 @@ impl Core {
         }
     }
 
+    pub fn pread_exact(&self, buf: &mut [u8], address: u64) -> Result<()> {
+        if !self.pread(buf, address)? == buf.len() as u64 {
+            return Err(Error::UnexpectedEof);
+        }
+
+        Ok(())
+    }
+
     pub fn read_u64(&self, address: u64) -> Result<u64> {
         let mut buf = [0u8; size_of::<u64>()];
         self.pread(&mut buf, address)?;
@@ -474,6 +484,34 @@ impl Core {
         } else {
             Err(io::Error::from_raw_os_error(ret).into())
         }
+    }
+
+    /// Get the values of a LWP's `ul_ftsd` field from its `ulwp_t`.
+    /// This contains the thread-local storage (TLS) for the LWP, also known as
+    /// thread-specific data (TSD).
+    pub fn lwp_tsd(&self, lwp: u32) -> Result<[u64; 9]> {
+        // A thread's `ulwp_t` struct from libc is not exposed as part of
+        // libproc. We can trivially get its address via `%fsbase`, but
+        // generating bindings would then drag in a large part of the OS which
+        // is quite a hassle. Instead we calculate its offset, which is
+        // obviously not reliable, but it's been ten years since the last
+        // time `ulwp_t` changed format, so we can probably get away with this
+        // hack for a while.
+        const UL_FTSD_OFFSET: u64 = 320;
+
+        // Start with u64 to ensure alignment is correct.
+        let tls = [0u64; 9];
+
+        // SAFETY: There are no layout requirements for either [u64; 9] or [u8; 72].
+        let mut bytes: [u8; 72] = unsafe { mem::transmute(tls) };
+
+        let regs = self.regs(lwp)?;
+        self.pread(&mut bytes, regs.fsbase + UL_FTSD_OFFSET)?;
+
+        // SAFETY: Returning to the original type.
+        let tls = unsafe { mem::transmute(bytes) };
+
+        Ok(tls)
     }
 
     pub fn mappings(&self) -> Result<Mappings> {
@@ -649,7 +687,9 @@ pub struct Status {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Lwp {
+    /// The LWP's thread id.
     pub tid: u32,
+    /// The address range of the LWP's stack.
     pub stack_range: Range<u64>,
 }
 

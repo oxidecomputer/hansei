@@ -452,6 +452,8 @@ pub struct VariantStub {
     pub name: String,
     /// Members of this variant's payload
     pub members: Vec<MemberStub>,
+    /// Discriminant value from DW_AT_discr_value (if present)
+    pub discriminant_value: Option<i64>,
 }
 
 /// Stub information for a DW_TAG_variant_part (Rust enum representation) collected during Phase 1.
@@ -1327,12 +1329,23 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
     ) -> Result<Option<VariantStub>> {
         let entry = variant_node.entry();
 
-        // Get variant name from DW_AT_name if available
+        // Get variant name from DW_AT_name and discriminant value from DW_AT_discr_value
         let mut variant_name = String::new();
+        let mut discriminant_value = None;
         let mut attrs = entry.attrs();
         while let Some(attr) = attrs.next()? {
             if attr.name() == gimli::DW_AT_name {
                 variant_name = self.get_string(unit, &attr)?;
+            } else if attr.name() == gimli::DW_AT_discr_value {
+                discriminant_value = match attr.value() {
+                    gimli::AttributeValue::Sdata(v) => Some(v),
+                    gimli::AttributeValue::Udata(v) => Some(v as i64),
+                    gimli::AttributeValue::Data1(v) => Some(v as i64),
+                    gimli::AttributeValue::Data2(v) => Some(v as i64),
+                    gimli::AttributeValue::Data4(v) => Some(v as i64),
+                    gimli::AttributeValue::Data8(v) => Some(v as i64),
+                    _ => None,
+                };
             }
         }
 
@@ -1365,6 +1378,7 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
         Ok(Some(VariantStub {
             name: variant_name,
             members,
+            discriminant_value,
         }))
     }
 
@@ -1881,9 +1895,39 @@ fn build_variant_part_members(
     // Add the discriminant member only if not niche-optimized
     if !is_niche_optimized {
         if let Some(discr) = &variant_part.discriminant {
+            // Collect discriminant values from variants to create a synthetic enum type
+            let enumerators: Vec<CtfEnumerator> = variant_part
+                .variants
+                .iter()
+                .filter_map(|v| {
+                    v.discriminant_value.map(|val| CtfEnumerator {
+                        name: v.name.clone(),
+                        value: val as i32,
+                    })
+                })
+                .collect();
+
+            // If we have discriminant values, create a synthetic enum type
+            let discr_type_id = if !enumerators.is_empty() {
+                let enum_name = if parent_struct_name.is_empty() {
+                    "__discr_ty".to_string()
+                } else {
+                    format!("{}::__discr_ty", parent_struct_name)
+                };
+                let enum_type = CtfType::Enum {
+                    name: enum_name,
+                    size: 4, // Standard CTF enum size
+                    enumerators,
+                };
+                MaybeOffset::Found(writer.add_synthetic_type(enum_type))
+            } else {
+                // Fall back to original type if no discriminant values available
+                resolve_type_ref(discr.type_ref.as_ref(), header_offset, global_type_map)
+            };
+
             members.push(CtfMember {
                 name: discr.name.clone(),
-                type_id: resolve_type_ref(discr.type_ref.as_ref(), header_offset, global_type_map),
+                type_id: discr_type_id,
                 offset_bits: discr.offset_bytes * 8,
             });
         }

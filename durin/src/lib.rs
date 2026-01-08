@@ -119,6 +119,7 @@ pub struct CtfHeader {
     pub strlen: u32,
 }
 
+// TODO refactor to more general error types, capture context
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("failed to decompress CTF data")]
@@ -129,11 +130,11 @@ pub enum Error {
     InvalidFloatEncoding(u8),
     #[error("invalid CTF magic number {0:02x}")]
     InvalidMagic(u16),
-    #[error("{0} is too large to be a valid string offset")]
+    #[error("{0} is not a valid string offset")]
     InvalidStrOffset(u32),
     #[error("{0} is not a valid type kind")]
     InvalidTypeKind(u16),
-    #[error("{0} is to large to be a valid type index")]
+    #[error("{0} is not a valid type index")]
     InvalidTypeIndex(u16),
     #[error("string at index {0:?} was not valid UTF-8")]
     InvalidStrEncoding(StrId),
