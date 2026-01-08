@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+durin = { workspace = true }
 flate2 = { workspace = true }
 memmap2 = { workspace = true }
 scroll = { workspace = true }

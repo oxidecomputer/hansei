@@ -1,4 +1,5 @@
 use anyhow::{Context as _, Result};
+use durin::read::CtfReader;
 use flate2::read::ZlibDecoder;
 use scroll::Pread;
 
@@ -125,6 +126,19 @@ struct CtfValidator<'a> {
 
 impl<'a> CtfValidator<'a> {
     fn new(data: &'a [u8]) -> Result<Self> {
+        let x = CtfReader::load(data).unwrap();
+        dbg!(&x.header);
+        let types: Result<Vec<_>, durin::Error> = x.types().collect();
+        let types = types?;
+        let strings = x.string_table();
+        let mut type_by_name = std::collections::HashMap::new();
+        for ty in &types {
+            let name = ty.name(&strings)?;
+            dbg!(name);
+            type_by_name.insert(name, ty);
+        }
+        dbg!(type_by_name.get("tokio::runtime::scheduler::Handle"));
+
         if data.len() < HEADER_SIZE {
             anyhow::bail!(
                 "input len {} is less than CTF header size of 36",
@@ -473,11 +487,7 @@ impl<'a> CtfValidator<'a> {
                     if offset + size_of::<u32>() > end {
                         anyhow::bail!("Incomplete integer encoding at type 0x{type_id:x}");
                     }
-                    let encoding: u32 = self.data.gread(&mut offset)?;
-
-                    let _enc_flags = (encoding >> 24) & 0xff;
-                    let _enc_offset = (encoding >> 16) & 0xff;
-                    let _enc_bits = encoding & 0xffff;
+                    let _encoding: u32 = self.data.gread(&mut offset)?;
                 }
 
                 CTF_K_FLOAT => {

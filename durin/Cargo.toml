@@ -9,3 +9,5 @@ flate2 = { workspace = true }
 gimli = { workspace = true }
 goblin = { workspace = true }
 scroll = { workspace = true }
+scroll_derive = { workspace = true }
+thiserror = { workspace = true }
