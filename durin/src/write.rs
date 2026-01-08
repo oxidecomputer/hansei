@@ -12,6 +12,7 @@ use scroll::{IOwrite, LE};
 
 use crate::constants::*;
 
+// TODO use our own identifier?
 type GlobalTypeOffset = gimli::DebugInfoOffset<usize>;
 
 pub fn ctf_type_info(kind: u8, is_root: bool, vlen: u16) -> u16 {
@@ -621,7 +622,7 @@ pub struct CtfMember {
     pub offset_bits: u64,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum MaybeOffset {
     Found(u16),
     Pending(GlobalTypeOffset),

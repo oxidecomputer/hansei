@@ -150,6 +150,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "durin",
  "flate2",
  "memmap2",
  "scroll",
@@ -249,6 +250,8 @@ dependencies = [
  "gimli",
  "goblin",
  "scroll",
+ "scroll_derive",
+ "thiserror",
 ]
 
 [[package]]
