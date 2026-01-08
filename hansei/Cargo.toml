@@ -1,0 +1,14 @@
+[package]
+name = "hansei"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+durin = { workspace = true }
+fallible-iterator = { workspace = true }
+gimli = { workspace = true }
+goblin = { workspace = true }
+memmap2 = { workspace = true }
+proc = { workspace = true }

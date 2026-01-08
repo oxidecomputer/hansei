@@ -6,6 +6,7 @@ members = [
     "durin",
     "dwarf2ctf",
     "findargs",
+    "hansei",
     "libproc-sys",
     "proc",
 ]
