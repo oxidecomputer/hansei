@@ -587,13 +587,14 @@ impl<'a> CtfValidator<'a> {
                     println!(", enumerators={}", type_info.vlen);
 
                     for i in 0..type_info.vlen {
-                        let enum_offset = offset + 8 * i as usize;
-                        if enum_offset + 8 > end {
+                        if offset + 8 > end {
                             anyhow::bail!("Incomplete enumerator {i} at type {type_id}");
                         }
 
                         let enum_name: u32 = self.data.gread(&mut offset)?;
-                        let _ = self.validate_string_ref(enum_name, 0);
+                        let enum_value: i32 = self.data.gread(&mut offset)?;
+                        let en = self.validate_string_ref(enum_name, 0)?;
+                        println!("  Enumerator {en} - Value {enum_value}");
                     }
                 }
 
