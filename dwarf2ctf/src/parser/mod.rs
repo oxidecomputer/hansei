@@ -1753,6 +1753,7 @@ fn stub_to_ctf_type(
                     header_offset,
                     writer,
                     global_type_map,
+                    deps,
                 );
             }
 
@@ -1835,6 +1836,7 @@ fn build_variant_part_members(
     header_offset: DebugInfoOffset<usize>,
     writer: &mut CtfWriter,
     global_type_map: &HashMap<GlobalTypeOffset, u16>,
+    deps: &TypeDependencies,
 ) {
     // If there are no variants with payloads, just add the discriminant
     if variant_part.variants.is_empty() {
@@ -1857,7 +1859,7 @@ fn build_variant_part_members(
         .min()
         .unwrap_or(0);
 
-    let is_niche_optimized = if variant_part.discriminant.is_some() {
+    let is_niche_optimized = if let Some(discr) = &variant_part.discriminant {
         // Enums using a niche optimization, e.g., `Option<NonZero<u32>>`, do not have
         // a separate discriminant. However, the DWARF still lists a discriminant, even
         // though it overlaps with the value:
@@ -1887,7 +1889,16 @@ fn build_variant_part_members(
                 }
             })
         });
-        member_at_zero
+
+        // Also check for discriminant folded into a nested enum's discriminant.
+        // This handles cases like `Option<SomeEnum>` where the Option discriminant
+        // uses an out-of-range value of the inner enum's discriminant field.
+        // For example, Option<HistogramType> where HistogramType has values 0,1,2
+        // would use value 3 for Option::None.
+        let nested_discr =
+            has_nested_enum_discriminant(variant_part, discr.offset_bytes, &deps.stubs, header_offset);
+
+        member_at_zero || nested_discr
     } else {
         false
     };
@@ -2002,6 +2013,127 @@ fn build_variant_part_members(
         type_id: MaybeOffset::Found(union_type_id),
         offset_bits: union_offset_bits,
     });
+}
+
+/// Convert a TypeRef to a GlobalTypeOffset.
+fn type_ref_to_global(type_ref: &TypeRef, header_offset: DebugInfoOffset<usize>) -> GlobalTypeOffset {
+    match type_ref {
+        TypeRef::SameUnit(unit_offset) => DebugInfoOffset(header_offset.0 + unit_offset.0),
+        TypeRef::CrossUnit(abs_offset) => *abs_offset,
+    }
+}
+
+/// Check if a discriminant at `discr_offset` is folded into a nested enum's discriminant.
+///
+/// This handles the Rust niche optimization where `Option<SomeEnum>` stores its discriminant
+/// in the same location as the inner enum's discriminant by using an out-of-range value.
+/// For example, `Option<HistogramType>` where HistogramType has variants 0, 1, 2 would use
+/// discriminant value 3 for `Option::None`.
+///
+/// The function traverses the type chain starting from variant members, following members
+/// at the same offset as the discriminant, looking for nested structs with variant_parts
+/// whose discriminant is at the same offset.
+fn has_nested_enum_discriminant(
+    variant_part: &VariantPartStub,
+    discr_offset: u64,
+    stubs: &HashMap<GlobalTypeOffset, TypeStub>,
+    header_offset: DebugInfoOffset<usize>,
+) -> bool {
+    // Check each variant's members for nested enums with discriminants at the same offset
+    for variant in &variant_part.variants {
+        for member in &variant.members {
+            // Only follow members that overlap with the discriminant
+            if member.offset_bytes != discr_offset {
+                continue;
+            }
+
+            if let Some(type_ref) = &member.type_ref {
+                if has_discriminant_in_type_chain(type_ref, discr_offset, stubs, header_offset, 0) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Recursively check if a type or any of its nested members at the given offset
+/// contains a variant_part (enum) with a discriminant at the same offset.
+fn has_discriminant_in_type_chain(
+    type_ref: &TypeRef,
+    target_offset: u64,
+    stubs: &HashMap<GlobalTypeOffset, TypeStub>,
+    header_offset: DebugInfoOffset<usize>,
+    depth: usize,
+) -> bool {
+    // Prevent infinite recursion in case of cycles
+    if depth > 20 {
+        return false;
+    }
+
+    let global_id = type_ref_to_global(type_ref, header_offset);
+    let Some(stub) = stubs.get(&global_id) else {
+        return false;
+    };
+
+    match stub {
+        TypeStub::Struct {
+            variant_parts,
+            members,
+            ..
+        } => {
+            // Check if this struct has a variant_part with discriminant at target_offset
+            for vp in variant_parts {
+                if let Some(discr) = &vp.discriminant {
+                    if discr.offset_bytes == target_offset {
+                        return true;
+                    }
+                }
+            }
+
+            // Recursively check members at offset 0 (relative to this struct)
+            // Since we're looking for the discriminant at target_offset, we need to
+            // follow members that would contain that offset
+            for member in members {
+                if member.offset_bytes == 0 {
+                    if let Some(member_type_ref) = &member.type_ref {
+                        if has_discriminant_in_type_chain(
+                            member_type_ref,
+                            target_offset,
+                            stubs,
+                            header_offset,
+                            depth + 1,
+                        ) {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            false
+        }
+
+        // For type modifiers, follow to the target type
+        TypeStub::Typedef { target, .. }
+        | TypeStub::Const { target, .. }
+        | TypeStub::Volatile { target, .. }
+        | TypeStub::Restrict { target, .. } => {
+            if let Some(target_ref) = target {
+                has_discriminant_in_type_chain(
+                    target_ref,
+                    target_offset,
+                    stubs,
+                    header_offset,
+                    depth + 1,
+                )
+            } else {
+                false
+            }
+        }
+
+        _ => false,
+    }
 }
 
 /// Resolve a type reference to a MaybeOffset.
