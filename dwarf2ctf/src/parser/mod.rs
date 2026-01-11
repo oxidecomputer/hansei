@@ -436,7 +436,7 @@ pub struct MemberStub {
 #[derive(Debug, Clone)]
 pub struct EnumeratorStub {
     pub name: String,
-    pub value: i32,
+    pub value: i64,
 }
 
 /// Stub information for a function parameter collected during Phase 1.
@@ -1194,7 +1194,7 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
         while let Some(child) = children.next()? {
             if child.entry().tag() == gimli::DW_TAG_enumerator {
                 let mut enum_name = String::new();
-                let mut enum_value: i32 = 0;
+                let mut enum_value: i64 = 0;
 
                 let mut child_attrs = child.entry().attrs();
                 while let Some(attr) = child_attrs.next()? {
@@ -1203,7 +1203,7 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
                             enum_name = self.get_string(unit, &attr)?;
                         }
                         gimli::DW_AT_const_value => {
-                            enum_value = self.get_sdata(&attr).unwrap_or(0) as i32;
+                            enum_value = self.get_sdata(&attr).unwrap_or(0);
                         }
                         _ => {}
                     }
@@ -1370,10 +1370,9 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
             }
         }
 
-        // Skip unit variants (no payload)
-        if members.is_empty() {
-            return Ok(None);
-        }
+        // Keep unit variants (no payload) - we need them for:
+        // 1. Their discriminant values (for the __discr_ty enum)
+        // 2. Including them in the __variants union as ZST types
 
         Ok(Some(VariantStub {
             name: variant_name,
@@ -1903,46 +1902,42 @@ fn build_variant_part_members(
         false
     };
 
-    // Add the discriminant member only if not niche-optimized
-    if !is_niche_optimized {
-        if let Some(discr) = &variant_part.discriminant {
-            // Collect discriminant values from variants to create a synthetic enum type
-            let enumerators: Vec<CtfEnumerator> = variant_part
-                .variants
-                .iter()
-                .filter_map(|v| {
-                    v.discriminant_value.map(|val| CtfEnumerator {
-                        name: v.name.clone(),
-                        value: val as i32,
-                    })
-                })
-                .collect();
+    // Collect discriminant values from variants to create a synthetic enum type.
+    // We do this for both niche-optimized and non-niche enums.
+    let enumerators: Vec<CtfEnumerator> = variant_part
+        .variants
+        .iter()
+        .filter_map(|v| {
+            v.discriminant_value.map(|val| CtfEnumerator {
+                name: v.name.clone(),
+                value: val, // Use full i64 value to support large discriminants
+            })
+        })
+        .collect();
 
-            // If we have discriminant values, create a synthetic enum type
-            let discr_type_id = if !enumerators.is_empty() {
-                let enum_name = if parent_struct_name.is_empty() {
-                    "__discr_ty".to_string()
-                } else {
-                    format!("{}::__discr_ty", parent_struct_name)
-                };
-                let enum_type = CtfType::Enum {
-                    name: enum_name,
-                    size: 4, // Standard CTF enum size
-                    enumerators,
-                };
-                MaybeOffset::Found(writer.add_synthetic_type(enum_type))
-            } else {
-                // Fall back to original type if no discriminant values available
-                resolve_type_ref(discr.type_ref.as_ref(), header_offset, global_type_map)
-            };
-
-            members.push(CtfMember {
-                name: discr.name.clone(),
-                type_id: discr_type_id,
-                offset_bits: discr.offset_bytes * 8,
-            });
-        }
-    }
+    // Create the discriminant enum type if we have enumerators
+    let discr_type_id = if !enumerators.is_empty() {
+        let enum_name = if parent_struct_name.is_empty() {
+            "__discr_ty".to_string()
+        } else {
+            format!("{}::__discr_ty", parent_struct_name)
+        };
+        let enum_type = CtfType::Enum {
+            name: enum_name,
+            size: 4, // Standard CTF enum size
+            enumerators,
+        };
+        Some(MaybeOffset::Found(writer.add_synthetic_type(enum_type)))
+    } else if let Some(discr) = &variant_part.discriminant {
+        // Fall back to original type if no discriminant values available
+        Some(resolve_type_ref(
+            discr.type_ref.as_ref(),
+            header_offset,
+            global_type_map,
+        ))
+    } else {
+        None
+    };
 
     // Create struct types for each variant and collect as union members
     let mut union_members: Vec<CtfMember> = Vec::new();
@@ -1964,8 +1959,24 @@ fn build_variant_part_members(
         let variant_size = parent_struct_size.saturating_sub((union_offset_bits / 8) as u32);
         max_variant_size = max_variant_size.max(variant_size);
 
-        // For single-member variants at offset 0, use the type directly
-        let variant_type_id = if adjusted_members.len() == 1
+        // Determine the variant's type:
+        // - For ZST variants (no members), create an empty struct
+        // - For single-member variants at offset 0, use the type directly
+        // - Otherwise, create a struct for the variant's payload
+        let variant_type_id = if adjusted_members.is_empty() {
+            // ZST variant (e.g., None in Option<NonZero<u32>>)
+            let zst_name = if parent_struct_name.is_empty() {
+                format!("{}::ZST", variant.name)
+            } else {
+                format!("{}::{}::ZST", parent_struct_name, variant.name)
+            };
+            let zst_struct = CtfType::Struct {
+                name: zst_name,
+                size: 0,
+                members: vec![],
+            };
+            MaybeOffset::Found(writer.add_synthetic_type(zst_struct))
+        } else if adjusted_members.len() == 1
             && adjusted_members[0].offset_bits == 0
             && (adjusted_members[0].name.is_empty() || adjusted_members[0].name == variant.name)
         {
@@ -1993,26 +2004,80 @@ fn build_variant_part_members(
         });
     }
 
-    // Create the union type
-    let union_name = if parent_struct_name.is_empty() {
+    // Create the __variants union type
+    let variants_union_name = if parent_struct_name.is_empty() {
         "__variants".to_string()
     } else {
         format!("{}::__variants", parent_struct_name)
     };
 
-    let union_type = CtfType::Union {
-        name: union_name,
+    let variants_union = CtfType::Union {
+        name: variants_union_name.clone(),
         size: max_variant_size,
         members: union_members,
     };
-    let union_type_id = writer.add_synthetic_type(union_type);
+    let variants_union_id = writer.add_synthetic_type(variants_union);
 
-    // Add the union as a member of the parent struct
-    members.push(CtfMember {
-        name: "__variants".to_string(),
-        type_id: MaybeOffset::Found(union_type_id),
-        offset_bits: union_offset_bits,
-    });
+    if is_niche_optimized {
+        // For niche-optimized enums, create a __tagged wrapper union containing
+        // both the discriminant and the variants union. This accurately represents
+        // that the discriminant and payload share the same memory location.
+        let mut tagged_members = Vec::new();
+
+        // Add the discriminant member
+        if let Some(discr_id) = discr_type_id {
+            tagged_members.push(CtfMember {
+                name: "__discr".to_string(),
+                type_id: discr_id,
+                offset_bits: 0,
+            });
+        }
+
+        // Add the variants union
+        tagged_members.push(CtfMember {
+            name: "__variants".to_string(),
+            type_id: MaybeOffset::Found(variants_union_id),
+            offset_bits: 0,
+        });
+
+        let tagged_union_name = if parent_struct_name.is_empty() {
+            "__tagged".to_string()
+        } else {
+            format!("{}::__tagged", parent_struct_name)
+        };
+
+        let tagged_union = CtfType::Union {
+            name: tagged_union_name,
+            size: max_variant_size,
+            members: tagged_members,
+        };
+        let tagged_union_id = writer.add_synthetic_type(tagged_union);
+
+        // Add the __tagged union as a member of the parent struct
+        members.push(CtfMember {
+            name: "__tagged".to_string(),
+            type_id: MaybeOffset::Found(tagged_union_id),
+            offset_bits: union_offset_bits,
+        });
+    } else {
+        // For non-niche enums, add the discriminant member and variants union separately
+        if let Some(discr) = &variant_part.discriminant {
+            if let Some(discr_id) = discr_type_id {
+                members.push(CtfMember {
+                    name: discr.name.clone(),
+                    type_id: discr_id,
+                    offset_bits: discr.offset_bytes * 8,
+                });
+            }
+        }
+
+        // Add the variants union as a member of the parent struct
+        members.push(CtfMember {
+            name: "__variants".to_string(),
+            type_id: MaybeOffset::Found(variants_union_id),
+            offset_bits: union_offset_bits,
+        });
+    }
 }
 
 /// Convert a TypeRef to a GlobalTypeOffset.
