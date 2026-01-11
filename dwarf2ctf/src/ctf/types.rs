@@ -155,7 +155,7 @@ impl CtfType {
 #[derive(Clone, Debug)]
 pub struct CtfEnumerator {
     pub name: String,
-    pub value: i32,
+    pub value: i64,
 }
 
 #[derive(Clone, Debug)]

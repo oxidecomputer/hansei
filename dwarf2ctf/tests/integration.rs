@@ -66,8 +66,8 @@ struct ParsedType {
     size_or_type: u16,
     /// For structs/unions: members with offsets
     members: Vec<ParsedMember>,
-    /// For enums: enumerator names and values
-    enumerators: Vec<(String, i32)>,
+    /// For enums: enumerator names and values (i64 to support large discriminants)
+    enumerators: Vec<(String, i64)>,
     /// For arrays: (element_type, index_type, nelems)
     array_info: Option<(u16, u16, u32)>,
 }
@@ -249,23 +249,27 @@ impl ParsedCtf {
                     }
                 }
                 CTF_K_ENUM => {
-                    // Each enumerator: name(4) + value(4)
+                    // Each enumerator: name(4) + value(8) - extended to support large discriminants
                     for _ in 0..vlen {
-                        if offset + 8 <= type_data.len() {
+                        if offset + 12 <= type_data.len() {
                             let enum_name_off = u32::from_le_bytes([
                                 type_data[offset],
                                 type_data[offset + 1],
                                 type_data[offset + 2],
                                 type_data[offset + 3],
                             ]);
-                            let enum_value = i32::from_le_bytes([
+                            let enum_value = i64::from_le_bytes([
                                 type_data[offset + 4],
                                 type_data[offset + 5],
                                 type_data[offset + 6],
                                 type_data[offset + 7],
+                                type_data[offset + 8],
+                                type_data[offset + 9],
+                                type_data[offset + 10],
+                                type_data[offset + 11],
                             ]);
                             enumerators.push((Self::get_string(strings, enum_name_off), enum_value));
-                            offset += 8;
+                            offset += 12;
                         }
                     }
                 }
@@ -317,6 +321,11 @@ impl ParsedCtf {
     /// Get all struct types
     fn structs(&self) -> Vec<&ParsedType> {
         self.types_of_kind(CTF_K_STRUCT)
+    }
+
+    /// Get all union types
+    fn unions(&self) -> Vec<&ParsedType> {
+        self.types_of_kind(CTF_K_UNION)
     }
 
     /// Get all enum types
@@ -619,9 +628,9 @@ fn test_enum_size_and_variants() {
         assert!(green.is_some(), "expected Green variant");
         assert!(blue.is_some(), "expected Blue variant");
 
-        assert_eq!(red.unwrap().1, 0, "Red should have value 0");
-        assert_eq!(green.unwrap().1, 1, "Green should have value 1");
-        assert_eq!(blue.unwrap().1, 2, "Blue should have value 2");
+        assert_eq!(red.unwrap().1, 0i64, "Red should have value 0");
+        assert_eq!(green.unwrap().1, 1i64, "Green should have value 1");
+        assert_eq!(blue.unwrap().1, 2i64, "Blue should have value 2");
     } else {
         // Rust enums might be represented differently
         let structs = ctf.structs();
@@ -1004,4 +1013,162 @@ fn test_requires_output_flag() {
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("--ctf_out").or(predicate::str::contains("--bin_out")));
+}
+
+// ==================== Niche-Optimized Enum Tests ====================
+
+#[test]
+fn test_option_nonzero_has_tagged_union() {
+    let source = r#"
+        use std::num::NonZeroU32;
+
+        #[no_mangle]
+        pub fn unwrap_nonzero(opt: Option<NonZeroU32>) -> u32 {
+            opt.map(|n| n.get()).unwrap_or(0)
+        }
+
+        fn main() {
+            let _ = unwrap_nonzero(NonZeroU32::new(42));
+        }
+    "#;
+
+    let (bin_path, dir) = compile_rust_fixture(source);
+    let ctf = run_and_parse_ctf(&bin_path, &["unwrap_nonzero"], &dir);
+
+    assert!(ctf.is_valid());
+
+    // Find the Option<NonZeroU32> struct
+    let option_struct = ctf.structs().into_iter()
+        .find(|s| s.name.contains("Option") && s.name.contains("NonZero"))
+        .expect("expected Option<NonZeroU32> struct");
+
+    // For niche-optimized enums, we should have a __tagged member
+    let tagged = option_struct.member("__tagged");
+    assert!(tagged.is_some(), "expected __tagged member for niche-optimized enum");
+
+    // Find the __tagged union
+    let tagged_union = ctf.unions().into_iter()
+        .find(|u| u.name.contains("__tagged"))
+        .expect("expected __tagged union type");
+
+    // The __tagged union should have __discr and __variants members
+    let discr = tagged_union.member("__discr");
+    let variants = tagged_union.member("__variants");
+
+    assert!(discr.is_some(), "expected __discr member in __tagged union");
+    assert!(variants.is_some(), "expected __variants member in __tagged union");
+
+    // Find the discriminant enum type
+    let discr_enum = ctf.enums().into_iter()
+        .find(|e| e.name.contains("__discr_ty"))
+        .expect("expected __discr_ty enum type");
+
+    // The discriminant enum should have a None variant with value 0
+    let none = discr_enum.enumerators.iter().find(|(n, _)| n == "None");
+    assert!(none.is_some(), "expected None enumerator in discriminant enum");
+    assert_eq!(none.unwrap().1, 0i64, "None should have discriminant value 0");
+
+    // Find the __variants union
+    let variants_union = ctf.unions().into_iter()
+        .find(|u| u.name.contains("__variants"))
+        .expect("expected __variants union type");
+
+    // The __variants union should have None and Some members
+    let none_member = variants_union.member("None");
+    let some_member = variants_union.member("Some");
+
+    assert!(none_member.is_some(), "expected None member in __variants union");
+    assert!(some_member.is_some(), "expected Some member in __variants union");
+}
+
+#[test]
+fn test_option_custom_enum_has_tagged_union() {
+    let source = r#"
+        #[repr(u8)]
+        pub enum Status {
+            Pending = 0,
+            Running = 1,
+            Complete = 2,
+        }
+
+        #[no_mangle]
+        pub fn check_status(opt: Option<Status>) -> u8 {
+            match opt {
+                Some(Status::Pending) => 0,
+                Some(Status::Running) => 1,
+                Some(Status::Complete) => 2,
+                None => 255,
+            }
+        }
+
+        fn main() {
+            let _ = check_status(Some(Status::Pending));
+        }
+    "#;
+
+    let (bin_path, dir) = compile_rust_fixture(source);
+    let ctf = run_and_parse_ctf(&bin_path, &["check_status"], &dir);
+
+    assert!(ctf.is_valid());
+
+    // Find the Option<Status> struct
+    let option_struct = ctf.structs().into_iter()
+        .find(|s| s.name.contains("Option") && s.name.contains("Status"));
+
+    // If we found the Option struct, check for __tagged union structure
+    if let Some(opt) = option_struct {
+        let tagged = opt.member("__tagged");
+        if tagged.is_some() {
+            // Niche-optimized case: look for __discr_ty with None variant
+            let discr_enum = ctf.enums().into_iter()
+                .find(|e| e.name.contains("__discr_ty") && e.name.contains("Option"));
+
+            if let Some(discr) = discr_enum {
+                // The None variant should have a discriminant value > 2 (since Status uses 0,1,2)
+                let none = discr.enumerators.iter().find(|(n, _)| n == "None");
+                assert!(none.is_some(), "expected None enumerator");
+                assert!(none.unwrap().1 > 2, "None should have discriminant value > 2 (out of range for Status)");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_zst_variant_has_struct() {
+    let source = r#"
+        use std::num::NonZeroU64;
+
+        #[no_mangle]
+        pub fn is_none(opt: Option<NonZeroU64>) -> bool {
+            opt.is_none()
+        }
+
+        fn main() {
+            let _ = is_none(None);
+        }
+    "#;
+
+    let (bin_path, dir) = compile_rust_fixture(source);
+    let ctf = run_and_parse_ctf(&bin_path, &["is_none"], &dir);
+
+    assert!(ctf.is_valid());
+
+    // Look for a ZST struct for the None variant
+    let zst_struct = ctf.structs().into_iter()
+        .find(|s| s.name.contains("None") && s.name.contains("ZST"));
+
+    // ZST struct should exist and have size 0
+    if let Some(zst) = zst_struct {
+        assert_eq!(zst.size(), 0, "ZST struct should have size 0");
+        assert_eq!(zst.vlen, 0, "ZST struct should have no members");
+    }
+
+    // Also verify the None variant exists in the __variants union
+    let variants_union = ctf.unions().into_iter()
+        .find(|u| u.name.contains("__variants") && u.name.contains("Option"));
+
+    if let Some(variants) = variants_union {
+        let none_member = variants.member("None");
+        assert!(none_member.is_some(), "expected None member in __variants union");
+    }
 }

@@ -764,8 +764,8 @@ mod tests {
         };
         let bytes = write_type(&enum_type);
 
-        // Header(8) + 3 enumerators * (name(4) + value(4)) = 8 + 24 = 32
-        assert_eq!(bytes.len(), 32);
+        // Header(8) + 3 enumerators * (name(4) + value(8)) = 8 + 36 = 44
+        assert_eq!(bytes.len(), 44);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
         assert_eq!(info, ctf_type_info(CTF_K_ENUM, true, 3));
