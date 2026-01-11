@@ -427,6 +427,7 @@ fn run_and_parse_ctf(elf_path: &PathBuf, functions: &[&str], output_dir: &TempDi
 #[test]
 fn test_simple_function_produces_valid_ctf() {
     let source = r#"
+        #[inline(never)]
         #[no_mangle]
         pub fn add(a: i32, b: i32) -> i32 {
             a + b
@@ -458,6 +459,7 @@ fn test_struct_size_and_member_offsets() {
             pub y: i32,
         }
 
+        #[inline(never)]
         #[no_mangle]
         pub fn sum_point(p: Point) -> i32 {
             p.x + p.y
@@ -500,6 +502,7 @@ fn test_struct_with_different_sized_members() {
             pub c: u16,
         }
 
+        #[inline(never)]
         #[no_mangle]
         pub fn use_mixed(m: Mixed) -> u32 {
             m.a as u32 + m.b + m.c as u32
@@ -546,6 +549,7 @@ fn test_nested_struct_sizes() {
             pub extra: i32,
         }
 
+        #[inline(never)]
         #[no_mangle]
         pub fn get_inner_value(o: Outer) -> i64 {
             o.inner.value
@@ -597,6 +601,7 @@ fn test_enum_size_and_variants() {
             Blue = 2,
         }
 
+        #[inline(never)]
         #[no_mangle]
         pub fn color_value(c: Color) -> i32 {
             c as i32
@@ -646,6 +651,7 @@ fn test_enum_size_and_variants() {
 #[test]
 fn test_array_element_count() {
     let source = r#"
+        #[inline(never)]
         #[no_mangle]
         pub fn array_sum(arr: [i32; 4]) -> i32 {
             arr[0] + arr[1] + arr[2] + arr[3]
@@ -678,6 +684,7 @@ fn test_tuple_struct_layout() {
         #[repr(C)]
         pub struct Pair(pub i32, pub i64);
 
+        #[inline(never)]
         #[no_mangle]
         pub fn first(p: Pair) -> i32 {
             p.0
@@ -716,6 +723,7 @@ fn test_tuple_struct_layout() {
 #[test]
 fn test_integer_sizes() {
     let source = r#"
+        #[inline(never)]
         #[no_mangle]
         pub fn sizes(a: i8, b: i16, c: i32, d: i64, e: u8, f: usize) -> i64 {
             a as i64 + b as i64 + c as i64 + d + e as i64 + f as i64
@@ -764,6 +772,7 @@ fn test_integer_sizes() {
 #[test]
 fn test_float_sizes() {
     let source = r#"
+        #[inline(never)]
         #[no_mangle]
         pub fn floats(a: f32, b: f64) -> f64 {
             a as f64 + b
@@ -804,6 +813,7 @@ fn test_complex_struct_offsets() {
             pub value: u16,
         }
 
+        #[inline(never)]
         #[no_mangle]
         pub fn get_id(c: Complex) -> u64 {
             c.id
@@ -859,6 +869,7 @@ fn test_complex_struct_offsets() {
 #[test]
 fn test_option_type_exists() {
     let source = r#"
+        #[inline(never)]
         #[no_mangle]
         pub fn unwrap_or_default(opt: Option<i32>) -> i32 {
             opt.unwrap_or(0)
@@ -882,6 +893,7 @@ fn test_option_type_exists() {
 #[test]
 fn test_result_type_exists() {
     let source = r#"
+        #[inline(never)]
         #[no_mangle]
         pub fn try_parse(s: &str) -> Result<i32, ()> {
             s.parse().map_err(|_| ())
@@ -904,6 +916,7 @@ fn test_result_type_exists() {
 #[test]
 fn test_vec_type_exists() {
     let source = r#"
+        #[inline(never)]
         #[no_mangle]
         pub fn vec_len(v: Vec<i32>) -> usize {
             v.len()
@@ -926,11 +939,13 @@ fn test_vec_type_exists() {
 #[test]
 fn test_pointer_types_exist() {
     let source = r#"
+        #[inline(never)]
         #[no_mangle]
         pub fn increment(x: &mut i32) {
             *x += 1;
         }
 
+        #[inline(never)]
         #[no_mangle]
         pub unsafe fn deref_ptr(p: *const i32) -> i32 {
             *p
@@ -955,9 +970,11 @@ fn test_pointer_types_exist() {
 #[test]
 fn test_multiple_functions() {
     let source = r#"
+        #[inline(never)]
         #[no_mangle]
         pub fn add(a: i32, b: i32) -> i32 { a + b }
 
+        #[inline(never)]
         #[no_mangle]
         pub fn sub(a: i32, b: i32) -> i32 { a - b }
 
@@ -976,6 +993,7 @@ fn test_multiple_functions() {
 #[test]
 fn test_function_not_found_still_produces_valid_ctf() {
     let source = r#"
+        #[inline(never)]
         #[no_mangle]
         pub fn foo() {}
 
@@ -1024,6 +1042,7 @@ fn test_option_nonzero_has_tagged_union() {
     let source = r#"
         use std::num::NonZeroU32;
 
+        #[inline(never)]
         #[no_mangle]
         pub fn unwrap_nonzero(opt: Option<NonZeroU32>) -> u32 {
             opt.map(|n| n.get()).unwrap_or(0)
@@ -1093,6 +1112,7 @@ fn test_option_custom_enum_has_tagged_union() {
             Complete = 2,
         }
 
+        #[inline(never)]
         #[no_mangle]
         pub fn check_status(opt: Option<Status>) -> u8 {
             match opt {
@@ -1140,6 +1160,7 @@ fn test_zst_variant_has_struct() {
     let source = r#"
         use std::num::NonZeroU64;
 
+        #[inline(never)]
         #[no_mangle]
         pub fn is_none(opt: Option<NonZeroU64>) -> bool {
             opt.is_none()
