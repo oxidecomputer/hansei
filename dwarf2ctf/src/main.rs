@@ -33,13 +33,13 @@ struct Args {
     /// An ELF file containing DWARF debug information.
     elf: PathBuf,
 
-    /// Functions to generate CTF for parameter and return types.
+    /// The functions to generate CTF for parameter and return types.
     #[clap(long, short, group = "input")]
-    fns: Vec<String>,
+    func: Vec<String>,
 
-    /// Types to generate CTF for.
+    /// The types to generate CTF for.
     #[clap(long, short, group = "input")]
-    types: Vec<String>,
+    ty: Vec<String>,
 
     /// Path to write CTF to.
     #[clap(long, short, group = "output")]
@@ -298,7 +298,7 @@ fn main() -> Result<()> {
         .collect();
 
     let missing_fns: Vec<_> = args
-        .fns
+        .func
         .iter()
         .filter(|f| !source_symbols.contains(f.as_str()))
         .collect();
@@ -307,8 +307,8 @@ fn main() -> Result<()> {
         eprintln!("'{missing}' was not found in {}", args.elf.display());
     }
 
-    let mut symbols: HashMap<_, _> = args.fns.into_iter().map(|name| (name, false)).collect();
-    let mut type_names: HashMap<_, _> = args.types.into_iter().map(|name| (name, false)).collect();
+    let mut symbols: HashMap<_, _> = args.func.into_iter().map(|name| (name, false)).collect();
+    let mut type_names: HashMap<_, _> = args.ty.into_iter().map(|name| (name, false)).collect();
 
     // Find functions and collect their type dependencies in one pass
     let (function_info, mut type_deps) = parser
