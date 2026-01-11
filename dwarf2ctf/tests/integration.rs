@@ -407,12 +407,14 @@ fn run_and_parse_ctf(elf_path: &PathBuf, functions: &[&str], output_dir: &TempDi
     let ctf_path = output_dir.path().join("output.ctf");
 
     let mut cmd = AssertCommand::cargo_bin("dwarf2ctf").unwrap();
-    cmd.arg("--elf").arg(elf_path);
-    cmd.arg("--ctf_out").arg(&ctf_path);
+    cmd.arg("--ctf-out").arg(&ctf_path);
 
     for func in functions {
-        cmd.arg("--fns").arg(func);
+        cmd.arg("--func").arg(func);
     }
+
+    // ELF path is a positional argument
+    cmd.arg(elf_path);
 
     cmd.assert().success();
 
@@ -994,9 +996,9 @@ fn test_missing_elf_file_fails() {
     let ctf_path = dir.path().join("output.ctf");
 
     let mut cmd = AssertCommand::cargo_bin("dwarf2ctf").unwrap();
-    cmd.arg("--elf").arg("/nonexistent/path/to/binary");
-    cmd.arg("--ctf_out").arg(&ctf_path);
-    cmd.arg("--fns").arg("foo");
+    cmd.arg("--ctf-out").arg(&ctf_path);
+    cmd.arg("--func").arg("foo");
+    cmd.arg("/nonexistent/path/to/binary");
 
     cmd.assert().failure();
 }
@@ -1007,12 +1009,12 @@ fn test_requires_output_flag() {
     let (bin_path, _dir) = compile_rust_fixture(source);
 
     let mut cmd = AssertCommand::cargo_bin("dwarf2ctf").unwrap();
-    cmd.arg("--elf").arg(&bin_path);
-    cmd.arg("--fns").arg("main");
+    cmd.arg("--func").arg("main");
+    cmd.arg(&bin_path);
 
     cmd.assert()
         .failure()
-        .stderr(predicate::str::contains("--ctf_out").or(predicate::str::contains("--bin_out")));
+        .stderr(predicate::str::contains("--ctf-out").or(predicate::str::contains("--bin-out")));
 }
 
 // ==================== Niche-Optimized Enum Tests ====================
