@@ -249,27 +249,23 @@ impl ParsedCtf {
                     }
                 }
                 CTF_K_ENUM => {
-                    // Each enumerator: name(4) + value(8) - extended to support large discriminants
+                    // Each enumerator: name(4) + value(4)
                     for _ in 0..vlen {
-                        if offset + 12 <= type_data.len() {
+                        if offset + 8 <= type_data.len() {
                             let enum_name_off = u32::from_le_bytes([
                                 type_data[offset],
                                 type_data[offset + 1],
                                 type_data[offset + 2],
                                 type_data[offset + 3],
                             ]);
-                            let enum_value = i64::from_le_bytes([
+                            let enum_value = i32::from_le_bytes([
                                 type_data[offset + 4],
                                 type_data[offset + 5],
                                 type_data[offset + 6],
                                 type_data[offset + 7],
-                                type_data[offset + 8],
-                                type_data[offset + 9],
-                                type_data[offset + 10],
-                                type_data[offset + 11],
                             ]);
-                            enumerators.push((Self::get_string(strings, enum_name_off), enum_value));
-                            offset += 12;
+                            enumerators.push((Self::get_string(strings, enum_name_off), enum_value as i64));
+                            offset += 8;
                         }
                     }
                 }

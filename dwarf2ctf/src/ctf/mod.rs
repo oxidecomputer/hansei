@@ -478,7 +478,7 @@ impl<'a> CtfWriter<'a> {
                 for enumerator in enumerators {
                     let enum_name_offset = strings.add_string(&enumerator.name);
                     buffer.iowrite_with(enum_name_offset, LE)?;
-                    buffer.iowrite_with(enumerator.value, LE)?;
+                    buffer.iowrite_with(enumerator.value as i32, LE)?;
                 }
             }
             CtfType::Unknown => {
@@ -764,8 +764,8 @@ mod tests {
         };
         let bytes = write_type(&enum_type);
 
-        // Header(8) + 3 enumerators * (name(4) + value(8)) = 8 + 36 = 44
-        assert_eq!(bytes.len(), 44);
+        // Header(8) + 3 enumerators * (name(4) + value(4)) = 8 + 24 = 32
+        assert_eq!(bytes.len(), 32);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
         assert_eq!(info, ctf_type_info(CTF_K_ENUM, true, 3));
