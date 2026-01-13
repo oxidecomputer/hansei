@@ -155,7 +155,27 @@ impl CtfType {
 #[derive(Clone, Debug)]
 pub struct CtfEnumerator {
     pub name: String,
-    pub value: i64,
+    pub value: i32,
+}
+
+impl CtfEnumerator {
+    /// Creates a new CtfEnumerator, encoding the discriminant value in the name
+    /// if it doesn't fit in an i32. CTF enums are limited to 4-byte values, so
+    /// large discriminants (common in Rust niche optimization) are encoded as
+    /// a `@@0x{hex}@@` suffix on the name.
+    pub fn new(name: String, full_value: i64) -> Self {
+        match i32::try_from(full_value) {
+            Ok(value) => Self { name, value },
+            Err(_) => {
+                // Encode large value in name with @@ delimiter
+                let encoded_name = format!("{name}@@0x{full_value:x}@@");
+                Self {
+                    name: encoded_name,
+                    value: full_value as i32,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

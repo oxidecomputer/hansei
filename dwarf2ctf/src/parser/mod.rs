@@ -1808,10 +1808,7 @@ fn stub_to_ctf_type(
 
             let ctf_enumerators: Vec<CtfEnumerator> = enumerators
                 .iter()
-                .map(|e| CtfEnumerator {
-                    name: e.name.clone(),
-                    value: e.value,
-                })
+                .map(|e| CtfEnumerator::new(e.name.clone(), e.value))
                 .collect();
 
             Ok(CtfType::Enum {
@@ -1908,10 +1905,8 @@ fn build_variant_part_members(
         .variants
         .iter()
         .filter_map(|v| {
-            v.discriminant_value.map(|val| CtfEnumerator {
-                name: v.name.clone(),
-                value: val, // Use full i64 value to support large discriminants
-            })
+            v.discriminant_value
+                .map(|val| CtfEnumerator::new(v.name.clone(), val))
         })
         .collect();
 
