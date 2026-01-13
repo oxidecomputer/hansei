@@ -478,7 +478,7 @@ impl<'a> CtfWriter<'a> {
                 for enumerator in enumerators {
                     let enum_name_offset = strings.add_string(&enumerator.name);
                     buffer.iowrite_with(enum_name_offset, LE)?;
-                    buffer.iowrite_with(enumerator.value as i32, LE)?;
+                    buffer.iowrite_with(enumerator.value, LE)?;
                 }
             }
             CtfType::Unknown => {
