@@ -34,11 +34,11 @@ struct Args {
     elf: PathBuf,
 
     /// The functions to generate CTF for parameter and return types.
-    #[clap(long, short, group = "input")]
+    #[clap(long = "fn", short, value_name = "FN", group = "input")]
     func: Vec<String>,
 
     /// The types to generate CTF for.
-    #[clap(long, short, group = "input")]
+    #[clap(long = "type", short, value_name = "TYPE", group = "input")]
     ty: Vec<String>,
 
     /// Path to write CTF to.
