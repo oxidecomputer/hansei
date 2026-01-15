@@ -1891,8 +1891,12 @@ fn build_variant_part_members(
         // uses an out-of-range value of the inner enum's discriminant field.
         // For example, Option<HistogramType> where HistogramType has values 0,1,2
         // would use value 3 for Option::None.
-        let nested_discr =
-            has_nested_enum_discriminant(variant_part, discr.offset_bytes, &deps.stubs, header_offset);
+        let nested_discr = has_nested_enum_discriminant(
+            variant_part,
+            discr.offset_bytes,
+            &deps.stubs,
+            header_offset,
+        );
 
         member_at_zero || nested_discr
     } else {
@@ -1917,9 +1921,11 @@ fn build_variant_part_members(
         } else {
             format!("{}::__discr_ty", parent_struct_name)
         };
+        // Infer the discriminant size from variant struct member offsets
+        let discr_size = infer_discriminant_size(variant_part, &deps.stubs, header_offset);
         let enum_type = CtfType::Enum {
             name: enum_name,
-            size: 4, // Standard CTF enum size
+            size: discr_size,
             enumerators,
         };
         Some(MaybeOffset::Found(writer.add_synthetic_type(enum_type)))
@@ -2076,7 +2082,10 @@ fn build_variant_part_members(
 }
 
 /// Convert a TypeRef to a GlobalTypeOffset.
-fn type_ref_to_global(type_ref: &TypeRef, header_offset: DebugInfoOffset<usize>) -> GlobalTypeOffset {
+fn type_ref_to_global(
+    type_ref: &TypeRef,
+    header_offset: DebugInfoOffset<usize>,
+) -> GlobalTypeOffset {
     match type_ref {
         TypeRef::SameUnit(unit_offset) => DebugInfoOffset(header_offset.0 + unit_offset.0),
         TypeRef::CrossUnit(abs_offset) => *abs_offset,
@@ -2194,6 +2203,50 @@ fn has_discriminant_in_type_chain(
 
         _ => false,
     }
+}
+
+/// Infer the discriminant size for a Rust enum by examining the offset of the first
+/// member in each variant struct.
+///
+/// In Rust's DWARF representation, the discriminant field doesn't have an explicit size
+/// attribute. However, each variant is represented as a struct where the payload members
+/// start after the discriminant. By finding the minimum offset of the first real member
+/// across all variant structs, we can determine the discriminant size.
+///
+/// For example, if all variant structs have their first member at offset 8, the
+/// discriminant occupies bytes 0-7 (8 bytes).
+///
+/// Returns the inferred size, or 4 as a fallback if no offset information is available.
+fn infer_discriminant_size(
+    variant_part: &VariantPartStub,
+    stubs: &HashMap<GlobalTypeOffset, TypeStub>,
+    header_offset: DebugInfoOffset<usize>,
+) -> u32 {
+    let mut min_offset: Option<u64> = None;
+
+    for variant in &variant_part.variants {
+        // Each variant has members that point to the variant struct types
+        for member in &variant.members {
+            if let Some(type_ref) = &member.type_ref {
+                let global_id = type_ref_to_global(type_ref, header_offset);
+                if let Some(TypeStub::Struct { members, .. }) = stubs.get(&global_id) {
+                    // Find the minimum non-zero offset among this struct's members
+                    for struct_member in members {
+                        if struct_member.offset_bytes > 0 {
+                            min_offset = Some(match min_offset {
+                                Some(current) => current.min(struct_member.offset_bytes),
+                                None => struct_member.offset_bytes,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Use the inferred size, or fall back to a single byte. For smaller types,
+    // e.g. `Option<u8>` this is a safer default.
+    min_offset.unwrap_or(1) as u32
 }
 
 /// Resolve a type reference to a MaybeOffset.
