@@ -465,6 +465,15 @@ pub struct VariantPartStub {
     pub variants: Vec<VariantStub>,
 }
 
+/// Stub information for a DW_TAG_template_type_parameter collected during Phase 1.
+#[derive(Debug, Clone)]
+pub struct TemplateParamStub {
+    /// Parameter name (e.g., "T", "K", "V")
+    pub name: String,
+    /// The concrete type this parameter is bound to
+    pub type_ref: Option<TypeRef>,
+}
+
 /// Cached metadata about a type entry, avoiding re-reading DWARF in Phase 2.
 #[derive(Debug, Clone)]
 pub enum TypeStub {
@@ -520,6 +529,8 @@ pub enum TypeStub {
         members: Vec<MemberStub>,
         /// Rust enum variant parts (DW_TAG_variant_part children).
         variant_parts: Vec<VariantPartStub>,
+        /// Template type parameters (DW_TAG_template_type_parameter children).
+        template_params: Vec<TemplateParamStub>,
     },
     /// DW_TAG_union_type
     Union {
@@ -1073,6 +1084,7 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
 
         let mut members = Vec::new();
         let mut variant_parts = Vec::new();
+        let mut template_params = Vec::new();
         let mut deps = Vec::new();
 
         let mut tree = unit.entries_tree(Some(offset))?;
@@ -1093,6 +1105,14 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
                     let variant_part = self.extract_variant_part_stub(unit, child, &mut deps)?;
                     variant_parts.push(variant_part);
                 }
+                gimli::DW_TAG_template_type_parameter => {
+                    // Extract template type parameter (e.g., T in Vec<T>)
+                    let param = self.extract_template_param_stub(unit, child.entry())?;
+                    if let Some(type_ref) = param.type_ref {
+                        deps.push(type_ref);
+                    }
+                    template_params.push(param);
+                }
                 _ => {}
             }
         }
@@ -1103,6 +1123,7 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
                 byte_size,
                 members,
                 variant_parts,
+                template_params,
             },
             deps,
         ))
@@ -1258,6 +1279,31 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
             type_ref,
             offset_bytes,
         })
+    }
+
+    /// Extract template type parameter stub from a DW_TAG_template_type_parameter entry.
+    fn extract_template_param_stub(
+        &self,
+        unit: &UnitRef<R>,
+        entry: &DebuggingInformationEntry<R>,
+    ) -> Result<TemplateParamStub> {
+        let mut name = String::new();
+        let mut type_ref = None;
+
+        let mut attrs = entry.attrs();
+        while let Some(attr) = attrs.next()? {
+            match attr.name() {
+                gimli::DW_AT_name => {
+                    name = self.get_string(unit, &attr)?;
+                }
+                gimli::DW_AT_type => {
+                    type_ref = self.get_type_ref(unit, &attr);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(TemplateParamStub { name, type_ref })
     }
 
     /// Extract a VariantPartStub from a DW_TAG_variant_part and collect dependencies.
@@ -1731,6 +1777,7 @@ fn stub_to_ctf_type(
             byte_size,
             members,
             variant_parts,
+            template_params,
         } => {
             // Convert regular members
             let mut ctf_members: Vec<CtfMember> = members
@@ -1754,6 +1801,23 @@ fn stub_to_ctf_type(
                     global_type_map,
                     deps,
                 );
+            }
+
+            // Generate synthetic zero-sized members for template type parameters.
+            // These allow consumers to determine the concrete types for generic containers
+            // like Vec<T> or HashMap<K, V>. The synthetic members are placed at the end
+            // of the struct (offset = byte_size) and reference the concrete type.
+            let end_offset_bits = (*byte_size as u64) * 8;
+            for param in template_params {
+                ctf_members.push(CtfMember {
+                    name: format!("__type_param_{}", param.name),
+                    type_id: resolve_type_ref(
+                        param.type_ref.as_ref(),
+                        header_offset,
+                        global_type_map,
+                    ),
+                    offset_bits: end_offset_bits,
+                });
             }
 
             // Sort members by offset for consistent CTF output
@@ -2781,6 +2845,158 @@ mod tests {
                 );
             }
             _ => panic!("Expected Function type, got {:?}", ctf_type),
+        }
+    }
+
+    #[test]
+    fn test_struct_with_template_params_generates_synthetic_members() {
+        // Test that template type parameters generate synthetic zero-sized members
+        // at the end of the struct, allowing CTF consumers to determine concrete types
+        // for generic containers like Vec<T> or HashMap<K, V>.
+        let mut deps = TypeDependencies::new();
+        let struct_id = DebugInfoOffset(100);
+        let usize_id = DebugInfoOffset(50);
+        let alloc_id = DebugInfoOffset(60);
+
+        deps.all_types.insert(usize_id);
+        deps.all_types.insert(alloc_id);
+        deps.all_types.insert(struct_id);
+        deps.deps.insert(usize_id, vec![]);
+        deps.deps.insert(alloc_id, vec![]);
+        deps.deps.insert(struct_id, vec![usize_id, alloc_id]);
+        deps.type_locations
+            .insert(usize_id, (DebugInfoOffset(0), UnitOffset(50)));
+        deps.type_locations
+            .insert(alloc_id, (DebugInfoOffset(0), UnitOffset(60)));
+        deps.type_locations
+            .insert(struct_id, (DebugInfoOffset(0), UnitOffset(100)));
+
+        // usize type
+        deps.stubs.insert(
+            usize_id,
+            TypeStub::Base {
+                name: "usize".to_string(),
+                byte_size: 8,
+                encoding: gimli::DW_ATE_unsigned,
+            },
+        );
+
+        // alloc::alloc::Global type (ZST allocator)
+        deps.stubs.insert(
+            alloc_id,
+            TypeStub::Struct {
+                name: "alloc::alloc::Global".to_string(),
+                byte_size: 0,
+                members: vec![],
+                variant_parts: vec![],
+                template_params: vec![],
+            },
+        );
+
+        // Vec<usize, alloc::alloc::Global> with template params T and A
+        deps.stubs.insert(
+            struct_id,
+            TypeStub::Struct {
+                name: "alloc::vec::Vec<usize, alloc::alloc::Global>".to_string(),
+                byte_size: 24, // buf (ptr+cap) + len = 24 bytes on 64-bit
+                members: vec![
+                    MemberStub {
+                        name: "buf".to_string(),
+                        type_ref: None, // Simplified for test
+                        offset_bytes: 0,
+                    },
+                    MemberStub {
+                        name: "len".to_string(),
+                        type_ref: Some(TypeRef::SameUnit(UnitOffset(50))), // usize
+                        offset_bytes: 16,
+                    },
+                ],
+                variant_parts: vec![],
+                template_params: vec![
+                    TemplateParamStub {
+                        name: "T".to_string(),
+                        type_ref: Some(TypeRef::SameUnit(UnitOffset(50))), // usize
+                    },
+                    TemplateParamStub {
+                        name: "A".to_string(),
+                        type_ref: Some(TypeRef::SameUnit(UnitOffset(60))), // Global
+                    },
+                ],
+            },
+        );
+
+        let mut writer = CtfWriter::new(None);
+
+        // Add base types first
+        let usize_ctf = build_base_type("usize", 8, gimli::DW_ATE_unsigned);
+        let usize_ctf_id = writer.add_type(usize_id, usize_ctf);
+
+        let alloc_ctf = CtfType::Struct {
+            name: "alloc::alloc::Global".to_string(),
+            size: 0,
+            members: vec![],
+        };
+        let alloc_ctf_id = writer.add_type(alloc_id, alloc_ctf);
+
+        let mut global_type_map = HashMap::new();
+        global_type_map.insert(usize_id, usize_ctf_id);
+        global_type_map.insert(alloc_id, alloc_ctf_id);
+
+        // Convert the struct stub
+        let struct_stub = deps.stubs.get(&struct_id).unwrap();
+        let result = stub_to_ctf_type(struct_stub, struct_id, &deps, &mut writer, &global_type_map);
+
+        let ctf_type = result.expect("Struct type conversion should succeed");
+
+        match ctf_type {
+            CtfType::Struct { name, size, members } => {
+                assert_eq!(name, "alloc::vec::Vec<usize, alloc::alloc::Global>");
+                assert_eq!(size, 24);
+
+                // Should have 4 members: buf, len, __type_param_T, __type_param_A
+                assert_eq!(members.len(), 4, "Expected 4 members (2 real + 2 synthetic)");
+
+                // Find the synthetic members
+                let type_param_t = members.iter().find(|m| m.name == "__type_param_T");
+                let type_param_a = members.iter().find(|m| m.name == "__type_param_A");
+
+                assert!(
+                    type_param_t.is_some(),
+                    "Expected synthetic member __type_param_T"
+                );
+                assert!(
+                    type_param_a.is_some(),
+                    "Expected synthetic member __type_param_A"
+                );
+
+                // Synthetic members should be at the end (offset = byte_size * 8 = 192 bits)
+                let t_param = type_param_t.unwrap();
+                let a_param = type_param_a.unwrap();
+
+                assert_eq!(
+                    t_param.offset_bits, 192,
+                    "__type_param_T should be at offset 192 (end of struct)"
+                );
+                assert_eq!(
+                    a_param.offset_bits, 192,
+                    "__type_param_A should be at offset 192 (end of struct)"
+                );
+
+                // T should reference usize
+                assert_eq!(
+                    t_param.type_id,
+                    MaybeOffset::Found(usize_ctf_id),
+                    "__type_param_T should reference usize type"
+                );
+
+                // A should reference Global
+                assert_eq!(
+                    a_param.type_id,
+                    MaybeOffset::Found(alloc_ctf_id),
+                    "__type_param_A should reference Global type"
+                );
+            }
+            _ => panic!("Expected Struct type, got {:?}", ctf_type),
         }
     }
 }
