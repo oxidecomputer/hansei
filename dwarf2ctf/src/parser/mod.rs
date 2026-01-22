@@ -1987,8 +1987,9 @@ fn build_variant_part_members(
         } else {
             format!("{}::__discr_ty", parent_struct_name)
         };
-        // Infer the discriminant size from variant struct member offsets
-        let discr_size = infer_discriminant_size(variant_part, &deps.stubs, header_offset);
+        // Infer the discriminant size from the discriminant type or parent struct size
+        let discr_size =
+            infer_discriminant_size(variant_part, &deps.stubs, header_offset, parent_struct_size);
         let enum_type = CtfType::Enum {
             name: enum_name,
             size: discr_size,
@@ -2271,48 +2272,35 @@ fn has_discriminant_in_type_chain(
     }
 }
 
-/// Infer the discriminant size for a Rust enum by examining the offset of the first
-/// member in each variant struct.
+/// Determine the discriminant size for a Rust enum.
 ///
-/// In Rust's DWARF representation, the discriminant field doesn't have an explicit size
-/// attribute. However, each variant is represented as a struct where the payload members
-/// start after the discriminant. By finding the minimum offset of the first real member
-/// across all variant structs, we can determine the discriminant size.
+/// First, try to get the size from the discriminant's type in DWARF (DW_AT_type on the
+/// discriminant member). This is the authoritative source when available.
 ///
-/// For example, if all variant structs have their first member at offset 8, the
-/// discriminant occupies bytes 0-7 (8 bytes).
-///
-/// Returns the inferred size, or 4 as a fallback if no offset information is available.
+/// If the discriminant type is not available or has no size, fall back to the parent
+/// enum's size: use 8 bytes for enums >= 8 bytes, otherwise use the enum's size.
 fn infer_discriminant_size(
     variant_part: &VariantPartStub,
     stubs: &HashMap<GlobalTypeOffset, TypeStub>,
     header_offset: DebugInfoOffset<usize>,
+    parent_struct_size: u32,
 ) -> u32 {
-    let mut min_offset: Option<u64> = None;
-
-    for variant in &variant_part.variants {
-        // Each variant has members that point to the variant struct types
-        for member in &variant.members {
-            if let Some(type_ref) = &member.type_ref {
-                let global_id = type_ref_to_global(type_ref, header_offset);
-                if let Some(TypeStub::Struct { members, .. }) = stubs.get(&global_id) {
-                    // Find the minimum non-zero offset among this struct's members
-                    for struct_member in members {
-                        if struct_member.offset_bytes > 0 {
-                            min_offset = Some(match min_offset {
-                                Some(current) => current.min(struct_member.offset_bytes),
-                                None => struct_member.offset_bytes,
-                            });
-                        }
-                    }
-                }
+    // First, try to get the size from the discriminant's type reference
+    if let Some(discr) = &variant_part.discriminant {
+        if let Some(type_ref) = &discr.type_ref {
+            let global_id = type_ref_to_global(type_ref, header_offset);
+            if let Some(TypeStub::Base { byte_size, .. }) = stubs.get(&global_id) {
+                return *byte_size;
             }
         }
     }
 
-    // Use the inferred size, or fall back to a single byte. For smaller types,
-    // e.g. `Option<u8>` this is a safer default.
-    min_offset.unwrap_or(1) as u32
+    // Fall back to using the parent enum's size
+    if parent_struct_size >= 8 {
+        8
+    } else {
+        parent_struct_size
+    }
 }
 
 /// Resolve a type reference to a MaybeOffset.
