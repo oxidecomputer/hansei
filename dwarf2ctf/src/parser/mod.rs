@@ -1804,20 +1804,22 @@ fn stub_to_ctf_type(
             }
 
             // Generate synthetic zero-sized members for template type parameters.
-            // These allow consumers to determine the concrete types for generic containers
-            // like Vec<T> or HashMap<K, V>. The synthetic members are placed at the end
-            // of the struct (offset = byte_size) and reference the concrete type.
-            let end_offset_bits = (*byte_size as u64) * 8;
-            for param in template_params {
-                ctf_members.push(CtfMember {
-                    name: format!("__type_param_{}", param.name),
-                    type_id: resolve_type_ref(
-                        param.type_ref.as_ref(),
-                        header_offset,
-                        global_type_map,
-                    ),
-                    offset_bits: end_offset_bits,
-                });
+            // These allow consumers to determine the concrete types for Vec<T>.
+            // The synthetic members are placed at the end of the struct (offset = byte_size)
+            // and reference the concrete type.
+            if name.starts_with("alloc::vec::Vec<") {
+                let end_offset_bits = (*byte_size as u64) * 8;
+                for param in template_params {
+                    ctf_members.push(CtfMember {
+                        name: format!("__type_param_{}", param.name),
+                        type_id: resolve_type_ref(
+                            param.type_ref.as_ref(),
+                            header_offset,
+                            global_type_map,
+                        ),
+                        offset_bits: end_offset_bits,
+                    });
+                }
             }
 
             // Sort members by offset for consistent CTF output
