@@ -453,25 +453,25 @@ impl Core {
 
     pub fn read_u64(&self, address: u64) -> Result<u64> {
         let mut buf = [0u8; size_of::<u64>()];
-        self.pread(&mut buf, address)?;
+        self.pread_exact(&mut buf, address)?;
         Ok(u64::from_le_bytes(buf))
     }
 
     pub fn read_u32(&self, address: u64) -> Result<u32> {
         let mut buf = [0u8; size_of::<u32>()];
-        self.pread(&mut buf, address)?;
+        self.pread_exact(&mut buf, address)?;
         Ok(u32::from_le_bytes(buf))
     }
 
     pub fn read_u16(&self, address: u64) -> Result<u16> {
         let mut buf = [0u8; size_of::<u16>()];
-        self.pread(&mut buf, address)?;
+        self.pread_exact(&mut buf, address)?;
         Ok(u16::from_le_bytes(buf))
     }
 
     pub fn read_u8(&self, address: u64) -> Result<u8> {
         let mut val = [0u8];
-        self.pread(&mut val, address)?;
+        self.pread_exact(&mut val, address)?;
         Ok(val[0])
     }
 
@@ -685,12 +685,24 @@ pub struct Status {
     pub stack_range: Range<u64>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Lwp {
     /// The LWP's thread id.
     pub tid: u32,
     /// The address range of the LWP's stack.
     pub stack_range: Range<u64>,
+}
+
+impl fmt::Debug for Lwp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lwp")
+            .field("tid", &self.tid)
+            .field(
+                "stack_range",
+                &format_args!("{:#x}..{:#x}", self.stack_range.start, self.stack_range.end),
+            )
+            .finish()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -742,7 +754,7 @@ impl IntoIterator for Mappings {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct LoadedObjectWithPath {
     pub path: Option<String>,
     pub vaddr: u64,
@@ -771,7 +783,19 @@ impl LoadedObjectWithPath {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+impl fmt::Debug for LoadedObjectWithPath {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("LoadedObjectWithPath")
+            .field("path", &self.path)
+            .field("vaddr", &format_args!("{:#016x}", self.vaddr))
+            .field("  end", &format_args!("{:#016x}", self.range().end))
+            .field(" size", &format_args!("{:#016x}", self.size))
+            .field("flags", &self.flags)
+            .finish()
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct MapFlags(pub u32);
 
 impl MapFlags {
@@ -800,6 +824,20 @@ impl MapFlags {
     }
 }
 
+impl fmt::Debug for MapFlags {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("MapFlags")
+            .field("is_read", &self.is_read())
+            .field("is_write", &self.is_write())
+            .field("is_exec", &self.is_exec())
+            .field("is_shared", &self.is_shared())
+            .field("is_anon", &self.is_anon())
+            .field("is_break", &self.is_break())
+            .field("inner", &format_args!("{:#016b}", self.0))
+            .finish()
+    }
+}
+
 impl LoadedObjectWithPath {
     pub fn file_name(&self) -> Option<&str> {
         self.path
@@ -808,7 +846,8 @@ impl LoadedObjectWithPath {
     }
 
     pub fn range(&self) -> Range<u64> {
-        self.vaddr..self.vaddr + self.size
+        let end = self.vaddr.saturating_add(self.size);
+        self.vaddr..end
     }
 }
 
@@ -833,7 +872,8 @@ pub struct LoadedObject {
 
 impl LoadedObject {
     pub fn range(&self) -> Range<u64> {
-        self.vaddr..self.vaddr + self.size
+        let end = self.vaddr.saturating_add(self.size);
+        self.vaddr..end
     }
 }
 

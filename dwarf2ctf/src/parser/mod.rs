@@ -2939,12 +2939,20 @@ mod tests {
         let ctf_type = result.expect("Struct type conversion should succeed");
 
         match ctf_type {
-            CtfType::Struct { name, size, members } => {
+            CtfType::Struct {
+                name,
+                size,
+                members,
+            } => {
                 assert_eq!(name, "alloc::vec::Vec<usize, alloc::alloc::Global>");
                 assert_eq!(size, 24);
 
                 // Should have 4 members: buf, len, __type_param_T, __type_param_A
-                assert_eq!(members.len(), 4, "Expected 4 members (2 real + 2 synthetic)");
+                assert_eq!(
+                    members.len(),
+                    4,
+                    "Expected 4 members (2 real + 2 synthetic)"
+                );
 
                 // Find the synthetic members
                 let type_param_t = members.iter().find(|m| m.name == "__type_param_T");
