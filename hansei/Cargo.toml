@@ -7,4 +7,7 @@ edition = "2024"
 anyhow = { workspace = true }
 clap = { workspace = true }
 durin = { workspace = true }
+gimli = { workspace = true }
+goblin = { workspace = true }
 proc = { workspace = true }
+rustc-demangle = { workspace = true }

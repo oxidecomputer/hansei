@@ -249,6 +249,7 @@ dependencies = [
  "flate2",
  "gimli",
  "goblin",
+ "proc",
  "scroll",
  "scroll_derive",
  "thiserror",
@@ -389,7 +390,10 @@ dependencies = [
  "anyhow",
  "clap",
  "durin",
+ "gimli",
+ "goblin",
  "proc",
+ "rustc-demangle",
 ]
 
 [[package]]
@@ -636,6 +640,12 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
+
+[[package]]
+name = "rustc-demangle"
+version = "0.1.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d"
 
 [[package]]
 name = "rustc-hash"

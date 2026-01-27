@@ -177,11 +177,22 @@ enum ErrorKind {
     NoEnumerator { ty: TypeId, enum_name: String },
     #[error("member {member_name} not found for type {ty:?}")]
     NoMember { ty: TypeId, member_name: String },
+    #[error("attempted to dereference an invalid pointer")]
+    NullPtr {
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    },
     #[error("failed to parse: {0}")]
     Parse(#[source] scroll::Error),
     #[error("failed to parse member {member}")]
     ParseMember {
         member: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+    #[error("failed to parse type {ty}")]
+    ParseType {
+        ty: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
@@ -199,6 +210,8 @@ enum ErrorKind {
         expected: TypeKind,
         name: String,
     },
+    #[error("expected enum variant {expected} was not active")]
+    UnexpectedVariant { expected: String },
     #[error("unsupported CTF version {0}")]
     UnsupportedVersion(u8),
     #[error("string at index {0:?} is not null-terminated")]
@@ -258,6 +271,7 @@ impl Error {
                 | ErrorKind::MissingValue(_)
                 | ErrorKind::NoEnumerator { .. }
                 | ErrorKind::NoMember { .. }
+                | ErrorKind::NullPtr { .. }
         )
     }
 
@@ -267,6 +281,7 @@ impl Error {
             self.kind,
             ErrorKind::Parse(_)
                 | ErrorKind::ParseMember { .. }
+                | ErrorKind::ParseType { .. }
                 | ErrorKind::TooShort { .. }
                 | ErrorKind::UnterminatedStr(_)
         )
@@ -282,7 +297,10 @@ impl Error {
 
     /// Returns true if this is a type mismatch error.
     pub fn is_type_mismatch(&self) -> bool {
-        matches!(self.kind, ErrorKind::UnexpectedType { .. })
+        matches!(
+            self.kind,
+            ErrorKind::UnexpectedType { .. } | ErrorKind::UnexpectedVariant { .. }
+        )
     }
 
     /// Returns true if this is an I/O error.
@@ -387,6 +405,10 @@ impl Error {
         Self::new(ErrorKind::NoMember { ty, member_name })
     }
 
+    pub fn null_ptr(source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) -> Self {
+        Self::new(ErrorKind::NullPtr { source })
+    }
+
     pub fn parse(source: scroll::Error) -> Self {
         Self::new(ErrorKind::Parse(source))
     }
@@ -396,6 +418,13 @@ impl Error {
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     ) -> Self {
         Self::new(ErrorKind::ParseMember { member, source })
+    }
+
+    pub fn parse_type(
+        ty: String,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    ) -> Self {
+        Self::new(ErrorKind::ParseType { ty, source })
     }
 
     pub fn read_error(
@@ -415,6 +444,10 @@ impl Error {
             expected,
             name,
         })
+    }
+
+    pub fn unexpected_variant(expected: String) -> Self {
+        Self::new(ErrorKind::UnexpectedVariant { expected })
     }
 
     pub fn unsupported_version(version: u8) -> Self {

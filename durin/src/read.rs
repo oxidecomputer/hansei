@@ -2,9 +2,11 @@ use crate::constants::*;
 use crate::{CtfHeader, CtfPreamble, Error, Result, StrId, StringTableType, TypeId, TypeKind};
 
 use flate2::read::ZlibDecoder;
+use proc::Core;
 use scroll::Pread;
 use scroll::ctx::TryFromCtx;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
 use std::str;
@@ -139,11 +141,27 @@ impl CtfReader {
         }
     }
 
-    pub fn types<'a>(&'a self) -> &'a [CtfType] {
+    pub fn types<'ctf>(&'ctf self) -> &'ctf [CtfType] {
         self.types.as_slice()
     }
 
-    pub fn str<'a>(&'a self, id: StrId) -> &'a str {
+    pub fn find_ty<'ctf>(&'ctf self, name: &str, kind: TypeKind) -> Option<&'ctf CtfType> {
+        self.types()
+            .iter()
+            .find(|t| t.kind() == kind && t.name(self) == name)
+    }
+
+    pub fn tys_by_name<'ctf>(&'ctf self) -> HashMap<&'ctf str, &'ctf CtfType> {
+        self.types()
+            .iter()
+            .map(|t| {
+                let name = t.name(&self);
+                (name, t)
+            })
+            .collect()
+    }
+
+    pub fn str<'ctf>(&'ctf self, id: StrId) -> &'ctf str {
         self.strings.get(id)
     }
 }
@@ -518,9 +536,9 @@ impl CtfMetadata {
     }
 
     // TODO use this?
-    pub fn is_root(&self) -> bool {
-        (self.0 & 0x0400) >> 10 == 1
-    }
+    // pub fn is_root(&self) -> bool {
+    //     (self.0 & 0x0400) >> 10 == 1
+    // }
 
     pub fn vlen(&self) -> u16 {
         self.0 & CTF_MAX_VLEN
@@ -1238,52 +1256,13 @@ impl TryFromCtx<'_, ()> for CtfEnumerator {
     }
 }
 
-/// Filter through nested CTF types to an underlying value.
-pub struct TypeLocator<B> {
-    /// The path of the target type in the CTF.
-    pub path: &'static [TypePath],
-    /// A reader to retrieve a Vec<u8> from a core file. TODO
-    pub reader: B,
-}
-
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct TypePath {
-    /// The name of the type.
-    /// Unused by the code, for human reference only.
-    pub name: &'static str,
-    /// The action to take to get the next type in the chain.
-    pub selector: Selector,
-}
-
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum Selector {
-    /// Read a struct member.
-    Struct { member: &'static str },
-    /// Select one variant and read it.
-    Enum { variant: &'static str },
-    /// Dereference a pointer.
-    Pointer,
-}
-
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Discriminant {
-    pub name: &'static str,
-    pub selector: SelectAction,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum SelectAction {
-    Select,
-    Skip,
-}
-
 #[derive(Clone)]
 pub struct TypeInfo<'ctf> {
     pub ty: &'ctf CtfType,
     pub addr: u64,
     pub buf: Vec<u8>,
     pub ctf: &'ctf CtfReader,
-    pub reader: &'ctf dyn BytesFromCore,
+    pub core: &'ctf Core,
 }
 
 impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
@@ -1293,9 +1272,9 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
         ty: &'ctf CtfType,
         addr: u64,
         ctf: &'ctf CtfReader,
-        reader: &'ctf dyn BytesFromCore,
+        core: &'ctf Core,
     ) -> Result<Option<Self>> {
-        let Some(buf) = reader.read_type(ty, addr)? else {
+        let Some(buf) = core.read_type(addr, ty, ctf)? else {
             return Ok(None);
         };
         Ok(Some(Self {
@@ -1303,108 +1282,47 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
             addr,
             ctf,
             buf,
-            reader,
+            core,
         }))
     }
 
-    /// Read the type following the TypePath provided. This will recurse into
-    /// struct members and dereference pointers. TODO
-    pub fn from_type_path(
-        ty: &'ctf CtfType,
-        addr: u64,
-        ctf: &'ctf CtfReader,
-        reader: &'ctf dyn BytesFromCore,
-        path: &[TypePath],
-    ) -> Result<Option<Self>> {
-        let Some(buf) = reader.read_type(ty, addr)? else {
-            return Ok(None);
-        };
-        let mut info = TypeInfo {
-            ty,
-            addr,
-            buf,
-            ctf,
-            reader,
-        };
-
-        // We're mostly reading struct members, which can be efficiently done by
-        // slicing the Vec of the parent type. However, we sometimes need to
-        // dereference pointers, which requires creating a new Vec. Chunk the
-        // tasks by whether they require pointer chasing, coalescing sequential
-        // local member accesses into a single allocation.
-        let chunks = path.chunk_by(|a, b| {
-            matches!(a.selector, Selector::Pointer) && matches!(b.selector, Selector::Pointer)
-        });
-
-        for chunk in chunks {
-            let Some(first) = chunk.first() else {
-                continue;
-            };
-            match first.selector {
-                Selector::Pointer => {
-                    for _ in chunk {
-                        while let Some(unwrapped) = unwrap_wrapper_struct(info.ty, ctf) {
-                            info.ty = unwrapped;
-                        }
-                        let Some(ptr_info) = dereference_pointer(info, reader)? else {
-                            return Ok(None);
-                        };
-                        info = ptr_info;
-                    }
-                }
-                _ => {
-                    let Some(child_info) = read_local_paths(chunk, info.as_ref())? else {
-                        return Ok(None);
-                    };
-
-                    info = child_info.into();
-                }
-            }
-        }
-        if info.ty.size(info.ctf) as usize != info.buf.len() {
-            panic!("bad size"); // TODO
-        }
-
-        Ok(Some(info))
-    }
-
-    #[inline]
     pub fn as_ref(&'buf self) -> TypeInfoRef<'buf, 'ctf> {
         self.into()
     }
 
-    #[inline]
-    pub fn member_info(&'buf self, member_name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
-        self.as_ref().member_info(member_name)
+    pub fn try_member(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+        self.as_ref().try_member(name)
     }
 
-    #[inline]
-    pub fn follow_path(&'buf self, path: &[TypePath]) -> Result<Option<TypeInfo<'ctf>>> {
-        self.as_ref().follow_path(path)
+    pub fn member(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
+        self.as_ref().member(name)
     }
 
-    #[inline]
-    pub fn parse_ty<T>(&self) -> Result<T>
+    pub fn try_deref_ptr(&self) -> Result<Option<TypeInfo<'ctf>>> {
+        self.as_ref().try_deref_ptr()
+    }
+
+    pub fn deref_ptr(&self) -> Result<TypeInfo<'ctf>> {
+        self.as_ref().deref_ptr()
+    }
+
+    pub fn try_select_variant(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+        self.as_ref().try_select_variant(name)
+    }
+
+    pub fn select_variant(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
+        self.as_ref().select_variant(name)
+    }
+
+    pub fn array_elements(&'buf self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
+        array_elements(self.ty, self.addr, &self.buf, self.core, self.ctf)
+    }
+
+    pub fn parse<T>(&self) -> Result<T>
     where
-        T: ReadCtfType,
+        T: ParseWithCtf,
     {
-        self.as_ref().parse_ty()
-    }
-
-    #[inline]
-    pub fn parse_member<T>(&self, name: &str) -> Result<T>
-    where
-        T: ReadCtfType,
-    {
-        self.as_ref().parse_member(name)
-    }
-
-    #[inline]
-    pub fn parse_option<T>(&'buf self) -> Result<Option<T>>
-    where
-        T: ReadCtfType,
-    {
-        self.as_ref().parse_option()
+        self.as_ref().parse()
     }
 }
 
@@ -1416,7 +1334,7 @@ impl<'buf, 'ctf: 'buf> From<TypeInfoRef<'buf, 'ctf>> for TypeInfo<'ctf> {
             addr,
             bytes,
             ctf,
-            reader,
+            core: reader,
         }: TypeInfoRef<'buf, 'ctf>,
     ) -> Self {
         Self {
@@ -1424,7 +1342,7 @@ impl<'buf, 'ctf: 'buf> From<TypeInfoRef<'buf, 'ctf>> for TypeInfo<'ctf> {
             addr,
             buf: bytes.to_vec(),
             ctf,
-            reader,
+            core: reader,
         }
     }
 }
@@ -1449,7 +1367,7 @@ pub struct TypeInfoRef<'buf, 'ctf: 'buf> {
     pub addr: u64,
     pub bytes: &'buf [u8],
     pub ctf: &'ctf CtfReader,
-    pub reader: &'ctf dyn BytesFromCore,
+    pub core: &'ctf Core,
 }
 
 impl Eq for TypeInfoRef<'_, '_> {}
@@ -1461,15 +1379,11 @@ impl PartialEq for TypeInfoRef<'_, '_> {
 }
 
 impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
-    pub fn member_info(&self, member_name: &str) -> Result<Self> {
-        let Some(member) = self.ty.member(member_name, self.ctf) else {
-            return Err(Error::no_member(self.ty.id(), member_name.to_string()));
+    pub fn try_member(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+        let Some(member) = self.ty.member(name, self.ctf) else {
+            return Ok(None);
         };
-        let mut ty = self.ctf.ty(member.type_id);
-
-        while let Some(unwrapped) = unwrap_wrapper_struct(ty, self.ctf) {
-            ty = unwrapped;
-        }
+        let ty = self.ctf.ty(member.type_id);
 
         let start = member.offset() as u16;
         let end = start + ty.size(self.ctf);
@@ -1479,16 +1393,72 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         };
         let addr = self.addr + member.offset();
 
-        Ok(TypeInfoRef {
-            ty,
-            addr,
-            bytes,
-            ctf: self.ctf,
-            reader: self.reader,
-        })
+        Ok(Some(
+            TypeInfoRef {
+                ty,
+                addr,
+                bytes,
+                ctf: self.ctf,
+                core: self.core,
+            }
+            .peel(),
+        ))
     }
 
-    pub fn select_variant(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+    pub fn member(&self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
+        let Some(member) = self.try_member(name)? else {
+            return Err(Error::no_member(self.ty.id(), name.to_string()));
+        };
+
+        Ok(member)
+    }
+
+    pub fn try_deref_ptr(&self) -> Result<Option<TypeInfo<'ctf>>> {
+        let peeled = self.clone().peel();
+        let CtfType::Pointer {
+            ty: CtfPointer { target_type, .. },
+            ..
+        } = peeled.ty
+        else {
+            return Err(Error::unexpected_type(
+                self.ty.kind(),
+                TypeKind::Pointer,
+                format!("{} ({:?})", self.ty.name(self.ctf), self.ty.id()),
+            ));
+        };
+
+        let Some(&bytes) = self.bytes.first_chunk::<8>() else {
+            return Err(Error::too_short(self.bytes.len() as u32, 8));
+        };
+
+        let addr = u64::from_le_bytes(bytes);
+        let target_ty = self.ctf.ty(*target_type);
+        let Some(buf) = self.core.read_type(addr, target_ty, self.ctf)? else {
+            return Ok(None);
+        };
+        let mut final_ty = target_ty;
+        while let Some(unwrapped) = unwrap_wrapper_struct(final_ty, self.ctf) {
+            final_ty = unwrapped;
+        }
+
+        Ok(Some(TypeInfo {
+            ty: final_ty,
+            addr,
+            buf,
+            ctf: self.ctf,
+            core: self.core,
+        }))
+    }
+
+    pub fn deref_ptr(&self) -> Result<TypeInfo<'ctf>> {
+        match self.try_deref_ptr() {
+            Ok(Some(i)) => Ok(i),
+            Ok(None) => Err(Error::null_ptr(None)),
+            Err(e) => Err(Error::null_ptr(Some(e.into()))),
+        }
+    }
+
+    pub fn try_select_variant(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
         let (discrim_value, enumerators) = self.read_discriminant()?;
 
         let Some(variants_member) = self.ty.member("__variants", self.ctf) else {
@@ -1523,13 +1493,15 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
                 // matching enumerator, but we didn't find it. User error.
                 return Err(Error::no_enumerator(variants.id(), name.to_string()));
             }
-            _ => {}
         }
 
         let Some(selected_variant) = variants.member(name, self.ctf) else {
             return Err(Error::no_member(self.ty.id(), name.to_string()));
         };
-        let ty = selected_variant.ty(self.ctf);
+        let mut ty = selected_variant.ty(self.ctf);
+        while let Some(unwrapped) = unwrap_wrapper_struct(ty, self.ctf) {
+            ty = unwrapped;
+        }
 
         let start = selected_variant.offset() as u16;
         let end = start + ty.size(self.ctf);
@@ -1539,27 +1511,96 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         };
         let addr = self.addr + selected_variant.offset();
 
-        Ok(Some(TypeInfoRef {
-            ty,
-            addr,
-            bytes,
-            ctf: self.ctf,
-            reader: self.reader,
-        }))
+        Ok(Some(
+            TypeInfoRef {
+                ty,
+                addr,
+                bytes,
+                ctf: self.ctf,
+                core: self.core,
+            }
+            .peel(),
+        ))
     }
 
-    pub fn parse_option<T: ReadCtfType>(&self) -> Result<Option<T>> {
-        let var = self.active_variant()?;
-        let value = match var {
-            ("Some", var_info) => T::from_ctf_info(&var_info)?,
-            ("None", _) => return Ok(None),
-            (s, _) => {
-                // TODO real error
-                panic!("bad variant name {s}");
-            }
+    pub fn select_variant(&self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
+        let Some(info) = self.try_select_variant(name)? else {
+            return Err(Error::unexpected_variant(name.to_string()));
         };
 
-        Ok(Some(value))
+        Ok(info)
+    }
+
+    pub fn parse<T: ParseWithCtf>(&self) -> Result<T> {
+        T::parse_with_ctf(&self)
+            .map_err(|e| Error::parse_type(self.ty.name(self.ctf).to_string(), e.into()))
+    }
+
+    pub fn to_owned(&self) -> TypeInfo<'ctf> {
+        self.clone().into()
+    }
+
+    pub fn with_ty(mut self, ty: &'ctf CtfType) -> TypeInfoRef<'buf, 'ctf> {
+        self.ty = ty;
+        self
+    }
+
+    pub fn with_addr(mut self, addr: u64) -> TypeInfoRef<'buf, 'ctf> {
+        self.addr = addr;
+        self
+    }
+
+    pub fn with_buf(mut self, buf: &'buf [u8]) -> TypeInfoRef<'buf, 'ctf> {
+        self.bytes = &buf;
+        self
+    }
+
+    /// Get an iterator of `TypeInfoRef`s over the elements of an array.
+    pub fn array_elements(&self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
+        array_elements(self.ty, self.addr, self.bytes, self.core, self.ctf)
+    }
+
+    /// Parse the elements of a boxed slice, returning them in a Vec.
+    pub fn boxed_slice_elements<T, F>(&self, f: F) -> Result<Vec<T>>
+    where
+        F: Fn(&TypeInfoRef<'_, '_>) -> Result<T>,
+    {
+        let len: u64 = self.member("length")?.parse()?;
+        let ptr = self.member("data_ptr")?;
+        let CtfType::Pointer {
+            ty: CtfPointer { target_type, .. },
+            ..
+        } = ptr.ty
+        else {
+            return Err(Error::unexpected_type(
+                ptr.ty.kind(),
+                TypeKind::Pointer,
+                self.ty.name(self.ctf).to_string(),
+            ));
+        };
+        let param_ty = self.ctf.ty(*target_type);
+        let elem_size = param_ty.size(self.ctf) as u64;
+
+        let p: u64 = ptr.parse()?;
+        let total_len = len * param_ty.size(self.ctf) as u64;
+
+        let mut out = Vec::with_capacity(len as usize);
+        let raw = self.core.read_bytes(p, total_len)?.unwrap();
+
+        for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
+            let item_info = TypeInfoRef {
+                ty: param_ty,
+                addr: p + (i as u64) * elem_size,
+                bytes: chunk,
+                ctf: self.ctf,
+                core: self.core,
+            }
+            .peel();
+            let item = f(&item_info)?;
+            out.push(item);
+        }
+
+        Ok(out)
     }
 
     pub fn active_variant(&self) -> Result<(&'ctf str, TypeInfoRef<'buf, 'ctf>)> {
@@ -1622,13 +1663,48 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
                 addr,
                 bytes,
                 ctf: self.ctf,
-                reader: self.reader,
-            },
+                core: self.core,
+            }
+            .peel(),
         ))
     }
 
-    pub fn follow_path(&self, path: &[TypePath]) -> Result<Option<TypeInfo<'ctf>>> {
-        TypeInfo::from_type_path(self.ty, self.addr, self.ctf, self.reader, path)
+    /// Check if the type is a wrapper struct, and return its inner type is it
+    /// is. This are defined as a struct with only a single sized member. The
+    /// buffer will be adjusted if the member is smaller than the parent
+    /// struct.
+    fn peel(self) -> TypeInfoRef<'buf, 'ctf> {
+        let mut info = self;
+
+        loop {
+            if info.ty.kind() != TypeKind::Struct {
+                break;
+            }
+
+            let members = info.ty.members();
+
+            // Zero-sized struct members have no impact on memory layout
+            // and can be ignored. Check if there is only one sized member, and
+            // peel to it if yes.
+            let mut iter = members
+                .iter()
+                .map(|m| (m, m.ty(info.ctf)))
+                .filter(|(_m, t)| t.size(info.ctf) > 0);
+
+            let (member, mem_ty) = match (iter.next(), iter.next()) {
+                (Some((member, mem_ty)), None) => (member, mem_ty),
+                _ => break,
+            };
+
+            let start = member.offset() as usize;
+            let end = start + mem_ty.size(info.ctf) as usize;
+
+            // TODO VALIDATE AHEAD OF TIME
+            info.bytes = info.bytes.get(start..end).unwrap();
+            info.ty = mem_ty;
+        }
+
+        info
     }
 
     fn read_discriminant(&self) -> Result<(u64, &[CtfEnumerator])> {
@@ -1686,7 +1762,7 @@ impl<'buf, 'ctf: 'buf> From<&'buf TypeInfo<'ctf>> for TypeInfoRef<'buf, 'ctf> {
             addr,
             buf,
             ctf,
-            reader,
+            core: reader,
         }: &'buf TypeInfo<'ctf>,
     ) -> Self {
         Self {
@@ -1694,132 +1770,29 @@ impl<'buf, 'ctf: 'buf> From<&'buf TypeInfo<'ctf>> for TypeInfoRef<'buf, 'ctf> {
             addr: *addr,
             bytes: &buf,
             ctf,
-            reader: *reader,
+            core: *reader,
         }
     }
-}
-
-impl<B> TypeLocator<B>
-where
-    B: BytesFromCore,
-{
-    /// Navigate through nested types, returning the target CTF type, the
-    /// address of the object in memory, and its raw bytes.
-    pub fn locate_type<'ctf>(
-        &'ctf self,
-        ty: &'ctf CtfType,
-        addr: u64,
-        ctf: &'ctf CtfReader,
-    ) -> Result<Option<TypeInfo<'ctf>>> {
-        let Some(buf) = self.reader.read_type(ty, addr)? else {
-            return Ok(None);
-        };
-        let mut info = TypeInfo {
-            ty,
-            addr,
-            buf,
-            ctf,
-            reader: &self.reader,
-        };
-
-        // We're mostly reading struct members, which can be efficiently done by
-        // slicing the Vec of the parent type. However, we sometimes need to
-        // load pointers, which requires creating a new Vec. Chunk the tasks by
-        // whether they require pointer chasing, coalescing sequential local
-        // member accesses into a single allocation.
-        let chunks = self.path.chunk_by(|a, b| {
-            matches!(a.selector, Selector::Pointer) && matches!(b.selector, Selector::Pointer)
-        });
-
-        for chunk in chunks {
-            let Some(first) = chunk.first() else {
-                continue;
-            };
-            match first.selector {
-                Selector::Pointer => {
-                    for _ in chunk {
-                        while let Some(unwrapped) = unwrap_wrapper_struct(info.ty, ctf) {
-                            info.ty = unwrapped;
-                        }
-                        let Some(ptr_info) = dereference_pointer(info, &self.reader)? else {
-                            return Ok(None);
-                        };
-                        info = ptr_info;
-                    }
-                }
-                _ => {
-                    let Some(child_info) = read_local_paths(chunk, info.as_ref())? else {
-                        return Ok(None);
-                    };
-
-                    info = child_info.into();
-                }
-            }
-        }
-        if info.ty.size(info.ctf) as usize != info.buf.len() {
-            panic!("bad size"); // TODO
-        }
-
-        Ok(Some(info))
-    }
-
-    // fn read_pointer(&self, info: TypeInfo<B>) -> Result<Option<TypeInfo<B>>> {
-    //     let CtfType::Pointer {
-    //         ty: CtfPointer { target_type, .. },
-    //         ..
-    //     } = info.ty
-    //     else {
-    //         return Err(Error::UnexpectedType {
-    //             actual: info.ty.kind(),
-    //             expected: TypeKind::Pointer,
-    //         });
-    //     };
-
-    //     let Some(&bytes) = info.buf.first_chunk::<8>() else {
-    //         return Err(Error::TooShort {
-    //             actual: info.buf.len() as u32,
-    //             expected: 8,
-    //         });
-    //     };
-
-    //     let addr = u64::from_le_bytes(bytes);
-    //     if addr == 0 {
-    //         eprintln!("NULL PTR for {:?}", info.ty);
-    //         // TODO should we error out? Should another layer handle this check?
-    //         return Ok(None);
-    //     }
-    //     let target_ty = info.ctf.ty(*target_type);
-    //     let Some(buf) = self.reader.read_type(target_ty, addr)? else {
-    //         return Ok(None);
-    //     };
-
-    //     Ok(Some(TypeInfo {
-    //         ty: target_ty,
-    //         addr,
-    //         buf,
-    //         ctf: info.ctf,
-    //         reader: info.reader,
-    //     }))
-    // }
 }
 
 pub trait BytesFromCore {
     /// Read the size of the provided type at address.
     /// The reader may return None if the address is unmapped.
-    fn read_type(&self, ty: &CtfType, addr: u64) -> Result<Option<Vec<u8>>>;
+    fn read_type(&self, addr: u64, ty: &CtfType, ctf: &CtfReader) -> Result<Option<Vec<u8>>>;
+
     /// Read `len` bytes at address.
     /// The reader may return None if the address is unmapped.
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Option<Vec<u8>>>;
 }
 
 /// Parse a byte slice as a type.
-pub trait ReadCtfType: Sized {
+pub trait ParseWithCtf: Sized {
     /// Attempt to read `Self` from the CTF type information.
-    fn from_ctf_info(info: &TypeInfoRef) -> Result<Self>;
+    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self>;
 }
 
-impl ReadCtfType for u8 {
-    fn from_ctf_info(info: &TypeInfoRef) -> Result<Self> {
+impl ParseWithCtf for u8 {
+    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -1830,8 +1803,8 @@ impl ReadCtfType for u8 {
     }
 }
 
-impl ReadCtfType for i8 {
-    fn from_ctf_info(info: &TypeInfoRef) -> Result<Self> {
+impl ParseWithCtf for i8 {
+    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -1842,8 +1815,8 @@ impl ReadCtfType for i8 {
     }
 }
 
-impl ReadCtfType for bool {
-    fn from_ctf_info(info: &TypeInfoRef) -> Result<Self> {
+impl ParseWithCtf for bool {
+    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -1856,8 +1829,8 @@ impl ReadCtfType for bool {
 
 macro_rules! ctf_num_impl {
     ($num_ty:ty) => {
-        impl ReadCtfType for $num_ty {
-            fn from_ctf_info(info: &TypeInfoRef) -> Result<Self> {
+        impl ParseWithCtf for $num_ty {
+            fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
                 if info.bytes.len() < size_of::<Self>() {
                     return Err(Error::too_short(
                         info.bytes.len() as u32,
@@ -1878,18 +1851,17 @@ ctf_num_impl!(i64);
 ctf_num_impl!(f32);
 ctf_num_impl!(f64);
 
-impl<T> ReadCtfType for Option<T>
+impl<T> ParseWithCtf for Option<T>
 where
-    T: ReadCtfType,
+    T: ParseWithCtf,
 {
-    fn from_ctf_info(info: &TypeInfoRef) -> Result<Self> {
+    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
         let var = info.active_variant()?;
         let value = match var {
-            ("Some", var_info) => T::from_ctf_info(&var_info)?,
+            ("Some", var_info) => T::parse_with_ctf(&var_info)?,
             ("None", _) => return Ok(None),
             (s, _) => {
-                // TODO real error
-                panic!("bad variant name {s}");
+                return Err(Error::no_enumerator(info.ty.id(), s.to_string()));
             }
         };
 
@@ -1897,34 +1869,26 @@ where
     }
 }
 
-impl<T> ReadCtfType for Vec<T>
+impl<T> ParseWithCtf for Vec<T>
 where
-    T: ReadCtfType,
+    T: ParseWithCtf,
 {
-    fn from_ctf_info(info: &TypeInfoRef) -> Result<Self> {
-        let len: u64 = info.parse_member("len")?;
+    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
+        let len: u64 = info.member("len")?.parse()?;
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
         let param_member = info.ty.member("__type_param_T", info.ctf).unwrap();
         let param_ty = param_member.ty(info.ctf);
         let param_size = param_ty.size(info.ctf) as u64;
 
-        let ptr = info.follow_path(&[
-            TypePath {
-                name: "Vec<T>",
-                selector: Selector::Struct { member: "buf" },
-            },
-            TypePath {
-                name: "RawVecInner",
-                selector: Selector::Struct { member: "ptr" },
-            },
-        ])?;
-        let Some(ptr) = ptr else {
-            return Ok(Vec::new());
-        };
+        let ptr = info.member("buf")?.member("ptr")?;
 
-        let p = u64::from_ctf_info(&ptr.as_ref())?;
+        let p: u64 = ptr.parse()?;
         let total_len = len * param_ty.size(info.ctf) as u64;
 
-        let raw = info.reader.read_bytes(p, total_len)?.unwrap();
+        let raw = info.core.read_bytes(p, total_len)?.unwrap();
         let mut out = Vec::with_capacity(len as usize);
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
@@ -1932,9 +1896,9 @@ where
                 addr: info.addr + (i as u64) * param_size,
                 bytes: chunk,
                 ctf: info.ctf,
-                reader: info.reader,
+                core: info.core,
             };
-            let item = T::from_ctf_info(&item_info)?;
+            let item = T::parse_with_ctf(&item_info)?;
             out.push(item);
         }
 
@@ -1942,33 +1906,31 @@ where
     }
 }
 
-impl<T> ReadCtfType for Box<[T]>
+impl<T> ParseWithCtf for Box<[T]>
 where
-    T: ReadCtfType,
+    T: ParseWithCtf,
 {
-    fn from_ctf_info(info: &TypeInfoRef) -> Result<Self> {
-        let len: u64 = info.parse_member("length")?;
-        let ptr = info.follow_path(&[TypePath {
-            name: "Box<[T]>",
-            selector: Selector::Struct { member: "data_ptr" },
-        }])?;
-        let Some(ptr) = ptr else {
-            return Ok(Box::new([]));
-        };
+    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
+        let len: u64 = info.member("length")?.parse()?;
+        let ptr = info.member("data_ptr")?;
         let CtfType::Pointer {
             ty: CtfPointer { target_type, .. },
             ..
         } = ptr.ty
         else {
-            panic!();
+            return Err(Error::unexpected_type(
+                ptr.ty.kind(),
+                TypeKind::Pointer,
+                info.ty.name(info.ctf).to_string(),
+            ));
         };
         let param_ty = info.ctf.ty(*target_type);
         let param_size = param_ty.size(info.ctf) as u64;
 
-        let p = u64::from_ctf_info(&ptr.as_ref())?;
+        let p: u64 = ptr.parse()?;
         let total_len = len * param_ty.size(info.ctf) as u64;
 
-        let raw = info.reader.read_bytes(p, total_len)?.unwrap();
+        let raw = info.core.read_bytes(p, total_len)?.unwrap();
         let mut out = Vec::with_capacity(len as usize);
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
@@ -1976,9 +1938,9 @@ where
                 addr: info.addr + (i as u64) * param_size,
                 bytes: chunk,
                 ctf: info.ctf,
-                reader: info.reader,
+                core: info.core,
             };
-            let item = T::from_ctf_info(&item_info)?;
+            let item = T::parse_with_ctf(&item_info)?;
             out.push(item);
         }
 
@@ -1986,11 +1948,11 @@ where
     }
 }
 
-impl<T, const N: usize> ReadCtfType for [T; N]
+impl<T, const N: usize> ParseWithCtf for [T; N]
 where
-    T: ReadCtfType,
+    T: ParseWithCtf,
 {
-    fn from_ctf_info(info: &TypeInfoRef) -> Result<Self> {
+    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -2007,7 +1969,11 @@ where
             ..
         } = info.ty
         else {
-            panic!();
+            return Err(Error::unexpected_type(
+                info.ty.kind(),
+                TypeKind::Array,
+                info.ty.name(info.ctf).to_string(),
+            ));
         };
 
         let elem_ty = info.ctf.ty(*element_type);
@@ -2021,9 +1987,9 @@ where
                 addr: info.addr + (i * size) as u64,
                 bytes: slice,
                 ctf: info.ctf,
-                reader: info.reader,
+                core: info.core,
             };
-            let item = T::from_ctf_info(&slice_info)?;
+            let item = T::parse_with_ctf(&slice_info)?;
             items.push(item);
         }
         let Ok(arr) = items.try_into() else {
@@ -2033,57 +1999,16 @@ where
     }
 }
 
-impl TypeInfoRef<'_, '_> {
-    pub fn parse_ty<T>(&self) -> Result<T>
-    where
-        T: ReadCtfType,
-    {
-        T::from_ctf_info(&self)
-    }
+impl ParseWithCtf for String {
+    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
+        let len: u64 = info.member("length")?.parse()?;
+        let ptr: u64 = info.member("data_ptr")?.parse()?;
+        let data = info.core.read_bytes(ptr, len)?.unwrap();
 
-    pub fn parse_member<T>(&self, name: &str) -> Result<T>
-    where
-        T: ReadCtfType,
-    {
-        let info = self
-            .member_info(name)
-            .map_err(|e| Error::parse_member(name.to_string(), e.into()))?;
-        T::from_ctf_info(&info).map_err(|e| Error::parse_member(name.to_string(), e.into()))
-    }
-}
+        let out = String::from_utf8_lossy(&data).to_string();
 
-/// Read a series TypePaths that contain fields within the current memory block.
-fn read_local_paths<'info, 'ctf: 'info>(
-    paths: &[TypePath],
-    info: TypeInfoRef<'info, 'ctf>,
-) -> Result<Option<TypeInfoRef<'info, 'ctf>>> {
-    let mut info = info;
-
-    for path in paths {
-        while let Some(unwrapped) = unwrap_wrapper_struct(info.ty, info.ctf) {
-            info.ty = unwrapped;
-        }
-        match &path.selector {
-            Selector::Struct { member } => {
-                let child_info = info.member_info(member)?;
-                info = child_info;
-            }
-            Selector::Enum {
-                variant: discriminant,
-            } => {
-                let Some(child_info) = info.select_variant(discriminant)? else {
-                    return Ok(None);
-                };
-                info = child_info;
-            }
-            _ => unreachable!(),
-        };
+        Ok(out)
     }
-    while let Some(unwrapped) = unwrap_wrapper_struct(info.ty, info.ctf) {
-        info.ty = unwrapped;
-    }
-
-    Ok(Some(info))
 }
 
 /// Check if the type is a wrapper struct, and return its inner type is it is.
@@ -2109,42 +2034,81 @@ fn unwrap_wrapper_struct<'a>(ty: &'a CtfType, ctf: &'a CtfReader) -> Option<&'a 
     }
 }
 
-fn dereference_pointer<'a>(
-    info: TypeInfo<'a>,
-    reader: &dyn BytesFromCore,
-) -> Result<Option<TypeInfo<'a>>> {
-    let CtfType::Pointer {
-        ty: CtfPointer { target_type, .. },
+// Split this into a free function to fix lifetime issues from calling
+// `TypeInfoRef` methods from `TypeInfo`.
+fn array_elements<'buf, 'ctf: 'buf>(
+    ty: &'ctf CtfType,
+    addr: u64,
+    bytes: &'buf [u8],
+    core: &'ctf Core,
+    ctf: &'ctf CtfReader,
+) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
+    let CtfType::Array {
+        ty: CtfArray { element_type, .. },
         ..
-    } = info.ty
+    } = ty
     else {
         return Err(Error::unexpected_type(
-            info.ty.kind(),
-            TypeKind::Pointer,
-            format!("{} ({:?})", info.ty.name(info.ctf), info.ty.id()),
+            ty.kind(),
+            TypeKind::Array,
+            ty.name(ctf).to_string(),
         ));
     };
 
-    let Some(&bytes) = info.buf.first_chunk::<8>() else {
-        return Err(Error::too_short(info.buf.len() as u32, 8));
-    };
+    let elem_size = ctf.ty_size(*element_type) as usize;
+    let iter = bytes
+        .chunks_exact(elem_size)
+        .enumerate()
+        .map(move |(i, chunk)| {
+            TypeInfoRef {
+                ty: ctf.ty(*element_type),
+                addr: addr + (i * elem_size) as u64,
+                bytes: chunk,
+                ctf,
+                core,
+            }
+            .peel()
+        });
+    Ok(iter)
+}
 
-    let addr = u64::from_le_bytes(bytes);
-    if addr == 0 {
-        eprintln!("NULL PTR for {:?}", info.ty);
-        // TODO should we error out? Should another layer handle this check?
-        return Ok(None);
+impl BytesFromCore for Core {
+    fn read_type(&self, addr: u64, ty: &CtfType, ctf: &CtfReader) -> Result<Option<Vec<u8>>> {
+        let mappings = self
+            .mappings()
+            .map_err(|e| Error::read_error(ty.id(), e.into()))?;
+
+        if !mappings
+            .as_slice()
+            .iter()
+            .any(|m| m.range().contains(&addr))
+        {
+            return Ok(None);
+        }
+
+        let mut buf = vec![0u8; ty.size(ctf) as usize];
+        self.pread_exact(&mut buf, addr)
+            .map_err(|e| Error::read_error(ty.id(), e.into()))?;
+        Ok(Some(buf))
     }
-    let target_ty = info.ctf.ty(*target_type);
-    let Some(buf) = reader.read_type(target_ty, addr)? else {
-        return Ok(None);
-    };
 
-    Ok(Some(TypeInfo {
-        ty: target_ty,
-        addr,
-        buf,
-        ctf: info.ctf,
-        reader: info.reader,
-    }))
+    // TODO replace with method on Core?
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<Option<Vec<u8>>> {
+        let mappings = self
+            .mappings()
+            .map_err(|e| Error::read_error(TypeId::try_from(1).unwrap(), e.into()))?;
+
+        if !mappings
+            .as_slice()
+            .iter()
+            .any(|m| m.range().contains(&addr))
+        {
+            return Ok(None);
+        }
+
+        let mut buf = vec![0u8; len as usize];
+        self.pread_exact(&mut buf, addr)
+            .map_err(|e| Error::read_error(TypeId::try_from(1).unwrap(), e.into()))?;
+        Ok(Some(buf))
+    }
 }

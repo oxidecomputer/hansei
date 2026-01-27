@@ -1,18 +1,28 @@
 use anyhow::{Context as _, Result};
 use clap::Parser;
-use durin::read::{
-    BytesFromCore, CtfArray, CtfReader, CtfType, Discriminant, ReadCtfType, SelectAction, Selector,
-    TypeInfo, TypeInfoRef, TypePath,
-};
+use durin::TypeId;
+use durin::read::{BytesFromCore, CtfReader, ParseWithCtf, TypeInfo, TypeInfoRef};
+use durin::{Error, TypeKind};
 use proc::Core;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::mem;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+pub mod unwind;
+
+/// TypeId of tokio::runtime::task::core::Header.
+static HDR_ID: OnceLock<TypeId> = OnceLock::new();
+/// TypeId of core::panic::location::Location.
+static LOC_ID: OnceLock<TypeId> = OnceLock::new();
+/// Cache of symbol names for vtable members.
+static SYMBOL_CACHE: OnceLock<Mutex<HashMap<u64, &'static str>>> = OnceLock::new();
 
 #[derive(clap::Parser)]
 struct Args {
@@ -50,73 +60,74 @@ fn exec(args: Args, _out: &mut dyn io::Write) -> Result<()> {
         fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
     let ctf = CtfReader::load(&ctf_bytes)?;
 
-    let core_reader = CoreReader {
-        core: &core,
-        ctf: &ctf,
-    };
+    let ctx_ty = ctf
+        .find_ty("tokio::runtime::context::Context", TypeKind::Struct)
+        .unwrap();
 
-    let mut type_map = HashMap::new();
-    for ty in ctf.types() {
-        let type_name = ty.name(&ctf);
-        type_map.insert(type_name, ty);
-    }
-
-    let ctx_ty = type_map.get("tokio::runtime::context::Context").unwrap();
     let lwps = core.lwps()?;
+
+    let backtraces = unwind::load_frames(&core)?;
+    let mut workers = BTreeMap::new();
+
     let mut scheduler = None;
     for lwp in &lwps {
         if let Some(addr) = find_context(lwp.tid, &brk_range, &core)? {
-            eprintln!("Context for TID {}: {addr:#x}", lwp.tid);
-            let info = TypeInfo::from_addr(ctx_ty, addr, &ctf, &core_reader)?.unwrap();
-            let ctx = ThreadCtx::from_ctf_info(&info.as_ref())?;
+            //eprintln!("Context for TID {}: {addr:#x}", lwp.tid);
+            let info = TypeInfo::from_addr(ctx_ty, addr, &ctf, &core)?.unwrap();
+            let ctx: ThreadCtx = info.parse()?;
+            workers.insert(lwp.tid, ctx);
+
             if scheduler.is_none() {
-                let sched_info = info
-                    .as_ref()
-                    .follow_path(&[
-                        TypePath {
-                            name: "Context",
-                            selector: Selector::Struct { member: "current" },
-                        },
-                        TypePath {
-                            name: "HandleCell",
-                            selector: Selector::Struct { member: "handle" },
-                        },
-                        TypePath {
-                            name: "RefCell<Handle>",
-                            selector: Selector::Struct { member: "value" },
-                        },
-                        TypePath {
-                            name: "Option<Handle>",
-                            selector: Selector::Enum { variant: "Some" },
-                        },
-                        TypePath {
-                            name: "Handle",
-                            selector: Selector::Enum {
-                                variant: "MultiThread",
-                            },
-                        },
-                        TypePath {
-                            name: "Handle::MultiThread",
-                            selector: Selector::Struct { member: "__0" },
-                        },
-                        TypePath {
-                            name: "*ArcInner<multi_thread::Handle>",
-                            selector: Selector::Pointer,
-                        },
-                        TypePath {
-                            name: "ArcInner<multi_thread::Handle>",
-                            selector: Selector::Struct { member: "data" },
-                        },
-                    ])?
-                    .unwrap();
-                scheduler = Some(Scheduler::from_ctf_info(&sched_info.as_ref())?);
+                let sched = info
+                    .member("current")?
+                    .member("handle")?
+                    .member("value")?
+                    .select_variant("Some")?
+                    .select_variant("MultiThread")?
+                    .deref_ptr()?
+                    .member("data")?
+                    .parse::<Scheduler>()?;
+                scheduler = Some(sched);
             }
-            eprintln!("{ctx:#?}");
         }
     }
-    eprintln!("{:#?}", scheduler.unwrap());
+    let scheduler = scheduler.unwrap();
+
+    for active in &scheduler.shared.active_workers {
+        let (tid, ctx) = workers
+            .iter()
+            .find(|(_tid, ctx)| {
+                let Some(id) = ctx.worker_index else {
+                    return false;
+                };
+                id == *active
+            })
+            .unwrap();
+        eprintln!("{ctx:#?}");
+        for frame in &backtraces[tid] {
+            let mangled = frame
+                .symbol
+                .as_ref()
+                .map(|s| s.name.as_str())
+                .unwrap_or_default();
+            let demangled = format!("{:#}", rustc_demangle::demangle(mangled));
+            eprintln!("{:#018x} {demangled}", frame.regs.rip);
+        }
+        eprintln!("");
+    }
+    eprintln!("{:#?}", scheduler);
 
     Ok(())
+}
+
+fn lookup_symbol(addr: u64, core: &Core) -> &'static str {
+    let cache = SYMBOL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    *cache.lock().unwrap().entry(addr).or_insert_with(|| {
+        let sym = core.lookup_symbol(addr).unwrap();
+        let s = format!("{:#}", rustc_demangle::demangle(&sym.name));
+        // Leak the String so we can treat it as a &'static str.
+        Box::leak(s.into_boxed_str())
+    })
 }
 
 /// Find the address of the thread-local `tokio::runtime::context::Context` for
@@ -171,158 +182,59 @@ fn find_context(tid: u32, brk_range: &Range<u64>, core: &Core) -> Result<Option<
     Ok(None)
 }
 
-struct CoreReader<'a> {
-    core: &'a Core,
-    ctf: &'a CtfReader,
-}
-
-impl<'a> BytesFromCore for CoreReader<'a> {
-    fn read_type(&self, ty: &CtfType, addr: u64) -> durin::Result<Option<Vec<u8>>> {
-        let mappings = self.core.mappings().map_err(|e| durin::Error::ReadError {
-            ty: ty.id(),
-            source: e.into(),
-        })?;
-        if !mappings
-            .as_slice()
-            .iter()
-            .any(|m| m.range().contains(&addr))
-        {
-            return Ok(None);
-        }
-
-        let mut buf = vec![0u8; ty.size(self.ctf) as usize];
-        self.core
-            .pread_exact(&mut buf, addr)
-            .map_err(|e| durin::Error::ReadError {
-                ty: ty.id(),
-                source: e.into(),
-            })?;
-        Ok(Some(buf))
-    }
-
-    fn read_bytes(&self, addr: u64, len: u64) -> durin::Result<Option<Vec<u8>>> {
-        let mappings = self.core.mappings().map_err(|e| durin::Error::ReadError {
-            ty: durin::TypeId::try_from(1).unwrap(),
-            source: e.into(),
-        })?;
-        if !mappings
-            .as_slice()
-            .iter()
-            .any(|m| m.range().contains(&addr))
-        {
-            return Ok(None);
-        }
-
-        let mut buf = vec![0u8; len as usize];
-        self.core
-            .pread_exact(&mut buf, addr)
-            .map_err(|e| durin::Error::ReadError {
-                ty: durin::TypeId::try_from(1).unwrap(),
-                source: e.into(),
-            })?;
-        Ok(Some(buf))
-    }
-}
-
 #[derive(Clone, PartialEq, Debug)]
 struct ThreadCtx {
     current_task_id: Option<u64>,
     thread_id: Option<u64>,
     worker_index: Option<u64>,
     worker_core: Option<WorkerCore>,
+    defer: Vec<Waker>,
     runtime: EnterRuntime,
     budget: Budget,
 }
-impl ReadCtfType for ThreadCtx {
-    fn from_ctf_info(ctx_info: &TypeInfoRef) -> durin::Result<Self> {
-        let current_task_id = ctx_info.parse_member("current_task_id")?;
-        let thread_id = ctx_info.parse_member("thread_id")?;
-        let runtime = ctx_info.parse_member("runtime")?;
-        let budget = ctx_info.parse_member("budget")?;
 
-        let worker_index = ctx_info
-            .follow_path(&[
-                TypePath {
-                    name: "Context",
-                    selector: Selector::Struct {
-                        member: "scheduler",
-                    },
-                },
-                TypePath {
-                    name: "ContextPtr",
-                    selector: Selector::Pointer,
-                },
-                TypePath {
-                    name: "Context",
-                    selector: Selector::Enum {
-                        variant: "MultiThread",
-                    },
-                },
-                TypePath {
-                    name: "Context::MultiThread",
-                    selector: Selector::Struct { member: "__0" },
-                },
-                TypePath {
-                    name: "MultiThread",
-                    selector: Selector::Struct { member: "worker" },
-                },
-                TypePath {
-                    name: "WorkerPtr",
-                    selector: Selector::Pointer,
-                },
-                TypePath {
-                    name: "Arc<Worker>",
-                    selector: Selector::Struct { member: "data" },
-                },
-                TypePath {
-                    name: "Worker",
-                    selector: Selector::Struct { member: "index" },
-                },
-            ])?
-            .map(|i| u64::from_ctf_info(&i.as_ref()))
-            .transpose()?;
+impl ParseWithCtf for ThreadCtx {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let current_task_id = info.member("current_task_id")?.parse()?;
+        let thread_id = info.member("thread_id")?.parse()?;
+        let runtime = info.member("runtime")?.parse()?;
+        let budget = info.member("budget")?.parse()?;
 
-        let worker_core = ctx_info
-            .follow_path(&[
-                TypePath {
-                    name: "Context",
-                    selector: Selector::Struct {
-                        member: "scheduler",
-                    },
-                },
-                TypePath {
-                    name: "ContextPtr",
-                    selector: Selector::Pointer,
-                },
-                TypePath {
-                    name: "Context",
-                    selector: Selector::Enum {
-                        variant: "MultiThread",
-                    },
-                },
-                TypePath {
-                    name: "Context::MultiThread",
-                    selector: Selector::Struct { member: "__0" },
-                },
-                TypePath {
-                    name: "multi_thread::Context",
-                    selector: Selector::Struct { member: "core" },
-                },
-                TypePath {
-                    name: "RefCell<Option<*Core>>",
-                    selector: Selector::Struct { member: "value" },
-                },
-                TypePath {
-                    name: "Option<*Core>",
-                    selector: Selector::Enum { variant: "Some" },
-                },
-                TypePath {
-                    name: "*Worker",
-                    selector: Selector::Pointer,
-                },
-            ])?
-            .map(|i| WorkerCore::from_ctf_info(&i.as_ref()))
-            .transpose()?;
+        let Some(sched_ptr) = info.member("scheduler")?.try_deref_ptr()? else {
+            return Ok(Self {
+                current_task_id,
+                thread_id,
+                runtime,
+                budget,
+                defer: Vec::new(),
+                worker_index: None,
+                worker_core: None,
+            });
+        };
+
+        let sched_info = sched_ptr.select_variant("MultiThread")?.to_owned();
+
+        let worker_index = match sched_info.member("worker")?.try_deref_ptr()? {
+            Some(worker) => {
+                let idx = worker.member("data")?.member("index")?.parse()?;
+                Some(idx)
+            }
+            None => None,
+        };
+
+        let worker_core = match sched_info
+            .member("core")?
+            .member("value")?
+            .try_select_variant("Some")?
+        {
+            Some(i) => {
+                let core = i.deref_ptr()?.parse()?;
+                Some(core)
+            }
+            None => None,
+        };
+
+        let defer = sched_info.member("defer")?.member("value")?.parse()?;
 
         Ok(Self {
             current_task_id,
@@ -330,6 +242,7 @@ impl ReadCtfType for ThreadCtx {
             worker_index,
             worker_core,
             runtime,
+            defer,
             budget,
         })
     }
@@ -341,17 +254,17 @@ pub enum EnterRuntime {
     NotEntered,
 }
 
-impl ReadCtfType for EnterRuntime {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
+impl ParseWithCtf for EnterRuntime {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
         match info.active_variant()? {
             ("Entered", var_info) => {
-                let allow_block_in_place = var_info.parse_member("allow_block_in_place")?;
+                let allow_block_in_place = var_info.parse()?;
                 Ok(Self::Entered {
                     allow_block_in_place,
                 })
             }
             ("NotEntered", _) => Ok(Self::NotEntered),
-            (other, _) => Err(durin::Error::InvalidEnumValue(other.to_string())),
+            (other, _) => Err(durin::Error::invalid_enum_value(other.to_string())),
         }
     }
 }
@@ -369,9 +282,9 @@ impl Budget {
     }
 }
 
-impl ReadCtfType for Budget {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let inner = info.parse_ty()?;
+impl ParseWithCtf for Budget {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let inner = info.parse()?;
         Ok(Self(inner))
     }
 }
@@ -382,10 +295,10 @@ pub struct Scheduler {
     driver: DriverHandle,
 }
 
-impl ReadCtfType for Scheduler {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let shared = info.parse_member("shared")?;
-        let driver = info.parse_member("driver")?;
+impl ParseWithCtf for Scheduler {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let shared = info.member("shared")?.parse()?;
+        let driver = info.member("driver")?.parse()?;
 
         Ok(Self { shared, driver })
     }
@@ -401,39 +314,30 @@ pub struct WorkerCore {
     is_searching: bool,
     is_shutdown: bool,
     is_traced: bool,
+    park: Option<Parker>,
     stats: WorkerStats,
 }
-impl ReadCtfType for WorkerCore {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let global_queue_interval = info.parse_member("global_queue_interval")?;
-        let tick = info.parse_member("tick")?;
-        let lifo_enabled = info.parse_member("lifo_enabled")?;
-        let lifo_slot = info.parse_member("lifo_slot")?;
-        let is_searching = info.parse_member("is_searching")?;
-        let is_shutdown = info.parse_member("is_shutdown")?;
-        let is_traced = info.parse_member("is_traced")?;
-        let stats = info.parse_member("stats")?;
+impl ParseWithCtf for WorkerCore {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let global_queue_interval = info.member("global_queue_interval")?.parse()?;
+        let tick = info.member("tick")?.parse()?;
+        let lifo_enabled = info.member("lifo_enabled")?.parse()?;
+        let lifo_slot = info
+            .member("lifo_slot")?
+            .try_select_variant("Some")?
+            .map(|i| i.deref_ptr().and_then(|i| i.parse()))
+            .transpose()?;
+        let is_searching = info.member("is_searching")?.parse()?;
+        let is_shutdown = info.member("is_shutdown")?.parse()?;
+        let is_traced = info.member("is_traced")?.parse()?;
+        let park = info.member("park")?.parse()?;
+        let stats = info.member("stats")?.parse()?;
 
-        let Some(run_queue_info) = info.follow_path(&[
-            TypePath {
-                name: "Core",
-                selector: Selector::Struct {
-                    member: "run_queue",
-                },
-            },
-            TypePath {
-                name: "*Arc<Queue>",
-                selector: Selector::Pointer,
-            },
-            TypePath {
-                name: "ArcInner<Queue>",
-                selector: Selector::Struct { member: "data" },
-            },
-        ])?
-        else {
-            panic!();
-        };
-        let run_queue = run_queue_info.parse_ty()?;
+        let run_queue = info
+            .member("run_queue")?
+            .deref_ptr()?
+            .member("data")?
+            .parse()?;
 
         Ok(WorkerCore {
             global_queue_interval,
@@ -444,8 +348,61 @@ impl ReadCtfType for WorkerCore {
             is_searching,
             is_shutdown,
             is_traced,
+            park,
             stats,
         })
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct Parker {
+    state: u64,
+}
+
+impl Parker {
+    const EMPTY: u64 = 0;
+    const PARKED_CONDVAR: u64 = 1;
+    const PARKED_DRIVER: u64 = 2;
+    const NOTIFIED: u64 = 3;
+
+    pub fn is_unparked(&self) -> bool {
+        self.state == Self::EMPTY
+    }
+
+    pub fn is_parked_waiting(&self) -> bool {
+        self.state == Self::PARKED_CONDVAR
+    }
+
+    pub fn is_parked_driving_io(&self) -> bool {
+        self.state == Self::PARKED_DRIVER
+    }
+
+    pub fn is_notified(&self) -> bool {
+        self.state == Self::NOTIFIED
+    }
+}
+
+impl ParseWithCtf for Parker {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let state = info.deref_ptr()?.member("data")?.member("state")?.parse()?;
+
+        Ok(Self { state })
+    }
+}
+
+impl fmt::Debug for Parker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state_desc = match self.state {
+            Self::EMPTY => format_args!("running ({})", self.state),
+            Self::PARKED_CONDVAR => format_args!("parked_condvar ({})", self.state),
+            Self::PARKED_DRIVER => format_args!("parked_io_driver ({})", self.state),
+            Self::NOTIFIED => format_args!("notify_wake ({})", self.state),
+            _ => format_args!("unknown ({})", self.state),
+        };
+
+        f.debug_struct("Parker")
+            .field("state", &state_desc)
+            .finish()
     }
 }
 
@@ -464,11 +421,11 @@ struct WorkerStats {
     task_poll_time_ewma: f64,
 }
 
-impl ReadCtfType for WorkerStats {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let batch = info.parse_member("batch")?;
-        let tasks_polled_in_batch = info.parse_member("tasks_polled_in_batch")?;
-        let task_poll_time_ewma = info.parse_member("task_poll_time_ewma")?;
+impl ParseWithCtf for WorkerStats {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let batch = info.member("batch")?.parse()?;
+        let tasks_polled_in_batch = info.member("tasks_polled_in_batch")?.parse()?;
+        let task_poll_time_ewma = info.member("task_poll_time_ewma")?.parse()?;
 
         Ok(Self {
             batch,
@@ -478,12 +435,12 @@ impl ReadCtfType for WorkerStats {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 struct MetricsBatch {
     /// The total busy duration in nanoseconds.
     busy_duration_total: u64,
     // Instant at which work last resumed (continued after park).
-    //processing_scheduled_tasks_started_at: Option<Instant>,
+    processing_scheduled_tasks_started_at: Option<Duration>, // TODO is duration useful here?
     /// Number of times the worker parked.
     park_count: u64,
     /// Number of times the worker parked and unparked.
@@ -506,18 +463,22 @@ struct MetricsBatch {
     overflow_count: u64,
 }
 
-impl ReadCtfType for MetricsBatch {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let busy_duration_total = info.parse_member("busy_duration_total")?;
-        let park_count = info.parse_member("park_count")?;
-        let park_unpark_count = info.parse_member("park_unpark_count")?;
-        let noop_count = info.parse_member("noop_count")?;
-        let steal_count = info.parse_member("steal_count")?;
-        let steal_operations = info.parse_member("steal_operations")?;
-        let poll_count = info.parse_member("poll_count")?;
-        let poll_count_on_last_park = info.parse_member("poll_count_on_last_park")?;
-        let local_schedule_count = info.parse_member("local_schedule_count")?;
-        let overflow_count = info.parse_member("overflow_count")?;
+impl ParseWithCtf for MetricsBatch {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let busy_duration_total = info.member("busy_duration_total")?.parse()?;
+        let processing_scheduled_tasks_started_at = info
+            .member("processing_scheduled_tasks_started_at")?
+            .parse::<Option<RawInstant>>()?
+            .map(|raw_time| Duration::new(raw_time.tv_sec, raw_time.tv_nsec));
+        let park_count = info.member("park_count")?.parse()?;
+        let park_unpark_count = info.member("park_unpark_count")?.parse()?;
+        let noop_count = info.member("noop_count")?.parse()?;
+        let steal_count = info.member("steal_count")?.parse()?;
+        let steal_operations = info.member("steal_operations")?.parse()?;
+        let poll_count = info.member("poll_count")?.parse()?;
+        let poll_count_on_last_park = info.member("poll_count_on_last_park")?.parse()?;
+        let local_schedule_count = info.member("local_schedule_count")?.parse()?;
+        let overflow_count = info.member("overflow_count")?.parse()?;
 
         Ok(Self {
             busy_duration_total,
@@ -530,6 +491,7 @@ impl ReadCtfType for MetricsBatch {
             poll_count_on_last_park,
             local_schedule_count,
             overflow_count,
+            processing_scheduled_tasks_started_at,
         })
     }
 }
@@ -538,7 +500,7 @@ impl ReadCtfType for MetricsBatch {
 pub struct Shared {
     // /// Per-worker remote state. All other workers have access to this and is
     // /// how they communicate between each other.
-    // remotes: Box<[Remote]>,
+    remotes: Box<[Remote]>,
     /// Tokio uses this to access the global task queue used for.
     /// For our purposes we just use to to easily see the number of pending jobs.
     pub inject_len: u64,
@@ -567,10 +529,8 @@ pub struct Shared {
     /// Scheduler configuration options
     config: Config,
     // /// Collects metrics from the runtime.
-    // pub(super) scheduler_metrics: SchedulerMetrics,
-
-    // pub(super) worker_metrics: Box<[WorkerMetrics]>,
-
+    scheduler_metrics: SchedulerMetrics,
+    worker_metrics: Box<[WorkerMetrics]>,
     // /// Only held to trigger some code on drop. This is used to get internal
     // /// runtime metrics that can be useful when doing performance
     // /// investigations. This does nothing (empty struct, no drop impl) unless
@@ -578,46 +538,50 @@ pub struct Shared {
     // _counters: Counters,
 }
 
-impl ReadCtfType for Shared {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let config = info.parse_member("config")?;
-        let inject_len = info.parse_member("inject")?;
-        let idle: Idle = info.parse_member("idle")?;
-        let owned = info.parse_member("owned")?;
-        let Some(synced_info) = info.follow_path(&[
-            TypePath {
-                name: "Shared",
-                selector: Selector::Struct { member: "synced" },
-            },
-            TypePath {
-                name: "Mutex<Synced>",
-                selector: Selector::Struct { member: "__1" },
-            },
-            TypePath {
-                name: "RawMutex<Synced>",
-                selector: Selector::Struct { member: "data" },
-            },
-        ])?
-        else {
-            panic!();
-        };
-        let synced = Synced::from_ctf_info(&synced_info.as_ref())?;
+impl ParseWithCtf for Shared {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let remotes = info.member("remotes")?.parse()?;
+        let config = info.member("config")?.parse()?;
+        let inject_len = info.member("inject")?.parse()?;
+        let idle: Idle = info.member("idle")?.parse()?;
+        let owned = info.member("owned")?.parse()?;
+        let scheduler_metrics = info.member("scheduler_metrics")?.parse()?;
+        let worker_metrics = info.member("worker_metrics")?.parse()?;
 
-        let mut active = BTreeSet::new();
+        let synced: Synced = info.member("synced")?.member("data")?.parse()?;
+        let mut active_workers = BTreeSet::new();
         for i in 0u64..idle.num_workers {
             if !synced.idle_sleepers.contains(&i) {
-                active.insert(i);
+                active_workers.insert(i);
             }
         }
 
         Ok(Self {
-            config,
+            remotes,
             inject_len,
             idle,
-            active_workers: active,
+            active_workers,
             owned,
             synced,
+            config,
+            scheduler_metrics,
+            worker_metrics,
         })
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Remote {
+    steal: TaskQueue,
+    unpark: Parker,
+}
+
+impl ParseWithCtf for Remote {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let steal = info.member("steal")?.deref_ptr()?.member("data")?.parse()?;
+        let unpark = info.member("unpark")?.parse()?;
+
+        Ok(Self { steal, unpark })
     }
 }
 
@@ -628,14 +592,14 @@ pub struct Idle {
     num_workers: u64,
 }
 
-impl ReadCtfType for Idle {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
+impl ParseWithCtf for Idle {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
         const UNPARK_SHIFT: u64 = 16;
         const UNPARK_MASK: u64 = !SEARCH_MASK;
         const SEARCH_MASK: u64 = (1 << UNPARK_SHIFT) - 1;
 
-        let num_workers = info.parse_member("num_workers")?;
-        let state: u64 = info.parse_member("state")?;
+        let num_workers = info.member("num_workers")?.parse()?;
+        let state: u64 = info.member("state")?.parse()?;
         let num_searching = state & SEARCH_MASK;
         let num_unparked = (state & UNPARK_MASK) >> UNPARK_SHIFT;
 
@@ -647,30 +611,70 @@ impl ReadCtfType for Idle {
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq)]
 pub struct OwnedTasks {
+    list: Vec<Vec<TaskHeader>>,
     added: u64,
     count: u64,
     closed: bool,
+    shard_mask: u64,
 }
 
-impl ReadCtfType for OwnedTasks {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let closed = info.parse_member("closed")?;
-        let Some(list_info) = info.follow_path(&[TypePath {
-            name: "OwnedTasks",
-            selector: Selector::Struct { member: "list" },
-        }])?
-        else {
-            panic!();
-        };
-        let added = list_info.parse_member("added")?;
-        let count = list_info.parse_member("count")?;
+impl ParseWithCtf for OwnedTasks {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let closed = info.member("closed")?.parse()?;
+
+        let list_info = info.member("list")?;
+        let added = list_info.member("added")?.parse()?;
+        let count = list_info.member("count")?.parse()?;
+        let shard_mask = list_info.member("shard_mask")?.parse()?;
+
+        let list = list_info.member("lists")?.boxed_slice_elements(|i| {
+            let mut tasks = Vec::new();
+            if let Some(mut head_info) = i
+                .member("data")?
+                .member("head")?
+                .try_select_variant("Some")?
+                .map(|i| i.deref_ptr())
+                .transpose()?
+            {
+                loop {
+                    let task = head_info.parse()?;
+                    tasks.push(task);
+
+                    let Some(next) = head_info
+                        .member("queue_next")?
+                        .try_select_variant("Some")?
+                        .map(|i| i.deref_ptr())
+                        .transpose()?
+                    else {
+                        break;
+                    };
+                    head_info = next.to_owned();
+                }
+            }
+
+            Ok(tasks)
+        })?;
+
         Ok(OwnedTasks {
+            list,
             added,
             count,
             closed,
+            shard_mask,
         })
+    }
+}
+
+impl fmt::Debug for OwnedTasks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnedTasks")
+            .field("list", &self.list)
+            .field("added", &self.added)
+            .field("count", &self.count)
+            .field("shard_mask", &format_args!("{:#b}", self.shard_mask))
+            .finish()
     }
 }
 
@@ -682,53 +686,27 @@ pub struct Synced {
     inject_tail: Option<TaskHeader>,
 }
 
-impl ReadCtfType for Synced {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let Some(idle_info) = info.follow_path(&[TypePath {
-            name: "Synced",
-            selector: Selector::Struct { member: "idle" },
-        }])?
-        else {
-            panic!();
-        };
-        let idle_sleepers_vec = Vec::<u64>::from_ctf_info(&idle_info.as_ref())?;
-        let idle_sleepers = idle_sleepers_vec.into_iter().collect();
-        let Some(inject_info) = info.follow_path(&[TypePath {
-            name: "Synced",
-            selector: Selector::Struct { member: "inject" },
-        }])?
-        else {
-            panic!();
-        };
-        let inject_closed = inject_info.parse_member("is_closed")?;
+impl ParseWithCtf for Synced {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let idle_sleepers = info
+            .member("idle")?
+            .parse::<Vec<u64>>()?
+            .into_iter()
+            .collect();
+
+        let inject_info = info.member("inject")?;
+        let inject_closed = inject_info.member("is_closed")?.parse()?;
+
         let inject_head = inject_info
-            .as_ref()
-            .follow_path(&[
-                TypePath {
-                    name: "Synced",
-                    selector: Selector::Struct { member: "head" },
-                },
-                TypePath {
-                    name: "Synced",
-                    selector: Selector::Enum { variant: "Some" },
-                },
-            ])?
-            .map(|i| TaskHeader::from_ctf_info(&i.as_ref()))
+            .member("head")?
+            .try_select_variant("Some")?
+            .map(|i| i.deref_ptr().and_then(|i| i.parse()))
             .transpose()?;
 
         let inject_tail = inject_info
-            .as_ref()
-            .follow_path(&[
-                TypePath {
-                    name: "Synced",
-                    selector: Selector::Struct { member: "tail" },
-                },
-                TypePath {
-                    name: "Synced",
-                    selector: Selector::Enum { variant: "Some" },
-                },
-            ])?
-            .map(|i| TaskHeader::from_ctf_info(&i.as_ref()))
+            .member("tail")?
+            .try_select_variant("Some")?
+            .map(|i| i.deref_ptr().and_then(|i| i.parse()))
             .transpose()?;
 
         Ok(Synced {
@@ -745,9 +723,9 @@ pub struct Inject {
     len: u64,
 }
 
-impl ReadCtfType for Inject {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let len = info.parse_member("len")?;
+impl ParseWithCtf for Inject {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let len = info.member("len")?.parse()?;
         Ok(Inject { len })
     }
 }
@@ -799,16 +777,82 @@ pub struct Config {
     // pub(crate) unhandled_panic: crate::runtime::UnhandledPanic,
 }
 
-impl ReadCtfType for Config {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let global_queue_interval = info.parse_member("global_queue_interval")?;
-        let event_interval = info.parse_member("event_interval")?;
-        let disable_lifo_slot = info.parse_member("disable_lifo_slot")?;
+impl ParseWithCtf for Config {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let global_queue_interval = info.member("global_queue_interval")?.parse()?;
+        let event_interval = info.member("event_interval")?.parse()?;
+        let disable_lifo_slot = info.member("disable_lifo_slot")?.parse()?;
 
         Ok(Self {
             global_queue_interval,
             event_interval,
             disable_lifo_slot,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct SchedulerMetrics {
+    remote_schedule_count: u64,
+    budget_forced_yield_count: u64,
+}
+
+impl ParseWithCtf for SchedulerMetrics {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let remote_schedule_count = info.member("remote_schedule_count")?.parse()?;
+        let budget_forced_yield_count = info.member("budget_forced_yield_count")?.parse()?;
+
+        Ok(Self {
+            remote_schedule_count,
+            budget_forced_yield_count,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct WorkerMetrics {
+    busy_duration_total: u64,
+    queue_depth: u64,
+    thread_id: Option<u64>,
+    park_count: u64,
+    park_unpark_count: u64,
+    noop_count: u64,
+    steal_count: u64,
+    steal_operations: u64,
+    poll_count: u64,
+    mean_poll_time: u64,
+    local_schedule_count: u64,
+    overflow_count: u64,
+}
+
+impl ParseWithCtf for WorkerMetrics {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let busy_duration_total = info.member("busy_duration_total")?.parse()?;
+        let queue_depth = info.member("queue_depth")?.parse()?;
+        let thread_id = info.member("thread_id")?.member("data")?.parse()?;
+        let park_count = info.member("park_count")?.parse()?;
+        let park_unpark_count = info.member("park_unpark_count")?.parse()?;
+        let noop_count = info.member("noop_count")?.parse()?;
+        let steal_count = info.member("steal_count")?.parse()?;
+        let steal_operations = info.member("steal_operations")?.parse()?;
+        let poll_count = info.member("poll_count")?.parse()?;
+        let mean_poll_time = info.member("mean_poll_time")?.parse()?;
+        let local_schedule_count = info.member("local_schedule_count")?.parse()?;
+        let overflow_count = info.member("overflow_count")?.parse()?;
+
+        Ok(Self {
+            busy_duration_total,
+            queue_depth,
+            thread_id,
+            park_count,
+            park_unpark_count,
+            noop_count,
+            steal_count,
+            steal_operations,
+            poll_count,
+            mean_poll_time,
+            local_schedule_count,
+            overflow_count,
         })
     }
 }
@@ -820,57 +864,20 @@ pub struct TaskQueue {
     tasks: Vec<TaskHeader>,
 }
 
-impl ReadCtfType for TaskQueue {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let head: u64 = info.parse_member("head")?;
-        let tail: u32 = info.parse_member("tail")?;
+impl ParseWithCtf for TaskQueue {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let head: u64 = info.member("head")?.parse()?;
+        let tail: u32 = info.member("tail")?.parse()?;
 
-        let Some(buf_ty) = info.follow_path(&[
-            TypePath {
-                name: "buffer",
-                selector: Selector::Struct { member: "buffer" },
-            },
-            TypePath {
-                name: "*ptr",
-                selector: Selector::Pointer,
-            },
-        ])?
-        else {
-            panic!();
-        };
-
-        let CtfType::Array {
-            ty: CtfArray { element_type, .. },
-            ..
-        } = buf_ty.ty
-        else {
-            panic!();
-        };
-
-        let elem_ty = buf_ty.ctf.ty(*element_type);
-        let elem_size = elem_ty.size(buf_ty.ctf) as usize;
+        let buf_info = info.member("buffer")?.deref_ptr()?;
 
         let real_head = (head & u32::MAX as u64) as u32;
         let len = tail.wrapping_sub(real_head) as usize;
 
         let mut tasks = Vec::with_capacity(len);
 
-        for (i, chunk) in buf_ty.buf.chunks_exact(elem_size).enumerate().take(len) {
-            let item_info = TypeInfoRef {
-                ty: elem_ty,
-                addr: buf_ty.addr + (i * elem_size) as u64,
-                bytes: chunk,
-                ctf: buf_ty.ctf,
-                reader: buf_ty.reader,
-            };
-            let Some(task_info) = item_info.follow_path(&[TypePath {
-                name: "MaybeUnint<Task>",
-                selector: Selector::Struct { member: "value" },
-            }])?
-            else {
-                unreachable!("TODO real error");
-            };
-            let task = task_info.parse_ty()?;
+        for elem_info in buf_info.as_ref().array_elements()?.take(len) {
+            let task = elem_info.member("value")?.deref_ptr()?.parse()?;
             tasks.push(task);
         }
 
@@ -891,9 +898,9 @@ impl fmt::Debug for TaskQueue {
 #[derive(Clone, PartialEq)]
 pub struct TaskHeader {
     state: u64,
-    queue_next: Option<Box<TaskHeader>>,
-    owner_id: Option<u64>,
-    // vtable: TODO,
+    runtime_id: Option<u64>,
+    id: u64,
+    spawn_location: Location,
 }
 
 impl TaskHeader {
@@ -966,39 +973,86 @@ impl TaskHeader {
     }
 }
 
+impl ParseWithCtf for TaskHeader {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let state = info.member("state")?.parse()?;
+        let runtime_id = info.member("owner_id")?.parse()?;
+
+        let vtable_info = info.member("vtable")?.deref_ptr()?;
+
+        let id_offset: u64 = vtable_info.member("id_offset")?.parse()?;
+        let id_addr = info.addr + id_offset;
+        let id_bytes = info
+            .core
+            .read_bytes(id_addr, size_of::<u64>() as u64)?
+            .unwrap();
+        let id = u64::from_le_bytes(id_bytes.try_into().unwrap());
+
+        // This is the offset from the Header address to the address of
+        // `spawn_location`.
+        let spawn_offset: u64 = vtable_info.member("spawn_location_offset")?.parse()?;
+        let spawn_ptr_addr = info.addr + spawn_offset;
+        let spawn_ptr = info
+            .core
+            .read_u64(spawn_ptr_addr)
+            .map_err(|e| Error::null_ptr(Some(e.into())))?;
+
+        // The CTF isn't aware we have a *Location here, so manually find the type and parse.
+        let spawn_id = LOC_ID.get_or_init(|| {
+            info.ctf
+                .find_ty("core::panic::location::Location", TypeKind::Struct)
+                .unwrap()
+                .id()
+        });
+        let spawn_ty = info.ctf.ty(*spawn_id);
+        let spawn_buf = info.core.read_type(spawn_ptr, spawn_ty, info.ctf)?.unwrap();
+        let spawn_info = info.clone().with_ty(spawn_ty).with_buf(&spawn_buf);
+        let spawn_location = spawn_info.parse()?;
+
+        Ok(TaskHeader {
+            state,
+            runtime_id,
+            id,
+            spawn_location,
+        })
+    }
+}
+
 impl fmt::Debug for TaskHeader {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("TaskHeader")
+            .field("runtime_id", &self.runtime_id)
+            .field("spawn_location", &self.spawn_location)
+            .field("id", &self.id)
+            .field("ref_count", &self.ref_count())
+            .field("inner_state", &format_args!("{:#b}", self.state))
             .field("is_running", &self.is_running())
             .field("is_complete", &self.is_complete())
             .field("is_notified", &self.is_notified())
             .field("is_cancelled", &self.is_cancelled())
             .field("is_join_interested", &self.is_join_interested())
             .field("is_join_waker_set", &self.is_join_waker_set())
-            .field("ref_count", &self.ref_count())
-            .field("owner_id", &self.owner_id)
-            .field("inner", &format_args!("{:0b}", self.state))
             .finish()
     }
 }
 
-impl ReadCtfType for TaskHeader {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let Some(info) = info.follow_path(&[TypePath {
-            name: "ptr",
-            selector: Selector::Pointer,
-        }])?
-        else {
-            panic!();
-        };
-        let state = info.parse_member("state")?;
-        let queue_next: Option<TaskHeader> = info.parse_member("queue_next")?;
+#[derive(Clone, PartialEq, Debug)]
+pub struct Location {
+    filename: String,
+    line: u32,
+    col: u32,
+}
 
-        let owner_id = info.parse_member("owner_id")?;
-        Ok(TaskHeader {
-            state,
-            queue_next: queue_next.map(Box::new),
-            owner_id,
+impl ParseWithCtf for Location {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let filename = info.member("filename")?.parse()?;
+        let line = info.member("line")?.parse()?;
+        let col = info.member("col")?.parse()?;
+
+        Ok(Self {
+            filename,
+            line,
+            col,
         })
     }
 }
@@ -1006,12 +1060,19 @@ impl ReadCtfType for TaskHeader {
 #[derive(Clone, PartialEq, Debug)]
 pub struct DriverHandle {
     io: IoHandle,
+    time: Option<TimeHandle>,
 }
 
-impl ReadCtfType for DriverHandle {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let io = info.parse_member("io")?;
-        Ok(Self { io })
+impl ParseWithCtf for DriverHandle {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let io = info.member("io")?.parse()?;
+        let time = info
+            .member("time")?
+            .try_select_variant("Some")?
+            .map(|i| i.parse())
+            .transpose()?;
+
+        Ok(Self { io, time })
     }
 }
 
@@ -1021,20 +1082,18 @@ pub enum IoHandle {
     Disabled(IoDisabled),
 }
 
-impl ReadCtfType for IoHandle {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
+impl ParseWithCtf for IoHandle {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
         match info.active_variant()? {
             ("Enabled", info) => {
-                let handle_info = info.member_info("__0")?;
-                let inner = IoEnabled::from_ctf_info(&handle_info)?;
+                let inner = info.parse()?;
                 Ok(IoHandle::Enabled(inner))
             }
             ("Disabled", info) => {
-                let handle_info = info.member_info("__0")?;
-                let inner = IoDisabled::from_ctf_info(&handle_info)?;
+                let inner = info.parse()?;
                 Ok(IoHandle::Disabled(inner))
             }
-            (other, info) => panic!("unexpected variant {other}: {info:?}"),
+            (other, info) => Err(Error::no_enumerator(info.ty.id(), other.to_string())),
         }
     }
 }
@@ -1042,39 +1101,26 @@ impl ReadCtfType for IoHandle {
 #[derive(Clone, PartialEq, Debug)]
 pub struct IoEnabled {
     num_pending_release: u64,
-    synced: IoSynced,
-    metrics: IoDriverMetrics,
     waker_fd: i32,
+    poll_fd: i32,
+    metrics: IoDriverMetrics,
+    synced: IoSynced,
 }
 
-impl ReadCtfType for IoEnabled {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let num_pending_release = info.parse_member("registrations")?;
-        let metrics = info.parse_member("metrics")?;
-        let waker_fd = info.parse_member("waker")?;
-        let synced_info = info
-            .follow_path(&[
-                TypePath {
-                    name: "IoEnabled",
-                    selector: Selector::Struct { member: "synced" },
-                },
-                TypePath {
-                    name: "Mutex<Synced>",
-                    selector: Selector::Struct { member: "__1" },
-                },
-                TypePath {
-                    name: "RawMutex<Synced>",
-                    selector: Selector::Struct { member: "data" },
-                },
-            ])?
-            .unwrap();
-        let synced = synced_info.parse_ty()?;
+impl ParseWithCtf for IoEnabled {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let num_pending_release = info.member("registrations")?.parse()?;
+        let metrics = info.member("metrics")?.parse()?;
+        let waker_fd = info.member("waker")?.parse()?;
+        let synced = info.member("synced")?.member("data")?.parse()?;
+        let poll_fd = info.member("registry")?.parse()?;
 
         Ok(Self {
             num_pending_release,
-            synced,
-            metrics,
             waker_fd,
+            poll_fd,
+            metrics,
+            synced,
         })
     }
 }
@@ -1084,8 +1130,8 @@ pub struct IoDisabled {
     park: u32,
 }
 
-impl ReadCtfType for IoDisabled {
-    fn from_ctf_info(_info: &TypeInfoRef) -> durin::Result<Self> {
+impl ParseWithCtf for IoDisabled {
+    fn parse_with_ctf(_info: &TypeInfoRef) -> durin::Result<Self> {
         todo!();
     }
 }
@@ -1096,54 +1142,27 @@ pub struct IoSynced {
     is_shutdown: bool,
 }
 
-impl ReadCtfType for IoSynced {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let is_shutdown = info.parse_member("is_shutdown")?;
+impl ParseWithCtf for IoSynced {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let is_shutdown = info.member("is_shutdown")?.parse()?;
         let mut registrations = Vec::new();
-        if let Some(mut head_info) = info.follow_path(&[
-            TypePath {
-                name: "IoSynced",
-                selector: Selector::Struct {
-                    member: "registrations",
-                },
-            },
-            TypePath {
-                name: "LinkedList",
-                selector: Selector::Struct { member: "head" },
-            },
-            TypePath {
-                name: "Option<NonNull<ScheduledIo>>",
-                selector: Selector::Enum { variant: "Some" },
-            },
-            TypePath {
-                name: "*NonNull<ScheduledIo>",
-                selector: Selector::Pointer,
-            },
-        ])? {
+        if let Some(mut head_info) = info
+            .member("registrations")?
+            .member("head")?
+            .try_select_variant("Some")?
+            .map(|i| i.deref_ptr())
+            .transpose()?
+        {
             loop {
-                let sched = head_info.parse_ty()?;
+                let sched = head_info.parse()?;
                 registrations.push(sched);
 
-                let Some(next) = head_info.follow_path(&[
-                    TypePath {
-                        name: "PointersInner<ScheduledIo>",
-                        selector: Selector::Struct {
-                            member: "linked_list_pointers",
-                        },
-                    },
-                    TypePath {
-                        name: "PointersInner<ScheduledIo>",
-                        selector: Selector::Struct { member: "next" },
-                    },
-                    TypePath {
-                        name: "Option<NonNull<ScheduledIo>>",
-                        selector: Selector::Enum { variant: "Some" },
-                    },
-                    TypePath {
-                        name: "NonNull<ScheduledIo>",
-                        selector: Selector::Pointer,
-                    },
-                ])?
+                let Some(next) = head_info
+                    .member("linked_list_pointers")?
+                    .member("next")?
+                    .try_select_variant("Some")?
+                    .map(|i| i.deref_ptr())
+                    .transpose()?
                 else {
                     break;
                 };
@@ -1165,27 +1184,10 @@ pub struct ScheduledIo {
     waiters: Waiters,
 }
 
-impl ReadCtfType for ScheduledIo {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let readiness = info.parse_member("readiness")?;
-        let waiters = info
-            .follow_path(&[
-                TypePath {
-                    name: "ScheduledIo",
-                    selector: Selector::Struct { member: "waiters" },
-                },
-                TypePath {
-                    name: "Mutex<Waiters>",
-                    selector: Selector::Struct { member: "__1" },
-                },
-                TypePath {
-                    name: "RawMutex<Waiters>",
-                    selector: Selector::Struct { member: "data" },
-                },
-            ])?
-            .map(|i| i.parse_ty())
-            .transpose()?
-            .unwrap();
+impl ParseWithCtf for ScheduledIo {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let readiness = info.member("readiness")?.parse()?;
+        let waiters = info.member("waiters")?.member("data")?.parse()?;
 
         Ok(Self { readiness, waiters })
     }
@@ -1194,9 +1196,9 @@ impl ReadCtfType for ScheduledIo {
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Ready(pub u64);
 
-impl ReadCtfType for Ready {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let inner = info.parse_ty()?;
+impl ParseWithCtf for Ready {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let inner = info.parse()?;
         Ok(Self(inner))
     }
 }
@@ -1283,67 +1285,26 @@ pub struct Waiters {
     writer: Option<Waker>,
 }
 
-impl ReadCtfType for Waiters {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
+impl ParseWithCtf for Waiters {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
         let mut list = Vec::new();
-        let prev = info.follow_path(&[
-            TypePath {
-                name: "Waiters",
-                selector: Selector::Struct { member: "list" },
-            },
-            TypePath {
-                name: "LinkedList<Waiter>",
-                selector: Selector::Struct { member: "tail" },
-            },
-            TypePath {
-                name: "Option<NonNull<ScheduledIo>>",
-                selector: Selector::Enum { variant: "Some" },
-            },
-            TypePath {
-                name: "*NonNull<Waiter>",
-                selector: Selector::Pointer,
-            },
-        ])?;
-        if let Some(mut head_info) = info.follow_path(&[
-            TypePath {
-                name: "Waiters",
-                selector: Selector::Struct { member: "list" },
-            },
-            TypePath {
-                name: "LinkedList<Waiter>",
-                selector: Selector::Struct { member: "head" },
-            },
-            TypePath {
-                name: "Option<NonNull<ScheduledIo>>",
-                selector: Selector::Enum { variant: "Some" },
-            },
-            TypePath {
-                name: "*NonNull<Waiter>",
-                selector: Selector::Pointer,
-            },
-        ])? {
+        if let Some(mut head_info) = info
+            .member("list")?
+            .member("head")?
+            .try_select_variant("Some")?
+            .map(|i| i.deref_ptr())
+            .transpose()?
+        {
             loop {
-                let waiter = head_info.parse_ty()?;
+                let waiter = head_info.parse()?;
                 list.push(waiter);
 
-                let Some(next) = head_info.follow_path(&[
-                    TypePath {
-                        name: "PointersInner<Waiter>",
-                        selector: Selector::Struct { member: "pointers" },
-                    },
-                    TypePath {
-                        name: "PointersInner<Waiter",
-                        selector: Selector::Struct { member: "next" },
-                    },
-                    TypePath {
-                        name: "Option<NonNull<Waiter>>",
-                        selector: Selector::Enum { variant: "Some" },
-                    },
-                    TypePath {
-                        name: "NonNull<Waiter>",
-                        selector: Selector::Pointer,
-                    },
-                ])?
+                let Some(next) = head_info
+                    .member("pointers")?
+                    .member("next")?
+                    .try_select_variant("Some")?
+                    .map(|i| i.deref_ptr())
+                    .transpose()?
                 else {
                     break;
                 };
@@ -1351,31 +1312,15 @@ impl ReadCtfType for Waiters {
             }
         }
         let reader = info
-            .follow_path(&[
-                TypePath {
-                    name: "Waiters",
-                    selector: Selector::Struct { member: "reader" },
-                },
-                TypePath {
-                    name: "Option<Waiter>",
-                    selector: Selector::Enum { variant: "Some" },
-                },
-            ])?
-            .map(|i| i.parse_ty())
+            .member("reader")?
+            .try_select_variant("Some")?
+            .map(|i| i.parse())
             .transpose()?;
 
         let writer = info
-            .follow_path(&[
-                TypePath {
-                    name: "Waiters",
-                    selector: Selector::Struct { member: "writer" },
-                },
-                TypePath {
-                    name: "Option<Waiter>",
-                    selector: Selector::Enum { variant: "Some" },
-                },
-            ])?
-            .map(|i| i.parse_ty())
+            .member("writer")?
+            .try_select_variant("Some")?
+            .map(|i| i.parse())
             .transpose()?;
 
         Ok(Self {
@@ -1393,22 +1338,15 @@ pub struct Waiter {
     waker: Option<Waker>,
 }
 
-impl ReadCtfType for Waiter {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let interest = info.parse_member("interest")?;
-        let is_ready = info.parse_member("is_ready")?;
+impl ParseWithCtf for Waiter {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let interest = info.member("interest")?.parse()?;
+        let is_ready = info.member("is_ready")?.parse()?;
+
         let waker = info
-            .follow_path(&[
-                TypePath {
-                    name: "Waiter",
-                    selector: Selector::Struct { member: "waker" },
-                },
-                TypePath {
-                    name: "Option<Waiter>",
-                    selector: Selector::Enum { variant: "Some" },
-                },
-            ])?
-            .map(|i| i.parse_ty())
+            .member("waker")?
+            .try_select_variant("Some")?
+            .map(|info| info.parse())
             .transpose()?;
 
         Ok(Self {
@@ -1422,9 +1360,9 @@ impl ReadCtfType for Waiter {
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Interest(pub u64);
 
-impl ReadCtfType for Interest {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let inner = info.parse_ty()?;
+impl ParseWithCtf for Interest {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let inner = info.parse()?;
         Ok(Self(inner))
     }
 }
@@ -1498,35 +1436,49 @@ impl fmt::Debug for Interest {
 
 #[derive(Clone, PartialEq)]
 pub struct Waker {
+    dependent_task: Option<TaskHeader>,
     data: u64,
-    wake: u64,
-    wake_by_ref: u64,
-    clone: u64,
-    drop: u64,
+    wake: &'static str,
+    wake_by_ref: &'static str,
+    clone: &'static str,
+    drop: &'static str,
 }
 
-impl ReadCtfType for Waker {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let data = info.parse_member("data")?;
+impl ParseWithCtf for Waker {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let data = info.member("data")?.parse()?;
+        let vtable_info = info.member("vtable")?.deref_ptr()?;
 
-        let vtable_info = info
-            .follow_path(&[
-                TypePath {
-                    name: "RawWaker",
-                    selector: Selector::Struct { member: "vtable" },
-                },
-                TypePath {
-                    name: "*Vtable",
-                    selector: Selector::Pointer,
-                },
-            ])?
-            .unwrap();
-        let wake = vtable_info.parse_member("wake")?;
-        let wake_by_ref = vtable_info.parse_member("wake_by_ref")?;
-        let clone = vtable_info.parse_member("clone")?;
-        let drop = vtable_info.parse_member("drop")?;
+        let wake_addr = vtable_info.member("wake")?.parse()?;
+        let wake_by_ref_addr = vtable_info.member("wake_by_ref")?.parse()?;
+        let clone_addr = vtable_info.member("clone")?.parse()?;
+        let drop_addr = vtable_info.member("drop")?.parse()?;
+
+        let wake = lookup_symbol(wake_addr, info.core);
+        let wake_by_ref = lookup_symbol(wake_by_ref_addr, info.core);
+        let clone = lookup_symbol(clone_addr, info.core);
+        let drop = lookup_symbol(drop_addr, info.core);
+
+        let dependent_task;
+        if wake == "tokio::runtime::task::waker::wake_by_val" {
+            let hdr_id = HDR_ID.get_or_init(|| {
+                info.ctf
+                    .find_ty(
+                        "*const_tokio::runtime::task::core::Header",
+                        TypeKind::Pointer,
+                    )
+                    .unwrap()
+                    .id()
+            });
+            let hdr_info = info.member("data")?.with_ty(info.ctf.ty(*hdr_id));
+            let hdr = hdr_info.deref_ptr()?.parse::<TaskHeader>()?;
+            dependent_task = Some(hdr);
+        } else {
+            dependent_task = None;
+        }
 
         Ok(Self {
+            dependent_task,
             data,
             wake,
             wake_by_ref,
@@ -1539,11 +1491,12 @@ impl ReadCtfType for Waker {
 impl fmt::Debug for Waker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Waker")
+            .field("header", &self.dependent_task)
             .field("data", &format_args!("{:#x}", self.data))
-            .field("wake", &format_args!("{:#x}", self.wake))
-            .field("wake_by_ref", &format_args!("{:#x}", self.wake_by_ref))
-            .field("clone", &format_args!("{:#x}", self.clone))
-            .field("drop", &format_args!("{:#x}", self.drop))
+            .field("wake", &self.wake)
+            .field("wake_by_ref", &self.wake_by_ref)
+            .field("clone", &self.clone)
+            .field("drop", &self.drop)
             .finish()
     }
 }
@@ -1555,16 +1508,392 @@ pub struct IoDriverMetrics {
     ready_count: u64,
 }
 
-impl ReadCtfType for IoDriverMetrics {
-    fn from_ctf_info(info: &TypeInfoRef) -> durin::Result<Self> {
-        let fd_registered_count = info.parse_member("fd_registered_count")?;
-        let fd_deregistered_count = info.parse_member("fd_deregistered_count")?;
-        let ready_count = info.parse_member("ready_count")?;
+impl ParseWithCtf for IoDriverMetrics {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let fd_registered_count = info.member("fd_registered_count")?.parse()?;
+        let fd_deregistered_count = info.member("fd_deregistered_count")?.parse()?;
+        let ready_count = info.member("ready_count")?.parse()?;
 
         Ok(Self {
             fd_registered_count,
             fd_deregistered_count,
             ready_count,
         })
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct TimeHandle {
+    is_shutdown: bool,
+    did_wake: bool,
+    time_source: Duration,
+    wheel: Wheel,
+    next_wake: Option<u64>,
+}
+
+impl ParseWithCtf for TimeHandle {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let raw_time: RawInstant = info.member("time_source")?.parse()?;
+        let time_source = Duration::new(raw_time.tv_sec, raw_time.tv_nsec);
+
+        let inner = info.member("inner")?;
+        let is_shutdown = inner.member("is_shutdown")?.parse()?;
+        let did_wake = inner.member("did_wake")?.parse()?;
+
+        let state_info = inner.member("state")?.member("data")?;
+
+        let wheel = state_info.member("wheel")?.parse()?;
+        let next_wake = state_info.member("next_wake")?.parse()?;
+
+        Ok(Self {
+            is_shutdown,
+            did_wake,
+            time_source,
+            wheel,
+            next_wake,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+struct RawInstant {
+    tv_sec: u64,
+    tv_nsec: u32,
+}
+
+impl ParseWithCtf for RawInstant {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let tv_sec = info.member("tv_sec")?.parse()?;
+        let tv_nsec = info.member("tv_nsec")?.parse()?;
+
+        Ok(Self { tv_sec, tv_nsec })
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct Wheel {
+    elapsed: u64,
+    levels: Vec<Level>,
+    pending: Vec<TimerShared>,
+}
+
+impl ParseWithCtf for Wheel {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let elapsed = info.member("elapsed")?.parse()?;
+
+        let levels_info = info.member("levels")?.deref_ptr()?;
+        let mut levels = Vec::with_capacity(6);
+
+        for elem_info in levels_info.array_elements()? {
+            let level = elem_info.parse()?;
+            levels.push(level);
+        }
+
+        let mut pending = Vec::new();
+        if let Some(mut head_info) = info
+            .member("pending")?
+            .member("head")?
+            .try_select_variant("Some")?
+            .map(|i| i.deref_ptr())
+            .transpose()?
+        {
+            loop {
+                let timer = head_info.parse()?;
+                pending.push(timer);
+
+                let Some(next) = head_info
+                    .member("pointers")?
+                    .member("next")?
+                    .try_select_variant("Some")?
+                    .map(|i| i.deref_ptr())
+                    .transpose()?
+                else {
+                    break;
+                };
+                head_info = next;
+            }
+        }
+
+        Ok(Self {
+            elapsed,
+            levels,
+            pending,
+        })
+    }
+}
+
+impl Wheel {
+    pub fn next_expiration(&self) -> Option<Expiration> {
+        for level in self.levels.iter() {
+            if let Some(expiration) = level.next_expiration(self.elapsed) {
+                return Some(expiration);
+            }
+        }
+
+        None
+    }
+}
+
+impl fmt::Debug for Wheel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Wheel")
+            .field("elapsed", &self.elapsed)
+            .field("levels", &self.levels)
+            .field("pending", &self.pending)
+            .field("next_expiration", &self.next_expiration())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct Level {
+    level: u64,
+    occupied: u64,
+    slot: Vec<TimerSlot>,
+}
+
+impl fmt::Debug for Level {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Level")
+            .field("level", &self.level)
+            .field("occupied", &format_args!("{:#064b}", self.occupied))
+            .field("slot", &self.slot)
+            .finish()
+    }
+}
+
+impl ParseWithCtf for Level {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let level = info.member("level")?.parse()?;
+        let occupied = info.member("occupied")?.parse()?;
+
+        let slot_info = info.member("slot")?;
+
+        let mut slot = Vec::new();
+        for (i, elem_info) in slot_info.array_elements()?.enumerate() {
+            let mut slot_timers = TimerSlot {
+                slot_id: i,
+                timers: Vec::new(),
+            };
+
+            // `occupied` acts as a bitmap for which slots contain items.
+            if occupied & 1 << i == 0 {
+                continue;
+            }
+
+            if let Some(mut head_info) = elem_info
+                .member("head")?
+                .try_select_variant("Some")?
+                .map(|i| i.deref_ptr())
+                .transpose()?
+            {
+                loop {
+                    let timer = head_info.parse()?;
+                    slot_timers.timers.push(timer);
+
+                    let Some(next) = head_info
+                        .member("pointers")?
+                        .member("next")?
+                        .try_select_variant("Some")?
+                        .map(|i| i.deref_ptr())
+                        .transpose()?
+                    else {
+                        break;
+                    };
+                    head_info = next;
+                }
+            }
+            slot.push(slot_timers);
+        }
+
+        Ok(Self {
+            level,
+            occupied,
+            slot,
+        })
+    }
+}
+
+impl Level {
+    const LEVEL_MULT: u64 = 64;
+
+    pub fn next_expiration(&self, now: u64) -> Option<Expiration> {
+        // Use the `occupied` bit field to get the index of the next slot that
+        // needs to be processed.
+        let slot = self.next_occupied_slot(now)?;
+
+        // From the slot index, calculate the `Instant` at which it needs to be
+        // processed. This value *must* be in the future with respect to `now`.
+
+        let level_range = self.level_range();
+        let slot_range = self.slot_range();
+
+        // Compute the start date of the current level by masking the low bits
+        // of `now` (`level_range` is a power of 2).
+        let level_start = now & !(level_range - 1);
+        let mut deadline = level_start + slot as u64 * slot_range;
+
+        if deadline <= now {
+            deadline += level_range;
+        }
+
+        Some(Expiration {
+            level: self.level,
+            slot,
+            deadline,
+        })
+    }
+
+    fn next_occupied_slot(&self, now: u64) -> Option<u64> {
+        if self.occupied == 0 {
+            return None;
+        }
+
+        // Get the slot for now using Maths
+        let now_slot = now / self.slot_range();
+        let occupied = self.occupied.rotate_right(now_slot as u32);
+        let zeros = occupied.trailing_zeros() as u64;
+        let slot = (zeros + now_slot) % Self::LEVEL_MULT;
+
+        Some(slot)
+    }
+
+    fn slot_range(&self) -> u64 {
+        Self::LEVEL_MULT.pow(self.level as u32) as u64
+    }
+
+    fn level_range(&self) -> u64 {
+        Self::LEVEL_MULT * self.slot_range()
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Expiration {
+    /// The level containing the slot.
+    level: u64,
+
+    /// The slot index.
+    slot: u64,
+
+    /// The instant at which the slot needs to be processed.
+    deadline: u64,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct TimerSlot {
+    slot_id: usize,
+    timers: Vec<TimerShared>,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct TimerShared {
+    registered_when: u64,
+    time_state: TimerState,
+    result: String,
+    waker_state: WakerState,
+    waker: Option<Waker>,
+}
+
+impl ParseWithCtf for TimerShared {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let registered_when = info.member("registered_when")?.parse()?;
+        let state_info = info.member("state")?;
+        let state = state_info.member("state")?.parse()?;
+        let result = state_info.member("result")?.active_variant()?.0.to_string();
+
+        let waker_info = state_info.member("waker")?;
+        let waker_state = waker_info.member("state")?.parse()?;
+        let waker = waker_info
+            .member("waker")?
+            .try_select_variant("Some")?
+            .map(|i| i.parse())
+            .transpose()?;
+
+        Ok(Self {
+            registered_when,
+            time_state: state,
+            result,
+            waker_state,
+            waker,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct TimerState(pub u64);
+
+impl TimerState {
+    const STATE_DEREGISTERED: u64 = u64::MAX;
+    const STATE_PENDING_FIRE: u64 = Self::STATE_DEREGISTERED - 1;
+
+    pub fn is_deregistered(&self) -> bool {
+        self.0 == Self::STATE_DEREGISTERED
+    }
+
+    pub fn is_pending_fire(&self) -> bool {
+        self.0 == Self::STATE_PENDING_FIRE
+    }
+}
+
+impl ParseWithCtf for TimerState {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let inner = info.parse()?;
+
+        Ok(Self(inner))
+    }
+}
+
+impl fmt::Debug for TimerState {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("TimerState")
+            .field("is_deregistered", &self.is_deregistered())
+            .field("is_pending_fire", &self.is_pending_fire())
+            .field("inner", &format_args!("{:#x}", self.0))
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct WakerState(pub u64);
+
+impl WakerState {
+    /// Idle state.
+    const WAITING: u64 = 0;
+
+    /// A new waker value is being registered with the `AtomicWaker` cell.
+    const REGISTERING: u64 = 0b01;
+
+    /// The task currently registered with the `AtomicWaker` cell is being woken.
+    const WAKING: u64 = 0b10;
+
+    pub fn is_waiting(&self) -> bool {
+        self.0 & Self::WAITING != 0
+    }
+
+    pub fn is_registering(&self) -> bool {
+        self.0 & Self::REGISTERING != 0
+    }
+
+    pub fn is_waking(&self) -> bool {
+        self.0 & Self::WAKING != 0
+    }
+}
+
+impl ParseWithCtf for WakerState {
+    fn parse_with_ctf(info: &TypeInfoRef) -> durin::Result<Self> {
+        let inner = info.parse()?;
+
+        Ok(Self(inner))
+    }
+}
+
+impl fmt::Debug for WakerState {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("WakerState")
+            .field("is_waiting", &self.is_waiting())
+            .field("is_registering", &self.is_registering())
+            .field("is_waking", &self.is_waking())
+            .field("inner", &format_args!("{:#b}", self.0))
+            .finish()
     }
 }
