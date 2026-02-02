@@ -343,6 +343,12 @@ fn main() -> Result<()> {
         .build_fn_info_from_deps(&function_info, &type_deps, &mut writer)
         .context("failed to build types from DWARF debug data")?;
 
+    // Extract and add crate version markers
+    let crate_versions = parser
+        .extract_crate_versions()
+        .context("failed to extract crate versions")?;
+    writer.add_crate_versions(&crate_versions);
+
     let ctf_buffer = writer
         .generate_ctf(parsed_function_info)
         .context("failed to generate CTF")?;

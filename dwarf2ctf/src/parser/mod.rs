@@ -9,7 +9,7 @@ use gimli::{
 use petgraph::prelude::DiGraphMap;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 
 pub struct DwarfParser<'a, R: Reader<Offset = usize>> {
@@ -348,6 +348,56 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         }
 
         Ok(parsed_funcs)
+    }
+
+    /// Extract crate versions from line program include directories.
+    ///
+    /// Looks for `.cargo` in the include directories of each compilation unit's
+    /// line program and extracts the crate name-version from the path
+    /// (4th component after `.cargo`).
+    /// Returns a sorted set of unique crate identifiers (e.g., "tokio-1.48.0").
+    pub fn extract_crate_versions(&self) -> Result<BTreeSet<String>> {
+        use camino::Utf8Path;
+
+        let mut crates = BTreeSet::new();
+
+        let mut iter = self.dwarf.units();
+        while let Some(header) = iter.next()? {
+            let unit = self.dwarf.unit(header)?;
+
+            let Some(line_program) = &unit.line_program else {
+                continue;
+            };
+
+            let lp_header = line_program.header();
+
+            for dir_attr in lp_header.include_directories() {
+                let dir_str = match self.dwarf.attr_string(&unit, dir_attr.clone()) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                let Ok(path_str) = dir_str.to_string_lossy() else {
+                    continue;
+                };
+
+                let path = Utf8Path::new(path_str.as_ref());
+
+                // Find the .cargo component and extract the 4th component after it
+                // Path structure: .../.cargo/registry/src/<hash>/<crate-version>/...
+                let components: Vec<_> = path.components().collect();
+                let cargo_pos = components.iter().position(|c| c.as_str() == ".cargo");
+
+                if let Some(pos) = cargo_pos {
+                    // crate-version is at index pos + 4
+                    if let Some(crate_component) = components.get(pos + 4) {
+                        crates.insert(crate_component.as_str().to_string());
+                    }
+                }
+            }
+        }
+
+        Ok(crates)
     }
 }
 

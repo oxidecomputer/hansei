@@ -116,6 +116,21 @@ impl<'a> CtfWriter<'a> {
         type_id
     }
 
+    /// Add crate version markers as typedef types.
+    ///
+    /// Each crate version is encoded as a typedef named `__CRATE_<name-version>__`
+    /// pointing to void. This allows consumers to extract dependency information.
+    pub fn add_crate_versions<'b>(&mut self, crates: impl IntoIterator<Item = &'b String>) {
+        for crate_id in crates {
+            let name = format!("__CRATE_{crate_id}__");
+            self.add_synthetic_type(CtfType::Typedef {
+                name,
+                // Point to void (type 1)
+                target_type: MaybeOffset::Found(1),
+            });
+        }
+    }
+
     pub fn generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> Result<Vec<u8>> {
         let mut out = Vec::new();
 
