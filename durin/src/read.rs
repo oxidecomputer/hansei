@@ -1261,88 +1261,142 @@ pub struct TypeInfo<'ctf> {
     pub ty: &'ctf CtfType,
     pub addr: u64,
     pub buf: Vec<u8>,
-    pub ctf: &'ctf CtfReader,
-    pub core: &'ctf Core,
 }
 
 impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
     /// Read the type directly at the address provided.
     /// Wrapper types will be unwrapped if present. TODO
-    pub fn from_addr(
+    pub fn from_addr<Ctx: CtfContext<'ctf>>(
+        ctx: Ctx,
         ty: &'ctf CtfType,
         addr: u64,
-        ctf: &'ctf CtfReader,
-        core: &'ctf Core,
     ) -> Result<Option<Self>> {
-        let Some(buf) = core.read_type(addr, ty, ctf)? else {
+        let Some(buf) = ctx.core().read_type(addr, ty, ctx.ctf())? else {
             return Ok(None);
         };
-        Ok(Some(Self {
-            ty,
-            addr,
-            ctf,
-            buf,
-            core,
-        }))
+        Ok(Some(Self { ty, addr, buf }))
     }
 
     pub fn as_ref(&'buf self) -> TypeInfoRef<'buf, 'ctf> {
         self.into()
     }
 
-    pub fn try_member(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
-        self.as_ref().try_member(name)
+    pub fn try_member<Ctx: CtfContext<'ctf>>(
+        &'buf self,
+        ctx: Ctx,
+        name: &str,
+    ) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+        self.as_ref().try_member(ctx, name)
     }
 
-    pub fn member(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
-        self.as_ref().member(name)
+    pub fn member<Ctx: CtfContext<'ctf>>(
+        &'buf self,
+        ctx: Ctx,
+        name: &str,
+    ) -> Result<TypeInfoRef<'buf, 'ctf>> {
+        self.as_ref().member(ctx, name)
     }
 
-    pub fn try_deref_ptr(&self) -> Result<Option<TypeInfo<'ctf>>> {
-        self.as_ref().try_deref_ptr()
+    pub fn try_deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<Option<TypeInfo<'ctf>>> {
+        self.as_ref().try_deref_ptr(ctx)
     }
 
-    pub fn deref_ptr(&self) -> Result<TypeInfo<'ctf>> {
-        self.as_ref().deref_ptr()
+    pub fn deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<TypeInfo<'ctf>> {
+        self.as_ref().deref_ptr(ctx)
     }
 
-    pub fn try_select_variant(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
-        self.as_ref().try_select_variant(name)
+    pub fn try_select_variant<Ctx: CtfContext<'ctf>>(
+        &'buf self,
+        ctx: Ctx,
+        name: &str,
+    ) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+        self.as_ref().try_select_variant(ctx, name)
     }
 
-    pub fn select_variant(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
-        self.as_ref().select_variant(name)
+    pub fn select_variant<Ctx: CtfContext<'ctf>>(
+        &'buf self,
+        ctx: Ctx,
+        name: &str,
+    ) -> Result<TypeInfoRef<'buf, 'ctf>> {
+        self.as_ref().select_variant(ctx, name)
     }
 
-    pub fn array_elements(&'buf self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
-        array_elements(self.ty, self.addr, &self.buf, self.core, self.ctf)
+    pub fn array_elements<Ctx: CtfContext<'ctf>>(
+        &'buf self,
+        ctx: Ctx,
+    ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
+        array_elements(self.ty, self.addr, &self.buf, ctx)
     }
 
-    pub fn parse<T>(&self) -> Result<T>
+    pub fn parse<T, Ctx>(&self, ctx: Ctx) -> Result<T>
     where
-        T: ParseWithCtf,
+        T: ParseWithCtf<'ctf, Ctx>,
+        Ctx: CtfContext<'ctf>,
     {
-        self.as_ref().parse()
+        self.as_ref().parse(ctx)
+    }
+
+    pub fn box2<Ctx: CtfContext<'ctf>>(
+        &'buf self,
+        ctx: Ctx,
+    ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>>
+    where
+        'ctf: 'buf,
+    {
+        boxed_slice_elements(&self, ctx)
+    }
+
+    /// Parse the elements of a boxed slice, returning them in a Vec.
+    pub fn boxed_slice_elements<T, Ctx, F>(&self, ctx: Ctx, mut f: F) -> Result<()>
+    where
+        F: FnMut(&TypeInfoRef<'_, '_>) -> Result<()>,
+        Ctx: CtfContext<'ctf>,
+    {
+        let ctf = ctx.ctf();
+        let core = ctx.core();
+
+        let len: u64 = self.member(ctx, "length")?.parse(ctx)?;
+        let ptr = self.member(ctx, "data_ptr")?;
+        let CtfType::Pointer {
+            ty: CtfPointer { target_type, .. },
+            ..
+        } = ptr.ty
+        else {
+            return Err(Error::unexpected_type(
+                ptr.ty.kind(),
+                TypeKind::Pointer,
+                self.ty.name(ctf).to_string(),
+            ));
+        };
+        let param_ty = ctf.ty(*target_type);
+        let elem_size = param_ty.size(ctf) as u64;
+
+        let p: u64 = ptr.parse(ctx)?;
+        let total_len = len * param_ty.size(ctf) as u64;
+
+        let raw = core.read_bytes(p, total_len)?.unwrap();
+
+        for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
+            let item_info = TypeInfoRef {
+                ty: param_ty,
+                addr: p + (i as u64) * elem_size,
+                bytes: chunk,
+            }
+            .peel(ctx);
+            f(&item_info)?;
+        }
+
+        Ok(())
     }
 }
 
 impl<'buf, 'ctf: 'buf> From<TypeInfoRef<'buf, 'ctf>> for TypeInfo<'ctf> {
     #[inline]
-    fn from(
-        TypeInfoRef {
-            ty,
-            addr,
-            bytes,
-            ctf,
-            core: reader,
-        }: TypeInfoRef<'buf, 'ctf>,
-    ) -> Self {
+    fn from(TypeInfoRef { ty, addr, bytes }: TypeInfoRef<'buf, 'ctf>) -> Self {
         Self {
             ty,
             addr,
             buf: bytes.to_vec(),
-            ctf,
-            core: reader,
         }
     }
 }
@@ -1350,10 +1404,7 @@ impl<'buf, 'ctf: 'buf> From<TypeInfoRef<'buf, 'ctf>> for TypeInfo<'ctf> {
 impl fmt::Debug for TypeInfo<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TypeInfo")
-            .field(
-                "ty",
-                &format_args!("TypeId({}): {}", self.ty.id().get(), self.ty.name(self.ctf)),
-            )
+            .field("ty", &format_args!("TypeId({})", self.ty.id().get()))
             .field("addr", &format_args!("{:#x}", self.addr))
             .field("buf", &self.buf)
             .field("reader", &"&dyn BytesFromCore")
@@ -1366,8 +1417,6 @@ pub struct TypeInfoRef<'buf, 'ctf: 'buf> {
     pub ty: &'ctf CtfType,
     pub addr: u64,
     pub bytes: &'buf [u8],
-    pub ctf: &'ctf CtfReader,
-    pub core: &'ctf Core,
 }
 
 impl Eq for TypeInfoRef<'_, '_> {}
@@ -1379,42 +1428,46 @@ impl PartialEq for TypeInfoRef<'_, '_> {
 }
 
 impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
-    pub fn try_member(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
-        let Some(member) = self.ty.member(name, self.ctf) else {
+    pub fn try_member<Ctx: CtfContext<'ctf>>(
+        &self,
+        ctx: Ctx,
+        name: &str,
+    ) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+        let ctf = ctx.ctf();
+
+        let Some(member) = self.ty.member(name, ctf) else {
             return Ok(None);
         };
-        let ty = self.ctf.ty(member.type_id);
+        let ty = ctf.ty(member.type_id);
 
         let start = member.offset() as u16;
-        let end = start + ty.size(self.ctf);
+        let end = start + ty.size(ctf);
         let Some(bytes) = self.bytes.get(start as usize..end as usize) else {
             let len = self.bytes.len() as u16;
             return Err(Error::invalid_member_range(start, end, len));
         };
         let addr = self.addr + member.offset();
 
-        Ok(Some(
-            TypeInfoRef {
-                ty,
-                addr,
-                bytes,
-                ctf: self.ctf,
-                core: self.core,
-            }
-            .peel(),
-        ))
+        Ok(Some(TypeInfoRef { ty, addr, bytes }.peel(ctx)))
     }
 
-    pub fn member(&self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
-        let Some(member) = self.try_member(name)? else {
+    pub fn member<Ctx: CtfContext<'ctf>>(
+        &self,
+        ctx: Ctx,
+        name: &str,
+    ) -> Result<TypeInfoRef<'buf, 'ctf>> {
+        let Some(member) = self.try_member(ctx, name)? else {
             return Err(Error::no_member(self.ty.id(), name.to_string()));
         };
 
         Ok(member)
     }
 
-    pub fn try_deref_ptr(&self) -> Result<Option<TypeInfo<'ctf>>> {
-        let peeled = self.clone().peel();
+    pub fn try_deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<Option<TypeInfo<'ctf>>> {
+        let ctf = ctx.ctf();
+        let core = ctx.core();
+
+        let peeled = self.clone().peel(ctx);
         let CtfType::Pointer {
             ty: CtfPointer { target_type, .. },
             ..
@@ -1423,7 +1476,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             return Err(Error::unexpected_type(
                 self.ty.kind(),
                 TypeKind::Pointer,
-                format!("{} ({:?})", self.ty.name(self.ctf), self.ty.id()),
+                format!("{} ({:?})", self.ty.name(ctf), self.ty.id()),
             ));
         };
 
@@ -1432,12 +1485,12 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         };
 
         let addr = u64::from_le_bytes(bytes);
-        let target_ty = self.ctf.ty(*target_type);
-        let Some(buf) = self.core.read_type(addr, target_ty, self.ctf)? else {
+        let target_ty = ctf.ty(*target_type);
+        let Some(buf) = core.read_type(addr, target_ty, ctf)? else {
             return Ok(None);
         };
         let mut final_ty = target_ty;
-        while let Some(unwrapped) = unwrap_wrapper_struct(final_ty, self.ctf) {
+        while let Some(unwrapped) = unwrap_wrapper_struct(final_ty, ctf) {
             final_ty = unwrapped;
         }
 
@@ -1445,26 +1498,29 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             ty: final_ty,
             addr,
             buf,
-            ctf: self.ctf,
-            core: self.core,
         }))
     }
 
-    pub fn deref_ptr(&self) -> Result<TypeInfo<'ctf>> {
-        match self.try_deref_ptr() {
+    pub fn deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<TypeInfo<'ctf>> {
+        match self.try_deref_ptr(ctx) {
             Ok(Some(i)) => Ok(i),
             Ok(None) => Err(Error::null_ptr(None)),
             Err(e) => Err(Error::null_ptr(Some(e.into()))),
         }
     }
 
-    pub fn try_select_variant(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
-        let (discrim_value, enumerators) = self.read_discriminant()?;
+    pub fn try_select_variant<Ctx: CtfContext<'ctf>>(
+        &self,
+        ctx: Ctx,
+        name: &str,
+    ) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+        let ctf = ctx.ctf();
+        let (discrim_value, enumerators) = self.read_discriminant(ctx)?;
 
-        let Some(variants_member) = self.ty.member("__variants", self.ctf) else {
+        let Some(variants_member) = self.ty.member("__variants", ctf) else {
             return Err(Error::no_member(self.ty.id(), "__variants".to_string()));
         };
-        let variants = variants_member.ty(self.ctf);
+        let variants = variants_member.ty(ctf);
 
         // In niche-optimized enums only one enumerator will be defined, with two
         // possible variants.
@@ -1472,7 +1528,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 
         // Find the enumerator whose name matches our expected value. It is common
         // common for our expected name to be missing due to niche-optimized enums.
-        let enumerator = enumerators.iter().find(|e| e.name(self.ctf) == name);
+        let enumerator = enumerators.iter().find(|e| e.name(ctf) == name);
 
         match (enumerator, is_niche_optimized) {
             (Some(e), _) => {
@@ -1495,45 +1551,40 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             }
         }
 
-        let Some(selected_variant) = variants.member(name, self.ctf) else {
+        let Some(selected_variant) = variants.member(name, ctf) else {
             return Err(Error::no_member(self.ty.id(), name.to_string()));
         };
-        let mut ty = selected_variant.ty(self.ctf);
-        while let Some(unwrapped) = unwrap_wrapper_struct(ty, self.ctf) {
+        let mut ty = selected_variant.ty(ctf);
+        while let Some(unwrapped) = unwrap_wrapper_struct(ty, ctf) {
             ty = unwrapped;
         }
 
         let start = selected_variant.offset() as u16;
-        let end = start + ty.size(self.ctf);
+        let end = start + ty.size(ctf);
         let Some(bytes) = self.bytes.get(start as usize..end as usize) else {
             let len = self.bytes.len() as u16;
             return Err(Error::invalid_member_range(start, end, len));
         };
         let addr = self.addr + selected_variant.offset();
 
-        Ok(Some(
-            TypeInfoRef {
-                ty,
-                addr,
-                bytes,
-                ctf: self.ctf,
-                core: self.core,
-            }
-            .peel(),
-        ))
+        Ok(Some(TypeInfoRef { ty, addr, bytes }.peel(ctx)))
     }
 
-    pub fn select_variant(&self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
-        let Some(info) = self.try_select_variant(name)? else {
+    pub fn select_variant<Ctx: CtfContext<'ctf>>(
+        &self,
+        ctx: Ctx,
+        name: &str,
+    ) -> Result<TypeInfoRef<'buf, 'ctf>> {
+        let Some(info) = self.try_select_variant(ctx, name)? else {
             return Err(Error::unexpected_variant(name.to_string()));
         };
 
         Ok(info)
     }
 
-    pub fn parse<T: ParseWithCtf>(&self) -> Result<T> {
-        T::parse_with_ctf(&self)
-            .map_err(|e| Error::parse_type(self.ty.name(self.ctf).to_string(), e.into()))
+    pub fn parse<T: ParseWithCtf<'ctf, Ctx>, Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<T> {
+        T::parse_with_ctf(ctx, &self)
+            .map_err(|e| Error::parse_type(self.ty.name(ctx.ctf()).to_string(), e.into()))
     }
 
     pub fn to_owned(&self) -> TypeInfo<'ctf> {
@@ -1556,17 +1607,24 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
     }
 
     /// Get an iterator of `TypeInfoRef`s over the elements of an array.
-    pub fn array_elements(&self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
-        array_elements(self.ty, self.addr, self.bytes, self.core, self.ctf)
+    pub fn array_elements<Ctx: CtfContext<'ctf>>(
+        &self,
+        ctx: Ctx,
+    ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
+        array_elements(self.ty, self.addr, self.bytes, ctx)
     }
 
     /// Parse the elements of a boxed slice, returning them in a Vec.
-    pub fn boxed_slice_elements<T, F>(&self, f: F) -> Result<Vec<T>>
+    pub fn boxed_slice_elements<T, Ctx, F>(&self, ctx: Ctx, mut f: F) -> Result<Vec<T>>
     where
-        F: Fn(&TypeInfoRef<'_, '_>) -> Result<T>,
+        F: FnMut(&TypeInfoRef<'_, '_>) -> Result<T>,
+        Ctx: CtfContext<'ctf>,
     {
-        let len: u64 = self.member("length")?.parse()?;
-        let ptr = self.member("data_ptr")?;
+        let ctf = ctx.ctf();
+        let core = ctx.core();
+
+        let len: u64 = self.member(ctx, "length")?.parse(ctx)?;
+        let ptr = self.member(ctx, "data_ptr")?;
         let CtfType::Pointer {
             ty: CtfPointer { target_type, .. },
             ..
@@ -1575,27 +1633,25 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             return Err(Error::unexpected_type(
                 ptr.ty.kind(),
                 TypeKind::Pointer,
-                self.ty.name(self.ctf).to_string(),
+                self.ty.name(ctf).to_string(),
             ));
         };
-        let param_ty = self.ctf.ty(*target_type);
-        let elem_size = param_ty.size(self.ctf) as u64;
+        let param_ty = ctf.ty(*target_type);
+        let elem_size = param_ty.size(ctf) as u64;
 
-        let p: u64 = ptr.parse()?;
-        let total_len = len * param_ty.size(self.ctf) as u64;
+        let p: u64 = ptr.parse(ctx)?;
+        let total_len = len * param_ty.size(ctf) as u64;
 
         let mut out = Vec::with_capacity(len as usize);
-        let raw = self.core.read_bytes(p, total_len)?.unwrap();
+        let raw = core.read_bytes(p, total_len)?.unwrap();
 
         for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
             let item_info = TypeInfoRef {
                 ty: param_ty,
                 addr: p + (i as u64) * elem_size,
                 bytes: chunk,
-                ctf: self.ctf,
-                core: self.core,
             }
-            .peel();
+            .peel(ctx);
             let item = f(&item_info)?;
             out.push(item);
         }
@@ -1603,13 +1659,17 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         Ok(out)
     }
 
-    pub fn active_variant(&self) -> Result<(&'ctf str, TypeInfoRef<'buf, 'ctf>)> {
-        let (discrim, enumerators) = self.read_discriminant()?;
+    pub fn active_variant<Ctx: CtfContext<'ctf>>(
+        &self,
+        ctx: Ctx,
+    ) -> Result<(&'ctf str, TypeInfoRef<'buf, 'ctf>)> {
+        let ctf = ctx.ctf();
+        let (discrim, enumerators) = self.read_discriminant(ctx)?;
 
-        let Some(variants_member) = self.ty.member("__variants", self.ctf) else {
+        let Some(variants_member) = self.ty.member("__variants", ctf) else {
             return Err(Error::no_member(self.ty.id(), "__variants".to_string()));
         };
-        let variants = variants_member.ty(self.ctf);
+        let variants = variants_member.ty(ctf);
 
         // In niche-optimized enums only one enumerator will be defined, with two
         // possible variants.
@@ -1620,7 +1680,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         let enumerator = enumerators.iter().find(|e| e.value == discrim);
 
         let name = match (enumerator, is_niche_optimized) {
-            (Some(e), _) => e.name(self.ctf),
+            (Some(e), _) => e.name(ctf),
             (None, true) => {
                 // UNWRAP: We know there are only two variants as this is
                 // niche-optimized, so the one that doesn't match the only
@@ -1628,9 +1688,9 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
                 let var = variants
                     .members()
                     .iter()
-                    .find(|m| m.name(self.ctf) != enumerators.first().unwrap().name(self.ctf))
+                    .find(|m| m.name(ctf) != enumerators.first().unwrap().name(ctf))
                     .unwrap();
-                var.name(self.ctf)
+                var.name(ctf)
             }
             (None, false) => {
                 // Not a niche-optimized enum, so each variant should have a
@@ -1643,37 +1703,28 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         // Remove any large discriminant values we've smuggled in via the
         // enumerator name.
         let name = name.splitn(2, "@@").next().unwrap_or_default();
-        let Some(selected_variant) = variants.member(name, self.ctf) else {
+        let Some(selected_variant) = variants.member(name, ctf) else {
             return Err(Error::no_member(self.ty.id(), name.to_string()));
         };
-        let ty = selected_variant.ty(self.ctf);
+        let ty = selected_variant.ty(ctf);
 
         let start = selected_variant.offset() as u16;
-        let end = start + ty.size(self.ctf);
+        let end = start + ty.size(ctf);
         let Some(bytes) = self.bytes.get(start as usize..end as usize) else {
             let len = self.bytes.len() as u16;
             return Err(Error::invalid_member_range(start, end, len));
         };
         let addr = self.addr + selected_variant.offset();
 
-        Ok((
-            name,
-            TypeInfoRef {
-                ty,
-                addr,
-                bytes,
-                ctf: self.ctf,
-                core: self.core,
-            }
-            .peel(),
-        ))
+        Ok((name, TypeInfoRef { ty, addr, bytes }.peel(ctx)))
     }
 
     /// Check if the type is a wrapper struct, and return its inner type is it
     /// is. This are defined as a struct with only a single sized member. The
     /// buffer will be adjusted if the member is smaller than the parent
     /// struct.
-    fn peel(self) -> TypeInfoRef<'buf, 'ctf> {
+    pub fn peel<Ctx: CtfContext<'ctf>>(self, ctx: Ctx) -> TypeInfoRef<'buf, 'ctf> {
+        let ctf = ctx.ctf();
         let mut info = self;
 
         loop {
@@ -1688,8 +1739,8 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             // peel to it if yes.
             let mut iter = members
                 .iter()
-                .map(|m| (m, m.ty(info.ctf)))
-                .filter(|(_m, t)| t.size(info.ctf) > 0);
+                .map(|m| (m, m.ty(ctf)))
+                .filter(|(_m, t)| t.size(ctf) > 0);
 
             let (member, mem_ty) = match (iter.next(), iter.next()) {
                 (Some((member, mem_ty)), None) => (member, mem_ty),
@@ -1697,7 +1748,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             };
 
             let start = member.offset() as usize;
-            let end = start + mem_ty.size(info.ctf) as usize;
+            let end = start + mem_ty.size(ctf) as usize;
 
             // TODO VALIDATE AHEAD OF TIME
             info.bytes = info.bytes.get(start..end).unwrap();
@@ -1707,17 +1758,21 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         info
     }
 
-    fn read_discriminant(&self) -> Result<(u64, &[CtfEnumerator])> {
-        let size = self.ty.size(self.ctf);
+    fn read_discriminant<Ctx: CtfContext<'ctf>>(
+        &self,
+        ctx: Ctx,
+    ) -> Result<(u64, &[CtfEnumerator])> {
+        let ctf = ctx.ctf();
+        let size = self.ty.size(ctf);
         if self.bytes.len() < size as usize {
             return Err(Error::too_short(self.bytes.len() as u32, size as u32));
         }
 
-        let Some(discriminant) = self.ty.member("__discr", self.ctf) else {
+        let Some(discriminant) = self.ty.member("__discr", ctf) else {
             return Err(Error::no_member(self.ty.id(), "__discr".to_string()));
         };
 
-        let discr_enum = self.ctf.ty(discriminant.type_id);
+        let discr_enum = ctf.ty(discriminant.type_id);
         let CtfType::Enum {
             ty: CtfEnum { enumerators, .. },
             ..
@@ -1726,10 +1781,10 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             return Err(Error::unexpected_type(
                 self.ty.kind(),
                 TypeKind::Enum,
-                format!("{} ({:?})", self.ty.name(self.ctf), self.ty.id()),
+                format!("{} ({:?})", self.ty.name(ctf), self.ty.id()),
             ));
         };
-        let discrim_value = match discr_enum.size(self.ctf) as u64 {
+        let discrim_value = match discr_enum.size(ctf) as u64 {
             1 => self.bytes[0] as u64,
             2 => u16::from_le_bytes(*self.bytes.first_chunk::<2>().unwrap()) as u64,
             4 => u32::from_le_bytes(*self.bytes.first_chunk::<4>().unwrap()) as u64,
@@ -1743,10 +1798,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 impl fmt::Debug for TypeInfoRef<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TypeInfoRef")
-            .field(
-                "ty",
-                &format_args!("TypeId({}): {}", self.ty.id().get(), self.ty.name(self.ctf)),
-            )
+            .field("ty", &format_args!("TypeId({})", self.ty.id().get()))
             .field("addr", &format_args!("{:#x}", self.addr))
             .field("bytes", &self.bytes)
             .field("reader", &"&dyn BytesFromCore")
@@ -1756,23 +1808,18 @@ impl fmt::Debug for TypeInfoRef<'_, '_> {
 
 impl<'buf, 'ctf: 'buf> From<&'buf TypeInfo<'ctf>> for TypeInfoRef<'buf, 'ctf> {
     #[inline]
-    fn from(
-        TypeInfo {
-            ty,
-            addr,
-            buf,
-            ctf,
-            core: reader,
-        }: &'buf TypeInfo<'ctf>,
-    ) -> Self {
+    fn from(TypeInfo { ty, addr, buf }: &'buf TypeInfo<'ctf>) -> Self {
         Self {
             ty,
             addr: *addr,
             bytes: &buf,
-            ctf,
-            core: *reader,
         }
     }
+}
+
+pub trait CtfContext<'ctf>: Copy {
+    fn ctf(&self) -> &'ctf CtfReader;
+    fn core(&self) -> &'ctf Core;
 }
 
 pub trait BytesFromCore {
@@ -1786,13 +1833,16 @@ pub trait BytesFromCore {
 }
 
 /// Parse a byte slice as a type.
-pub trait ParseWithCtf: Sized {
+pub trait ParseWithCtf<'ctf, Ctx>: Sized
+where
+    Ctx: CtfContext<'ctf>,
+{
     /// Attempt to read `Self` from the CTF type information.
-    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self>;
+    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self>;
 }
 
-impl ParseWithCtf for u8 {
-    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
+impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for u8 {
+    fn parse_with_ctf(_ctx: Ctx, info: &TypeInfoRef) -> Result<Self> {
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -1803,8 +1853,8 @@ impl ParseWithCtf for u8 {
     }
 }
 
-impl ParseWithCtf for i8 {
-    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
+impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for i8 {
+    fn parse_with_ctf(_ctx: Ctx, info: &TypeInfoRef) -> Result<Self> {
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -1815,8 +1865,8 @@ impl ParseWithCtf for i8 {
     }
 }
 
-impl ParseWithCtf for bool {
-    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
+impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for bool {
+    fn parse_with_ctf(_ctx: Ctx, info: &TypeInfoRef) -> Result<Self> {
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -1829,8 +1879,8 @@ impl ParseWithCtf for bool {
 
 macro_rules! ctf_num_impl {
     ($num_ty:ty) => {
-        impl ParseWithCtf for $num_ty {
-            fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
+        impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for $num_ty {
+            fn parse_with_ctf(_ctx: Ctx, info: &TypeInfoRef) -> Result<Self> {
                 if info.bytes.len() < size_of::<Self>() {
                     return Err(Error::too_short(
                         info.bytes.len() as u32,
@@ -1851,14 +1901,15 @@ ctf_num_impl!(i64);
 ctf_num_impl!(f32);
 ctf_num_impl!(f64);
 
-impl<T> ParseWithCtf for Option<T>
+impl<'ctf, T, Ctx> ParseWithCtf<'ctf, Ctx> for Option<T>
 where
-    T: ParseWithCtf,
+    T: ParseWithCtf<'ctf, Ctx>,
+    Ctx: CtfContext<'ctf>,
 {
-    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
-        let var = info.active_variant()?;
+    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+        let var = info.active_variant(ctx)?;
         let value = match var {
-            ("Some", var_info) => T::parse_with_ctf(&var_info)?,
+            ("Some", var_info) => T::parse_with_ctf(ctx, &var_info)?,
             ("None", _) => return Ok(None),
             (s, _) => {
                 return Err(Error::no_enumerator(info.ty.id(), s.to_string()));
@@ -1869,36 +1920,38 @@ where
     }
 }
 
-impl<T> ParseWithCtf for Vec<T>
+impl<'ctf, T, Ctx> ParseWithCtf<'ctf, Ctx> for Vec<T>
 where
-    T: ParseWithCtf,
+    T: ParseWithCtf<'ctf, Ctx>,
+    Ctx: CtfContext<'ctf>,
 {
-    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
-        let len: u64 = info.member("len")?.parse()?;
+    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+        let ctf = ctx.ctf();
+        let core = ctx.core();
+
+        let len: u64 = info.member(ctx, "len")?.parse(ctx)?;
         if len == 0 {
             return Ok(Vec::new());
         }
 
-        let param_member = info.ty.member("__type_param_T", info.ctf).unwrap();
-        let param_ty = param_member.ty(info.ctf);
-        let param_size = param_ty.size(info.ctf) as u64;
+        let param_member = info.ty.member("__type_param_T", ctf).unwrap();
+        let param_ty = param_member.ty(ctf);
+        let param_size = param_ty.size(ctf) as u64;
 
-        let ptr = info.member("buf")?.member("ptr")?;
+        let ptr = info.member(ctx, "buf")?.member(ctx, "ptr")?;
 
-        let p: u64 = ptr.parse()?;
-        let total_len = len * param_ty.size(info.ctf) as u64;
+        let p: u64 = ptr.parse(ctx)?;
+        let total_len = len * param_ty.size(ctf) as u64;
 
-        let raw = info.core.read_bytes(p, total_len)?.unwrap();
+        let raw = core.read_bytes(p, total_len)?.unwrap();
         let mut out = Vec::with_capacity(len as usize);
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
                 ty: param_ty,
                 addr: info.addr + (i as u64) * param_size,
                 bytes: chunk,
-                ctf: info.ctf,
-                core: info.core,
             };
-            let item = T::parse_with_ctf(&item_info)?;
+            let item = T::parse_with_ctf(ctx, &item_info)?;
             out.push(item);
         }
 
@@ -1906,13 +1959,17 @@ where
     }
 }
 
-impl<T> ParseWithCtf for Box<[T]>
+impl<'ctf, T, Ctx> ParseWithCtf<'ctf, Ctx> for Box<[T]>
 where
-    T: ParseWithCtf,
+    T: ParseWithCtf<'ctf, Ctx>,
+    Ctx: CtfContext<'ctf>,
 {
-    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
-        let len: u64 = info.member("length")?.parse()?;
-        let ptr = info.member("data_ptr")?;
+    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+        let ctf = ctx.ctf();
+        let core = ctx.core();
+
+        let len: u64 = info.member(ctx, "length")?.parse(ctx)?;
+        let ptr = info.member(ctx, "data_ptr")?;
         let CtfType::Pointer {
             ty: CtfPointer { target_type, .. },
             ..
@@ -1921,26 +1978,24 @@ where
             return Err(Error::unexpected_type(
                 ptr.ty.kind(),
                 TypeKind::Pointer,
-                info.ty.name(info.ctf).to_string(),
+                info.ty.name(ctf).to_string(),
             ));
         };
-        let param_ty = info.ctf.ty(*target_type);
-        let param_size = param_ty.size(info.ctf) as u64;
+        let param_ty = ctf.ty(*target_type);
+        let param_size = param_ty.size(ctf) as u64;
 
-        let p: u64 = ptr.parse()?;
-        let total_len = len * param_ty.size(info.ctf) as u64;
+        let p: u64 = ptr.parse(ctx)?;
+        let total_len = len * param_ty.size(ctf) as u64;
 
-        let raw = info.core.read_bytes(p, total_len)?.unwrap();
+        let raw = core.read_bytes(p, total_len)?.unwrap();
         let mut out = Vec::with_capacity(len as usize);
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
                 ty: param_ty,
                 addr: info.addr + (i as u64) * param_size,
                 bytes: chunk,
-                ctf: info.ctf,
-                core: info.core,
             };
-            let item = T::parse_with_ctf(&item_info)?;
+            let item = T::parse_with_ctf(ctx, &item_info)?;
             out.push(item);
         }
 
@@ -1948,11 +2003,14 @@ where
     }
 }
 
-impl<T, const N: usize> ParseWithCtf for [T; N]
+impl<'ctf, T, Ctx, const N: usize> ParseWithCtf<'ctf, Ctx> for [T; N]
 where
-    T: ParseWithCtf,
+    T: ParseWithCtf<'ctf, Ctx>,
+    Ctx: CtfContext<'ctf>,
 {
-    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
+    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef) -> Result<Self> {
+        let ctf = ctx.ctf();
+
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -1972,12 +2030,12 @@ where
             return Err(Error::unexpected_type(
                 info.ty.kind(),
                 TypeKind::Array,
-                info.ty.name(info.ctf).to_string(),
+                info.ty.name(ctf).to_string(),
             ));
         };
 
-        let elem_ty = info.ctf.ty(*element_type);
-        let size = elem_ty.size(info.ctf) as usize;
+        let elem_ty = ctf.ty(*element_type);
+        let size = elem_ty.size(ctf) as usize;
         let len = *nelems as usize;
 
         let mut items = Vec::with_capacity(len);
@@ -1986,10 +2044,8 @@ where
                 ty: elem_ty,
                 addr: info.addr + (i * size) as u64,
                 bytes: slice,
-                ctf: info.ctf,
-                core: info.core,
             };
-            let item = T::parse_with_ctf(&slice_info)?;
+            let item = T::parse_with_ctf(ctx, &slice_info)?;
             items.push(item);
         }
         let Ok(arr) = items.try_into() else {
@@ -1999,11 +2055,13 @@ where
     }
 }
 
-impl ParseWithCtf for String {
-    fn parse_with_ctf(info: &TypeInfoRef) -> Result<Self> {
-        let len: u64 = info.member("length")?.parse()?;
-        let ptr: u64 = info.member("data_ptr")?.parse()?;
-        let data = info.core.read_bytes(ptr, len)?.unwrap();
+impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for String {
+    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+        let core = ctx.core();
+
+        let len: u64 = info.member(ctx, "length")?.parse(ctx)?;
+        let ptr: u64 = info.member(ctx, "data_ptr")?.parse(ctx)?;
+        let data = core.read_bytes(ptr, len)?.unwrap();
 
         let out = String::from_utf8_lossy(&data).to_string();
 
@@ -2036,13 +2094,13 @@ fn unwrap_wrapper_struct<'a>(ty: &'a CtfType, ctf: &'a CtfReader) -> Option<&'a 
 
 // Split this into a free function to fix lifetime issues from calling
 // `TypeInfoRef` methods from `TypeInfo`.
-fn array_elements<'buf, 'ctf: 'buf>(
+fn array_elements<'buf, 'ctf: 'buf, Ctx: CtfContext<'ctf>>(
     ty: &'ctf CtfType,
     addr: u64,
     bytes: &'buf [u8],
-    core: &'ctf Core,
-    ctf: &'ctf CtfReader,
+    ctx: Ctx,
 ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
+    let ctf = ctx.ctf();
     let CtfType::Array {
         ty: CtfArray { element_type, .. },
         ..
@@ -2064,10 +2122,30 @@ fn array_elements<'buf, 'ctf: 'buf>(
                 ty: ctf.ty(*element_type),
                 addr: addr + (i * elem_size) as u64,
                 bytes: chunk,
-                ctf,
-                core,
             }
-            .peel()
+            .peel(ctx)
+        });
+    Ok(iter)
+}
+
+/// Parse the elements of a boxed slice, returning them in a Vec.
+fn boxed_slice_elements<'buf, 'ctf: 'buf, Ctx: CtfContext<'ctf>>(
+    ptr_info: &'buf TypeInfo<'ctf>,
+    ctx: Ctx,
+) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
+    // todo check len?
+    let elem_size = ptr_info.ty.size(ctx.ctf()) as u64;
+    let iter = ptr_info
+        .buf
+        .chunks(elem_size as usize)
+        .enumerate()
+        .map(move |(i, chunk)| {
+            TypeInfoRef {
+                ty: ptr_info.ty,
+                addr: ptr_info.addr + (i as u64) * elem_size,
+                bytes: chunk,
+            }
+            .peel(ctx)
         });
     Ok(iter)
 }

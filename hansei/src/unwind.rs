@@ -459,7 +459,7 @@ impl<'a> ObjectInfo<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Frame {
     pub pc: u64,
     pub regs: Regs,

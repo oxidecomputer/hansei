@@ -9,5 +9,8 @@ clap = { workspace = true }
 durin = { workspace = true }
 gimli = { workspace = true }
 goblin = { workspace = true }
+petgraph = { workspace = true }
 proc = { workspace = true }
+regex = { workspace = true }
 rustc-demangle = { workspace = true }
+semver = { workspace = true }
