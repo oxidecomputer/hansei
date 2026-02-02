@@ -385,13 +385,22 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
 
                 // Find the .cargo component and extract the 4th component after it
                 // Path structure: .../.cargo/registry/src/<hash>/<crate-version>/...
+                // We verify "registry" and "src" to avoid matching git checkouts
                 let components: Vec<_> = path.components().collect();
                 let cargo_pos = components.iter().position(|c| c.as_str() == ".cargo");
 
                 if let Some(pos) = cargo_pos {
-                    // crate-version is at index pos + 4
-                    if let Some(crate_component) = components.get(pos + 4) {
-                        crates.insert(crate_component.as_str().to_string());
+                    // Verify this is a registry path, not a git checkout
+                    let is_registry = components
+                        .get(pos + 1)
+                        .is_some_and(|c| c.as_str() == "registry")
+                        && components.get(pos + 2).is_some_and(|c| c.as_str() == "src");
+
+                    if is_registry {
+                        // crate-version is at index pos + 4
+                        if let Some(crate_component) = components.get(pos + 4) {
+                            crates.insert(crate_component.as_str().to_string());
+                        }
                     }
                 }
             }
