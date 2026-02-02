@@ -29,8 +29,10 @@ petgraph = "0.7"
 predicates = "3.1"
 proc = { path = "proc", version = "0.1.0" }
 rangemap = "1.7.0"
+regex = "1.12"
 rustc-demangle = "0.1.27"
 scroll = { version = "0.13.0", features = ["derive"] }
 scroll_derive = "0.13.0"
+semver = "1.0"
 tempfile = "3.14"
 thiserror = "2.0.17"
