@@ -255,7 +255,6 @@ dependencies = [
  "flate2",
  "gimli",
  "goblin",
- "proc",
  "scroll",
  "scroll_derive",
  "thiserror",
@@ -401,6 +400,7 @@ dependencies = [
  "goblin",
  "proc",
  "regex",
+ "reify",
  "rustc-demangle",
  "semver",
 ]
@@ -649,6 +649,15 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
+
+[[package]]
+name = "reify"
+version = "0.1.0"
+dependencies = [
+ "durin",
+ "proc",
+ "thiserror",
+]
 
 [[package]]
 name = "rustc-demangle"

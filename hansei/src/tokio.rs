@@ -1,11 +1,10 @@
 use crate::unwind::Backtrace;
 
 use anyhow::{Context as _, Result};
-use durin::TypeId;
-use durin::read::{BytesFromProc, CtfContext, CtfReader, ParseWithCtf, TypeInfo, TypeInfoRef};
-use durin::{Error, TypeKind};
+use durin::{TypeId, TypeKind};
 use proc::Proc;
 use regex::Regex;
+use reify::{BytesFromProc, CtfContext, CtfReader, Error, ParseWithCtf, TypeInfo, TypeInfoRef};
 use semver::Version;
 
 use std::cell::RefCell;
