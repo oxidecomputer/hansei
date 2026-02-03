@@ -2,7 +2,7 @@ use crate::constants::*;
 use crate::{CtfHeader, CtfPreamble, Error, Result, StrId, StringTableType, TypeId, TypeKind};
 
 use flate2::read::ZlibDecoder;
-use proc::Core;
+use proc::Proc;
 use scroll::Pread;
 use scroll::ctx::TryFromCtx;
 
@@ -1260,7 +1260,7 @@ impl TryFromCtx<'_, ()> for CtfEnumerator {
 pub struct TypeInfo<'ctf> {
     pub ty: &'ctf CtfType,
     pub addr: u64,
-    pub buf: Vec<u8>,
+    pub buf: Box<[u8]>,
 }
 
 impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
@@ -1271,9 +1271,10 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
         ty: &'ctf CtfType,
         addr: u64,
     ) -> Result<Option<Self>> {
-        let Some(buf) = ctx.core().read_type(addr, ty, ctx.ctf())? else {
+        let Some(vec) = ctx.proc().read_type(addr, ty, ctx.ctf())? else {
             return Ok(None);
         };
+        let buf = vec.into_boxed_slice();
         Ok(Some(Self { ty, addr, buf }))
     }
 
@@ -1356,7 +1357,7 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
         Ctx: CtfContext<'ctf>,
     {
         let ctf = ctx.ctf();
-        let core = ctx.core();
+        let proc = ctx.proc();
 
         let len: u64 = self.member(ctx, "length")?.parse(ctx)?;
         let ptr = self.member(ctx, "data_ptr")?;
@@ -1377,7 +1378,7 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
         let p: u64 = ptr.parse(ctx)?;
         let total_len = len * param_ty.size(ctf) as u64;
 
-        let raw = core.read_bytes(p, total_len)?.unwrap();
+        let raw = proc.read_bytes(p, total_len)?.unwrap();
 
         for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
             let item_info = TypeInfoRef {
@@ -1399,7 +1400,7 @@ impl<'buf, 'ctf: 'buf> From<TypeInfoRef<'buf, 'ctf>> for TypeInfo<'ctf> {
         Self {
             ty,
             addr,
-            buf: bytes.to_vec(),
+            buf: bytes.to_vec().into_boxed_slice(),
         }
     }
 }
@@ -1410,7 +1411,6 @@ impl fmt::Debug for TypeInfo<'_> {
             .field("ty", &format_args!("TypeId({})", self.ty.id().get()))
             .field("addr", &format_args!("{:#x}", self.addr))
             .field("buf", &self.buf)
-            .field("reader", &"&dyn BytesFromCore")
             .finish()
     }
 }
@@ -1471,7 +1471,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         ctx: &Ctx,
     ) -> Result<Option<TypeInfo<'ctf>>> {
         let ctf = ctx.ctf();
-        let core = ctx.core();
+        let proc = ctx.proc();
 
         let peeled = self.clone().peel(ctx);
         let CtfType::Pointer {
@@ -1492,9 +1492,10 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 
         let addr = u64::from_le_bytes(bytes);
         let target_ty = ctf.ty(*target_type);
-        let Some(buf) = core.read_type(addr, target_ty, ctf)? else {
+        let Some(vec) = proc.read_type(addr, target_ty, ctf)? else {
             return Ok(None);
         };
+        let buf = vec.into_boxed_slice();
         let mut final_ty = target_ty;
         while let Some(unwrapped) = unwrap_wrapper_struct(final_ty, ctf) {
             final_ty = unwrapped;
@@ -1620,14 +1621,14 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         array_elements(self.ty, self.addr, self.bytes, ctx)
     }
 
-    /// Parse the elements of a boxed slice, returning them in a Vec.
+    /// Pass the `TypeInfoRef` of the elements of a boxed slice to the provided closure.
     pub fn boxed_slice_elements<T, Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<Vec<T>>
     where
         F: FnMut(&TypeInfoRef<'_, '_>) -> Result<T>,
         Ctx: CtfContext<'ctf>,
     {
         let ctf = ctx.ctf();
-        let core = ctx.core();
+        let proc = ctx.proc();
 
         let len: u64 = self.member(ctx, "length")?.parse(ctx)?;
         let ptr = self.member(ctx, "data_ptr")?;
@@ -1649,7 +1650,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         let total_len = len * param_ty.size(ctf) as u64;
 
         let mut out = Vec::with_capacity(len as usize);
-        let raw = core.read_bytes(p, total_len)?.unwrap();
+        let raw = proc.read_bytes(p, total_len)?.unwrap();
 
         for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
             let item_info = TypeInfoRef {
@@ -1807,7 +1808,6 @@ impl fmt::Debug for TypeInfoRef<'_, '_> {
             .field("ty", &format_args!("TypeId({})", self.ty.id().get()))
             .field("addr", &format_args!("{:#x}", self.addr))
             .field("bytes", &self.bytes)
-            .field("reader", &"&dyn BytesFromCore")
             .finish()
     }
 }
@@ -1825,10 +1825,10 @@ impl<'buf, 'ctf: 'buf> From<&'buf TypeInfo<'ctf>> for TypeInfoRef<'buf, 'ctf> {
 
 pub trait CtfContext<'ctf> {
     fn ctf(&self) -> &'ctf CtfReader;
-    fn core(&self) -> &'ctf Core;
+    fn proc(&self) -> &'ctf Proc;
 }
 
-pub trait BytesFromCore {
+pub trait BytesFromProc {
     /// Read the size of the provided type at address.
     /// The reader may return None if the address is unmapped.
     fn read_type(&self, addr: u64, ty: &CtfType, ctf: &CtfReader) -> Result<Option<Vec<u8>>>;
@@ -1933,7 +1933,7 @@ where
 {
     fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
         let ctf = ctx.ctf();
-        let core = ctx.core();
+        let proc = ctx.proc();
 
         let len: u64 = info.member(ctx, "len")?.parse(ctx)?;
         if len == 0 {
@@ -1949,7 +1949,7 @@ where
         let p: u64 = ptr.parse(ctx)?;
         let total_len = len * param_ty.size(ctf) as u64;
 
-        let raw = core.read_bytes(p, total_len)?.unwrap();
+        let raw = proc.read_bytes(p, total_len)?.unwrap();
         let mut out = Vec::with_capacity(len as usize);
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
@@ -1972,7 +1972,7 @@ where
 {
     fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
         let ctf = ctx.ctf();
-        let core = ctx.core();
+        let proc = ctx.proc();
 
         let len: u64 = info.member(ctx, "length")?.parse(ctx)?;
         let ptr = info.member(ctx, "data_ptr")?;
@@ -1993,7 +1993,7 @@ where
         let p: u64 = ptr.parse(ctx)?;
         let total_len = len * param_ty.size(ctf) as u64;
 
-        let raw = core.read_bytes(p, total_len)?.unwrap();
+        let raw = proc.read_bytes(p, total_len)?.unwrap();
         let mut out = Vec::with_capacity(len as usize);
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
@@ -2063,11 +2063,11 @@ where
 
 impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for String {
     fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
-        let core = ctx.core();
+        let proc = ctx.proc();
 
         let len: u64 = info.member(ctx, "length")?.parse(ctx)?;
         let ptr: u64 = info.member(ctx, "data_ptr")?.parse(ctx)?;
-        let data = core.read_bytes(ptr, len)?.unwrap();
+        let data = proc.read_bytes(ptr, len)?.unwrap();
 
         let out = String::from_utf8_lossy(&data).to_string();
 
@@ -2156,7 +2156,7 @@ fn boxed_slice_elements<'buf, 'ctf: 'buf, Ctx: CtfContext<'ctf>>(
     Ok(iter)
 }
 
-impl BytesFromCore for Core {
+impl BytesFromProc for Proc {
     fn read_type(&self, addr: u64, ty: &CtfType, ctf: &CtfReader) -> Result<Option<Vec<u8>>> {
         let mappings = self
             .mappings()
@@ -2176,7 +2176,7 @@ impl BytesFromCore for Core {
         Ok(Some(buf))
     }
 
-    // TODO replace with method on Core?
+    // TODO replace with method on Proc?
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Option<Vec<u8>>> {
         let mappings = self
             .mappings()

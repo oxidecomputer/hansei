@@ -36,7 +36,7 @@ pub enum Error {
 }
 
 #[derive(Debug)]
-pub struct Core {
+pub struct Proc {
     handle: NonNull<ps_prochandle>,
 }
 
@@ -298,8 +298,27 @@ impl From<gregset_t> for Regs {
     }
 }
 
-impl Core {
-    pub fn open(core_path: &Path) -> Result<Self> {
+impl Proc {
+    pub fn open_pid(pid: u32) -> Result<Self> {
+        let mut perr: c_int = 0;
+
+        // Empty flags means we will stop the target process.
+        let handle = unsafe { libproc_sys::Pgrab(pid as libproc_sys::pid_t, 0, &mut perr) };
+        let Some(handle) = NonNull::new(handle) else {
+            let err_msg = unsafe { libproc_sys::Pgrab_error(perr) };
+
+            // SAFETY: The implementation of Pgrab_error returns a static string.
+            let c_msg = unsafe { CStr::from_ptr(err_msg) };
+
+            // UNWRAP: We know all possible values returned by Pgrab_error are valid UTF-8.
+            let msg = c_msg.to_str().unwrap();
+
+            return Err(Error::GrabFailed(msg));
+        };
+        Ok(Proc { handle })
+    }
+
+    pub fn open_core(core_path: &Path) -> Result<Self> {
         let c_core_path = CString::new(core_path.as_os_str().as_bytes())?;
         let mut perr: c_int = 0;
         let flags = 0 | libproc_sys::PGRAB_RDONLY as c_int;
@@ -317,7 +336,7 @@ impl Core {
 
             return Err(Error::GrabFailed(msg));
         };
-        Ok(Core { handle })
+        Ok(Proc { handle })
     }
 
     pub fn status(&self) -> Status {
@@ -922,7 +941,7 @@ pub struct SymbolBuf {
     pub st_size: u64,
 }
 
-impl Drop for Core {
+impl Drop for Proc {
     fn drop(&mut self) {
         // TODO Prelease instead?
         unsafe { libproc_sys::Pfree(self.handle.as_mut()) };
