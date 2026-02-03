@@ -322,10 +322,6 @@ impl Core {
 
     pub fn status(&self) -> Status {
         let status = unsafe { libproc_sys::Pstatus(self.handle.as_ptr()) };
-        if status.is_null() {
-            // Pstatus(3proc) is documented as always returning a valid pointer.
-            panic!("Pstatus returned null ptr");
-        }
 
         let status = match unsafe { status.as_ref() } {
             Some(s) => s,
