@@ -16,9 +16,40 @@ type Slice<'a> = EndianSlice<'a, Endian>;
 
 const PT_SUNW_UNWIND: u32 = 0x6464e550;
 
+// TODO - does this actually matter?
 const _: () = assert!(usize::BITS == 64, "host system must be 64-bit");
 
-pub fn load_frames(core: &Core) -> Result<BTreeMap<u32, Vec<Frame>>> {
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct Backtrace {
+    pub frames: Vec<Frame>,
+}
+
+impl Backtrace {
+    pub fn new(frames: Vec<Frame>) -> Self {
+        Self { frames }
+    }
+
+    pub fn stack_trace(&self, max_frames: usize) -> Vec<String> {
+        self.frames
+            .iter()
+            .take(max_frames)
+            .map(|frame| {
+                let mangled = frame
+                    .symbol
+                    .as_ref()
+                    .map(|s| s.name.as_str())
+                    .unwrap_or_default();
+                format!(
+                    "{:#018x} {:#}",
+                    frame.regs.rip,
+                    rustc_demangle::demangle(mangled)
+                )
+            })
+            .collect()
+    }
+}
+
+pub fn load_frames(core: &Core) -> Result<BTreeMap<u32, Backtrace>> {
     let addrs = AddrRanges::parse(&core).context("could not parse address mappings")?;
 
     let exec_bytes = load_object(&addrs.exec_text, &core).context("failed to load executable")?;
@@ -44,7 +75,7 @@ pub fn load_frames(core: &Core) -> Result<BTreeMap<u32, Vec<Frame>>> {
         let frames = unwinder
             .unwind_stack(&initial_regs, &mut UnwindContext::new(), 64)
             .with_context(|| format!("failed to unwind stack for tid {}", lwp.tid))?;
-        frame_map.insert(lwp.tid, frames);
+        frame_map.insert(lwp.tid, Backtrace::new(frames));
     }
     Ok(frame_map)
 }

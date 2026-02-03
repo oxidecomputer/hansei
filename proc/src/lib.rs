@@ -710,7 +710,7 @@ impl fmt::Debug for Lwp {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Timespec {
     pub tv_sec: i64,
     pub tv_nsec: i64,
