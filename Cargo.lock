@@ -399,7 +399,6 @@ dependencies = [
  "durin",
  "gimli",
  "goblin",
- "petgraph",
  "proc",
  "regex",
  "rustc-demangle",
