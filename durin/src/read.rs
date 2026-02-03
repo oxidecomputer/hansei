@@ -1504,8 +1504,8 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
     pub fn deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<TypeInfo<'ctf>> {
         match self.try_deref_ptr(ctx) {
             Ok(Some(i)) => Ok(i),
-            Ok(None) => Err(Error::null_ptr(None)),
-            Err(e) => Err(Error::null_ptr(Some(e.into()))),
+            Ok(None) => Err(Error::null_ptr()),
+            Err(e) => Err(Error::null_ptr().with_source(e)),
         }
     }
 
@@ -1584,7 +1584,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 
     pub fn parse<T: ParseWithCtf<'ctf, Ctx>, Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<T> {
         T::parse_with_ctf(ctx, &self)
-            .map_err(|e| Error::parse_type(self.ty.name(ctx.ctf()).to_string(), e.into()))
+            .map_err(|e| Error::parse_type(self.ty.name(ctx.ctf())).with_source(e))
     }
 
     pub fn to_owned(&self) -> TypeInfo<'ctf> {
@@ -2154,7 +2154,7 @@ impl BytesFromCore for Core {
     fn read_type(&self, addr: u64, ty: &CtfType, ctf: &CtfReader) -> Result<Option<Vec<u8>>> {
         let mappings = self
             .mappings()
-            .map_err(|e| Error::read_error(ty.id(), e.into()))?;
+            .map_err(|e| Error::read_error(ty.id()).with_source(e))?;
 
         if !mappings
             .as_slice()
@@ -2166,7 +2166,7 @@ impl BytesFromCore for Core {
 
         let mut buf = vec![0u8; ty.size(ctf) as usize];
         self.pread_exact(&mut buf, addr)
-            .map_err(|e| Error::read_error(ty.id(), e.into()))?;
+            .map_err(|e| Error::read_error(ty.id()).with_source(e))?;
         Ok(Some(buf))
     }
 
@@ -2174,7 +2174,7 @@ impl BytesFromCore for Core {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Option<Vec<u8>>> {
         let mappings = self
             .mappings()
-            .map_err(|e| Error::read_error(TypeId::try_from(1).unwrap(), e.into()))?;
+            .map_err(|e| Error::read_error(TypeId::try_from(1).unwrap()).with_source(e))?;
 
         if !mappings
             .as_slice()
@@ -2186,7 +2186,7 @@ impl BytesFromCore for Core {
 
         let mut buf = vec![0u8; len as usize];
         self.pread_exact(&mut buf, addr)
-            .map_err(|e| Error::read_error(TypeId::try_from(1).unwrap(), e.into()))?;
+            .map_err(|e| Error::read_error(TypeId::try_from(1).unwrap()).with_source(e))?;
         Ok(Some(buf))
     }
 }

@@ -123,16 +123,14 @@ pub struct CtfHeader {
 #[derive(Debug)]
 pub struct Error {
     kind: ErrorKind,
+    source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
     backtrace: std::backtrace::Backtrace,
 }
 
 #[derive(thiserror::Error, Debug)]
 enum ErrorKind {
     #[error("failed to decompress CTF data")]
-    Decompress {
-        #[source]
-        source: io::Error,
-    },
+    Decompress,
     #[error("str {0:?} located in external string table, which are not supported")]
     ExternalStr(StrId),
     #[error("invalid discriminant value {discrim} for type {ty:?}")]
@@ -178,30 +176,15 @@ enum ErrorKind {
     #[error("member {member_name} not found for type {ty:?}")]
     NoMember { ty: TypeId, member_name: String },
     #[error("attempted to dereference an invalid pointer")]
-    NullPtr {
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
-    },
-    #[error("failed to parse: {0}")]
-    Parse(#[source] scroll::Error),
-    #[error("failed to parse member {member}")]
-    ParseMember {
-        member: String,
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
-    },
-    #[error("failed to parse type {ty}")]
-    ParseType {
-        ty: String,
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
-    },
-    #[error("failed to read type {ty:?}")]
-    ReadError {
-        ty: TypeId,
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
-    },
+    NullPtr,
+    #[error("failed to parse CTF data")]
+    Parse,
+    #[error("failed to parse member {0}")]
+    ParseMember(String),
+    #[error("failed to parse type {0}")]
+    ParseType(String),
+    #[error("failed to read type {0:?}")]
+    ReadError(TypeId),
     #[error("data length {actual} is less than {expected} length")]
     TooShort { actual: u32, expected: u32 },
     #[error("expected a {expected:?} but found a {actual:?} when parsing {name}")]
@@ -223,8 +206,18 @@ impl Error {
     fn new(kind: ErrorKind) -> Self {
         Self {
             kind,
+            source: None,
             backtrace: std::backtrace::Backtrace::capture(),
         }
+    }
+
+    /// Attaches a source error to this error.
+    pub fn with_source<E>(mut self, source: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        self.source = Some(Box::new(source));
+        self
     }
 
     /// Returns the backtrace captured when the error was created.
@@ -271,7 +264,7 @@ impl Error {
                 | ErrorKind::MissingValue(_)
                 | ErrorKind::NoEnumerator { .. }
                 | ErrorKind::NoMember { .. }
-                | ErrorKind::NullPtr { .. }
+                | ErrorKind::NullPtr
         )
     }
 
@@ -279,9 +272,9 @@ impl Error {
     pub fn is_parse(&self) -> bool {
         matches!(
             self.kind,
-            ErrorKind::Parse(_)
-                | ErrorKind::ParseMember { .. }
-                | ErrorKind::ParseType { .. }
+            ErrorKind::Parse
+                | ErrorKind::ParseMember(_)
+                | ErrorKind::ParseType(_)
                 | ErrorKind::TooShort { .. }
                 | ErrorKind::UnterminatedStr(_)
         )
@@ -307,14 +300,14 @@ impl Error {
     pub fn is_io(&self) -> bool {
         matches!(
             self.kind,
-            ErrorKind::Decompress { .. } | ErrorKind::ReadError { .. }
+            ErrorKind::Decompress | ErrorKind::ReadError(_)
         )
     }
 
     // Public constructors for each variant
 
     pub fn decompress(source: io::Error) -> Self {
-        Self::new(ErrorKind::Decompress { source })
+        Self::new(ErrorKind::Decompress).with_source(source)
     }
 
     pub fn external_str(id: StrId) -> Self {
@@ -405,33 +398,24 @@ impl Error {
         Self::new(ErrorKind::NoMember { ty, member_name })
     }
 
-    pub fn null_ptr(source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) -> Self {
-        Self::new(ErrorKind::NullPtr { source })
+    pub fn null_ptr() -> Self {
+        Self::new(ErrorKind::NullPtr)
     }
 
     pub fn parse(source: scroll::Error) -> Self {
-        Self::new(ErrorKind::Parse(source))
+        Self::new(ErrorKind::Parse).with_source(source)
     }
 
-    pub fn parse_member(
-        member: String,
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
-    ) -> Self {
-        Self::new(ErrorKind::ParseMember { member, source })
+    pub fn parse_member(member: impl Into<String>) -> Self {
+        Self::new(ErrorKind::ParseMember(member.into()))
     }
 
-    pub fn parse_type(
-        ty: String,
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
-    ) -> Self {
-        Self::new(ErrorKind::ParseType { ty, source })
+    pub fn parse_type(ty: impl Into<String>) -> Self {
+        Self::new(ErrorKind::ParseType(ty.into()))
     }
 
-    pub fn read_error(
-        ty: TypeId,
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
-    ) -> Self {
-        Self::new(ErrorKind::ReadError { ty, source })
+    pub fn read_error(ty: TypeId) -> Self {
+        Self::new(ErrorKind::ReadError(ty))
     }
 
     pub fn too_short(actual: u32, expected: u32) -> Self {
@@ -467,7 +451,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.kind.source()
+        self.source.as_ref().map(|e| e.as_ref() as _)
     }
 }
 
