@@ -6,7 +6,7 @@ use gimli::{
 use goblin::elf::Elf;
 use goblin::elf::header::{EI_CLASS, ELFCLASS64};
 use goblin::elf::program_header::PT_LOAD;
-use proc::{Core, Reg, Regs, SymbolBuf, x86_64::*};
+use proc::{Proc, Reg, Regs, SymbolBuf, x86_64::*};
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -49,7 +49,7 @@ impl Backtrace {
     }
 }
 
-pub fn load_frames(core: &Core) -> Result<BTreeMap<u32, Backtrace>> {
+pub fn load_frames(core: &Proc) -> Result<BTreeMap<u32, Backtrace>> {
     let addrs = AddrRanges::parse(&core).context("could not parse address mappings")?;
 
     let exec_bytes = load_object(&addrs.exec_text, &core).context("failed to load executable")?;
@@ -82,7 +82,7 @@ pub fn load_frames(core: &Core) -> Result<BTreeMap<u32, Backtrace>> {
 
 #[derive(Debug)]
 struct Unwinder<'a> {
-    core: &'a Core,
+    core: &'a Proc,
     exec: &'a ObjectInfo<'a>,
     libc: &'a ObjectInfo<'a>,
 }
@@ -394,7 +394,7 @@ impl<'a> Unwinder<'a> {
     }
 }
 
-fn load_object(object_range: &Range<u64>, core: &Core) -> Result<Vec<u8>> {
+fn load_object(object_range: &Range<u64>, core: &Proc) -> Result<Vec<u8>> {
     let object_len = object_range.end - object_range.start;
     let mut buf = vec![0u8; object_len as usize];
     let read_len = core
@@ -504,7 +504,7 @@ struct AddrRanges {
 }
 
 impl AddrRanges {
-    pub fn parse(core: &Core) -> Result<Self> {
+    pub fn parse(core: &Proc) -> Result<Self> {
         let core_mappings = core
             .mappings()
             .context("failed to retrieve memory mappings from core")?;

@@ -2,9 +2,9 @@ use crate::unwind::Backtrace;
 
 use anyhow::{Context as _, Result};
 use durin::TypeId;
-use durin::read::{BytesFromCore, CtfContext, CtfReader, ParseWithCtf, TypeInfo, TypeInfoRef};
+use durin::read::{BytesFromProc, CtfContext, CtfReader, ParseWithCtf, TypeInfo, TypeInfoRef};
 use durin::{Error, TypeKind};
-use proc::Core;
+use proc::Proc;
 use regex::Regex;
 use semver::Version;
 
@@ -16,7 +16,7 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 pub struct Context<'ctf> {
-    pub core: &'ctf Core,
+    pub proc: &'ctf Proc,
     pub ctf: &'ctf CtfReader,
     pub symbols: RefCell<HashMap<u64, &'static str>>,
     pub header_id: TypeId,
@@ -31,7 +31,7 @@ impl<'ctf> Context<'ctf> {
         let mut symbols = self.symbols.borrow_mut();
 
         *symbols.entry(addr).or_insert_with(|| {
-            let sym = self.core.lookup_symbol(addr).unwrap();
+            let sym = self.proc.lookup_symbol(addr).unwrap();
             let s = format!("{:#}", rustc_demangle::demangle(&sym.name));
             // Leak the String so we can treat it as a &'static str.
             Box::leak(s.into_boxed_str())
@@ -43,8 +43,8 @@ impl<'ctf> CtfContext<'ctf> for Context<'ctf> {
     fn ctf(&self) -> &'ctf CtfReader {
         &self.ctf
     }
-    fn core(&self) -> &'ctf Core {
-        &self.core
+    fn proc(&self) -> &'ctf Proc {
+        &self.proc
     }
 }
 
@@ -56,13 +56,13 @@ pub struct TokioRuntime {
 }
 
 impl TokioRuntime {
-    pub fn parse(ctf: &CtfReader, core: &Core) -> Result<Self> {
-        let lwps = core.lwps()?;
-        let status = core.status();
+    pub fn parse(ctf: &CtfReader, proc: &Proc) -> Result<Self> {
+        let lwps = proc.lwps()?;
+        let status = proc.status();
         let brk_range = status.brk_range;
 
         let Some(main_lwp) = lwps.first() else {
-            anyhow::bail!("no lwps found in core");
+            anyhow::bail!("no lwps found in proc");
         };
 
         // TODO - This assumes the timestamp is valid for all threads. I think
@@ -90,13 +90,13 @@ impl TokioRuntime {
             anyhow::bail!("failed to find tokio::runtime::context::Context CTF type");
         };
 
-        let backtraces = crate::unwind::load_frames(&core)?;
+        let backtraces = crate::unwind::load_frames(&proc)?;
         let mut workers = BTreeMap::new();
 
         let tokio_version = extract_tokio_version(&ctf).context("failed to find tokio version")?;
 
         let ctx = Context {
-            core,
+            proc,
             ctf,
             symbols: RefCell::new(HashMap::new()),
             header_id: header_ty.id(),
@@ -108,7 +108,7 @@ impl TokioRuntime {
 
         let mut scheduler = None;
         for lwp in &lwps {
-            if let Some(addr) = find_thd_context(lwp.tid, &brk_range, &ctx.core)
+            if let Some(addr) = find_thd_context(lwp.tid, &brk_range, &ctx.proc)
                 .context("failed to find thread-local context")?
             {
                 let Some(info) = TypeInfo::from_addr(&ctx, ctx_ty, addr)
@@ -205,11 +205,8 @@ fn extract_tokio_version(ctf: &CtfReader) -> Result<Version> {
 /// Find the address of the thread-local `tokio::runtime::context::Context` for
 /// this LWP, if present. The first three u64s of this type form a
 /// recognizeable pattern unlikely to be replicated by other types.
-fn find_thd_context(tid: u32, brk_range: &Range<u64>, core: &Core) -> Result<Option<u64>> {
-    // So far I've always observed the Context at `tls[4]`, but there's no
-    // reason to assume this will remain the case. Check all of the slots to be
-    // safe.
-    let tls = core.lwp_tsd(tid)?;
+fn find_thd_context(tid: u32, brk_range: &Range<u64>, proc: &Proc) -> Result<Option<u64>> {
+    let tls = proc.lwp_tsd(tid)?;
     for addr in tls {
         // The `tokio::runtime::context::Context` is heap allocated.
         if !brk_range.contains(&addr) {
@@ -219,7 +216,7 @@ fn find_thd_context(tid: u32, brk_range: &Range<u64>, core: &Core) -> Result<Opt
         let mut buf = [0u8; CONTEXT_SIZE as usize];
 
         // The value may be unmapped.
-        if core.pread_exact(&mut buf, addr).is_err() {
+        if proc.pread_exact(&mut buf, addr).is_err() {
             continue;
         }
         let buf: [u64; 3] = unsafe { mem::transmute(buf) };
@@ -1117,7 +1114,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
         let id_offset: u64 = vtable_info.member(ctx, "id_offset")?.parse(ctx)?;
         let id_addr = info.addr + id_offset;
         let id_bytes = ctx
-            .core
+            .proc
             .read_bytes(id_addr, size_of::<u64>() as u64)?
             .unwrap();
         let id = u64::from_le_bytes(id_bytes.try_into().unwrap());
@@ -1129,13 +1126,13 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
             .parse(ctx)?;
         let spawn_ptr_addr = info.addr + spawn_offset;
         let spawn_ptr = ctx
-            .core
+            .proc
             .read_u64(spawn_ptr_addr)
             .map_err(|e| Error::null_ptr().with_source(e))?;
 
         // The CTF isn't aware we have a *Location here, so manually find the type and parse.
         let spawn_ty = ctx.ctf.ty(ctx.location_id);
-        let spawn_buf = ctx.core.read_type(spawn_ptr, spawn_ty, &ctx.ctf)?.unwrap();
+        let spawn_buf = ctx.proc.read_type(spawn_ptr, spawn_ty, &ctx.ctf)?.unwrap();
         let spawn_info = info.clone().with_ty(spawn_ty).with_buf(&spawn_buf);
         let spawn_location = spawn_info.parse(ctx)?;
 
@@ -1146,7 +1143,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
 
         let trailer_ty = ctx.ctf.ty(ctx.trailer_id);
         let trailer_buf = ctx
-            .core
+            .proc
             .read_type(trailer_ptr, trailer_ty, &ctx.ctf)?
             .unwrap();
         let trailer_info = info.clone().with_ty(trailer_ty).with_buf(&trailer_buf);
@@ -1205,7 +1202,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Location {
 #[derive(Clone, PartialEq, Debug)]
 pub struct DriverHandle {
     pub io: IoHandle,
-    pub time: Option<TimeHandle>,
+    pub time: TimeHandle,
     pub clock: Clock,
 }
 
@@ -1214,9 +1211,8 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for DriverHandle {
         let io = info.member(ctx, "io")?.parse(ctx)?;
         let time = info
             .member(ctx, "time")?
-            .try_select_variant(ctx, "Some")?
-            .map(|i| i.parse(ctx))
-            .transpose()?;
+            .select_variant(ctx, "Some")?
+            .parse(ctx)?;
         let clock = info.member(ctx, "clock")?.member(ctx, "data")?.parse(ctx)?;
 
         Ok(Self { io, time, clock })
@@ -1715,7 +1711,7 @@ impl TryFrom<proc::Timespec> for RawInstant {
 
     fn try_from(value: proc::Timespec) -> std::result::Result<Self, Self::Error> {
         const NSEC_PER_SEC: i64 = 1_000_000_000;
-        if value.tv_nsec >= 0 && value.tv_nsec < NSEC_PER_SEC {
+        if value.tv_nsec < 0 || value.tv_nsec >= NSEC_PER_SEC {
             anyhow::bail!("invalid process timestamp {value:?}");
         }
 
@@ -1940,7 +1936,6 @@ impl Level {
 
         // From the slot index, calculate the `Instant` at which it needs to be
         // processed. This value *must* be in the future with respect to `now`.
-
         let level_range = self.level_range();
         let slot_range = self.slot_range();
 

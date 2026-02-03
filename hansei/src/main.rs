@@ -1,7 +1,8 @@
 use anyhow::{Context as _, Result};
-use clap::Parser;
+use clap::{Args, Parser};
 use durin::read::CtfReader;
-use proc::Core;
+use proc::Proc;
+
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -10,17 +11,44 @@ pub mod tokio;
 pub mod unwind;
 
 #[derive(clap::Parser)]
-struct Args {
-    /// The core dump to open.
-    core: PathBuf,
+struct Cli {
+    #[command(flatten)]
+    source: SourceType,
 
     /// The CTF file to read.
     #[clap(long, short)]
     ctf: PathBuf,
 }
 
+#[derive(Args)]
+#[group(required = true, multiple = false)]
+struct SourceType {
+    /// The pid of the process to inspect.
+    #[arg(long)]
+    pid: Option<u32>,
+
+    /// The core dump to open.
+    #[arg(long)]
+    core: Option<PathBuf>,
+}
+
+enum Source {
+    Pid(u32),
+    Core(PathBuf),
+}
+
+impl From<SourceType> for Source {
+    fn from(s: SourceType) -> Self {
+        match (s.pid, s.core) {
+            (Some(pid), None) => Source::Pid(pid),
+            (None, Some(core)) => Source::Core(core),
+            _ => unreachable!(),
+        }
+    }
+}
+
 fn main() {
-    let args = Args::parse();
+    let args = Cli::parse();
     let mut stdout = io::stdout().lock();
 
     if let Err(e) = exec(args, &mut stdout) {
@@ -35,23 +63,31 @@ fn main() {
     }
 }
 
-fn exec(args: Args, _out: &mut dyn io::Write) -> Result<()> {
-    let core = Core::open(&args.core)
-        .with_context(|| format!("failed to open {} as a core", args.core.display()))?;
+fn exec(args: Cli, out: &mut dyn io::Write) -> Result<()> {
+    let source = Source::from(args.source);
+    let proc = match &source {
+        Source::Pid(pid) => Proc::open_pid(*pid).with_context(|| "failed to open pid {pid}")?,
+        Source::Core(core) => {
+            Proc::open_core(&core).with_context(|| format!("failed to open {}", core.display()))?
+        }
+    };
+
     let ctf_bytes =
         fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
     let ctf = CtfReader::load(&ctf_bytes)?;
 
-    let runtime = tokio::TokioRuntime::parse(&ctf, &core).context("failed to parse tokio state")?;
+    let runtime = tokio::TokioRuntime::parse(&ctf, &proc).context("failed to parse tokio state")?;
 
+    let run_dur = runtime.now - runtime.scheduler.driver.time.time_source;
+    writeln!(out, "Now: {:?}, Running for {:?}", runtime.now, run_dur)?;
     for active in runtime.active_workers() {
-        eprintln!("{:#?}", active.thd_ctx);
+        writeln!(out, "{:#?}", active.thd_ctx)?;
         for frame in active.backtrace.stack_trace(32) {
-            eprintln!("{frame}");
+            writeln!(out, "{frame}")?;
         }
-        eprintln!("");
+        writeln!(out, "")?;
     }
-    eprintln!("{:#?}", runtime.scheduler);
+    writeln!(out, "{:#?}", runtime.scheduler)?;
 
     Ok(())
 }

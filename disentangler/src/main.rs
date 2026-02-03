@@ -15,7 +15,7 @@ use goblin::elf::Elf;
 use goblin::elf::header::{EI_CLASS, ELFCLASS64};
 use goblin::elf::program_header::PT_LOAD;
 use memmap2::Mmap;
-use proc::{Core, Reg, Regs, SymbolBuf, x86_64::*};
+use proc::{Proc, Reg, Regs, SymbolBuf, x86_64::*};
 use rangemap::RangeMap;
 
 use core::fmt;
@@ -74,7 +74,7 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
         .map(|df| df.load_debug_info())
         .transpose()?;
 
-    let core = Core::open(&args.core)
+    let core = Proc::open_core(&args.core)
         .with_context(|| format!("failed to open {} as a core", args.core.display()))?;
     let addrs = AddrRanges::parse(&core).context("could not parse address mappings")?;
 
@@ -195,7 +195,7 @@ fn is_pointer_type(type_name: Option<&str>) -> bool {
 }
 
 /// Format a u64 value with optional decimal, mapping type, and optional symbol.
-fn format_field_value(value: u64, addrs: &AddrRanges, core: &Core, show_decimal: bool) -> String {
+fn format_field_value(value: u64, addrs: &AddrRanges, core: &Proc, show_decimal: bool) -> String {
     let map_ty = addrs.mapping_type(value);
     let desc = map_ty.map(|m| m.to_string()).unwrap_or_default();
 
@@ -227,7 +227,7 @@ fn print_field(
     field: &FieldInfo,
     indent: usize,
     addrs: &AddrRanges,
-    core: &Core,
+    core: &Proc,
 ) -> Result<()> {
     write!(out, "{}.{}: ", " ".repeat(indent), field.name)?;
     if let Some(type_name) = &field.type_name {
@@ -298,7 +298,7 @@ struct AddrRanges {
 }
 
 impl AddrRanges {
-    pub fn parse(core: &Core) -> Result<Self> {
+    pub fn parse(core: &Proc) -> Result<Self> {
         let core_mappings = core
             .mappings()
             .context("failed to retrieve memory mappings from core")?;
@@ -456,7 +456,7 @@ struct DebugInfo<'a> {
     dwarf: Dwarf<Slice<'a>>,
 }
 
-fn load_object(object_range: &Range<u64>, core: &Core) -> Result<Vec<u8>> {
+fn load_object(object_range: &Range<u64>, core: &Proc) -> Result<Vec<u8>> {
     let object_len = object_range.end - object_range.start;
     let mut buf = vec![0u8; object_len as usize];
     let read_len = core
@@ -484,7 +484,7 @@ impl Frame {
         out: &mut dyn io::Write,
         i: usize,
         addrs: &AddrRanges,
-        core: &Core,
+        core: &Proc,
     ) -> Result<()> {
         writeln!(out, "\n{}\n", "-".repeat(20))?;
 
@@ -613,7 +613,7 @@ impl Frame {
 fn eval_piece<'a>(
     piece: &Piece<Slice<'a>>,
     regs: &Regs,
-    core: &Core,
+    core: &Proc,
 ) -> Result<Option<(String, u64)>> {
     let &Piece {
         size_in_bits,
@@ -698,7 +698,7 @@ fn print_stuff(
     current_ptr: u64,
     name: &str,
     addrs: &AddrRanges,
-    core: &Core,
+    core: &Proc,
 ) -> Result<()> {
     let mut current_ptr = current_ptr;
     let map_ty = addrs.mapping_type(current_ptr);
@@ -794,7 +794,7 @@ fn format_value(data: u64) -> String {
 
 #[derive(Debug)]
 struct Unwinder<'a> {
-    core: &'a Core,
+    core: &'a Proc,
     exec: &'a ObjectInfo<'a>,
     libc: &'a ObjectInfo<'a>,
 }
@@ -1217,7 +1217,7 @@ struct DwarfEval<'a> {
     unit_index: usize,
     entry_offset: UnitOffset,
     dwarf: &'a Dwarf<Slice<'a>>,
-    core: &'a Core,
+    core: &'a Proc,
 }
 
 impl<'a> DwarfEval<'a> {
@@ -1229,7 +1229,7 @@ impl<'a> DwarfEval<'a> {
         unit_index: usize,
         entry_offset: UnitOffset,
         dwarf: &'a Dwarf<Slice<'a>>,
-        core: &'a Core,
+        core: &'a Proc,
     ) -> Result<()> {
         let eval = DwarfEval {
             cfa,
@@ -1658,7 +1658,7 @@ fn find_variables_in_scope<'a>(
     func_offset: gimli::UnitOffset,
     pc: u64,
     regs: &Regs,
-    core: &Core,
+    core: &Proc,
 ) -> Result<Vec<VariableLocation<'a>>> {
     let mut variables = Vec::new();
     let mut tree = unit.entries_tree(Some(func_offset)).unwrap();
@@ -1674,7 +1674,7 @@ fn collect_variables_recursive<'a>(
     pc: u64,
     frame_base: u64,
     regs: &Regs,
-    core: &Core,
+    core: &Proc,
     variables: &mut Vec<VariableLocation<'a>>,
 ) -> Result<()> {
     let entry = node.entry();
@@ -1745,7 +1745,7 @@ pub fn read_variable_info<'a>(
     pc: u64,
     frame_base: u64,
     regs: &Regs,
-    core: &Core,
+    core: &Proc,
 ) -> Result<Option<VariableLocation<'a>>> {
     let Some(name) = get_name(unit, entry)? else {
         return Ok(None);
@@ -1793,7 +1793,7 @@ fn get_struct_fields<'a>(
     entry: &DebuggingInformationEntry<Slice<'a>>,
     base_addr: Option<u64>,
     loc_kind: LocationKind,
-    core: &Core,
+    core: &Proc,
     depth: usize,
 ) -> Result<Vec<FieldInfo>> {
     if depth >= MAX_FIELD_DEPTH {
@@ -1867,7 +1867,7 @@ fn get_struct_fields_from_type_offset<'a>(
     unit: &UnitRef<'a, Slice<'a>>,
     type_offset: UnitOffset,
     base_addr: Option<u64>,
-    core: &Core,
+    core: &Proc,
     depth: usize,
 ) -> Result<Vec<FieldInfo>> {
     if depth >= MAX_FIELD_DEPTH {
@@ -1927,7 +1927,7 @@ fn read_enum_variant_fields<'a>(
     unit: &UnitRef<'a, Slice<'a>>,
     variant_part: &DebuggingInformationEntry<Slice<'a>>,
     base_addr: Option<u64>,
-    core: &Core,
+    core: &Proc,
     depth: usize,
 ) -> Result<Vec<FieldInfo>> {
     let mut fields = Vec::new();
@@ -1997,7 +1997,7 @@ fn read_discriminant_value<'a>(
     unit: &UnitRef<'a, Slice<'a>>,
     variant_part: &DebuggingInformationEntry<Slice<'a>>,
     base_addr: Option<u64>,
-    core: &Core,
+    core: &Proc,
 ) -> Result<Option<u64>> {
     // DW_AT_discr points to the discriminant member
     let discr_ref = match variant_part.attr_value(DW_AT_discr)? {
@@ -2049,7 +2049,7 @@ fn resolve_type_with_deref<'a>(
     mut type_offset: UnitOffset,
     base_addr: Option<u64>,
     loc_kind: LocationKind,
-    core: &Core,
+    core: &Proc,
 ) -> Result<(UnitOffset, Option<u64>)> {
     let mut deref_addr: Option<u64> = None;
     let mut current_addr = base_addr;
@@ -2168,7 +2168,7 @@ fn read_member_info<'a>(
     unit: &UnitRef<'a, Slice<'a>>,
     entry: &DebuggingInformationEntry<Slice<'a>>,
     base_addr: Option<u64>,
-    core: &Core,
+    core: &Proc,
     depth: usize,
 ) -> Result<Option<FieldInfo>> {
     // Get field name
@@ -2270,7 +2270,7 @@ fn get_member_offset<'a>(
 }
 
 /// Read a field value from memory.
-fn read_field_value(core: &Core, addr: u64, size: u64) -> Option<FieldValue> {
+fn read_field_value(core: &Proc, addr: u64, size: u64) -> Option<FieldValue> {
     match size {
         1 => core
             .read_u8(addr)
@@ -2545,7 +2545,7 @@ fn evaluate_location<'a>(
     pc: u64,
     frame_base: u64,
     regs: &Regs,
-    core: &Core,
+    core: &Proc,
 ) -> Result<Option<Vec<Piece<Slice<'a>>>>> {
     let Some(loc_attr) = entry.attr_value(DW_AT_location)? else {
         return Ok(None);
@@ -2585,7 +2585,7 @@ fn evaluate_expression<'a>(
     encoding: Encoding,
     frame_base: u64,
     regs: &Regs,
-    core: &Core,
+    core: &Proc,
 ) -> Result<Vec<Piece<Slice<'a>>>> {
     let mut eval = expr.evaluation(encoding);
     let mut result = eval.evaluate()?;
