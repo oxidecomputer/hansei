@@ -395,9 +395,15 @@ impl Core {
                     let stack_start = stack.ss_sp as u64;
                     let stack_end = stack_start + stack.ss_size as u64;
 
+                    let tstamp = Timespec {
+                        tv_sec: status.pr_tstamp.tv_sec,
+                        tv_nsec: status.pr_tstamp.tv_nsec,
+                    };
+
                     cb_data.data.push(Lwp {
                         tid: status.pr_lwpid as u32,
                         stack_range: stack_start..stack_end,
+                        tstamp,
                     });
                 }
 
@@ -687,6 +693,8 @@ pub struct Lwp {
     pub tid: u32,
     /// The address range of the LWP's stack.
     pub stack_range: Range<u64>,
+    /// The timestamp the LWP was stopped.
+    pub tstamp: Timespec,
 }
 
 impl fmt::Debug for Lwp {
@@ -697,8 +705,15 @@ impl fmt::Debug for Lwp {
                 "stack_range",
                 &format_args!("{:#x}..{:#x}", self.stack_range.start, self.stack_range.end),
             )
+            .field("tstamp", &self.tstamp)
             .finish()
     }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Timespec {
+    pub tv_sec: i64,
+    pub tv_nsec: i64,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
