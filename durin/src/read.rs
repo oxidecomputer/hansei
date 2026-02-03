@@ -1267,7 +1267,7 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
     /// Read the type directly at the address provided.
     /// Wrapper types will be unwrapped if present. TODO
     pub fn from_addr<Ctx: CtfContext<'ctf>>(
-        ctx: Ctx,
+        ctx: &Ctx,
         ty: &'ctf CtfType,
         addr: u64,
     ) -> Result<Option<Self>> {
@@ -1283,7 +1283,7 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
 
     pub fn try_member<Ctx: CtfContext<'ctf>>(
         &'buf self,
-        ctx: Ctx,
+        ctx: &Ctx,
         name: &str,
     ) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
         self.as_ref().try_member(ctx, name)
@@ -1291,23 +1291,26 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
 
     pub fn member<Ctx: CtfContext<'ctf>>(
         &'buf self,
-        ctx: Ctx,
+        ctx: &Ctx,
         name: &str,
     ) -> Result<TypeInfoRef<'buf, 'ctf>> {
         self.as_ref().member(ctx, name)
     }
 
-    pub fn try_deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<Option<TypeInfo<'ctf>>> {
+    pub fn try_deref_ptr<Ctx: CtfContext<'ctf>>(
+        &self,
+        ctx: &Ctx,
+    ) -> Result<Option<TypeInfo<'ctf>>> {
         self.as_ref().try_deref_ptr(ctx)
     }
 
-    pub fn deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<TypeInfo<'ctf>> {
+    pub fn deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: &Ctx) -> Result<TypeInfo<'ctf>> {
         self.as_ref().deref_ptr(ctx)
     }
 
     pub fn try_select_variant<Ctx: CtfContext<'ctf>>(
         &'buf self,
-        ctx: Ctx,
+        ctx: &Ctx,
         name: &str,
     ) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
         self.as_ref().try_select_variant(ctx, name)
@@ -1315,7 +1318,7 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
 
     pub fn select_variant<Ctx: CtfContext<'ctf>>(
         &'buf self,
-        ctx: Ctx,
+        ctx: &Ctx,
         name: &str,
     ) -> Result<TypeInfoRef<'buf, 'ctf>> {
         self.as_ref().select_variant(ctx, name)
@@ -1323,12 +1326,12 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
 
     pub fn array_elements<Ctx: CtfContext<'ctf>>(
         &'buf self,
-        ctx: Ctx,
+        ctx: &Ctx,
     ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
         array_elements(self.ty, self.addr, &self.buf, ctx)
     }
 
-    pub fn parse<T, Ctx>(&self, ctx: Ctx) -> Result<T>
+    pub fn parse<T, Ctx>(&self, ctx: &Ctx) -> Result<T>
     where
         T: ParseWithCtf<'ctf, Ctx>,
         Ctx: CtfContext<'ctf>,
@@ -1338,7 +1341,7 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
 
     pub fn box2<Ctx: CtfContext<'ctf>>(
         &'buf self,
-        ctx: Ctx,
+        ctx: &Ctx,
     ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>>
     where
         'ctf: 'buf,
@@ -1347,7 +1350,7 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
     }
 
     /// Parse the elements of a boxed slice, returning them in a Vec.
-    pub fn boxed_slice_elements<T, Ctx, F>(&self, ctx: Ctx, mut f: F) -> Result<()>
+    pub fn boxed_slice_elements<T, Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<()>
     where
         F: FnMut(&TypeInfoRef<'_, '_>) -> Result<()>,
         Ctx: CtfContext<'ctf>,
@@ -1430,7 +1433,7 @@ impl PartialEq for TypeInfoRef<'_, '_> {
 impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
     pub fn try_member<Ctx: CtfContext<'ctf>>(
         &self,
-        ctx: Ctx,
+        ctx: &Ctx,
         name: &str,
     ) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
         let ctf = ctx.ctf();
@@ -1453,7 +1456,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 
     pub fn member<Ctx: CtfContext<'ctf>>(
         &self,
-        ctx: Ctx,
+        ctx: &Ctx,
         name: &str,
     ) -> Result<TypeInfoRef<'buf, 'ctf>> {
         let Some(member) = self.try_member(ctx, name)? else {
@@ -1463,7 +1466,10 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         Ok(member)
     }
 
-    pub fn try_deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<Option<TypeInfo<'ctf>>> {
+    pub fn try_deref_ptr<Ctx: CtfContext<'ctf>>(
+        &self,
+        ctx: &Ctx,
+    ) -> Result<Option<TypeInfo<'ctf>>> {
         let ctf = ctx.ctf();
         let core = ctx.core();
 
@@ -1501,7 +1507,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         }))
     }
 
-    pub fn deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<TypeInfo<'ctf>> {
+    pub fn deref_ptr<Ctx: CtfContext<'ctf>>(&self, ctx: &Ctx) -> Result<TypeInfo<'ctf>> {
         match self.try_deref_ptr(ctx) {
             Ok(Some(i)) => Ok(i),
             Ok(None) => Err(Error::null_ptr()),
@@ -1511,7 +1517,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 
     pub fn try_select_variant<Ctx: CtfContext<'ctf>>(
         &self,
-        ctx: Ctx,
+        ctx: &Ctx,
         name: &str,
     ) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
         let ctf = ctx.ctf();
@@ -1572,7 +1578,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 
     pub fn select_variant<Ctx: CtfContext<'ctf>>(
         &self,
-        ctx: Ctx,
+        ctx: &Ctx,
         name: &str,
     ) -> Result<TypeInfoRef<'buf, 'ctf>> {
         let Some(info) = self.try_select_variant(ctx, name)? else {
@@ -1582,7 +1588,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         Ok(info)
     }
 
-    pub fn parse<T: ParseWithCtf<'ctf, Ctx>, Ctx: CtfContext<'ctf>>(&self, ctx: Ctx) -> Result<T> {
+    pub fn parse<T: ParseWithCtf<'ctf, Ctx>, Ctx: CtfContext<'ctf>>(&self, ctx: &Ctx) -> Result<T> {
         T::parse_with_ctf(ctx, &self)
             .map_err(|e| Error::parse_type(self.ty.name(ctx.ctf())).with_source(e))
     }
@@ -1609,13 +1615,13 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
     /// Get an iterator of `TypeInfoRef`s over the elements of an array.
     pub fn array_elements<Ctx: CtfContext<'ctf>>(
         &self,
-        ctx: Ctx,
+        ctx: &Ctx,
     ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
         array_elements(self.ty, self.addr, self.bytes, ctx)
     }
 
     /// Parse the elements of a boxed slice, returning them in a Vec.
-    pub fn boxed_slice_elements<T, Ctx, F>(&self, ctx: Ctx, mut f: F) -> Result<Vec<T>>
+    pub fn boxed_slice_elements<T, Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<Vec<T>>
     where
         F: FnMut(&TypeInfoRef<'_, '_>) -> Result<T>,
         Ctx: CtfContext<'ctf>,
@@ -1661,7 +1667,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 
     pub fn active_variant<Ctx: CtfContext<'ctf>>(
         &self,
-        ctx: Ctx,
+        ctx: &Ctx,
     ) -> Result<(&'ctf str, TypeInfoRef<'buf, 'ctf>)> {
         let ctf = ctx.ctf();
         let (discrim, enumerators) = self.read_discriminant(ctx)?;
@@ -1723,7 +1729,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
     /// is. This are defined as a struct with only a single sized member. The
     /// buffer will be adjusted if the member is smaller than the parent
     /// struct.
-    pub fn peel<Ctx: CtfContext<'ctf>>(self, ctx: Ctx) -> TypeInfoRef<'buf, 'ctf> {
+    pub fn peel<Ctx: CtfContext<'ctf>>(self, ctx: &Ctx) -> TypeInfoRef<'buf, 'ctf> {
         let ctf = ctx.ctf();
         let mut info = self;
 
@@ -1760,7 +1766,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 
     fn read_discriminant<Ctx: CtfContext<'ctf>>(
         &self,
-        ctx: Ctx,
+        ctx: &Ctx,
     ) -> Result<(u64, &[CtfEnumerator])> {
         let ctf = ctx.ctf();
         let size = self.ty.size(ctf);
@@ -1817,7 +1823,7 @@ impl<'buf, 'ctf: 'buf> From<&'buf TypeInfo<'ctf>> for TypeInfoRef<'buf, 'ctf> {
     }
 }
 
-pub trait CtfContext<'ctf>: Copy {
+pub trait CtfContext<'ctf> {
     fn ctf(&self) -> &'ctf CtfReader;
     fn core(&self) -> &'ctf Core;
 }
@@ -1838,11 +1844,11 @@ where
     Ctx: CtfContext<'ctf>,
 {
     /// Attempt to read `Self` from the CTF type information.
-    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self>;
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self>;
 }
 
 impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for u8 {
-    fn parse_with_ctf(_ctx: Ctx, info: &TypeInfoRef) -> Result<Self> {
+    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef) -> Result<Self> {
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -1854,7 +1860,7 @@ impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for u8 {
 }
 
 impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for i8 {
-    fn parse_with_ctf(_ctx: Ctx, info: &TypeInfoRef) -> Result<Self> {
+    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef) -> Result<Self> {
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -1866,7 +1872,7 @@ impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for i8 {
 }
 
 impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for bool {
-    fn parse_with_ctf(_ctx: Ctx, info: &TypeInfoRef) -> Result<Self> {
+    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef) -> Result<Self> {
         if info.bytes.len() < size_of::<Self>() {
             return Err(Error::too_short(
                 info.bytes.len() as u32,
@@ -1880,7 +1886,7 @@ impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for bool {
 macro_rules! ctf_num_impl {
     ($num_ty:ty) => {
         impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for $num_ty {
-            fn parse_with_ctf(_ctx: Ctx, info: &TypeInfoRef) -> Result<Self> {
+            fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef) -> Result<Self> {
                 if info.bytes.len() < size_of::<Self>() {
                     return Err(Error::too_short(
                         info.bytes.len() as u32,
@@ -1906,7 +1912,7 @@ where
     T: ParseWithCtf<'ctf, Ctx>,
     Ctx: CtfContext<'ctf>,
 {
-    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
         let var = info.active_variant(ctx)?;
         let value = match var {
             ("Some", var_info) => T::parse_with_ctf(ctx, &var_info)?,
@@ -1925,7 +1931,7 @@ where
     T: ParseWithCtf<'ctf, Ctx>,
     Ctx: CtfContext<'ctf>,
 {
-    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
         let ctf = ctx.ctf();
         let core = ctx.core();
 
@@ -1964,7 +1970,7 @@ where
     T: ParseWithCtf<'ctf, Ctx>,
     Ctx: CtfContext<'ctf>,
 {
-    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
         let ctf = ctx.ctf();
         let core = ctx.core();
 
@@ -2008,7 +2014,7 @@ where
     T: ParseWithCtf<'ctf, Ctx>,
     Ctx: CtfContext<'ctf>,
 {
-    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef) -> Result<Self> {
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef) -> Result<Self> {
         let ctf = ctx.ctf();
 
         if info.bytes.len() < size_of::<Self>() {
@@ -2056,7 +2062,7 @@ where
 }
 
 impl<'ctf, Ctx: CtfContext<'ctf>> ParseWithCtf<'ctf, Ctx> for String {
-    fn parse_with_ctf(ctx: Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
         let core = ctx.core();
 
         let len: u64 = info.member(ctx, "length")?.parse(ctx)?;
@@ -2098,7 +2104,7 @@ fn array_elements<'buf, 'ctf: 'buf, Ctx: CtfContext<'ctf>>(
     ty: &'ctf CtfType,
     addr: u64,
     bytes: &'buf [u8],
-    ctx: Ctx,
+    ctx: &Ctx,
 ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
     let ctf = ctx.ctf();
     let CtfType::Array {
@@ -2131,7 +2137,7 @@ fn array_elements<'buf, 'ctf: 'buf, Ctx: CtfContext<'ctf>>(
 /// Parse the elements of a boxed slice, returning them in a Vec.
 fn boxed_slice_elements<'buf, 'ctf: 'buf, Ctx: CtfContext<'ctf>>(
     ptr_info: &'buf TypeInfo<'ctf>,
-    ctx: Ctx,
+    ctx: &Ctx,
 ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
     // todo check len?
     let elem_size = ptr_info.ty.size(ctx.ctf()) as u64;
