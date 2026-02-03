@@ -256,7 +256,6 @@ dependencies = [
  "gimli",
  "goblin",
  "proc",
- "regex",
  "scroll",
  "scroll_derive",
  "thiserror",
