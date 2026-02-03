@@ -9,7 +9,6 @@ use goblin::elf::header::{EI_CLASS, ELFCLASS64};
 use memmap2::Mmap;
 
 use std::fs::File;
-use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 #[derive(clap::Parser)]

@@ -298,10 +298,7 @@ impl Error {
 
     /// Returns true if this is an I/O error.
     pub fn is_io(&self) -> bool {
-        matches!(
-            self.kind,
-            ErrorKind::Decompress | ErrorKind::ReadError(_)
-        )
+        matches!(self.kind, ErrorKind::Decompress | ErrorKind::ReadError(_))
     }
 
     // Public constructors for each variant
