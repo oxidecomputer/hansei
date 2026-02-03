@@ -1,7 +1,7 @@
+use std::io;
+
 pub mod read;
 pub mod write;
-
-use std::io;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -580,9 +580,496 @@ pub enum SizeOrType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::read::CtfReader;
+    use crate::write::{CtfEnumerator, CtfMember, CtfType, CtfWriter, MaybeOffset, ctf_int_data};
+    use std::collections::HashMap;
+
+    /// Test helper to create CTF data and parse it back.
+    fn round_trip_ctf(writer: &mut CtfWriter) -> CtfReader {
+        let ctf_bytes = writer.generate_ctf(HashMap::new()).unwrap();
+        CtfReader::load(&ctf_bytes).unwrap()
+    }
 
     #[test]
-    fn it_works() {
-        todo!();
+    fn round_trip_integer_types() {
+        let mut writer = CtfWriter::new(None);
+
+        // Add signed 32-bit integer
+        let offset = gimli::DebugInfoOffset(0x100);
+        writer.add_type(
+            offset,
+            CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            },
+        );
+
+        // Add unsigned 64-bit integer
+        let offset2 = gimli::DebugInfoOffset(0x200);
+        writer.add_type(
+            offset2,
+            CtfType::Integer {
+                name: "u64".to_string(),
+                size: 8,
+                encoding: ctf_int_data(0, 0, 64),
+            },
+        );
+
+        let reader = round_trip_ctf(&mut writer);
+
+        // Verify types were parsed correctly
+        let types = reader.types();
+        assert!(types.len() >= 3); // null type + void + our 2 types
+
+        // Find and verify i32
+        let i32_ty = reader.find_ty("i32", TypeKind::Integer);
+        assert!(i32_ty.is_some(), "i32 type not found");
+        let i32_ty = i32_ty.unwrap();
+        assert_eq!(i32_ty.size(&reader), 4);
+
+        // Find and verify u64
+        let u64_ty = reader.find_ty("u64", TypeKind::Integer);
+        assert!(u64_ty.is_some(), "u64 type not found");
+        let u64_ty = u64_ty.unwrap();
+        assert_eq!(u64_ty.size(&reader), 8);
+    }
+
+    #[test]
+    fn round_trip_struct_type() {
+        let mut writer = CtfWriter::new(None);
+
+        // Add i32 type first (will be type id 2 after null and void)
+        let int_offset = gimli::DebugInfoOffset(0x100);
+        let int_id = writer.add_type(
+            int_offset,
+            CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            },
+        );
+
+        // Add struct with two i32 members
+        let struct_offset = gimli::DebugInfoOffset(0x200);
+        writer.add_type(
+            struct_offset,
+            CtfType::Struct {
+                name: "Point".to_string(),
+                size: 8,
+                members: vec![
+                    CtfMember {
+                        name: "x".to_string(),
+                        type_id: MaybeOffset::Found(int_id),
+                        offset_bits: 0,
+                    },
+                    CtfMember {
+                        name: "y".to_string(),
+                        type_id: MaybeOffset::Found(int_id),
+                        offset_bits: 32,
+                    },
+                ],
+            },
+        );
+
+        let reader = round_trip_ctf(&mut writer);
+
+        // Find and verify struct
+        let point = reader.find_ty("Point", TypeKind::Struct);
+        assert!(point.is_some(), "Point struct not found");
+        let point = point.unwrap();
+        assert_eq!(point.size(&reader), 8);
+
+        // Verify members
+        let members = point.members();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].name(&reader), "x");
+        assert_eq!(members[0].offset(), 0);
+        assert_eq!(members[1].name(&reader), "y");
+        assert_eq!(members[1].offset(), 4);
+    }
+
+    #[test]
+    fn round_trip_pointer_type() {
+        let mut writer = CtfWriter::new(None);
+
+        // Add i32 type
+        let int_offset = gimli::DebugInfoOffset(0x100);
+        let int_id = writer.add_type(
+            int_offset,
+            CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            },
+        );
+
+        // Add pointer to i32
+        let ptr_offset = gimli::DebugInfoOffset(0x200);
+        writer.add_type(
+            ptr_offset,
+            CtfType::Pointer {
+                name: "".to_string(),
+                target_type: MaybeOffset::Found(int_id),
+            },
+        );
+
+        let reader = round_trip_ctf(&mut writer);
+
+        // Find pointer type (unnamed, so search by kind)
+        let ptr = reader
+            .types()
+            .iter()
+            .find(|t| t.kind() == TypeKind::Pointer);
+        assert!(ptr.is_some(), "Pointer type not found");
+        let ptr = ptr.unwrap();
+
+        // Pointers are 8 bytes on 64-bit
+        assert_eq!(ptr.size(&reader), 8);
+    }
+
+    #[test]
+    fn round_trip_array_type() {
+        let mut writer = CtfWriter::new(None);
+
+        // Add i32 type
+        let int_offset = gimli::DebugInfoOffset(0x100);
+        let int_id = writer.add_type(
+            int_offset,
+            CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            },
+        );
+
+        // Add array of 10 i32s
+        let array_offset = gimli::DebugInfoOffset(0x200);
+        writer.add_type(
+            array_offset,
+            CtfType::Array {
+                name: "".to_string(),
+                element_type: MaybeOffset::Found(int_id),
+                index_type: MaybeOffset::Found(int_id),
+                nelems: 10,
+            },
+        );
+
+        let reader = round_trip_ctf(&mut writer);
+
+        // Find array type
+        let arr = reader.types().iter().find(|t| t.kind() == TypeKind::Array);
+        assert!(arr.is_some(), "Array type not found");
+        let arr = arr.unwrap();
+
+        // Array of 10 i32s = 40 bytes
+        assert_eq!(arr.size(&reader), 40);
+    }
+
+    #[test]
+    fn round_trip_enum_type() {
+        let mut writer = CtfWriter::new(None);
+
+        let enum_offset = gimli::DebugInfoOffset(0x100);
+        writer.add_type(
+            enum_offset,
+            CtfType::Enum {
+                name: "Color".to_string(),
+                size: 4,
+                enumerators: vec![
+                    CtfEnumerator {
+                        name: "Red".to_string(),
+                        value: 0,
+                    },
+                    CtfEnumerator {
+                        name: "Green".to_string(),
+                        value: 1,
+                    },
+                    CtfEnumerator {
+                        name: "Blue".to_string(),
+                        value: 2,
+                    },
+                ],
+            },
+        );
+
+        let reader = round_trip_ctf(&mut writer);
+
+        // Find and verify enum
+        let color = reader.find_ty("Color", TypeKind::Enum);
+        assert!(color.is_some(), "Color enum not found");
+        let color = color.unwrap();
+        assert_eq!(color.size(&reader), 4);
+
+        // Verify enumerators
+        if let read::CtfType::Enum {
+            ty: read::CtfEnum { enumerators, .. },
+            ..
+        } = color
+        {
+            assert_eq!(enumerators.len(), 3);
+            assert_eq!(enumerators[0].name(&reader), "Red");
+            assert_eq!(enumerators[0].value, 0);
+            assert_eq!(enumerators[1].name(&reader), "Green");
+            assert_eq!(enumerators[1].value, 1);
+            assert_eq!(enumerators[2].name(&reader), "Blue");
+            assert_eq!(enumerators[2].value, 2);
+        } else {
+            panic!("Expected enum type");
+        }
+    }
+
+    #[test]
+    fn round_trip_typedef() {
+        let mut writer = CtfWriter::new(None);
+
+        // Add i32 type
+        let int_offset = gimli::DebugInfoOffset(0x100);
+        let int_id = writer.add_type(
+            int_offset,
+            CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            },
+        );
+
+        // Add typedef
+        let typedef_offset = gimli::DebugInfoOffset(0x200);
+        writer.add_type(
+            typedef_offset,
+            CtfType::Typedef {
+                name: "MyInt".to_string(),
+                target_type: MaybeOffset::Found(int_id),
+            },
+        );
+
+        let reader = round_trip_ctf(&mut writer);
+
+        // Find and verify typedef
+        let myint = reader.find_ty("MyInt", TypeKind::Typedef);
+        assert!(myint.is_some(), "MyInt typedef not found");
+        let myint = myint.unwrap();
+
+        // Typedef should resolve to same size as target
+        assert_eq!(myint.size(&reader), 4);
+    }
+
+    #[test]
+    fn round_trip_union_type() {
+        let mut writer = CtfWriter::new(None);
+
+        // Add i32 type
+        let int_offset = gimli::DebugInfoOffset(0x100);
+        let int_id = writer.add_type(
+            int_offset,
+            CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            },
+        );
+
+        // Add f32 type
+        let float_offset = gimli::DebugInfoOffset(0x150);
+        let float_id = writer.add_type(
+            float_offset,
+            CtfType::Float {
+                name: "f32".to_string(),
+                size: 4,
+                encoding: 0x01_00_0020, // Single precision, 32 bits
+            },
+        );
+
+        // Add union with both members
+        let union_offset = gimli::DebugInfoOffset(0x200);
+        writer.add_type(
+            union_offset,
+            CtfType::Union {
+                name: "IntOrFloat".to_string(),
+                size: 4,
+                members: vec![
+                    CtfMember {
+                        name: "i".to_string(),
+                        type_id: MaybeOffset::Found(int_id),
+                        offset_bits: 0,
+                    },
+                    CtfMember {
+                        name: "f".to_string(),
+                        type_id: MaybeOffset::Found(float_id),
+                        offset_bits: 0,
+                    },
+                ],
+            },
+        );
+
+        let reader = round_trip_ctf(&mut writer);
+
+        // Find and verify union
+        let union_ty = reader.find_ty("IntOrFloat", TypeKind::Union);
+        assert!(union_ty.is_some(), "IntOrFloat union not found");
+        let union_ty = union_ty.unwrap();
+        assert_eq!(union_ty.size(&reader), 4);
+
+        // Verify members - both at offset 0
+        let members = union_ty.members();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].name(&reader), "i");
+        assert_eq!(members[0].offset(), 0);
+        assert_eq!(members[1].name(&reader), "f");
+        assert_eq!(members[1].offset(), 0);
+    }
+
+    #[test]
+    fn round_trip_nested_struct() {
+        let mut writer = CtfWriter::new(None);
+
+        // Add i32 type
+        let int_offset = gimli::DebugInfoOffset(0x100);
+        let int_id = writer.add_type(
+            int_offset,
+            CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            },
+        );
+
+        // Add inner Point struct
+        let point_offset = gimli::DebugInfoOffset(0x200);
+        let point_id = writer.add_type(
+            point_offset,
+            CtfType::Struct {
+                name: "Point".to_string(),
+                size: 8,
+                members: vec![
+                    CtfMember {
+                        name: "x".to_string(),
+                        type_id: MaybeOffset::Found(int_id),
+                        offset_bits: 0,
+                    },
+                    CtfMember {
+                        name: "y".to_string(),
+                        type_id: MaybeOffset::Found(int_id),
+                        offset_bits: 32,
+                    },
+                ],
+            },
+        );
+
+        // Add outer Rect struct containing two Points
+        let rect_offset = gimli::DebugInfoOffset(0x300);
+        writer.add_type(
+            rect_offset,
+            CtfType::Struct {
+                name: "Rect".to_string(),
+                size: 16,
+                members: vec![
+                    CtfMember {
+                        name: "top_left".to_string(),
+                        type_id: MaybeOffset::Found(point_id),
+                        offset_bits: 0,
+                    },
+                    CtfMember {
+                        name: "bottom_right".to_string(),
+                        type_id: MaybeOffset::Found(point_id),
+                        offset_bits: 64,
+                    },
+                ],
+            },
+        );
+
+        let reader = round_trip_ctf(&mut writer);
+
+        // Verify Rect
+        let rect = reader.find_ty("Rect", TypeKind::Struct).unwrap();
+        assert_eq!(rect.size(&reader), 16);
+
+        let members = rect.members();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].name(&reader), "top_left");
+        assert_eq!(members[0].offset(), 0);
+        assert_eq!(members[1].name(&reader), "bottom_right");
+        assert_eq!(members[1].offset(), 8);
+
+        // Verify the member types reference Point
+        let top_left_ty = members[0].ty(&reader);
+        assert_eq!(top_left_ty.name(&reader), "Point");
+    }
+
+    #[test]
+    fn round_trip_with_label() {
+        let mut writer = CtfWriter::new(None);
+        writer.set_label("test_binary".to_string());
+
+        // Add a simple type
+        let int_offset = gimli::DebugInfoOffset(0x100);
+        writer.add_type(
+            int_offset,
+            CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            },
+        );
+
+        let reader = round_trip_ctf(&mut writer);
+
+        // Verify label was preserved
+        assert!(!reader.labels.is_empty());
+        assert_eq!(reader.labels[0].label(&reader), "test_binary");
+    }
+
+    #[test]
+    fn round_trip_const_volatile_restrict() {
+        let mut writer = CtfWriter::new(None);
+
+        // Add base i32 type
+        let int_offset = gimli::DebugInfoOffset(0x100);
+        let int_id = writer.add_type(
+            int_offset,
+            CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            },
+        );
+
+        // Add const i32
+        let const_offset = gimli::DebugInfoOffset(0x200);
+        let const_id = writer.add_type(
+            const_offset,
+            CtfType::Const {
+                name: "".to_string(),
+                target_type: MaybeOffset::Found(int_id),
+            },
+        );
+
+        // Add volatile const i32
+        let volatile_offset = gimli::DebugInfoOffset(0x300);
+        writer.add_type(
+            volatile_offset,
+            CtfType::Volatile {
+                name: "".to_string(),
+                target_type: MaybeOffset::Found(const_id),
+            },
+        );
+
+        let reader = round_trip_ctf(&mut writer);
+
+        // Find const type
+        let const_ty = reader.types().iter().find(|t| t.kind() == TypeKind::Const);
+        assert!(const_ty.is_some(), "Const type not found");
+
+        // Find volatile type
+        let volatile_ty = reader
+            .types()
+            .iter()
+            .find(|t| t.kind() == TypeKind::Volatile);
+        assert!(volatile_ty.is_some(), "Volatile type not found");
+
+        // Volatile should resolve to same size as underlying type
+        let volatile_ty = volatile_ty.unwrap();
+        assert_eq!(volatile_ty.size(&reader), 4);
     }
 }

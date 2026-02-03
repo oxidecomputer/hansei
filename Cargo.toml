@@ -9,6 +9,7 @@ members = [
     "hansei",
     "libproc-sys",
     "proc",
+    "reify",
 ]
 
 [workspace.dependencies]
@@ -29,6 +30,7 @@ petgraph = "0.7"
 predicates = "3.1"
 proc = { path = "proc", version = "0.1.0" }
 rangemap = "1.7.0"
+reify = { path = "reify", version = "0.1.0" }
 regex = "1.12"
 rustc-demangle = "0.1.27"
 scroll = { version = "0.13.0", features = ["derive"] }

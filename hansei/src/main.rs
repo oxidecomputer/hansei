@@ -22,7 +22,7 @@ struct Cli {
 
 #[derive(Args)]
 #[group(required = true, multiple = false)]
-struct SourceType {
+struct Source {
     /// The pid of the process to inspect.
     #[arg(long)]
     pid: Option<u32>,
@@ -30,21 +30,6 @@ struct SourceType {
     /// The core dump to open.
     #[arg(long)]
     core: Option<PathBuf>,
-}
-
-enum Source {
-    Pid(u32),
-    Core(PathBuf),
-}
-
-impl From<SourceType> for Source {
-    fn from(s: SourceType) -> Self {
-        match (s.pid, s.core) {
-            (Some(pid), None) => Source::Pid(pid),
-            (None, Some(core)) => Source::Core(core),
-            _ => unreachable!(),
-        }
-    }
 }
 
 fn main() {
@@ -64,12 +49,14 @@ fn main() {
 }
 
 fn exec(args: Cli, out: &mut dyn io::Write) -> Result<()> {
-    let source = Source::from(args.source);
-    let proc = match &source {
-        Source::Pid(pid) => Proc::open_pid(*pid).with_context(|| "failed to open pid {pid}")?,
-        Source::Core(core) => {
+    let proc = match &args.source {
+        Some(Source::Pid(pid)) => {
+            Proc::open_pid(*pid).with_context(|| "failed to open pid {pid}")?
+        }
+        Some(Source::Core(core)) => {
             Proc::open_core(&core).with_context(|| format!("failed to open {}", core.display()))?
         }
+        _ => unreachable!(),
     };
 
     let ctf_bytes =
