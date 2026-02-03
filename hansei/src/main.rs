@@ -30,7 +30,7 @@ fn main() {
             return;
         }
 
-        let _ = writeln!(io::stderr(), "{e:#}");
+        let _ = writeln!(io::stderr(), "Error: {e:?}");
         std::process::exit(1);
     }
 }
@@ -42,22 +42,11 @@ fn exec(args: Args, _out: &mut dyn io::Write) -> Result<()> {
         fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
     let ctf = CtfReader::load(&ctf_bytes)?;
 
-    let runtime = tokio::TokioRuntime::parse(&ctf, &core)?;
+    let runtime = tokio::TokioRuntime::parse(&ctf, &core).context("failed to parse tokio state")?;
 
-    for active in &runtime.scheduler.shared.active_workers {
-        let state = runtime
-            .workers
-            .values()
-            .find(|state| {
-                let Some(id) = state.thd_ctx.worker_index else {
-                    return false;
-                };
-                id == *active
-            })
-            .unwrap();
-
-        eprintln!("{:#?}", state.thd_ctx);
-        for frame in state.backtrace.stack(32) {
+    for active in runtime.active_workers() {
+        eprintln!("{:#?}", active.thd_ctx);
+        for frame in active.backtrace.stack_trace(32) {
             eprintln!("{frame}");
         }
         eprintln!("");

@@ -1,10 +1,9 @@
-use crate::unwind::Frame;
+use crate::unwind::Backtrace;
 
 use anyhow::{Context as _, Result};
 use durin::TypeId;
 use durin::read::{BytesFromCore, CtfContext, CtfReader, ParseWithCtf, TypeInfo, TypeInfoRef};
 use durin::{Error, TypeKind};
-use petgraph::graphmap::DiGraphMap;
 use proc::Core;
 use regex::Regex;
 use semver::Version;
@@ -53,6 +52,7 @@ impl<'ctf> CtfContext<'ctf> for Context<'ctf> {
 pub struct TokioRuntime {
     pub workers: BTreeMap<u32, WorkerState>,
     pub scheduler: Scheduler,
+    pub now: Instant,
 }
 
 impl TokioRuntime {
@@ -64,11 +64,10 @@ impl TokioRuntime {
         let Some(main_lwp) = lwps.first() else {
             anyhow::bail!("no lwps found in core");
         };
-        let now: Instant = RawInstant {
-            tv_sec: main_lwp.tstamp.tv_sec as u64,
-            tv_nsec: main_lwp.tstamp.tv_nsec as u32,
-        }
-        .into();
+
+        // TODO - This assumes the timestamp is valid for all threads. I think
+        // this is true, but haven't validated.
+        let now: Instant = RawInstant::try_from(main_lwp.tstamp)?.into();
 
         let Some(header_ty) = ctf.find_ty(
             "*const_tokio::runtime::task::core::Header",
@@ -109,20 +108,21 @@ impl TokioRuntime {
 
         let mut scheduler = None;
         for lwp in &lwps {
-            if let Some(addr) = find_thd_context(lwp.tid, &brk_range, &ctx.core)? {
-                let Some(info) = TypeInfo::from_addr(&ctx, ctx_ty, addr)? else {
+            if let Some(addr) = find_thd_context(lwp.tid, &brk_range, &ctx.core)
+                .context("failed to find thread-local context")?
+            {
+                let Some(info) = TypeInfo::from_addr(&ctx, ctx_ty, addr)
+                    .context("failed to get type information")?
+                else {
                     continue;
                 };
 
-                let thd_ctx: ThreadCtx = info.parse(&ctx)?;
+                let thd_ctx: ThreadCtx = info
+                    .parse(&ctx)
+                    .context("failed to parse thread-local context")?;
                 let backtrace = backtraces.get(&lwp.tid).cloned().unwrap_or_default();
-                workers.insert(
-                    lwp.tid,
-                    WorkerState {
-                        thd_ctx,
-                        backtrace: Backtrace { inner: backtrace },
-                    },
-                );
+
+                workers.insert(lwp.tid, WorkerState { thd_ctx, backtrace });
 
                 if scheduler.is_none() {
                     let sched = info
@@ -133,7 +133,8 @@ impl TokioRuntime {
                         .select_variant(&ctx, "MultiThread")?
                         .deref_ptr(&ctx)?
                         .member(&ctx, "data")?
-                        .parse::<Scheduler, _>(&ctx)?;
+                        .parse::<Scheduler, _>(&ctx)
+                        .context("failed to parse scheduler")?;
                     scheduler = Some(sched);
                 }
             }
@@ -142,20 +143,31 @@ impl TokioRuntime {
             anyhow::bail!("failed to find scheduler");
         };
 
-        let mut task_map = DiGraphMap::new();
-        for (addr, task) in scheduler.shared.owned.tasks.iter() {
-            task_map.add_node(*addr);
-            if let Some(waker) = &task.waker
-                && let Some(target) = waker.dependent_task
-            {
-                dbg!("adding edge");
-                task_map.add_edge(*addr, target, 0);
-            }
-        }
-        dbg!(task_map);
-        dbg!(now - scheduler.driver.time.as_ref().unwrap().time_source);
+        Ok(Self {
+            workers,
+            scheduler,
+            now,
+        })
+    }
 
-        Ok(Self { workers, scheduler })
+    pub fn active_workers(&self) -> Vec<&WorkerState> {
+        let len = self.scheduler.shared.active_workers.len();
+        let mut workers = Vec::with_capacity(len);
+
+        for active in &self.scheduler.shared.active_workers {
+            let worker = self
+                .workers
+                .values()
+                .find(|state| {
+                    let Some(id) = state.thd_ctx.worker_index else {
+                        return false;
+                    };
+                    id == *active
+                })
+                .unwrap();
+            workers.push(worker);
+        }
+        workers
     }
 }
 
@@ -163,32 +175,6 @@ impl TokioRuntime {
 pub struct WorkerState {
     pub thd_ctx: ThreadCtx,
     pub backtrace: Backtrace,
-}
-
-#[derive(Clone, PartialEq, Debug)]
-pub struct Backtrace {
-    inner: Vec<Frame>,
-}
-
-impl Backtrace {
-    pub fn stack(&self, max_frames: usize) -> Vec<String> {
-        self.inner
-            .iter()
-            .take(max_frames)
-            .map(|frame| {
-                let mangled = frame
-                    .symbol
-                    .as_ref()
-                    .map(|s| s.name.as_str())
-                    .unwrap_or_default();
-                format!(
-                    "{:#018x} {:#}",
-                    frame.regs.rip,
-                    rustc_demangle::demangle(mangled)
-                )
-            })
-            .collect()
-    }
 }
 
 fn extract_tokio_version(ctf: &CtfReader) -> Result<Version> {
@@ -1145,7 +1131,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
         let spawn_ptr = ctx
             .core
             .read_u64(spawn_ptr_addr)
-            .map_err(|e| Error::null_ptr(Some(e.into())))?;
+            .map_err(|e| Error::null_ptr().with_source(e))?;
 
         // The CTF isn't aware we have a *Location here, so manually find the type and parse.
         let spawn_ty = ctx.ctf.ty(ctx.location_id);
@@ -1295,7 +1281,7 @@ pub struct IoDisabled {
 }
 
 impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoDisabled {
-    fn parse_with_ctf(ctx: &Context, _info: &TypeInfoRef) -> durin::Result<Self> {
+    fn parse_with_ctf(_ctx: &Context, _info: &TypeInfoRef) -> durin::Result<Self> {
         todo!();
     }
 }
@@ -1718,11 +1704,26 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TimeHandle {
 }
 
 /// Must match the layout of `tokio::time::Instant`.
-#[repr(C)]
 #[derive(Clone, PartialEq, Debug)]
 struct RawInstant {
     pub tv_sec: u64,
     pub tv_nsec: u32,
+}
+
+impl TryFrom<proc::Timespec> for RawInstant {
+    type Error = anyhow::Error;
+
+    fn try_from(value: proc::Timespec) -> std::result::Result<Self, Self::Error> {
+        const NSEC_PER_SEC: i64 = 1_000_000_000;
+        if value.tv_nsec >= 0 && value.tv_nsec < NSEC_PER_SEC {
+            anyhow::bail!("invalid process timestamp {value:?}");
+        }
+
+        Ok(Self {
+            tv_sec: value.tv_sec as u64,
+            tv_nsec: value.tv_nsec as u32,
+        })
+    }
 }
 
 impl From<RawInstant> for Instant {
@@ -1730,7 +1731,7 @@ impl From<RawInstant> for Instant {
         assert_eq!(size_of::<RawInstant>(), size_of::<Instant>());
 
         // SAFETY: RawInstant has the same layout as the underlying `Timespec`
-        // used by `tokio::time::Instant`.
+        // used by `tokio::time::Instant`, we hope.
         unsafe { mem::transmute(value) }
     }
 }
@@ -1770,7 +1771,19 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Clock {
 
 #[derive(Clone, PartialEq)]
 pub struct Wheel {
+    /// The number of milliseconds elapsed since the wheel started.
     pub elapsed: u64,
+
+    /// Timer wheel.
+    ///
+    /// Levels:
+    ///
+    /// * 1 ms slots / 64 ms range
+    /// * 64 ms slots / ~ 4 sec range
+    /// * ~ 4 sec slots / ~ 4 min range
+    /// * ~ 4 min slots / ~ 4 hr range
+    /// * ~ 4 hr slots / ~ 12 day range
+    /// * ~ 12 day slots / ~ 2 yr range
     pub levels: Vec<Level>,
     pub pending: Vec<TimerShared>,
 }
@@ -1830,12 +1843,17 @@ impl Wheel {
 
         None
     }
+
+    pub fn elapsed_dur(&self) -> Duration {
+        Duration::from_millis(self.elapsed)
+    }
 }
 
 impl fmt::Debug for Wheel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Wheel")
             .field("elapsed", &self.elapsed)
+            .field("elapsed_dur", &self.elapsed_dur())
             .field("levels", &self.levels)
             .field("pending", &self.pending)
             .field("next_expiration", &self.next_expiration())
