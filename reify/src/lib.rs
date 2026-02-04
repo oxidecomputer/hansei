@@ -5,8 +5,8 @@ use proc::Proc;
 use std::fmt;
 use std::str;
 
-//#[cfg(not(target_os = "illumos"))]
-//compile_error!("this crate only supports illumos");
+#[cfg(not(target_os = "illumos"))]
+compile_error!("this crate only supports illumos");
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -754,6 +754,7 @@ pub trait ParseCtx<'ctf> {
     fn proc(&self) -> &'ctf Proc;
 }
 
+// TODO remove this and change semantics to remote Option
 pub trait BytesFromProc {
     /// Read the size of the provided type at address.
     /// The reader may return None if the address is unmapped.

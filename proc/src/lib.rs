@@ -1,5 +1,11 @@
 use libproc_sys::{
-    GElf_Sym, MAXPATHLEN, Plookup_by_addr, gregset_t, lwpstatus_t, prmap_t, ps_prochandle, stack_t,
+    BIND_GLOBAL, BIND_LOCAL, GElf_Sym, MA_ANON, MA_BREAK, MA_EXEC, MA_READ, MA_SHARED, MA_WRITE,
+    MAXPATHLEN, PGRAB_RDONLY, PR_SYMTAB, Paddr_to_map, Pexecname, Pfree, Pgrab, Pgrab_core,
+    Pgrab_error, Plookup_by_addr, Plwp_getregs, Plwp_iter, Plwp_main_stack, Pmapping_iter_resolved,
+    Pread, Pstatus, Psymbol_iter, REG_CS, REG_DS, REG_ERR, REG_ES, REG_FS, REG_FSBASE, REG_GS,
+    REG_GSBASE, REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15, REG_RAX,
+    REG_RBP, REG_RBX, REG_RCX, REG_RDI, REG_RDX, REG_RFL, REG_RIP, REG_RSI, REG_RSP, REG_SS,
+    REG_TRAPNO, TYPE_FUNC, gregset_t, lwpstatus_t, pid_t, prmap_t, ps_prochandle, stack_t,
 };
 
 use std::ffi::{CStr, CString, FromBytesUntilNulError, NulError, OsStr, c_char, c_int, c_void};
@@ -11,8 +17,12 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{self, NonNull};
 
+#[cfg(not(target_os = "illumos"))]
+compile_error!("this crate only supports illumos");
+
 type Result<T> = std::result::Result<T, Error>;
 
+// TODO add error kind and so forth
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("could not convert path to C string")]
@@ -266,34 +276,34 @@ impl fmt::Debug for Regs {
 impl From<gregset_t> for Regs {
     fn from(regs: gregset_t) -> Self {
         Regs {
-            r15: regs[libproc_sys::REG_R15 as usize] as u64,
-            r14: regs[libproc_sys::REG_R14 as usize] as u64,
-            r13: regs[libproc_sys::REG_R13 as usize] as u64,
-            r12: regs[libproc_sys::REG_R12 as usize] as u64,
-            r11: regs[libproc_sys::REG_R11 as usize] as u64,
-            r10: regs[libproc_sys::REG_R10 as usize] as u64,
-            r9: regs[libproc_sys::REG_R9 as usize] as u64,
-            r8: regs[libproc_sys::REG_R8 as usize] as u64,
-            rdi: regs[libproc_sys::REG_RDI as usize] as u64,
-            rsi: regs[libproc_sys::REG_RSI as usize] as u64,
-            rbp: regs[libproc_sys::REG_RBP as usize] as u64,
-            rbx: regs[libproc_sys::REG_RBX as usize] as u64,
-            rdx: regs[libproc_sys::REG_RDX as usize] as u64,
-            rcx: regs[libproc_sys::REG_RCX as usize] as u64,
-            rax: regs[libproc_sys::REG_RAX as usize] as u64,
-            trapno: regs[libproc_sys::REG_TRAPNO as usize] as u64,
-            err: regs[libproc_sys::REG_ERR as usize] as u64,
-            rip: regs[libproc_sys::REG_RIP as usize] as u64,
-            cs: regs[libproc_sys::REG_CS as usize] as u64,
-            rfl: regs[libproc_sys::REG_RFL as usize] as u64,
-            rsp: regs[libproc_sys::REG_RSP as usize] as u64,
-            ss: regs[libproc_sys::REG_SS as usize] as u64,
-            fs: regs[libproc_sys::REG_FS as usize] as u64,
-            gs: regs[libproc_sys::REG_GS as usize] as u64,
-            es: regs[libproc_sys::REG_ES as usize] as u64,
-            ds: regs[libproc_sys::REG_DS as usize] as u64,
-            fsbase: regs[libproc_sys::REG_FSBASE as usize] as u64,
-            gsbase: regs[libproc_sys::REG_GSBASE as usize] as u64,
+            r15: regs[REG_R15 as usize] as u64,
+            r14: regs[REG_R14 as usize] as u64,
+            r13: regs[REG_R13 as usize] as u64,
+            r12: regs[REG_R12 as usize] as u64,
+            r11: regs[REG_R11 as usize] as u64,
+            r10: regs[REG_R10 as usize] as u64,
+            r9: regs[REG_R9 as usize] as u64,
+            r8: regs[REG_R8 as usize] as u64,
+            rdi: regs[REG_RDI as usize] as u64,
+            rsi: regs[REG_RSI as usize] as u64,
+            rbp: regs[REG_RBP as usize] as u64,
+            rbx: regs[REG_RBX as usize] as u64,
+            rdx: regs[REG_RDX as usize] as u64,
+            rcx: regs[REG_RCX as usize] as u64,
+            rax: regs[REG_RAX as usize] as u64,
+            trapno: regs[REG_TRAPNO as usize] as u64,
+            err: regs[REG_ERR as usize] as u64,
+            rip: regs[REG_RIP as usize] as u64,
+            cs: regs[REG_CS as usize] as u64,
+            rfl: regs[REG_RFL as usize] as u64,
+            rsp: regs[REG_RSP as usize] as u64,
+            ss: regs[REG_SS as usize] as u64,
+            fs: regs[REG_FS as usize] as u64,
+            gs: regs[REG_GS as usize] as u64,
+            es: regs[REG_ES as usize] as u64,
+            ds: regs[REG_DS as usize] as u64,
+            fsbase: regs[REG_FSBASE as usize] as u64,
+            gsbase: regs[REG_GSBASE as usize] as u64,
         }
     }
 }
@@ -303,9 +313,9 @@ impl Proc {
         let mut perr: c_int = 0;
 
         // Empty flags means we will stop the target process.
-        let handle = unsafe { libproc_sys::Pgrab(pid as libproc_sys::pid_t, 0, &mut perr) };
+        let handle = unsafe { Pgrab(pid as pid_t, 0, &mut perr) };
         let Some(handle) = NonNull::new(handle) else {
-            let err_msg = unsafe { libproc_sys::Pgrab_error(perr) };
+            let err_msg = unsafe { Pgrab_error(perr) };
 
             // SAFETY: The implementation of Pgrab_error returns a static string.
             let c_msg = unsafe { CStr::from_ptr(err_msg) };
@@ -321,12 +331,11 @@ impl Proc {
     pub fn open_core(core_path: &Path) -> Result<Self> {
         let c_core_path = CString::new(core_path.as_os_str().as_bytes())?;
         let mut perr: c_int = 0;
-        let flags = 0 | libproc_sys::PGRAB_RDONLY as c_int;
+        let flags = 0 | PGRAB_RDONLY as c_int;
 
-        let handle =
-            unsafe { libproc_sys::Pgrab_core(c_core_path.as_ptr(), ptr::null(), flags, &mut perr) };
+        let handle = unsafe { Pgrab_core(c_core_path.as_ptr(), ptr::null(), flags, &mut perr) };
         let Some(handle) = NonNull::new(handle) else {
-            let err_msg = unsafe { libproc_sys::Pgrab_error(perr) };
+            let err_msg = unsafe { Pgrab_error(perr) };
 
             // SAFETY: The implementation of Pgrab_error returns a static string.
             let c_msg = unsafe { CStr::from_ptr(err_msg) };
@@ -340,7 +349,7 @@ impl Proc {
     }
 
     pub fn status(&self) -> Status {
-        let status = unsafe { libproc_sys::Pstatus(self.handle.as_ptr()) };
+        let status = unsafe { Pstatus(self.handle.as_ptr()) };
 
         let status = match unsafe { status.as_ref() } {
             Some(s) => s,
@@ -366,7 +375,7 @@ impl Proc {
         let mut buf = vec![0u8; MAXPATHLEN as usize];
 
         let ret = unsafe {
-            libproc_sys::Pexecname(
+            Pexecname(
                 self.handle.as_ptr(),
                 buf.as_mut_ptr() as *mut c_char,
                 buf.len(),
@@ -400,11 +409,8 @@ impl Proc {
                     };
 
                     let mut stack = MaybeUninit::<stack_t>::uninit();
-                    let ret = libproc_sys::Plwp_main_stack(
-                        cb_data.handle,
-                        status.pr_lwpid as u32,
-                        stack.as_mut_ptr(),
-                    );
+                    let ret =
+                        Plwp_main_stack(cb_data.handle, status.pr_lwpid as u32, stack.as_mut_ptr());
                     if ret != 0 {
                         // skip
                         return 0;
@@ -435,7 +441,7 @@ impl Proc {
             data: Vec::new(),
         };
         let ret = unsafe {
-            libproc_sys::Plwp_iter(
+            Plwp_iter(
                 self.handle.as_ptr(),
                 Some(callback::lwp_callback),
                 &mut cb_data as *mut _ as *mut c_void,
@@ -450,7 +456,7 @@ impl Proc {
 
     pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
         let ct = unsafe {
-            libproc_sys::Pread(
+            Pread(
                 self.handle.as_ptr(),
                 buf.as_mut_ptr() as *mut c_void,
                 buf.len(),
@@ -498,8 +504,7 @@ impl Proc {
 
     pub fn regs(&self, lwp: u32) -> Result<Regs> {
         let mut regs: gregset_t = [0; 28];
-        let ret =
-            unsafe { libproc_sys::Plwp_getregs(self.handle.as_ptr(), lwp, regs.as_mut_ptr()) };
+        let ret = unsafe { Plwp_getregs(self.handle.as_ptr(), lwp, regs.as_mut_ptr()) };
         if ret == 0 {
             Ok(Regs::from(regs))
         } else {
@@ -567,7 +572,7 @@ impl Proc {
 
         let mut objs = Vec::new();
         let ret = unsafe {
-            libproc_sys::Pmapping_iter_resolved(
+            Pmapping_iter_resolved(
                 self.handle.as_ptr(),
                 Some(callback::object_callback),
                 &mut objs as *mut _ as *mut c_void,
@@ -582,8 +587,7 @@ impl Proc {
     }
 
     pub fn lookup_map(&self, address: u64) -> Option<LoadedObject> {
-        let prmap_ptr =
-            unsafe { libproc_sys::Paddr_to_map(self.handle.as_ptr(), address as usize) };
+        let prmap_ptr = unsafe { Paddr_to_map(self.handle.as_ptr(), address as usize) };
 
         if prmap_ptr.is_null() {
             return None;
@@ -636,14 +640,14 @@ impl Proc {
         }
         // Search for symbols in the executable only.
         const PR_OBJ_EXEC: *const c_char = ptr::null();
-        let fmask = libproc_sys::TYPE_FUNC | libproc_sys::BIND_GLOBAL | libproc_sys::BIND_LOCAL;
+        let fmask = TYPE_FUNC | BIND_GLOBAL | BIND_LOCAL;
 
         let mut symbols = Vec::new();
         let ret = unsafe {
-            libproc_sys::Psymbol_iter(
+            Psymbol_iter(
                 self.handle.as_ptr(),
                 PR_OBJ_EXEC,
-                libproc_sys::PR_SYMTAB as i32,
+                PR_SYMTAB as i32,
                 fmask as i32,
                 Some(callback::symbol_callback),
                 &mut symbols as *mut _ as *mut c_void,
@@ -830,27 +834,27 @@ pub struct MapFlags(pub u32);
 
 impl MapFlags {
     pub fn is_read(&self) -> bool {
-        self.0 & libproc_sys::MA_READ > 0
+        self.0 & MA_READ > 0
     }
 
     pub fn is_write(&self) -> bool {
-        self.0 & libproc_sys::MA_WRITE > 0
+        self.0 & MA_WRITE > 0
     }
 
     pub fn is_exec(&self) -> bool {
-        self.0 & libproc_sys::MA_EXEC > 0
+        self.0 & MA_EXEC > 0
     }
 
     pub fn is_shared(&self) -> bool {
-        self.0 & libproc_sys::MA_SHARED > 0
+        self.0 & MA_SHARED > 0
     }
 
     pub fn is_anon(&self) -> bool {
-        self.0 & libproc_sys::MA_ANON > 0
+        self.0 & MA_ANON > 0
     }
 
     pub fn is_break(&self) -> bool {
-        self.0 & libproc_sys::MA_BREAK > 0
+        self.0 & MA_BREAK > 0
     }
 }
 
@@ -944,7 +948,7 @@ pub struct SymbolBuf {
 impl Drop for Proc {
     fn drop(&mut self) {
         // TODO Prelease instead?
-        unsafe { libproc_sys::Pfree(self.handle.as_mut()) };
+        unsafe { Pfree(self.handle.as_mut()) };
     }
 }
 

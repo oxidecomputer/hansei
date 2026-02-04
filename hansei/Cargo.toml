@@ -9,6 +9,7 @@ clap = { workspace = true }
 durin = { workspace = true }
 gimli = { workspace = true }
 goblin = { workspace = true }
+humantime = { workspace = true }
 proc = { workspace = true }
 regex = { workspace = true }
 reify = { workspace = true }
