@@ -13,7 +13,7 @@ pub mod unwind;
 #[derive(clap::Parser)]
 struct Cli {
     #[command(flatten)]
-    source: SourceType,
+    source: Source,
 
     /// The CTF file to read.
     #[clap(long, short)]
@@ -49,12 +49,10 @@ fn main() {
 }
 
 fn exec(args: Cli, out: &mut dyn io::Write) -> Result<()> {
-    let proc = match &args.source {
-        Some(Source::Pid(pid)) => {
-            Proc::open_pid(*pid).with_context(|| "failed to open pid {pid}")?
-        }
-        Some(Source::Core(core)) => {
-            Proc::open_core(&core).with_context(|| format!("failed to open {}", core.display()))?
+    let proc = match (args.source.pid, args.source.core) {
+        (Some(pid), None) => Proc::open_pid(pid).with_context(|| "failed to open pid {pid}")?,
+        (None, Some(ref core)) => {
+            Proc::open_core(core).with_context(|| format!("failed to open {}", core.display()))?
         }
         _ => unreachable!(),
     };
