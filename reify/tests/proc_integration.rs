@@ -12,7 +12,7 @@ use std::process::{Child, Command, Stdio};
 
 use durin::read::CtfReader;
 use proc::Proc;
-use reify::{ParseCtx, ParseWithCtf};
+use reify::ParseCtx;
 use tempfile::TempDir;
 
 const TEST_PROGRAM: &str = r#"
@@ -21,13 +21,13 @@ pub struct Point {
     pub y: i32,
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static GLOBAL_POINT: Point = Point { x: 42, y: 100 };
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static GLOBAL_U64: u64 = 0xDEADBEEF_CAFEBABE;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static GLOBAL_ARRAY: [i32; 4] = [1, 2, 3, 4];
 
 fn main() {
@@ -125,15 +125,6 @@ impl<'a> ParseCtx<'a> for TestContext<'a> {
     }
 }
 
-/// Find a symbol's address in the process.
-fn find_symbol_addr(proc: &Proc, name: &str) -> Option<u64> {
-    let symbols = proc.symbols().ok()?;
-    symbols
-        .iter()
-        .find(|s| s.name() == name)
-        .map(|s| s.value())
-}
-
 #[test]
 fn read_global_point() {
     let tmpdir = setup_test_binary();
@@ -151,11 +142,16 @@ fn read_global_point() {
     let ctf = CtfReader::load(&ctf_bytes).expect("failed to load CTF");
     let proc = Proc::open_pid(pid as i32).expect("failed to open process");
 
-    let ctx = TestContext { ctf: &ctf, proc: &proc };
+    let ctx = TestContext {
+        ctf: &ctf,
+        proc: &proc,
+    };
 
     // Find the GLOBAL_POINT symbol
-    let addr = find_symbol_addr(&proc, "GLOBAL_POINT")
-        .expect("GLOBAL_POINT symbol not found");
+    let addr = proc
+        .lookup_symbol_by_name("GLOBAL_POINT")
+        .expect("GLOBAL_POINT symbol not found")
+        .st_value;
 
     // Find the Point type in CTF
     let point_ty = ctf
@@ -168,8 +164,16 @@ fn read_global_point() {
         .expect("address unmapped");
 
     // Extract x and y values
-    let x: i32 = info.member(&ctx, "x").expect("x member").parse(&ctx).expect("parse x");
-    let y: i32 = info.member(&ctx, "y").expect("y member").parse(&ctx).expect("parse y");
+    let x: i32 = info
+        .member(&ctx, "x")
+        .expect("x member")
+        .parse(&ctx)
+        .expect("parse x");
+    let y: i32 = info
+        .member(&ctx, "y")
+        .expect("y member")
+        .parse(&ctx)
+        .expect("parse y");
 
     assert_eq!(x, 42, "x value mismatch");
     assert_eq!(y, 100, "y value mismatch");
@@ -193,10 +197,15 @@ fn read_global_u64() {
     let ctf = CtfReader::load(&ctf_bytes).expect("failed to load CTF");
     let proc = Proc::open_pid(pid as i32).expect("failed to open process");
 
-    let ctx = TestContext { ctf: &ctf, proc: &proc };
+    let ctx = TestContext {
+        ctf: &ctf,
+        proc: &proc,
+    };
 
-    let addr = find_symbol_addr(&proc, "GLOBAL_U64")
-        .expect("GLOBAL_U64 symbol not found");
+    let addr = proc
+        .lookup_symbol_by_name("GLOBAL_U64")
+        .expect("GLOBAL_U64 symbol not found")
+        .st_value;
 
     let u64_ty = ctf
         .find_ty("u64", durin::TypeKind::Integer)
@@ -227,10 +236,15 @@ fn read_global_array() {
     let ctf = CtfReader::load(&ctf_bytes).expect("failed to load CTF");
     let proc = Proc::open_pid(pid as i32).expect("failed to open process");
 
-    let ctx = TestContext { ctf: &ctf, proc: &proc };
+    let ctx = TestContext {
+        ctf: &ctf,
+        proc: &proc,
+    };
 
-    let addr = find_symbol_addr(&proc, "GLOBAL_ARRAY")
-        .expect("GLOBAL_ARRAY symbol not found");
+    let addr = proc
+        .lookup_symbol_by_name("GLOBAL_ARRAY")
+        .expect("GLOBAL_ARRAY symbol not found")
+        .st_value;
 
     let array_ty = ctf
         .types()
