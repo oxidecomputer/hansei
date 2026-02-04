@@ -202,7 +202,7 @@ fn format_field_value(value: u64, addrs: &AddrRanges, core: &Proc, show_decimal:
     // Look up symbol for text/data addresses
     let sym = match map_ty {
         Some(MappingType::ExecText) | Some(MappingType::ExecData) | Some(MappingType::LibcText) => {
-            core.lookup_symbol(value).map(|s| s.name.clone())
+            core.lookup_symbol_by_addr(value).map(|s| s.name.clone())
         }
         _ => None,
     };
@@ -516,14 +516,14 @@ impl Frame {
 
             match map_ty {
                 Some(MappingType::ExecText) => {
-                    if let Some(sym) = core.lookup_symbol(current_ptr) {
+                    if let Some(sym) = core.lookup_symbol_by_addr(current_ptr) {
                         write!(out, " {}", sym.name)?;
                     }
                     // Don't deref into .text
                     continue;
                 }
                 Some(MappingType::ExecData) => {
-                    if let Some(sym) = core.lookup_symbol(current_ptr) {
+                    if let Some(sym) = core.lookup_symbol_by_addr(current_ptr) {
                         print!(" {}", sym.name);
                     }
                 }
@@ -547,13 +547,13 @@ impl Frame {
 
                 match map_ty {
                     Some(MappingType::ExecText) | Some(MappingType::LibcText) => {
-                        if let Some(sym) = core.lookup_symbol(current_ptr) {
+                        if let Some(sym) = core.lookup_symbol_by_addr(current_ptr) {
                             write!(out, " {}", sym.name)?;
                         }
                         break;
                     }
                     Some(MappingType::ExecData) => {
-                        if let Some(sym) = core.lookup_symbol(current_ptr) {
+                        if let Some(sym) = core.lookup_symbol_by_addr(current_ptr) {
                             write!(out, " {}", sym.name)?;
                         }
                     }
@@ -712,14 +712,14 @@ fn print_stuff(
 
     match map_ty {
         Some(MappingType::ExecText) => {
-            if let Some(sym) = core.lookup_symbol(current_ptr) {
+            if let Some(sym) = core.lookup_symbol_by_addr(current_ptr) {
                 write!(out, " {}", sym.name)?;
             }
             // Don't deref into .text
             return Ok(());
         }
         Some(MappingType::ExecData) => {
-            if let Some(sym) = core.lookup_symbol(current_ptr) {
+            if let Some(sym) = core.lookup_symbol_by_addr(current_ptr) {
                 print!(" {}", sym.name);
             }
         }
@@ -749,13 +749,13 @@ fn print_stuff(
 
         match map_ty {
             Some(MappingType::ExecText) | Some(MappingType::LibcText) => {
-                if let Some(sym) = core.lookup_symbol(current_ptr) {
+                if let Some(sym) = core.lookup_symbol_by_addr(current_ptr) {
                     write!(out, " {}", sym.name)?;
                 }
                 break;
             }
             Some(MappingType::ExecData) => {
-                if let Some(sym) = core.lookup_symbol(current_ptr) {
+                if let Some(sym) = core.lookup_symbol_by_addr(current_ptr) {
                     write!(out, " {}", sym.name)?;
                 }
             }
@@ -813,7 +813,7 @@ impl<'a> Unwinder<'a> {
         let initial_frame = Frame {
             pc: regs.rip,
             regs: regs.clone(),
-            symbol: self.core.lookup_symbol(regs.rip),
+            symbol: self.core.lookup_symbol_by_addr(regs.rip),
             modified_regs: Vec::new(),
             has_cfi: false,
         };
@@ -922,8 +922,8 @@ impl<'a> Unwinder<'a> {
 
                 let prev_symbol = self
                     .core
-                    .lookup_symbol(prev_regs.rip)
-                    .or_else(|| self.core.lookup_symbol(prev_regs.rip - 1));
+                    .lookup_symbol_by_addr(prev_regs.rip)
+                    .or_else(|| self.core.lookup_symbol_by_addr(prev_regs.rip - 1));
                 return Ok(Some(Frame {
                     pc: prev_regs.rip,
                     regs: prev_regs,
@@ -960,8 +960,8 @@ impl<'a> Unwinder<'a> {
 
         let prev_symbol = self
             .core
-            .lookup_symbol(prev_regs.rip)
-            .or_else(|| self.core.lookup_symbol(prev_regs.rip - 1));
+            .lookup_symbol_by_addr(prev_regs.rip)
+            .or_else(|| self.core.lookup_symbol_by_addr(prev_regs.rip - 1));
         let prev_frame = Frame {
             pc: prev_pc,
             regs: prev_regs,

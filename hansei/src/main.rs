@@ -25,7 +25,7 @@ struct Cli {
 struct Source {
     /// The pid of the process to inspect.
     #[arg(long)]
-    pid: Option<u32>,
+    pid: Option<i32>,
 
     /// The core dump to open.
     #[arg(long)]

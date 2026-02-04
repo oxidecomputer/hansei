@@ -101,7 +101,7 @@ impl<'a> Unwinder<'a> {
         let initial_frame = Frame {
             pc: regs.rip,
             regs: regs.clone(),
-            symbol: self.core.lookup_symbol(regs.rip),
+            symbol: self.core.lookup_symbol_by_addr(regs.rip),
         };
         frames.push(initial_frame);
 
@@ -214,8 +214,8 @@ impl<'a> Unwinder<'a> {
 
                 let prev_symbol = self
                     .core
-                    .lookup_symbol(prev_regs.rip)
-                    .or_else(|| self.core.lookup_symbol(prev_regs.rip - 1));
+                    .lookup_symbol_by_addr(prev_regs.rip)
+                    .or_else(|| self.core.lookup_symbol_by_addr(prev_regs.rip - 1));
                 return Ok(Some(Frame {
                     pc: prev_regs.rip,
                     regs: prev_regs,
@@ -250,8 +250,8 @@ impl<'a> Unwinder<'a> {
 
         let prev_symbol = self
             .core
-            .lookup_symbol(prev_regs.rip)
-            .or_else(|| self.core.lookup_symbol(prev_regs.rip - 1));
+            .lookup_symbol_by_addr(prev_regs.rip)
+            .or_else(|| self.core.lookup_symbol_by_addr(prev_regs.rip - 1));
         let prev_frame = Frame {
             pc: prev_pc,
             regs: prev_regs,

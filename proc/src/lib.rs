@@ -1,11 +1,12 @@
 use libproc_sys::{
     BIND_GLOBAL, BIND_LOCAL, GElf_Sym, MA_ANON, MA_BREAK, MA_EXEC, MA_READ, MA_SHARED, MA_WRITE,
     MAXPATHLEN, PGRAB_RDONLY, PR_SYMTAB, Paddr_to_map, Pexecname, Pfree, Pgrab, Pgrab_core,
-    Pgrab_error, Plookup_by_addr, Plwp_getregs, Plwp_iter, Plwp_main_stack, Pmapping_iter_resolved,
-    Pread, Pstatus, Psymbol_iter, REG_CS, REG_DS, REG_ERR, REG_ES, REG_FS, REG_FSBASE, REG_GS,
-    REG_GSBASE, REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15, REG_RAX,
-    REG_RBP, REG_RBX, REG_RCX, REG_RDI, REG_RDX, REG_RFL, REG_RIP, REG_RSI, REG_RSP, REG_SS,
-    REG_TRAPNO, TYPE_FUNC, gregset_t, lwpstatus_t, pid_t, prmap_t, ps_prochandle, stack_t,
+    Pgrab_error, Plookup_by_addr, Plookup_by_name, Plwp_getregs, Plwp_iter, Plwp_main_stack,
+    Pmapping_iter_resolved, Pread, Pstatus, Psymbol_iter, REG_CS, REG_DS, REG_ERR, REG_ES, REG_FS,
+    REG_FSBASE, REG_GS, REG_GSBASE, REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14,
+    REG_R15, REG_RAX, REG_RBP, REG_RBX, REG_RCX, REG_RDI, REG_RDX, REG_RFL, REG_RIP, REG_RSI,
+    REG_RSP, REG_SS, REG_TRAPNO, TYPE_FUNC, gregset_t, lwpstatus_t, pid_t, prmap_t, ps_prochandle,
+    stack_t,
 };
 
 use std::ffi::{CStr, CString, FromBytesUntilNulError, NulError, OsStr, c_char, c_int, c_void};
@@ -309,7 +310,7 @@ impl From<gregset_t> for Regs {
 }
 
 impl Proc {
-    pub fn open_pid(pid: u32) -> Result<Self> {
+    pub fn open_pid(pid: i32) -> Result<Self> {
         let mut perr: c_int = 0;
 
         // Empty flags means we will stop the target process.
@@ -661,7 +662,7 @@ impl Proc {
         }
     }
 
-    pub fn lookup_symbol(&self, address: u64) -> Option<SymbolBuf> {
+    pub fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {
         let mut buf = vec![0u8; 4096];
         let mut sym = MaybeUninit::<GElf_Sym>::uninit();
 
@@ -696,8 +697,42 @@ impl Proc {
         })
     }
 
-    pub fn lookup_symbol_name(&self, address: u64) -> Option<String> {
-        let sym = self.lookup_symbol(address)?;
+    pub fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
+        const PR_OBJ_EXEC: *const c_char = ptr::null();
+
+        let Ok(c_name) = CString::new(name) else {
+            return None;
+        };
+
+        let mut sym = MaybeUninit::<GElf_Sym>::uninit();
+
+        let ret = unsafe {
+            Plookup_by_name(
+                self.handle.as_ptr(),
+                PR_OBJ_EXEC,
+                c_name.as_ptr(),
+                sym.as_mut_ptr(),
+            )
+        };
+        if ret != 0 {
+            return None;
+        }
+
+        let sym = unsafe { sym.assume_init() };
+
+        Some(SymbolBuf {
+            name: name.to_string(),
+            st_name: sym.st_name as usize,
+            st_info: sym.st_info,
+            st_other: sym.st_other,
+            st_shndx: sym.st_shndx as usize,
+            st_value: sym.st_value,
+            st_size: sym.st_size,
+        })
+    }
+
+    pub fn lookup_symbol_name_by_addr(&self, address: u64) -> Option<String> {
+        let sym = self.lookup_symbol_by_addr(address)?;
 
         Some(sym.name)
     }
