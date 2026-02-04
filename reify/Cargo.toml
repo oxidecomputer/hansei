@@ -7,3 +7,6 @@ edition = "2024"
 durin = { workspace = true }
 proc = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
