@@ -39,6 +39,7 @@ impl<'ctf> Context<'ctf> {
         *symbols.entry(addr).or_insert_with(|| {
             let sym = self.proc.lookup_symbol_by_addr(addr).unwrap();
             let s = format!("{:#}", rustc_demangle::demangle(&sym.name));
+
             // Leak the String so we can treat it as a &'static str.
             Box::leak(s.into_boxed_str())
         })
