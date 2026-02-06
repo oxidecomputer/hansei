@@ -112,7 +112,7 @@ fn exec(args: Args, out: &mut dyn io::Write) -> Result<()> {
     for (i, frame) in frames.iter().enumerate() {
         frame.print_regs(out, i, &addrs, &core)?;
 
-        let Some(mapping) = core.lookup_map(frame.pc) else {
+        let Some(mapping) = core.addr_to_map(frame.pc) else {
             continue;
         };
 
@@ -825,12 +825,12 @@ impl<'a> Unwinder<'a> {
                 break;
             }
 
-            let mapping = match self.core.lookup_map(pc) {
+            let mapping = match self.core.addr_to_map(pc) {
                 Some(l) => l,
                 None => {
                     pc -= size_of::<u64>() as u64;
                     self.core
-                        .lookup_map(pc)
+                        .addr_to_map(pc)
                         .with_context(|| format!("no mapping found for PC {pc:#x}"))?
                 }
             };
