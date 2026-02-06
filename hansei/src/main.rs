@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result};
 use clap::{ArgAction, Args, Parser, Subcommand};
 use durin::read::CtfReader;
+use jiff::{Unit, Zoned};
 use proc::Proc;
 
 use std::collections::HashMap;
@@ -189,12 +190,24 @@ fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
         let runtime = tokio::TokioRuntime::parse(&ctf, &proc, &mut symbols, false)
             .context("failed to parse tokio state")?;
         let active = runtime.active_workers();
+        let now = Zoned::now().round(Unit::Second)?;
         writeln!(
             out,
-            "{} active workers\n{} tasks",
+            "\n{now}\n{} active workers\n{} total workers\n{} tasks",
             active.len(),
+            runtime.scheduler.shared.idle.num_workers,
             runtime.scheduler.shared.owned.count
         )?;
+        if let Some((i, _)) = runtime
+            .scheduler
+            .shared
+            .remotes
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.unpark.is_parked_driving_io())
+        {
+            writeln!(out, "worker {i} is the io_driver")?;
+        }
         for worker in active {
             writeln!(
                 out,
