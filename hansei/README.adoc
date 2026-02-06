@@ -1,5 +1,17 @@
 = Hansei
 
-> https://en.wikipedia.org/wiki/Hansei[Hansei] (反省; "self-reflection") is a central idea in Japanese culture, meaning to acknowledge one's own mistake and to pledge improvement.
+> https://en.wikipedia.org/wiki/Hansei[Hansei] (反省; "self-reflection") is a central idea in Japanese culture, meaning
+to acknowledge one's own mistake and to pledge improvement.
 
-A tool to inspect where we have erred with `tokio`.
+A tool to inspect where we have erred with `tokio`. Currently a proof-of-concept, expect bugs.
+
+== Usage
+
+There are two subcommands:
+
+* `dump` will output the state of the `tokio` runtime scheduler and thread-local contexts from either a core dump or
+a live process.
+* `poll` will attach to the process, periodically pausing it at a fixed interval to read the tokio state, printing a
+brief summary.
+
+WARNING: DO NOT USE RUN THIS AGAINST A PROCESS YOU CARE ABOUT.
