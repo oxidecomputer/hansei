@@ -25,6 +25,7 @@ flate2 = "1.1.5"
 gimli = { version = "0.32", features = ["fallible-iterator"] }
 goblin = "0.10.3"
 humantime = "2.3"
+jiff = "0.2"
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
 memmap2 = "0.9.9"
 petgraph = "0.7"
