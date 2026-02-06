@@ -1,0 +1,7 @@
+= dwarf2ctf
+
+A tool for converting Rust DWARF debug information to illumos CTF. A given CTF file have up to ~32k types, and a large
+Rust binary may contain many more types than this, so `dwarf2ctf` allows you to select the types you need to generate
+CTF for. Any types referred to by the items passed will be recursively added.
+
+This also supports creating a copy of the source binary with CTF embedded. 
