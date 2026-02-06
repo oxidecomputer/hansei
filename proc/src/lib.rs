@@ -1,12 +1,12 @@
 use libproc_sys::{
     BIND_GLOBAL, BIND_LOCAL, GElf_Sym, MA_ANON, MA_BREAK, MA_EXEC, MA_READ, MA_SHARED, MA_WRITE,
-    MAXPATHLEN, PGRAB_RDONLY, PR_SYMTAB, Paddr_to_map, Pexecname, Pfree, Pgrab, Pgrab_core,
-    Pgrab_error, Plookup_by_addr, Plookup_by_name, Plwp_getregs, Plwp_iter, Plwp_main_stack,
-    Pmapping_iter_resolved, Pread, Pstatus, Psymbol_iter, REG_CS, REG_DS, REG_ERR, REG_ES, REG_FS,
-    REG_FSBASE, REG_GS, REG_GSBASE, REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14,
-    REG_R15, REG_RAX, REG_RBP, REG_RBX, REG_RCX, REG_RDI, REG_RDX, REG_RFL, REG_RIP, REG_RSI,
-    REG_RSP, REG_SS, REG_TRAPNO, TYPE_FUNC, gregset_t, lwpstatus_t, pid_t, prmap_t, ps_prochandle,
-    stack_t,
+    MAXPATHLEN, PGRAB_NOSTOP, PGRAB_RDONLY, PGRAB_RETAIN, PR_SYMTAB, PRELEASE_CLEAR, Paddr_to_map,
+    Pexecname, Pgrab, Pgrab_core, Pgrab_error, Plookup_by_addr, Plookup_by_name, Plwp_getregs,
+    Plwp_iter, Plwp_main_stack, Pmapping_iter_resolved, Pread, Prelease, Psetrun, Pstatus, Pstop,
+    Psymbol_iter, REG_CS, REG_DS, REG_ERR, REG_ES, REG_FS, REG_FSBASE, REG_GS, REG_GSBASE, REG_R8,
+    REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15, REG_RAX, REG_RBP, REG_RBX,
+    REG_RCX, REG_RDI, REG_RDX, REG_RFL, REG_RIP, REG_RSI, REG_RSP, REG_SS, REG_TRAPNO, TYPE_FUNC,
+    gregset_t, lwpstatus_t, pid_t, prmap_t, ps_prochandle, stack_t,
 };
 
 use std::ffi::{CStr, CString, FromBytesUntilNulError, NulError, OsStr, c_char, c_int, c_void};
@@ -23,9 +23,14 @@ compile_error!("this crate only supports illumos");
 
 type Result<T> = std::result::Result<T, Error>;
 
-// TODO add error kind and so forth
+#[derive(Debug)]
+pub struct Error {
+    kind: ErrorKind,
+    backtrace: std::backtrace::Backtrace,
+}
+
 #[derive(thiserror::Error, Debug)]
-pub enum Error {
+enum ErrorKind {
     #[error("could not convert path to C string")]
     BadPath(#[from] NulError),
     #[error("failed to open core: {0}")]
@@ -40,18 +45,89 @@ pub enum Error {
     NoNul(#[from] FromBytesUntilNulError),
     #[error("error: {0}")] // TODO better message
     Read(#[from] io::Error), // TODO fix name
+    #[error("failed to start process: {0}")]
+    Start(i32), // TODO show name or errno?
+    #[error("failed to stop process: {0}")]
+    Stop(i32),
     #[error("failed to iterate over symbols")]
     SymbolIterFailed,
     #[error("failed to fill whole buffer")]
     UnexpectedEof,
 }
 
+impl Error {
+    /// Creates a new error with backtrace capture.
+    fn new(kind: ErrorKind) -> Self {
+        Self {
+            kind,
+            backtrace: std::backtrace::Backtrace::capture(),
+        }
+    }
+
+    /// Returns the backtrace captured when the error was created.
+    pub fn backtrace(&self) -> &std::backtrace::Backtrace {
+        &self.backtrace
+    }
+
+    pub fn bad_path(e: NulError) -> Self {
+        Self::new(ErrorKind::BadPath(e))
+    }
+
+    pub fn grab_failed(s: &'static str) -> Self {
+        Self::new(ErrorKind::GrabFailed(s))
+    }
+
+    pub fn lwp_iter_failed() -> Self {
+        Self::new(ErrorKind::LwpIterFailed)
+    }
+
+    pub fn map_iter_failed() -> Self {
+        Self::new(ErrorKind::MapIterFailed)
+    }
+
+    pub fn no_exec_name() -> Self {
+        Self::new(ErrorKind::NoExecName)
+    }
+
+    pub fn no_nul(e: FromBytesUntilNulError) -> Self {
+        Self::new(ErrorKind::NoNul(e))
+    }
+
+    pub fn read(e: io::Error) -> Self {
+        Self::new(ErrorKind::Read(e))
+    }
+
+    pub fn start(errno: i32) -> Self {
+        Self::new(ErrorKind::Start(errno))
+    }
+
+    pub fn stop(errno: i32) -> Self {
+        Self::new(ErrorKind::Stop(errno))
+    }
+
+    pub fn symbol_iter_failed() -> Self {
+        Self::new(ErrorKind::SymbolIterFailed)
+    }
+
+    pub fn unexpected_eof() -> Self {
+        Self::new(ErrorKind::UnexpectedEof)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+
+impl std::error::Error for Error {}
+
 #[derive(Debug)]
 pub struct Proc {
     handle: NonNull<ps_prochandle>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Reg(pub u16);
 
 impl Reg {
@@ -64,6 +140,13 @@ impl Reg {
         }
     }
 }
+
+impl fmt::Debug for Reg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#x}", self.0)
+    }
+}
+
 pub mod x86_64 {
     use super::Reg;
 
@@ -310,11 +393,24 @@ impl From<gregset_t> for Regs {
 }
 
 impl Proc {
-    pub fn open_pid(pid: i32) -> Result<Self> {
+    pub fn grab_pid(pid: u32) -> Result<Self> {
+        // Pass empty flags so the process is stopped and any existing flags are
+        // cleared.
+        let flags = 0;
+        Self::open_proc(pid, flags)
+    }
+
+    pub fn grab_pid_no_stop(pid: u32) -> Result<Self> {
+        // Don't stop the process and retain existing flags to avoid setting
+        // PR_KLC, so the process resumes execution even if we die.
+        let flags = (PGRAB_NOSTOP | PGRAB_RETAIN) as i32;
+        Self::open_proc(pid, flags)
+    }
+
+    fn open_proc(pid: u32, flags: i32) -> Result<Self> {
         let mut perr: c_int = 0;
 
-        // Empty flags means we will stop the target process.
-        let handle = unsafe { Pgrab(pid as pid_t, 0, &mut perr) };
+        let handle = unsafe { Pgrab(pid as pid_t, flags, &mut perr) };
         let Some(handle) = NonNull::new(handle) else {
             let err_msg = unsafe { Pgrab_error(perr) };
 
@@ -324,13 +420,14 @@ impl Proc {
             // UNWRAP: We know all possible values returned by Pgrab_error are valid UTF-8.
             let msg = c_msg.to_str().unwrap();
 
-            return Err(Error::GrabFailed(msg));
+            return Err(Error::grab_failed(msg));
         };
         Ok(Proc { handle })
     }
 
     pub fn open_core(core_path: &Path) -> Result<Self> {
-        let c_core_path = CString::new(core_path.as_os_str().as_bytes())?;
+        let c_core_path =
+            CString::new(core_path.as_os_str().as_bytes()).map_err(|e| Error::bad_path(e))?;
         let mut perr: c_int = 0;
         let flags = 0 | PGRAB_RDONLY as c_int;
 
@@ -344,7 +441,7 @@ impl Proc {
             // UNWRAP: We know all possible values returned by Pgrab_error are valid UTF-8.
             let msg = c_msg.to_str().unwrap();
 
-            return Err(Error::GrabFailed(msg));
+            return Err(Error::grab_failed(msg));
         };
         Ok(Proc { handle })
     }
@@ -372,6 +469,25 @@ impl Proc {
         }
     }
 
+    pub fn run(&self) -> Result<()> {
+        // Don't set any signals or flags.
+        let ret = unsafe { Psetrun(self.handle.as_ptr(), 0, 0) };
+        if ret != 0 {
+            return Err(Error::start(ret));
+        }
+
+        Ok(())
+    }
+
+    pub fn stop(&self, wait_ms: u32) -> Result<()> {
+        let ret = unsafe { Pstop(self.handle.as_ptr(), wait_ms) };
+        if ret != 0 {
+            return Err(Error::stop(ret));
+        }
+
+        Ok(())
+    }
+
     pub fn exec_name(&self) -> Result<PathBuf> {
         let mut buf = vec![0u8; MAXPATHLEN as usize];
 
@@ -384,12 +500,12 @@ impl Proc {
         };
 
         if !ret.is_null() {
-            let c_path = CStr::from_bytes_until_nul(&buf)?;
+            let c_path = CStr::from_bytes_until_nul(&buf).map_err(|e| Error::no_nul(e))?;
             let os_path = OsStr::from_bytes(c_path.to_bytes());
             let path = Path::new(os_path);
             Ok(path.to_owned())
         } else {
-            Err(Error::NoExecName)
+            Err(Error::no_exec_name())
         }
     }
 
@@ -449,7 +565,7 @@ impl Proc {
             )
         };
         if ret != 0 {
-            return Err(Error::LwpIterFailed);
+            return Err(Error::lwp_iter_failed());
         }
 
         Ok(cb_data.data)
@@ -467,13 +583,13 @@ impl Proc {
         if ct >= 0 {
             Ok(ct as u64)
         } else {
-            Err(io::Error::last_os_error().into())
+            Err(Error::read(io::Error::last_os_error()))
         }
     }
 
     pub fn pread_exact(&self, buf: &mut [u8], address: u64) -> Result<()> {
         if !self.pread(buf, address)? == buf.len() as u64 {
-            return Err(Error::UnexpectedEof);
+            return Err(Error::unexpected_eof());
         }
 
         Ok(())
@@ -509,7 +625,7 @@ impl Proc {
         if ret == 0 {
             Ok(Regs::from(regs))
         } else {
-            Err(io::Error::from_raw_os_error(ret).into())
+            Err(Error::read(io::Error::from_raw_os_error(ret)))
         }
     }
 
@@ -583,23 +699,27 @@ impl Proc {
         if ret == 0 {
             Ok(Mappings { inner: objs })
         } else {
-            Err(Error::MapIterFailed)
+            Err(Error::map_iter_failed())
         }
     }
 
-    pub fn lookup_map(&self, address: u64) -> Option<LoadedObject> {
+    pub fn addr_to_map(&self, address: u64) -> Option<LoadedObject> {
         let prmap_ptr = unsafe { Paddr_to_map(self.handle.as_ptr(), address as usize) };
 
-        if prmap_ptr.is_null() {
-            return None;
-        }
-        let prmap = unsafe { *prmap_ptr };
+        let prmap = match unsafe { prmap_ptr.as_ref() } {
+            Some(prmap) => prmap,
+            None => return None,
+        };
 
         Some(LoadedObject {
             vaddr: prmap.pr_vaddr as u64,
             size: prmap.pr_size as u64,
-            flags: prmap.pr_mflags as u32,
+            flags: MapFlags(prmap.pr_mflags as u32),
         })
+    }
+
+    pub fn addr_is_mapped(&self, addr: u64) -> bool {
+        self.addr_to_map(addr).is_some()
     }
 
     pub fn symbols<'a>(&'a self) -> Result<Vec<Symbol<'a>>> {
@@ -658,7 +778,7 @@ impl Proc {
         if ret == 0 {
             Ok(symbols)
         } else {
-            Err(Error::SymbolIterFailed)
+            Err(Error::symbol_iter_failed())
         }
     }
 
@@ -936,7 +1056,7 @@ impl PartialOrd for LoadedObjectWithPath {
 pub struct LoadedObject {
     pub vaddr: u64,
     pub size: u64,
-    pub flags: u32,
+    pub flags: MapFlags,
 }
 
 impl LoadedObject {
@@ -982,8 +1102,9 @@ pub struct SymbolBuf {
 
 impl Drop for Proc {
     fn drop(&mut self) {
-        // TODO Prelease instead?
-        unsafe { Pfree(self.handle.as_mut()) };
+        // Clear any flags, let the process resume execution.
+        let flags = PRELEASE_CLEAR as i32;
+        unsafe { Prelease(self.handle.as_mut(), flags) };
     }
 }
 

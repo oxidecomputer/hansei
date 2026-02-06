@@ -5,7 +5,7 @@ use durin::read::CtfReader;
 use durin::{TypeId, TypeKind};
 use proc::Proc;
 use regex::Regex;
-use reify::{BytesFromProc, Error, ParseCtx, ParseWithCtf, TypeInfo, TypeInfoRef};
+use reify::{Error, ParseCtx, ParseWithCtf, ReadFromProc, TypeInfo, TypeInfoRef};
 use semver::Version;
 
 use std::cell::RefCell;
@@ -13,7 +13,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::mem;
 use std::ops::Range;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
+
+static TOKIO_TYPE_PAT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"__CRATE_tokio-1\.\d+\.\d+__"#).unwrap());
+
+static TOKIO_VER_PAT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"__CRATE_tokio-(\d+\.\d+\.\d+)__"#).unwrap());
 
 pub struct Context<'ctf> {
     pub proc: &'ctf Proc,
@@ -22,6 +29,7 @@ pub struct Context<'ctf> {
     pub header_id: TypeId,
     pub trailer_id: TypeId,
     pub location_id: TypeId,
+    pub park_id: TypeId,
     pub tokio_version: Version,
     pub now: Instant,
 }
@@ -52,11 +60,16 @@ impl<'ctf> ParseCtx<'ctf> for Context<'ctf> {
 pub struct TokioRuntime {
     pub workers: BTreeMap<u32, WorkerState>,
     pub scheduler: Scheduler,
-    pub now: Instant,
+    pub now: RawInstant,
 }
 
 impl TokioRuntime {
-    pub fn parse(ctf: &CtfReader, proc: &Proc) -> Result<Self> {
+    pub fn parse(
+        ctf: &CtfReader,
+        proc: &Proc,
+        symbols: &mut HashMap<u64, &'static str>,
+        capture_backtraces: bool,
+    ) -> Result<Self> {
         let lwps = proc.lwps()?;
         let status = proc.status();
         let brk_range = status.brk_range;
@@ -67,7 +80,7 @@ impl TokioRuntime {
 
         // TODO - This assumes the timestamp is valid for all threads. I think
         // this is true, but haven't validated.
-        let now: Instant = RawInstant::try_from(main_lwp.tstamp)?.into();
+        let now = RawInstant::try_from(main_lwp.tstamp)?;
 
         let Some(header_ty) = ctf.find_ty(
             "*const_tokio::runtime::task::core::Header",
@@ -86,11 +99,25 @@ impl TokioRuntime {
             anyhow::bail!("failed to find core::panic::location::Location CTF type");
         };
 
+        let Some(park_ty) = ctf.find_ty(
+            "alloc::sync::Arc<tokio::runtime::park::Inner,_alloc::alloc::Global>",
+            TypeKind::Struct,
+        ) else {
+            anyhow::bail!(
+                "failed to find alloc::sync::Arc<tokio::runtime::park::Inner, alloc::alloc::Global> CTF type"
+            );
+        };
+
         let Some(ctx_ty) = ctf.find_ty("tokio::runtime::context::Context", TypeKind::Struct) else {
             anyhow::bail!("failed to find tokio::runtime::context::Context CTF type");
         };
 
-        let backtraces = crate::unwind::load_frames(&proc)?;
+        let backtraces = if capture_backtraces {
+            let bt = crate::unwind::load_frames(&proc)?;
+            Some(bt)
+        } else {
+            None
+        };
         let mut workers = BTreeMap::new();
 
         let tokio_version = extract_tokio_version(&ctf).context("failed to find tokio version")?;
@@ -98,12 +125,13 @@ impl TokioRuntime {
         let ctx = Context {
             proc,
             ctf,
-            symbols: RefCell::new(HashMap::new()),
+            symbols: RefCell::new(symbols.clone()),
             header_id: header_ty.id(),
             trailer_id: trailer_ty.id(),
             location_id: location_ty.id(),
+            park_id: park_ty.id(),
             tokio_version,
-            now,
+            now: now.into(),
         };
 
         let mut scheduler = None;
@@ -120,7 +148,7 @@ impl TokioRuntime {
                 let thd_ctx: ThreadCtx = info
                     .parse(&ctx)
                     .context("failed to parse thread-local context")?;
-                let backtrace = backtraces.get(&lwp.tid).cloned().unwrap_or_default();
+                let backtrace = backtraces.as_ref().and_then(|bt| bt.get(&lwp.tid).cloned());
 
                 workers.insert(lwp.tid, WorkerState { thd_ctx, backtrace });
 
@@ -142,6 +170,9 @@ impl TokioRuntime {
         let Some(scheduler) = scheduler else {
             anyhow::bail!("failed to find scheduler");
         };
+
+        // Swap out captured symbols to parent. TODO make this not ugly
+        *symbols = ctx.symbols.take();
 
         Ok(Self {
             workers,
@@ -174,21 +205,19 @@ impl TokioRuntime {
 #[derive(Clone, PartialEq, Debug)]
 pub struct WorkerState {
     pub thd_ctx: ThreadCtx,
-    pub backtrace: Backtrace,
+    pub backtrace: Option<Backtrace>,
 }
 
 fn extract_tokio_version(ctf: &CtfReader) -> Result<Version> {
-    let tokio_type_pat = Regex::new(r#"__CRATE_tokio-1\.\d+\.\d+__"#).unwrap();
     let Some(tokio_ver_ty) = ctf
         .types()
         .iter()
-        .find(|t| t.kind() == TypeKind::Typedef && tokio_type_pat.is_match(t.name(ctf)))
+        .find(|t| t.kind() == TypeKind::Typedef && TOKIO_TYPE_PAT.is_match(t.name(ctf)))
     else {
         anyhow::bail!("failed to find tokio version typedef in CTF");
     };
 
-    let tokio_ver_pat = Regex::new(r#"__CRATE_tokio-(\d+\.\d+\.\d+)__"#).unwrap();
-    let Some(ver_match) = tokio_ver_pat
+    let Some(ver_match) = TOKIO_VER_PAT
         .captures(tokio_ver_ty.name(&ctf))
         .and_then(|c| c.get(1))
     else {
@@ -518,7 +547,7 @@ pub struct MetricsBatch {
     /// The total busy duration in nanoseconds.
     pub busy_duration_total: u64,
     // Instant at which work last resumed (continued after park).
-    pub processing_scheduled_tasks_started_at: Option<Instant>,
+    pub processing_scheduled_tasks_started_at: Option<RawInstant>,
     /// Number of times the worker parked.
     pub park_count: u64,
     /// Number of times the worker parked and unparked.
@@ -546,8 +575,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for MetricsBatch {
         let busy_duration_total = info.member(ctx, "busy_duration_total")?.parse(ctx)?;
         let processing_scheduled_tasks_started_at = info
             .member(ctx, "processing_scheduled_tasks_started_at")?
-            .parse::<Option<RawInstant>, _>(ctx)?
-            .map(|raw_time| raw_time.into());
+            .parse(ctx)?;
         let park_count = info.member(ctx, "park_count")?.parse(ctx)?;
         let park_unpark_count = info.member(ctx, "park_unpark_count")?.parse(ctx)?;
         let noop_count = info.member(ctx, "noop_count")?.parse(ctx)?;
@@ -822,6 +850,9 @@ pub struct TaskAddr(pub u64);
 impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskAddr {
     fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
         let addr = info.parse(ctx)?;
+        if !ctx.proc.addr_is_mapped(addr) {
+            return Err(Error::invalid_addr(addr));
+        }
         Ok(Self(addr))
     }
 }
@@ -1182,7 +1213,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
         let spawn_ptr = ctx
             .proc
             .read_u64(spawn_ptr_addr)
-            .map_err(|e| Error::null_ptr().with_source(e))?;
+            .map_err(|e| Error::invalid_addr(spawn_ptr_addr).with_source(e))?;
 
         // The CTF isn't aware we have a *Location here, so manually find the type and parse.
         let spawn_ty = ctx.ctf.ty(ctx.location_id);
@@ -1640,6 +1671,7 @@ impl fmt::Debug for Interest {
 #[derive(Clone, PartialEq)]
 pub struct Waker {
     pub dependent_task: Option<TaskAddr>,
+    pub dependent_park: Option<ParkThread>,
     pub data: TaskAddr,
     pub wake: &'static str,
     pub wake_by_ref: &'static str,
@@ -1662,17 +1694,28 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Waker {
         let clone = ctx.lookup_symbol(clone_addr);
         let drop = ctx.lookup_symbol(drop_addr);
 
-        let dependent_task;
-        if wake == "tokio::runtime::task::waker::wake_by_val" {
+        let dependent_task = if wake == "tokio::runtime::task::waker::wake_by_val" {
             let hdr_info = info.member(ctx, "data")?.with_ty(ctx.ctf.ty(ctx.header_id));
-            let hdr = hdr_info.parse::<TaskAddr, _>(ctx)?;
-            dependent_task = Some(hdr);
+            let hdr = hdr_info.parse(ctx)?;
+            Some(hdr)
         } else {
-            dependent_task = None;
-        }
+            None
+        };
+
+        let dependent_park = if wake == "tokio::runtime::park::wake" {
+            let park_info = info.member(ctx, "data")?.with_ty(ctx.ctf.ty(ctx.park_id));
+            let park = park_info.deref_ptr(ctx)?.member(ctx, "data")?.parse(ctx)?;
+            Some(park)
+        } else {
+            None
+        };
+
+        // TODO when mangling v0 hits stable, we can get the generic type for futures_unordered and
+        // parse those too.
 
         Ok(Self {
             dependent_task,
+            dependent_park,
             data,
             wake,
             wake_by_ref,
@@ -1685,12 +1728,55 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Waker {
 impl fmt::Debug for Waker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Waker")
-            .field("header", &self.dependent_task)
+            .field("dependent_task", &self.dependent_task)
+            .field("dependent_park", &self.dependent_park)
             .field("data", &self.data)
             .field("wake", &self.wake)
             .field("wake_by_ref", &self.wake_by_ref)
             .field("clone", &self.clone)
             .field("drop", &self.drop)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct ParkThread(pub u64);
+
+impl ParkThread {
+    const EMPTY: u64 = 0;
+    const PARKED: u64 = 1;
+    const NOTIFIED: u64 = 2;
+
+    pub fn is_empty(&self) -> bool {
+        self.0 == Self::EMPTY
+    }
+
+    pub fn is_notified(&self) -> bool {
+        self.0 == Self::NOTIFIED
+    }
+
+    pub fn is_parked(&self) -> bool {
+        self.0 == Self::PARKED
+    }
+}
+
+impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for ParkThread {
+    fn parse_with_ctf(ctx: &Context<'ctf>, info: &TypeInfoRef<'_, 'ctf>) -> reify::Result<Self> {
+        let state = info.member(ctx, "state")?.parse(ctx)?;
+        Ok(Self(state))
+    }
+}
+
+impl fmt::Debug for ParkThread {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state_desc = match self.0 {
+            Self::EMPTY => "empty",
+            Self::NOTIFIED => "notified",
+            Self::PARKED => "parked",
+            _ => "invalid state",
+        };
+        f.debug_struct("ParkThread")
+            .field("state", &format_args!("{} ({})", self.0, state_desc))
             .finish()
     }
 }
@@ -1720,15 +1806,14 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoDriverMetrics {
 pub struct TimeHandle {
     pub is_shutdown: bool,
     pub did_wake: bool,
-    pub time_source: Instant,
+    pub time_source: RawInstant,
     pub wheel: Wheel,
     pub next_wake: Option<u64>,
 }
 
 impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TimeHandle {
     fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
-        let raw_time: RawInstant = info.member(ctx, "time_source")?.parse(ctx)?;
-        let time_source = raw_time.into();
+        let time_source = info.member(ctx, "time_source")?.parse(ctx)?;
 
         let mut inner = info.member(ctx, "inner")?;
         if ctx.tokio_version >= Version::new(1, 49, 0) {
@@ -1754,8 +1839,8 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TimeHandle {
 }
 
 /// Must match the layout of `tokio::time::Instant`.
-#[derive(Clone, PartialEq, Debug)]
-struct RawInstant {
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct RawInstant {
     pub tv_sec: u64,
     pub tv_nsec: u32,
 }
@@ -1797,19 +1882,16 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for RawInstant {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Clock {
-    base: Instant,
-    unfrozen: Option<Instant>,
+    base: RawInstant,
+    unfrozen: Option<RawInstant>,
     enable_pausing: bool,
 }
 
 impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Clock {
     fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
-        let base_raw: RawInstant = info.member(ctx, "base")?.parse(ctx)?;
-        let unfrozen_raw: Option<RawInstant> = info.member(ctx, "unfrozen")?.parse(ctx)?;
+        let base = info.member(ctx, "base")?.parse(ctx)?;
+        let unfrozen = info.member(ctx, "unfrozen")?.parse(ctx)?;
         let enable_pausing = info.member(ctx, "enable_pausing")?.parse(ctx)?;
-
-        let base = base_raw.into();
-        let unfrozen = unfrozen_raw.map(|i| i.into());
 
         Ok(Self {
             base,

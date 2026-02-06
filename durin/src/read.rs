@@ -6,12 +6,12 @@ use scroll::Pread;
 use scroll::ctx::TryFromCtx;
 
 use std::collections::HashMap;
+use std::fmt;
 use std::io::Read;
 use std::str;
 
 const HEADER_SIZE: usize = 36;
 
-#[derive(Debug)]
 pub struct CtfReader {
     pub preamble: CtfPreamble,
     pub header: CtfHeader,
@@ -20,6 +20,37 @@ pub struct CtfReader {
     pub functions: Vec<TypeId>,
     types: TypeTable,
     strings: StringTable,
+}
+
+impl fmt::Debug for CtfReader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        struct TypeWrapper<'a> {
+            table: &'a TypeTable,
+            ctf: &'a CtfReader,
+        }
+
+        impl fmt::Debug for TypeWrapper<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                let iter = self.table.types.iter().map(|ty| (ty.name(self.ctf), ty));
+                f.debug_map().entries(iter).finish()
+            }
+        }
+        f.debug_struct("CtfReader")
+            .field("preamble", &self.preamble)
+            .field("header", &self.header)
+            .field("labels", &self.labels)
+            .field("objects", &self.objects)
+            .field("functions", &self.functions)
+            .field(
+                "types",
+                &TypeWrapper {
+                    table: &self.types,
+                    ctf: self,
+                },
+            )
+            .field("strings", &self.strings)
+            .finish()
+    }
 }
 
 impl CtfReader {
@@ -189,7 +220,9 @@ fn read_objects(header: &CtfHeader, data: &[u8]) -> Result<Vec<TypeId>> {
 
     let mut objects = Vec::new();
     while *offset < obj_data.len() {
-        let object = obj_data.gread(offset)?;
+        let raw_id: u16 = obj_data.gread(offset)?;
+        let object = TypeId::from_int(raw_id)?;
+
         objects.push(object);
     }
 
@@ -398,16 +431,16 @@ impl TryFromCtx<'_, ()> for StrId {
     }
 }
 
-impl TryFromCtx<'_, ()> for TypeId {
-    type Error = Error;
-
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
-        let raw: u16 = from.pread(0)?;
-        let val = Self::try_from(raw)?;
-
-        Ok((val, size_of::<Self>()))
-    }
-}
+// impl TryFromCtx<'_, ()> for TypeId {
+//     type Error = Error;
+//
+//     fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+//         let raw: u16 = from.pread(0)?;
+//         let val = Self::from_int(raw)?;
+//
+//         Ok((val, size_of::<Self>()))
+//     }
+// }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CtfLabel {
@@ -431,7 +464,7 @@ impl TryFromCtx<'_, ()> for CtfLabel {
 
         let label = from.gread(offset)?;
         let idx_int: u32 = from.gread(offset)?;
-        let typeidx = (idx_int as u16).try_into().ok();
+        let typeidx = TypeId::from_int(idx_int as u16).ok();
 
         Ok((Self { label, typeidx }, *offset))
     }
@@ -449,7 +482,7 @@ impl TypeTable {
         let types_data = &data[types_start..types_end];
 
         let offset = &mut 0;
-        let mut id = TypeId::try_from(1).unwrap();
+        let mut id = TypeId::from_int(1).unwrap();
 
         let mut types = Vec::new();
         // First slot is empty, but we use Unknown as a placeholder
@@ -458,7 +491,7 @@ impl TypeTable {
         while *offset < types_data.len() {
             let ty = types_data.gread_with(offset, id)?;
             types.push(ty);
-            let new_id = TypeId::try_from(id.get() + 1)?;
+            let new_id = TypeId::from_int(id.get() + 1)?;
             id = new_id;
         }
 
@@ -482,7 +515,7 @@ impl TypeTable {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct StringTable {
     inner: Vec<u8>,
 }
@@ -522,6 +555,16 @@ impl StringTable {
 
         let s = str::from_utf8(substr).map_err(|_| Error::invalid_str_encoding(id))?;
         Ok(s)
+    }
+}
+
+impl fmt::Debug for StringTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let iter = self
+            .inner
+            .split(|&b| b == 0)
+            .map(|s| str::from_utf8(s).unwrap());
+        f.debug_map().entries(iter.enumerate()).finish()
     }
 }
 
@@ -951,15 +994,19 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 }
             }
             TypeKind::Pointer => {
-                let target_type = TypeId::try_from(size)?;
+                let target_type = TypeId::from_int(size)?;
                 Self::Pointer {
                     id,
                     ty: CtfPointer { name, target_type },
                 }
             }
             TypeKind::Array => {
-                let element_type = from.gread(offset)?;
-                let index_type = from.gread(offset)?;
+                let element_type_raw = from.gread(offset)?;
+                let element_type = TypeId::from_int(element_type_raw)?;
+
+                let index_type_raw = from.gread(offset)?;
+                let index_type = TypeId::from_int(index_type_raw)?;
+
                 let nelems = from.gread(offset)?;
                 Self::Array {
                     id,
@@ -972,11 +1019,12 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 }
             }
             TypeKind::Function => {
-                let return_type = TypeId::try_from(size)?;
+                let return_type = TypeId::from_int(size)?;
                 let vlen = meta.vlen();
                 let mut args = Vec::new();
                 for _ in 0..vlen {
-                    let arg = from.gread(offset)?;
+                    let arg_raw = from.gread(offset)?;
+                    let arg = TypeId::from_int(arg_raw)?;
                     args.push(arg);
                 }
                 // TODO is this needed?
@@ -1056,28 +1104,28 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 ty: CtfForward { name },
             },
             TypeKind::Typedef => {
-                let target_type = TypeId::try_from(size)?;
+                let target_type = TypeId::from_int(size)?;
                 Self::Typedef {
                     id,
                     ty: CtfTypedef { name, target_type },
                 }
             }
             TypeKind::Volatile => {
-                let target_type = TypeId::try_from(size)?;
+                let target_type = TypeId::from_int(size)?;
                 Self::Volatile {
                     id,
                     ty: CtfVolatile { name, target_type },
                 }
             }
             TypeKind::Const => {
-                let target_type = TypeId::try_from(size)?;
+                let target_type = TypeId::from_int(size)?;
                 Self::Const {
                     id,
                     ty: CtfConst { name, target_type },
                 }
             }
             TypeKind::Restrict => {
-                let target_type = TypeId::try_from(size)?;
+                let target_type = TypeId::from_int(size)?;
                 Self::Restrict {
                     id,
                     ty: CtfRestrict { name, target_type },
@@ -1211,7 +1259,8 @@ impl TryFromCtx<'_, ()> for CtfMember {
 
         let name: StrId = from.gread(offset)?;
         // TODO this will fail on varargs
-        let type_id = from.gread(offset)?;
+        let type_id_raw = from.gread(offset)?;
+        let type_id = TypeId::from_int(type_id_raw)?;
         let offset_bits = from.gread(offset)?;
 
         Ok((

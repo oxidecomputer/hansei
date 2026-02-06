@@ -514,12 +514,8 @@ impl TypeId {
     pub fn get(&self) -> u16 {
         self.0
     }
-}
 
-impl TryFrom<u16> for TypeId {
-    type Error = Error;
-
-    fn try_from(value: u16) -> Result<Self> {
+    pub(crate) fn from_int(value: u16) -> Result<Self> {
         if value == 0 {
             return Err(Error::invalid_type_index(value));
         }
