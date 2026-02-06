@@ -904,6 +904,10 @@ impl Mappings {
         self.inner.iter().find(|o| o.range().contains(&address))
     }
 
+    pub fn contains_addr(&self, address: u64) -> bool {
+        self.get(address).is_some()
+    }
+
     pub fn as_slice(&self) -> &[LoadedObjectWithPath] {
         &self.inner.as_slice()
     }

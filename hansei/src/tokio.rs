@@ -3,7 +3,7 @@ use crate::unwind::Backtrace;
 use anyhow::{Context as _, Result};
 use durin::read::CtfReader;
 use durin::{TypeId, TypeKind};
-use proc::Proc;
+use proc::{Mappings, Proc};
 use regex::Regex;
 use reify::{Error, ParseCtx, ParseWithCtf, ReadFromProc, TypeInfo, TypeInfoRef};
 use semver::Version;
@@ -26,6 +26,7 @@ pub struct Context<'ctf> {
     pub proc: &'ctf Proc,
     pub ctf: &'ctf CtfReader,
     pub symbols: RefCell<HashMap<u64, &'static str>>,
+    pub mappings: Mappings,
     pub header_id: TypeId,
     pub trailer_id: TypeId,
     pub location_id: TypeId,
@@ -54,6 +55,9 @@ impl<'ctf> ParseCtx<'ctf> for Context<'ctf> {
     fn proc(&self) -> &'ctf Proc {
         &self.proc
     }
+    fn mappings(&self) -> &Mappings {
+        &self.mappings
+    }
 }
 
 #[derive(Debug)]
@@ -73,14 +77,11 @@ impl TokioRuntime {
         let lwps = proc.lwps()?;
         let status = proc.status();
         let brk_range = status.brk_range;
+        let mappings = proc.mappings()?;
 
         let Some(main_lwp) = lwps.first() else {
             anyhow::bail!("no lwps found in proc");
         };
-
-        // TODO - This assumes the timestamp is valid for all threads. I think
-        // this is true, but haven't validated.
-        let now = RawInstant::try_from(main_lwp.tstamp)?;
 
         let Some(header_ty) = ctf.find_ty(
             "*const_tokio::runtime::task::core::Header",
@@ -122,10 +123,15 @@ impl TokioRuntime {
 
         let tokio_version = extract_tokio_version(&ctf).context("failed to find tokio version")?;
 
+        // TODO - This assumes the timestamp is valid for all threads. I think
+        // this is true, but haven't validated.
+        let now = RawInstant::try_from(main_lwp.tstamp)?;
+
         let ctx = Context {
             proc,
             ctf,
             symbols: RefCell::new(symbols.clone()),
+            mappings,
             header_id: header_ty.id(),
             trailer_id: trailer_ty.id(),
             location_id: location_ty.id(),
@@ -850,7 +856,7 @@ pub struct TaskAddr(pub u64);
 impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskAddr {
     fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
         let addr = info.parse(ctx)?;
-        if !ctx.proc.addr_is_mapped(addr) {
+        if !ctx.mappings.contains_addr(addr) {
             return Err(Error::invalid_addr(addr));
         }
         Ok(Self(addr))
@@ -1198,10 +1204,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
 
         let id_offset: u64 = vtable_info.member(ctx, "id_offset")?.parse(ctx)?;
         let id_addr = info.addr + id_offset;
-        let id_bytes = ctx
-            .proc
-            .read_bytes(id_addr, size_of::<u64>() as u64)?
-            .unwrap();
+        let id_bytes = ctx.proc.read_bytes(ctx, id_addr, size_of::<u64>() as u64)?;
         let id = u64::from_le_bytes(id_bytes.try_into().unwrap());
 
         // This is the offset from the Header address to the address of
@@ -1217,7 +1220,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
 
         // The CTF isn't aware we have a *Location here, so manually find the type and parse.
         let spawn_ty = ctx.ctf.ty(ctx.location_id);
-        let spawn_buf = ctx.proc.read_type(spawn_ptr, spawn_ty, &ctx.ctf)?.unwrap();
+        let spawn_buf = ctx.proc.read_type(ctx, spawn_ptr, spawn_ty)?;
         let spawn_info = info.clone().with_ty(spawn_ty).with_buf(&spawn_buf);
         let spawn_location = spawn_info.parse(ctx)?;
 
@@ -1227,10 +1230,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
         let trailer_ptr = info.addr + trailer_offset;
 
         let trailer_ty = ctx.ctf.ty(ctx.trailer_id);
-        let trailer_buf = ctx
-            .proc
-            .read_type(trailer_ptr, trailer_ty, &ctx.ctf)?
-            .unwrap();
+        let trailer_buf = ctx.proc.read_type(ctx, trailer_ptr, trailer_ty)?;
         let trailer_info = info.clone().with_ty(trailer_ty).with_buf(&trailer_buf);
         let waker = trailer_info.member(ctx, "waker")?.parse(ctx)?;
 
@@ -2139,6 +2139,10 @@ impl<'ctf> ParseCtx<'ctf> for TimeContext<'ctf> {
 
     fn proc(&self) -> &'ctf Proc {
         self.ctx.proc()
+    }
+
+    fn mappings(&self) -> &Mappings {
+        self.ctx.mappings()
     }
 }
 

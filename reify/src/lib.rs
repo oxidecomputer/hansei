@@ -1,6 +1,6 @@
 use durin::read::{CtfArray, CtfEnum, CtfEnumerator, CtfPointer, CtfReader, CtfType};
 use durin::{TypeId, TypeKind};
-use proc::Proc;
+use proc::{Mappings, Proc};
 
 use std::fmt;
 use std::str;
@@ -136,7 +136,8 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
         ty: &'ctf CtfType,
         addr: u64,
     ) -> Result<Option<Self>> {
-        let Some(vec) = ctx.proc().read_type(addr, ty, ctx.ctf())? else {
+        let Ok(vec) = ctx.proc().read_type(ctx, addr, ty) else {
+            // TODO just return an error?
             return Ok(None);
         };
         let buf = vec.into_boxed_slice();
@@ -240,7 +241,7 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
         let p: u64 = ptr.parse(ctx)?;
         let total_len = len * param_ty.size(ctf) as u64;
 
-        let raw = proc.read_bytes(p, total_len)?.unwrap();
+        let raw = proc.read_bytes(ctx, p, total_len)?;
 
         for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
             let item_info = TypeInfoRef {
@@ -351,7 +352,8 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 
         let addr = u64::from_le_bytes(bytes);
         let target_ty = ctf.ty(*target_type);
-        let Some(vec) = proc.read_type(addr, target_ty, ctf)? else {
+        let Ok(vec) = proc.read_type(ctx, addr, target_ty) else {
+            // TODO return an error?
             return Ok(None);
         };
         let buf = vec.into_boxed_slice();
@@ -510,7 +512,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         let total_len = len * param_ty.size(ctf) as u64;
 
         let mut out = Vec::with_capacity(len as usize);
-        let raw = proc.read_bytes(p, total_len)?.unwrap();
+        let raw = proc.read_bytes(ctx, p, total_len)?;
 
         for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
             let item_info = TypeInfoRef {
@@ -683,15 +685,7 @@ impl<'buf, 'ctf: 'buf> From<&'buf TypeInfo<'ctf>> for TypeInfoRef<'buf, 'ctf> {
 pub trait ParseCtx<'ctf> {
     fn ctf(&self) -> &'ctf CtfReader;
     fn proc(&self) -> &'ctf Proc;
-}
-
-pub trait ReadFromProc {
-    /// Read the size of the provided type at address, returning None if the
-    /// address is unmapped.
-    fn read_type(&self, addr: u64, ty: &CtfType, ctf: &CtfReader) -> Result<Option<Vec<u8>>>;
-
-    /// Read `len` bytes at address, returning None if the address is unmapped.
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Option<Vec<u8>>>;
+    fn mappings(&self) -> &Mappings;
 }
 
 /// Parse a byte slice as a type using CTF.
@@ -805,7 +799,7 @@ where
         let p: u64 = ptr.parse(ctx)?;
         let total_len = len * param_ty.size(ctf) as u64;
 
-        let raw = proc.read_bytes(p, total_len)?.unwrap();
+        let raw = proc.read_bytes(ctx, p, total_len)?;
         let mut out = Vec::with_capacity(len as usize);
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
@@ -849,7 +843,7 @@ where
         let p: u64 = ptr.parse(ctx)?;
         let total_len = len * param_ty.size(ctf) as u64;
 
-        let raw = proc.read_bytes(p, total_len)?.unwrap();
+        let raw = proc.read_bytes(ctx, p, total_len)?;
         let mut out = Vec::with_capacity(len as usize);
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
@@ -923,7 +917,7 @@ impl<'ctf, Ctx: ParseCtx<'ctf>> ParseWithCtf<'ctf, Ctx> for String {
 
         let len: u64 = info.member(ctx, "length")?.parse(ctx)?;
         let ptr: u64 = info.member(ctx, "data_ptr")?.parse(ctx)?;
-        let data = proc.read_bytes(ptr, len)?.unwrap();
+        let data = proc.read_bytes(ctx, ptr, len)?;
 
         let out = String::from_utf8_lossy(&data).to_string();
 
@@ -989,19 +983,35 @@ fn boxed_slice_elements<'buf, 'ctf: 'buf, Ctx: ParseCtx<'ctf>>(
     Ok(iter)
 }
 
-impl ReadFromProc for Proc {
-    fn read_type(&self, addr: u64, ty: &CtfType, ctf: &CtfReader) -> Result<Option<Vec<u8>>> {
-        self.read_bytes(addr, ty.size(ctf) as u64)
+pub trait ReadFromProc<'ctf, Ctx>
+where
+    Ctx: ParseCtx<'ctf>,
+{
+    /// Read the size of the provided type at address, returning None if the
+    /// address is unmapped.
+    fn read_type(&self, ctx: &Ctx, addr: u64, ty: &CtfType) -> Result<Vec<u8>>;
+
+    /// Read `len` bytes at address, returning None if the address is unmapped.
+    fn read_bytes(&self, ctx: &Ctx, addr: u64, len: u64) -> Result<Vec<u8>>;
+}
+
+impl<'ctf, Ctx> ReadFromProc<'ctf, Ctx> for Proc
+where
+    Ctx: ParseCtx<'ctf>,
+{
+    fn read_type(&self, ctx: &Ctx, addr: u64, ty: &CtfType) -> Result<Vec<u8>> {
+        self.read_bytes(ctx, addr, ty.size(ctx.ctf()) as u64)
     }
 
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Option<Vec<u8>>> {
-        if !self.addr_is_mapped(addr) {
-            return Ok(None);
+    fn read_bytes(&self, ctx: &Ctx, addr: u64, len: u64) -> Result<Vec<u8>> {
+        if !ctx.mappings().contains_addr(addr) {
+            return Err(Error::invalid_addr(addr));
         }
-
         let mut buf = vec![0u8; len as usize];
+
+        // TODO we may also receive an EOF here, need better error
         self.pread_exact(&mut buf, addr)
             .map_err(|e| Error::invalid_addr(addr).with_source(e))?;
-        Ok(Some(buf))
+        Ok(buf)
     }
 }

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use durin::read::CtfReader;
-use proc::Proc;
+use proc::{Mappings, Proc};
 use reify::ParseCtx;
 use reify::ParseWithCtf;
 use tempfile::TempDir;
@@ -131,6 +131,7 @@ fn spawn_test_binary(tmpdir: &Path) -> Child {
 struct TestContext<'a> {
     ctf: &'a CtfReader,
     proc: &'a Proc,
+    mappings: &'a Mappings,
 }
 
 impl<'a> ParseCtx<'a> for TestContext<'a> {
@@ -140,6 +141,10 @@ impl<'a> ParseCtx<'a> for TestContext<'a> {
 
     fn proc(&self) -> &'a Proc {
         self.proc
+    }
+
+    fn mappings(&self) -> &'a Mappings {
+        self.mappings
     }
 }
 
@@ -184,10 +189,12 @@ fn read_global_point() {
     let ctf_bytes = std::fs::read(&ctf_path).expect("failed to read CTF");
     let ctf = CtfReader::load(&ctf_bytes).expect("failed to load CTF");
     let proc = Proc::grab_pid(pid).expect("failed to open process");
+    let mappings = proc.mappings().expect("failed to get mappings");
 
     let ctx = TestContext {
         ctf: &ctf,
         proc: &proc,
+        mappings: &mappings,
     };
 
     // Find the GLOBAL_POINT symbol
@@ -237,10 +244,12 @@ fn read_global_u64() {
     let ctf_bytes = std::fs::read(&ctf_path).expect("failed to read CTF");
     let ctf = CtfReader::load(&ctf_bytes).expect("failed to load CTF");
     let proc = Proc::grab_pid(pid).expect("failed to open process");
+    let mappings = proc.mappings().expect("failed to get mappings");
 
     let ctx = TestContext {
         ctf: &ctf,
         proc: &proc,
+        mappings: &mappings,
     };
 
     let addr = proc

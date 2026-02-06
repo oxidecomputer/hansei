@@ -37,9 +37,9 @@ struct Poll {
     #[clap(long, short)]
     ctf: PathBuf,
 
-    /// How frequently tokio state should be polled.
+    /// How frequently tokio state should be polled, in milliseconds.
     #[arg(long, short)]
-    freq: u32,
+    freq: Option<u64>,
 }
 
 #[derive(Args)]
@@ -138,6 +138,8 @@ fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
 }
 
 fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
+    const DEFAULT_FREQ: Duration = Duration::from_millis(2000);
+
     let proc = Proc::grab_pid_no_stop(args.pid).with_context(|| "failed to open pid {pid}")?;
 
     let ctf_bytes =
@@ -147,20 +149,38 @@ fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
     let mut symbols = HashMap::new();
 
     // Pre-cache known symbol names, lookup is expensive.
-    for sym_name in [
+    let sym_names = [
         "tokio::runtime::park::wake",
         "tokio::runtime::park::wake_by_ref",
         "tokio::runtime::park::clone",
         "tokio::runtime::park::drop_waker",
         "tokio::runtime::task::waker::wake_by_val",
-        "tokio::runtime::task::waker::wake_by_val",
+        "tokio::runtime::task::waker::wake_by_ref",
         "tokio::runtime::task::waker::clone_waker",
         "tokio::runtime::task::waker::drop_waker",
-    ] {
-        if let Some(sym) = proc.lookup_symbol_by_name(sym_name) {
-            symbols.insert(sym.st_value, sym_name);
+        "tokio::util::wake::wake_arc_raw",
+        "tokio::util::wake::wake_by_ref_arc_raw",
+        "tokio::util::wake::clone_arc_raw",
+        "tokio::util::wake::drop_arc_raw",
+        "futures_util::stream::futures_unordered::task::waker_ref::wake_arc_raw",
+        "futures_util::stream::futures_unordered::task::waker_ref::wake_by_ref_arc_raw",
+        "futures_util::stream::futures_unordered::task::waker_ref::clone_arc_raw",
+        "futures_util::stream::futures_unordered::task::waker_ref::drop_arc_raw",
+    ];
+
+    // There may be multiple addresses for a given method, most frequently due
+    // to generics, but also inlining in some cases. Scan all symbols for
+    for symbol in proc.symbols()? {
+        let demangled = format!("{:#}", rustc_demangle::demangle(&symbol.name));
+        if let Some(&sym_name) = sym_names.iter().find(|&&n| demangled == n) {
+            symbols.insert(symbol.st_value, sym_name);
         }
     }
+
+    let freq = args
+        .freq
+        .map(|f| Duration::from_millis(f))
+        .unwrap_or(DEFAULT_FREQ);
 
     loop {
         let start = Instant::now();
@@ -200,6 +220,6 @@ fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
         let end = Instant::now();
         writeln!(out, "process stopped for {:?}", end - start)?;
 
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(freq);
     }
 }
