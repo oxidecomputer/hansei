@@ -1,0 +1,20 @@
+= Durin
+
+A suite of tools for creating and using illumos CTF debug information for Rust binaries.
+
+Experimental and mostly untested, expect bugs.
+
+== Tools
+
+These are the workspace members that may be useful:
+
+* dwarf2ctf: Convert DWARF to CTF for specified types.
+* durin: Read and write CTF files.
+* hansei: Dump and poll the state of the `tokio` multi-threaded runtime in a core dump or live process.
+* proc: Minimal bindings for illumos `libproc`.
+* reify: Using a CTF file, interpret a process's state.
+
+== What's with the name?
+
+In _The Lord of the Rings_, Durin is Gimli's father, `gimli` being the excellent DWARF library for Rust. The joke doesn't quite work as
+DWARF is actually older than CTF, oh well.
