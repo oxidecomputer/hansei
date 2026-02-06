@@ -16,9 +16,6 @@ use std::ops::Range;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-static TOKIO_TYPE_PAT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"__CRATE_tokio-1\.\d+\.\d+__"#).unwrap());
-
 static TOKIO_VER_PAT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"__CRATE_tokio-(\d+\.\d+\.\d+)__"#).unwrap());
 
@@ -218,7 +215,7 @@ fn extract_tokio_version(ctf: &CtfReader) -> Result<Version> {
     let Some(tokio_ver_ty) = ctf
         .types()
         .iter()
-        .find(|t| t.kind() == TypeKind::Typedef && TOKIO_TYPE_PAT.is_match(t.name(ctf)))
+        .find(|t| t.kind() == TypeKind::Typedef && TOKIO_VER_PAT.is_match(t.name(ctf)))
     else {
         anyhow::bail!("failed to find tokio version typedef in CTF");
     };
