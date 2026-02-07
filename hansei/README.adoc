@@ -12,9 +12,17 @@ WARNING: DO NOT USE RUN THIS AGAINST A PROCESS YOU CARE ABOUT.
 
 == Usage
 
-First, build a release binary with `debug = true` set. I haven't run down why dev builds don't work, I wouldn't expect
-the struct layout to be different for them. The CTF can be applied to any binary that uses the same `tokio` version and
-features, i.e., you can use the same file for both `nexus` and `sled-agent`.
+First, build an optimized copy of the target binary with full debug information enabled.
+
+[source,toml]
+----
+[profile.release]
+debug =  true
+----
+
+In theory a dev build should work, but they don't. I haven't run down why this is, I wouldn't expect the struct layout
+to be different for them. The CTF can be applied to any binary that uses the same `tokio` version and features, i.e.,
+you can use the same file for both `nexus` and `sled-agent`.
 
 To generate the CTF file, execute:
 
