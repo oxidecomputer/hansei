@@ -151,18 +151,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "checkctf"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "durin",
- "flate2",
- "memmap2",
- "scroll",
-]
-
-[[package]]
 name = "clang-sys"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -267,7 +255,6 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "camino",
- "checkctf",
  "clap",
  "flate2",
  "gimli",
