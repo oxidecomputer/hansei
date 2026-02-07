@@ -19,9 +19,9 @@ features, i.e., you can use the same file for both `nexus` and `sled-agent`.
 To generate the CTF file, execute:
 
 [source,shell]
-====
+----
 cargo run --release --bin dwarf2ctf -- ${PATH_TO_BINARY} --ctf-out tokio.ctf -t 'tokio::runtime::context::Context' -t 'tokio::runtime::task::core::Trailer' -t 'core::panic::location::Location' -t 'alloc::sync::Arc<tokio::runtime::park::Inner, alloc::alloc::Global>'
-====
+----
 
 There are two subcommands:
 
