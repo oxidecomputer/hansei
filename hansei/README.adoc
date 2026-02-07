@@ -26,8 +26,18 @@ cargo run --release --bin dwarf2ctf -- ${PATH_TO_BINARY} --ctf-out tokio.ctf -t 
 There are two subcommands:
 
 * `dump` will output the state of the `tokio` runtime scheduler and thread-local contexts from either a core dump or
-a live process.
+a live process. For example:
++
+[source,shell]
+----
+cargo run --release --bin hansei -- dump --core ${PATH_TO_CORE} --ctf ${PATH_TO_CTF}
+----
 * `poll` will attach to the process, periodically pausing it at to read the `tokio` state, printing a brief summary.
++
+[source,shell]
+----
+cargo run --release --bin hansei -- poll --pid ${PID} --ctf ${PATH_TO_CTF}
+----
 
 Backtraces for all threads are captured by default by `dump`, though only displayed for active workers. This is quite
 slow currently and disabled for `poll`.
