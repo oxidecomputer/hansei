@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = [
-    "checkctf",
     "disentangler",
     "durin",
     "dwarf2ctf",
@@ -17,7 +16,6 @@ anyhow = "1.0"
 camino = "1.2"
 assert_cmd = "2.0"
 bindgen = { version = "0.72", default-features = false }
-checkctf = { path = "checkctf", version = "0.1.0" }
 clap = { version = "4.5.51", features = ["derive"] }
 durin = { path = "durin", version = "0.1.0" }
 fallible-iterator = "0.3.0"
