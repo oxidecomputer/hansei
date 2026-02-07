@@ -1356,12 +1356,14 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoEnabled {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct IoDisabled {
-    pub park: u32,
+    pub park: ParkThread,
 }
 
 impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoDisabled {
-    fn parse_with_ctf(_ctx: &Context, _info: &TypeInfoRef) -> reify::Result<Self> {
-        todo!();
+    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+        let park = info.deref_ptr(ctx)?.member(ctx, "data")?.parse(ctx)?;
+
+        Ok(Self { park })
     }
 }
 
