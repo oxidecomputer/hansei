@@ -12,10 +12,9 @@ WARNING: DO NOT USE RUN THIS AGAINST A PROCESS YOU CARE ABOUT.
 
 == Usage
 
-First, build a binary with `debug = true` set. Note that in `omicron` this is _not_ enabled for `profile.dev`. I've
-been using release builds, as other tools like `disentangler` required them, but it should work with a debug build that
-contains DWARF. The CTF can be applied to any binary that uses the same `tokio` version and features, i.e., you can use
-the same file for both `nexus` and `sled-agent`.
+First, build a release binary with `debug = true` set. I haven't run down why dev builds don't work, I wouldn't expect
+the struct layout to be different for them. The CTF can be applied to any binary that uses the same `tokio` version and
+features, i.e., you can use the same file for both `nexus` and `sled-agent`.
 
 To generate the CTF file, execute:
 
@@ -37,8 +36,8 @@ slow currently and disabled for `poll`.
 
 To give a bit of explanation on why these types are being included. Any type that is linked to a member of a type
 requested will be included in the CTF. `tokio` and `std::task::Waker` are a bit unusual for Rust as they will sometimes
-use an bare offset or `void*` to access a value. Types referenced this way are not linked in the DWARF, so we need to
-manually tell `dwarf2ctf` to include them.
+use an bare offset or `void*` to access a value. Types referenced this way do not have a cross-reference in the DWARF,
+so we need to manually tell `dwarf2ctf` to include them.
 
 * `tokio::runtime::context::Context`: The thread-local context for workers. Pulls in the vast majority of types we
 need, including the scheduler.
