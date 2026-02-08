@@ -2,10 +2,6 @@
 //!
 //! These tests generate a test binary with known types and values,
 //! then use CTF to read those values from the running process.
-//!
-//! Only runs on illumos where libproc is available.
-
-#![cfg(target_os = "illumos")]
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
