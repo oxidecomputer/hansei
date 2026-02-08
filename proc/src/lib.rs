@@ -645,7 +645,7 @@ impl Proc {
         // Start with u64 to ensure alignment is correct.
         let tls = [0u64; 9];
 
-        // SAFETY: There are no layout requirements for either [u64; 9] or [u8; 72].
+        // SAFETY: Any valid alignment for [u64; 9] is also valid [u8; 72].
         let mut bytes: [u8; 72] = unsafe { mem::transmute(tls) };
 
         let regs = self.regs(lwp)?;
@@ -665,23 +665,26 @@ impl Proc {
                 map: *const prmap_t,
                 name: *const c_char,
             ) -> c_int {
-                unsafe {
-                    let objs = &mut *(data as *mut Vec<_>);
-                    let map_ref = &*map;
+                // SAFETY: We've passed in a valid pointer.
+                let objs = unsafe { &mut *(data as *mut Vec<_>) };
 
-                    let path = if !name.is_null() {
-                        Some(CStr::from_ptr(name).to_string_lossy().to_string())
-                    } else {
-                        None
-                    };
+                // SAFETY: libproc guarantees that this pointer is valid.
+                let map_ref = unsafe { &*map };
 
-                    objs.push(LoadedObjectWithPath {
-                        path,
-                        vaddr: map_ref.pr_vaddr as u64,
-                        size: map_ref.pr_size as u64,
-                        flags: MapFlags(map_ref.pr_mflags as u32),
-                    });
-                }
+                let path = if !name.is_null() {
+                    // SAFETY: We just verified the pointer is not null.
+                    let s = unsafe { CStr::from_ptr(name) };
+                    Some(s.to_string_lossy().to_string())
+                } else {
+                    None
+                };
+
+                objs.push(LoadedObjectWithPath {
+                    path,
+                    vaddr: map_ref.pr_vaddr as u64,
+                    size: map_ref.pr_size as u64,
+                    flags: MapFlags(map_ref.pr_mflags as u32),
+                });
 
                 0 // Continue iteration
             }
