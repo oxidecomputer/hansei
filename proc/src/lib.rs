@@ -894,7 +894,7 @@ pub struct Timespec {
     pub tv_nsec: i64,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Mappings {
     inner: Vec<LoadedObjectWithPath>,
 }
@@ -988,7 +988,7 @@ impl fmt::Debug for LoadedObjectWithPath {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct MapFlags(pub u32);
 
 impl MapFlags {
@@ -1082,7 +1082,7 @@ impl PartialOrd for LoadedObject {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Symbol<'a> {
     pub name: &'a str,
     pub st_name: usize,
@@ -1093,7 +1093,7 @@ pub struct Symbol<'a> {
     pub st_size: u64,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SymbolBuf {
     pub name: String,
     pub st_name: usize,
