@@ -722,7 +722,7 @@ impl Proc {
         self.addr_to_map(addr).is_some()
     }
 
-    pub fn symbols<'a>(&'a self) -> Result<Vec<Symbol<'a>>> {
+    pub fn symbols(&self) -> Result<Vec<SymbolBuf>> {
         mod callback {
             use super::*;
 
@@ -731,35 +731,52 @@ impl Proc {
                 sym: *const GElf_Sym,
                 name: *const c_char,
             ) -> c_int {
-                unsafe {
-                    let symbols = &mut *(data as *mut Vec<_>);
-                    let Some(sym) = sym.as_ref() else {
-                        return 0;
-                    };
+                // SAFETY: We've passed in a valid pointer.
+                let symbols = unsafe { &mut *(data as *mut Vec<_>) };
 
-                    if name.is_null() {
-                        return 0;
-                    }
-                    let c_str = CStr::from_ptr(name);
-                    let Ok(name) = c_str.to_str() else {
-                        return 0;
-                    };
+                // SAFETY: libproc guarantees this will be a GElf_Sym*.
+                let Some(sym) = (unsafe { sym.as_ref() }) else {
+                    return 0;
+                };
 
-                    symbols.push(Symbol {
-                        name,
-                        st_name: sym.st_name as usize,
-                        st_info: sym.st_info,
-                        st_other: sym.st_other,
-                        st_shndx: sym.st_shndx as usize,
-                        st_value: sym.st_value,
-                        st_size: sym.st_size,
-                    });
+                // Something has gone wrong if this is invalid, but we'll
+                // continue iteration in case later symbols work.
+                if name.is_null() {
+                    return 0;
                 }
+
+                // SAFETY: We just confirmed this is non-null.
+                let c_str = unsafe { CStr::from_ptr(name) };
+
+                // Just bail out if the name is malformed, again continuing
+                // iteration.
+                let Ok(name_str) = c_str.to_str() else {
+                    return 0;
+                };
+
+                // We could pretty safely assume the name pointer would remain
+                // valid for the lifetime of the handle with a core dump,
+                // but this is not the case with a live process. Copy out
+                // the name. If we find that these copies have a measurable
+                // impact, we could consider a separate, non-copying variant
+                // just for cores.
+                let name = name_str.to_string();
+
+                symbols.push(SymbolBuf {
+                    name,
+                    st_name: sym.st_name as usize,
+                    st_info: sym.st_info,
+                    st_other: sym.st_other,
+                    st_shndx: sym.st_shndx as usize,
+                    st_value: sym.st_value,
+                    st_size: sym.st_size,
+                });
 
                 0 // Continue iteration
             }
         }
-        // Search for symbols in the executable only.
+
+        // Search for function symbols in the executable only.
         const PR_OBJ_EXEC: *const c_char = ptr::null();
         let fmask = TYPE_FUNC | BIND_GLOBAL | BIND_LOCAL;
 
