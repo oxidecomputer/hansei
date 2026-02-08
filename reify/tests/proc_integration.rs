@@ -43,6 +43,15 @@ fn main() {
 }
 "#;
 
+struct TestProc(Child);
+
+impl Drop for TestProc {
+    fn drop(&mut self) {
+        self.0.kill().ok();
+        self.0.wait().ok();
+    }
+}
+
 /// Set up a test binary by creating a cargo project, writing the test program,
 /// and building it.
 fn setup_test_binary() -> TempDir {
@@ -105,7 +114,7 @@ fn generate_ctf(tmpdir: &Path) -> PathBuf {
 }
 
 /// Spawn the test binary and return the child process.
-fn spawn_test_binary(tmpdir: &Path) -> Child {
+fn spawn_test_binary(tmpdir: &Path) -> TestProc {
     let binary = tmpdir.join("target/debug/test_types");
     let mut child = Command::new(&binary)
         .stdout(Stdio::piped())
@@ -118,7 +127,7 @@ fn spawn_test_binary(tmpdir: &Path) -> Child {
 
     // Wait for the child to start and write to stdout.
     match stdout.read(&mut buf) {
-        Ok(1) => return child,
+        Ok(1) => return TestProc(child),
         _ => unreachable!(),
     }
 }
@@ -175,11 +184,8 @@ fn read_global_point() {
     let ctf_path = generate_ctf(tmpdir.path());
 
     // Spawn the test binary
-    let mut child = spawn_test_binary(tmpdir.path());
-    let pid = child.id();
-
-    // Give the process time to start
-    //std::thread::sleep(std::time::Duration::from_millis(100));
+    let child = spawn_test_binary(tmpdir.path());
+    let pid = child.0.id();
 
     // Load CTF and attach to process
     let ctf_bytes = std::fs::read(&ctf_path).expect("failed to read CTF");
@@ -223,19 +229,15 @@ fn read_global_point() {
 
     assert_eq!(x, 42, "x value mismatch");
     assert_eq!(y, 100, "y value mismatch");
-
-    // Clean up
-    child.kill().ok();
-    child.wait().ok();
 }
 
 #[test]
-fn read_global_u64() {
+fn read_global_foo() {
     let tmpdir = setup_test_binary();
     let ctf_path = generate_ctf(tmpdir.path());
 
-    let mut child = spawn_test_binary(tmpdir.path());
-    let pid = child.id();
+    let child = spawn_test_binary(tmpdir.path());
+    let pid = child.0.id();
 
     let ctf_bytes = std::fs::read(&ctf_path).expect("failed to read CTF");
     let ctf = CtfReader::load(&ctf_bytes).expect("failed to load CTF");
@@ -263,7 +265,4 @@ fn read_global_u64() {
 
     let value: Foo = info.parse(&ctx).expect("parse u64");
     assert_eq!(value, Foo::A(500), "Foo value mismatch");
-
-    child.kill().ok();
-    child.wait().ok();
 }
