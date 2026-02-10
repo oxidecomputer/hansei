@@ -251,7 +251,7 @@ fn validate_labels(
     for label in labels {
         strings.check(label.label)?;
         if let Some(ty) = label.typeidx {
-            let _ = types.ty_checked(ty)?;
+            types.check(ty)?;
         }
     }
 
@@ -261,7 +261,7 @@ fn validate_labels(
 /// Iterate over objects and confirm that all type references are valid.
 fn validate_objects(objects: &[TypeId], types: &TypeTable) -> Result<()> {
     for ty in objects {
-        let _ = types.ty_checked(*ty)?;
+        types.check(*ty)?;
     }
 
     Ok(())
@@ -282,7 +282,9 @@ fn validate_functions(functions: &[TypeId], _types: &TypeTable) -> Result<()> {
 /// valid.
 fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<()> {
     for ty in types.as_slice() {
-        let _ = ty.name_checked(strings)?;
+        if let Some(id) = ty.name_id() {
+            strings.check(id)?;
+        };
         match ty {
             CtfType::Unknown { .. } => {}
             CtfType::Integer { .. } => {}
@@ -291,7 +293,7 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
                 ty: CtfPointer { target_type, .. },
                 ..
             } => {
-                let _ = types.ty_checked(*target_type)?;
+                types.check(*target_type)?;
             }
             CtfType::Array {
                 ty:
@@ -302,8 +304,8 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
                     },
                 ..
             } => {
-                let _ = types.ty_checked(*element_type)?;
-                let _ = types.ty_checked(*index_type)?;
+                types.check(*element_type)?;
+                types.check(*index_type)?;
             }
             CtfType::Function {
                 ty: CtfFunction {
@@ -311,9 +313,9 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
                 },
                 ..
             } => {
-                let _ = types.ty_checked(*return_type)?;
+                types.check(*return_type)?;
                 for arg in args {
-                    let _ = types.ty_checked(*arg)?;
+                    types.check(*arg)?;
                 }
             }
             CtfType::Struct {
@@ -321,8 +323,8 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
                 ..
             } => {
                 for CtfMember { name, type_id, .. } in members {
-                    let _ = strings.check(*name)?;
-                    let _ = types.ty_checked(*type_id)?;
+                    strings.check(*name)?;
+                    types.check(*type_id)?;
                 }
             }
             CtfType::Union {
@@ -330,8 +332,8 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
                 ..
             } => {
                 for CtfMember { name, type_id, .. } in members {
-                    let _ = strings.check(*name)?;
-                    let _ = types.ty_checked(*type_id)?;
+                    strings.check(*name)?;
+                    types.check(*type_id)?;
                 }
             }
             CtfType::Enum {
@@ -339,7 +341,7 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
                 ..
             } => {
                 for CtfEnumerator { name, .. } in enumerators {
-                    let _ = strings.check(*name)?;
+                    strings.check(*name)?;
                 }
             }
             CtfType::Forward { .. } => {}
@@ -347,25 +349,25 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
                 ty: CtfTypedef { target_type, .. },
                 ..
             } => {
-                let _ = types.ty_checked(*target_type)?;
+                types.check(*target_type)?;
             }
             CtfType::Volatile {
                 ty: CtfVolatile { target_type, .. },
                 ..
             } => {
-                let _ = types.ty_checked(*target_type)?;
+                types.check(*target_type)?;
             }
             CtfType::Const {
                 ty: CtfConst { target_type, .. },
                 ..
             } => {
-                let _ = types.ty_checked(*target_type)?;
+                types.check(*target_type)?;
             }
             CtfType::Restrict {
                 ty: CtfRestrict { target_type, .. },
                 ..
             } => {
-                let _ = types.ty_checked(*target_type)?;
+                types.check(*target_type)?;
             }
         }
     }
@@ -540,6 +542,11 @@ impl TypeTable {
         };
 
         Ok(ty)
+    }
+
+    pub fn check<'ctf>(&'ctf self, id: TypeId) -> Result<()> {
+        let _ = self.ty_checked(id)?;
+        Ok(())
     }
 
     pub fn as_slice(&self) -> &[CtfType] {
@@ -813,13 +820,6 @@ impl CtfType {
             return "";
         };
         ctf.str(id)
-    }
-
-    fn name_checked<'ctf>(&self, strings: &'ctf UncheckedStringTable) -> Result<&'ctf str> {
-        let Some(id) = self.name_id() else {
-            return Ok("");
-        };
-        strings.get_checked(id)
     }
 
     fn name_id(&self) -> Option<StrId> {
