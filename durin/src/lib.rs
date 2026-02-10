@@ -484,17 +484,20 @@ impl StrId {
             StringTableType::External
         }
     }
-}
 
-impl TryFrom<u32> for StrId {
-    type Error = Error;
-
-    fn try_from(value: u32) -> Result<Self> {
+    pub(crate) fn from_u32(value: u32) -> Result<Self> {
         if value > Self::MAX {
             return Err(Error::invalid_str_offset(value));
         }
 
         Ok(Self(value))
+    }
+}
+
+impl Default for StrId {
+    fn default() -> Self {
+        // StrId 0 is always present and points to an empty string.
+        Self(0)
     }
 }
 
@@ -515,7 +518,7 @@ impl TypeId {
         self.0
     }
 
-    pub(crate) fn from_int(value: u16) -> Result<Self> {
+    pub(crate) fn from_u16(value: u16) -> Result<Self> {
         if value == 0 {
             return Err(Error::invalid_type_index(value));
         }
@@ -523,6 +526,8 @@ impl TypeId {
         Ok(Self(value))
     }
 }
+
+pub(crate) const VARARGS_ID: u16 = 0;
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[repr(u16)]

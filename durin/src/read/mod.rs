@@ -1,5 +1,6 @@
 use crate::constants::*;
-use crate::{CtfHeader, CtfPreamble, Error, Result, StrId, StringTableType, TypeId, TypeKind};
+use crate::{CtfHeader, CtfPreamble, Error, Result, StrId, TypeId, TypeKind, VARARGS_ID};
+use strings::UncheckedStringTable;
 
 use flate2::read::ZlibDecoder;
 use scroll::Pread;
@@ -9,6 +10,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
 use std::str;
+
+pub use strings::StringTable;
+
+mod strings;
 
 const HEADER_SIZE: usize = 36;
 
@@ -87,11 +92,18 @@ impl CtfReader {
         let objects = read_objects(&header, &data)?;
         let functions = Vec::new(); // TODO
         let mut types = TypeTable::load(&header, &data)?;
-        let strings = StringTable::new(&header, &data);
+        let unchecked_strings = UncheckedStringTable::new(&header, &data);
 
         // TODO how expensive is this check? Do we care?
         // If this is a real library we should make this optional.
-        validate_types(&types, &strings)?;
+        validate_labels(&labels, &types, &unchecked_strings)?;
+        validate_objects(&objects, &types)?;
+        validate_functions(&functions, &types)?;
+        validate_types(&types, &unchecked_strings)?;
+
+        // We've now checked every source of StrIds and know that all
+        // ids present point to a valid `&str`.
+        let strings = StringTable::from(unchecked_strings);
 
         update_large_enums(&mut types, &strings)?;
 
@@ -221,7 +233,7 @@ fn read_objects(header: &CtfHeader, data: &[u8]) -> Result<Vec<TypeId>> {
     let mut objects = Vec::new();
     while *offset < obj_data.len() {
         let raw_id: u16 = obj_data.gread(offset)?;
-        let object = TypeId::from_int(raw_id)?;
+        let object = TypeId::from_u16(raw_id)?;
 
         objects.push(object);
     }
@@ -229,9 +241,46 @@ fn read_objects(header: &CtfHeader, data: &[u8]) -> Result<Vec<TypeId>> {
     Ok(objects)
 }
 
+/// Iterate over labels and confirm that all type and string references are
+/// valid.
+fn validate_labels(
+    labels: &[CtfLabel],
+    types: &TypeTable,
+    strings: &UncheckedStringTable,
+) -> Result<()> {
+    for label in labels {
+        strings.check(label.label)?;
+        if let Some(ty) = label.typeidx {
+            let _ = types.ty_checked(ty)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Iterate over objects and confirm that all type references are valid.
+fn validate_objects(objects: &[TypeId], types: &TypeTable) -> Result<()> {
+    for ty in objects {
+        let _ = types.ty_checked(*ty)?;
+    }
+
+    Ok(())
+}
+
+/// Iterate over functions and confirm that all type and string references are
+/// valid.
+fn validate_functions(functions: &[TypeId], _types: &TypeTable) -> Result<()> {
+    // TODO
+    for _func in functions {
+        // TODO
+    }
+
+    Ok(())
+}
+
 /// Iterate over types and confirm that all type and string references are
 /// valid.
-fn validate_types(types: &TypeTable, strings: &StringTable) -> Result<()> {
+fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<()> {
     for ty in types.as_slice() {
         let _ = ty.name_checked(strings)?;
         match ty {
@@ -272,7 +321,7 @@ fn validate_types(types: &TypeTable, strings: &StringTable) -> Result<()> {
                 ..
             } => {
                 for CtfMember { name, type_id, .. } in members {
-                    let _ = strings.get_checked(*name)?;
+                    let _ = strings.check(*name)?;
                     let _ = types.ty_checked(*type_id)?;
                 }
             }
@@ -281,7 +330,7 @@ fn validate_types(types: &TypeTable, strings: &StringTable) -> Result<()> {
                 ..
             } => {
                 for CtfMember { name, type_id, .. } in members {
-                    let _ = strings.get_checked(*name)?;
+                    let _ = strings.check(*name)?;
                     let _ = types.ty_checked(*type_id)?;
                 }
             }
@@ -290,7 +339,7 @@ fn validate_types(types: &TypeTable, strings: &StringTable) -> Result<()> {
                 ..
             } => {
                 for CtfEnumerator { name, .. } in enumerators {
-                    let _ = strings.get_checked(*name)?;
+                    let _ = strings.check(*name)?;
                 }
             }
             CtfType::Forward { .. } => {}
@@ -383,8 +432,11 @@ impl TryFromCtx<'_, ()> for CtfHeader {
     fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let parlabel = from.gread(offset)?;
-        let parname = from.gread(offset)?;
+        let parlabel_raw = from.gread(offset)?;
+        let parlabel = StrId::from_u32(parlabel_raw)?;
+        let parname_raw = from.gread(offset)?;
+        let parname = StrId::from_u32(parname_raw)?;
+
         let lbloff = from.gread(offset)?;
         if lbloff % 2 != 0 {
             return Err(Error::misaligned_label_offset(lbloff));
@@ -420,28 +472,6 @@ impl TryFromCtx<'_, ()> for CtfHeader {
     }
 }
 
-impl TryFromCtx<'_, ()> for StrId {
-    type Error = Error;
-
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
-        let raw: u32 = from.pread(0)?;
-        let val = Self::try_from(raw)?;
-
-        Ok((val, size_of::<Self>()))
-    }
-}
-
-// impl TryFromCtx<'_, ()> for TypeId {
-//     type Error = Error;
-//
-//     fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
-//         let raw: u16 = from.pread(0)?;
-//         let val = Self::from_int(raw)?;
-//
-//         Ok((val, size_of::<Self>()))
-//     }
-// }
-
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CtfLabel {
     /// Ref to name of label.
@@ -462,9 +492,15 @@ impl TryFromCtx<'_, ()> for CtfLabel {
     fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let label = from.gread(offset)?;
+        let label_raw = from.gread(offset)?;
+        let label = StrId::from_u32(label_raw)?;
         let idx_int: u32 = from.gread(offset)?;
-        let typeidx = TypeId::from_int(idx_int as u16).ok();
+        let typeidx = if idx_int == VARARGS_ID as u32 {
+            None
+        } else {
+            let ty = TypeId::from_u16(idx_int as u16)?;
+            Some(ty)
+        };
 
         Ok((Self { label, typeidx }, *offset))
     }
@@ -482,7 +518,7 @@ impl TypeTable {
         let types_data = &data[types_start..types_end];
 
         let offset = &mut 0;
-        let mut id = TypeId::from_int(1).unwrap();
+        let mut id = TypeId::from_u16(1).unwrap();
 
         let mut types = Vec::new();
         // First slot is empty, but we use Unknown as a placeholder
@@ -491,7 +527,7 @@ impl TypeTable {
         while *offset < types_data.len() {
             let ty = types_data.gread_with(offset, id)?;
             types.push(ty);
-            let new_id = TypeId::from_int(id.get() + 1)?;
+            let new_id = TypeId::from_u16(id.get() + 1)?;
             id = new_id;
         }
 
@@ -512,59 +548,6 @@ impl TypeTable {
 
     pub fn as_slice_mut(&mut self) -> &mut [CtfType] {
         &mut self.types
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct StringTable {
-    inner: Vec<u8>,
-}
-
-impl StringTable {
-    fn new(header: &CtfHeader, data: &[u8]) -> Self {
-        let str_start = header.stroff as usize;
-        let str_end = str_start + header.strlen as usize;
-
-        StringTable {
-            inner: data[str_start..str_end].to_vec(),
-        }
-    }
-
-    /// Retrieve a string from the string table.
-    fn get<'a>(&'a self, id: StrId) -> &'a str {
-        // UNWRAP: We confirm in `validate_types` that all referenced strings
-        // are valid.
-        self.get_checked(id).unwrap()
-    }
-
-    /// Retrieve a string from the string table, confirming it has a valid
-    /// index, is correctly encoded, and is in the expected table.
-    fn get_checked<'a>(&'a self, id: StrId) -> Result<&'a str> {
-        if matches!(id.table(), StringTableType::External) {
-            return Err(Error::external_str(id));
-        }
-
-        let bytes = self
-            .inner
-            .get(id.offset() as usize..)
-            .ok_or_else(|| Error::missing_str(id))?;
-
-        let Some(substr) = bytes.split(|&b| b == 0).next() else {
-            return Err(Error::unterminated_str(id));
-        };
-
-        let s = str::from_utf8(substr).map_err(|_| Error::invalid_str_encoding(id))?;
-        Ok(s)
-    }
-}
-
-impl fmt::Debug for StringTable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let iter = self
-            .inner
-            .split(|&b| b == 0)
-            .map(|s| str::from_utf8(s).unwrap());
-        f.debug_map().entries(iter.enumerate()).finish()
     }
 }
 
@@ -832,7 +815,7 @@ impl CtfType {
         ctf.str(id)
     }
 
-    fn name_checked<'ctf>(&self, strings: &'ctf StringTable) -> Result<&'ctf str> {
+    fn name_checked<'ctf>(&self, strings: &'ctf UncheckedStringTable) -> Result<&'ctf str> {
         let Some(id) = self.name_id() else {
             return Ok("");
         };
@@ -964,7 +947,9 @@ impl TryFromCtx<'_, TypeId> for CtfType {
     fn try_from_ctx(from: &[u8], id: TypeId) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let name: StrId = from.gread(offset)?;
+        let name_raw = from.gread(offset)?;
+        let name = StrId::from_u32(name_raw)?;
+
         let meta: CtfMetadata = from.gread(offset)?;
         let size: u16 = from.gread(offset)?;
 
@@ -994,7 +979,7 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 }
             }
             TypeKind::Pointer => {
-                let target_type = TypeId::from_int(size)?;
+                let target_type = TypeId::from_u16(size)?;
                 Self::Pointer {
                     id,
                     ty: CtfPointer { name, target_type },
@@ -1002,10 +987,10 @@ impl TryFromCtx<'_, TypeId> for CtfType {
             }
             TypeKind::Array => {
                 let element_type_raw = from.gread(offset)?;
-                let element_type = TypeId::from_int(element_type_raw)?;
+                let element_type = TypeId::from_u16(element_type_raw)?;
 
                 let index_type_raw = from.gread(offset)?;
-                let index_type = TypeId::from_int(index_type_raw)?;
+                let index_type = TypeId::from_u16(index_type_raw)?;
 
                 let nelems = from.gread(offset)?;
                 Self::Array {
@@ -1019,12 +1004,21 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 }
             }
             TypeKind::Function => {
-                let return_type = TypeId::from_int(size)?;
+                let return_type = TypeId::from_u16(size)?;
                 let vlen = meta.vlen();
                 let mut args = Vec::new();
-                for _ in 0..vlen {
+                let mut is_varargs = false;
+
+                for i in 0..vlen {
                     let arg_raw = from.gread(offset)?;
-                    let arg = TypeId::from_int(arg_raw)?;
+
+                    // The final argument may a placeholder indicating varargs.
+                    if i == vlen - 1 && arg_raw == VARARGS_ID {
+                        is_varargs = true;
+                        continue;
+                    }
+
+                    let arg = TypeId::from_u16(arg_raw)?;
                     args.push(arg);
                 }
                 // TODO is this needed?
@@ -1037,7 +1031,7 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                         name,
                         return_type,
                         args,
-                        is_varargs: false,
+                        is_varargs,
                     },
                 }
             }
@@ -1104,28 +1098,28 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 ty: CtfForward { name },
             },
             TypeKind::Typedef => {
-                let target_type = TypeId::from_int(size)?;
+                let target_type = TypeId::from_u16(size)?;
                 Self::Typedef {
                     id,
                     ty: CtfTypedef { name, target_type },
                 }
             }
             TypeKind::Volatile => {
-                let target_type = TypeId::from_int(size)?;
+                let target_type = TypeId::from_u16(size)?;
                 Self::Volatile {
                     id,
                     ty: CtfVolatile { name, target_type },
                 }
             }
             TypeKind::Const => {
-                let target_type = TypeId::from_int(size)?;
+                let target_type = TypeId::from_u16(size)?;
                 Self::Const {
                     id,
                     ty: CtfConst { name, target_type },
                 }
             }
             TypeKind::Restrict => {
-                let target_type = TypeId::from_int(size)?;
+                let target_type = TypeId::from_u16(size)?;
                 Self::Restrict {
                     id,
                     ty: CtfRestrict { name, target_type },
@@ -1257,10 +1251,12 @@ impl TryFromCtx<'_, ()> for CtfMember {
     fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let name: StrId = from.gread(offset)?;
-        // TODO this will fail on varargs
+        let name_raw = from.gread(offset)?;
+        let name = StrId::from_u32(name_raw)?;
+
         let type_id_raw = from.gread(offset)?;
-        let type_id = TypeId::from_int(type_id_raw)?;
+        let type_id = TypeId::from_u16(type_id_raw)?;
+
         let offset_bits = from.gread(offset)?;
 
         Ok((
@@ -1286,7 +1282,9 @@ impl TryFromCtx<'_, ()> for CtfEnumerator {
     fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let name: StrId = from.gread(offset)?;
+        let name_raw = from.gread(offset)?;
+        let name = StrId::from_u32(name_raw)?;
+
         // CTF requires that enum values be 4 bytes, but we're going to work
         // around this by passing long values in the name. Parse the inline
         // value as an i32. Once all strings are parsed we will take a second
