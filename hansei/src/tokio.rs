@@ -33,6 +33,63 @@ pub struct Context<'ctf> {
 }
 
 impl<'ctf> Context<'ctf> {
+    fn new(
+        proc: &'ctf Proc,
+        ctf: &'ctf CtfReader,
+        symbols: &HashMap<u64, &'static str>,
+    ) -> Result<Self> {
+        let lwps = proc.lwps()?;
+        let mappings = proc.mappings()?;
+
+        let Some(main_lwp) = lwps.first() else {
+            anyhow::bail!("no lwps found in proc");
+        };
+        let Some(header_ty) = ctf.find_ty(
+            "*const_tokio::runtime::task::core::Header",
+            TypeKind::Pointer,
+        ) else {
+            anyhow::bail!("failed to find *const_tokio::runtime::task::core::Header CTF type");
+        };
+
+        let Some(trailer_ty) = ctf.find_ty("tokio::runtime::task::core::Trailer", TypeKind::Struct)
+        else {
+            anyhow::bail!("failed to find tokio::runtime::task::core::Trailer CTF type");
+        };
+
+        let Some(location_ty) = ctf.find_ty("core::panic::location::Location", TypeKind::Struct)
+        else {
+            anyhow::bail!("failed to find core::panic::location::Location CTF type");
+        };
+
+        let Some(park_ty) = ctf.find_ty(
+            "alloc::sync::Arc<tokio::runtime::park::Inner,_alloc::alloc::Global>",
+            TypeKind::Struct,
+        ) else {
+            anyhow::bail!(
+                "failed to find alloc::sync::Arc<tokio::runtime::park::Inner, alloc::alloc::Global> CTF type"
+            );
+        };
+
+        let tokio_version = extract_tokio_version(&ctf).context("failed to find tokio version")?;
+
+        // TODO - This assumes the timestamp is valid for all threads. I think
+        // this is true, but haven't validated.
+        let now = RawInstant::try_from(main_lwp.tstamp)?;
+
+        Ok(Context {
+            proc,
+            ctf,
+            symbols: RefCell::new(symbols.clone()),
+            mappings,
+            header_id: header_ty.id(),
+            trailer_id: trailer_ty.id(),
+            location_id: location_ty.id(),
+            park_id: park_ty.id(),
+            tokio_version,
+            now: now.into(),
+        })
+    }
+
     fn lookup_symbol(&self, addr: u64) -> &'static str {
         let mut symbols = self.symbols.borrow_mut();
 
@@ -62,7 +119,7 @@ impl<'ctf> ParseCtx<'ctf> for Context<'ctf> {
 pub struct TokioRuntime {
     pub workers: BTreeMap<u32, WorkerState>,
     pub scheduler: Scheduler,
-    pub now: RawInstant,
+    pub now: Instant,
 }
 
 impl TokioRuntime {
@@ -72,40 +129,11 @@ impl TokioRuntime {
         symbols: &mut HashMap<u64, &'static str>,
         capture_backtraces: bool,
     ) -> Result<Self> {
+        let ctx = Context::new(proc, ctf, symbols).context("failed to create Context")?;
+
         let lwps = proc.lwps()?;
         let status = proc.status();
         let brk_range = status.brk_range;
-        let mappings = proc.mappings()?;
-
-        let Some(main_lwp) = lwps.first() else {
-            anyhow::bail!("no lwps found in proc");
-        };
-
-        let Some(header_ty) = ctf.find_ty(
-            "*const_tokio::runtime::task::core::Header",
-            TypeKind::Pointer,
-        ) else {
-            anyhow::bail!("failed to find *const_tokio::runtime::task::core::Header CTF type");
-        };
-
-        let Some(trailer_ty) = ctf.find_ty("tokio::runtime::task::core::Trailer", TypeKind::Struct)
-        else {
-            anyhow::bail!("failed to find tokio::runtime::task::core::Trailer CTF type");
-        };
-
-        let Some(location_ty) = ctf.find_ty("core::panic::location::Location", TypeKind::Struct)
-        else {
-            anyhow::bail!("failed to find core::panic::location::Location CTF type");
-        };
-
-        let Some(park_ty) = ctf.find_ty(
-            "alloc::sync::Arc<tokio::runtime::park::Inner,_alloc::alloc::Global>",
-            TypeKind::Struct,
-        ) else {
-            anyhow::bail!(
-                "failed to find alloc::sync::Arc<tokio::runtime::park::Inner, alloc::alloc::Global> CTF type"
-            );
-        };
 
         let Some(ctx_ty) = ctf.find_ty("tokio::runtime::context::Context", TypeKind::Struct) else {
             anyhow::bail!("failed to find tokio::runtime::context::Context CTF type");
@@ -118,25 +146,6 @@ impl TokioRuntime {
             None
         };
         let mut workers = BTreeMap::new();
-
-        let tokio_version = extract_tokio_version(&ctf).context("failed to find tokio version")?;
-
-        // TODO - This assumes the timestamp is valid for all threads. I think
-        // this is true, but haven't validated.
-        let now = RawInstant::try_from(main_lwp.tstamp)?;
-
-        let ctx = Context {
-            proc,
-            ctf,
-            symbols: RefCell::new(symbols.clone()),
-            mappings,
-            header_id: header_ty.id(),
-            trailer_id: trailer_ty.id(),
-            location_id: location_ty.id(),
-            park_id: park_ty.id(),
-            tokio_version,
-            now: now.into(),
-        };
 
         let mut scheduler = None;
         for lwp in &lwps {
@@ -181,7 +190,7 @@ impl TokioRuntime {
         Ok(Self {
             workers,
             scheduler,
-            now,
+            now: ctx.now,
         })
     }
 
