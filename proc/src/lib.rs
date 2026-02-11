@@ -618,7 +618,7 @@ impl Proc {
     }
 
     pub fn pread_exact(&self, buf: &mut [u8], address: u64) -> Result<()> {
-        if !self.pread(buf, address)? == buf.len() as u64 {
+        if self.pread(buf, address)? != buf.len() as u64 {
             return Err(Error::unexpected_eof());
         }
 
