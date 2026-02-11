@@ -659,10 +659,18 @@ impl Proc {
         }
     }
 
-    /// Get the values of a LWP's `ul_ftsd` field from its `ulwp_t`.
-    /// This contains the thread-local storage (TLS) for the LWP, also known as
+    /// Get the values of a LWP's `ul_ftsd` field from its `ulwp_t`. This
+    /// contains the thread-local storage (TLS) for the LWP, also known as
     /// thread-specific data (TSD).
     pub fn lwp_tsd(&self, lwp: u32) -> Result<[u64; 9]> {
+        let regs = self.regs(lwp)?;
+        self.tsd_from_regs(&regs)
+    }
+
+    /// Use the provided register set to find the values of a LWP's `ul_ftsd`
+    /// field from its `ulwp_t`. This contains the thread-local storage (TLS)
+    /// for the LWP, also known as thread-specific data (TSD).
+    pub fn tsd_from_regs(&self, regs: &Regs) -> Result<[u64; 9]> {
         // A thread's `ulwp_t` struct from libc is not exposed as part of
         // libproc. We can trivially get its address via `%fsbase`, but
         // generating bindings would then drag in a large part of the OS which
@@ -678,8 +686,7 @@ impl Proc {
         // SAFETY: Any valid alignment for [u64; 9] is also valid [u8; 72].
         let mut bytes: [u8; 72] = unsafe { mem::transmute(tls) };
 
-        let regs = self.regs(lwp)?;
-        self.pread(&mut bytes, regs.fsbase + UL_FTSD_OFFSET)?;
+        self.pread_exact(&mut bytes, regs.fsbase + UL_FTSD_OFFSET)?;
 
         // SAFETY: Returning to the original type.
         let tls = unsafe { mem::transmute(bytes) };
