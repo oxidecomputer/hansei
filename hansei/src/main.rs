@@ -163,15 +163,18 @@ fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
 
     let main_lwp = proc.lwp_handle(1)?;
 
-    // This assumes that process mappings remain stable over time, which isn't
-    // the case. If we're polling for a few seconds its probably fine.
-    // TODO fix this
+    // Process mappings may change at any time, so for arbitrary addresses
+    // reusing an old copy in the Context is invalid. However, the scheduler
+    // addresses we're looking at here remain stable, so as long as they are
+    // valid now we can assume they will remain valid for the remainder of the
+    // process's lifetime.
     let ctx = tokio::Context::new(&proc, &main_lwp, &ctf, &symbols)
         .context("failed to create Context")?;
 
     let start_pause = Instant::now();
     // We need to read the worker's thread-local contexts.
-    // We must stop the process in order to access register state.
+    // We must stop the process in order to access register state, which we use
+    // to locate the address of the LWP's thread-local storage.
     proc.stop(0).context("failed to stop process")?;
 
     let lwps = proc.lwps().context("failed to read lwps")?;
