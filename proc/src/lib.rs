@@ -540,6 +540,8 @@ impl Proc {
                         return 0;
                     }
 
+                    let regs = status.pr_reg.into();
+
                     let stack = stack.assume_init();
                     let stack_start = stack.ss_sp as u64;
                     let stack_end = stack_start + stack.ss_size as u64;
@@ -551,6 +553,7 @@ impl Proc {
 
                     cb_data.data.push(LwpInfo {
                         tid: status.pr_lwpid as u32,
+                        regs,
                         stack_range: stack_start..stack_end,
                         tstamp,
                     });
@@ -914,6 +917,8 @@ pub struct Status {
 pub struct LwpInfo {
     /// The LWP's thread id.
     pub tid: u32,
+    /// The LWP's register state.
+    pub regs: Regs,
     /// The address range of the LWP's stack.
     pub stack_range: Range<u64>,
     /// The timestamp the LWP was stopped.
