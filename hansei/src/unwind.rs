@@ -397,12 +397,8 @@ impl<'a> Unwinder<'a> {
 fn load_object(object_range: &Range<u64>, core: &Proc) -> Result<Vec<u8>> {
     let object_len = object_range.end - object_range.start;
     let mut buf = vec![0u8; object_len as usize];
-    let read_len = core
-        .pread(&mut buf, object_range.start)
+    core.pread_exact(&mut buf, object_range.start)
         .context("failed to read libc mapping from core")?;
-    if read_len != object_len {
-        anyhow::bail!("unexpected pread len {read_len:x} reading object, expected {object_len:x}");
-    }
 
     Ok(buf)
 }
