@@ -157,7 +157,7 @@ impl<'a> CtfWriter<'a> {
         let mut lbl_data = Vec::new();
         if let Some(label) = &self.label {
             let label_name_off = self.strings.add_string(label);
-            let last_type_idx = self.types.len() as u32;
+            let last_type_idx = (self.types.len() - 1) as u32;
             lbl_data.iowrite_with(label_name_off, LE)?;
             lbl_data.iowrite_with(last_type_idx, LE)?;
         }
