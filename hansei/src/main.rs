@@ -59,6 +59,11 @@ struct Dump {
     /// Don't include thread backtraces.
     #[arg(long, action = ArgAction::SetTrue, overrides_with="backtrace")]
     no_backtrace: bool,
+
+    /// Dumping a live process is potentially destructive.
+    /// Required if --pid is passed.
+    #[arg(long, short = 'w')]
+    destructive: bool,
 }
 
 impl Dump {
@@ -105,7 +110,15 @@ fn main() {
 
 fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
     let proc = match (args.source.pid, &args.source.core) {
-        (Some(pid), None) => Proc::grab_pid(pid).with_context(|| "failed to open pid {pid}")?,
+        (Some(pid), None) => {
+            anyhow::ensure!(
+                args.destructive,
+                "This command is potentially destructive when run against live \
+                processes. Pass the `-w` / `--destructive` flag to allow it."
+            );
+
+            Proc::grab_pid(pid).with_context(|| "failed to grab pid {pid}")?
+        }
         (None, Some(core)) => {
             Proc::open_core(core).with_context(|| format!("failed to open {}", core.display()))?
         }
