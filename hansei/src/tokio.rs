@@ -3,7 +3,7 @@ use crate::unwind::Backtrace;
 use anyhow::{Context as _, Result};
 use durin::read::CtfReader;
 use durin::{TypeId, TypeKind};
-use proc::{Mappings, Proc};
+use proc::{Lwp, LwpInfo, Mappings, Proc, Regs};
 use regex::Regex;
 use reify::{Error, ParseCtx, ParseWithCtf, ReadFromProc, TypeInfo, TypeInfoRef};
 use semver::Version;
@@ -24,68 +24,30 @@ pub struct Context<'ctf> {
     pub ctf: &'ctf CtfReader,
     pub symbols: RefCell<HashMap<u64, &'static str>>,
     pub mappings: Mappings,
-    pub header_id: TypeId,
-    pub trailer_id: TypeId,
-    pub location_id: TypeId,
-    pub park_id: TypeId,
-    pub tokio_version: Version,
+    pub tokio_info: TokioInfo,
     pub now: Instant,
 }
 
 impl<'ctf> Context<'ctf> {
-    fn new(
+    pub fn new(
         proc: &'ctf Proc,
+        main_lwp: &'ctf Lwp,
         ctf: &'ctf CtfReader,
         symbols: &HashMap<u64, &'static str>,
     ) -> Result<Self> {
-        let lwps = proc.lwps()?;
         let mappings = proc.mappings()?;
-
-        let Some(main_lwp) = lwps.first() else {
-            anyhow::bail!("no lwps found in proc");
-        };
-        let Some(header_ty) = ctf.find_ty(
-            "*const_tokio::runtime::task::core::Header",
-            TypeKind::Pointer,
-        ) else {
-            anyhow::bail!("failed to find *const_tokio::runtime::task::core::Header CTF type");
-        };
-
-        let Some(trailer_ty) = ctf.find_ty("tokio::runtime::task::core::Trailer", TypeKind::Struct)
-        else {
-            anyhow::bail!("failed to find tokio::runtime::task::core::Trailer CTF type");
-        };
-
-        let Some(location_ty) = ctf.find_ty("core::panic::location::Location", TypeKind::Struct)
-        else {
-            anyhow::bail!("failed to find core::panic::location::Location CTF type");
-        };
-
-        let Some(park_ty) = ctf.find_ty(
-            "alloc::sync::Arc<tokio::runtime::park::Inner,_alloc::alloc::Global>",
-            TypeKind::Struct,
-        ) else {
-            anyhow::bail!(
-                "failed to find alloc::sync::Arc<tokio::runtime::park::Inner, alloc::alloc::Global> CTF type"
-            );
-        };
-
-        let tokio_version = extract_tokio_version(&ctf).context("failed to find tokio version")?;
 
         // TODO - This assumes the timestamp is valid for all threads. I think
         // this is true, but haven't validated.
-        let now = RawInstant::try_from(main_lwp.tstamp)?;
+        let now = RawInstant::try_from(main_lwp.status())?;
 
+        let tokio_info = TokioInfo::new(ctf)?;
         Ok(Context {
             proc,
             ctf,
             symbols: RefCell::new(symbols.clone()),
             mappings,
-            header_id: header_ty.id(),
-            trailer_id: trailer_ty.id(),
-            location_id: location_ty.id(),
-            park_id: park_ty.id(),
-            tokio_version,
+            tokio_info,
             now: now.into(),
         })
     }
@@ -116,6 +78,263 @@ impl<'ctf> ParseCtx<'ctf> for Context<'ctf> {
 }
 
 #[derive(Debug)]
+pub struct TokioInfo {
+    pub header_id: TypeId,
+    pub trailer_id: TypeId,
+    pub location_id: TypeId,
+    pub park_id: TypeId,
+    pub tokio_version: Version,
+}
+
+impl TokioInfo {
+    fn new(ctf: &CtfReader) -> Result<Self> {
+        let Some(header_ty) = ctf.find_ty(
+            "*const_tokio::runtime::task::core::Header",
+            TypeKind::Pointer,
+        ) else {
+            anyhow::bail!("failed to find *const_tokio::runtime::task::core::Header CTF type");
+        };
+
+        let Some(trailer_ty) = ctf.find_ty("tokio::runtime::task::core::Trailer", TypeKind::Struct)
+        else {
+            anyhow::bail!("failed to find tokio::runtime::task::core::Trailer CTF type");
+        };
+
+        let Some(location_ty) = ctf.find_ty("core::panic::location::Location", TypeKind::Struct)
+        else {
+            anyhow::bail!("failed to find core::panic::location::Location CTF type");
+        };
+
+        let Some(park_ty) = ctf.find_ty(
+            "alloc::sync::Arc<tokio::runtime::park::Inner,_alloc::alloc::Global>",
+            TypeKind::Struct,
+        ) else {
+            anyhow::bail!(
+                "failed to find alloc::sync::Arc<tokio::runtime::park::Inner, alloc::alloc::Global> CTF type"
+            );
+        };
+
+        let tokio_version =
+            Self::extract_tokio_version(&ctf).context("failed to find tokio version")?;
+
+        Ok(Self {
+            header_id: header_ty.id(),
+            trailer_id: trailer_ty.id(),
+            location_id: location_ty.id(),
+            park_id: park_ty.id(),
+            tokio_version,
+        })
+    }
+
+    fn extract_tokio_version(ctf: &CtfReader) -> Result<Version> {
+        let Some(tokio_ver_ty) = ctf
+            .types()
+            .iter()
+            .find(|t| t.kind() == TypeKind::Typedef && TOKIO_VER_PAT.is_match(t.name(ctf)))
+        else {
+            anyhow::bail!("failed to find tokio version typedef in CTF");
+        };
+
+        let Some(ver_match) = TOKIO_VER_PAT
+            .captures(tokio_ver_ty.name(&ctf))
+            .and_then(|c| c.get(1))
+        else {
+            anyhow::bail!(
+                "failed to find version string in {}",
+                tokio_ver_ty.name(ctf)
+            );
+        };
+
+        let ver = Version::parse(ver_match.as_str())?;
+        Ok(ver)
+    }
+}
+
+/// The minimal state needed to perform status polling.
+#[derive(Debug)]
+pub struct MinTokioState {
+    pub active: BTreeSet<u64>,
+    pub worker_ct: u64,
+    pub task_ct: u64,
+    pub io_driver: Option<usize>,
+}
+
+impl MinTokioState {
+    pub fn find_type_info<'a>(ctx: &Context<'a>, lwps: &[LwpInfo]) -> Result<TypeInfo<'a>> {
+        let status = ctx.proc.status();
+        let brk_range = status.brk_range;
+
+        let Some(ctx_ty) = ctx
+            .ctf
+            .find_ty("tokio::runtime::context::Context", TypeKind::Struct)
+        else {
+            anyhow::bail!("failed to find tokio::runtime::context::Context CTF type");
+        };
+
+        //let mut scheduler = None;
+        let mut sched_info = None;
+
+        for lwp in lwps {
+            if let Some(addr) = find_thd_context(&lwp.regs, &brk_range, &ctx.proc)
+                .context("failed to find thread-local context")?
+            {
+                let Some(info) = TypeInfo::from_addr(ctx, ctx_ty, addr)
+                    .context("failed to get type information")?
+                else {
+                    continue;
+                };
+
+                if sched_info.is_none() {
+                    let ctx_info = info
+                        .member(ctx, "current")?
+                        .member(ctx, "handle")?
+                        .member(ctx, "value")?
+                        .select_variant(ctx, "Some")?
+                        .select_variant(ctx, "MultiThread")?
+                        .deref_ptr(ctx)?;
+
+                    let info = ctx_info
+                        .member(ctx, "data")
+                        .context("failed to get scheduler info")?;
+
+                    sched_info = Some(info.to_owned());
+
+                    break;
+                }
+            }
+        }
+
+        let Some(sched_info) = sched_info else {
+            anyhow::bail!("failed to find scheduler");
+        };
+
+        Ok(sched_info)
+    }
+
+    pub fn parse<'a>(ctx: &Context<'a>, info: &TypeInfo<'a>) -> Result<Self> {
+        let scheduler = info
+            .parse::<MinScheduler, _>(&ctx)
+            .context("failed to parse scheduler")?;
+
+        let io_driver = scheduler
+            .parkers
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.is_parked_driving_io())
+            .map(|(i, _)| i);
+
+        Ok(Self {
+            active: scheduler.active_workers,
+            worker_ct: scheduler.idle.num_workers,
+            task_ct: scheduler.added,
+            io_driver,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct MinThreadCtx {
+    pub current_task_id: Option<u64>,
+    pub thread_id: Option<u64>,
+    pub worker_index: Option<u64>,
+    pub runtime: EnterRuntime,
+    pub budget: Budget,
+}
+
+impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for MinThreadCtx {
+    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+        let current_task_id = info.member(ctx, "current_task_id")?.parse(ctx)?;
+        let thread_id = info.member(ctx, "thread_id")?.parse(ctx)?;
+        let runtime = info.member(ctx, "runtime")?.parse(ctx)?;
+        let budget = info.member(ctx, "budget")?.parse(ctx)?;
+
+        let Some(sched_ptr) = info.member(ctx, "scheduler")?.try_deref_ptr(ctx)? else {
+            return Ok(Self {
+                current_task_id,
+                thread_id,
+                runtime,
+                budget,
+                worker_index: None,
+            });
+        };
+
+        let sched_info = sched_ptr.select_variant(ctx, "MultiThread")?.to_owned();
+
+        let worker_index = match sched_info.member(ctx, "worker")?.try_deref_ptr(ctx)? {
+            Some(worker) => {
+                let idx = worker
+                    .member(ctx, "data")?
+                    .member(ctx, "index")?
+                    .parse(ctx)?;
+                Some(idx)
+            }
+            None => None,
+        };
+
+        Ok(Self {
+            current_task_id,
+            thread_id,
+            worker_index,
+            runtime,
+            budget,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct MinScheduler {
+    pub parkers: Vec<Parker>,
+    pub inject_len: u64,
+    pub idle: Idle,
+    pub added: u64,
+    pub active_workers: BTreeSet<u64>,
+    pub synced: Synced,
+}
+
+impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for MinScheduler {
+    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+        let info = info.member(ctx, "shared")?;
+        let mut parkers = Vec::new();
+        info.member(ctx, "remotes")?
+            .boxed_slice_elements(ctx, |info| {
+                let unpark = info.member(ctx, "unpark")?.parse(ctx)?;
+                parkers.push(unpark);
+                Ok(())
+            })?;
+
+        let inject_len = info.member(ctx, "inject")?.parse(ctx)?;
+        let idle: Idle = info.member(ctx, "idle")?.parse(ctx)?;
+
+        let added = info
+            .member(ctx, "owned")?
+            .member(ctx, "list")?
+            .member(ctx, "added")?
+            .parse(ctx)?;
+
+        let synced: Synced = info
+            .member(ctx, "synced")?
+            .member(ctx, "data")?
+            .parse(ctx)?;
+
+        let mut active_workers = BTreeSet::new();
+        for i in 0u64..idle.num_workers {
+            if !synced.idle_sleepers.contains(&i) {
+                active_workers.insert(i);
+            }
+        }
+
+        Ok(Self {
+            parkers,
+            inject_len,
+            idle,
+            active_workers,
+            added,
+            synced,
+        })
+    }
+}
+
+#[derive(Debug)]
 pub struct TokioRuntime {
     pub workers: BTreeMap<u32, WorkerState>,
     pub scheduler: Scheduler,
@@ -126,10 +345,11 @@ impl TokioRuntime {
     pub fn parse(
         ctf: &CtfReader,
         proc: &Proc,
+        main_lwp: &Lwp,
         symbols: &mut HashMap<u64, &'static str>,
         capture_backtraces: bool,
     ) -> Result<Self> {
-        let ctx = Context::new(proc, ctf, symbols).context("failed to create Context")?;
+        let ctx = Context::new(proc, main_lwp, ctf, symbols).context("failed to create Context")?;
 
         let lwps = proc.lwps()?;
         let status = proc.status();
@@ -149,7 +369,7 @@ impl TokioRuntime {
 
         let mut scheduler = None;
         for lwp in &lwps {
-            if let Some(addr) = find_thd_context(lwp.tid, &brk_range, &ctx.proc)
+            if let Some(addr) = find_thd_context(&lwp.regs, &brk_range, &ctx.proc)
                 .context("failed to find thread-local context")?
             {
                 let Some(info) = TypeInfo::from_addr(&ctx, ctx_ty, addr)
@@ -221,39 +441,19 @@ pub struct WorkerState {
     pub backtrace: Option<Backtrace>,
 }
 
-fn extract_tokio_version(ctf: &CtfReader) -> Result<Version> {
-    let Some(tokio_ver_ty) = ctf
-        .types()
-        .iter()
-        .find(|t| t.kind() == TypeKind::Typedef && TOKIO_VER_PAT.is_match(t.name(ctf)))
-    else {
-        anyhow::bail!("failed to find tokio version typedef in CTF");
-    };
-
-    let Some(ver_match) = TOKIO_VER_PAT
-        .captures(tokio_ver_ty.name(&ctf))
-        .and_then(|c| c.get(1))
-    else {
-        anyhow::bail!(
-            "failed to find version string in {}",
-            tokio_ver_ty.name(ctf)
-        );
-    };
-
-    let ver = Version::parse(ver_match.as_str())?;
-    Ok(ver)
-}
-
 /// Find the address of the thread-local `tokio::runtime::context::Context` for
 /// this LWP, if present. The first three u64s of this type form a
 /// recognizeable pattern unlikely to be replicated by other types.
-fn find_thd_context(tid: u32, brk_range: &Range<u64>, proc: &Proc) -> Result<Option<u64>> {
-    let tls = proc.lwp_tsd(tid)?;
+fn find_thd_context(regs: &Regs, brk_range: &Range<u64>, proc: &Proc) -> Result<Option<u64>> {
+    let tls = proc
+        .tsd_from_regs(regs)
+        .context("failed to get thread-local data")?;
     for addr in tls {
         // The `tokio::runtime::context::Context` is heap allocated.
-        if !brk_range.contains(&addr) {
-            continue;
-        }
+        // So far I haven't observed this being located in an anonymous mmap.
+        //if !brk_range.contains(&addr) {
+        //    continue;
+        //}
         const CONTEXT_SIZE: u64 = 3 * size_of::<u64>() as u64;
         let mut buf = [0u8; CONTEXT_SIZE as usize];
 
@@ -1226,7 +1426,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
             .map_err(|e| Error::invalid_addr(spawn_ptr_addr).with_source(e))?;
 
         // The CTF isn't aware we have a *Location here, so manually find the type and parse.
-        let spawn_ty = ctx.ctf.ty(ctx.location_id);
+        let spawn_ty = ctx.ctf.ty(ctx.tokio_info.location_id);
         let spawn_buf = ctx.proc.read_type(ctx, spawn_ptr, spawn_ty)?;
         let spawn_info = info.clone().with_ty(spawn_ty).with_buf(&spawn_buf);
         let spawn_location = spawn_info.parse(ctx)?;
@@ -1236,7 +1436,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
         let trailer_offset: u64 = vtable_info.member(ctx, "trailer_offset")?.parse(ctx)?;
         let trailer_ptr = info.addr + trailer_offset;
 
-        let trailer_ty = ctx.ctf.ty(ctx.trailer_id);
+        let trailer_ty = ctx.ctf.ty(ctx.tokio_info.trailer_id);
         let trailer_buf = ctx.proc.read_type(ctx, trailer_ptr, trailer_ty)?;
         let trailer_info = info.clone().with_ty(trailer_ty).with_buf(&trailer_buf);
         let waker = trailer_info.member(ctx, "waker")?.parse(ctx)?;
@@ -1704,7 +1904,9 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Waker {
         let drop = ctx.lookup_symbol(drop_addr);
 
         let dependent_task = if wake == "tokio::runtime::task::waker::wake_by_val" {
-            let hdr_info = info.member(ctx, "data")?.with_ty(ctx.ctf.ty(ctx.header_id));
+            let hdr_info = info
+                .member(ctx, "data")?
+                .with_ty(ctx.ctf.ty(ctx.tokio_info.header_id));
             let hdr = hdr_info.parse(ctx)?;
             Some(hdr)
         } else {
@@ -1712,7 +1914,9 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Waker {
         };
 
         let dependent_park = if wake == "tokio::runtime::park::wake" {
-            let park_info = info.member(ctx, "data")?.with_ty(ctx.ctf.ty(ctx.park_id));
+            let park_info = info
+                .member(ctx, "data")?
+                .with_ty(ctx.ctf.ty(ctx.tokio_info.park_id));
             let park = park_info.deref_ptr(ctx)?.member(ctx, "data")?.parse(ctx)?;
             Some(park)
         } else {
@@ -1825,7 +2029,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TimeHandle {
         let time_source = info.member(ctx, "time_source")?.parse(ctx)?;
 
         let mut inner = info.member(ctx, "inner")?;
-        if ctx.tokio_version >= Version::new(1, 49, 0) {
+        if ctx.tokio_info.tokio_version >= Version::new(1, 49, 0) {
             inner = inner.select_variant(ctx, "Traditional")?;
         }
 

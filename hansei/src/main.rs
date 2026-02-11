@@ -111,14 +111,21 @@ fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
         }
         _ => unreachable!(),
     };
+    let main_lwp = proc.lwp_handle(1)?;
 
     let ctf_bytes =
         fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
     let ctf = CtfReader::load(&ctf_bytes)?;
 
     let mut symbols = HashMap::new();
-    let runtime = tokio::TokioRuntime::parse(&ctf, &proc, &mut symbols, args.capture_backtraces())
-        .context("failed to parse tokio state")?;
+    let runtime = tokio::TokioRuntime::parse(
+        &ctf,
+        &proc,
+        &main_lwp,
+        &mut symbols,
+        args.capture_backtraces(),
+    )
+    .context("failed to parse tokio state")?;
 
     let run_dur =
         Instant::from(runtime.now) - Instant::from(runtime.scheduler.driver.time.time_source);
@@ -147,91 +154,61 @@ fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
         fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
     let ctf = CtfReader::load(&ctf_bytes).context("failed to load CTF")?;
 
-    let mut symbols = HashMap::new();
-
-    // Pre-cache known symbol names, lookup is expensive.
-    let sym_names = [
-        "tokio::runtime::park::wake",
-        "tokio::runtime::park::wake_by_ref",
-        "tokio::runtime::park::clone",
-        "tokio::runtime::park::drop_waker",
-        "tokio::runtime::task::waker::wake_by_val",
-        "tokio::runtime::task::waker::wake_by_ref",
-        "tokio::runtime::task::waker::clone_waker",
-        "tokio::runtime::task::waker::drop_waker",
-        "tokio::util::wake::wake_arc_raw",
-        "tokio::util::wake::wake_by_ref_arc_raw",
-        "tokio::util::wake::clone_arc_raw",
-        "tokio::util::wake::drop_arc_raw",
-        "futures_util::stream::futures_unordered::task::waker_ref::wake_arc_raw",
-        "futures_util::stream::futures_unordered::task::waker_ref::wake_by_ref_arc_raw",
-        "futures_util::stream::futures_unordered::task::waker_ref::clone_arc_raw",
-        "futures_util::stream::futures_unordered::task::waker_ref::drop_arc_raw",
-    ];
-
-    // There may be multiple addresses for a given method, most frequently due
-    // to generics, but also inlining in some cases. Scan all symbols for
-    for symbol in proc.symbols()? {
-        let demangled = format!("{:#}", rustc_demangle::demangle(&symbol.name));
-        if let Some(&sym_name) = sym_names.iter().find(|&&n| demangled == n) {
-            symbols.insert(symbol.st_value, sym_name);
-        }
-    }
+    let symbols = HashMap::new();
 
     let freq = args
         .freq
         .map(|f| Duration::from_millis(f))
         .unwrap_or(DEFAULT_FREQ);
 
+    let main_lwp = proc.lwp_handle(1)?;
+
+    // This assumes that process mappings remain stable over time, which isn't
+    // the case. If we're polling for a few seconds its probably fine.
+    // TODO fix this
+    let ctx = tokio::Context::new(&proc, &main_lwp, &ctf, &symbols)
+        .context("failed to create Context")?;
+
+    let start_pause = Instant::now();
+    // We need to read the worker's thread-local contexts.
+    // We must stop the process in order to access register state.
+    proc.stop(0).context("failed to stop process")?;
+
+    let lwps = proc.lwps().context("failed to read lwps")?;
+
+    proc.run().context("failed to set process to run")?;
+    let end_pause = Instant::now();
+    writeln!(out, "paused process for {:?}", end_pause - start_pause)?;
+
+    // We assume that the address of the scheduler handle will remain constant
+    // over time. It's not `Pin`, but it is an `Arc` and I don't think the
+    // underlying heap pointer will be moved.
+    let sched_info = tokio::MinTokioState::find_type_info(&ctx, &lwps)?;
+
     loop {
         let start = Instant::now();
-        proc.stop(0).context("failed to stop process")?;
 
-        let runtime = tokio::TokioRuntime::parse(&ctf, &proc, &mut symbols, false)
+        // We will get torn reads doing this without pausing the process,
+        // particularly when reading the remotes to find the io driver. Each of
+        // those is a separate allocation we need to `Pread`. Given that we're
+        // mostly interested in whether the driver is stuck, getting an
+        // inconsistent value on the io driver is a sacrifice worth making.
+        let runtime = tokio::MinTokioState::parse(&ctx, &sched_info)
             .context("failed to parse tokio state")?;
-        let active = runtime.active_workers();
         let now = Zoned::now().round(Unit::Second)?;
         writeln!(
             out,
             "\n{now}\n{} active workers\n{} total workers\n{} tasks",
-            active.len(),
-            runtime.scheduler.shared.idle.num_workers,
-            runtime.scheduler.shared.owned.count
+            runtime.active.len(),
+            runtime.worker_ct,
+            runtime.task_ct,
         )?;
-        if let Some((i, _)) = runtime
-            .scheduler
-            .shared
-            .remotes
-            .iter()
-            .enumerate()
-            .find(|(_, r)| r.unpark.is_parked_driving_io())
-        {
+        if let Some(i) = runtime.io_driver {
             writeln!(out, "worker {i} is the io_driver")?;
         }
-        for worker in active {
-            writeln!(
-                out,
-                "Worker: {:?}, Task ID: {:?}",
-                worker.thd_ctx.worker_index, worker.thd_ctx.current_task_id
-            )?;
-            if let Some(task_id) = worker.thd_ctx.current_task_id {
-                if let Some(task) = runtime
-                    .scheduler
-                    .shared
-                    .owned
-                    .tasks
-                    .values()
-                    .find(|t| t.id == task_id)
-                {
-                    writeln!(out, "{task:?}")?;
-                }
-            }
-        }
-
-        proc.run().context("failed to set process to run")?;
 
         let end = Instant::now();
-        writeln!(out, "process stopped for {:?}", end - start)?;
+        writeln!(out, "read took {:?}", end - start)?;
 
         std::thread::sleep(freq);
     }
