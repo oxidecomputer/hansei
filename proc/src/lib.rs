@@ -1,12 +1,13 @@
 use libproc_sys::{
-    BIND_GLOBAL, BIND_LOCAL, GElf_Sym, MA_ANON, MA_BREAK, MA_EXEC, MA_READ, MA_SHARED, MA_WRITE,
-    MAXPATHLEN, PGRAB_NOSTOP, PGRAB_RDONLY, PGRAB_RETAIN, PR_SYMTAB, PRELEASE_CLEAR, Paddr_to_map,
-    Pexecname, Pgrab, Pgrab_core, Pgrab_error, Plookup_by_addr, Plookup_by_name, Plwp_getregs,
-    Plwp_iter, Plwp_main_stack, Pmapping_iter_resolved, Pread, Prelease, Psetrun, Pstatus, Pstop,
-    Psymbol_iter, REG_CS, REG_DS, REG_ERR, REG_ES, REG_FS, REG_FSBASE, REG_GS, REG_GSBASE, REG_R8,
-    REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15, REG_RAX, REG_RBP, REG_RBX,
-    REG_RCX, REG_RDI, REG_RDX, REG_RFL, REG_RIP, REG_RSI, REG_RSP, REG_SS, REG_TRAPNO, TYPE_FUNC,
-    gregset_t, lwpstatus_t, pid_t, prmap_t, ps_prochandle, stack_t,
+    BIND_GLOBAL, BIND_LOCAL, GElf_Sym, Lfree, Lgrab, Lgrab_error, Lstatus, MA_ANON, MA_BREAK,
+    MA_EXEC, MA_READ, MA_SHARED, MA_WRITE, MAXPATHLEN, PGRAB_NOSTOP, PGRAB_RDONLY, PGRAB_RETAIN,
+    PR_SYMTAB, PRELEASE_CLEAR, Paddr_to_map, Pexecname, Pgrab, Pgrab_core, Pgrab_error,
+    Plookup_by_addr, Plookup_by_name, Plwp_getregs, Plwp_iter, Plwp_main_stack,
+    Pmapping_iter_resolved, Pread, Prelease, Psetrun, Pstatus, Pstop, Psymbol_iter, REG_CS, REG_DS,
+    REG_ERR, REG_ES, REG_FS, REG_FSBASE, REG_GS, REG_GSBASE, REG_R8, REG_R9, REG_R10, REG_R11,
+    REG_R12, REG_R13, REG_R14, REG_R15, REG_RAX, REG_RBP, REG_RBX, REG_RCX, REG_RDI, REG_RDX,
+    REG_RFL, REG_RIP, REG_RSI, REG_RSP, REG_SS, REG_TRAPNO, TYPE_FUNC, gregset_t, lwpstatus_t,
+    pid_t, prmap_t, ps_lwphandle, ps_prochandle, stack_t,
 };
 
 use std::ffi::{CStr, CString, FromBytesUntilNulError, NulError, OsStr, c_char, c_int, c_void};
@@ -35,6 +36,8 @@ enum ErrorKind {
     BadPath(#[from] NulError),
     #[error("failed to grab process: {0}")]
     GrabFailed(&'static str),
+    #[error("failed to grab thread: {0}")]
+    LgrabFailed(&'static str),
     #[error("failed to iterate over lwps")]
     LwpIterFailed,
     #[error("failed to iterate over mappings")]
@@ -75,6 +78,10 @@ impl Error {
 
     pub fn grab_failed(s: &'static str) -> Self {
         Self::new(ErrorKind::GrabFailed(s))
+    }
+
+    pub fn lgrab_failed(s: &'static str) -> Self {
+        Self::new(ErrorKind::LgrabFailed(s))
     }
 
     pub fn lwp_iter_failed() -> Self {
@@ -509,13 +516,13 @@ impl Proc {
         }
     }
 
-    pub fn lwps(&self) -> Result<Vec<Lwp>> {
+    pub fn lwps(&self) -> Result<Vec<LwpInfo>> {
         mod callback {
             use super::*;
 
             pub(super) struct LwpCbData {
                 pub handle: *mut ps_prochandle,
-                pub data: Vec<Lwp>,
+                pub data: Vec<LwpInfo>,
             }
 
             pub extern "C" fn lwp_callback(data: *mut c_void, status: *const lwpstatus_t) -> c_int {
@@ -542,7 +549,7 @@ impl Proc {
                         tv_nsec: status.pr_tstamp.tv_nsec,
                     };
 
-                    cb_data.data.push(Lwp {
+                    cb_data.data.push(LwpInfo {
                         tid: status.pr_lwpid as u32,
                         stack_range: stack_start..stack_end,
                         tstamp,
@@ -569,6 +576,24 @@ impl Proc {
         }
 
         Ok(cb_data.data)
+    }
+
+    pub fn lwp_handle(&self, lwpid: u32) -> Result<Lwp> {
+        let mut perr: c_int = 0;
+
+        let handle = unsafe { Lgrab(self.handle.as_ptr(), lwpid, &mut perr) };
+        let Some(handle) = NonNull::new(handle) else {
+            let err_msg = unsafe { Lgrab_error(perr) };
+
+            // SAFETY: The implementation of Lgrab_error returns a static string.
+            let c_msg = unsafe { CStr::from_ptr(err_msg) };
+
+            // UNWRAP: We know all possible values returned by Pgrab_error are valid UTF-8.
+            let msg = c_msg.to_str().unwrap();
+
+            return Err(Error::lgrab_failed(msg));
+        };
+        Ok(Lwp { handle })
     }
 
     pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
@@ -886,7 +911,7 @@ pub struct Status {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Lwp {
+pub struct LwpInfo {
     /// The LWP's thread id.
     pub tid: u32,
     /// The address range of the LWP's stack.
@@ -895,7 +920,7 @@ pub struct Lwp {
     pub tstamp: Timespec,
 }
 
-impl fmt::Debug for Lwp {
+impl fmt::Debug for LwpInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lwp")
             .field("tid", &self.tid)
@@ -1129,6 +1154,33 @@ impl Drop for Proc {
         // Clear any flags, let the process resume execution.
         let flags = PRELEASE_CLEAR as i32;
         unsafe { Prelease(self.handle.as_mut(), flags) };
+    }
+}
+
+pub struct Lwp {
+    handle: NonNull<ps_lwphandle>,
+}
+
+impl Lwp {
+    pub fn status(&self) -> Timespec {
+        // SAFETY: Our lwp handle is valid.
+        let ret = unsafe { Lstatus(self.handle.as_ptr()) };
+
+        // SAFETY: libproc guarantees that the pointer returned is valid.
+        match unsafe { ret.as_ref() } {
+            Some(status) => Timespec {
+                tv_sec: status.pr_tstamp.tv_sec,
+                tv_nsec: status.pr_tstamp.tv_nsec,
+            },
+            None => unreachable!("Lstatus returned null"),
+        }
+    }
+}
+
+impl Drop for Lwp {
+    fn drop(&mut self) {
+        // SAFETY: Our lwp handle is valid.
+        unsafe { Lfree(self.handle.as_mut()) };
     }
 }
 
