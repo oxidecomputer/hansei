@@ -33,7 +33,7 @@ pub struct Error {
 enum ErrorKind {
     #[error("could not convert path to C string")]
     BadPath(#[from] NulError),
-    #[error("failed to open core: {0}")]
+    #[error("failed to grab process: {0}")]
     GrabFailed(&'static str),
     #[error("failed to iterate over lwps")]
     LwpIterFailed,
