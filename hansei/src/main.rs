@@ -128,7 +128,7 @@ fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
 
     let ctf_bytes =
         fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
-    let ctf = CtfReader::load(&ctf_bytes)?;
+    let ctf = CtfReader::load(&ctf_bytes).context("failed to load CTF")?;
 
     let mut symbols = HashMap::new();
     let runtime = tokio::TokioRuntime::parse(
