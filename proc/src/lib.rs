@@ -584,8 +584,10 @@ impl Proc {
     pub fn lwp_handle(&self, lwpid: u32) -> Result<Lwp> {
         let mut perr: c_int = 0;
 
+        // SAFETY: Our handle is valid.
         let handle = unsafe { Lgrab(self.handle.as_ptr(), lwpid, &mut perr) };
         let Some(handle) = NonNull::new(handle) else {
+            // SAFETY: Can't really mess this one up.
             let err_msg = unsafe { Lgrab_error(perr) };
 
             // SAFETY: The implementation of Lgrab_error returns a static string.
