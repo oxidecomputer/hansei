@@ -1003,10 +1003,7 @@ where
         self.read_bytes(ctx, addr, ty.size(ctx.ctf()) as u64)
     }
 
-    fn read_bytes(&self, ctx: &Ctx, addr: u64, len: u64) -> Result<Vec<u8>> {
-        if !ctx.mappings().contains_addr(addr) {
-            return Err(Error::invalid_addr(addr));
-        }
+    fn read_bytes(&self, _ctx: &Ctx, addr: u64, len: u64) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; len as usize];
 
         // TODO we may also receive an EOF here, need better error
