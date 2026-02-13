@@ -272,7 +272,7 @@ struct ChangeTimes {
     io_driver: Option<Instant>,
 }
 
-/// Highlight `value` in red+bold if it changed within the last 2 seconds.
+/// Highlight `value` in green+bold if it changed within the last 2 seconds.
 fn maybe_style<T: Display>(
     value: T,
     now: Instant,
