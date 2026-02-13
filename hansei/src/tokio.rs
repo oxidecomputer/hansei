@@ -178,11 +178,8 @@ impl MinTokioState {
             if let Some(addr) = find_thd_context(&lwp.regs, &brk_range, &ctx.proc)
                 .context("failed to find thread-local context")?
             {
-                let Some(info) = TypeInfo::from_addr(ctx, ctx_ty, addr)
-                    .context("failed to get type information")?
-                else {
-                    continue;
-                };
+                let info = TypeInfo::from_addr(ctx, ctx_ty, addr)
+                    .context("failed to get type information")?;
 
                 if sched_info.is_none() {
                     let ctx_info = info
@@ -372,11 +369,8 @@ impl TokioRuntime {
             if let Some(addr) = find_thd_context(&lwp.regs, &brk_range, &ctx.proc)
                 .context("failed to find thread-local context")?
             {
-                let Some(info) = TypeInfo::from_addr(&ctx, ctx_ty, addr)
-                    .context("failed to get type information")?
-                else {
-                    continue;
-                };
+                let info = TypeInfo::from_addr(&ctx, ctx_ty, addr)
+                    .context("failed to get type information")?;
 
                 let thd_ctx: ThreadCtx = info
                     .parse(&ctx)

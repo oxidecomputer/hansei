@@ -131,17 +131,11 @@ pub struct TypeInfo<'ctf> {
 impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
     /// Read the type directly at the address provided.
     /// Wrapper types will be unwrapped if present. TODO
-    pub fn from_addr<Ctx: ParseCtx<'ctf>>(
-        ctx: &Ctx,
-        ty: &'ctf CtfType,
-        addr: u64,
-    ) -> Result<Option<Self>> {
-        let Ok(vec) = ctx.proc().read_type(ctx, addr, ty) else {
-            // TODO just return an error?
-            return Ok(None);
-        };
+    pub fn from_addr<Ctx: ParseCtx<'ctf>>(ctx: &Ctx, ty: &'ctf CtfType, addr: u64) -> Result<Self> {
+        let vec = ctx.proc().read_type(ctx, addr, ty)?;
         let buf = vec.into_boxed_slice();
-        Ok(Some(Self { ty, addr, buf }))
+
+        Ok(Self { ty, addr, buf })
     }
 
     pub fn as_ref(&'buf self) -> TypeInfoRef<'buf, 'ctf> {
