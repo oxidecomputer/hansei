@@ -159,7 +159,7 @@ fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
 }
 
 fn exec_poll(args: Poll, term: Term) -> Result<()> {
-    const DEFAULT_FREQ: Duration = Duration::from_millis(2000);
+    const DEFAULT_FREQ: Duration = Duration::from_millis(200);
 
     let proc = Proc::grab_pid_no_stop(args.pid).with_context(|| "failed to open pid {pid}")?;
 
