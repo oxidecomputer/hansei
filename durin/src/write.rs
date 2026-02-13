@@ -1,14 +1,13 @@
-use std::collections::HashMap;
-use std::io::Write;
-
 use anyhow::Result;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use goblin::elf::Elf;
-
 use goblin::elf::section_header::SHN_UNDEF;
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
 use scroll::{IOwrite, LE};
+
+use std::collections::HashMap;
+use std::io::Write;
 
 use crate::constants::*;
 
