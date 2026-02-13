@@ -211,9 +211,7 @@ fn read_global_point() {
         .expect("Point type not found in CTF");
 
     // Read the value
-    let info = reify::TypeInfo::from_addr(&ctx, point_ty, addr)
-        .expect("failed to read type")
-        .expect("address unmapped");
+    let info = reify::TypeInfo::from_addr(&ctx, point_ty, addr).expect("failed to read type");
 
     // Extract x and y values
     let x: i32 = info
@@ -259,9 +257,7 @@ fn read_global_foo() {
         .find_ty("test_types::Foo", durin::TypeKind::Struct)
         .expect("Foo type not found in CTF");
 
-    let info = reify::TypeInfo::from_addr(&ctx, foo_ty, addr)
-        .expect("failed to read type")
-        .expect("address unmapped");
+    let info = reify::TypeInfo::from_addr(&ctx, foo_ty, addr).expect("failed to read type");
 
     let value: Foo = info.parse(&ctx).expect("parse u64");
     assert_eq!(value, Foo::A(500), "Foo value mismatch");
