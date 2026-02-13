@@ -142,6 +142,16 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
         self.into()
     }
 
+    /// Refresh the contents of the buffer from `Proc` memory from the current
+    /// address.
+    pub fn refresh<Ctx: ParseCtx<'ctf>>(&mut self, ctx: &Ctx) -> Result<()> {
+        let vec = ctx.proc().read_type(ctx, self.addr, self.ty)?;
+        let buf = vec.into_boxed_slice();
+
+        self.buf = buf;
+        Ok(())
+    }
+
     pub fn try_member<Ctx: ParseCtx<'ctf>>(
         &'buf self,
         ctx: &Ctx,
