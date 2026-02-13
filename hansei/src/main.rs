@@ -1,10 +1,11 @@
 use anyhow::{Context as _, Result};
 use clap::{ArgAction, Args, Parser, Subcommand};
+use console::{StyledObject, Term};
 use durin::read::CtfReader;
-use jiff::{Unit, Zoned};
 use proc::Proc;
 
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -90,11 +91,10 @@ struct Source {
 
 fn main() {
     let args = Cli::parse();
-    let mut stdout = io::stdout().lock();
 
     let res = match args.action {
-        Action::Poll(poll) => exec_poll(poll, &mut stdout),
-        Action::Dump(dump) => exec_dump(dump, &mut stdout),
+        Action::Poll(poll) => exec_poll(poll, Term::stdout()),
+        Action::Dump(dump) => exec_dump(dump, &mut io::stdout().lock()),
     };
     if let Err(e) = res {
         if let Some(io_err) = e.downcast_ref::<io::Error>()
@@ -158,7 +158,7 @@ fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
     Ok(())
 }
 
-fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
+fn exec_poll(args: Poll, term: Term) -> Result<()> {
     const DEFAULT_FREQ: Duration = Duration::from_millis(2000);
 
     let proc = Proc::grab_pid_no_stop(args.pid).with_context(|| "failed to open pid {pid}")?;
@@ -194,12 +194,17 @@ fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
 
     proc.run().context("failed to set process to run")?;
     let end_pause = Instant::now();
-    writeln!(out, "paused process for {:?}", end_pause - start_pause)?;
+    term.write_line(&format!(
+        "Paused process to read LWP registers for {:?}\n",
+        end_pause - start_pause
+    ))?;
 
     // We assume that the address of the scheduler handle will remain constant
     // over time. It's not `Pin`, but it is an `Arc` and I don't think the
     // underlying heap pointer will be moved.
     let mut sched_info = tokio::MinTokioState::find_type_info(&ctx, &lwps)?;
+
+    let mut last = ChangeTimes::default();
 
     loop {
         let start = Instant::now();
@@ -216,21 +221,67 @@ fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
         // inconsistent value on the io driver is a sacrifice worth making.
         let runtime = tokio::MinTokioState::parse(&ctx, &sched_info)
             .context("failed to parse tokio state")?;
-        let now = Zoned::now().round(Unit::Microsecond)?;
-        writeln!(
-            out,
-            "\n{now}\n{} active workers\n{} total workers\n{} live tasks",
-            runtime.active.len(),
-            runtime.worker_ct,
-            runtime.task_ct,
-        )?;
-        if let Some(i) = runtime.io_driver {
-            writeln!(out, "worker {i} is the io_driver")?;
+        let now = Instant::now();
+
+        // Update timestamps for any values that changed since the last
+        // iteration.
+        if let Some(ref prev) = last.runtime {
+            if runtime.active.len() != prev.active.len() {
+                last.active_workers = Some(now);
+            }
+            if runtime.worker_ct != prev.worker_ct {
+                last.total_workers = Some(now);
+            }
+            if runtime.task_ct != prev.task_ct {
+                last.tasks = Some(now);
+            }
+            if runtime.io_driver != prev.io_driver {
+                last.io_driver = Some(now);
+            }
         }
 
-        let end = Instant::now();
-        writeln!(out, "read took {:?}", end - start)?;
+        let active = maybe_style(runtime.active.len(), now, last.active_workers);
+        let total = maybe_style(runtime.worker_ct, now, last.total_workers);
+        let tasks = maybe_style(runtime.task_ct, now, last.tasks);
+        let io_driver = runtime
+            .io_driver
+            .map(|i| maybe_style(i, now, last.io_driver).to_string())
+            .unwrap_or_default();
+
+        if last.runtime.is_some() {
+            term.clear_last_lines(5)?;
+        }
+        term.write_line(&format!("Active Workers:    {active}"))?;
+        term.write_line(&format!("Worker Count:      {total}"))?;
+        term.write_line(&format!("Task Count:        {tasks}"))?;
+        term.write_line(&format!("I/O Driver Worker: {io_driver}"))?;
+        term.write_line(&format!("Scan duration:     {:?}", now - start))?;
+
+        last.runtime = Some(runtime);
 
         std::thread::sleep(freq);
+    }
+}
+
+#[derive(Default, Debug)]
+struct ChangeTimes {
+    runtime: Option<tokio::MinTokioState>,
+    active_workers: Option<Instant>,
+    total_workers: Option<Instant>,
+    tasks: Option<Instant>,
+    io_driver: Option<Instant>,
+}
+
+/// Highlight `value` in red+bold if it changed within the last 2 seconds.
+fn maybe_style<T: Display>(
+    value: T,
+    now: Instant,
+    last_changed: Option<Instant>,
+) -> StyledObject<T> {
+    const HIGHLIGHT_DUR: Duration = Duration::from_secs(2);
+
+    match last_changed {
+        Some(last) if now - last < HIGHLIGHT_DUR => console::style(value).green().bold(),
+        _ => console::style(value),
     }
 }
