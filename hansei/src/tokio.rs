@@ -223,7 +223,7 @@ impl MinTokioState {
         Ok(Self {
             active: scheduler.active_workers,
             worker_ct: scheduler.idle.num_workers,
-            task_ct: scheduler.added,
+            task_ct: scheduler.count,
             io_driver,
         })
     }
@@ -283,7 +283,7 @@ pub struct MinScheduler {
     pub parkers: Vec<Parker>,
     pub inject_len: u64,
     pub idle: Idle,
-    pub added: u64,
+    pub count: u64,
     pub active_workers: BTreeSet<u64>,
     pub synced: Synced,
 }
@@ -302,10 +302,10 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for MinScheduler {
         let inject_len = info.member(ctx, "inject")?.parse(ctx)?;
         let idle: Idle = info.member(ctx, "idle")?.parse(ctx)?;
 
-        let added = info
+        let count = info
             .member(ctx, "owned")?
             .member(ctx, "list")?
-            .member(ctx, "added")?
+            .member(ctx, "count")?
             .parse(ctx)?;
 
         let synced: Synced = info
@@ -325,7 +325,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for MinScheduler {
             inject_len,
             idle,
             active_workers,
-            added,
+            count,
             synced,
         })
     }
