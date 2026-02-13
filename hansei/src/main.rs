@@ -214,7 +214,7 @@ fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
         let now = Zoned::now().round(Unit::Second)?;
         writeln!(
             out,
-            "\n{now}\n{} active workers\n{} total workers\n{} tasks",
+            "\n{now}\n{} active workers\n{} total workers\n{} live tasks",
             runtime.active.len(),
             runtime.worker_ct,
             runtime.task_ct,
