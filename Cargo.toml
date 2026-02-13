@@ -17,13 +17,13 @@ camino = "1.2"
 assert_cmd = "2.0"
 bindgen = { version = "0.72", default-features = false }
 clap = { version = "4.5.51", features = ["derive"] }
+console = "0.16"
 durin = { path = "durin", version = "0.1.0" }
 fallible-iterator = "0.3.0"
 flate2 = "1.1.5"
 gimli = { version = "0.32", features = ["fallible-iterator"] }
 goblin = "0.10.3"
 humantime = "2.3"
-jiff = "0.2"
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
 memmap2 = "0.9.9"
 petgraph = "0.7"
