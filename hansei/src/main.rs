@@ -216,7 +216,7 @@ fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
         // inconsistent value on the io driver is a sacrifice worth making.
         let runtime = tokio::MinTokioState::parse(&ctx, &sched_info)
             .context("failed to parse tokio state")?;
-        let now = Zoned::now().round(Unit::Second)?;
+        let now = Zoned::now().round(Unit::Microsecond)?;
         writeln!(
             out,
             "\n{now}\n{} active workers\n{} total workers\n{} live tasks",
