@@ -1,4 +1,5 @@
-use crate::{CtfHeader, Error, Result, StrId, StringTableType};
+use crate::read::{Error, Result};
+use crate::{CtfHeader, StrId, StringTableType};
 
 use std::fmt;
 
