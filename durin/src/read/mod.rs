@@ -1,5 +1,5 @@
 use crate::constants::*;
-use crate::{CtfHeader, CtfPreamble, Error, Result, StrId, TypeId, TypeKind, VARARGS_ID};
+use crate::{CtfFlags, CtfHeader, CtfPreamble, CtfVersion, StrId, TypeId, TypeKind, VARARGS_ID};
 use strings::UncheckedStringTable;
 
 use flate2::read::ZlibDecoder;
@@ -11,9 +11,13 @@ use std::fmt;
 use std::io::Read;
 use std::str;
 
+mod error;
+mod strings;
+
+pub use error::Error;
 pub use strings::StringTable;
 
-mod strings;
+pub type Result<T> = std::result::Result<T, Error>;
 
 const HEADER_SIZE: usize = 36;
 
@@ -1298,5 +1302,72 @@ impl TryFromCtx<'_, ()> for CtfEnumerator {
             },
             *offset,
         ))
+    }
+}
+
+impl TryFrom<u8> for CtfVersion {
+    type Error = Error;
+
+    fn try_from(val: u8) -> Result<Self> {
+        match val {
+            CTF_VERSION => Ok(CtfVersion::V2),
+            v => Err(Error::unsupported_version(v)),
+        }
+    }
+}
+
+impl TryFrom<u8> for CtfFlags {
+    type Error = Error;
+
+    fn try_from(val: u8) -> Result<Self> {
+        match val {
+            0 | CTF_F_COMPRESS => Ok(Self(val)),
+            _ => Err(Error::invalid_flags(val)),
+        }
+    }
+}
+
+impl StrId {
+    pub(crate) fn from_u32(value: u32) -> Result<Self> {
+        if value > Self::MAX {
+            return Err(Error::invalid_str_offset(value));
+        }
+
+        Ok(Self(value))
+    }
+}
+
+impl TypeId {
+    pub(crate) fn from_u16(value: u16) -> Result<Self> {
+        if value == 0 {
+            return Err(Error::invalid_type_index(value));
+        }
+
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<u16> for TypeKind {
+    type Error = Error;
+
+    fn try_from(value: u16) -> std::result::Result<Self, Self::Error> {
+        let ty = match value {
+            0 => Self::Unknown,
+            1 => Self::Integer,
+            2 => Self::Float,
+            3 => Self::Pointer,
+            4 => Self::Array,
+            5 => Self::Function,
+            6 => Self::Struct,
+            7 => Self::Union,
+            8 => Self::Enum,
+            9 => Self::Forward,
+            10 => Self::Typedef,
+            11 => Self::Volatile,
+            12 => Self::Const,
+            13 => Self::Restrict,
+            v => return Err(Error::invalid_type_kind(v)),
+        };
+        Ok(ty)
     }
 }
