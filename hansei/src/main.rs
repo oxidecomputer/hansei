@@ -199,10 +199,15 @@ fn exec_poll(args: Poll, out: &mut dyn io::Write) -> Result<()> {
     // We assume that the address of the scheduler handle will remain constant
     // over time. It's not `Pin`, but it is an `Arc` and I don't think the
     // underlying heap pointer will be moved.
-    let sched_info = tokio::MinTokioState::find_type_info(&ctx, &lwps)?;
+    let mut sched_info = tokio::MinTokioState::find_type_info(&ctx, &lwps)?;
 
     loop {
         let start = Instant::now();
+
+        // Re-read scheduler bytes from process memory.
+        sched_info
+            .refresh(&ctx)
+            .context("failed to re-read scheduler")?;
 
         // We will get torn reads doing this without pausing the process,
         // particularly when reading the remotes to find the io driver. Each of
