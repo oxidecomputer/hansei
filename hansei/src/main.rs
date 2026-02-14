@@ -1,3 +1,5 @@
+use crate::tokio::{Context, MinTokioState, TokioRuntime};
+
 use anyhow::{Context as _, Result};
 use clap::{ArgAction, Args, Parser, Subcommand};
 use console::{StyledObject, Term};
@@ -131,7 +133,7 @@ fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
     let ctf = CtfReader::load(&ctf_bytes).context("failed to load CTF")?;
 
     let mut symbols = HashMap::new();
-    let runtime = tokio::TokioRuntime::parse(
+    let runtime = TokioRuntime::parse(
         &ctf,
         &proc,
         &main_lwp,
@@ -181,8 +183,7 @@ fn exec_poll(args: Poll, term: Term) -> Result<()> {
     // addresses we're looking at here remain stable, so as long as they are
     // valid now we can assume they will remain valid for the remainder of the
     // process's lifetime.
-    let ctx = tokio::Context::new(&proc, &main_lwp, &ctf, &symbols)
-        .context("failed to create Context")?;
+    let ctx = Context::new(&proc, &main_lwp, &ctf, &symbols).context("failed to create Context")?;
 
     let start_pause = Instant::now();
     // We need to read the worker's thread-local contexts.
@@ -202,7 +203,7 @@ fn exec_poll(args: Poll, term: Term) -> Result<()> {
     // We assume that the address of the scheduler handle will remain constant
     // over time. It's not `Pin`, but it is an `Arc` and I don't think the
     // underlying heap pointer will be moved.
-    let mut sched_info = tokio::MinTokioState::find_type_info(&ctx, &lwps)?;
+    let mut sched_info = MinTokioState::find_type_info(&ctx, &lwps)?;
 
     let mut last = ChangeTimes::default();
 
@@ -219,8 +220,8 @@ fn exec_poll(args: Poll, term: Term) -> Result<()> {
         // those is a separate allocation we need to `Pread`. Given that we're
         // mostly interested in whether the driver is stuck, getting an
         // inconsistent value on the io driver is a sacrifice worth making.
-        let runtime = tokio::MinTokioState::parse(&ctx, &sched_info)
-            .context("failed to parse tokio state")?;
+        let runtime =
+            MinTokioState::parse(&ctx, &sched_info).context("failed to parse tokio state")?;
         let now = Instant::now();
 
         // Update timestamps for any values that changed since the last
@@ -265,7 +266,7 @@ fn exec_poll(args: Poll, term: Term) -> Result<()> {
 
 #[derive(Default, Debug)]
 struct ChangeTimes {
-    runtime: Option<tokio::MinTokioState>,
+    runtime: Option<MinTokioState>,
     active_workers: Option<Instant>,
     total_workers: Option<Instant>,
     tasks: Option<Instant>,
