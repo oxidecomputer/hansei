@@ -128,6 +128,20 @@ impl<'a> CtfWriter<'a> {
         self.types[type_id.get() as usize] = ctf_type;
     }
 
+    /// Add crate version markers as typedef types.
+    ///
+    /// Each crate version is encoded as a typedef named `__CRATE_<name-version>__`
+    /// pointing to void. This allows consumers to extract dependency information.
+    pub fn add_crate_versions<'b>(&mut self, crates: impl IntoIterator<Item = &'b String>) {
+        for crate_id in crates {
+            let name = format!("__CRATE_{crate_id}__");
+            self.add_type(CtfType::Typedef {
+                name,
+                target_type: TypeId::void(),
+            });
+        }
+    }
+
     pub fn generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> Result<Vec<u8>> {
         let mut out = Vec::new();
 
@@ -144,10 +158,10 @@ impl<'a> CtfWriter<'a> {
             println!("Function: {}", name);
             println!("  Arguments:");
             for arg in &func.args {
-                let ty = &self.types[(*arg) as usize];
+                let ty = &self.types[arg.get() as usize];
                 println!("    {ty:?}");
             }
-            let ret_ty = &self.types[func.return_type as usize];
+            let ret_ty = &self.types[func.return_type.get() as usize];
             println!("  Return Type: {ret_ty:?}");
         }
 
@@ -194,11 +208,11 @@ impl<'a> CtfWriter<'a> {
                         eprintln!("Argument count for {symbol_name}: {vlen}");
                         let info = ctf_type_info(CTF_K_FUNCTION, false, vlen);
                         func_data.iowrite_with(info, LE)?;
-                        func_data.iowrite_with(func_info.return_type, LE)?;
+                        func_data.iowrite_with(func_info.return_type.get(), LE)?;
 
                         // Write argument types
                         for &arg in &func_info.args {
-                            func_data.iowrite_with(arg, LE)?;
+                            func_data.iowrite_with(arg.get(), LE)?;
                         }
                     }
                     STT_OBJECT => {
@@ -486,8 +500,8 @@ impl<'a> CtfWriter<'a> {
 /// Parsed function info with CTF type IDs.
 #[derive(Clone, Debug)]
 pub struct CtfFunctionInfo {
-    pub return_type: u16,
-    pub args: Vec<u16>,
+    pub return_type: TypeId,
+    pub args: Vec<TypeId>,
 }
 
 #[derive(Clone, Debug)]
@@ -569,6 +583,14 @@ impl CtfType {
             Self::Array { name, .. } => name,
             Self::Unknown => "<unknown>",
         }
+    }
+
+    /// Returns true if this is a struct with any member at offset 0.
+    pub fn has_member_with_zero_offset(&self) -> bool {
+        let Self::Struct { members, .. } = self else {
+            return false;
+        };
+        members.iter().any(|m| m.offset_bits == 0)
     }
 }
 

@@ -269,6 +269,7 @@ dependencies = [
  "assert_cmd",
  "camino",
  "clap",
+ "durin",
  "flate2",
  "gimli",
  "goblin",

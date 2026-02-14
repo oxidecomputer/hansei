@@ -1,17 +1,9 @@
-mod ctf;
-mod parser;
-
-use std::collections::{HashMap, HashSet};
-
-use gimli::DebugInfoOffset;
-
-use std::fs::{self, File};
-use std::mem::size_of;
-use std::path::PathBuf;
+use crate::parser::DwarfParser;
 
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser};
-use gimli::{Dwarf, EndianSlice, RunTimeEndian};
+use durin::write::CtfWriter;
+use gimli::{DebugInfoOffset, Dwarf, EndianSlice, RunTimeEndian};
 use goblin::elf::Elf;
 use goblin::elf::header::{EI_CLASS, ELFCLASS64, Header};
 use goblin::elf::section_header::{
@@ -20,8 +12,12 @@ use goblin::elf::section_header::{
 use memmap2::Mmap;
 use scroll::{LE, Pwrite};
 
-use crate::ctf::CtfWriter;
-use crate::parser::DwarfParser;
+use std::collections::{HashMap, HashSet};
+use std::fs::{self, File};
+use std::mem::size_of;
+use std::path::PathBuf;
+
+mod parser;
 
 /// Absolute offset of type in .debug_info.
 type GlobalTypeOffset = DebugInfoOffset<usize>;
