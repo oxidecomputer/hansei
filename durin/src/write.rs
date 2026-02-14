@@ -1,3 +1,6 @@
+use crate::TypeId;
+use crate::constants::*;
+
 use anyhow::Result;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
@@ -8,11 +11,6 @@ use scroll::{IOwrite, LE};
 
 use std::collections::HashMap;
 use std::io::Write;
-
-use crate::constants::*;
-
-// TODO use our own identifier?
-type GlobalTypeOffset = gimli::DebugInfoOffset<usize>;
 
 pub fn ctf_type_info(kind: u8, is_root: bool, vlen: u16) -> u16 {
     ((kind as u16) << 11) | ((if is_root { 1u16 } else { 0 }) << 10) | (vlen & CTF_MAX_VLEN)
@@ -50,12 +48,14 @@ impl StringTable {
 
         let offset = self.strings.len() as u32;
         self.offsets.insert(s.to_string(), offset);
-        if s.len() >= 1023 {
+        // Replace spaces with underscores - CTF tools may not handle spaces well
+        let unspaced = s.replace(' ', "_");
+        if unspaced.len() >= 1023 {
             // Truncate strings to 1 KiB.
-            self.strings.extend_from_slice(&s.as_bytes()[..1020]);
+            self.strings.extend_from_slice(&unspaced.as_bytes()[..1020]);
             self.strings.extend_from_slice(b"...");
         } else {
-            self.strings.extend_from_slice(s.as_bytes());
+            self.strings.extend_from_slice(unspaced.as_bytes());
         }
         self.strings.push(0); // null terminator
         offset
@@ -75,7 +75,6 @@ impl Default for StringTable {
 pub struct CtfWriter<'a> {
     pub types: Vec<CtfType>,
     pub strings: StringTable,
-    pub type_map: HashMap<GlobalTypeOffset, u16>, // DWARF offset to CTF type ID
     elf: Option<&'a Elf<'a>>,
     label: Option<String>,
 }
@@ -96,7 +95,6 @@ impl<'a> CtfWriter<'a> {
                 },
             ],
             strings: StringTable::new(),
-            type_map: HashMap::new(),
             label: None,
         }
     }
@@ -105,19 +103,29 @@ impl<'a> CtfWriter<'a> {
         self.label = Some(label);
     }
 
-    pub fn add_type(&mut self, offset: GlobalTypeOffset, ctf_type: CtfType) -> u16 {
-        let type_id = (self.types.len()) as u16;
+    /// Add a type to the writer. Returns the assigned type ID.
+    pub fn add_type(&mut self, ctf_type: CtfType) -> TypeId {
+        let type_offset = self.types.len() as u16;
+        let type_id = TypeId::from_u16(type_offset).unwrap();
+
         self.types.push(ctf_type);
-        self.type_map.insert(offset, type_id);
         type_id
     }
 
-    /// Add a synthetic type that doesn't correspond to a DWARF entry.
-    /// Used for creating anonymous unions/structs for Rust enum variants.
-    pub fn add_synthetic_type(&mut self, ctf_type: CtfType) -> u16 {
-        let type_id = (self.types.len()) as u16;
-        self.types.push(ctf_type);
+    /// Reserve a type ID by adding a placeholder. Returns the reserved ID.
+    /// Use `set_type` to replace the placeholder with the actual type.
+    pub fn reserve_type_id(&mut self) -> TypeId {
+        let type_offset = self.types.len() as u16;
+        let type_id = TypeId::from_u16(type_offset).unwrap();
+
+        self.types.push(CtfType::Unknown); // placeholder
         type_id
+    }
+
+    /// Replace a placeholder type at the given ID with the actual type.
+    /// The type_id must have been previously reserved with `reserve_type_id`.
+    pub fn set_type(&mut self, type_id: TypeId, ctf_type: CtfType) {
+        self.types[type_id.get() as usize] = ctf_type;
     }
 
     pub fn generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> Result<Vec<u8>> {
@@ -146,7 +154,7 @@ impl<'a> CtfWriter<'a> {
         let mut lbl_data = Vec::new();
         if let Some(label) = &self.label {
             let label_name_off = self.strings.add_string(label);
-            let last_type_idx = self.types.len() as u32;
+            let last_type_idx = (self.types.len() - 1) as u32;
             lbl_data.iowrite_with(label_name_off, LE)?;
             lbl_data.iowrite_with(last_type_idx, LE)?;
         }
@@ -274,25 +282,14 @@ impl<'a> CtfWriter<'a> {
     }
 
     fn write_type(&mut self, buffer: &mut Vec<u8>, ctf_type: &CtfType) -> Result<()> {
-        Self::write_type_impl(buffer, &mut self.strings, ctf_type, &self.type_map)
+        Self::write_type_impl(buffer, &mut self.strings, ctf_type)
     }
 
     fn write_type_impl(
         buffer: &mut Vec<u8>,
         strings: &mut StringTable,
         ctf_type: &CtfType,
-        type_map: &HashMap<GlobalTypeOffset, u16>,
     ) -> Result<()> {
-        let deref = |offset: &MaybeOffset| -> Result<u16> {
-            match offset {
-                MaybeOffset::Found(f) => Ok(*f),
-                MaybeOffset::Pending(p) => type_map
-                    .get(p)
-                    .copied()
-                    .ok_or_else(|| anyhow::anyhow!("no type index found for {offset:?}")),
-            }
-        };
-
         match ctf_type {
             CtfType::Integer {
                 name,
@@ -323,47 +320,42 @@ impl<'a> CtfWriter<'a> {
             CtfType::Pointer { name, target_type } => {
                 let name_offset = strings.add_string(name);
                 let info = ctf_type_info(CTF_K_POINTER, false, 0);
-                let target_type = deref(target_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(target_type, LE)?;
+                buffer.iowrite_with(target_type.get(), LE)?;
             }
             CtfType::Typedef { name, target_type } => {
                 let name_offset = strings.add_string(name);
                 let info = ctf_type_info(CTF_K_TYPEDEF, false, 0);
-                let target_type = deref(target_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(target_type, LE)?;
+                buffer.iowrite_with(target_type.get(), LE)?;
             }
             CtfType::Const { name, target_type } => {
                 let name_offset = strings.add_string(name);
                 let info = ctf_type_info(CTF_K_CONST, false, 0);
-                let target_type = deref(target_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(target_type, LE)?;
+                buffer.iowrite_with(target_type.get(), LE)?;
             }
             CtfType::Volatile { name, target_type } => {
                 let name_offset = strings.add_string(name);
                 let info = ctf_type_info(CTF_K_VOLATILE, false, 0);
-                let target_type = deref(target_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(target_type, LE)?;
+                buffer.iowrite_with(target_type.get(), LE)?;
             }
             CtfType::Restrict { name, target_type } => {
                 let name_offset = strings.add_string(name);
                 let info = ctf_type_info(CTF_K_RESTRICT, false, 0);
-                let target_type = deref(target_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(target_type, LE)?;
+                buffer.iowrite_with(target_type.get(), LE)?;
             }
             CtfType::Function {
                 name,
@@ -377,16 +369,14 @@ impl<'a> CtfWriter<'a> {
                     vlen += 1;
                 }
                 let info = ctf_type_info(CTF_K_FUNCTION, false, vlen);
-                let return_type = deref(return_type)?;
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
-                buffer.iowrite_with(return_type, LE)?;
+                buffer.iowrite_with(return_type.get(), LE)?;
 
                 // Write argument types
                 for arg in args {
-                    let arg = deref(arg)?;
-                    buffer.iowrite_with(arg, LE)?;
+                    buffer.iowrite_with(arg.get(), LE)?;
                 }
 
                 // Write varargs marker if needed
@@ -411,10 +401,8 @@ impl<'a> CtfWriter<'a> {
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
                 buffer.iowrite_with(0u16, LE)?;
-                let element_id = deref(element_type)?;
-                buffer.iowrite_with(element_id, LE)?;
-                let index_id = deref(index_type)?;
-                buffer.iowrite_with(index_id, LE)?;
+                buffer.iowrite_with(element_type.get(), LE)?;
+                buffer.iowrite_with(index_type.get(), LE)?;
                 buffer.iowrite_with(*nelems, LE)?;
             }
             CtfType::Struct {
@@ -431,10 +419,9 @@ impl<'a> CtfWriter<'a> {
 
                 // Write members
                 for member in members {
-                    let type_id = deref(&member.type_id)?;
                     let member_name_offset = strings.add_string(&member.name);
                     buffer.iowrite_with(member_name_offset, LE)?;
-                    buffer.iowrite_with(type_id, LE)?;
+                    buffer.iowrite_with(member.type_id.get(), LE)?;
                     if *size < 8192 {
                         buffer.iowrite_with(member.offset_bits as u16, LE)?;
                     } else {
@@ -456,10 +443,9 @@ impl<'a> CtfWriter<'a> {
 
                 // Write members
                 for member in members {
-                    let type_id = deref(&member.type_id)?;
                     let member_name_offset = strings.add_string(&member.name);
                     buffer.iowrite_with(member_name_offset, LE)?;
-                    buffer.iowrite_with(type_id, LE)?;
+                    buffer.iowrite_with(member.type_id.get(), LE)?;
                     if *size < 8192 {
                         buffer.iowrite_with(member.offset_bits as u16, LE)?;
                     } else {
@@ -518,28 +504,28 @@ pub enum CtfType {
     },
     Pointer {
         name: String,
-        target_type: MaybeOffset,
+        target_type: TypeId,
     },
     Typedef {
         name: String,
-        target_type: MaybeOffset,
+        target_type: TypeId,
     },
     Const {
         name: String,
-        target_type: MaybeOffset,
+        target_type: TypeId,
     },
     Volatile {
         name: String,
-        target_type: MaybeOffset,
+        target_type: TypeId,
     },
     Restrict {
         name: String,
-        target_type: MaybeOffset,
+        target_type: TypeId,
     },
     Array {
         name: String,
-        element_type: MaybeOffset,
-        index_type: MaybeOffset,
+        element_type: TypeId,
+        index_type: TypeId,
         nelems: u32,
     },
     Struct {
@@ -559,8 +545,8 @@ pub enum CtfType {
     },
     Function {
         name: String,
-        return_type: MaybeOffset,
-        args: Vec<MaybeOffset>,
+        return_type: TypeId,
+        args: Vec<TypeId>,
         is_varargs: bool,
     },
     Unknown,
@@ -617,38 +603,19 @@ pub struct CtfEnumerator {
 #[derive(Clone, Debug)]
 pub struct CtfMember {
     pub name: String,
-    pub type_id: MaybeOffset,
+    pub type_id: TypeId,
     pub offset_bits: u64,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum MaybeOffset {
-    Found(u16),
-    Pending(GlobalTypeOffset),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gimli::DebugInfoOffset;
 
     // Helper to write a type and return the buffer bytes
     fn write_type(ctf_type: &CtfType) -> Vec<u8> {
         let mut buffer = Vec::new();
         let mut strings = StringTable::new();
-        let type_map = HashMap::new();
-        CtfWriter::write_type_impl(&mut buffer, &mut strings, ctf_type, &type_map).unwrap();
-        buffer
-    }
-
-    // Helper to write a type with a pre-populated type_map for reference types
-    fn write_type_with_refs(
-        ctf_type: &CtfType,
-        type_map: &HashMap<GlobalTypeOffset, u16>,
-    ) -> Vec<u8> {
-        let mut buffer = Vec::new();
-        let mut strings = StringTable::new();
-        CtfWriter::write_type_impl(&mut buffer, &mut strings, ctf_type, type_map).unwrap();
+        CtfWriter::write_type_impl(&mut buffer, &mut strings, ctf_type).unwrap();
         buffer
     }
 
@@ -751,7 +718,7 @@ mod tests {
     fn test_write_pointer_type() {
         let ptr_type = CtfType::Pointer {
             name: "".to_string(),
-            target_type: MaybeOffset::Found(5),
+            target_type: TypeId::from_u16(5).unwrap(),
         };
         let bytes = write_type(&ptr_type);
 
@@ -769,7 +736,7 @@ mod tests {
     fn test_write_typedef() {
         let typedef = CtfType::Typedef {
             name: "size_t".to_string(),
-            target_type: MaybeOffset::Found(3),
+            target_type: TypeId::from_u16(3).unwrap(),
         };
         let bytes = write_type(&typedef);
 
@@ -781,7 +748,7 @@ mod tests {
     fn test_write_const() {
         let const_type = CtfType::Const {
             name: "".to_string(),
-            target_type: MaybeOffset::Found(2),
+            target_type: TypeId::from_u16(3).unwrap(),
         };
         let bytes = write_type(&const_type);
 
@@ -793,8 +760,8 @@ mod tests {
     fn test_write_array_type() {
         let array_type = CtfType::Array {
             name: "".to_string(),
-            element_type: MaybeOffset::Found(2),
-            index_type: MaybeOffset::Found(3),
+            element_type: TypeId::from_u16(2).unwrap(),
+            index_type: TypeId::from_u16(3).unwrap(),
             nelems: 10,
         };
         let bytes = write_type(&array_type);
@@ -833,12 +800,12 @@ mod tests {
             members: vec![
                 CtfMember {
                     name: "x".to_string(),
-                    type_id: MaybeOffset::Found(1),
+                    type_id: TypeId::from_u16(1).unwrap(),
                     offset_bits: 0,
                 },
                 CtfMember {
                     name: "y".to_string(),
-                    type_id: MaybeOffset::Found(1),
+                    type_id: TypeId::from_u16(1).unwrap(),
                     offset_bits: 32,
                 },
             ],
@@ -860,12 +827,12 @@ mod tests {
             members: vec![
                 CtfMember {
                     name: "i".to_string(),
-                    type_id: MaybeOffset::Found(1),
+                    type_id: TypeId::from_u16(1).unwrap(),
                     offset_bits: 0,
                 },
                 CtfMember {
                     name: "f".to_string(),
-                    type_id: MaybeOffset::Found(2),
+                    type_id: TypeId::from_u16(2).unwrap(),
                     offset_bits: 0,
                 },
             ],
@@ -909,7 +876,7 @@ mod tests {
     fn test_write_function_no_args() {
         let func_type = CtfType::Function {
             name: "".to_string(),
-            return_type: MaybeOffset::Found(1),
+            return_type: TypeId::from_u16(1).unwrap(),
             args: vec![],
             is_varargs: false,
         };
@@ -924,10 +891,11 @@ mod tests {
 
     #[test]
     fn test_write_function_with_args() {
+        let id = TypeId::from_u16(1).unwrap();
         let func_type = CtfType::Function {
             name: "add".to_string(),
-            return_type: MaybeOffset::Found(1),
-            args: vec![MaybeOffset::Found(1), MaybeOffset::Found(1)],
+            return_type: id,
+            args: vec![id, id],
             is_varargs: false,
         };
         let bytes = write_type(&func_type);
@@ -943,8 +911,8 @@ mod tests {
     fn test_write_function_odd_args_padded() {
         let func_type = CtfType::Function {
             name: "".to_string(),
-            return_type: MaybeOffset::Found(1),
-            args: vec![MaybeOffset::Found(2)], // 1 arg = odd vlen
+            return_type: TypeId::from_u16(1).unwrap(),
+            args: vec![TypeId::from_u16(2).unwrap()], // 1 arg = odd vlen
             is_varargs: false,
         };
         let bytes = write_type(&func_type);
@@ -957,8 +925,8 @@ mod tests {
     fn test_write_function_varargs() {
         let func_type = CtfType::Function {
             name: "printf".to_string(),
-            return_type: MaybeOffset::Found(1),
-            args: vec![MaybeOffset::Found(2)],
+            return_type: TypeId::from_u16(1).unwrap(),
+            args: vec![TypeId::from_u16(2).unwrap()],
             is_varargs: true,
         };
         let bytes = write_type(&func_type);
@@ -977,38 +945,5 @@ mod tests {
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
         assert_eq!(info, ctf_type_info(CTF_K_UNKNOWN, false, 0));
-    }
-
-    #[test]
-    fn test_pending_offset_resolved() {
-        let offset = DebugInfoOffset(0x100);
-        let mut type_map = HashMap::new();
-        type_map.insert(offset, 42u16);
-
-        let ptr_type = CtfType::Pointer {
-            name: "".to_string(),
-            target_type: MaybeOffset::Pending(offset),
-        };
-        let bytes = write_type_with_refs(&ptr_type, &type_map);
-
-        let target = u16::from_le_bytes([bytes[6], bytes[7]]);
-        assert_eq!(target, 42);
-    }
-
-    #[test]
-    fn test_pending_offset_unresolved_errors() {
-        let offset = DebugInfoOffset(0x999);
-        let type_map = HashMap::new(); // empty - offset won't be found
-
-        let ptr_type = CtfType::Pointer {
-            name: "".to_string(),
-            target_type: MaybeOffset::Pending(offset),
-        };
-
-        let mut buffer = Vec::new();
-        let mut strings = StringTable::new();
-        let result = CtfWriter::write_type_impl(&mut buffer, &mut strings, &ptr_type, &type_map);
-
-        assert!(result.is_err());
     }
 }
