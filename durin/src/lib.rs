@@ -141,6 +141,16 @@ impl Default for TypeId {
 impl TypeId {
     pub const MAX: u64 = u16::MAX as u64;
 
+    /// The `TypeId` for unknown types.
+    pub fn unknown() -> Self {
+        Self(0)
+    }
+
+    /// The `TypeId` for `void`.
+    pub fn void() -> Self {
+        Self::default()
+    }
+
     pub fn get(&self) -> u16 {
         self.0
     }

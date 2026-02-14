@@ -1,7 +1,8 @@
 use crate::GlobalTypeOffset;
-use crate::ctf::CtfWriter;
 
 use anyhow::{Context, Result};
+use durin::TypeId;
+use durin::write::{CtfFunctionInfo, CtfWriter};
 use gimli::{
     AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram, DebugInfoOffset,
     DebuggingInformationEntry, DwTag, Dwarf, Reader, UnitOffset, UnitRef,
@@ -313,7 +314,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         writer: &mut CtfWriter,
     ) -> Result<HashMap<String, CtfFunctionInfo>> {
         // Build all types from the collected dependencies
-        build_types_from_deps(type_deps, writer)?;
+        let global_type_map = build_types_from_deps(type_deps, writer)?;
 
         // Now look up the type IDs for each function
         let mut parsed_funcs = HashMap::new();
@@ -324,19 +325,17 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             println!("  Return Type: {:?}", func.return_type_offset);
 
             let return_type = if let Some(ret_offset) = func.return_type_offset {
-                writer
-                    .type_map
+                global_type_map
                     .get(&ret_offset)
                     .copied()
                     .context("return type not found after building types")?
             } else {
-                0 // void
+                TypeId::unknown()
             };
 
             let mut args = Vec::new();
             for (arg_name, arg_offset) in &func.args {
-                let arg_type_id = writer
-                    .type_map
+                let arg_type_id = global_type_map
                     .get(arg_offset)
                     .copied()
                     .context("arg type not found after building types")?;
@@ -416,13 +415,6 @@ pub struct FunctionInfo {
     pub name: String,
     pub return_type_offset: Option<GlobalTypeOffset>,
     pub args: Vec<(String, GlobalTypeOffset)>,
-}
-
-/// Parsed function info with CTF type IDs.
-#[derive(Clone, Debug)]
-pub struct CtfFunctionInfo {
-    pub return_type: u16,
-    pub args: Vec<u16>,
 }
 
 /// Get the type offset from an entry's DW_AT_type attribute.
@@ -1678,49 +1670,52 @@ pub fn topological_sort(deps: &TypeDependencies) -> TopologicalOrder {
 // Phase 2: Type Builder
 // ============================================================================
 
-use crate::ctf::types::{
-    CTF_INT_BOOL, CTF_INT_CHAR, CTF_INT_SIGNED, CtfEnumerator, CtfMember, CtfType, MaybeOffset,
-    ctf_int_data,
-};
+use durin::constants::{CTF_INT_BOOL, CTF_INT_CHAR, CTF_INT_SIGNED};
+use durin::write::{CtfEnumerator, CtfMember, CtfType, ctf_int_data};
 
 /// Build CTF types from collected dependencies in topological order.
 /// This is the main entry point for Phase 2.
-pub fn build_types_from_deps(deps: &TypeDependencies, writer: &mut CtfWriter) -> Result<()> {
+pub fn build_types_from_deps(
+    deps: &TypeDependencies,
+    writer: &mut CtfWriter,
+) -> Result<HashMap<GlobalTypeOffset, TypeId>> {
     let order = topological_sort(deps);
 
     // Map from GlobalTypeId to CTF type ID
-    let mut global_type_map: HashMap<GlobalTypeOffset, u16> = HashMap::new();
+    let mut global_type_map: HashMap<GlobalTypeOffset, TypeId> = HashMap::new();
 
     for scc in &order.sccs {
         build_scc_types(scc, deps, writer, &mut global_type_map)?;
     }
 
-    // Populate writer.type_map directly with GlobalTypeIds
-    for (global_id, &type_id) in &global_type_map {
-        writer.type_map.insert(*global_id, type_id);
-    }
-
-    Ok(())
+    Ok(global_type_map)
 }
 
 /// Build types for a single SCC (strongly connected component).
-/// For single-type SCCs, this is straightforward.
-/// For multi-type SCCs (cycles), we use MaybeOffset::Pending for back-references.
+/// Uses two-phase processing:
+/// - Phase 1: Reserve type IDs for all types in the SCC
+/// - Phase 2: Build actual types (all references are now resolvable)
 fn build_scc_types(
     scc: &[GlobalTypeOffset],
     deps: &TypeDependencies,
     writer: &mut CtfWriter,
-    global_type_map: &mut HashMap<GlobalTypeOffset, u16>,
+    global_type_map: &mut HashMap<GlobalTypeOffset, TypeId>,
 ) -> Result<()> {
+    // Phase 1: Reserve type IDs for all types in this SCC
+    let mut reserved_ids: Vec<(GlobalTypeOffset, TypeId)> = Vec::new();
     for &global_id in scc {
-        let Some(stub) = deps.stubs.get(&global_id) else {
-            continue;
-        };
+        if deps.stubs.contains_key(&global_id) {
+            let type_id = writer.reserve_type_id();
+            global_type_map.insert(global_id, type_id);
+            reserved_ids.push((global_id, type_id));
+        }
+    }
 
+    // Phase 2: Build actual types (all refs now resolvable via global_type_map)
+    for (global_id, type_id) in reserved_ids {
+        let stub = deps.stubs.get(&global_id).unwrap(); // Already checked in phase 1
         let ctf_type = stub_to_ctf_type(stub, global_id, deps, writer, global_type_map)?;
-
-        let type_id = writer.add_type(global_id, ctf_type);
-        global_type_map.insert(global_id, type_id);
+        writer.set_type(type_id, ctf_type);
     }
 
     Ok(())
@@ -1732,7 +1727,7 @@ fn stub_to_ctf_type(
     global_id: GlobalTypeOffset,
     deps: &TypeDependencies,
     writer: &mut CtfWriter,
-    global_type_map: &HashMap<GlobalTypeOffset, u16>,
+    global_type_map: &HashMap<GlobalTypeOffset, TypeId>,
 ) -> Result<CtfType> {
     // Get the header offset for this type to convert TypeRefs to GlobalTypeIds
     let header_offset = deps
@@ -1811,7 +1806,7 @@ fn stub_to_ctf_type(
             is_varargs,
         } => {
             let ret = resolve_type_ref(return_type.as_ref(), header_offset, global_type_map);
-            let args: Vec<MaybeOffset> = params
+            let args: Vec<_> = params
                 .iter()
                 .map(|p| resolve_type_ref(p.type_ref.as_ref(), header_offset, global_type_map))
                 .collect();
@@ -1933,7 +1928,10 @@ fn stub_to_ctf_type(
 
             let ctf_enumerators: Vec<CtfEnumerator> = enumerators
                 .iter()
-                .map(|e| CtfEnumerator::new(e.name.clone(), e.value))
+                .map(|e| CtfEnumerator {
+                    name: e.name.clone(),
+                    value: e.value as i32,
+                })
                 .collect();
 
             Ok(CtfType::Enum {
@@ -1956,7 +1954,7 @@ fn build_variant_part_members(
     parent_struct_size: u32,
     header_offset: DebugInfoOffset<usize>,
     writer: &mut CtfWriter,
-    global_type_map: &HashMap<GlobalTypeOffset, u16>,
+    global_type_map: &HashMap<GlobalTypeOffset, TypeId>,
     deps: &TypeDependencies,
 ) {
     // If there are no variants with payloads, just add the discriminant
@@ -2000,14 +1998,11 @@ fn build_variant_part_members(
         let member_at_zero = variant_part.variants.iter().any(|v| {
             v.members.iter().any(|m| {
                 let type_id = resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map);
-                match type_id {
-                    MaybeOffset::Found(id) => writer
-                        .types
-                        .get(id as usize)
-                        .map(|t| t.has_member_with_zero_offset())
-                        .unwrap_or_default(),
-                    _ => false,
-                }
+                writer
+                    .types
+                    .get(type_id.get() as usize)
+                    .map(|t| t.has_member_with_zero_offset())
+                    .unwrap_or_default()
             })
         });
 
@@ -2034,8 +2029,10 @@ fn build_variant_part_members(
         .variants
         .iter()
         .filter_map(|v| {
-            v.discriminant_value
-                .map(|val| CtfEnumerator::new(v.name.clone(), val))
+            v.discriminant_value.map(|val| CtfEnumerator {
+                name: v.name.clone(),
+                value: val as i32,
+            })
         })
         .collect();
 
@@ -2054,7 +2051,7 @@ fn build_variant_part_members(
             size: discr_size,
             enumerators,
         };
-        Some(MaybeOffset::Found(writer.add_synthetic_type(enum_type)))
+        Some(writer.add_type(enum_type))
     } else if let Some(discr) = &variant_part.discriminant {
         // Fall back to original type if no discriminant values available
         Some(resolve_type_ref(
@@ -2102,7 +2099,7 @@ fn build_variant_part_members(
                 size: 0,
                 members: vec![],
             };
-            MaybeOffset::Found(writer.add_synthetic_type(zst_struct))
+            writer.add_type(zst_struct)
         } else if adjusted_members.len() == 1
             && adjusted_members[0].offset_bits == 0
             && (adjusted_members[0].name.is_empty() || adjusted_members[0].name == variant.name)
@@ -2121,7 +2118,7 @@ fn build_variant_part_members(
                 size: variant_size,
                 members: adjusted_members,
             };
-            MaybeOffset::Found(writer.add_synthetic_type(variant_struct))
+            writer.add_type(variant_struct)
         };
 
         union_members.push(CtfMember {
@@ -2143,7 +2140,7 @@ fn build_variant_part_members(
         size: max_variant_size,
         members: union_members,
     };
-    let variants_union_id = writer.add_synthetic_type(variants_union);
+    let variants_union_id = writer.add_type(variants_union);
 
     if is_niche_optimized {
         // For niche-optimized enums, create a __tagged wrapper union containing
@@ -2163,7 +2160,7 @@ fn build_variant_part_members(
         // Add the variants union
         tagged_members.push(CtfMember {
             name: "__variants".to_string(),
-            type_id: MaybeOffset::Found(variants_union_id),
+            type_id: (variants_union_id),
             offset_bits: 0,
         });
 
@@ -2178,12 +2175,12 @@ fn build_variant_part_members(
             size: max_variant_size,
             members: tagged_members,
         };
-        let tagged_union_id = writer.add_synthetic_type(tagged_union);
+        let tagged_union_id = writer.add_type(tagged_union);
 
         // Add the __tagged union as a member of the parent struct
         members.push(CtfMember {
             name: "__tagged".to_string(),
-            type_id: MaybeOffset::Found(tagged_union_id),
+            type_id: (tagged_union_id),
             offset_bits: union_offset_bits,
         });
     } else {
@@ -2201,7 +2198,7 @@ fn build_variant_part_members(
         // Add the variants union as a member of the parent struct
         members.push(CtfMember {
             name: "__variants".to_string(),
-            type_id: MaybeOffset::Found(variants_union_id),
+            type_id: (variants_union_id),
             offset_bits: union_offset_bits,
         });
     }
@@ -2362,17 +2359,17 @@ fn infer_discriminant_size(
     }
 }
 
-/// Resolve a type reference to a MaybeOffset.
+/// Resolve a type reference to a CTF type ID.
 /// Converts TypeRef to GlobalTypeId and looks up in global_type_map.
 fn resolve_type_ref(
     type_ref: Option<&TypeRef>,
     header_offset: DebugInfoOffset<usize>,
-    global_type_map: &HashMap<GlobalTypeOffset, u16>,
-) -> MaybeOffset {
+    global_type_map: &HashMap<GlobalTypeOffset, TypeId>,
+) -> TypeId {
     let Some(type_ref) = type_ref else {
         // No type reference - use void (type ID 1)
         // Type 0 is Unknown/reserved, type 1 is the void type in CtfWriter
-        return MaybeOffset::Found(1);
+        return TypeId::void();
     };
 
     // Convert TypeRef to GlobalTypeId
@@ -2384,14 +2381,10 @@ fn resolve_type_ref(
         TypeRef::CrossUnit(abs_offset) => *abs_offset,
     };
 
-    // Check if already in global_type_map
-    if let Some(&type_id) = global_type_map.get(&global_id) {
-        return MaybeOffset::Found(type_id);
-    }
-
-    // Should have been processed already (topological order ensures this)
-    // If not found, mark as pending
-    MaybeOffset::Pending(global_id)
+    // With two-phase SCC processing, all types should already be in the map
+    *global_type_map
+        .get(&global_id)
+        .expect("type not found in global_type_map - topological ordering bug")
 }
 
 /// Build a base type (integer or float) from DWARF encoding.
@@ -2592,140 +2585,6 @@ mod tests {
         }
     }
 
-    /// Helper to simulate the member sorting logic used in stub_to_ctf_type
-    /// for struct and union members.
-    fn sort_members_by_offset(members: &mut [CtfMember]) {
-        members.sort_by_key(|m| m.offset_bits);
-    }
-
-    #[test]
-    fn test_struct_members_sorted_by_offset() {
-        // Simulate members in reverse offset order (as might come from DWARF)
-        let mut members = vec![
-            CtfMember {
-                name: "c".to_string(),
-                type_id: MaybeOffset::Found(1),
-                offset_bits: 128, // 16 bytes * 8
-            },
-            CtfMember {
-                name: "a".to_string(),
-                type_id: MaybeOffset::Found(1),
-                offset_bits: 0,
-            },
-            CtfMember {
-                name: "b".to_string(),
-                type_id: MaybeOffset::Found(1),
-                offset_bits: 64, // 8 bytes * 8
-            },
-        ];
-
-        sort_members_by_offset(&mut members);
-
-        // Members should be sorted by offset_bits
-        assert_eq!(members.len(), 3);
-        assert_eq!(members[0].name, "a");
-        assert_eq!(members[0].offset_bits, 0);
-        assert_eq!(members[1].name, "b");
-        assert_eq!(members[1].offset_bits, 64);
-        assert_eq!(members[2].name, "c");
-        assert_eq!(members[2].offset_bits, 128);
-    }
-
-    #[test]
-    fn test_union_members_sorted_by_offset() {
-        // Union members typically have offset 0, verify stable sort behavior
-        let mut members = vec![
-            CtfMember {
-                name: "z".to_string(),
-                type_id: MaybeOffset::Found(1),
-                offset_bits: 0,
-            },
-            CtfMember {
-                name: "y".to_string(),
-                type_id: MaybeOffset::Found(1),
-                offset_bits: 0,
-            },
-            CtfMember {
-                name: "x".to_string(),
-                type_id: MaybeOffset::Found(1),
-                offset_bits: 0,
-            },
-        ];
-
-        sort_members_by_offset(&mut members);
-
-        // All offsets are 0, stable sort preserves original order
-        assert_eq!(members.len(), 3);
-        assert_eq!(members[0].name, "z");
-        assert_eq!(members[1].name, "y");
-        assert_eq!(members[2].name, "x");
-    }
-
-    #[test]
-    fn test_struct_members_with_mixed_offsets() {
-        // Test with non-contiguous offsets (padding scenario)
-        let mut members = vec![
-            CtfMember {
-                name: "field_at_24".to_string(),
-                type_id: MaybeOffset::Found(1),
-                offset_bits: 192, // 24 * 8
-            },
-            CtfMember {
-                name: "field_at_4".to_string(),
-                type_id: MaybeOffset::Found(1),
-                offset_bits: 32, // 4 * 8
-            },
-            CtfMember {
-                name: "field_at_0".to_string(),
-                type_id: MaybeOffset::Found(1),
-                offset_bits: 0,
-            },
-            CtfMember {
-                name: "field_at_12".to_string(),
-                type_id: MaybeOffset::Found(1),
-                offset_bits: 96, // 12 * 8
-            },
-        ];
-
-        sort_members_by_offset(&mut members);
-
-        // Verify ascending offset order
-        assert_eq!(members.len(), 4);
-        assert_eq!(members[0].name, "field_at_0");
-        assert_eq!(members[0].offset_bits, 0);
-        assert_eq!(members[1].name, "field_at_4");
-        assert_eq!(members[1].offset_bits, 32);
-        assert_eq!(members[2].name, "field_at_12");
-        assert_eq!(members[2].offset_bits, 96);
-        assert_eq!(members[3].name, "field_at_24");
-        assert_eq!(members[3].offset_bits, 192);
-    }
-
-    #[test]
-    fn test_single_member_struct() {
-        // Edge case: single member should remain unchanged
-        let mut members = vec![CtfMember {
-            name: "only_field".to_string(),
-            type_id: MaybeOffset::Found(1),
-            offset_bits: 0,
-        }];
-
-        sort_members_by_offset(&mut members);
-
-        assert_eq!(members.len(), 1);
-        assert_eq!(members[0].name, "only_field");
-    }
-
-    #[test]
-    fn test_empty_struct() {
-        // Edge case: empty struct should not panic
-        let mut members: Vec<CtfMember> = vec![];
-
-        sort_members_by_offset(&mut members);
-
-        assert!(members.is_empty());
-    }
-
     #[test]
     fn test_anonymous_function_type_gets_synthetic_name() {
         // DW_TAG_subroutine_type entries typically don't have names in DWARF.
@@ -2769,7 +2628,7 @@ mod tests {
 
         // First add the void type
         let void_ctf = build_base_type("void", 0, gimli::DW_ATE_signed);
-        let void_ctf_id = writer.add_type(void_id, void_ctf);
+        let void_ctf_id = writer.add_type(void_ctf);
 
         // Build global type map
         let mut global_type_map = HashMap::new();
@@ -2829,7 +2688,7 @@ mod tests {
             CtfType::Function { return_type, .. } => {
                 assert_eq!(
                     return_type,
-                    MaybeOffset::Found(1),
+                    TypeId::void(),
                     "Void return type should use type ID 1 (void), not 0 (unknown)"
                 );
             }
@@ -2876,7 +2735,7 @@ mod tests {
         let mut writer = CtfWriter::new(None);
 
         let void_ctf = build_base_type("void", 0, gimli::DW_ATE_signed);
-        let void_ctf_id = writer.add_type(void_id, void_ctf);
+        let void_ctf_id = writer.add_type(void_ctf);
 
         let mut global_type_map = HashMap::new();
         global_type_map.insert(void_id, void_ctf_id);
@@ -2978,14 +2837,14 @@ mod tests {
 
         // Add base types first
         let usize_ctf = build_base_type("usize", 8, gimli::DW_ATE_unsigned);
-        let usize_ctf_id = writer.add_type(usize_id, usize_ctf);
+        let usize_ctf_id = writer.add_type(usize_ctf);
 
         let alloc_ctf = CtfType::Struct {
             name: "alloc::alloc::Global".to_string(),
             size: 0,
             members: vec![],
         };
-        let alloc_ctf_id = writer.add_type(alloc_id, alloc_ctf);
+        let alloc_ctf_id = writer.add_type(alloc_ctf);
 
         let mut global_type_map = HashMap::new();
         global_type_map.insert(usize_id, usize_ctf_id);
@@ -3041,15 +2900,13 @@ mod tests {
 
                 // T should reference usize
                 assert_eq!(
-                    t_param.type_id,
-                    MaybeOffset::Found(usize_ctf_id),
+                    t_param.type_id, usize_ctf_id,
                     "__type_param_T should reference usize type"
                 );
 
                 // A should reference Global
                 assert_eq!(
-                    a_param.type_id,
-                    MaybeOffset::Found(alloc_ctf_id),
+                    a_param.type_id, alloc_ctf_id,
                     "__type_param_A should reference Global type"
                 );
             }
