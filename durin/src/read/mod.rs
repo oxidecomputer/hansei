@@ -943,6 +943,16 @@ impl CtfType {
             } => ctf.ty(*target_type).size(ctf),
         }
     }
+
+    pub fn enumerators(&self) -> &[CtfEnumerator] {
+        match self {
+            CtfType::Enum {
+                ty: CtfEnum { enumerators, .. },
+                ..
+            } => enumerators,
+            _ => &[],
+        }
+    }
 }
 
 impl TryFromCtx<'_, TypeId> for CtfType {
