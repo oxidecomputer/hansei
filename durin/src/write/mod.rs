@@ -8,6 +8,7 @@ use goblin::elf::section_header::SHN_UNDEF;
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
 use scroll::{IOwrite, LE};
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{self, Write};
 
@@ -29,13 +30,17 @@ pub fn ctf_int_data(encoding: u8, offset: u8, bits: u32) -> u32 {
 pub struct StringTable {
     strings: Vec<u8>,
     offsets: HashMap<String, u32>,
+    truncate_len: Option<usize>,
+    replace_space: Option<&'static str>,
 }
 
 impl StringTable {
-    pub fn new() -> Self {
+    pub fn new(truncate_len: Option<usize>, replace_space: Option<&'static str>) -> Self {
         let mut table = StringTable {
             strings: Vec::new(),
             offsets: HashMap::new(),
+            truncate_len,
+            replace_space,
         };
         // First byte is always null terminator
         table.strings.push(0);
@@ -53,27 +58,27 @@ impl StringTable {
 
         let offset = self.strings.len() as u32;
         self.offsets.insert(s.to_string(), offset);
-        // Replace spaces with underscores - CTF tools may not handle spaces well
-        let unspaced = s.replace(' ', "_");
-        if unspaced.len() >= 1023 {
-            // Truncate strings to 1 KiB.
-            self.strings.extend_from_slice(&unspaced.as_bytes()[..1020]);
-            self.strings.extend_from_slice(b"...");
-        } else {
-            self.strings.extend_from_slice(unspaced.as_bytes());
+        let mut updated = Cow::Borrowed(s);
+
+        if let Some(replace) = self.replace_space {
+            updated = s.replace(' ', replace).into();
         }
+
+        if let Some(max_len) = self.truncate_len
+            && updated.len() > max_len
+        {
+            self.strings
+                .extend_from_slice(&updated.as_bytes()[..max_len]);
+        } else {
+            self.strings.extend_from_slice(updated.as_bytes());
+        }
+
         self.strings.push(0); // null terminator
         offset
     }
 
     pub fn data(&self) -> &[u8] {
         &self.strings
-    }
-}
-
-impl Default for StringTable {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -85,11 +90,13 @@ pub struct CtfWriter<'a> {
 }
 
 impl<'a> CtfWriter<'a> {
-    /// Construct a new `CtfWriter`. If `elf` is provided then function info
-    /// will be included in the generated CTF.
-    pub fn new(elf: Option<&'a Elf<'a>>) -> Self {
+    /// Construct a new `CtfWriter`.
+    pub fn new() -> Self {
+        Self::_new(Opts::default())
+    }
+
+    fn _new(opts: Opts<'a>) -> Self {
         CtfWriter {
-            elf,
             // Start null type at index 0 and void type for functions without a return type.
             types: vec![
                 CtfType::Unknown,
@@ -99,13 +106,10 @@ impl<'a> CtfWriter<'a> {
                     encoding: 0,
                 },
             ],
-            strings: StringTable::new(),
-            label: None,
+            strings: StringTable::new(opts.truncate_str_len, opts.replace_spaces),
+            elf: opts.elf,
+            label: opts.label,
         }
-    }
-
-    pub fn set_label(&mut self, label: String) {
-        self.label = Some(label);
     }
 
     /// Add a type to the writer. Returns the assigned type ID.
@@ -506,6 +510,58 @@ impl<'a> CtfWriter<'a> {
     }
 }
 
+#[derive(Default, Debug)]
+struct Opts<'a> {
+    elf: Option<&'a Elf<'a>>,
+    truncate_str_len: Option<usize>,
+    replace_spaces: Option<&'static str>,
+    label: Option<String>,
+}
+
+#[derive(Default, Debug)]
+pub struct CtfWriterBuilder<'a> {
+    opts: Opts<'a>,
+}
+
+impl<'a> CtfWriterBuilder<'a> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn build(self) -> CtfWriter<'a> {
+        CtfWriter::_new(self.opts)
+    }
+
+    /// The ELF file to pull symbols from. If present this will be used to
+    /// generate function type info in the CTF file.
+    pub fn with_elf(mut self, elf: &'a Elf<'a>) -> Self {
+        self.opts.elf = Some(elf);
+        self
+    }
+
+    /// Strings longer than this value will be truncated to this length.
+    /// Some illumos CTF tooling will fail if a string is longer than their
+    /// buffer length.
+    pub fn with_truncate_str_len(mut self, len: usize) -> Self {
+        self.opts.truncate_str_len = Some(len);
+        self
+    }
+
+    /// The character to replace spaces with in type names.
+    /// Some illumos CTF tooling cannot parse a type name that contains a
+    /// space.
+    pub fn with_replace_spaces(mut self, replace: &'static str) -> Self {
+        self.opts.replace_spaces = Some(replace);
+        self
+    }
+
+    /// The label to apply to the CTF file.
+    pub fn with_label(mut self, label: String) -> Self {
+        self.opts.label = Some(label);
+        self
+    }
+}
+
 /// Parsed function info with CTF type IDs.
 #[derive(Clone, Debug)]
 pub struct CtfFunctionInfo {
@@ -645,20 +701,20 @@ mod tests {
     // Helper to write a type and return the buffer bytes
     fn write_type(ctf_type: &CtfType) -> Vec<u8> {
         let mut buffer = Vec::new();
-        let mut strings = StringTable::new();
+        let mut strings = StringTable::new(None, None);
         CtfWriter::write_type_impl(&mut buffer, &mut strings, ctf_type).unwrap();
         buffer
     }
 
     #[test]
     fn test_string_table_starts_with_null() {
-        let table = StringTable::new();
+        let table = StringTable::new(None, None);
         assert_eq!(table.data(), &[0]);
     }
 
     #[test]
     fn test_string_table_empty_string_returns_zero() {
-        let mut table = StringTable::new();
+        let mut table = StringTable::new(None, None);
         let offset = table.add_string("");
         assert_eq!(offset, 0);
         // Table should still just have the null byte
@@ -667,7 +723,7 @@ mod tests {
 
     #[test]
     fn test_string_table_add_string() {
-        let mut table = StringTable::new();
+        let mut table = StringTable::new(None, None);
         let offset = table.add_string("foo");
         assert_eq!(offset, 1); // After initial null byte
         assert_eq!(table.data(), b"\0foo\0");
@@ -675,7 +731,7 @@ mod tests {
 
     #[test]
     fn test_string_table_deduplication() {
-        let mut table = StringTable::new();
+        let mut table = StringTable::new(None, None);
         let off1 = table.add_string("foo");
         let off2 = table.add_string("bar");
         let off3 = table.add_string("foo"); // duplicate
@@ -688,15 +744,15 @@ mod tests {
 
     #[test]
     fn test_string_table_truncates_long_strings() {
-        let mut table = StringTable::new();
+        let mut table = StringTable::new(Some(1025), None);
         let long_string = "x".repeat(2000);
         let offset = table.add_string(&long_string);
         assert_eq!(offset, 1);
 
         let data = table.data();
-        // Should be: null + 1020 x's + "..." + null = 1025 bytes
-        assert_eq!(data.len(), 1025);
-        assert!(data.ends_with(b"...\0"));
+        // initial 0, plus truncated len, plus trailing 0.
+        assert_eq!(data.len(), 1027);
+        assert!(data.ends_with(b"\0"));
     }
 
     #[test]

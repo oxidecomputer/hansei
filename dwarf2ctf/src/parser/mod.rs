@@ -2624,7 +2624,7 @@ mod tests {
             },
         );
 
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         // First add the void type
         let void_ctf = build_base_type("void", 0, gimli::DW_ATE_signed);
@@ -2675,7 +2675,7 @@ mod tests {
             },
         );
 
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         let global_type_map = HashMap::new();
 
@@ -2732,7 +2732,7 @@ mod tests {
             },
         );
 
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         let void_ctf = build_base_type("void", 0, gimli::DW_ATE_signed);
         let void_ctf_id = writer.add_type(void_ctf);
@@ -2833,7 +2833,7 @@ mod tests {
             },
         );
 
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         // Add base types first
         let usize_ctf = build_base_type("usize", 8, gimli::DW_ATE_unsigned);

@@ -186,7 +186,9 @@ pub enum SizeOrType {
 mod tests {
     use super::*;
     use crate::read::CtfReader;
-    use crate::write::{CtfEnumerator, CtfMember, CtfType, CtfWriter, ctf_int_data};
+    use crate::write::{
+        CtfEnumerator, CtfMember, CtfType, CtfWriter, CtfWriterBuilder, ctf_int_data,
+    };
     use std::collections::HashMap;
 
     /// Test helper to create CTF data and parse it back.
@@ -197,7 +199,7 @@ mod tests {
 
     #[test]
     fn round_trip_integer_types() {
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         // Add signed 32-bit integer
         writer.add_type(CtfType::Integer {
@@ -234,7 +236,7 @@ mod tests {
 
     #[test]
     fn round_trip_struct_type() {
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         // Add i32 type first (will be type id 2 after null and void)
         let int_id = writer.add_type(CtfType::Integer {
@@ -280,7 +282,7 @@ mod tests {
 
     #[test]
     fn round_trip_pointer_type() {
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         // Add i32 type
         let int_id = writer.add_type(CtfType::Integer {
@@ -311,7 +313,7 @@ mod tests {
 
     #[test]
     fn round_trip_array_type() {
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         // Add i32 type
         let int_id = writer.add_type(CtfType::Integer {
@@ -341,7 +343,7 @@ mod tests {
 
     #[test]
     fn round_trip_enum_type() {
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         writer.add_type(CtfType::Enum {
             name: "Color".to_string(),
@@ -390,7 +392,7 @@ mod tests {
 
     #[test]
     fn round_trip_typedef() {
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         // Add i32 type
         let int_id = writer.add_type(CtfType::Integer {
@@ -418,7 +420,7 @@ mod tests {
 
     #[test]
     fn round_trip_union_type() {
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         // Add i32 type
         let int_id = writer.add_type(CtfType::Integer {
@@ -471,7 +473,7 @@ mod tests {
 
     #[test]
     fn round_trip_nested_struct() {
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         // Add i32 type
         let int_id = writer.add_type(CtfType::Integer {
@@ -536,8 +538,9 @@ mod tests {
 
     #[test]
     fn round_trip_with_label() {
-        let mut writer = CtfWriter::new(None);
-        writer.set_label("test_binary".to_string());
+        let mut writer = CtfWriterBuilder::new()
+            .with_label("test_binary".to_string())
+            .build();
 
         // Add a simple type
         writer.add_type(CtfType::Integer {
@@ -555,7 +558,7 @@ mod tests {
 
     #[test]
     fn round_trip_const_volatile_restrict() {
-        let mut writer = CtfWriter::new(None);
+        let mut writer = CtfWriter::new();
 
         // Add base i32 type
         let int_id = writer.add_type(CtfType::Integer {
