@@ -2,7 +2,7 @@ use crate::parser::DwarfParser;
 
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser};
-use durin::write::CtfWriter;
+use durin::write::CtfWriterBuilder;
 use gimli::{DebugInfoOffset, Dwarf, EndianSlice, RunTimeEndian};
 use goblin::elf::Elf;
 use goblin::elf::header::{EI_CLASS, ELFCLASS64, Header};
@@ -274,18 +274,20 @@ fn main() -> Result<()> {
     let dwarf = Dwarf::load(&loader)
         .with_context(|| format!("failed to load DWARF from {}", args.elf.display()))?;
     let mut parser = DwarfParser::build(&dwarf)?;
-    let mut writer = if args.bin_out.is_some() {
-        CtfWriter::new(Some(&debug_elf))
-    } else {
-        CtfWriter::new(None)
-    };
-
     let label = args
         .elf
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| args.elf.display().to_string());
-    writer.set_label(label);
+
+    let mut builder = CtfWriterBuilder::new()
+        .with_label(label)
+        .with_truncate_str_len(1024)
+        .with_replace_spaces("_");
+    if args.bin_out.is_some() {
+        builder = builder.with_elf(&debug_elf);
+    }
+    let mut writer = builder.build();
 
     let source_symbols: HashSet<_> = debug_elf
         .syms
