@@ -1,7 +1,6 @@
 use crate::TypeId;
 use crate::constants::*;
 
-use anyhow::Result;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use goblin::elf::Elf;
@@ -10,7 +9,13 @@ use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
 use scroll::{IOwrite, LE};
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{self, Write};
+
+pub use error::Error;
+
+mod error;
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn ctf_type_info(kind: u8, is_root: bool, vlen: u16) -> u16 {
     ((kind as u16) << 11) | ((if is_root { 1u16 } else { 0 }) << 10) | (vlen & CTF_MAX_VLEN)
@@ -143,6 +148,10 @@ impl<'a> CtfWriter<'a> {
     }
 
     pub fn generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> Result<Vec<u8>> {
+        self._generate_ctf(funcs).map_err(|e| Error::write(e))
+    }
+
+    fn _generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
 
         // Calculate type section size and write to string table
@@ -295,7 +304,7 @@ impl<'a> CtfWriter<'a> {
         Ok(out)
     }
 
-    fn write_type(&mut self, buffer: &mut Vec<u8>, ctf_type: &CtfType) -> Result<()> {
+    fn write_type(&mut self, buffer: &mut Vec<u8>, ctf_type: &CtfType) -> io::Result<()> {
         Self::write_type_impl(buffer, &mut self.strings, ctf_type)
     }
 
@@ -303,7 +312,7 @@ impl<'a> CtfWriter<'a> {
         buffer: &mut Vec<u8>,
         strings: &mut StringTable,
         ctf_type: &CtfType,
-    ) -> Result<()> {
+    ) -> io::Result<()> {
         match ctf_type {
             CtfType::Integer {
                 name,
