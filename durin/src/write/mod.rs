@@ -89,6 +89,12 @@ pub struct CtfWriter<'a> {
     label: Option<String>,
 }
 
+impl Default for CtfWriter<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> CtfWriter<'a> {
     /// Construct a new `CtfWriter`.
     pub fn new() -> Self {
