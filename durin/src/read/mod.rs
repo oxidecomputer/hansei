@@ -1192,7 +1192,7 @@ pub struct CtfStruct {
 pub struct CtfMember {
     pub name: StrId,
     pub type_id: TypeId,
-    pub offset_bits: u16,
+    pub offset_bits: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -1255,7 +1255,7 @@ impl CtfMember {
 
     /// The member's offset in bytes.
     pub fn offset(&self) -> u64 {
-        self.offset_bits as u64 / 8
+        self.offset_bits / 8
     }
 }
 
@@ -1271,7 +1271,7 @@ impl TryFromCtx<'_, ()> for CtfMember {
         let type_id_raw = from.gread(offset)?;
         let type_id = TypeId::from_u16(type_id_raw)?;
 
-        let offset_bits = from.gread(offset)?;
+        let offset_bits = from.gread::<u16>(offset)? as u64;
 
         Ok((
             CtfMember {
