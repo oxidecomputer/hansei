@@ -21,7 +21,7 @@ impl UncheckedStringTable {
 
     /// Retrieve a StrId from the table, confirming it has a valid index, is
     /// correctly encoded, and is in the internal table.
-    pub fn get_checked<'a>(&'a self, id: StrId) -> Result<&'a str> {
+    pub fn get_checked(&self, id: StrId) -> Result<&str> {
         if matches!(id.table(), StringTableType::External) {
             return Err(Error::external_str(id));
         }
@@ -40,7 +40,7 @@ impl UncheckedStringTable {
 
     /// Confirm a StrId has a valid index, is correctly encoded, and is in the
     /// internal table.
-    pub fn check<'a>(&'a self, id: StrId) -> Result<()> {
+    pub fn check(&self, id: StrId) -> Result<()> {
         let _ = self.get_checked(id)?;
 
         Ok(())
@@ -58,13 +58,13 @@ pub struct StringTable {
 impl StringTable {
     /// Retrieve a string from the string table. Only internal tables are
     /// supported.
-    pub fn get<'a>(&'a self, id: StrId) -> &'a str {
+    pub fn get(&self, id: StrId) -> &str {
         // SAFETY: We confirmed all StrIds prior to construction.
         unsafe { self.get_unchecked(id) }
     }
 
     /// SAFETY: This may only be called after all StrIds have been validated.
-    unsafe fn get_unchecked<'a>(&'a self, id: StrId) -> &'a str {
+    unsafe fn get_unchecked(&self, id: StrId) -> &str {
         // SAFETY: We've confirmed that all StrIds present are valid. No public
         // constructor is available for users to create an invalid id. We hold
         // exclusive access to the table state in memory.

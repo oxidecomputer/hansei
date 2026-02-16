@@ -122,7 +122,7 @@ impl CtfReader {
         })
     }
 
-    pub fn ty<'ctf>(&'ctf self, id: TypeId) -> &'ctf CtfType {
+    pub fn ty(&self, id: TypeId) -> &CtfType {
         // UNWRAP: We validate all type ids are valid during construction.
         self.types.ty_checked(id).unwrap()
     }
@@ -186,7 +186,7 @@ impl CtfReader {
         }
     }
 
-    pub fn types<'ctf>(&'ctf self) -> &'ctf [CtfType] {
+    pub fn types(&self) -> &[CtfType] {
         self.types.as_slice()
     }
 
@@ -196,17 +196,17 @@ impl CtfReader {
             .find(|t| t.kind() == kind && t.name(self) == name)
     }
 
-    pub fn tys_by_name<'ctf>(&'ctf self) -> HashMap<&'ctf str, &'ctf CtfType> {
+    pub fn tys_by_name(&self) -> HashMap<&str, &CtfType> {
         self.types()
             .iter()
             .map(|t| {
-                let name = t.name(&self);
+                let name = t.name(self);
                 (name, t)
             })
             .collect()
     }
 
-    pub fn str<'ctf>(&'ctf self, id: StrId) -> &'ctf str {
+    pub fn str(&self, id: StrId) -> &str {
         self.strings.get(id)
     }
 }
@@ -384,7 +384,7 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
 /// i32. Once all strings are parsed, take a second pass to update the values as
 /// necessary.
 fn update_large_enums(types: &mut TypeTable, strings: &StringTable) -> Result<()> {
-    let iter = types.as_slice_mut().into_iter().filter_map(|t| match t {
+    let iter = types.as_slice_mut().iter_mut().filter_map(|t| match t {
         CtfType::Enum { ty, .. } => Some(ty),
         _ => None,
     });
@@ -394,7 +394,7 @@ fn update_large_enums(types: &mut TypeTable, strings: &StringTable) -> Result<()
             let name = strings.get(enm.name);
             if name.ends_with("@@") {
                 let hex_num = name
-                    .splitn(3, "@@")
+                    .split("@@")
                     .nth(1)
                     .ok_or_else(|| Error::invalid_enum_format(name.to_string()))?;
                 let bare_hex = hex_num.trim_start_matches("0x");
@@ -528,7 +528,7 @@ impl TypeTable {
 
         let mut types = Vec::new();
         // First slot is empty, but we use Unknown as a placeholder
-        types.push(CtfType::Unknown { id: id });
+        types.push(CtfType::Unknown { id });
 
         while *offset < types_data.len() {
             let ty = types_data.gread_with(offset, id)?;
@@ -540,7 +540,7 @@ impl TypeTable {
         Ok(Self { types })
     }
 
-    pub fn ty_checked<'ctf>(&'ctf self, id: TypeId) -> Result<&'ctf CtfType> {
+    pub fn ty_checked(&self, id: TypeId) -> Result<&CtfType> {
         let Some(ty) = self.types.get(id.get() as usize) else {
             return Err(Error::missing_type(id));
         };
@@ -548,7 +548,7 @@ impl TypeTable {
         Ok(ty)
     }
 
-    pub fn check<'ctf>(&'ctf self, id: TypeId) -> Result<()> {
+    pub fn check(&self, id: TypeId) -> Result<()> {
         let _ = self.ty_checked(id)?;
         Ok(())
     }
