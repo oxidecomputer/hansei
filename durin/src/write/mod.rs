@@ -152,7 +152,7 @@ impl<'a> CtfWriter<'a> {
     }
 
     pub fn generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> Result<Vec<u8>> {
-        self._generate_ctf(funcs).map_err(|e| Error::write(e))
+        self._generate_ctf(funcs).map_err(Error::write)
     }
 
     fn _generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> io::Result<Vec<u8>> {
