@@ -20,6 +20,7 @@ pub use strings::StringTable;
 pub type Result<T> = std::result::Result<T, Error>;
 
 const HEADER_SIZE: usize = 36;
+const LARGE_THRESHOLD: u16 = 8192;
 
 pub struct CtfReader {
     pub preamble: CtfPreamble,
@@ -1050,14 +1051,18 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 }
             }
             TypeKind::Struct => {
-                if size >= 8192 {
-                    unimplemented!("large structs are no supported yet");
-                }
                 let vlen = meta.vlen();
                 let mut members = Vec::new();
-                for _ in 0..vlen {
-                    let member = from.gread(offset)?;
-                    members.push(member);
+                if size >= LARGE_THRESHOLD {
+                    for _ in 0..vlen {
+                        let lmember: LargeCtfMember = from.gread(offset)?;
+                        members.push(lmember.into());
+                    }
+                } else {
+                    for _ in 0..vlen {
+                        let member = from.gread(offset)?;
+                        members.push(member);
+                    }
                 }
                 Self::Struct {
                     id,
@@ -1069,14 +1074,18 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 }
             }
             TypeKind::Union => {
-                if size >= 8192 {
-                    unimplemented!("large unions are no supported yet");
-                }
                 let vlen = meta.vlen();
                 let mut members = Vec::new();
-                for _ in 0..vlen {
-                    let member = from.gread(offset)?;
-                    members.push(member);
+                if size >= LARGE_THRESHOLD {
+                    for _ in 0..vlen {
+                        let lmember: LargeCtfMember = from.gread(offset)?;
+                        members.push(lmember.into());
+                    }
+                } else {
+                    for _ in 0..vlen {
+                        let member = from.gread(offset)?;
+                        members.push(member);
+                    }
                 }
                 Self::Union {
                     id,
@@ -1275,6 +1284,58 @@ impl TryFromCtx<'_, ()> for CtfMember {
 
         Ok((
             CtfMember {
+                name,
+                type_id,
+                offset_bits,
+            },
+            *offset,
+        ))
+    }
+}
+
+struct LargeCtfMember {
+    pub name: StrId,
+    pub type_id: TypeId,
+    pub offset_bits: u64,
+}
+
+impl From<LargeCtfMember> for CtfMember {
+    fn from(
+        LargeCtfMember {
+            name,
+            type_id,
+            offset_bits,
+        }: LargeCtfMember,
+    ) -> Self {
+        Self {
+            name,
+            type_id,
+            offset_bits,
+        }
+    }
+}
+
+impl TryFromCtx<'_, ()> for LargeCtfMember {
+    type Error = Error;
+
+    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+        let offset = &mut 0;
+
+        let name_raw = from.gread(offset)?;
+        let name = StrId::from_u32(name_raw)?;
+
+        let type_id_raw = from.gread(offset)?;
+        let type_id = TypeId::from_u16(type_id_raw)?;
+
+        let _padding: u16 = from.gread(offset)?;
+
+        let offset_hi: u32 = from.gread(offset)?;
+        let offset_lo: u32 = from.gread(offset)?;
+
+        let offset_bits = (offset_hi as u64) << 32 | offset_lo as u64;
+
+        Ok((
+            LargeCtfMember {
                 name,
                 type_id,
                 offset_bits,
