@@ -1,5 +1,8 @@
 use crate::constants::*;
-use crate::{CtfFlags, CtfHeader, CtfPreamble, CtfVersion, StrId, TypeId, TypeKind, VARARGS_ID};
+use crate::{
+    CtfFlags, CtfHeader, CtfPreamble, CtfVersion, IntegerEncoding, IntegerFlags, StrId, TypeId,
+    TypeKind, VARARGS_ID,
+};
 use strings::UncheckedStringTable;
 
 use flate2::read::ZlibDecoder;
@@ -593,33 +596,38 @@ impl TryFromCtx<'_, ()> for CtfMetadata {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-#[repr(transparent)]
-pub struct CtfIntEncoding(u32);
+impl TryFromCtx<'_, ()> for IntegerEncoding {
+    type Error = Error;
 
-impl CtfIntEncoding {
-    pub fn is_signed(&self) -> bool {
-        ((self.0 & 0xff00_0000) >> 24) & 0x1 > 0
+    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> std::result::Result<(Self, usize), Self::Error> {
+        let off = &mut 0;
+        let val: u32 = from.gread(off)?;
+        let raw_encoding = ((val & 0xff000000) >> 24) as u8;
+
+        let encoding = raw_encoding.try_into()?;
+        let offset = ((val & 0x00ff0000) >> 16) as u8;
+        let bits = (val & 0x0000ffff) as u16;
+
+        Ok((
+            Self {
+                bits,
+                offset,
+                flags: encoding,
+            },
+            *off,
+        ))
     }
+}
 
-    pub fn is_char(&self) -> bool {
-        ((self.0 & 0xff00_0000) >> 24) & 0x2 > 0
-    }
+impl TryFrom<u8> for IntegerFlags {
+    type Error = Error;
 
-    pub fn is_bool(&self) -> bool {
-        ((self.0 & 0xff00_0000) >> 24) & 0x4 > 0
-    }
+    fn try_from(raw: u8) -> Result<Self> {
+        if raw > 0b0000_1111 {
+            return Err(Error::invalid_integer_encoding(raw));
+        }
 
-    pub fn is_varargs(&self) -> bool {
-        ((self.0 & 0xff00_0000) >> 24) & 0x8 > 0
-    }
-
-    pub fn offset_bits(&self) -> u32 {
-        (self.0 & 0x00ff_0000) >> 16
-    }
-
-    pub fn size_bits(&self) -> u32 {
-        self.0 & 0x0000_ffff
+        Ok(Self(raw))
     }
 }
 
@@ -971,13 +979,13 @@ impl TryFromCtx<'_, TypeId> for CtfType {
         let ty = match meta.type_kind()? {
             TypeKind::Unknown => Self::Unknown { id },
             TypeKind::Integer => {
-                let encoding_int: u32 = from.gread(offset)?;
+                let encoding = from.gread(offset)?;
                 Self::Integer {
                     id,
                     ty: CtfInteger {
                         name,
                         size,
-                        encoding: CtfIntEncoding(encoding_int),
+                        encoding,
                     },
                 }
             }
@@ -1158,7 +1166,7 @@ impl TryFromCtx<'_, TypeId> for CtfType {
 pub struct CtfInteger {
     pub name: StrId,
     pub size: u16,
-    pub encoding: CtfIntEncoding,
+    pub encoding: IntegerEncoding,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -1440,5 +1448,35 @@ impl TryFrom<u16> for TypeKind {
             v => return Err(Error::invalid_type_kind(v)),
         };
         Ok(ty)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::write::{self, CtfWriter};
+
+    #[test]
+    fn test_invalid_flags_caught() {
+        let mut encoding = IntegerEncoding {
+            offset: 0,
+            bits: 32,
+            flags: IntegerFlags::new(),
+        };
+        crate::testhelper::set_invalid_flags(&mut encoding);
+
+        let mut writer = CtfWriter::new();
+        writer.add_type(write::CtfType::Integer {
+            name: "foo".to_string(),
+            size: 32,
+            encoding,
+        });
+        let data = writer.generate_ctf(HashMap::new()).unwrap();
+        let ctf = CtfReader::load(&data);
+        assert_eq!(
+            ctf.unwrap_err().to_string(),
+            Error::invalid_integer_encoding(0xff).to_string()
+        );
     }
 }

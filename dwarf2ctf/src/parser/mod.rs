@@ -1,8 +1,8 @@
 use crate::GlobalTypeOffset;
 
 use anyhow::{Context, Result};
-use durin::TypeId;
 use durin::write::{CtfFunctionInfo, CtfWriter};
+use durin::{IntegerEncoding, IntegerFlags, TypeId};
 use gimli::{
     AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram, DebugInfoOffset,
     DebuggingInformationEntry, DwTag, Dwarf, Reader, UnitOffset, UnitRef,
@@ -1670,7 +1670,6 @@ pub fn topological_sort(deps: &TypeDependencies) -> TopologicalOrder {
 // Phase 2: Type Builder
 // ============================================================================
 
-use durin::constants::{CTF_INT_BOOL, CTF_INT_CHAR, CTF_INT_SIGNED};
 use durin::write::{CtfEnumerator, CtfMember, CtfType, ctf_int_data};
 
 /// Build CTF types from collected dependencies in topological order.
@@ -1922,7 +1921,11 @@ fn stub_to_ctf_type(
                 return Ok(CtfType::Integer {
                     name: name.clone(),
                     size: *byte_size,
-                    encoding: ctf_int_data(0, 0, bit_size),
+                    encoding: IntegerEncoding {
+                        bits: bit_size as u16,
+                        offset: 0,
+                        flags: IntegerFlags::new(),
+                    },
                 });
             }
 
@@ -2395,27 +2398,47 @@ fn build_base_type(name: &str, byte_size: u32, encoding: gimli::DwAte) -> CtfTyp
         gimli::DW_ATE_signed => CtfType::Integer {
             name: name.to_string(),
             size: byte_size,
-            encoding: ctf_int_data(CTF_INT_SIGNED, 0, bit_size),
+            encoding: IntegerEncoding {
+                offset: 0,
+                bits: bit_size as u16,
+                flags: IntegerFlags::new().signed(),
+            },
         },
         gimli::DW_ATE_unsigned => CtfType::Integer {
             name: name.to_string(),
             size: byte_size,
-            encoding: ctf_int_data(0, 0, bit_size),
+            encoding: IntegerEncoding {
+                offset: 0,
+                bits: bit_size as u16,
+                flags: IntegerFlags::new(),
+            },
         },
         gimli::DW_ATE_boolean => CtfType::Integer {
             name: name.to_string(),
             size: byte_size,
-            encoding: ctf_int_data(CTF_INT_BOOL, 0, bit_size),
+            encoding: IntegerEncoding {
+                offset: 0,
+                bits: bit_size as u16,
+                flags: IntegerFlags::new().bool(),
+            },
         },
         gimli::DW_ATE_signed_char => CtfType::Integer {
             name: name.to_string(),
             size: byte_size,
-            encoding: ctf_int_data(CTF_INT_SIGNED | CTF_INT_CHAR, 0, bit_size),
+            encoding: IntegerEncoding {
+                offset: 0,
+                bits: bit_size as u16,
+                flags: IntegerFlags::new().signed().char(),
+            },
         },
         gimli::DW_ATE_unsigned_char => CtfType::Integer {
             name: name.to_string(),
             size: byte_size,
-            encoding: ctf_int_data(CTF_INT_CHAR, 0, bit_size),
+            encoding: IntegerEncoding {
+                offset: 0,
+                bits: bit_size as u16,
+                flags: IntegerFlags::new().char(),
+            },
         },
         gimli::DW_ATE_float => {
             // Map float size to CTF float encoding
@@ -2436,7 +2459,11 @@ fn build_base_type(name: &str, byte_size: u32, encoding: gimli::DwAte) -> CtfTyp
             CtfType::Integer {
                 name: name.to_string(),
                 size: byte_size,
-                encoding: ctf_int_data(0, 0, bit_size),
+                encoding: IntegerEncoding {
+                    offset: 0,
+                    bits: bit_size as u16,
+                    flags: IntegerFlags::new(),
+                },
             }
         }
     }
@@ -2567,7 +2594,7 @@ mod tests {
                 assert_eq!(name, "i32");
                 assert_eq!(size, 4);
                 // Check encoding has signed flag
-                assert_eq!(encoding >> 24, CTF_INT_SIGNED as u32);
+                assert!(encoding.flags.is_signed());
             }
             _ => panic!("Expected Integer type"),
         }
