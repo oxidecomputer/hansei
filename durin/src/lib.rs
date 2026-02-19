@@ -29,6 +29,7 @@ pub mod constants {
     pub const CTF_INT_SIGNED: u8 = 0x01;
     pub const CTF_INT_CHAR: u8 = 0x02;
     pub const CTF_INT_BOOL: u8 = 0x04;
+    pub const CTF_INT_VARARGS: u8 = 0x08;
 
     pub const CTF_MAGIC: u16 = 0xcff1;
     pub const CTF_VERSION: u8 = 2;
