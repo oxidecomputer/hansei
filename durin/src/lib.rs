@@ -1,3 +1,5 @@
+use std::fmt;
+
 pub mod read;
 pub mod write;
 
@@ -183,13 +185,91 @@ pub enum SizeOrType {
     Type(TypeId),
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Default, Debug)]
+pub struct IntegerEncoding {
+    pub bits: u16,
+    pub offset: u8,
+    pub flags: IntegerFlags,
+}
+
+impl IntegerEncoding {
+    pub fn as_u32(&self) -> u32 {
+        ((self.flags.get() as u32) << 24) | ((self.offset as u32) << 16) | self.bits as u32
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Default)]
+pub struct IntegerFlags(u8);
+
+impl IntegerFlags {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self) -> u8 {
+        self.0
+    }
+
+    pub fn signed(self) -> Self {
+        Self(self.0 | constants::CTF_INT_SIGNED)
+    }
+
+    pub fn char(self) -> Self {
+        Self(self.0 | constants::CTF_INT_CHAR)
+    }
+
+    pub fn bool(self) -> Self {
+        Self(self.0 | constants::CTF_INT_BOOL)
+    }
+
+    pub fn varargs(self) -> Self {
+        Self(self.0 | constants::CTF_INT_VARARGS)
+    }
+
+    pub fn is_signed(&self) -> bool {
+        self.0 & constants::CTF_INT_SIGNED != 0
+    }
+
+    pub fn is_char(&self) -> bool {
+        self.0 & constants::CTF_INT_CHAR != 0
+    }
+
+    pub fn is_bool(&self) -> bool {
+        self.0 & constants::CTF_INT_BOOL != 0
+    }
+
+    pub fn is_varargs(&self) -> bool {
+        self.0 & constants::CTF_INT_VARARGS != 0
+    }
+}
+
+impl fmt::Debug for IntegerFlags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IntegerFlags")
+            .field("inner", &format_args!("{:08b}", self.0))
+            .field("is_signed", &self.is_signed())
+            .field("is_char", &self.is_char())
+            .field("is_bool", &self.is_bool())
+            .field("is_varargs", &self.is_varargs())
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod testhelper {
+    use crate::{IntegerEncoding, IntegerFlags};
+
+    /// Set the `IntegerFlags` of the encoding to an invalid value.
+    pub fn set_invalid_flags(encoding: &mut IntegerEncoding) {
+        encoding.flags = IntegerFlags(0xff);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::read::CtfReader;
-    use crate::write::{
-        CtfEnumerator, CtfMember, CtfType, CtfWriter, CtfWriterBuilder, ctf_int_data,
-    };
+    use crate::write::{CtfEnumerator, CtfMember, CtfType, CtfWriter, CtfWriterBuilder};
     use std::collections::HashMap;
 
     /// Test helper to create CTF data and parse it back.
@@ -206,14 +286,22 @@ mod tests {
         writer.add_type(CtfType::Integer {
             name: "i32".to_string(),
             size: 4,
-            encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            encoding: IntegerEncoding {
+                offset: 0,
+                bits: 32,
+                flags: IntegerFlags::new().signed(),
+            },
         });
 
         // Add unsigned 64-bit integer
         writer.add_type(CtfType::Integer {
             name: "u64".to_string(),
             size: 8,
-            encoding: ctf_int_data(0, 0, 64),
+            encoding: IntegerEncoding {
+                offset: 0,
+                bits: 64,
+                flags: IntegerFlags::new(),
+            },
         });
 
         let reader = round_trip_ctf(&mut writer);
@@ -243,7 +331,11 @@ mod tests {
         let int_id = writer.add_type(CtfType::Integer {
             name: "i32".to_string(),
             size: 4,
-            encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            encoding: IntegerEncoding {
+                bits: 32,
+                offset: 0,
+                flags: IntegerFlags::new().signed(),
+            },
         });
 
         // Add struct with two i32 members
@@ -289,7 +381,11 @@ mod tests {
         let int_id = writer.add_type(CtfType::Integer {
             name: "i32".to_string(),
             size: 4,
-            encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            encoding: IntegerEncoding {
+                bits: 32,
+                offset: 0,
+                flags: IntegerFlags::new().signed(),
+            },
         });
 
         // Add pointer to i32
@@ -320,7 +416,11 @@ mod tests {
         let int_id = writer.add_type(CtfType::Integer {
             name: "i32".to_string(),
             size: 4,
-            encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            encoding: IntegerEncoding {
+                bits: 32,
+                offset: 0,
+                flags: IntegerFlags::new().signed(),
+            },
         });
 
         // Add array of 10 i32s
@@ -399,7 +499,11 @@ mod tests {
         let int_id = writer.add_type(CtfType::Integer {
             name: "i32".to_string(),
             size: 4,
-            encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            encoding: IntegerEncoding {
+                bits: 32,
+                offset: 0,
+                flags: IntegerFlags::new().signed(),
+            },
         });
 
         // Add typedef
@@ -427,7 +531,11 @@ mod tests {
         let int_id = writer.add_type(CtfType::Integer {
             name: "i32".to_string(),
             size: 4,
-            encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            encoding: IntegerEncoding {
+                bits: 32,
+                offset: 0,
+                flags: IntegerFlags::new().signed(),
+            },
         });
 
         // Add f32 type
@@ -480,7 +588,11 @@ mod tests {
         let int_id = writer.add_type(CtfType::Integer {
             name: "i32".to_string(),
             size: 4,
-            encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            encoding: IntegerEncoding {
+                bits: 32,
+                offset: 0,
+                flags: IntegerFlags::new().signed(),
+            },
         });
 
         // Add inner Point struct
@@ -547,7 +659,11 @@ mod tests {
         writer.add_type(CtfType::Integer {
             name: "i32".to_string(),
             size: 4,
-            encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            encoding: IntegerEncoding {
+                bits: 32,
+                offset: 0,
+                flags: IntegerFlags::new().signed(),
+            },
         });
 
         let reader = round_trip_ctf(&mut writer);
@@ -565,7 +681,11 @@ mod tests {
         let int_id = writer.add_type(CtfType::Integer {
             name: "i32".to_string(),
             size: 4,
-            encoding: ctf_int_data(constants::CTF_INT_SIGNED, 0, 32),
+            encoding: IntegerEncoding {
+                bits: 32,
+                offset: 0,
+                flags: IntegerFlags::new().signed(),
+            },
         });
 
         // Add const i32

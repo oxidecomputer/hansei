@@ -1,5 +1,5 @@
-use crate::TypeId;
 use crate::constants::*;
+use crate::{IntegerEncoding, TypeId};
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
@@ -109,7 +109,7 @@ impl<'a> CtfWriter<'a> {
                 CtfType::Integer {
                     name: "void".to_string(),
                     size: 0,
-                    encoding: 0,
+                    encoding: IntegerEncoding::default(),
                 },
             ],
             strings: StringTable::new(opts.truncate_str_len, opts.replace_spaces),
@@ -335,7 +335,7 @@ impl<'a> CtfWriter<'a> {
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
                 buffer.iowrite_with(*size as u16, LE)?;
-                buffer.iowrite_with(*encoding, LE)?;
+                buffer.iowrite_with(encoding.as_u32(), LE)?;
             }
             CtfType::Float {
                 name,
@@ -580,7 +580,7 @@ pub enum CtfType {
     Integer {
         name: String,
         size: u32,
-        encoding: u32,
+        encoding: IntegerEncoding,
     },
     Float {
         name: String,
@@ -704,6 +704,8 @@ pub struct CtfMember {
 mod tests {
     use super::*;
 
+    use crate::IntegerFlags;
+
     // Helper to write a type and return the buffer bytes
     fn write_type(ctf_type: &CtfType) -> Vec<u8> {
         let mut buffer = Vec::new();
@@ -766,7 +768,11 @@ mod tests {
         let int_type = CtfType::Integer {
             name: "int".to_string(),
             size: 32,
-            encoding: ctf_int_data(CTF_INT_SIGNED, 0, 32),
+            encoding: IntegerEncoding {
+                bits: 32,
+                offset: 0,
+                flags: IntegerFlags::new().signed(),
+            },
         };
         let bytes = write_type(&int_type);
 
@@ -783,7 +789,7 @@ mod tests {
         let void_type = CtfType::Integer {
             name: "void".to_string(),
             size: 0,
-            encoding: 0,
+            encoding: IntegerEncoding::default(),
         };
         let bytes = write_type(&void_type);
 

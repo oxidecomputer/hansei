@@ -28,6 +28,8 @@ enum ErrorKind {
     InvalidFlags(u8),
     #[error("{0} is not a valid float encoding")]
     InvalidFloatEncoding(u8),
+    #[error("{0:b} is not a valid integer encoding")]
+    InvalidIntegerEncoding(u8),
     #[error("invalid CTF magic number {0:02x}")]
     InvalidMagic(u16),
     #[error("unable to read member at range {start}..{end} from buf with len {len}")]
@@ -122,6 +124,7 @@ impl Error {
                 | ErrorKind::InvalidEnumFormat(_)
                 | ErrorKind::InvalidEnumValue(_)
                 | ErrorKind::InvalidDiscriminantValue { .. }
+                | ErrorKind::InvalidIntegerEncoding(_)
                 | ErrorKind::InvalidStrEncoding(_)
                 | ErrorKind::InvalidMemberRange { .. }
         )
@@ -216,6 +219,10 @@ impl Error {
 
     pub fn invalid_float_encoding(encoding: u8) -> Self {
         Self::new(ErrorKind::InvalidFloatEncoding(encoding))
+    }
+
+    pub fn invalid_integer_encoding(encoding: u8) -> Self {
+        Self::new(ErrorKind::InvalidIntegerEncoding(encoding))
     }
 
     pub fn invalid_magic(magic: u16) -> Self {
