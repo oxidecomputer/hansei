@@ -22,10 +22,6 @@ pub fn ctf_type_info(kind: u8, is_root: bool, vlen: u16) -> u16 {
     ((kind as u16) << 11) | ((if is_root { 1u16 } else { 0 }) << 10) | (vlen & CTF_MAX_VLEN)
 }
 
-pub fn ctf_int_data(encoding: u8, offset: u8, bits: u32) -> u32 {
-    ((encoding as u32) << 24) | ((offset as u32) << 16) | bits
-}
-
 // String table builder
 pub struct StringTable {
     strings: Vec<u8>,
