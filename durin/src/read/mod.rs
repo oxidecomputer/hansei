@@ -1472,7 +1472,7 @@ mod tests {
             size: 32,
             encoding,
         });
-        let data = writer.generate_ctf(HashMap::new()).unwrap();
+        let data = writer.generate_ctf().unwrap();
         let ctf = CtfReader::load(&data);
         assert_eq!(
             ctf.unwrap_err().to_string(),

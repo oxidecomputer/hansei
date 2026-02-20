@@ -85,6 +85,7 @@ impl StringTable {
 pub struct CtfWriter<'a> {
     pub types: Vec<CtfType>,
     pub strings: StringTable,
+    pub funcs: HashMap<String, FuncInfo>,
     elf: Option<&'a Elf<'a>>,
     label: Option<String>,
 }
@@ -113,6 +114,7 @@ impl<'a> CtfWriter<'a> {
                 },
             ],
             strings: StringTable::new(opts.truncate_str_len, opts.replace_spaces),
+            funcs: HashMap::new(),
             elf: opts.elf,
             label: opts.label,
         }
@@ -125,6 +127,13 @@ impl<'a> CtfWriter<'a> {
 
         self.types.push(ctf_type);
         type_id
+    }
+
+    /// Add a function to the writer. This will only be included in the the
+    /// generated CTF if `CtfWriterBuilder::with_elf` was passed when
+    /// constructing the `CtfWriter`.
+    pub fn add_func(&mut self, name: String, func: FuncInfo) {
+        self.funcs.insert(name, func);
     }
 
     /// Reserve a type ID by adding a placeholder. Returns the reserved ID.
@@ -157,11 +166,11 @@ impl<'a> CtfWriter<'a> {
         }
     }
 
-    pub fn generate_ctf(&mut self, funcs: HashMap<String, FuncInfo>) -> Result<Vec<u8>> {
-        self._generate_ctf(funcs).map_err(Error::write)
+    pub fn generate_ctf(&mut self) -> Result<Vec<u8>> {
+        self._generate_ctf().map_err(Error::write)
     }
 
-    fn _generate_ctf(&mut self, funcs: HashMap<String, FuncInfo>) -> io::Result<Vec<u8>> {
+    fn _generate_ctf(&mut self) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
 
         // Calculate type section size and write to string table
@@ -171,17 +180,6 @@ impl<'a> CtfWriter<'a> {
         // Skip the initial placeholder item.
         for ctf_type in types.iter().skip(1) {
             self.write_type(&mut type_data, ctf_type)?;
-        }
-
-        for (name, func) in &funcs {
-            println!("Function: {}", name);
-            println!("  Arguments:");
-            for arg in &func.args {
-                let ty = &self.types[arg.get() as usize];
-                println!("    {ty:?}");
-            }
-            let ret_ty = &self.types[func.return_type.get() as usize];
-            println!("  Return Type: {ret_ty:?}");
         }
 
         let mut lbl_data = Vec::new();
@@ -217,7 +215,7 @@ impl<'a> CtfWriter<'a> {
 
                 match sym.st_type() {
                     STT_FUNC => {
-                        let Some(func_info) = funcs.get(symbol_name) else {
+                        let Some(func_info) = self.funcs.get(symbol_name) else {
                             let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
                             func_data.iowrite_with(info, LE)?;
                             continue;
