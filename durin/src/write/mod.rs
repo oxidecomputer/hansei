@@ -1,5 +1,5 @@
 use crate::constants::*;
-use crate::{FloatEncoding, IntegerEncoding, TypeId};
+use crate::{FloatEncoding, IntegerEncoding, TypeId, TypeKind};
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
@@ -659,6 +659,25 @@ impl CtfType {
             Self::Function { name, .. } => name,
             Self::Array { name, .. } => name,
             Self::Unknown => "<unknown>",
+        }
+    }
+
+    /// The `TypeKind` of this type.
+    pub fn kind(&self) -> TypeKind {
+        match self {
+            Self::Integer { .. } => TypeKind::Integer,
+            Self::Float { .. } => TypeKind::Float,
+            Self::Pointer { .. } => TypeKind::Pointer,
+            Self::Typedef { .. } => TypeKind::Typedef,
+            Self::Const { .. } => TypeKind::Const,
+            Self::Volatile { .. } => TypeKind::Volatile,
+            Self::Restrict { .. } => TypeKind::Restrict,
+            Self::Struct { .. } => TypeKind::Struct,
+            Self::Union { .. } => TypeKind::Union,
+            Self::Enum { .. } => TypeKind::Enum,
+            Self::Function { .. } => TypeKind::Function,
+            Self::Array { .. } => TypeKind::Array,
+            Self::Unknown => TypeKind::Unknown,
         }
     }
 
