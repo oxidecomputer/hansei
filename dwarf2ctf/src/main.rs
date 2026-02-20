@@ -340,6 +340,9 @@ fn main() -> Result<()> {
     let parsed_function_info = parser
         .build_fn_info_from_deps(&function_info, &type_deps, &mut writer)
         .context("failed to build types from DWARF debug data")?;
+    for (name, func) in parsed_function_info {
+        writer.add_func(name, func);
+    }
 
     // Extract and add crate version markers
     let crate_versions = parser
@@ -347,9 +350,7 @@ fn main() -> Result<()> {
         .context("failed to extract crate versions")?;
     writer.add_crate_versions(&crate_versions);
 
-    let ctf_buffer = writer
-        .generate_ctf(parsed_function_info)
-        .context("failed to generate CTF")?;
+    let ctf_buffer = writer.generate_ctf().context("failed to generate CTF")?;
 
     if let Some(ctf_path) = &args.ctf_out {
         fs::write(ctf_path, &ctf_buffer)?;

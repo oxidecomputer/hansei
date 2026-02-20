@@ -270,11 +270,10 @@ mod tests {
     use super::*;
     use crate::read::CtfReader;
     use crate::write::{CtfEnumerator, CtfMember, CtfType, CtfWriter, CtfWriterBuilder};
-    use std::collections::HashMap;
 
     /// Test helper to create CTF data and parse it back.
     fn round_trip_ctf(writer: &mut CtfWriter) -> CtfReader {
-        let ctf_bytes = writer.generate_ctf(HashMap::new()).unwrap();
+        let ctf_bytes = writer.generate_ctf().unwrap();
         CtfReader::load(&ctf_bytes).unwrap()
     }
 
