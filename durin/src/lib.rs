@@ -73,6 +73,10 @@ impl CtfFlags {
     pub fn is_compressed(&self) -> bool {
         self.0 & constants::CTF_F_COMPRESS != 0
     }
+
+    pub fn get(&self) -> u8 {
+        self.0
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
