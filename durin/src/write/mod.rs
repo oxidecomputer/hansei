@@ -116,13 +116,16 @@ impl<'a> CtfWriter<'a> {
         }
     }
 
-    /// Add a type to the writer. Returns the assigned type ID.
-    pub fn add_type(&mut self, ctf_type: CtfType) -> TypeId {
+    /// Add a type to the writer. Returns the assigned type ID. Will fail if
+    /// all available type IDs have been consumed.
+    pub fn add_type(&mut self, ctf_type: CtfType) -> Result<TypeId> {
         let type_offset = self.types.len() as u16;
-        let type_id = TypeId::from_u16(type_offset).unwrap();
+        let Ok(type_id) = TypeId::from_u16(type_offset) else {
+            return Err(Error::type_ids_exhausted());
+        };
 
         self.types.push(ctf_type);
-        type_id
+        Ok(type_id)
     }
 
     /// Add a function to the writer. This will only be included in the the
@@ -133,13 +136,16 @@ impl<'a> CtfWriter<'a> {
     }
 
     /// Reserve a type ID by adding a placeholder. Returns the reserved ID.
-    /// Use `set_type` to replace the placeholder with the actual type.
-    pub fn reserve_type_id(&mut self) -> TypeId {
+    /// Use `set_type` to replace the placeholder with the actual type. Will
+    /// fail if all available type IDs have been consumed.
+    pub fn reserve_type_id(&mut self) -> Result<TypeId> {
         let type_offset = self.types.len() as u16;
-        let type_id = TypeId::from_u16(type_offset).unwrap();
+        let Ok(type_id) = TypeId::from_u16(type_offset) else {
+            return Err(Error::type_ids_exhausted());
+        };
 
         self.types.push(CtfType::Unknown); // placeholder
-        type_id
+        Ok(type_id)
     }
 
     /// Replace a placeholder type at the given ID with the actual type.
@@ -152,14 +158,19 @@ impl<'a> CtfWriter<'a> {
     ///
     /// Each crate version is encoded as a typedef named `__CRATE_<name-version>__`
     /// pointing to void. This allows consumers to extract dependency information.
-    pub fn add_crate_versions<'b>(&mut self, crates: impl IntoIterator<Item = &'b String>) {
+    pub fn add_crate_versions<'b>(
+        &mut self,
+        crates: impl IntoIterator<Item = &'b String>,
+    ) -> Result<()> {
         for crate_id in crates {
             let name = format!("__CRATE_{crate_id}__");
             self.add_type(CtfType::Typedef {
                 name,
                 target_type: TypeId::void(),
-            });
+            })?;
         }
+
+        Ok(())
     }
 
     pub fn generate_ctf(&mut self) -> Result<Vec<u8>> {
@@ -1042,5 +1053,18 @@ mod tests {
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
         assert_eq!(info, ctf_type_info(CTF_K_UNKNOWN, false, 0));
+    }
+
+    #[test]
+    fn test_exhaust_type_ids() {
+        let mut writer = CtfWriter::new();
+        for _ in 0..MAX_TYPES {
+            writer.reserve_type_id().unwrap();
+        }
+        let next_ty = writer.reserve_type_id();
+        assert_eq!(
+            next_ty.unwrap_err().to_string(),
+            Error::type_ids_exhausted().to_string()
+        );
     }
 }

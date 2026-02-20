@@ -72,6 +72,8 @@ enum ErrorKind {
     ReadError(TypeId),
     #[error("data length {actual} is less than {expected} length")]
     TooShort { actual: u32, expected: u32 },
+    #[error("{0} is outside range of valid type IDs")]
+    TypeIdOutOfRange(u16),
     #[error("expected a {expected:?} but found a {actual:?} when parsing {name}")]
     UnexpectedType {
         actual: TypeKind,
@@ -307,6 +309,10 @@ impl Error {
 
     pub fn too_short(actual: u32, expected: u32) -> Self {
         Self::new(ErrorKind::TooShort { actual, expected })
+    }
+
+    pub fn type_id_out_of_range(id: u16) -> Self {
+        Self::new(ErrorKind::TypeIdOutOfRange(id))
     }
 
     pub fn unexpected_type(actual: TypeKind, expected: TypeKind, name: String) -> Self {
