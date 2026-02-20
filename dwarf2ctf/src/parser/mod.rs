@@ -2,7 +2,7 @@ use crate::GlobalTypeOffset;
 
 use anyhow::{Context, Result};
 use durin::write::{CtfWriter, FuncInfo};
-use durin::{IntegerEncoding, IntegerFlags, TypeId};
+use durin::{FloatEncoding, FloatType, IntegerEncoding, IntegerFlags, TypeId};
 use gimli::{
     AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram, DebugInfoOffset,
     DebuggingInformationEntry, DwTag, Dwarf, Reader, UnitOffset, UnitRef,
@@ -1670,7 +1670,7 @@ pub fn topological_sort(deps: &TypeDependencies) -> TopologicalOrder {
 // Phase 2: Type Builder
 // ============================================================================
 
-use durin::write::{CtfEnumerator, CtfMember, CtfType, ctf_int_data};
+use durin::write::{CtfEnumerator, CtfMember, CtfType};
 
 /// Build CTF types from collected dependencies in topological order.
 /// This is the main entry point for Phase 2.
@@ -2442,16 +2442,32 @@ fn build_base_type(name: &str, byte_size: u32, encoding: gimli::DwAte) -> CtfTyp
         },
         gimli::DW_ATE_float => {
             // Map float size to CTF float encoding
-            let float_encoding = match byte_size {
-                4 => ctf_int_data(1, 0, 32),   // CTF_FP_SINGLE
-                8 => ctf_int_data(2, 0, 64),   // CTF_FP_DOUBLE
-                16 => ctf_int_data(6, 0, 128), // CTF_FP_LDOUBLE
-                _ => ctf_int_data(1, 0, bit_size),
+            let encoding = match byte_size {
+                4 => FloatEncoding {
+                    bits: 32,
+                    offset: 0,
+                    float_type: FloatType::Single,
+                },
+                8 => FloatEncoding {
+                    bits: 64,
+                    offset: 0,
+                    float_type: FloatType::Double,
+                },
+                16 => FloatEncoding {
+                    bits: 128,
+                    offset: 0,
+                    float_type: FloatType::LongDouble,
+                },
+                _ => FloatEncoding {
+                    bits: 32,
+                    offset: 0,
+                    float_type: FloatType::Single,
+                },
             };
             CtfType::Float {
                 name: name.to_string(),
                 size: byte_size,
-                encoding: float_encoding,
+                encoding,
             }
         }
         _ => {

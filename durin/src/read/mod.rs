@@ -1,7 +1,7 @@
 use crate::constants::*;
 use crate::{
-    CtfFlags, CtfHeader, CtfPreamble, CtfVersion, IntegerEncoding, IntegerFlags, StrId, TypeId,
-    TypeKind, VARARGS_ID,
+    CtfFlags, CtfHeader, CtfPreamble, CtfVersion, FloatEncoding, FloatType, IntegerEncoding,
+    IntegerFlags, StrId, TypeId, TypeKind, VARARGS_ID,
 };
 use strings::UncheckedStringTable;
 
@@ -631,59 +631,30 @@ impl TryFrom<u8> for IntegerFlags {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-#[repr(transparent)]
-pub struct CtfFloatEncoding(u32);
-
-impl CtfFloatEncoding {
-    pub fn encoding(&self) -> CtfFloatEncodingType {
-        let raw = ((self.0 & 0xff00_0000) >> 24) as u8;
-
-        // We've validated the encoding is valid in the constructor.
-        raw.try_into().unwrap()
-    }
-
-    pub fn offset_bits(&self) -> u32 {
-        (self.0 & 0x00ff_0000) >> 16
-    }
-
-    pub fn size_bits(&self) -> u32 {
-        self.0 & 0x0000_ffff
-    }
-}
-
-impl TryFrom<u32> for CtfFloatEncoding {
+impl TryFromCtx<'_, ()> for FloatEncoding {
     type Error = Error;
 
-    fn try_from(value: u32) -> Result<Self> {
-        let enc = CtfFloatEncoding(value);
+    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+        let off = &mut 0;
+        let val: u32 = from.gread(off)?;
+        let raw_encoding = ((val & 0xff000000) >> 24) as u8;
 
-        // Validate encoding type.
-        let raw = ((value & 0xff00_0000) >> 24) as u8;
-        let _ = CtfFloatEncodingType::try_from(raw)?;
+        let float_type = raw_encoding.try_into()?;
+        let offset = ((val & 0x00ff0000) >> 16) as u8;
+        let bits = (val & 0x0000ffff) as u16;
 
-        Ok(enc)
+        Ok((
+            Self {
+                bits,
+                offset,
+                float_type,
+            },
+            *off,
+        ))
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-#[repr(u8)]
-pub enum CtfFloatEncodingType {
-    Single = 1,
-    Double = 2,
-    Complex = 3,
-    DoubleComplex = 4,
-    LongDoubleComplex = 5,
-    LongDouble = 6,
-    Interval = 7,
-    DoubleInterval = 8,
-    LongDoubleInterval = 9,
-    Imaginary = 10,
-    DoubleImaginary = 11,
-    LongDoubleImaginary = 12,
-}
-
-impl TryFrom<u8> for CtfFloatEncodingType {
+impl TryFrom<u8> for FloatType {
     type Error = Error;
 
     fn try_from(value: u8) -> Result<Self> {
@@ -990,8 +961,7 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 }
             }
             TypeKind::Float => {
-                let encoding_int: u32 = from.gread(offset)?;
-                let encoding = encoding_int.try_into()?;
+                let encoding = from.gread(offset)?;
                 Self::Float {
                     id,
                     ty: CtfFloat {
@@ -1173,7 +1143,7 @@ pub struct CtfInteger {
 pub struct CtfFloat {
     pub name: StrId,
     pub size: u16,
-    pub encoding: CtfFloatEncoding,
+    pub encoding: FloatEncoding,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
