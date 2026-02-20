@@ -250,17 +250,17 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
             let qualified_name = collector.get_qualified_name(unit, entry.offset(), &name)?;
 
             // Check if this matches any requested type
-            if let Some(found) = type_names.get_mut(&qualified_name) {
-                if !*found {
-                    *found = true;
-                    let unit_name = unit
-                        .name
-                        .as_ref()
-                        .and_then(|n| n.to_string_lossy().ok())
-                        .unwrap_or_default();
-                    println!("Found type {qualified_name} in unit {unit_name}");
-                    matches.push(entry.offset());
-                }
+            if let Some(found) = type_names.get_mut(&qualified_name)
+                && !*found
+            {
+                *found = true;
+                let unit_name = unit
+                    .name
+                    .as_ref()
+                    .and_then(|n| n.to_string_lossy().ok())
+                    .unwrap_or_default();
+                println!("Found type {qualified_name} in unit {unit_name}");
+                matches.push(entry.offset());
             }
         }
 
@@ -2055,15 +2055,11 @@ fn build_variant_part_members(
             enumerators,
         };
         Some(writer.add_type(enum_type)?)
-    } else if let Some(discr) = &variant_part.discriminant {
-        // Fall back to original type if no discriminant values available
-        Some(resolve_type_ref(
-            discr.type_ref.as_ref(),
-            header_offset,
-            global_type_map,
-        ))
     } else {
-        None
+        variant_part
+            .discriminant
+            .as_ref()
+            .map(|discr| resolve_type_ref(discr.type_ref.as_ref(), header_offset, global_type_map))
     };
 
     // Create struct types for each variant and collect as union members
@@ -2188,14 +2184,14 @@ fn build_variant_part_members(
         });
     } else {
         // For non-niche enums, add the discriminant member and variants union separately
-        if let Some(discr) = &variant_part.discriminant {
-            if let Some(discr_id) = discr_type_id {
-                members.push(CtfMember {
-                    name: discr.name.clone(),
-                    type_id: discr_id,
-                    offset_bits: discr.offset_bytes * 8,
-                });
-            }
+        if let Some(discr) = &variant_part.discriminant
+            && let Some(discr_id) = discr_type_id
+        {
+            members.push(CtfMember {
+                name: discr.name.clone(),
+                type_id: discr_id,
+                offset_bits: discr.offset_bytes * 8,
+            });
         }
 
         // Add the variants union as a member of the parent struct
@@ -2244,10 +2240,10 @@ fn has_nested_enum_discriminant(
                 continue;
             }
 
-            if let Some(type_ref) = &member.type_ref {
-                if has_discriminant_in_type_chain(type_ref, discr_offset, stubs, header_offset, 0) {
-                    return true;
-                }
+            if let Some(type_ref) = &member.type_ref
+                && has_discriminant_in_type_chain(type_ref, discr_offset, stubs, header_offset, 0)
+            {
+                return true;
             }
         }
     }
@@ -2282,10 +2278,10 @@ fn has_discriminant_in_type_chain(
         } => {
             // Check if this struct has a variant_part with discriminant at target_offset
             for vp in variant_parts {
-                if let Some(discr) = &vp.discriminant {
-                    if discr.offset_bytes == target_offset {
-                        return true;
-                    }
+                if let Some(discr) = &vp.discriminant
+                    && discr.offset_bytes == target_offset
+                {
+                    return true;
                 }
             }
 
@@ -2293,18 +2289,17 @@ fn has_discriminant_in_type_chain(
             // Since we're looking for the discriminant at target_offset, we need to
             // follow members that would contain that offset
             for member in members {
-                if member.offset_bytes == 0 {
-                    if let Some(member_type_ref) = &member.type_ref {
-                        if has_discriminant_in_type_chain(
-                            member_type_ref,
-                            target_offset,
-                            stubs,
-                            header_offset,
-                            depth + 1,
-                        ) {
-                            return true;
-                        }
-                    }
+                if member.offset_bytes == 0
+                    && let Some(member_type_ref) = &member.type_ref
+                    && has_discriminant_in_type_chain(
+                        member_type_ref,
+                        target_offset,
+                        stubs,
+                        header_offset,
+                        depth + 1,
+                    )
+                {
+                    return true;
                 }
             }
 
@@ -2347,12 +2342,12 @@ fn infer_discriminant_size(
     parent_struct_size: u32,
 ) -> u32 {
     // First, try to get the size from the discriminant's type reference
-    if let Some(discr) = &variant_part.discriminant {
-        if let Some(type_ref) = &discr.type_ref {
-            let global_id = type_ref_to_global(type_ref, header_offset);
-            if let Some(TypeStub::Base { byte_size, .. }) = stubs.get(&global_id) {
-                return *byte_size;
-            }
+    if let Some(discr) = &variant_part.discriminant
+        && let Some(type_ref) = &discr.type_ref
+    {
+        let global_id = type_ref_to_global(type_ref, header_offset);
+        if let Some(TypeStub::Base { byte_size, .. }) = stubs.get(&global_id) {
+            return *byte_size;
         }
     }
 
