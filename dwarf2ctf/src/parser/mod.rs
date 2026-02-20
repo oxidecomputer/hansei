@@ -1,7 +1,7 @@
 use crate::GlobalTypeOffset;
 
 use anyhow::{Context, Result};
-use durin::write::{CtfFunctionInfo, CtfWriter};
+use durin::write::{CtfWriter, FuncInfo};
 use durin::{IntegerEncoding, IntegerFlags, TypeId};
 use gimli::{
     AttributeValue, DW_TAG_formal_parameter, DW_TAG_subprogram, DebugInfoOffset,
@@ -312,7 +312,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
         funcs: &[FunctionInfo],
         type_deps: &TypeDependencies,
         writer: &mut CtfWriter,
-    ) -> Result<HashMap<String, CtfFunctionInfo>> {
+    ) -> Result<HashMap<String, FuncInfo>> {
         // Build all types from the collected dependencies
         let global_type_map = build_types_from_deps(type_deps, writer)?;
 
@@ -343,7 +343,7 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 args.push(arg_type_id);
             }
 
-            parsed_funcs.insert(func.name.to_string(), CtfFunctionInfo { return_type, args });
+            parsed_funcs.insert(func.name.to_string(), FuncInfo { return_type, args });
         }
 
         Ok(parsed_funcs)
