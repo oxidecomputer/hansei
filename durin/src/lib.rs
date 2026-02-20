@@ -103,7 +103,7 @@ pub enum StringTableType {
     External = 1,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Debug)]
 #[repr(transparent)]
 pub struct StrId(u32);
 
@@ -122,12 +122,11 @@ impl StrId {
             StringTableType::External
         }
     }
-}
 
-impl Default for StrId {
-    fn default() -> Self {
+    /// The identifier for the empty string.
+    pub fn empty() -> Self {
         // StrId 0 is always present and points to an empty string.
-        Self(0)
+        Self::default()
     }
 }
 
