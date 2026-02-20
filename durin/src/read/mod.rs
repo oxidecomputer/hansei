@@ -1392,6 +1392,10 @@ impl TypeId {
             return Err(Error::invalid_type_index(value));
         }
 
+        if value > MAX_TYPE_INDEX {
+            return Err(Error::type_id_out_of_range(value));
+        }
+
         Ok(Self(value))
     }
 }
@@ -1437,11 +1441,13 @@ mod tests {
         crate::testhelper::set_invalid_flags(&mut encoding);
 
         let mut writer = CtfWriter::new();
-        writer.add_type(write::CtfType::Integer {
-            name: "foo".to_string(),
-            size: 32,
-            encoding,
-        });
+        writer
+            .add_type(write::CtfType::Integer {
+                name: "foo".to_string(),
+                size: 32,
+                encoding,
+            })
+            .unwrap();
         let data = writer.generate_ctf().unwrap();
         let ctf = CtfReader::load(&data);
         assert_eq!(

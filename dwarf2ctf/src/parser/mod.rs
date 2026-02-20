@@ -1704,7 +1704,7 @@ fn build_scc_types(
     let mut reserved_ids: Vec<(GlobalTypeOffset, TypeId)> = Vec::new();
     for &global_id in scc {
         if deps.stubs.contains_key(&global_id) {
-            let type_id = writer.reserve_type_id();
+            let type_id = writer.reserve_type_id()?;
             global_type_map.insert(global_id, type_id);
             reserved_ids.push((global_id, type_id));
         }
@@ -1853,7 +1853,7 @@ fn stub_to_ctf_type(
                     writer,
                     global_type_map,
                     deps,
-                );
+                )?;
             }
 
             // Generate synthetic zero-sized members for template type parameters.
@@ -1959,7 +1959,7 @@ fn build_variant_part_members(
     writer: &mut CtfWriter,
     global_type_map: &HashMap<GlobalTypeOffset, TypeId>,
     deps: &TypeDependencies,
-) {
+) -> Result<()> {
     // If there are no variants with payloads, just add the discriminant
     if variant_part.variants.is_empty() {
         if let Some(discr) = &variant_part.discriminant {
@@ -1969,7 +1969,7 @@ fn build_variant_part_members(
                 offset_bits: discr.offset_bytes * 8,
             });
         }
-        return;
+        return Ok(());
     }
 
     // Find the minimum offset among all variant members to determine union placement
@@ -2054,7 +2054,7 @@ fn build_variant_part_members(
             size: discr_size,
             enumerators,
         };
-        Some(writer.add_type(enum_type))
+        Some(writer.add_type(enum_type)?)
     } else if let Some(discr) = &variant_part.discriminant {
         // Fall back to original type if no discriminant values available
         Some(resolve_type_ref(
@@ -2102,7 +2102,7 @@ fn build_variant_part_members(
                 size: 0,
                 members: vec![],
             };
-            writer.add_type(zst_struct)
+            writer.add_type(zst_struct)?
         } else if adjusted_members.len() == 1
             && adjusted_members[0].offset_bits == 0
             && (adjusted_members[0].name.is_empty() || adjusted_members[0].name == variant.name)
@@ -2121,7 +2121,7 @@ fn build_variant_part_members(
                 size: variant_size,
                 members: adjusted_members,
             };
-            writer.add_type(variant_struct)
+            writer.add_type(variant_struct)?
         };
 
         union_members.push(CtfMember {
@@ -2143,7 +2143,7 @@ fn build_variant_part_members(
         size: max_variant_size,
         members: union_members,
     };
-    let variants_union_id = writer.add_type(variants_union);
+    let variants_union_id = writer.add_type(variants_union)?;
 
     if is_niche_optimized {
         // For niche-optimized enums, create a __tagged wrapper union containing
@@ -2178,7 +2178,7 @@ fn build_variant_part_members(
             size: max_variant_size,
             members: tagged_members,
         };
-        let tagged_union_id = writer.add_type(tagged_union);
+        let tagged_union_id = writer.add_type(tagged_union)?;
 
         // Add the __tagged union as a member of the parent struct
         members.push(CtfMember {
@@ -2205,6 +2205,8 @@ fn build_variant_part_members(
             offset_bits: union_offset_bits,
         });
     }
+
+    Ok(())
 }
 
 /// Convert a TypeRef to a GlobalTypeOffset.
@@ -2671,7 +2673,7 @@ mod tests {
 
         // First add the void type
         let void_ctf = build_base_type("void", 0, gimli::DW_ATE_signed);
-        let void_ctf_id = writer.add_type(void_ctf);
+        let void_ctf_id = writer.add_type(void_ctf).unwrap();
 
         // Build global type map
         let mut global_type_map = HashMap::new();
@@ -2778,7 +2780,7 @@ mod tests {
         let mut writer = CtfWriter::new();
 
         let void_ctf = build_base_type("void", 0, gimli::DW_ATE_signed);
-        let void_ctf_id = writer.add_type(void_ctf);
+        let void_ctf_id = writer.add_type(void_ctf).unwrap();
 
         let mut global_type_map = HashMap::new();
         global_type_map.insert(void_id, void_ctf_id);
@@ -2880,14 +2882,14 @@ mod tests {
 
         // Add base types first
         let usize_ctf = build_base_type("usize", 8, gimli::DW_ATE_unsigned);
-        let usize_ctf_id = writer.add_type(usize_ctf);
+        let usize_ctf_id = writer.add_type(usize_ctf).unwrap();
 
         let alloc_ctf = CtfType::Struct {
             name: "alloc::alloc::Global".to_string(),
             size: 0,
             members: vec![],
         };
-        let alloc_ctf_id = writer.add_type(alloc_ctf);
+        let alloc_ctf_id = writer.add_type(alloc_ctf).unwrap();
 
         let mut global_type_map = HashMap::new();
         global_type_map.insert(usize_id, usize_ctf_id);

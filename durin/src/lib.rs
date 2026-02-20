@@ -312,26 +312,30 @@ mod tests {
         let mut writer = CtfWriter::new();
 
         // Add signed 32-bit integer
-        writer.add_type(CtfType::Integer {
-            name: "i32".to_string(),
-            size: 4,
-            encoding: IntegerEncoding {
-                offset: 0,
-                bits: 32,
-                flags: IntegerFlags::new().signed(),
-            },
-        });
+        writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    offset: 0,
+                    bits: 32,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
 
         // Add unsigned 64-bit integer
-        writer.add_type(CtfType::Integer {
-            name: "u64".to_string(),
-            size: 8,
-            encoding: IntegerEncoding {
-                offset: 0,
-                bits: 64,
-                flags: IntegerFlags::new(),
-            },
-        });
+        writer
+            .add_type(CtfType::Integer {
+                name: "u64".to_string(),
+                size: 8,
+                encoding: IntegerEncoding {
+                    offset: 0,
+                    bits: 64,
+                    flags: IntegerFlags::new(),
+                },
+            })
+            .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
 
@@ -357,33 +361,37 @@ mod tests {
         let mut writer = CtfWriter::new();
 
         // Add i32 type first (will be type id 2 after null and void)
-        let int_id = writer.add_type(CtfType::Integer {
-            name: "i32".to_string(),
-            size: 4,
-            encoding: IntegerEncoding {
-                bits: 32,
-                offset: 0,
-                flags: IntegerFlags::new().signed(),
-            },
-        });
+        let int_id = writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
 
         // Add struct with two i32 members
-        writer.add_type(CtfType::Struct {
-            name: "Point".to_string(),
-            size: 8,
-            members: vec![
-                CtfMember {
-                    name: "x".to_string(),
-                    type_id: int_id,
-                    offset_bits: 0,
-                },
-                CtfMember {
-                    name: "y".to_string(),
-                    type_id: int_id,
-                    offset_bits: 32,
-                },
-            ],
-        });
+        writer
+            .add_type(CtfType::Struct {
+                name: "Point".to_string(),
+                size: 8,
+                members: vec![
+                    CtfMember {
+                        name: "x".to_string(),
+                        type_id: int_id,
+                        offset_bits: 0,
+                    },
+                    CtfMember {
+                        name: "y".to_string(),
+                        type_id: int_id,
+                        offset_bits: 32,
+                    },
+                ],
+            })
+            .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
 
@@ -407,21 +415,25 @@ mod tests {
         let mut writer = CtfWriter::new();
 
         // Add i32 type
-        let int_id = writer.add_type(CtfType::Integer {
-            name: "i32".to_string(),
-            size: 4,
-            encoding: IntegerEncoding {
-                bits: 32,
-                offset: 0,
-                flags: IntegerFlags::new().signed(),
-            },
-        });
+        let int_id = writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
 
         // Add pointer to i32
-        writer.add_type(CtfType::Pointer {
-            name: "".to_string(),
-            target_type: int_id,
-        });
+        writer
+            .add_type(CtfType::Pointer {
+                name: "".to_string(),
+                target_type: int_id,
+            })
+            .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
 
@@ -442,23 +454,27 @@ mod tests {
         let mut writer = CtfWriter::new();
 
         // Add i32 type
-        let int_id = writer.add_type(CtfType::Integer {
-            name: "i32".to_string(),
-            size: 4,
-            encoding: IntegerEncoding {
-                bits: 32,
-                offset: 0,
-                flags: IntegerFlags::new().signed(),
-            },
-        });
+        let int_id = writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
 
         // Add array of 10 i32s
-        writer.add_type(CtfType::Array {
-            name: "".to_string(),
-            element_type: int_id,
-            index_type: int_id,
-            nelems: 10,
-        });
+        writer
+            .add_type(CtfType::Array {
+                name: "".to_string(),
+                element_type: int_id,
+                index_type: int_id,
+                nelems: 10,
+            })
+            .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
 
@@ -475,24 +491,26 @@ mod tests {
     fn round_trip_enum_type() {
         let mut writer = CtfWriter::new();
 
-        writer.add_type(CtfType::Enum {
-            name: "Color".to_string(),
-            size: 4,
-            enumerators: vec![
-                CtfEnumerator {
-                    name: "Red".to_string(),
-                    value: 0,
-                },
-                CtfEnumerator {
-                    name: "Green".to_string(),
-                    value: 1,
-                },
-                CtfEnumerator {
-                    name: "Blue".to_string(),
-                    value: 2,
-                },
-            ],
-        });
+        writer
+            .add_type(CtfType::Enum {
+                name: "Color".to_string(),
+                size: 4,
+                enumerators: vec![
+                    CtfEnumerator {
+                        name: "Red".to_string(),
+                        value: 0,
+                    },
+                    CtfEnumerator {
+                        name: "Green".to_string(),
+                        value: 1,
+                    },
+                    CtfEnumerator {
+                        name: "Blue".to_string(),
+                        value: 2,
+                    },
+                ],
+            })
+            .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
 
@@ -525,21 +543,25 @@ mod tests {
         let mut writer = CtfWriter::new();
 
         // Add i32 type
-        let int_id = writer.add_type(CtfType::Integer {
-            name: "i32".to_string(),
-            size: 4,
-            encoding: IntegerEncoding {
-                bits: 32,
-                offset: 0,
-                flags: IntegerFlags::new().signed(),
-            },
-        });
+        let int_id = writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
 
         // Add typedef
-        writer.add_type(CtfType::Typedef {
-            name: "MyInt".to_string(),
-            target_type: int_id,
-        });
+        writer
+            .add_type(CtfType::Typedef {
+                name: "MyInt".to_string(),
+                target_type: int_id,
+            })
+            .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
 
@@ -557,44 +579,50 @@ mod tests {
         let mut writer = CtfWriter::new();
 
         // Add i32 type
-        let int_id = writer.add_type(CtfType::Integer {
-            name: "i32".to_string(),
-            size: 4,
-            encoding: IntegerEncoding {
-                bits: 32,
-                offset: 0,
-                flags: IntegerFlags::new().signed(),
-            },
-        });
+        let int_id = writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
 
         // Add f32 type
-        let float_id = writer.add_type(CtfType::Float {
-            name: "f32".to_string(),
-            size: 4,
-            encoding: FloatEncoding {
-                bits: 32,
-                offset: 0,
-                float_type: FloatType::Single,
-            },
-        });
+        let float_id = writer
+            .add_type(CtfType::Float {
+                name: "f32".to_string(),
+                size: 4,
+                encoding: FloatEncoding {
+                    bits: 32,
+                    offset: 0,
+                    float_type: FloatType::Single,
+                },
+            })
+            .unwrap();
 
         // Add union with both members
-        writer.add_type(CtfType::Union {
-            name: "IntOrFloat".to_string(),
-            size: 4,
-            members: vec![
-                CtfMember {
-                    name: "i".to_string(),
-                    type_id: int_id,
-                    offset_bits: 0,
-                },
-                CtfMember {
-                    name: "f".to_string(),
-                    type_id: float_id,
-                    offset_bits: 0,
-                },
-            ],
-        });
+        writer
+            .add_type(CtfType::Union {
+                name: "IntOrFloat".to_string(),
+                size: 4,
+                members: vec![
+                    CtfMember {
+                        name: "i".to_string(),
+                        type_id: int_id,
+                        offset_bits: 0,
+                    },
+                    CtfMember {
+                        name: "f".to_string(),
+                        type_id: float_id,
+                        offset_bits: 0,
+                    },
+                ],
+            })
+            .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
 
@@ -618,51 +646,57 @@ mod tests {
         let mut writer = CtfWriter::new();
 
         // Add i32 type
-        let int_id = writer.add_type(CtfType::Integer {
-            name: "i32".to_string(),
-            size: 4,
-            encoding: IntegerEncoding {
-                bits: 32,
-                offset: 0,
-                flags: IntegerFlags::new().signed(),
-            },
-        });
+        let int_id = writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
 
         // Add inner Point struct
-        let point_id = writer.add_type(CtfType::Struct {
-            name: "Point".to_string(),
-            size: 8,
-            members: vec![
-                CtfMember {
-                    name: "x".to_string(),
-                    type_id: int_id,
-                    offset_bits: 0,
-                },
-                CtfMember {
-                    name: "y".to_string(),
-                    type_id: int_id,
-                    offset_bits: 32,
-                },
-            ],
-        });
+        let point_id = writer
+            .add_type(CtfType::Struct {
+                name: "Point".to_string(),
+                size: 8,
+                members: vec![
+                    CtfMember {
+                        name: "x".to_string(),
+                        type_id: int_id,
+                        offset_bits: 0,
+                    },
+                    CtfMember {
+                        name: "y".to_string(),
+                        type_id: int_id,
+                        offset_bits: 32,
+                    },
+                ],
+            })
+            .unwrap();
 
         // Add outer Rect struct containing two Points
-        writer.add_type(CtfType::Struct {
-            name: "Rect".to_string(),
-            size: 16,
-            members: vec![
-                CtfMember {
-                    name: "top_left".to_string(),
-                    type_id: point_id,
-                    offset_bits: 0,
-                },
-                CtfMember {
-                    name: "bottom_right".to_string(),
-                    type_id: point_id,
-                    offset_bits: 64,
-                },
-            ],
-        });
+        writer
+            .add_type(CtfType::Struct {
+                name: "Rect".to_string(),
+                size: 16,
+                members: vec![
+                    CtfMember {
+                        name: "top_left".to_string(),
+                        type_id: point_id,
+                        offset_bits: 0,
+                    },
+                    CtfMember {
+                        name: "bottom_right".to_string(),
+                        type_id: point_id,
+                        offset_bits: 64,
+                    },
+                ],
+            })
+            .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
 
@@ -689,15 +723,17 @@ mod tests {
             .build();
 
         // Add a simple type
-        writer.add_type(CtfType::Integer {
-            name: "i32".to_string(),
-            size: 4,
-            encoding: IntegerEncoding {
-                bits: 32,
-                offset: 0,
-                flags: IntegerFlags::new().signed(),
-            },
-        });
+        writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
 
@@ -711,27 +747,33 @@ mod tests {
         let mut writer = CtfWriter::new();
 
         // Add base i32 type
-        let int_id = writer.add_type(CtfType::Integer {
-            name: "i32".to_string(),
-            size: 4,
-            encoding: IntegerEncoding {
-                bits: 32,
-                offset: 0,
-                flags: IntegerFlags::new().signed(),
-            },
-        });
+        let int_id = writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
 
         // Add const i32
-        let const_id = writer.add_type(CtfType::Const {
-            name: "".to_string(),
-            target_type: int_id,
-        });
+        let const_id = writer
+            .add_type(CtfType::Const {
+                name: "".to_string(),
+                target_type: int_id,
+            })
+            .unwrap();
 
         // Add volatile const i32
-        writer.add_type(CtfType::Volatile {
-            name: "".to_string(),
-            target_type: const_id,
-        });
+        writer
+            .add_type(CtfType::Volatile {
+                name: "".to_string(),
+                target_type: const_id,
+            })
+            .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
 

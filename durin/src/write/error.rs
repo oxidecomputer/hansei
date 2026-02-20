@@ -10,6 +10,8 @@ pub struct Error {
 
 #[derive(thiserror::Error, Debug)]
 enum ErrorKind {
+    #[error("limit on number of types reached")]
+    TypeIdsExhausted,
     #[error("failed to write CTF data")]
     Write,
 }
@@ -39,6 +41,10 @@ impl Error {
     }
 
     // Public constructors for each variant
+    pub fn type_ids_exhausted() -> Self {
+        Self::new(ErrorKind::TypeIdsExhausted)
+    }
+
     pub fn write(source: io::Error) -> Self {
         Self::new(ErrorKind::Write).with_source(source)
     }

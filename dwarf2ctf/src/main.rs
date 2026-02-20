@@ -348,7 +348,7 @@ fn main() -> Result<()> {
     let crate_versions = parser
         .extract_crate_versions()
         .context("failed to extract crate versions")?;
-    writer.add_crate_versions(&crate_versions);
+    writer.add_crate_versions(&crate_versions)?;
 
     let ctf_buffer = writer.generate_ctf().context("failed to generate CTF")?;
 
