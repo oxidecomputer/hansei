@@ -43,6 +43,35 @@ pub mod constants {
     pub const STR_INDEX_MASK: u32 = 0x8000_0000;
 }
 
+/// The byte order to use when reading or writing a CTF file.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Endian {
+    Big,
+    Little,
+}
+
+#[cfg(target_endian = "little")]
+/// The hosts's native byte order
+pub const NATIVE: Endian = Endian::Little;
+#[cfg(target_endian = "big")]
+/// The host's native byte order
+pub const NATIVE: Endian = Endian::Big;
+
+impl Default for Endian {
+    fn default() -> Self {
+        NATIVE
+    }
+}
+
+impl From<Endian> for scroll::Endian {
+    fn from(value: Endian) -> Self {
+        match value {
+            Endian::Big => scroll::Endian::Big,
+            Endian::Little => scroll::Endian::Little,
+        }
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[repr(C)]
 pub struct CtfPreamble {
