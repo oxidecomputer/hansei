@@ -26,7 +26,7 @@ enum ErrorKind {
     InvalidEnumSize(u16),
     #[error("invalid CTF flags {0:08b}")]
     InvalidFlags(u8),
-    #[error("{0} is not a valid float encoding")]
+    #[error("{0:b} is not a valid float encoding")]
     InvalidFloatEncoding(u8),
     #[error("{0:b} is not a valid integer encoding")]
     InvalidIntegerEncoding(u8),
