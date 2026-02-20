@@ -157,11 +157,11 @@ impl<'a> CtfWriter<'a> {
         }
     }
 
-    pub fn generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> Result<Vec<u8>> {
+    pub fn generate_ctf(&mut self, funcs: HashMap<String, FuncInfo>) -> Result<Vec<u8>> {
         self._generate_ctf(funcs).map_err(Error::write)
     }
 
-    fn _generate_ctf(&mut self, funcs: HashMap<String, CtfFunctionInfo>) -> io::Result<Vec<u8>> {
+    fn _generate_ctf(&mut self, funcs: HashMap<String, FuncInfo>) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
 
         // Calculate type section size and write to string table
@@ -570,7 +570,7 @@ impl<'a> CtfWriterBuilder<'a> {
 
 /// Parsed function info with CTF type IDs.
 #[derive(Clone, Debug)]
-pub struct CtfFunctionInfo {
+pub struct FuncInfo {
     pub return_type: TypeId,
     pub args: Vec<TypeId>,
 }
