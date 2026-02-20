@@ -643,6 +643,7 @@ pub enum CtfType {
 }
 
 impl CtfType {
+    /// The name of this type.
     pub fn name(&self) -> &str {
         match self {
             Self::Integer { name, .. } => name,
