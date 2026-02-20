@@ -18,8 +18,8 @@ mod error;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub fn ctf_type_info(kind: u8, is_root: bool, vlen: u16) -> u16 {
-    ((kind as u16) << 11) | ((if is_root { 1u16 } else { 0 }) << 10) | (vlen & CTF_MAX_VLEN)
+fn ctf_type_info(kind: u8, is_root: bool, vlen: u16) -> u16 {
+    ((kind as u16) << 11) | ((if is_root { 1 } else { 0 }) << 10) | (vlen & CTF_MAX_VLEN)
 }
 
 // String table builder
@@ -223,7 +223,7 @@ impl<'a> CtfWriter<'a> {
                 match sym.st_type() {
                     STT_FUNC => {
                         let Some(func_info) = self.funcs.get(symbol_name) else {
-                            let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
+                            let info = CtfType::Unknown.type_info();
                             func_data.iowrite_with(info, LE)?;
                             continue;
                         };
@@ -328,6 +328,8 @@ impl<'a> CtfWriter<'a> {
         strings: &mut StringTable,
         ctf_type: &CtfType,
     ) -> io::Result<()> {
+        let info = ctf_type.type_info();
+
         match ctf_type {
             CtfType::Integer {
                 name,
@@ -335,7 +337,7 @@ impl<'a> CtfWriter<'a> {
                 encoding,
             } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_INTEGER, true, 0);
+                let info = ctf_type.type_info();
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -348,7 +350,6 @@ impl<'a> CtfWriter<'a> {
                 encoding,
             } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_FLOAT, true, 0);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -357,7 +358,6 @@ impl<'a> CtfWriter<'a> {
             }
             CtfType::Pointer { name, target_type } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_POINTER, false, 0);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -365,7 +365,6 @@ impl<'a> CtfWriter<'a> {
             }
             CtfType::Typedef { name, target_type } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_TYPEDEF, false, 0);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -373,7 +372,6 @@ impl<'a> CtfWriter<'a> {
             }
             CtfType::Const { name, target_type } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_CONST, false, 0);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -381,7 +379,6 @@ impl<'a> CtfWriter<'a> {
             }
             CtfType::Volatile { name, target_type } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_VOLATILE, false, 0);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -389,7 +386,6 @@ impl<'a> CtfWriter<'a> {
             }
             CtfType::Restrict { name, target_type } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_RESTRICT, false, 0);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -402,11 +398,6 @@ impl<'a> CtfWriter<'a> {
                 is_varargs,
             } => {
                 let name_offset = strings.add_string(name);
-                let mut vlen = args.len() as u16;
-                if *is_varargs {
-                    vlen += 1;
-                }
-                let info = ctf_type_info(CTF_K_FUNCTION, false, vlen);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -423,7 +414,7 @@ impl<'a> CtfWriter<'a> {
                 }
 
                 // Pad vlen to an even number for alignment.
-                if !vlen.is_multiple_of(2) {
+                if !ctf_type.vlen().is_multiple_of(2) {
                     buffer.iowrite_with(0u16, LE)?;
                 }
             }
@@ -434,7 +425,6 @@ impl<'a> CtfWriter<'a> {
                 nelems,
             } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_ARRAY, true, 0);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -449,7 +439,6 @@ impl<'a> CtfWriter<'a> {
                 members,
             } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_STRUCT, true, members.len() as u16);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -473,7 +462,6 @@ impl<'a> CtfWriter<'a> {
                 members,
             } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_UNION, true, members.len() as u16);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -497,7 +485,6 @@ impl<'a> CtfWriter<'a> {
                 enumerators,
             } => {
                 let name_offset = strings.add_string(name);
-                let info = ctf_type_info(CTF_K_ENUM, true, enumerators.len() as u16);
 
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
@@ -510,7 +497,6 @@ impl<'a> CtfWriter<'a> {
                 }
             }
             CtfType::Unknown => {
-                let info = ctf_type_info(CTF_K_UNKNOWN, false, 0);
                 buffer.iowrite_with(0u32, LE)?;
                 buffer.iowrite_with(info, LE)?;
                 buffer.iowrite_with(0u16, LE)?;
@@ -643,6 +629,17 @@ pub enum CtfType {
 }
 
 impl CtfType {
+    /// The `u16` type info representation used in the CTF file format.
+    pub fn type_info(&self) -> u16 {
+        // TODO: Currently we assume all real types are directly referenced.
+        let is_root = if self.kind() == TypeKind::Unknown {
+            0
+        } else {
+            1
+        };
+        ((self.kind() as u16) << 11) | is_root << 10 | (self.vlen() & CTF_MAX_VLEN)
+    }
+
     /// The name of this type.
     pub fn name(&self) -> &str {
         match self {
@@ -678,6 +675,25 @@ impl CtfType {
             Self::Function { .. } => TypeKind::Function,
             Self::Array { .. } => TypeKind::Array,
             Self::Unknown => TypeKind::Unknown,
+        }
+    }
+
+    /// The number of dynamic elements in this type.
+    pub fn vlen(&self) -> u16 {
+        match self {
+            Self::Struct { members, .. } => members.len() as u16,
+            Self::Union { members, .. } => members.len() as u16,
+            Self::Enum { enumerators, .. } => enumerators.len() as u16,
+            Self::Function {
+                args, is_varargs, ..
+            } => {
+                let mut vlen = args.len() as u16;
+                if *is_varargs {
+                    vlen += 1;
+                }
+                vlen
+            }
+            _ => 0,
         }
     }
 
@@ -806,7 +822,7 @@ mod tests {
 
         // Check info field (bytes 4-5): kind=INTEGER(1), root=true, vlen=0
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_INTEGER, true, 0));
+        assert_eq!(info, int_type.type_info());
     }
 
     #[test]
@@ -839,7 +855,7 @@ mod tests {
         assert_eq!(bytes.len(), 12);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_FLOAT, true, 0));
+        assert_eq!(info, float_type.type_info());
     }
 
     #[test]
@@ -854,7 +870,7 @@ mod tests {
         assert_eq!(bytes.len(), 8);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_POINTER, false, 0));
+        assert_eq!(info, ptr_type.type_info());
 
         let target = u16::from_le_bytes([bytes[6], bytes[7]]);
         assert_eq!(target, 5);
@@ -869,7 +885,7 @@ mod tests {
         let bytes = write_type(&typedef);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_TYPEDEF, false, 0));
+        assert_eq!(info, typedef.type_info());
     }
 
     #[test]
@@ -881,7 +897,7 @@ mod tests {
         let bytes = write_type(&const_type);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_CONST, false, 0));
+        assert_eq!(info, const_type.type_info());
     }
 
     #[test]
@@ -898,7 +914,7 @@ mod tests {
         assert_eq!(bytes.len(), 16);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_ARRAY, true, 0));
+        assert_eq!(info, array_type.type_info());
 
         let nelems = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
         assert_eq!(nelems, 10);
@@ -917,7 +933,7 @@ mod tests {
         assert_eq!(bytes.len(), 8);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_STRUCT, true, 0));
+        assert_eq!(info, struct_type.type_info());
     }
 
     #[test]
@@ -944,7 +960,7 @@ mod tests {
         assert_eq!(bytes.len(), 24);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_STRUCT, true, 2));
+        assert_eq!(info, struct_type.type_info());
     }
 
     #[test]
@@ -968,7 +984,7 @@ mod tests {
         let bytes = write_type(&union_type);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_UNION, true, 2));
+        assert_eq!(info, union_type.type_info());
     }
 
     #[test]
@@ -997,7 +1013,7 @@ mod tests {
         assert_eq!(bytes.len(), 32);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_ENUM, true, 3));
+        assert_eq!(info, enum_type.type_info());
     }
 
     #[test]
@@ -1014,7 +1030,7 @@ mod tests {
         assert_eq!(bytes.len(), 8);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_FUNCTION, false, 0));
+        assert_eq!(info, func_type.type_info());
     }
 
     #[test]
@@ -1032,7 +1048,7 @@ mod tests {
         assert_eq!(bytes.len(), 12);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_FUNCTION, false, 2));
+        assert_eq!(info, func_type.type_info());
     }
 
     #[test]
@@ -1061,7 +1077,7 @@ mod tests {
 
         // vlen = 1 arg + 1 varargs marker = 2
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_FUNCTION, false, 2));
+        assert_eq!(info, func_type.type_info());
     }
 
     #[test]
@@ -1072,7 +1088,7 @@ mod tests {
         assert_eq!(bytes.len(), 8);
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
-        assert_eq!(info, ctf_type_info(CTF_K_UNKNOWN, false, 0));
+        assert_eq!(info, CtfType::Unknown.type_info());
     }
 
     #[test]
