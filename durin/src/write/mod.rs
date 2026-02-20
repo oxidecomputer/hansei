@@ -1,5 +1,5 @@
 use crate::constants::*;
-use crate::{IntegerEncoding, TypeId};
+use crate::{FloatEncoding, IntegerEncoding, TypeId};
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
@@ -346,7 +346,7 @@ impl<'a> CtfWriter<'a> {
                 buffer.iowrite_with(name_offset, LE)?;
                 buffer.iowrite_with(info, LE)?;
                 buffer.iowrite_with(*size as u16, LE)?;
-                buffer.iowrite_with(*encoding, LE)?;
+                buffer.iowrite_with(encoding.as_u32(), LE)?;
             }
             CtfType::Pointer { name, target_type } => {
                 let name_offset = strings.add_string(name);
@@ -583,7 +583,7 @@ pub enum CtfType {
     Float {
         name: String,
         size: u32,
-        encoding: u32,
+        encoding: FloatEncoding,
     },
     Pointer {
         name: String,
@@ -702,7 +702,7 @@ pub struct CtfMember {
 mod tests {
     use super::*;
 
-    use crate::IntegerFlags;
+    use crate::{FloatType, IntegerFlags};
 
     // Helper to write a type and return the buffer bytes
     fn write_type(ctf_type: &CtfType) -> Vec<u8> {
@@ -801,7 +801,11 @@ mod tests {
         let float_type = CtfType::Float {
             name: "f32".to_string(),
             size: 32,
-            encoding: 0,
+            encoding: FloatEncoding {
+                bits: 32,
+                offset: 0,
+                float_type: FloatType::Single,
+            },
         };
         let bytes = write_type(&float_type);
 

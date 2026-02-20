@@ -255,6 +255,36 @@ impl fmt::Debug for IntegerFlags {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct FloatEncoding {
+    pub bits: u16,
+    pub offset: u8,
+    pub float_type: FloatType,
+}
+
+impl FloatEncoding {
+    pub fn as_u32(&self) -> u32 {
+        ((self.float_type as u32) << 24) | ((self.offset as u32) << 16) | self.bits as u32
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[repr(u8)]
+pub enum FloatType {
+    Single = 1,
+    Double = 2,
+    Complex = 3,
+    DoubleComplex = 4,
+    LongDoubleComplex = 5,
+    LongDouble = 6,
+    Interval = 7,
+    DoubleInterval = 8,
+    LongDoubleInterval = 9,
+    Imaginary = 10,
+    DoubleImaginary = 11,
+    LongDoubleImaginary = 12,
+}
+
 #[cfg(test)]
 mod testhelper {
     use crate::{IntegerEncoding, IntegerFlags};
@@ -541,7 +571,11 @@ mod tests {
         let float_id = writer.add_type(CtfType::Float {
             name: "f32".to_string(),
             size: 4,
-            encoding: 0x01_00_0020, // Single precision, 32 bits
+            encoding: FloatEncoding {
+                bits: 32,
+                offset: 0,
+                float_type: FloatType::Single,
+            },
         });
 
         // Add union with both members
