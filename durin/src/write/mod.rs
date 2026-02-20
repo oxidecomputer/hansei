@@ -1,5 +1,8 @@
 use crate::constants::*;
-use crate::{FloatEncoding, IntegerEncoding, TypeId, TypeKind};
+use crate::{
+    CtfFlags, CtfHeader, CtfPreamble, CtfVersion, FloatEncoding, IntegerEncoding, StrId, TypeId,
+    TypeKind,
+};
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
@@ -271,14 +274,20 @@ impl<'a> CtfWriter<'a> {
         let strlen = self.strings.data().len() as u32;
 
         // Write header
+        let preamble = CtfPreamble {
+            magic: CTF_MAGIC,
+            vers: CtfVersion::V2,
+            flags: CtfFlags::new(true),
+        };
+
+        out.iowrite_with(preamble.magic, LE)?;
+        out.iowrite_with(preamble.vers as u8, LE)?;
+        out.iowrite_with(preamble.flags.get(), LE)?;
+
+        // TODO: support parents.
         let header = CtfHeader {
-            preamble: CtfPreamble {
-                magic: CTF_MAGIC,
-                version: CTF_VERSION,
-                flags: CTF_F_COMPRESS,
-            },
-            parlabel: 0,
-            parname: 0,
+            parlabel: StrId::empty(),
+            parname: StrId::empty(),
             lbloff,
             objtoff,
             funcoff,
@@ -287,12 +296,8 @@ impl<'a> CtfWriter<'a> {
             strlen,
         };
 
-        out.iowrite_with(header.preamble.magic, LE)?;
-        out.iowrite_with(header.preamble.version, LE)?;
-        out.iowrite_with(header.preamble.flags, LE)?;
-
-        out.iowrite_with(header.parlabel, LE)?;
-        out.iowrite_with(header.parname, LE)?;
+        out.iowrite_with(header.parlabel.offset(), LE)?;
+        out.iowrite_with(header.parname.offset(), LE)?;
         out.iowrite_with(header.lbloff, LE)?;
         out.iowrite_with(header.objtoff, LE)?;
         out.iowrite_with(header.funcoff, LE)?;
@@ -704,28 +709,6 @@ impl CtfType {
         };
         members.iter().any(|m| m.offset_bits == 0)
     }
-}
-
-#[derive(Debug)]
-#[repr(C)]
-pub struct CtfPreamble {
-    pub magic: u16,
-    pub version: u8,
-    pub flags: u8,
-}
-
-#[derive(Debug)]
-#[repr(C)]
-pub struct CtfHeader {
-    pub preamble: CtfPreamble,
-    pub parlabel: u32,
-    pub parname: u32,
-    pub lbloff: u32,
-    pub objtoff: u32,
-    pub funcoff: u32,
-    pub typeoff: u32,
-    pub stroff: u32,
-    pub strlen: u32,
 }
 
 #[derive(Clone, Debug)]
