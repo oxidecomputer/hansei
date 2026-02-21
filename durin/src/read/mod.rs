@@ -1,7 +1,7 @@
 use crate::constants::*;
 use crate::{
-    CtfFlags, CtfHeader, CtfPreamble, CtfVersion, FloatEncoding, FloatType, IntegerEncoding,
-    IntegerFlags, StrId, TypeId, TypeKind, VARARGS_ID,
+    CtfFlags, CtfHeader, CtfPreamble, CtfVersion, FloatEncoding, FloatType, HEADER_SIZE,
+    IntegerEncoding, IntegerFlags, LARGE_THRESHOLD, StrId, TypeId, TypeKind, VARARGS_ID,
 };
 use strings::UncheckedStringTable;
 
@@ -21,9 +21,6 @@ pub use error::Error;
 pub use strings::StringTable;
 
 pub type Result<T> = std::result::Result<T, Error>;
-
-const HEADER_SIZE: usize = 36;
-const LARGE_THRESHOLD: u16 = 8192;
 
 pub struct CtfReader {
     pub preamble: CtfPreamble,
