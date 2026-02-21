@@ -1,7 +1,7 @@
 use crate::constants::*;
 use crate::{
-    CtfFlags, CtfHeader, CtfPreamble, CtfVersion, FloatEncoding, IntegerEncoding, StrId, TypeId,
-    TypeKind,
+    CtfFlags, CtfHeader, CtfPreamble, CtfVersion, FloatEncoding, HEADER_SIZE, IntegerEncoding,
+    StrId, TypeId, TypeKind,
 };
 
 use flate2::Compression;
@@ -9,7 +9,8 @@ use flate2::write::ZlibEncoder;
 use goblin::elf::Elf;
 use goblin::elf::section_header::SHN_UNDEF;
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
-use scroll::{Endian, IOwrite};
+use scroll::ctx::TryIntoCtx;
+use scroll::{Endian, IOwrite, Pwrite};
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -184,8 +185,8 @@ impl<'a> CtfWriter<'a> {
         self._generate_ctf().map_err(Error::write)
     }
 
-    fn _generate_ctf(&mut self) -> io::Result<Vec<u8>> {
-        let mut out = Vec::new();
+    fn _generate_ctf(&mut self) -> scroll::Result<Vec<u8>> {
+        let mut out = vec![0u8; HEADER_SIZE];
 
         let endian = self.endian;
 
@@ -284,10 +285,6 @@ impl<'a> CtfWriter<'a> {
             flags: CtfFlags::new(self.compress),
         };
 
-        out.iowrite_with(CTF_MAGIC, endian)?;
-        out.iowrite_with(preamble.vers as u8, endian)?;
-        out.iowrite_with(preamble.flags.get(), endian)?;
-
         // TODO: support parents.
         let header = CtfHeader {
             parlabel: StrId::empty(),
@@ -300,14 +297,13 @@ impl<'a> CtfWriter<'a> {
             strlen,
         };
 
-        out.iowrite_with(header.parlabel.offset(), endian)?;
-        out.iowrite_with(header.parname.offset(), endian)?;
-        out.iowrite_with(header.lbloff, endian)?;
-        out.iowrite_with(header.objtoff, endian)?;
-        out.iowrite_with(header.funcoff, endian)?;
-        out.iowrite_with(header.typeoff, endian)?;
-        out.iowrite_with(header.stroff, endian)?;
-        out.iowrite_with(header.strlen, endian)?;
+        let data_len = (stroff + strlen) as usize;
+        out.reserve(data_len);
+
+        let offset = &mut 0;
+        out.gwrite_with(CTF_MAGIC, offset, endian)?;
+        out.gwrite_with(preamble, offset, endian)?;
+        out.gwrite_with(header, offset, endian)?;
 
         if self.compress {
             let mut encoder = ZlibEncoder::new(&mut out, Compression::fast());
@@ -750,6 +746,60 @@ pub struct CtfMember {
     pub name: String,
     pub type_id: TypeId,
     pub offset_bits: u64,
+}
+
+impl TryIntoCtx<scroll::Endian> for StrId {
+    type Error = scroll::Error;
+
+    fn try_into_ctx(self, this: &mut [u8], en: scroll::Endian) -> scroll::Result<usize> {
+        let offset = &mut 0;
+        this.gwrite_with(self.0, offset, en)?;
+
+        Ok(*offset)
+    }
+}
+
+impl TryIntoCtx<scroll::Endian> for CtfPreamble {
+    type Error = scroll::Error;
+
+    fn try_into_ctx(self, this: &mut [u8], en: scroll::Endian) -> scroll::Result<usize> {
+        let CtfPreamble { vers, flags } = self;
+
+        let offset = &mut 0;
+        this.gwrite_with(vers as u8, offset, en)?;
+        this.gwrite_with(flags.0, offset, en)?;
+
+        Ok(*offset)
+    }
+}
+
+impl TryIntoCtx<scroll::Endian> for CtfHeader {
+    type Error = scroll::Error;
+
+    fn try_into_ctx(self, this: &mut [u8], en: scroll::Endian) -> scroll::Result<usize> {
+        let CtfHeader {
+            parlabel,
+            parname,
+            lbloff,
+            objtoff,
+            funcoff,
+            typeoff,
+            stroff,
+            strlen,
+        } = self;
+
+        let offset = &mut 0;
+        this.gwrite_with(parlabel, offset, en)?;
+        this.gwrite_with(parname, offset, en)?;
+        this.gwrite_with(lbloff, offset, en)?;
+        this.gwrite_with(objtoff, offset, en)?;
+        this.gwrite_with(funcoff, offset, en)?;
+        this.gwrite_with(typeoff, offset, en)?;
+        this.gwrite_with(stroff, offset, en)?;
+        this.gwrite_with(strlen, offset, en)?;
+
+        Ok(*offset)
+    }
 }
 
 #[cfg(test)]

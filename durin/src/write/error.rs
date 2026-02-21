@@ -1,5 +1,3 @@
-use std::io;
-
 /// The error type for CTF write operations.
 #[derive(Debug)]
 pub struct Error {
@@ -45,7 +43,7 @@ impl Error {
         Self::new(ErrorKind::TypeIdsExhausted)
     }
 
-    pub fn write(source: io::Error) -> Self {
+    pub fn write(source: scroll::Error) -> Self {
         Self::new(ErrorKind::Write).with_source(source)
     }
 }
