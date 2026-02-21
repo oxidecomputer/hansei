@@ -88,6 +88,7 @@ pub struct CtfWriter<'a> {
     elf: Option<&'a Elf<'a>>,
     label: Option<String>,
     endian: Endian,
+    compress: bool,
 }
 
 impl Default for CtfWriter<'_> {
@@ -118,6 +119,7 @@ impl<'a> CtfWriter<'a> {
             elf: opts.elf,
             label: opts.label,
             endian: opts.endian.unwrap_or_default(),
+            compress: opts.compress.unwrap_or(true), // Use compression by default.
         }
     }
 
@@ -281,7 +283,7 @@ impl<'a> CtfWriter<'a> {
         let preamble = CtfPreamble {
             magic: CTF_MAGIC,
             vers: CtfVersion::V2,
-            flags: CtfFlags::new(true),
+            flags: CtfFlags::new(self.compress),
         };
 
         out.iowrite_with(preamble.magic, endian)?;
@@ -309,21 +311,25 @@ impl<'a> CtfWriter<'a> {
         out.iowrite_with(header.stroff, endian)?;
         out.iowrite_with(header.strlen, endian)?;
 
-        let mut encoder = ZlibEncoder::new(&mut out, Compression::fast());
+        if self.compress {
+            let mut encoder = ZlibEncoder::new(&mut out, Compression::fast());
+            encoder.write_all(&lbl_data)?;
+            encoder.write_all(&obj_data)?;
+            encoder.write_all(&func_data)?;
+            encoder.write_all(&vec![0u8; func_padding as usize])?;
+            encoder.write_all(&type_data)?;
+            encoder.write_all(self.strings.data())?;
+            encoder.finish()?;
+        } else {
+            out.extend_from_slice(&lbl_data);
+            out.extend_from_slice(&obj_data);
+            out.extend_from_slice(&func_data);
+            out.extend_from_slice(&vec![0u8; func_padding as usize]);
+            out.extend_from_slice(&type_data);
+            out.extend_from_slice(self.strings.data());
+        }
 
-        encoder.write_all(&lbl_data)?;
-        encoder.write_all(&obj_data)?;
-        encoder.write_all(&func_data)?;
-        encoder.write_all(&vec![0u8; func_padding as usize])?;
-        encoder.write_all(&type_data)?;
-        encoder.write_all(self.strings.data())?;
-        encoder.finish()?;
-        out.write_all(&lbl_data)?;
-        out.write_all(&obj_data)?;
-        out.write_all(&func_data)?;
-        out.write_all(&vec![0u8; func_padding as usize])?;
-        out.write_all(&type_data)?;
-        out.write_all(self.strings.data())?;
+        out.shrink_to_fit();
 
         Ok(out)
     }
@@ -529,6 +535,7 @@ struct Opts<'a> {
     replace_spaces: Option<&'static str>,
     label: Option<String>,
     endian: Option<Endian>,
+    compress: Option<bool>,
 }
 
 #[derive(Default, Debug)]
@@ -577,6 +584,12 @@ impl<'a> CtfWriterBuilder<'a> {
     /// The label to apply to the CTF file.
     pub fn with_label(mut self, label: String) -> Self {
         self.opts.label = Some(label);
+        self
+    }
+
+    /// Whether to compress the CTF data.
+    pub fn with_compression(mut self, use_compression: bool) -> Self {
+        self.opts.compress = Some(use_compression);
         self
     }
 }
@@ -1102,5 +1115,45 @@ mod tests {
             next_ty.unwrap_err().to_string(),
             Error::type_ids_exhausted().to_string()
         );
+    }
+
+    #[test]
+    fn test_use_compression() {
+        let mut writer = CtfWriterBuilder::new().with_compression(true).build();
+        writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
+
+        let bytes = writer.generate_ctf().unwrap();
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        assert!(reader.preamble.flags.is_compressed());
+    }
+
+    #[test]
+    fn test_no_compression() {
+        let mut writer = CtfWriterBuilder::new().with_compression(false).build();
+        writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
+
+        let bytes = writer.generate_ctf().unwrap();
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        assert!(!reader.preamble.flags.is_compressed());
     }
 }
