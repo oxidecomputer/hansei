@@ -280,12 +280,11 @@ impl<'a> CtfWriter<'a> {
         let strlen = self.strings.data().len() as u32;
 
         let preamble = CtfPreamble {
-            magic: CTF_MAGIC,
             vers: CtfVersion::V2,
             flags: CtfFlags::new(self.compress),
         };
 
-        out.iowrite_with(preamble.magic, endian)?;
+        out.iowrite_with(CTF_MAGIC, endian)?;
         out.iowrite_with(preamble.vers as u8, endian)?;
         out.iowrite_with(preamble.flags.get(), endian)?;
 

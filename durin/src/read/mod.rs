@@ -73,6 +73,10 @@ impl CtfReader {
         if input.len() < HEADER_SIZE {
             return Err(Error::too_short(input.len() as u32, HEADER_SIZE as u32));
         }
+        let magic: u16 = input.gread(offset)?;
+        if magic != CTF_MAGIC {
+            return Err(Error::invalid_magic(magic));
+        }
         let preamble: CtfPreamble = input.gread(offset)?;
         let header: CtfHeader = input.gread(offset)?;
 
@@ -422,17 +426,13 @@ impl TryFromCtx<'_, ()> for CtfPreamble {
     fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let magic: u16 = from.gread(offset)?;
-        if magic != CTF_MAGIC {
-            return Err(Error::invalid_magic(magic));
-        }
         let vers_int: u8 = from.gread(offset)?;
         let vers = vers_int.try_into()?;
 
         let flags_int: u8 = from.gread(offset)?;
         let flags = flags_int.try_into()?;
 
-        Ok((Self { magic, vers, flags }, *offset))
+        Ok((Self { vers, flags }, *offset))
     }
 }
 

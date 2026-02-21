@@ -75,7 +75,6 @@ impl From<Endian> for scroll::Endian {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[repr(C)]
 pub struct CtfPreamble {
-    pub magic: u16,
     pub vers: CtfVersion,
     pub flags: CtfFlags,
 }
