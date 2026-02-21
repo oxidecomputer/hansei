@@ -43,6 +43,9 @@ pub mod constants {
     pub const STR_INDEX_MASK: u32 = 0x8000_0000;
 }
 
+const HEADER_SIZE: usize = 36;
+const LARGE_THRESHOLD: u16 = 8192;
+
 /// The byte order to use when reading or writing a CTF file.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Endian {
