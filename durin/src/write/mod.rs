@@ -279,7 +279,6 @@ impl<'a> CtfWriter<'a> {
         let stroff = typeoff + type_data.len() as u32;
         let strlen = self.strings.data().len() as u32;
 
-        // Write header
         let preamble = CtfPreamble {
             magic: CTF_MAGIC,
             vers: CtfVersion::V2,
