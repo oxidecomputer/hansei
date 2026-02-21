@@ -38,7 +38,6 @@ impl Error {
         &self.backtrace
     }
 
-    // Public constructors for each variant
     pub fn type_ids_exhausted() -> Self {
         Self::new(ErrorKind::TypeIdsExhausted)
     }
