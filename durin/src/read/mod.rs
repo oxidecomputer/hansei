@@ -6,8 +6,8 @@ use crate::{
 use strings::UncheckedStringTable;
 
 use flate2::read::ZlibDecoder;
-use scroll::Pread;
 use scroll::ctx::TryFromCtx;
+use scroll::{Endian, Pread};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -21,6 +21,9 @@ pub use error::Error;
 pub use strings::StringTable;
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+const CTF_MAGIC_BYTES_BE: [u8; 2] = [0xcf, 0xf1];
+const CTF_MAGIC_BYTES_LE: [u8; 2] = [0xf1, 0xcf];
 
 pub struct CtfReader {
     pub preamble: CtfPreamble,
@@ -70,12 +73,16 @@ impl CtfReader {
         if input.len() < HEADER_SIZE {
             return Err(Error::too_short(input.len() as u32, HEADER_SIZE as u32));
         }
+
         let magic: u16 = input.gread(offset)?;
-        if magic != CTF_MAGIC {
-            return Err(Error::invalid_magic(magic));
-        }
-        let preamble: CtfPreamble = input.gread(offset)?;
-        let header: CtfHeader = input.gread(offset)?;
+        let endian = match magic.to_ne_bytes() {
+            CTF_MAGIC_BYTES_BE => Endian::Big,
+            CTF_MAGIC_BYTES_LE => Endian::Little,
+            _ => return Err(Error::invalid_magic(magic)),
+        };
+
+        let preamble: CtfPreamble = input.gread_with(offset, endian)?;
+        let header: CtfHeader = input.gread_with(offset, endian)?;
 
         let expected_len = header.stroff + header.strlen;
         let data = if preamble.flags.is_compressed() {
@@ -97,10 +104,12 @@ impl CtfReader {
             data.to_vec()
         };
 
-        let labels = read_labels(&header, &data)?;
-        let objects = read_objects(&header, &data)?;
+        let labels = read_labels(&header, &data, endian)?;
+        let objects = read_objects(&header, &data, endian)?;
         let functions = Vec::new(); // TODO
-        let mut types = TypeTable::load(&header, &data)?;
+        let mut types = TypeTable::load(&header, &data, endian)?;
+
+        // Strings are endian-agnostic.
         let unchecked_strings = UncheckedStringTable::new(&header, &data);
 
         // TODO how expensive is this check? Do we care?
@@ -216,7 +225,7 @@ impl CtfReader {
     }
 }
 
-fn read_labels(header: &CtfHeader, data: &[u8]) -> Result<Vec<CtfLabel>> {
+fn read_labels(header: &CtfHeader, data: &[u8], endian: Endian) -> Result<Vec<CtfLabel>> {
     let labels_start = header.lbloff as usize;
     let labels_end = header.objtoff as usize;
     let labels_data = &data[labels_start..labels_end];
@@ -225,14 +234,14 @@ fn read_labels(header: &CtfHeader, data: &[u8]) -> Result<Vec<CtfLabel>> {
 
     let mut labels = Vec::new();
     while *offset < labels_data.len() {
-        let label = labels_data.gread(offset)?;
+        let label = labels_data.gread_with(offset, endian)?;
         labels.push(label);
     }
 
     Ok(labels)
 }
 
-fn read_objects(header: &CtfHeader, data: &[u8]) -> Result<Vec<TypeId>> {
+fn read_objects(header: &CtfHeader, data: &[u8], endian: Endian) -> Result<Vec<TypeId>> {
     let obj_start = header.objtoff as usize;
     let obj_end = header.funcoff as usize;
     let obj_data = &data[obj_start..obj_end];
@@ -241,7 +250,7 @@ fn read_objects(header: &CtfHeader, data: &[u8]) -> Result<Vec<TypeId>> {
 
     let mut objects = Vec::new();
     while *offset < obj_data.len() {
-        let raw_id: u16 = obj_data.gread(offset)?;
+        let raw_id: u16 = obj_data.gread_with(offset, endian)?;
         let object = TypeId::from_u16(raw_id)?;
 
         objects.push(object);
@@ -417,51 +426,51 @@ fn update_large_enums(types: &mut TypeTable, strings: &StringTable) -> Result<()
     Ok(())
 }
 
-impl TryFromCtx<'_, ()> for CtfPreamble {
+impl TryFromCtx<'_, Endian> for CtfPreamble {
     type Error = Error;
 
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+    fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let vers_int: u8 = from.gread(offset)?;
+        let vers_int: u8 = from.gread_with(offset, endian)?;
         let vers = vers_int.try_into()?;
 
-        let flags_int: u8 = from.gread(offset)?;
+        let flags_int: u8 = from.gread_with(offset, endian)?;
         let flags = flags_int.try_into()?;
 
         Ok((Self { vers, flags }, *offset))
     }
 }
 
-impl TryFromCtx<'_, ()> for CtfHeader {
+impl TryFromCtx<'_, Endian> for CtfHeader {
     type Error = Error;
 
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+    fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let parlabel_raw = from.gread(offset)?;
+        let parlabel_raw = from.gread_with(offset, endian)?;
         let parlabel = StrId::from_u32(parlabel_raw)?;
-        let parname_raw = from.gread(offset)?;
+        let parname_raw = from.gread_with(offset, endian)?;
         let parname = StrId::from_u32(parname_raw)?;
 
-        let lbloff = from.gread(offset)?;
+        let lbloff = from.gread_with(offset, endian)?;
         if lbloff % 2 != 0 {
             return Err(Error::misaligned_label_offset(lbloff));
         }
-        let objtoff = from.gread(offset)?;
+        let objtoff = from.gread_with(offset, endian)?;
         if objtoff % 2 != 0 {
             return Err(Error::misaligned_object_offset(objtoff));
         }
-        let funcoff = from.gread(offset)?;
+        let funcoff = from.gread_with(offset, endian)?;
         if funcoff % 4 != 0 {
             return Err(Error::misaligned_func_offset(funcoff));
         }
-        let typeoff = from.gread(offset)?;
+        let typeoff = from.gread_with(offset, endian)?;
         if typeoff % 4 != 0 {
             return Err(Error::misaligned_type_offset(typeoff));
         }
-        let stroff = from.gread(offset)?;
-        let stflen = from.gread(offset)?;
+        let stroff = from.gread_with(offset, endian)?;
+        let stflen = from.gread_with(offset, endian)?;
 
         Ok((
             Self {
@@ -493,15 +502,15 @@ impl CtfLabel {
     }
 }
 
-impl TryFromCtx<'_, ()> for CtfLabel {
+impl TryFromCtx<'_, Endian> for CtfLabel {
     type Error = Error;
 
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+    fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let label_raw = from.gread(offset)?;
+        let label_raw = from.gread_with(offset, endian)?;
         let label = StrId::from_u32(label_raw)?;
-        let idx_int: u32 = from.gread(offset)?;
+        let idx_int: u32 = from.gread_with(offset, endian)?;
         let typeidx = if idx_int == VARARGS_ID as u32 {
             None
         } else {
@@ -519,7 +528,7 @@ struct TypeTable {
 }
 
 impl TypeTable {
-    pub fn load(header: &CtfHeader, data: &[u8]) -> Result<Self> {
+    pub fn load(header: &CtfHeader, data: &[u8], endian: Endian) -> Result<Self> {
         let types_start = header.typeoff as usize;
         let types_end = header.stroff as usize;
         let types_data = &data[types_start..types_end];
@@ -532,7 +541,7 @@ impl TypeTable {
         types.push(CtfType::Unknown { id });
 
         while *offset < types_data.len() {
-            let ty = types_data.gread_with(offset, id)?;
+            let ty = types_data.gread_with(offset, (id, endian))?;
             types.push(ty);
             let new_id = TypeId::from_u16(id.get() + 1)?;
             id = new_id;
@@ -581,24 +590,27 @@ impl CtfMetadata {
     }
 }
 
-impl TryFromCtx<'_, ()> for CtfMetadata {
+impl TryFromCtx<'_, Endian> for CtfMetadata {
     type Error = Error;
 
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+    fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let raw = from.gread(offset)?;
+        let raw = from.gread_with(offset, endian)?;
 
         Ok((CtfMetadata(raw), *offset))
     }
 }
 
-impl TryFromCtx<'_, ()> for IntegerEncoding {
+impl TryFromCtx<'_, Endian> for IntegerEncoding {
     type Error = Error;
 
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> std::result::Result<(Self, usize), Self::Error> {
+    fn try_from_ctx(
+        from: &'_ [u8],
+        endian: Endian,
+    ) -> std::result::Result<(Self, usize), Self::Error> {
         let off = &mut 0;
-        let val: u32 = from.gread(off)?;
+        let val: u32 = from.gread_with(off, endian)?;
         let raw_encoding = ((val & 0xff000000) >> 24) as u8;
 
         let encoding = raw_encoding.try_into()?;
@@ -628,12 +640,12 @@ impl TryFrom<u8> for IntegerFlags {
     }
 }
 
-impl TryFromCtx<'_, ()> for FloatEncoding {
+impl TryFromCtx<'_, Endian> for FloatEncoding {
     type Error = Error;
 
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+    fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
         let off = &mut 0;
-        let val: u32 = from.gread(off)?;
+        let val: u32 = from.gread_with(off, endian)?;
         let raw_encoding = ((val & 0xff000000) >> 24) as u8;
 
         let float_type = raw_encoding.try_into()?;
@@ -932,22 +944,23 @@ impl CtfType {
     }
 }
 
-impl TryFromCtx<'_, TypeId> for CtfType {
+impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
     type Error = Error;
 
-    fn try_from_ctx(from: &[u8], id: TypeId) -> Result<(Self, usize)> {
+    fn try_from_ctx(from: &[u8], ctx: (TypeId, Endian)) -> Result<(Self, usize)> {
+        let (id, endian) = ctx;
         let offset = &mut 0;
 
-        let name_raw = from.gread(offset)?;
+        let name_raw = from.gread_with(offset, endian)?;
         let name = StrId::from_u32(name_raw)?;
 
-        let meta: CtfMetadata = from.gread(offset)?;
-        let size: u16 = from.gread(offset)?;
+        let meta: CtfMetadata = from.gread_with(offset, endian)?;
+        let size: u16 = from.gread_with(offset, endian)?;
 
         let ty = match meta.type_kind()? {
             TypeKind::Unknown => Self::Unknown { id },
             TypeKind::Integer => {
-                let encoding = from.gread(offset)?;
+                let encoding = from.gread_with(offset, endian)?;
                 Self::Integer {
                     id,
                     ty: CtfInteger {
@@ -958,7 +971,7 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 }
             }
             TypeKind::Float => {
-                let encoding = from.gread(offset)?;
+                let encoding = from.gread_with(offset, endian)?;
                 Self::Float {
                     id,
                     ty: CtfFloat {
@@ -976,13 +989,13 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 }
             }
             TypeKind::Array => {
-                let element_type_raw = from.gread(offset)?;
+                let element_type_raw = from.gread_with(offset, endian)?;
                 let element_type = TypeId::from_u16(element_type_raw)?;
 
-                let index_type_raw = from.gread(offset)?;
+                let index_type_raw = from.gread_with(offset, endian)?;
                 let index_type = TypeId::from_u16(index_type_raw)?;
 
-                let nelems = from.gread(offset)?;
+                let nelems = from.gread_with(offset, endian)?;
                 Self::Array {
                     id,
                     ty: CtfArray {
@@ -1000,7 +1013,7 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 let mut is_varargs = false;
 
                 for i in 0..vlen {
-                    let arg_raw = from.gread(offset)?;
+                    let arg_raw = from.gread_with(offset, endian)?;
 
                     // The final argument may a placeholder indicating varargs.
                     if i == vlen - 1 && arg_raw == VARARGS_ID {
@@ -1030,12 +1043,12 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 let mut members = Vec::new();
                 if size >= LARGE_THRESHOLD {
                     for _ in 0..vlen {
-                        let lmember: LargeCtfMember = from.gread(offset)?;
+                        let lmember: LargeCtfMember = from.gread_with(offset, endian)?;
                         members.push(lmember.into());
                     }
                 } else {
                     for _ in 0..vlen {
-                        let member = from.gread(offset)?;
+                        let member = from.gread_with(offset, endian)?;
                         members.push(member);
                     }
                 }
@@ -1053,12 +1066,12 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 let mut members = Vec::new();
                 if size >= LARGE_THRESHOLD {
                     for _ in 0..vlen {
-                        let lmember: LargeCtfMember = from.gread(offset)?;
+                        let lmember: LargeCtfMember = from.gread_with(offset, endian)?;
                         members.push(lmember.into());
                     }
                 } else {
                     for _ in 0..vlen {
-                        let member = from.gread(offset)?;
+                        let member = from.gread_with(offset, endian)?;
                         members.push(member);
                     }
                 }
@@ -1079,7 +1092,7 @@ impl TryFromCtx<'_, TypeId> for CtfType {
                 let vlen = meta.vlen();
                 let mut enumerators = Vec::new();
                 for _ in 0..vlen {
-                    let en = from.gread(offset)?;
+                    let en = from.gread_with(offset, endian)?;
                     enumerators.push(en);
                 }
                 Self::Enum {
@@ -1243,19 +1256,19 @@ impl CtfMember {
     }
 }
 
-impl TryFromCtx<'_, ()> for CtfMember {
+impl TryFromCtx<'_, Endian> for CtfMember {
     type Error = Error;
 
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+    fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let name_raw = from.gread(offset)?;
+        let name_raw = from.gread_with(offset, endian)?;
         let name = StrId::from_u32(name_raw)?;
 
-        let type_id_raw = from.gread(offset)?;
+        let type_id_raw = from.gread_with(offset, endian)?;
         let type_id = TypeId::from_u16(type_id_raw)?;
 
-        let offset_bits = from.gread::<u16>(offset)? as u64;
+        let offset_bits = from.gread_with::<u16>(offset, endian)? as u64;
 
         Ok((
             CtfMember {
@@ -1290,22 +1303,22 @@ impl From<LargeCtfMember> for CtfMember {
     }
 }
 
-impl TryFromCtx<'_, ()> for LargeCtfMember {
+impl TryFromCtx<'_, Endian> for LargeCtfMember {
     type Error = Error;
 
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+    fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let name_raw = from.gread(offset)?;
+        let name_raw = from.gread_with(offset, endian)?;
         let name = StrId::from_u32(name_raw)?;
 
-        let type_id_raw = from.gread(offset)?;
+        let type_id_raw = from.gread_with(offset, endian)?;
         let type_id = TypeId::from_u16(type_id_raw)?;
 
-        let _padding: u16 = from.gread(offset)?;
+        let _padding: u16 = from.gread_with(offset, endian)?;
 
-        let offset_hi: u32 = from.gread(offset)?;
-        let offset_lo: u32 = from.gread(offset)?;
+        let offset_hi: u32 = from.gread_with(offset, endian)?;
+        let offset_lo: u32 = from.gread_with(offset, endian)?;
 
         let offset_bits = (offset_hi as u64) << 32 | offset_lo as u64;
 
@@ -1326,20 +1339,20 @@ impl CtfEnumerator {
     }
 }
 
-impl TryFromCtx<'_, ()> for CtfEnumerator {
+impl TryFromCtx<'_, Endian> for CtfEnumerator {
     type Error = Error;
 
-    fn try_from_ctx(from: &'_ [u8], _ctx: ()) -> Result<(Self, usize)> {
+    fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let name_raw = from.gread(offset)?;
+        let name_raw = from.gread_with(offset, endian)?;
         let name = StrId::from_u32(name_raw)?;
 
         // CTF requires that enum values be 4 bytes, but we're going to work
         // around this by passing long values in the name. Parse the inline
         // value as an i32. Once all strings are parsed we will take a second
         // pass to update the values as needed.
-        let value: i32 = from.gread(offset)?;
+        let value: i32 = from.gread_with(offset, endian)?;
 
         Ok((
             CtfEnumerator {
