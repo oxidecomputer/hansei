@@ -1,7 +1,7 @@
 use crate::constants::*;
 use crate::{
-    CtfFlags, CtfHeader, CtfPreamble, CtfVersion, Endian, FloatEncoding, IntegerEncoding, StrId,
-    TypeId, TypeKind,
+    CtfFlags, CtfHeader, CtfPreamble, CtfVersion, FloatEncoding, IntegerEncoding, StrId, TypeId,
+    TypeKind,
 };
 
 use flate2::Compression;
@@ -9,7 +9,7 @@ use flate2::write::ZlibEncoder;
 use goblin::elf::Elf;
 use goblin::elf::section_header::SHN_UNDEF;
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
-use scroll::IOwrite;
+use scroll::{Endian, IOwrite};
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -118,7 +118,7 @@ impl<'a> CtfWriter<'a> {
             funcs: HashMap::new(),
             elf: opts.elf,
             label: opts.label,
-            endian: opts.endian.unwrap_or_default(),
+            endian: opts.endian.unwrap_or_default().into(),
             compress: opts.compress.unwrap_or(true), // Use compression by default.
         }
     }
@@ -187,7 +187,7 @@ impl<'a> CtfWriter<'a> {
     fn _generate_ctf(&mut self) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
 
-        let endian = self.endian.into();
+        let endian = self.endian;
 
         // Calculate type section size and write to string table
         let mut type_data = Vec::new();
@@ -336,7 +336,7 @@ impl<'a> CtfWriter<'a> {
         &mut self,
         buffer: &mut Vec<u8>,
         ctf_type: &CtfType,
-        endian: scroll::Endian,
+        endian: Endian,
     ) -> io::Result<()> {
         Self::write_type_impl(buffer, &mut self.strings, ctf_type, endian)
     }
@@ -345,7 +345,7 @@ impl<'a> CtfWriter<'a> {
         buffer: &mut Vec<u8>,
         strings: &mut StringTable,
         ctf_type: &CtfType,
-        endian: scroll::Endian,
+        endian: Endian,
     ) -> io::Result<()> {
         let info = ctf_type.type_info();
 
@@ -532,7 +532,7 @@ struct Opts<'a> {
     truncate_str_len: Option<usize>,
     replace_spaces: Option<&'static str>,
     label: Option<String>,
-    endian: Option<Endian>,
+    endian: Option<crate::Endian>,
     compress: Option<bool>,
 }
 
@@ -558,7 +558,7 @@ impl<'a> CtfWriterBuilder<'a> {
     }
 
     /// The endianness to use when writing the CTF file.
-    pub fn with_endianness(mut self, endian: Endian) -> Self {
+    pub fn with_endianness(mut self, endian: crate::Endian) -> Self {
         self.opts.endian = Some(endian);
         self
     }
