@@ -1153,6 +1153,62 @@ mod tests {
     }
 
     #[test]
+    fn test_write_be() {
+        let mut writer = CtfWriterBuilder::new()
+            .with_endianness(crate::Endian::Big)
+            .build();
+        writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
+
+        let bytes = writer.generate_ctf().unwrap();
+
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        let int = reader
+            .types()
+            .iter()
+            .find(|t| t.name(&reader) == "i32")
+            .unwrap();
+        assert_eq!(int.kind(), TypeKind::Integer);
+    }
+
+    #[test]
+    fn test_write_le() {
+        let mut writer = CtfWriterBuilder::new()
+            .with_endianness(crate::Endian::Little)
+            .build();
+        writer
+            .add_type(CtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new().signed(),
+                },
+            })
+            .unwrap();
+
+        let bytes = writer.generate_ctf().unwrap();
+
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        let int = reader
+            .types()
+            .iter()
+            .find(|t| t.name(&reader) == "i32")
+            .unwrap();
+        assert_eq!(int.kind(), TypeKind::Integer);
+    }
+
+    #[test]
     fn test_exhaust_type_ids() {
         let mut writer = CtfWriter::new();
         for _ in 0..MAX_TYPES {
