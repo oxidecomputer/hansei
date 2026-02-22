@@ -1,7 +1,7 @@
 use crate::constants::*;
 use crate::{
     CtfFlags, CtfHeader, CtfPreamble, CtfVersion, FloatEncoding, HEADER_SIZE, IntegerEncoding,
-    StrId, TypeId, TypeKind,
+    LARGE_THRESHOLD, StrId, TypeId, TypeKind,
 };
 
 use flate2::Compression;
@@ -733,6 +733,48 @@ impl CtfType {
         };
         members.iter().any(|m| m.offset_bits == 0)
     }
+
+    /// The size of this type when serialized into CTF.
+    fn encoded_len(&self) -> usize {
+        // The size of ctf_stype.
+        const STYPE_SIZE: usize = 8;
+
+        // The size of large ctf_type.
+        const LTYPE_SIZE: usize = 16;
+
+        match self {
+            Self::Struct { size, .. } | Self::Union { size, .. } => {
+                let base = if *size as u64 == CTF_LSIZE_SENT {
+                    LTYPE_SIZE
+                } else {
+                    STYPE_SIZE
+                };
+                let member_size = if *size >= LARGE_THRESHOLD as u32 {
+                    16
+                } else {
+                    8
+                };
+
+                base + self.vlen() as usize * member_size
+            }
+            Self::Function { .. } => {
+                let mut var = self.vlen() as usize * 2;
+                if !self.vlen().is_multiple_of(2) {
+                    var += 2;
+                }
+                STYPE_SIZE + var
+            }
+            Self::Enum { enumerators, .. } => STYPE_SIZE + enumerators.len() * 8,
+            Self::Array { .. } => STYPE_SIZE + 8,
+            Self::Integer { .. } | Self::Float { .. } => STYPE_SIZE + size_of::<IntegerEncoding>(),
+            Self::Pointer { .. }
+            | Self::Typedef { .. }
+            | Self::Const { .. }
+            | Self::Volatile { .. }
+            | Self::Restrict { .. }
+            | Self::Unknown => STYPE_SIZE,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1150,6 +1192,137 @@ mod tests {
 
         let info = u16::from_le_bytes([bytes[4], bytes[5]]);
         assert_eq!(info, CtfType::Unknown.type_info());
+    }
+
+    #[test]
+    fn test_encoded_size() {
+        for (ty, size) in [
+            (
+                CtfType::Integer {
+                    name: "int".to_string(),
+                    size: 4,
+                    encoding: IntegerEncoding {
+                        bits: 32,
+                        offset: 0,
+                        flags: IntegerFlags::new(),
+                    },
+                },
+                12,
+            ),
+            (
+                CtfType::Float {
+                    name: "float".to_string(),
+                    size: 4,
+                    encoding: FloatEncoding {
+                        bits: 32,
+                        offset: 0,
+                        float_type: FloatType::Single,
+                    },
+                },
+                12,
+            ),
+            (
+                CtfType::Const {
+                    name: "const".to_string(),
+                    target_type: TypeId::unknown(),
+                },
+                8,
+            ),
+            (
+                CtfType::Struct {
+                    name: "struct_even_vlen".to_string(),
+                    size: 4,
+                    members: vec![
+                        CtfMember {
+                            name: "first".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                        CtfMember {
+                            name: "second".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                    ],
+                },
+                24,
+            ),
+            (
+                CtfType::Union {
+                    name: "union_odd_vlen_padded".to_string(),
+                    size: 4,
+                    members: vec![
+                        CtfMember {
+                            name: "first".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                        CtfMember {
+                            name: "second".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                        CtfMember {
+                            name: "third".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                    ],
+                },
+                32,
+            ),
+            (
+                CtfType::Function {
+                    name: "func_single_arg".to_string(),
+                    return_type: TypeId::unknown(),
+                    args: vec![TypeId::unknown()],
+                    is_varargs: false,
+                },
+                12,
+            ),
+            (
+                CtfType::Function {
+                    name: "func_four_args_varargs".to_string(),
+                    return_type: TypeId::unknown(),
+                    args: vec![TypeId::unknown(); 4],
+                    is_varargs: true,
+                },
+                20,
+            ),
+            (
+                CtfType::Enum {
+                    name: "enum".to_string(),
+                    size: 4,
+                    enumerators: vec![
+                        CtfEnumerator {
+                            name: "FOO".to_string(),
+                            value: 1,
+                        },
+                        CtfEnumerator {
+                            name: "BAR".to_string(),
+                            value: 2,
+                        },
+                    ],
+                },
+                24,
+            ),
+            (
+                CtfType::Array {
+                    name: "array".to_string(),
+                    element_type: TypeId::unknown(),
+                    index_type: TypeId::unknown(),
+                    nelems: 16,
+                },
+                16,
+            ),
+        ] {
+            assert_eq!(
+                ty.encoded_len(),
+                size,
+                "unexpected encoded_len for type {}",
+                ty.name()
+            );
+        }
     }
 
     #[test]
