@@ -477,9 +477,15 @@ impl<'a> CtfWriter<'a> {
             } => {
                 let name_offset = strings.add_string(name);
 
-                buffer.gwrite_with(name_offset, offset, endian)?;
-                buffer.gwrite_with(info, offset, endian)?;
-                buffer.gwrite_with(*size as u16, offset, endian)?;
+                if *size > CTF_MAX_SIZE {
+                    buffer.gwrite_with(name_offset, offset, endian)?;
+                    buffer.gwrite_with(info, offset, endian)?;
+                    buffer.gwrite_with(CTF_LSIZE_SENT, offset, endian)?;
+                } else {
+                    buffer.gwrite_with(name_offset, offset, endian)?;
+                    buffer.gwrite_with(info, offset, endian)?;
+                    buffer.gwrite_with(*size as u16, offset, endian)?;
+                }
 
                 // Write members
                 for member in members {
@@ -500,9 +506,15 @@ impl<'a> CtfWriter<'a> {
             } => {
                 let name_offset = strings.add_string(name);
 
-                buffer.gwrite_with(name_offset, offset, endian)?;
-                buffer.gwrite_with(info, offset, endian)?;
-                buffer.gwrite_with(*size as u16, offset, endian)?;
+                if *size > CTF_MAX_SIZE {
+                    buffer.gwrite_with(name_offset, offset, endian)?;
+                    buffer.gwrite_with(info, offset, endian)?;
+                    buffer.gwrite_with(CTF_LSIZE_SENT, offset, endian)?;
+                } else {
+                    buffer.gwrite_with(name_offset, offset, endian)?;
+                    buffer.gwrite_with(info, offset, endian)?;
+                    buffer.gwrite_with(*size as u16, offset, endian)?;
+                }
 
                 // Write members
                 for member in members {
@@ -766,7 +778,7 @@ impl CtfType {
 
         match self {
             Self::Struct { size, .. } | Self::Union { size, .. } => {
-                let base = if *size == CTF_LSIZE_SENT as u64 {
+                let base = if *size > CTF_MAX_SIZE {
                     LTYPE_SIZE
                 } else {
                     STYPE_SIZE
@@ -1293,6 +1305,58 @@ mod tests {
                     ],
                 },
                 32,
+            ),
+            (
+                // This will use `ctf_stype` for the base type, and
+                // `ctf_lmember` for the members.
+                CtfType::Struct {
+                    name: "struct_over_lmember_size".to_string(),
+                    size: 10_000,
+                    members: vec![
+                        CtfMember {
+                            name: "first".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                        CtfMember {
+                            name: "second".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                        CtfMember {
+                            name: "third".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                    ],
+                },
+                56,
+            ),
+            (
+                // This will use `ctf_type` for the base type, and
+                // `ctf_lmember` for the members.
+                CtfType::Union {
+                    name: "union_over_max_size".to_string(),
+                    size: 0x1ffff,
+                    members: vec![
+                        CtfMember {
+                            name: "first".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                        CtfMember {
+                            name: "second".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                        CtfMember {
+                            name: "third".to_string(),
+                            offset_bits: 0,
+                            type_id: TypeId::unknown(),
+                        },
+                    ],
+                },
+                64,
             ),
             (
                 CtfType::Function {
