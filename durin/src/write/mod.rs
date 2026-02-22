@@ -766,7 +766,7 @@ impl CtfType {
 
         match self {
             Self::Struct { size, .. } | Self::Union { size, .. } => {
-                let base = if *size as u64 == CTF_LSIZE_SENT {
+                let base = if *size == CTF_LSIZE_SENT as u32 {
                     LTYPE_SIZE
                 } else {
                     STYPE_SIZE

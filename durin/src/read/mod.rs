@@ -1041,7 +1041,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
             TypeKind::Struct => {
                 let vlen = meta.vlen();
                 let mut members = Vec::new();
-                if size >= LARGE_THRESHOLD {
+                if size == CTF_LSIZE_SENT {
                     for _ in 0..vlen {
                         let lmember: LargeCtfMember = from.gread_with(offset, endian)?;
                         members.push(lmember.into());

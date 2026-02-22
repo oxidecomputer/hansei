@@ -24,7 +24,7 @@ pub mod constants {
     pub const CTF_MAX_VLEN: u16 = 0x3ff;
 
     pub const CTF_MAX_SIZE: u64 = 0xfffe;
-    pub const CTF_LSIZE_SENT: u64 = 0xffff;
+    pub const CTF_LSIZE_SENT: u16 = 0xffff;
     pub const CTF_MAX_LSIZE: u64 = u64::MAX;
 
     // CTF Integer Encoding Flags
