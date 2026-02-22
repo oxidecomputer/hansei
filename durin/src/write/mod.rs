@@ -478,9 +478,14 @@ impl<'a> CtfWriter<'a> {
                 let name_offset = strings.add_string(name);
 
                 if *size > CTF_MAX_SIZE {
+                    let sizehi: u32 = (size >> 32) as u32;
+                    let sizelo: u32 = *size as u32;
+
                     buffer.gwrite_with(name_offset, offset, endian)?;
                     buffer.gwrite_with(info, offset, endian)?;
                     buffer.gwrite_with(CTF_LSIZE_SENT, offset, endian)?;
+                    buffer.gwrite_with(sizehi, offset, endian)?;
+                    buffer.gwrite_with(sizelo, offset, endian)?;
                 } else {
                     buffer.gwrite_with(name_offset, offset, endian)?;
                     buffer.gwrite_with(info, offset, endian)?;
@@ -492,10 +497,14 @@ impl<'a> CtfWriter<'a> {
                     let member_name_offset = strings.add_string(&member.name);
                     buffer.gwrite_with(member_name_offset, offset, endian)?;
                     buffer.gwrite_with(member.type_id.get(), offset, endian)?;
-                    if *size < 8192 {
-                        buffer.gwrite_with(member.offset_bits as u16, offset, endian)?;
+                    if *size >= 8192 {
+                        let offsethi: u32 = (member.offset_bits >> 32) as u32;
+                        let offsetlo: u32 = member.offset_bits as u32;
+                        buffer.gwrite_with(0u16, offset, endian)?;
+                        buffer.gwrite_with(offsethi, offset, endian)?;
+                        buffer.gwrite_with(offsetlo, offset, endian)?;
                     } else {
-                        todo!("ctlm_offsethi/lo");
+                        buffer.gwrite_with(member.offset_bits as u16, offset, endian)?;
                     }
                 }
             }
@@ -507,9 +516,14 @@ impl<'a> CtfWriter<'a> {
                 let name_offset = strings.add_string(name);
 
                 if *size > CTF_MAX_SIZE {
+                    let sizehi: u32 = (size >> 32) as u32;
+                    let sizelo: u32 = *size as u32;
+
                     buffer.gwrite_with(name_offset, offset, endian)?;
                     buffer.gwrite_with(info, offset, endian)?;
                     buffer.gwrite_with(CTF_LSIZE_SENT, offset, endian)?;
+                    buffer.gwrite_with(sizehi, offset, endian)?;
+                    buffer.gwrite_with(sizelo, offset, endian)?;
                 } else {
                     buffer.gwrite_with(name_offset, offset, endian)?;
                     buffer.gwrite_with(info, offset, endian)?;
@@ -521,10 +535,14 @@ impl<'a> CtfWriter<'a> {
                     let member_name_offset = strings.add_string(&member.name);
                     buffer.gwrite_with(member_name_offset, offset, endian)?;
                     buffer.gwrite_with(member.type_id.get(), offset, endian)?;
-                    if *size < 8192 {
-                        buffer.gwrite_with(member.offset_bits as u16, offset, endian)?;
+                    if *size >= 8192 {
+                        let offsethi: u32 = (member.offset_bits >> 32) as u32;
+                        let offsetlo: u32 = member.offset_bits as u32;
+                        buffer.gwrite_with(0u16, offset, endian)?;
+                        buffer.gwrite_with(offsethi, offset, endian)?;
+                        buffer.gwrite_with(offsetlo, offset, endian)?;
                     } else {
-                        todo!("ctlm_offsethi/lo");
+                        buffer.gwrite_with(member.offset_bits as u16, offset, endian)?;
                     }
                 }
             }
