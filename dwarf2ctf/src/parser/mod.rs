@@ -1880,7 +1880,7 @@ fn stub_to_ctf_type(
 
             Ok(CtfType::Struct {
                 name: name.clone(),
-                size: *byte_size,
+                size: *byte_size as u64,
                 members: ctf_members,
             })
         }
@@ -1904,7 +1904,7 @@ fn stub_to_ctf_type(
 
             Ok(CtfType::Union {
                 name: name.clone(),
-                size: *byte_size,
+                size: *byte_size as u64,
                 members: ctf_members,
             })
         }
@@ -1920,7 +1920,7 @@ fn stub_to_ctf_type(
                 let bit_size = *byte_size * 8;
                 return Ok(CtfType::Integer {
                     name: name.clone(),
-                    size: *byte_size,
+                    size: *byte_size as u64,
                     encoding: IntegerEncoding {
                         bits: bit_size as u16,
                         offset: 0,
@@ -1939,7 +1939,7 @@ fn stub_to_ctf_type(
 
             Ok(CtfType::Enum {
                 name: name.clone(),
-                size: *byte_size,
+                size: *byte_size as u64,
                 enumerators: ctf_enumerators,
             })
         }
@@ -2051,7 +2051,7 @@ fn build_variant_part_members(
             infer_discriminant_size(variant_part, &deps.stubs, header_offset, parent_struct_size);
         let enum_type = CtfType::Enum {
             name: enum_name,
-            size: discr_size,
+            size: discr_size as u64,
             enumerators,
         };
         Some(writer.add_type(enum_type)?)
@@ -2114,7 +2114,7 @@ fn build_variant_part_members(
 
             let variant_struct = CtfType::Struct {
                 name: variant_struct_name,
-                size: variant_size,
+                size: variant_size as u64,
                 members: adjusted_members,
             };
             writer.add_type(variant_struct)?
@@ -2136,7 +2136,7 @@ fn build_variant_part_members(
 
     let variants_union = CtfType::Union {
         name: variants_union_name.clone(),
-        size: max_variant_size,
+        size: max_variant_size as u64,
         members: union_members,
     };
     let variants_union_id = writer.add_type(variants_union)?;
@@ -2171,7 +2171,7 @@ fn build_variant_part_members(
 
         let tagged_union = CtfType::Union {
             name: tagged_union_name,
-            size: max_variant_size,
+            size: max_variant_size as u64,
             members: tagged_members,
         };
         let tagged_union_id = writer.add_type(tagged_union)?;
@@ -2394,7 +2394,7 @@ fn build_base_type(name: &str, byte_size: u32, encoding: gimli::DwAte) -> CtfTyp
     match encoding {
         gimli::DW_ATE_signed => CtfType::Integer {
             name: name.to_string(),
-            size: byte_size,
+            size: byte_size as u64,
             encoding: IntegerEncoding {
                 offset: 0,
                 bits: bit_size as u16,
@@ -2403,7 +2403,7 @@ fn build_base_type(name: &str, byte_size: u32, encoding: gimli::DwAte) -> CtfTyp
         },
         gimli::DW_ATE_unsigned => CtfType::Integer {
             name: name.to_string(),
-            size: byte_size,
+            size: byte_size as u64,
             encoding: IntegerEncoding {
                 offset: 0,
                 bits: bit_size as u16,
@@ -2412,7 +2412,7 @@ fn build_base_type(name: &str, byte_size: u32, encoding: gimli::DwAte) -> CtfTyp
         },
         gimli::DW_ATE_boolean => CtfType::Integer {
             name: name.to_string(),
-            size: byte_size,
+            size: byte_size as u64,
             encoding: IntegerEncoding {
                 offset: 0,
                 bits: bit_size as u16,
@@ -2421,7 +2421,7 @@ fn build_base_type(name: &str, byte_size: u32, encoding: gimli::DwAte) -> CtfTyp
         },
         gimli::DW_ATE_signed_char => CtfType::Integer {
             name: name.to_string(),
-            size: byte_size,
+            size: byte_size as u64,
             encoding: IntegerEncoding {
                 offset: 0,
                 bits: bit_size as u16,
@@ -2430,7 +2430,7 @@ fn build_base_type(name: &str, byte_size: u32, encoding: gimli::DwAte) -> CtfTyp
         },
         gimli::DW_ATE_unsigned_char => CtfType::Integer {
             name: name.to_string(),
-            size: byte_size,
+            size: byte_size as u64,
             encoding: IntegerEncoding {
                 offset: 0,
                 bits: bit_size as u16,
@@ -2463,7 +2463,7 @@ fn build_base_type(name: &str, byte_size: u32, encoding: gimli::DwAte) -> CtfTyp
             };
             CtfType::Float {
                 name: name.to_string(),
-                size: byte_size,
+                size: byte_size as u64,
                 encoding,
             }
         }
@@ -2471,7 +2471,7 @@ fn build_base_type(name: &str, byte_size: u32, encoding: gimli::DwAte) -> CtfTyp
             // Unknown encoding - treat as unsigned integer
             CtfType::Integer {
                 name: name.to_string(),
-                size: byte_size,
+                size: byte_size as u64,
                 encoding: IntegerEncoding {
                     offset: 0,
                     bits: bit_size as u16,
