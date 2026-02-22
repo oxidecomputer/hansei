@@ -621,12 +621,12 @@ pub struct FuncInfo {
 pub enum CtfType {
     Integer {
         name: String,
-        size: u32,
+        size: u64,
         encoding: IntegerEncoding,
     },
     Float {
         name: String,
-        size: u32,
+        size: u64,
         encoding: FloatEncoding,
     },
     Pointer {
@@ -657,17 +657,17 @@ pub enum CtfType {
     },
     Struct {
         name: String,
-        size: u32,
+        size: u64,
         members: Vec<CtfMember>,
     },
     Union {
         name: String,
-        size: u32,
+        size: u64,
         members: Vec<CtfMember>,
     },
     Enum {
         name: String,
-        size: u32,
+        size: u64,
         enumerators: Vec<CtfEnumerator>,
     },
     Function {
@@ -766,12 +766,12 @@ impl CtfType {
 
         match self {
             Self::Struct { size, .. } | Self::Union { size, .. } => {
-                let base = if *size == CTF_LSIZE_SENT as u32 {
+                let base = if *size == CTF_LSIZE_SENT as u64 {
                     LTYPE_SIZE
                 } else {
                     STYPE_SIZE
                 };
-                let member_size = if *size >= LARGE_THRESHOLD as u32 {
+                let member_size = if *size >= LARGE_THRESHOLD as u64 {
                     16
                 } else {
                     8
