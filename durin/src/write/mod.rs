@@ -84,12 +84,13 @@ impl StringTable {
 
 pub struct CtfWriter<'a> {
     pub types: Vec<CtfType>,
-    pub strings: StringTable,
     pub funcs: HashMap<String, FuncInfo>,
     elf: Option<&'a Elf<'a>>,
     label: Option<String>,
     endian: Endian,
     compress: bool,
+    truncate_str_len: Option<usize>,
+    replace_spaces: Option<&'static str>,
 }
 
 impl Default for CtfWriter<'_> {
@@ -115,12 +116,13 @@ impl<'a> CtfWriter<'a> {
                     encoding: IntegerEncoding::default(),
                 },
             ],
-            strings: StringTable::new(opts.truncate_str_len, opts.replace_spaces),
             funcs: HashMap::new(),
             elf: opts.elf,
             label: opts.label,
             endian: opts.endian.unwrap_or_default().into(),
             compress: opts.compress.unwrap_or(true), // Use compression by default.
+            truncate_str_len: opts.truncate_str_len,
+            replace_spaces: opts.replace_spaces,
         }
     }
 
@@ -187,6 +189,7 @@ impl<'a> CtfWriter<'a> {
 
     fn _generate_ctf(&mut self) -> scroll::Result<Vec<u8>> {
         let mut out = vec![0u8; HEADER_SIZE];
+        let mut strings = StringTable::new(self.truncate_str_len, self.replace_spaces);
 
         let endian = self.endian;
 
@@ -195,21 +198,20 @@ impl<'a> CtfWriter<'a> {
         // trivial to calculate and gets us close enough to minimize
         // reallocations when appending.
         let mut type_data = Vec::with_capacity(self.types.len() * 8);
-        let types = self.types.clone();
 
         // Skip the initial placeholder item.
         let ty_offset = &mut 0;
-        for ctf_type in types.iter().skip(1) {
+        for ctf_type in self.types.iter().skip(1) {
             // Ensure the buffer has space for the type.
             type_data.resize(type_data.len() + ctf_type.encoded_len(), 0);
 
-            self.write_type(&mut type_data, ty_offset, ctf_type, endian)?;
+            self.write_type(&mut type_data, ty_offset, &mut strings, ctf_type, endian)?;
         }
 
         let mut lbl_data = vec![0u8; 16];
         let lbl_offset = &mut 0;
         if let Some(label) = &self.label {
-            let label_name_off = self.strings.add_string(label);
+            let label_name_off = strings.add_string(label);
             let last_type_idx = (self.types.len() - 1) as u32;
             lbl_data.gwrite_with(label_name_off, lbl_offset, endian)?;
             lbl_data.gwrite_with(last_type_idx, lbl_offset, endian)?;
@@ -295,7 +297,7 @@ impl<'a> CtfWriter<'a> {
 
         let typeoff = func_data_end + func_padding;
         let stroff = typeoff + type_data.len() as u32;
-        let strlen = self.strings.data().len() as u32;
+        let strlen = strings.data().len() as u32;
 
         let preamble = CtfPreamble {
             vers: CtfVersion::V2,
@@ -329,7 +331,7 @@ impl<'a> CtfWriter<'a> {
             encoder.write_all(&func_data)?;
             encoder.write_all(&vec![0u8; func_padding as usize])?;
             encoder.write_all(&type_data)?;
-            encoder.write_all(self.strings.data())?;
+            encoder.write_all(strings.data())?;
             encoder.finish()?;
         } else {
             out.extend_from_slice(&lbl_data);
@@ -337,7 +339,7 @@ impl<'a> CtfWriter<'a> {
             out.extend_from_slice(&func_data);
             out.extend_from_slice(&vec![0u8; func_padding as usize]);
             out.extend_from_slice(&type_data);
-            out.extend_from_slice(self.strings.data());
+            out.extend_from_slice(strings.data());
         }
 
         out.shrink_to_fit();
@@ -346,13 +348,14 @@ impl<'a> CtfWriter<'a> {
     }
 
     fn write_type(
-        &mut self,
+        &self,
         buffer: &mut [u8],
         offset: &mut usize,
+        strings: &mut StringTable,
         ctf_type: &CtfType,
         endian: Endian,
     ) -> scroll::Result<()> {
-        Self::write_type_impl(buffer, offset, &mut self.strings, ctf_type, endian)
+        Self::write_type_impl(buffer, offset, strings, ctf_type, endian)
     }
 
     fn write_type_impl(
