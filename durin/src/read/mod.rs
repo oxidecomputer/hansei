@@ -267,7 +267,7 @@ fn validate_labels(
     strings: &UncheckedStringTable,
 ) -> Result<()> {
     for label in labels {
-        strings.check(label.label)?;
+        strings.check(label.name)?;
         if let Some(ty) = label.typeidx {
             types.check(ty)?;
         }
@@ -491,14 +491,14 @@ impl TryFromCtx<'_, Endian> for CtfHeader {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CtfLabel {
     /// Ref to name of label.
-    label: StrId,
+    pub name: StrId,
     /// Last type associated with this label.
-    typeidx: Option<TypeId>,
+    pub typeidx: Option<TypeId>,
 }
 
 impl CtfLabel {
-    pub fn label<'a>(&self, ctf: &'a CtfReader) -> &'a str {
-        ctf.str(self.label)
+    pub fn name<'a>(&self, ctf: &'a CtfReader) -> &'a str {
+        ctf.str(self.name)
     }
 }
 
@@ -508,8 +508,8 @@ impl TryFromCtx<'_, Endian> for CtfLabel {
     fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
         let offset = &mut 0;
 
-        let label_raw = from.gread_with(offset, endian)?;
-        let label = StrId::from_u32(label_raw)?;
+        let name_raw = from.gread_with(offset, endian)?;
+        let name = StrId::from_u32(name_raw)?;
         let idx_int: u32 = from.gread_with(offset, endian)?;
         let typeidx = if idx_int == VARARGS_ID as u32 {
             None
@@ -518,7 +518,7 @@ impl TryFromCtx<'_, Endian> for CtfLabel {
             Some(ty)
         };
 
-        Ok((Self { label, typeidx }, *offset))
+        Ok((Self { name, typeidx }, *offset))
     }
 }
 
