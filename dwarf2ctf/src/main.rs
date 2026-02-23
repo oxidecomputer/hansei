@@ -281,7 +281,7 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| args.elf.display().to_string());
 
     let mut builder = CtfWriterBuilder::new()
-        .with_label(label)
+        .with_labels(vec![label])
         .with_truncate_str_len(1024)
         .with_replace_spaces("_");
     if args.bin_out.is_some() {
