@@ -1248,6 +1248,54 @@ mod tests {
     }
 
     #[test]
+    fn test_write_large_struct() {
+        let ty = CtfType::Struct {
+            name: "very_large_struct".to_string(),
+            size: CTF_MAX_SIZE + 1,
+            members: vec![CtfMember {
+                name: "first".to_string(),
+                offset_bits: 0,
+                type_id: TypeId::void(),
+            }],
+        };
+        let mut writer = CtfWriter::new();
+        writer.add_type(ty).unwrap();
+        let bytes = writer.generate_ctf().unwrap();
+
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        let ty_read = reader
+            .types()
+            .iter()
+            .find(|t| t.name(&reader) == "very_large_struct")
+            .unwrap();
+        assert_eq!(reader.ty_size(ty_read.id()), CTF_MAX_SIZE + 1);
+    }
+
+    #[test]
+    fn test_write_large_member_struct() {
+        let ty = CtfType::Struct {
+            name: "somewhat_large_struct".to_string(),
+            size: LARGE_THRESHOLD as u64 + 1,
+            members: vec![CtfMember {
+                name: "first".to_string(),
+                offset_bits: 0,
+                type_id: TypeId::void(),
+            }],
+        };
+        let mut writer = CtfWriter::new();
+        writer.add_type(ty).unwrap();
+        let bytes = writer.generate_ctf().unwrap();
+
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        let ty_read = reader
+            .types()
+            .iter()
+            .find(|t| t.name(&reader) == "somewhat_large_struct")
+            .unwrap();
+        assert_eq!(reader.ty_size(ty_read.id()), LARGE_THRESHOLD as u64 + 1);
+    }
+
+    #[test]
     fn test_encoded_size() {
         for (ty, size) in [
             (
