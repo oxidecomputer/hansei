@@ -500,7 +500,7 @@ impl<'a> CtfWriter<'a> {
                     if *size >= 8192 {
                         let offsethi: u32 = (member.offset_bits >> 32) as u32;
                         let offsetlo: u32 = member.offset_bits as u32;
-                        buffer.gwrite_with(0u16, offset, endian)?;
+                        buffer.gwrite_with(0u16, offset, endian)?; // Padding.
                         buffer.gwrite_with(offsethi, offset, endian)?;
                         buffer.gwrite_with(offsetlo, offset, endian)?;
                     } else {
@@ -538,7 +538,7 @@ impl<'a> CtfWriter<'a> {
                     if *size >= 8192 {
                         let offsethi: u32 = (member.offset_bits >> 32) as u32;
                         let offsetlo: u32 = member.offset_bits as u32;
-                        buffer.gwrite_with(0u16, offset, endian)?;
+                        buffer.gwrite_with(0u16, offset, endian)?; // Padding.
                         buffer.gwrite_with(offsethi, offset, endian)?;
                         buffer.gwrite_with(offsetlo, offset, endian)?;
                     } else {
