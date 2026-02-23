@@ -271,7 +271,6 @@ impl<'a> CtfWriter<'a> {
                         };
 
                         let vlen = func_info.args.len() as u16;
-                        eprintln!("Argument count for {symbol_name}: {vlen}");
                         let info = ctf_type_info(CTF_K_FUNCTION, false, vlen);
 
                         let func_len = 4 + 2 * vlen as usize;
