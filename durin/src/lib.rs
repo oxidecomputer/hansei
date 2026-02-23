@@ -753,7 +753,7 @@ mod tests {
     #[test]
     fn round_trip_with_label() {
         let mut writer = CtfWriterBuilder::new()
-            .with_label("test_binary".to_string())
+            .with_labels(vec!["test_binary".to_string()])
             .build();
 
         // Add a simple type

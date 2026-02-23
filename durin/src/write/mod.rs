@@ -85,7 +85,7 @@ pub struct CtfWriter<'a> {
     pub types: Vec<CtfType>,
     pub funcs: HashMap<String, FuncInfo>,
     elf: Option<&'a Elf<'a>>,
-    label: Option<String>,
+    labels: Vec<String>,
     endian: Endian,
     compress: bool,
     truncate_str_len: Option<usize>,
@@ -117,7 +117,7 @@ impl<'a> CtfWriter<'a> {
             ],
             funcs: HashMap::new(),
             elf: opts.elf,
-            label: opts.label,
+            labels: opts.labels,
             endian: opts.endian.unwrap_or_default().into(),
             compress: opts.compress.unwrap_or(true), // Use compression by default.
             truncate_str_len: opts.truncate_str_len,
@@ -207,9 +207,9 @@ impl<'a> CtfWriter<'a> {
             self.write_type(&mut type_data, ty_offset, &mut strings, ctf_type, endian)?;
         }
 
-        let mut lbl_data = vec![0u8; 16];
+        let mut lbl_data = vec![0u8; 16 * self.labels.len()];
         let lbl_offset = &mut 0;
-        if let Some(label) = &self.label {
+        for label in &self.labels {
             let label_name_off = strings.add_string(label);
             let last_type_idx = (self.types.len() - 1) as u32;
             lbl_data.gwrite_with(label_name_off, lbl_offset, endian)?;
@@ -573,7 +573,7 @@ struct Opts<'a> {
     elf: Option<&'a Elf<'a>>,
     truncate_str_len: Option<usize>,
     replace_spaces: Option<&'static str>,
-    label: Option<String>,
+    labels: Vec<String>,
     endian: Option<crate::Endian>,
     compress: Option<bool>,
 }
@@ -621,9 +621,9 @@ impl<'a> CtfWriterBuilder<'a> {
         self
     }
 
-    /// The label to apply to the CTF file.
-    pub fn with_label(mut self, label: String) -> Self {
-        self.opts.label = Some(label);
+    /// The label(s) to apply to the CTF file.
+    pub fn with_labels(mut self, labels: Vec<String>) -> Self {
+        self.opts.labels = labels;
         self
     }
 
@@ -1242,15 +1242,15 @@ mod tests {
     }
 
     #[test]
-    fn test_write_label() {
+    fn test_write_labels() {
         let mut writer = CtfWriterBuilder::new()
-            .with_label("foobar".to_string())
+            .with_labels(vec!["foobar".to_string(), "qux".to_string()])
             .build();
         let bytes = writer.generate_ctf().unwrap();
 
         let reader = crate::read::CtfReader::load(&bytes).unwrap();
-        let label = reader.labels[0];
-        assert_eq!(label.name(&reader), "foobar");
+        assert_eq!(reader.labels[0].name(&reader), "foobar");
+        assert_eq!(reader.labels[1].name(&reader), "qux");
     }
 
     #[test]
