@@ -773,7 +773,7 @@ mod tests {
 
         // Verify label was preserved
         assert!(!reader.labels.is_empty());
-        assert_eq!(reader.labels[0].label(&reader), "test_binary");
+        assert_eq!(reader.labels[0].name(&reader), "test_binary");
     }
 
     #[test]
