@@ -333,7 +333,7 @@ mod testhelper {
 mod tests {
     use super::*;
     use crate::read::CtfReader;
-    use crate::write::{CtfEnumerator, CtfMember, CtfType, CtfWriter, CtfWriterBuilder};
+    use crate::write::{CtfEnumerator, CtfMember, CtfType, CtfWriter};
 
     /// Test helper to create CTF data and parse it back.
     fn round_trip_ctf(writer: &mut CtfWriter) -> CtfReader {
@@ -752,10 +752,9 @@ mod tests {
 
     #[test]
     fn round_trip_with_label() {
-        let mut writer = CtfWriterBuilder::new()
-            .with_labels(vec!["test_binary".to_string()])
-            .build();
+        let mut writer = CtfWriter::new();
 
+        writer.add_label("test_binary".to_string());
         // Add a simple type
         writer
             .add_type(CtfType::Integer {
