@@ -26,7 +26,6 @@ fn ctf_type_info(kind: u8, is_root: bool, vlen: u16) -> u16 {
     ((kind as u16) << 11) | ((if is_root { 1 } else { 0 }) << 10) | (vlen & CTF_MAX_VLEN)
 }
 
-// String table builder
 pub struct StringTable {
     strings: Vec<u8>,
     offsets: HashMap<String, u32>,
@@ -261,7 +260,6 @@ impl<'a> CtfWriter<'a> {
                         func_data.gwrite_with(info, func_offset, endian)?;
                         func_data.gwrite_with(func_info.return_type.get(), func_offset, endian)?;
 
-                        // Write argument types
                         for &arg in &func_info.args {
                             func_data.gwrite_with(arg.get(), func_offset, endian)?;
                         }
@@ -440,12 +438,10 @@ impl<'a> CtfWriter<'a> {
                 buffer.gwrite_with(info, offset, endian)?;
                 buffer.gwrite_with(return_type.get(), offset, endian)?;
 
-                // Write argument types
                 for arg in args {
                     buffer.gwrite_with(arg.get(), offset, endian)?;
                 }
 
-                // Write varargs marker if needed
                 if *is_varargs {
                     buffer.gwrite_with(0u16, offset, endian)?;
                 }
@@ -492,7 +488,6 @@ impl<'a> CtfWriter<'a> {
                     buffer.gwrite_with(*size as u16, offset, endian)?;
                 }
 
-                // Write members
                 for member in members {
                     let member_name_offset = strings.add_string(&member.name);
                     buffer.gwrite_with(member_name_offset, offset, endian)?;
@@ -530,7 +525,6 @@ impl<'a> CtfWriter<'a> {
                     buffer.gwrite_with(*size as u16, offset, endian)?;
                 }
 
-                // Write members
                 for member in members {
                     let member_name_offset = strings.add_string(&member.name);
                     buffer.gwrite_with(member_name_offset, offset, endian)?;
