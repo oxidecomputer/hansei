@@ -445,6 +445,13 @@ impl<'a> CtfWriter<'a> {
                 buffer.gwrite_with(info, offset, endian)?;
                 buffer.gwrite_with(target_type.get(), offset, endian)?;
             }
+            CtfType::Forward { name } => {
+                let name_offset = strings.add_string(name);
+
+                buffer.gwrite_with(name_offset, offset, endian)?;
+                buffer.gwrite_with(info, offset, endian)?;
+                buffer.gwrite_with(0u16, offset, endian)?;
+            }
             CtfType::Function {
                 name,
                 return_type,
@@ -685,6 +692,9 @@ pub enum CtfType {
         name: String,
         target_type: TypeId,
     },
+    Forward {
+        name: String,
+    },
     Array {
         name: String,
         element_type: TypeId,
@@ -737,6 +747,7 @@ impl CtfType {
             Self::Const { name, .. } => name,
             Self::Volatile { name, .. } => name,
             Self::Restrict { name, .. } => name,
+            Self::Forward { name, .. } => name,
             Self::Struct { name, .. } => name,
             Self::Union { name, .. } => name,
             Self::Enum { name, .. } => name,
@@ -756,6 +767,7 @@ impl CtfType {
             Self::Const { .. } => TypeKind::Const,
             Self::Volatile { .. } => TypeKind::Volatile,
             Self::Restrict { .. } => TypeKind::Restrict,
+            Self::Forward { .. } => TypeKind::Forward,
             Self::Struct { .. } => TypeKind::Struct,
             Self::Union { .. } => TypeKind::Union,
             Self::Enum { .. } => TypeKind::Enum,
@@ -830,6 +842,7 @@ impl CtfType {
             | Self::Const { .. }
             | Self::Volatile { .. }
             | Self::Restrict { .. }
+            | Self::Forward { .. }
             | Self::Unknown => STYPE_SIZE,
         }
     }
@@ -1080,6 +1093,20 @@ mod tests {
 
         let nelems = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
         assert_eq!(nelems, 10);
+    }
+
+    #[test]
+    fn test_write_forward() {
+        let struct_type = CtfType::Forward {
+            name: "fwd".to_string(),
+        };
+        let bytes = write_type(&struct_type);
+
+        // Struct header: name(4) + info(2) + size(2) = 8 bytes
+        assert_eq!(bytes.len(), 8);
+
+        let info = u16::from_le_bytes([bytes[4], bytes[5]]);
+        assert_eq!(info, struct_type.type_info());
     }
 
     #[test]
