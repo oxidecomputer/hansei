@@ -572,7 +572,7 @@ impl TypeTable {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 struct CtfMetadata(u16);
 
 impl CtfMetadata {
@@ -580,10 +580,9 @@ impl CtfMetadata {
         ((self.0 & 0xf800) >> 11).try_into()
     }
 
-    // TODO use this?
-    // pub fn is_root(&self) -> bool {
-    //     (self.0 & 0x0400) >> 10 == 1
-    // }
+    pub fn is_root(&self) -> bool {
+        (self.0 & 0x0400) >> 10 == 1
+    }
 
     pub fn vlen(&self) -> u16 {
         self.0 & CTF_MAX_VLEN
@@ -599,6 +598,17 @@ impl TryFromCtx<'_, Endian> for CtfMetadata {
         let raw = from.gread_with(offset, endian)?;
 
         Ok((CtfMetadata(raw), *offset))
+    }
+}
+
+impl fmt::Debug for CtfMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CtfMetadata")
+            .field("inner", &self.0)
+            .field("type_kind", &self.type_kind())
+            .field("vlen", &self.vlen())
+            .field("is_root", &self.is_root())
+            .finish()
     }
 }
 
