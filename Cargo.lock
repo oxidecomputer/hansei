@@ -253,10 +253,8 @@ name = "durin"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "gimli",
  "goblin",
  "scroll",
- "scroll_derive",
  "thiserror",
 ]
 
