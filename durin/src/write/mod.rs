@@ -84,8 +84,8 @@ impl StringTable {
 pub struct CtfWriter<'a> {
     pub types: Vec<CtfType>,
     pub funcs: HashMap<String, FuncInfo>,
-    elf: Option<&'a Elf<'a>>,
     labels: Vec<String>,
+    elf: Option<&'a Elf<'a>>,
     endian: Endian,
     compress: bool,
     truncate_str_len: Option<usize>,
@@ -116,8 +116,8 @@ impl<'a> CtfWriter<'a> {
                 },
             ],
             funcs: HashMap::new(),
+            labels: Vec::new(),
             elf: opts.elf,
-            labels: opts.labels,
             endian: opts.endian.unwrap_or_default().into(),
             compress: opts.compress.unwrap_or(true), // Use compression by default.
             truncate_str_len: opts.truncate_str_len,
@@ -142,6 +142,11 @@ impl<'a> CtfWriter<'a> {
     /// constructing the `CtfWriter`.
     pub fn add_func(&mut self, name: String, func: FuncInfo) {
         self.funcs.insert(name, func);
+    }
+
+    /// Add a label to the writer.
+    pub fn add_label(&mut self, name: String) {
+        self.labels.push(name);
     }
 
     /// Reserve a type ID by adding a placeholder. Returns the reserved ID.
@@ -573,7 +578,6 @@ struct Opts<'a> {
     elf: Option<&'a Elf<'a>>,
     truncate_str_len: Option<usize>,
     replace_spaces: Option<&'static str>,
-    labels: Vec<String>,
     endian: Option<crate::Endian>,
     compress: Option<bool>,
 }
@@ -618,12 +622,6 @@ impl<'a> CtfWriterBuilder<'a> {
     /// space.
     pub fn with_replace_spaces(mut self, replace: &'static str) -> Self {
         self.opts.replace_spaces = Some(replace);
-        self
-    }
-
-    /// The label(s) to apply to the CTF file.
-    pub fn with_labels(mut self, labels: Vec<String>) -> Self {
-        self.opts.labels = labels;
         self
     }
 
@@ -1243,9 +1241,9 @@ mod tests {
 
     #[test]
     fn test_write_labels() {
-        let mut writer = CtfWriterBuilder::new()
-            .with_labels(vec!["foobar".to_string(), "qux".to_string()])
-            .build();
+        let mut writer = CtfWriter::new();
+        writer.add_label("foobar".to_string());
+        writer.add_label("qux".to_string());
         let bytes = writer.generate_ctf().unwrap();
 
         let reader = crate::read::CtfReader::load(&bytes).unwrap();
