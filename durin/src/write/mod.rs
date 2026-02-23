@@ -26,7 +26,7 @@ fn ctf_type_info(kind: u8, is_root: bool, vlen: u16) -> u16 {
     ((kind as u16) << 11) | ((if is_root { 1 } else { 0 }) << 10) | (vlen & CTF_MAX_VLEN)
 }
 
-pub struct StringTable {
+pub(crate) struct StringTable {
     strings: Vec<u8>,
     offsets: HashMap<String, u32>,
     truncate_len: Option<usize>,
