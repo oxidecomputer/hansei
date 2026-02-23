@@ -1288,8 +1288,8 @@ mod tests {
         let bytes = writer.generate_ctf().unwrap();
 
         let reader = crate::read::CtfReader::load(&bytes).unwrap();
-        assert_eq!(reader.labels[0].name(&reader), "foobar");
-        assert_eq!(reader.labels[1].name(&reader), "qux");
+        assert_eq!(reader.labels()[0].name(&reader), "foobar");
+        assert_eq!(reader.labels()[1].name(&reader), "qux");
     }
 
     #[test]
@@ -1609,7 +1609,7 @@ mod tests {
 
         let bytes = writer.generate_ctf().unwrap();
         let reader = crate::read::CtfReader::load(&bytes).unwrap();
-        assert!(reader.preamble.flags.is_compressed());
+        assert!(reader.preamble().flags.is_compressed());
     }
 
     #[test]
@@ -1629,7 +1629,7 @@ mod tests {
 
         let bytes = writer.generate_ctf().unwrap();
         let reader = crate::read::CtfReader::load(&bytes).unwrap();
-        assert!(!reader.preamble.flags.is_compressed());
+        assert!(!reader.preamble().flags.is_compressed());
     }
 
     #[test]
