@@ -143,7 +143,7 @@ impl CtfReader {
 
     /// Return the size of bytes of the type by id, following referenced
     /// types as needed.
-    pub fn ty_size(&self, id: TypeId) -> u16 {
+    pub fn ty_size(&self, id: TypeId) -> u64 {
         match self.ty(id) {
             CtfType::Unknown { .. } => 0,
             CtfType::Integer {
@@ -165,7 +165,7 @@ impl CtfReader {
                 ..
             } => {
                 let elem_size = self.ty_size(*element_type);
-                elem_size * *nelems as u16
+                elem_size * *nelems as u64
             }
             CtfType::Function { .. } => 8,
             CtfType::Struct {
@@ -886,7 +886,7 @@ impl CtfType {
 
     /// Return the size of bytes of the type by id, following referenced
     /// types as needed.
-    pub fn size(&self, ctf: &CtfReader) -> u16 {
+    pub fn size(&self, ctf: &CtfReader) -> u64 {
         match self {
             CtfType::Unknown { .. } => 0,
             CtfType::Integer {
@@ -908,7 +908,7 @@ impl CtfType {
                 ..
             } => {
                 let elem_size = ctf.ty(*element_type).size(ctf);
-                elem_size * *nelems as u16
+                elem_size * *nelems as u64
             }
             CtfType::Function { .. } => 8,
             CtfType::Struct {
@@ -965,7 +965,14 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
         let name = StrId::from_u32(name_raw)?;
 
         let meta: CtfMetadata = from.gread_with(offset, endian)?;
-        let size: u16 = from.gread_with(offset, endian)?;
+        let size_or_ty: u16 = from.gread_with(offset, endian)?;
+        let size = if size_or_ty == CTF_LSIZE_SENT {
+            let sizehi: u32 = from.gread_with(offset, endian)?;
+            let sizelo: u32 = from.gread_with(offset, endian)?;
+            (sizehi as u64) << 32 | sizelo as u64
+        } else {
+            size_or_ty as u64
+        };
 
         let ty = match meta.type_kind()? {
             TypeKind::Unknown => Self::Unknown { id },
@@ -992,7 +999,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 }
             }
             TypeKind::Pointer => {
-                let target_type = TypeId::from_u16(size)?;
+                let target_type = TypeId::from_u16(size_or_ty)?;
                 Self::Pointer {
                     id,
                     ty: CtfPointer { name, target_type },
@@ -1017,7 +1024,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 }
             }
             TypeKind::Function => {
-                let return_type = TypeId::from_u16(size)?;
+                let return_type = TypeId::from_u16(size_or_ty)?;
                 let vlen = meta.vlen();
                 let mut args = Vec::new();
                 let mut is_varargs = false;
@@ -1051,7 +1058,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
             TypeKind::Struct => {
                 let vlen = meta.vlen();
                 let mut members = Vec::new();
-                if size == CTF_LSIZE_SENT {
+                if size_or_ty >= LARGE_THRESHOLD {
                     for _ in 0..vlen {
                         let lmember: LargeCtfMember = from.gread_with(offset, endian)?;
                         members.push(lmember.into());
@@ -1074,7 +1081,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
             TypeKind::Union => {
                 let vlen = meta.vlen();
                 let mut members = Vec::new();
-                if size >= LARGE_THRESHOLD {
+                if size_or_ty >= LARGE_THRESHOLD {
                     for _ in 0..vlen {
                         let lmember: LargeCtfMember = from.gread_with(offset, endian)?;
                         members.push(lmember.into());
@@ -1097,7 +1104,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
             TypeKind::Enum => {
                 match size {
                     1 | 2 | 4 | 8 => {}
-                    _ => return Err(Error::invalid_enum_size(size)),
+                    _ => return Err(Error::invalid_enum_size(size_or_ty)),
                 }
                 let vlen = meta.vlen();
                 let mut enumerators = Vec::new();
@@ -1119,28 +1126,28 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 ty: CtfForward { name },
             },
             TypeKind::Typedef => {
-                let target_type = TypeId::from_u16(size)?;
+                let target_type = TypeId::from_u16(size_or_ty)?;
                 Self::Typedef {
                     id,
                     ty: CtfTypedef { name, target_type },
                 }
             }
             TypeKind::Volatile => {
-                let target_type = TypeId::from_u16(size)?;
+                let target_type = TypeId::from_u16(size_or_ty)?;
                 Self::Volatile {
                     id,
                     ty: CtfVolatile { name, target_type },
                 }
             }
             TypeKind::Const => {
-                let target_type = TypeId::from_u16(size)?;
+                let target_type = TypeId::from_u16(size_or_ty)?;
                 Self::Const {
                     id,
                     ty: CtfConst { name, target_type },
                 }
             }
             TypeKind::Restrict => {
-                let target_type = TypeId::from_u16(size)?;
+                let target_type = TypeId::from_u16(size_or_ty)?;
                 Self::Restrict {
                     id,
                     ty: CtfRestrict { name, target_type },
@@ -1155,14 +1162,14 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CtfInteger {
     pub name: StrId,
-    pub size: u16,
+    pub size: u64,
     pub encoding: IntegerEncoding,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CtfFloat {
     pub name: StrId,
-    pub size: u16,
+    pub size: u64,
     pub encoding: FloatEncoding,
 }
 
@@ -1191,7 +1198,7 @@ pub struct CtfFunction {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CtfStruct {
     pub name: StrId,
-    pub size: u16,
+    pub size: u64,
     pub members: Vec<CtfMember>,
 }
 
@@ -1205,14 +1212,14 @@ pub struct CtfMember {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CtfUnion {
     pub name: StrId,
-    pub size: u16,
+    pub size: u64,
     pub members: Vec<CtfMember>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CtfEnum {
     pub name: StrId,
-    pub size: u16,
+    pub size: u64,
     pub enumerators: Vec<CtfEnumerator>,
 }
 
