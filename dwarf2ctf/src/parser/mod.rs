@@ -2002,7 +2002,7 @@ fn build_variant_part_members(
             v.members.iter().any(|m| {
                 let type_id = resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map);
                 writer
-                    .types
+                    .types()
                     .get(type_id.get() as usize)
                     .map(|t| t.has_member_with_zero_offset())
                     .unwrap_or_default()

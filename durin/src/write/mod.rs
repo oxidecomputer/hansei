@@ -82,8 +82,8 @@ impl StringTable {
 }
 
 pub struct CtfWriter<'a> {
-    pub types: Vec<CtfType>,
-    pub funcs: HashMap<String, FuncInfo>,
+    types: Vec<CtfType>,
+    funcs: HashMap<String, FuncInfo>,
     labels: Vec<String>,
     elf: Option<&'a Elf<'a>>,
     endian: Endian,
@@ -137,6 +137,11 @@ impl<'a> CtfWriter<'a> {
         Ok(type_id)
     }
 
+    /// Access the types added to the writer.
+    pub fn types(&self) -> &[CtfType] {
+        &self.types
+    }
+
     /// Add a function to the writer. This will only be included in the the
     /// generated CTF if `CtfWriterBuilder::with_elf` was passed when
     /// constructing the `CtfWriter`.
@@ -144,9 +149,19 @@ impl<'a> CtfWriter<'a> {
         self.funcs.insert(name, func);
     }
 
+    /// Access the functions added to the writer.
+    pub fn funcs(&self) -> &HashMap<String, FuncInfo> {
+        &self.funcs
+    }
+
     /// Add a label to the writer.
     pub fn add_label(&mut self, name: String) {
         self.labels.push(name);
+    }
+
+    /// Access the labels added to the writer.
+    pub fn labels(&self) -> &[String] {
+        &self.labels
     }
 
     /// Reserve a type ID by adding a placeholder. Returns the reserved ID.
