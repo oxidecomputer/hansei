@@ -766,8 +766,8 @@ mod tests {
         let reader = round_trip_ctf(&mut writer);
 
         // Verify label was preserved
-        assert!(!reader.labels.is_empty());
-        assert_eq!(reader.labels[0].name(&reader), "test_binary");
+        assert!(!reader.labels().is_empty());
+        assert_eq!(reader.labels()[0].name(&reader), "test_binary");
     }
 
     #[test]

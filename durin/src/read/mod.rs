@@ -26,11 +26,11 @@ const CTF_MAGIC_BYTES_BE: [u8; 2] = [0xcf, 0xf1];
 const CTF_MAGIC_BYTES_LE: [u8; 2] = [0xf1, 0xcf];
 
 pub struct CtfReader {
-    pub preamble: CtfPreamble,
-    pub header: CtfHeader,
-    pub labels: Vec<CtfLabel>,
-    pub objects: Vec<TypeId>,
-    pub functions: Vec<TypeId>,
+    preamble: CtfPreamble,
+    header: CtfHeader,
+    labels: Vec<CtfLabel>,
+    objects: Vec<TypeId>,
+    functions: Vec<TypeId>,
     types: TypeTable,
     strings: StringTable,
 }
@@ -136,6 +136,14 @@ impl CtfReader {
         })
     }
 
+    pub fn preamble(&self) -> &CtfPreamble {
+        &self.preamble
+    }
+
+    pub fn header(&self) -> &CtfHeader {
+        &self.header
+    }
+
     pub fn ty(&self, id: TypeId) -> &CtfType {
         // UNWRAP: We validate all type ids are valid during construction.
         self.types.ty_checked(id).unwrap()
@@ -218,6 +226,18 @@ impl CtfReader {
                 (name, t)
             })
             .collect()
+    }
+
+    pub fn labels(&self) -> &[CtfLabel] {
+        &self.labels
+    }
+
+    pub fn objects(&self) -> &[TypeId] {
+        &self.objects
+    }
+
+    pub fn funcs(&self) -> &[TypeId] {
+        &self.functions
     }
 
     pub fn str(&self, id: StrId) -> &str {
