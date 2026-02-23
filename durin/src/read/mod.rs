@@ -696,12 +696,6 @@ impl TryFrom<u8> for FloatType {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum SizeOrType {
-    Size(u16),
-    Type(TypeId),
-}
-
 // TODO handle large structs
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum CtfType {

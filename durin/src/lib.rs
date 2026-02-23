@@ -214,11 +214,6 @@ pub enum TypeKind {
     Restrict = 13,
 }
 
-pub enum SizeOrType {
-    Size(u16),
-    Type(TypeId),
-}
-
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Default, Debug)]
 pub struct IntegerEncoding {
     pub bits: u16,
