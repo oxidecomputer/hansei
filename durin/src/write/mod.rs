@@ -1248,6 +1248,18 @@ mod tests {
     }
 
     #[test]
+    fn test_write_label() {
+        let mut writer = CtfWriterBuilder::new()
+            .with_label("foobar".to_string())
+            .build();
+        let bytes = writer.generate_ctf().unwrap();
+
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        let label = reader.labels[0];
+        assert_eq!(label.name(&reader), "foobar");
+    }
+
+    #[test]
     fn test_write_large_struct() {
         let ty = CtfType::Struct {
             name: "very_large_struct".to_string(),
@@ -1585,5 +1597,49 @@ mod tests {
         let bytes = writer.generate_ctf().unwrap();
         let reader = crate::read::CtfReader::load(&bytes).unwrap();
         assert!(!reader.preamble.flags.is_compressed());
+    }
+
+    #[test]
+    fn test_replace_space() {
+        let mut writer = CtfWriterBuilder::new().with_replace_spaces("$").build();
+        writer
+            .add_type(CtfType::Integer {
+                name: "my cool type".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new(),
+                },
+            })
+            .unwrap();
+
+        let bytes = writer.generate_ctf().unwrap();
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        assert!(reader.find_ty("my$cool$type", TypeKind::Integer).is_some());
+    }
+
+    #[test]
+    fn test_truncate_strs() {
+        let mut writer = CtfWriterBuilder::new().with_truncate_str_len(20).build();
+        writer
+            .add_type(CtfType::Integer {
+                name: "this_string_is_over_twenty_characters".to_string(),
+                size: 4,
+                encoding: IntegerEncoding {
+                    bits: 32,
+                    offset: 0,
+                    flags: IntegerFlags::new(),
+                },
+            })
+            .unwrap();
+
+        let bytes = writer.generate_ctf().unwrap();
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        assert!(
+            reader
+                .find_ty("this_string_is_over_", TypeKind::Integer)
+                .is_some()
+        );
     }
 }
