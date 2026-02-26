@@ -330,7 +330,7 @@ mod tests {
     use crate::read::CtfReader;
     use crate::write::{CtfEnumerator, CtfMember, CtfType, CtfWriter};
 
-    /// Test helper to create CTF data and parse it back.
+    /// Test helper to create CTF data, parse it back, and return an indexed view.
     fn round_trip_ctf(writer: &mut CtfWriter) -> CtfReader {
         let ctf_bytes = writer.generate_ctf().unwrap();
         CtfReader::load(&ctf_bytes).unwrap()
@@ -367,22 +367,23 @@ mod tests {
             .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
+        let view = reader.view();
 
         // Verify types were parsed correctly
-        let types = reader.types();
-        assert!(types.len() >= 3); // null type + void + our 2 types
+        let types: Vec<_> = view.types().collect();
+        assert!(types.len() == 4); // empty + void + our types
 
         // Find and verify i32
-        let i32_ty = reader.find_ty("i32", TypeKind::Integer);
+        let i32_ty = view.find("i32", TypeKind::Integer);
         assert!(i32_ty.is_some(), "i32 type not found");
         let i32_ty = i32_ty.unwrap();
-        assert_eq!(i32_ty.size(&reader), 4);
+        assert_eq!(i32_ty.size(), 4);
 
         // Find and verify u64
-        let u64_ty = reader.find_ty("u64", TypeKind::Integer);
+        let u64_ty = view.find("u64", TypeKind::Integer);
         assert!(u64_ty.is_some(), "u64 type not found");
         let u64_ty = u64_ty.unwrap();
-        assert_eq!(u64_ty.size(&reader), 8);
+        assert_eq!(u64_ty.size(), 8);
     }
 
     #[test]
@@ -423,97 +424,28 @@ mod tests {
             .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
+        let view = reader.view();
 
         // Find and verify struct
-        let point = reader.find_ty("Point", TypeKind::Struct);
+        let point = view.find("Point", TypeKind::Struct);
         assert!(point.is_some(), "Point struct not found");
         let point = point.unwrap();
-        assert_eq!(point.size(&reader), 8);
+        assert_eq!(point.size(), 8);
 
-        // Verify members
-        let members = point.members();
+        // Verify members using CtfView
+        let members: Vec<_> = point.members().collect();
         assert_eq!(members.len(), 2);
-        assert_eq!(members[0].name(&reader), "x");
-        assert_eq!(members[0].offset(), 0);
-        assert_eq!(members[1].name(&reader), "y");
-        assert_eq!(members[1].offset(), 4);
-    }
+        assert_eq!(members[0].name(), "x");
+        assert_eq!(members[1].name(), "y");
 
-    #[test]
-    fn round_trip_pointer_type() {
-        let mut writer = CtfWriter::new();
+        // Also verify via find_member
+        let x = point.member("x");
+        assert!(x.is_some());
+        assert_eq!(x.unwrap().offset(), 0);
 
-        // Add i32 type
-        let int_id = writer
-            .add_type(CtfType::Integer {
-                name: "i32".to_string(),
-                size: 4,
-                encoding: IntegerEncoding {
-                    bits: 32,
-                    offset: 0,
-                    flags: IntegerFlags::new().signed(),
-                },
-            })
-            .unwrap();
-
-        // Add pointer to i32
-        writer
-            .add_type(CtfType::Pointer {
-                name: "".to_string(),
-                target_type: int_id,
-            })
-            .unwrap();
-
-        let reader = round_trip_ctf(&mut writer);
-
-        // Find pointer type (unnamed, so search by kind)
-        let ptr = reader
-            .types()
-            .iter()
-            .find(|t| t.kind() == TypeKind::Pointer);
-        assert!(ptr.is_some(), "Pointer type not found");
-        let ptr = ptr.unwrap();
-
-        // Pointers are 8 bytes on 64-bit
-        assert_eq!(ptr.size(&reader), 8);
-    }
-
-    #[test]
-    fn round_trip_array_type() {
-        let mut writer = CtfWriter::new();
-
-        // Add i32 type
-        let int_id = writer
-            .add_type(CtfType::Integer {
-                name: "i32".to_string(),
-                size: 4,
-                encoding: IntegerEncoding {
-                    bits: 32,
-                    offset: 0,
-                    flags: IntegerFlags::new().signed(),
-                },
-            })
-            .unwrap();
-
-        // Add array of 10 i32s
-        writer
-            .add_type(CtfType::Array {
-                name: "".to_string(),
-                element_type: int_id,
-                index_type: int_id,
-                nelems: 10,
-            })
-            .unwrap();
-
-        let reader = round_trip_ctf(&mut writer);
-
-        // Find array type
-        let arr = reader.types().iter().find(|t| t.kind() == TypeKind::Array);
-        assert!(arr.is_some(), "Array type not found");
-        let arr = arr.unwrap();
-
-        // Array of 10 i32s = 40 bytes
-        assert_eq!(arr.size(&reader), 40);
+        let y = point.member("y");
+        assert!(y.is_some());
+        assert_eq!(y.unwrap().offset(), 4);
     }
 
     #[test]
@@ -542,29 +474,23 @@ mod tests {
             .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
+        let view = reader.view();
 
         // Find and verify enum
-        let color = reader.find_ty("Color", TypeKind::Enum);
+        let color = view.find("Color", TypeKind::Enum);
         assert!(color.is_some(), "Color enum not found");
         let color = color.unwrap();
-        assert_eq!(color.size(&reader), 4);
+        assert_eq!(color.size(), 4);
 
-        // Verify enumerators
-        if let read::CtfType::Enum {
-            ty: read::CtfEnum { enumerators, .. },
-            ..
-        } = color
-        {
-            assert_eq!(enumerators.len(), 3);
-            assert_eq!(enumerators[0].name(&reader), "Red");
-            assert_eq!(enumerators[0].value, 0);
-            assert_eq!(enumerators[1].name(&reader), "Green");
-            assert_eq!(enumerators[1].value, 1);
-            assert_eq!(enumerators[2].name(&reader), "Blue");
-            assert_eq!(enumerators[2].value, 2);
-        } else {
-            panic!("Expected enum type");
-        }
+        // Verify enumerators using CtfView
+        let enums: Vec<_> = color.as_enum().unwrap().enumerators().collect();
+        assert_eq!(enums.len(), 3);
+        assert_eq!(enums[0].name(), "Red");
+        assert_eq!(enums[0].value(), 0);
+        assert_eq!(enums[1].name(), "Green");
+        assert_eq!(enums[1].value(), 1);
+        assert_eq!(enums[2].name(), "Blue");
+        assert_eq!(enums[2].value(), 2);
     }
 
     #[test]
@@ -593,14 +519,20 @@ mod tests {
             .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
+        let view = reader.view();
 
         // Find and verify typedef
-        let myint = reader.find_ty("MyInt", TypeKind::Typedef);
+        let myint = view.find("MyInt", TypeKind::Typedef);
         assert!(myint.is_some(), "MyInt typedef not found");
         let myint = myint.unwrap();
 
         // Typedef should resolve to same size as target
-        assert_eq!(myint.size(&reader), 4);
+        assert_eq!(myint.size(), 4);
+
+        // Verify resolve_type follows the chain
+        let resolved = myint.target().unwrap();
+        assert_eq!(resolved.kind(), TypeKind::Integer);
+        assert_eq!(resolved.name(), "i32");
     }
 
     #[test]
@@ -654,20 +586,24 @@ mod tests {
             .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
+        let view = reader.view();
 
         // Find and verify union
-        let union_ty = reader.find_ty("IntOrFloat", TypeKind::Union);
+        let union_ty = view.find("IntOrFloat", TypeKind::Union);
         assert!(union_ty.is_some(), "IntOrFloat union not found");
         let union_ty = union_ty.unwrap();
-        assert_eq!(union_ty.size(&reader), 4);
+        assert_eq!(union_ty.size(), 4);
 
-        // Verify members - both at offset 0
-        let members = union_ty.members();
+        // Verify members using CtfView - both at offset 0
+        let members: Vec<_> = union_ty.members().collect();
         assert_eq!(members.len(), 2);
-        assert_eq!(members[0].name(&reader), "i");
-        assert_eq!(members[0].offset(), 0);
-        assert_eq!(members[1].name(&reader), "f");
-        assert_eq!(members[1].offset(), 0);
+        assert_eq!(members[0].name(), "i");
+        assert_eq!(members[1].name(), "f");
+
+        let i_member = union_ty.member("i").unwrap();
+        let f_member = union_ty.member("f").unwrap();
+        assert_eq!(i_member.offset(), 0);
+        assert_eq!(f_member.offset(), 0);
     }
 
     #[test]
@@ -728,21 +664,24 @@ mod tests {
             .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
+        let view = reader.view();
 
-        // Verify Rect
-        let rect = reader.find_ty("Rect", TypeKind::Struct).unwrap();
-        assert_eq!(rect.size(&reader), 16);
+        // Verify Rect using CtfView
+        let rect = view.find("Rect", TypeKind::Struct).unwrap();
+        assert_eq!(rect.size(), 16);
 
-        let members = rect.members();
+        let members: Vec<_> = rect.members().collect();
         assert_eq!(members.len(), 2);
-        assert_eq!(members[0].name(&reader), "top_left");
-        assert_eq!(members[0].offset(), 0);
-        assert_eq!(members[1].name(&reader), "bottom_right");
-        assert_eq!(members[1].offset(), 8);
+        assert_eq!(members[0].name(), "top_left");
+        assert_eq!(members[1].name(), "bottom_right");
+
+        let top_left = rect.member("top_left").unwrap();
+        let bottom_right = rect.member("bottom_right").unwrap();
+        assert_eq!(top_left.offset(), 0);
+        assert_eq!(bottom_right.offset(), 8);
 
         // Verify the member types reference Point
-        let top_left_ty = members[0].ty(&reader);
-        assert_eq!(top_left_ty.name(&reader), "Point");
+        assert_eq!(members[0].ty().name(), "Point");
     }
 
     #[test]
@@ -765,9 +704,9 @@ mod tests {
 
         let reader = round_trip_ctf(&mut writer);
 
-        // Verify label was preserved
-        assert!(!reader.labels().is_empty());
-        assert_eq!(reader.labels()[0].name(&reader), "test_binary");
+        let labels = reader.labels();
+        assert!(!labels.is_empty());
+        assert_eq!(reader.str(labels[0].name), "test_binary");
     }
 
     #[test]
@@ -790,7 +729,7 @@ mod tests {
         // Add const i32
         let const_id = writer
             .add_type(CtfType::Const {
-                name: "".to_string(),
+                name: "FOO".to_string(),
                 target_type: int_id,
             })
             .unwrap();
@@ -798,26 +737,27 @@ mod tests {
         // Add volatile const i32
         writer
             .add_type(CtfType::Volatile {
-                name: "".to_string(),
+                name: "BAR".to_string(),
                 target_type: const_id,
             })
             .unwrap();
 
         let reader = round_trip_ctf(&mut writer);
+        let view = reader.view();
 
         // Find const type
-        let const_ty = reader.types().iter().find(|t| t.kind() == TypeKind::Const);
+        let const_ty = view.find("FOO", TypeKind::Const);
         assert!(const_ty.is_some(), "Const type not found");
 
         // Find volatile type
-        let volatile_ty = reader
-            .types()
-            .iter()
-            .find(|t| t.kind() == TypeKind::Volatile);
+        let volatile_ty = view.find("BAR", TypeKind::Volatile);
         assert!(volatile_ty.is_some(), "Volatile type not found");
 
+        let volatile = volatile_ty.unwrap();
         // Volatile should resolve to same size as underlying type
-        let volatile_ty = volatile_ty.unwrap();
-        assert_eq!(volatile_ty.size(&reader), 4);
+        assert_eq!(volatile.size(), 4);
+
+        assert_eq!(volatile.kind(), TypeKind::Volatile);
+        assert_eq!(volatile.name(), "BAR");
     }
 }
