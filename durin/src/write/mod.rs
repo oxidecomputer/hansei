@@ -227,7 +227,7 @@ impl<'a> CtfWriter<'a> {
             self.write_type(&mut type_data, ty_offset, &mut strings, ctf_type, endian)?;
         }
 
-        let mut lbl_data = vec![0u8; 16 * self.labels.len()];
+        let mut lbl_data = vec![0u8; 8 * self.labels.len()];
         let lbl_offset = &mut 0;
         for label in &self.labels {
             let label_name_off = strings.add_string(label);
