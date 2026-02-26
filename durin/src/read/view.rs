@@ -1,7 +1,8 @@
 //! Indexed view into CTF data for efficient lookups.
 
-use super::{CtfMember, CtfReader, CtfType};
-use crate::{StrId, TypeId, TypeKind};
+use super::CtfReader;
+use super::types::CtfType;
+use crate::{TypeId, TypeKind};
 
 use std::collections::HashMap;
 
@@ -41,15 +42,15 @@ impl<'a> CtfView<'a> {
         Self { reader, by_name }
     }
 
-    /// Look up a type by its ID.
-    pub fn ty(&self, id: TypeId) -> &'a CtfType {
-        self.reader.ty(id)
+    /// Get a type by its ID.
+    pub fn get(&self, id: TypeId) -> CtfType<'a> {
+        CtfType::from_raw(self.reader.ty(id), self.reader)
     }
 
     /// Find a type by name and kind.
     ///
     /// If multiple types have the same name (but different kinds), only the first match is returned.
-    pub fn find_ty(&self, name: &str, kind: TypeKind) -> Option<&'a CtfType> {
+    pub fn find(&self, name: &str, kind: TypeKind) -> Option<CtfType<'a>> {
         self.by_name
             .get(name)?
             .iter()
@@ -59,60 +60,19 @@ impl<'a> CtfView<'a> {
 
     /// Find a type by name and kind.
     ///
-    /// This is useful when multiple types share a name (e.g., a struct and
-    /// a typedef with the same name).
-    pub fn find_all_by_name(&self, name: &str) -> impl Iterator<Item = &'a CtfType> {
+    /// If multiple types have the same name (but different kinds), only the first match is returned.
+    pub fn find_all(&self, name: &str) -> impl Iterator<Item = CtfType<'a>> {
         self.by_name
             .get(name)
             .into_iter()
             .flatten()
-            .map(|&id| self.ty(id))
+            .map(|&id| self.get(id))
     }
 
-    /// Iterate over all types.
-    pub fn types(&self) -> &'a [CtfType] {
-        self.reader.types()
-    }
-
-    /// Get the size in bytes of a type, following references as needed.
-    pub fn ty_size(&self, id: TypeId) -> u64 {
-        self.reader.ty_size(id)
-    }
-
-    /// Resolve a string ID to a string.
-    pub fn str(&self, id: StrId) -> &'a str {
-        self.reader.str(id)
-    }
-
-    /// Iterate over labels with resolved names and optional types.
-    pub fn labels(&self) -> impl Iterator<Item = (&'a str, Option<&'a CtfType>)> {
-        self.reader.labels().iter().map(|label| {
-            let name = self.str(label.name);
-            let ty = label.typeidx.map(|id| self.ty(id));
-            (name, ty)
-        })
-    }
-
-    /// Iterate over object types.
-    pub fn objects(&self) -> impl Iterator<Item = &'a CtfType> {
-        self.reader.objects().iter().map(|&id| self.ty(id))
-    }
-
-    /// Iterate over function types.
-    pub fn functions(&self) -> impl Iterator<Item = &'a CtfType> {
-        self.reader.funcs().iter().map(|&id| self.ty(id))
-    }
-
-    /// Get the name of a type.
-    pub fn type_name(&self, ty: &CtfType) -> &'a str {
-        ty.name(self.reader)
-    }
-
-    /// Get resolved members of a struct or union as (name, type) pairs.
-    ///
-    /// Returns an empty vector for non-aggregate types.
-    pub fn members_resolved(&self, ty: &'a CtfType) -> Vec<(&'a str, &'a CtfType)> {
-        ty.members()
+    /// Iterate over all types as wrapped `CtfType`.
+    pub fn types(&self) -> impl Iterator<Item = CtfType<'a>> + '_ {
+        self.reader
+            .types()
             .iter()
             .map(|m| (self.str(m.name), self.ty(m.type_id)))
             .collect()
@@ -121,27 +81,27 @@ impl<'a> CtfView<'a> {
     /// Find a member by name in a struct or union.
     ///
     /// Returns `None` for non-aggregate types or if the member is not found.
-    pub fn find_member(&self, ty: &'a CtfType, name: &str) -> Option<&'a CtfMember> {
+    pub fn find_member(&self, ty: &'a RawCtfType, name: &str) -> Option<&'a RawCtfMember> {
         ty.members().iter().find(|m| self.str(m.name) == name)
     }
 
     /// Iterate over enumerators with resolved names and values.
     ///
     /// Returns an empty iterator for non-enum types.
-    pub fn enumerators(&self, ty: &'a CtfType) -> impl Iterator<Item = (&'a str, u64)> {
+    pub fn enumerators(&self, ty: &'a RawCtfType) -> impl Iterator<Item = (&'a str, u64)> {
         ty.enumerators().iter().map(|e| (self.str(e.name), e.value))
     }
 
     /// Follow typedef/const/volatile/restrict chain to the underlying type.
     ///
     /// For non-reference types, returns the type itself.
-    pub fn resolve_type(&self, id: TypeId) -> &'a CtfType {
+    pub fn resolve_type(&self, id: TypeId) -> &'a RawCtfType {
         let ty = self.ty(id);
         match ty {
-            CtfType::Typedef { ty: inner, .. } => self.resolve_type(inner.target_type),
-            CtfType::Const { ty: inner, .. } => self.resolve_type(inner.target_type),
-            CtfType::Volatile { ty: inner, .. } => self.resolve_type(inner.target_type),
-            CtfType::Restrict { ty: inner, .. } => self.resolve_type(inner.target_type),
+            RawCtfType::Typedef { ty: inner, .. } => self.resolve_type(inner.target_type),
+            RawCtfType::Const { ty: inner, .. } => self.resolve_type(inner.target_type),
+            RawCtfType::Volatile { ty: inner, .. } => self.resolve_type(inner.target_type),
+            RawCtfType::Restrict { ty: inner, .. } => self.resolve_type(inner.target_type),
             _ => ty,
         }
     }
@@ -149,13 +109,13 @@ impl<'a> CtfView<'a> {
     /// Get the target type of a pointer, typedef, const, volatile, or restrict.
     ///
     /// Returns `None` for types that don't have a target type.
-    pub fn target_type(&self, ty: &'a CtfType) -> Option<&'a CtfType> {
+    pub fn target_type(&self, ty: &'a RawCtfType) -> Option<&'a RawCtfType> {
         let target_id = match ty {
-            CtfType::Pointer { ty: inner, .. } => inner.target_type,
-            CtfType::Typedef { ty: inner, .. } => inner.target_type,
-            CtfType::Const { ty: inner, .. } => inner.target_type,
-            CtfType::Volatile { ty: inner, .. } => inner.target_type,
-            CtfType::Restrict { ty: inner, .. } => inner.target_type,
+            RawCtfType::Pointer { ty: inner, .. } => inner.target_type,
+            RawCtfType::Typedef { ty: inner, .. } => inner.target_type,
+            RawCtfType::Const { ty: inner, .. } => inner.target_type,
+            RawCtfType::Volatile { ty: inner, .. } => inner.target_type,
+            RawCtfType::Restrict { ty: inner, .. } => inner.target_type,
             _ => return None,
         };
         Some(self.ty(target_id))
@@ -164,9 +124,9 @@ impl<'a> CtfView<'a> {
     /// Get the element type of an array.
     ///
     /// Returns `None` for non-array types.
-    pub fn array_element_type(&self, ty: &'a CtfType) -> Option<&'a CtfType> {
+    pub fn array_element_type(&self, ty: &'a RawCtfType) -> Option<&'a RawCtfType> {
         match ty {
-            CtfType::Array { ty: inner, .. } => Some(self.ty(inner.element_type)),
+            RawCtfType::Array { ty: inner, .. } => Some(self.ty(inner.element_type)),
             _ => None,
         }
     }
@@ -174,9 +134,9 @@ impl<'a> CtfView<'a> {
     /// Get function signature details.
     ///
     /// Returns `None` for non-function types.
-    pub fn function_signature(&self, ty: &'a CtfType) -> Option<FunctionSig<'a>> {
+    pub fn function_signature(&self, ty: &'a RawCtfType) -> Option<FunctionSig<'a>> {
         match ty {
-            CtfType::Function { ty: inner, .. } => {
+            RawCtfType::Function { ty: inner, .. } => {
                 let return_type = self.ty(inner.return_type);
                 let args = inner.args.iter().map(|&id| self.ty(id)).collect();
                 Some(FunctionSig {
@@ -188,17 +148,6 @@ impl<'a> CtfView<'a> {
             _ => None,
         }
     }
-}
-
-/// Function signature details.
-#[derive(Debug, Clone)]
-pub struct FunctionSig<'a> {
-    /// The return type of the function.
-    pub return_type: &'a CtfType,
-    /// The argument types.
-    pub args: Vec<&'a CtfType>,
-    /// Whether the function accepts variadic arguments.
-    pub is_varargs: bool,
 }
 
 #[cfg(test)]
