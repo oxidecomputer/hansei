@@ -131,10 +131,11 @@ fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
     let ctf_bytes =
         fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
     let ctf = CtfReader::load(&ctf_bytes).context("failed to load CTF")?;
+    let view = ctf.view();
 
     let mut symbols = HashMap::new();
     let runtime = TokioRuntime::parse(
-        &ctf,
+        view,
         &proc,
         &main_lwp,
         &mut symbols,
@@ -168,6 +169,7 @@ fn exec_poll(args: Poll, term: Term) -> Result<()> {
     let ctf_bytes =
         fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
     let ctf = CtfReader::load(&ctf_bytes).context("failed to load CTF")?;
+    let view = ctf.view();
 
     let symbols = HashMap::new();
 
@@ -183,7 +185,7 @@ fn exec_poll(args: Poll, term: Term) -> Result<()> {
     // addresses we're looking at here remain stable, so as long as they are
     // valid now we can assume they will remain valid for the remainder of the
     // process's lifetime.
-    let ctx = Context::new(&proc, &main_lwp, &ctf, &symbols).context("failed to create Context")?;
+    let ctx = Context::new(&proc, &main_lwp, view, &symbols).context("failed to create Context")?;
 
     let start_pause = Instant::now();
     // We need to read the worker's thread-local contexts.
