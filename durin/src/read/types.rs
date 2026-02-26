@@ -1878,4 +1878,79 @@ mod tests {
         let iter = f.args();
         assert_eq!(iter.len(), 3);
     }
+
+    #[test]
+    fn test_ctf_nested_struct() {
+        let mut writer = CtfWriter::new();
+        let int_id = writer
+            .add_type(WriteCtfType::Integer {
+                name: "i32".to_string(),
+                size: 4,
+                encoding: IntegerEncoding::default(),
+            })
+            .unwrap();
+
+        let point_id = writer
+            .add_type(WriteCtfType::Struct {
+                name: "Point".to_string(),
+                size: 8,
+                members: vec![
+                    WriteCtfMember {
+                        name: "x".to_string(),
+                        type_id: int_id,
+                        offset_bits: 0,
+                    },
+                    WriteCtfMember {
+                        name: "y".to_string(),
+                        type_id: int_id,
+                        offset_bits: 32,
+                    },
+                ],
+            })
+            .unwrap();
+
+        writer
+            .add_type(WriteCtfType::Struct {
+                name: "Rect".to_string(),
+                size: 16,
+                members: vec![
+                    WriteCtfMember {
+                        name: "top_left".to_string(),
+                        type_id: point_id,
+                        offset_bits: 0,
+                    },
+                    WriteCtfMember {
+                        name: "bottom_right".to_string(),
+                        type_id: point_id,
+                        offset_bits: 64,
+                    },
+                ],
+            })
+            .unwrap();
+
+        let reader = create_reader(&mut writer);
+        let raw = reader.find_ty("Rect", TypeKind::Struct).unwrap();
+        let ty = CtfType::from_raw(raw, &reader);
+
+        let rect = ty.as_struct().unwrap();
+        assert_eq!(rect.name(), "Rect");
+        assert_eq!(rect.size(), 16);
+        assert_eq!(rect.member_count(), 2);
+
+        let members: Vec<_> = rect.members().collect();
+        assert_eq!(members[0].name(), "top_left");
+        assert_eq!(members[0].offset(), 0);
+        assert_eq!(members[1].name(), "bottom_right");
+        assert_eq!(members[1].offset(), 8);
+
+        // Verify the member types reference Point
+        assert_eq!(members[0].ty().name(), "Point");
+        assert_eq!(members[1].ty().name(), "Point");
+
+        // Verify the nested struct's own members are accessible
+        let point_ty = members[0].ty();
+        let point = point_ty.as_struct().unwrap();
+        assert_eq!(point.member_count(), 2);
+        assert_eq!(point.member("x").unwrap().ty().name(), "i32");
+    }
 }
