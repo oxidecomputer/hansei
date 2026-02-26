@@ -158,58 +158,27 @@ impl CtfReader {
     /// types as needed.
     pub fn ty_size(&self, id: TypeId) -> u64 {
         match self.ty(id) {
-            RawCtfType::Unknown { .. } => 0,
-            RawCtfType::Integer {
-                ty: RawCtfInteger { size, .. },
+            RawCtfType::Unknown(..) => 0,
+            RawCtfType::Integer(RawCtfInteger { size, .. }) => *size,
+            RawCtfType::Float(RawCtfFloat { size, .. }) => *size,
+            RawCtfType::Pointer(..) => POINTER_SIZE,
+            RawCtfType::Array(RawCtfArray {
+                element_type,
+                nelems,
                 ..
-            } => *size,
-            RawCtfType::Float {
-                ty: RawCtfFloat { size, .. },
-                ..
-            } => *size,
-            RawCtfType::Pointer { .. } => POINTER_SIZE,
-            RawCtfType::Array {
-                ty:
-                    RawCtfArray {
-                        element_type,
-                        nelems,
-                        ..
-                    },
-                ..
-            } => {
+            }) => {
                 let elem_size = self.ty_size(*element_type);
                 elem_size * *nelems as u64
             }
-            RawCtfType::Function { .. } => POINTER_SIZE,
-            RawCtfType::Struct {
-                ty: RawCtfStruct { size, .. },
-                ..
-            } => *size,
-            RawCtfType::Union {
-                ty: RawCtfUnion { size, .. },
-                ..
-            } => *size,
-            RawCtfType::Enum {
-                ty: RawCtfEnum { size, .. },
-                ..
-            } => *size,
-            RawCtfType::Forward { .. } => 0,
-            RawCtfType::Typedef {
-                ty: RawCtfTypedef { target_type, .. },
-                ..
-            } => self.ty_size(*target_type),
-            RawCtfType::Volatile {
-                ty: RawCtfVolatile { target_type, .. },
-                ..
-            } => self.ty_size(*target_type),
-            RawCtfType::Const {
-                ty: RawCtfConst { target_type, .. },
-                ..
-            } => self.ty_size(*target_type),
-            RawCtfType::Restrict {
-                ty: RawCtfRestrict { target_type, .. },
-                ..
-            } => self.ty_size(*target_type),
+            RawCtfType::Function(..) => POINTER_SIZE,
+            RawCtfType::Struct(RawCtfStruct { size, .. }) => *size,
+            RawCtfType::Union(RawCtfUnion { size, .. }) => *size,
+            RawCtfType::Enum(RawCtfEnum { size, .. }) => *size,
+            RawCtfType::Forward(..) => 0,
+            RawCtfType::Typedef(RawCtfTypedef { target_type, .. }) => self.ty_size(*target_type),
+            RawCtfType::Volatile(RawCtfVolatile { target_type, .. }) => self.ty_size(*target_type),
+            RawCtfType::Const(RawCtfConst { target_type, .. }) => self.ty_size(*target_type),
+            RawCtfType::Restrict(RawCtfRestrict { target_type, .. }) => self.ty_size(*target_type),
         }
     }
 
@@ -337,87 +306,56 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
             strings.check(id)?;
         };
         match ty {
-            RawCtfType::Unknown { .. } => {}
-            RawCtfType::Integer { .. } => {}
-            RawCtfType::Float { .. } => {}
-            RawCtfType::Pointer {
-                ty: RawCtfPointer { target_type, .. },
-                ..
-            } => {
+            RawCtfType::Unknown(..) => {}
+            RawCtfType::Integer(..) => {}
+            RawCtfType::Float(..) => {}
+            RawCtfType::Pointer(RawCtfPointer { target_type, .. }) => {
                 types.check(*target_type)?;
             }
-            RawCtfType::Array {
-                ty:
-                    RawCtfArray {
-                        element_type,
-                        index_type,
-                        ..
-                    },
+            RawCtfType::Array(RawCtfArray {
+                element_type,
+                index_type,
                 ..
-            } => {
+            }) => {
                 types.check(*element_type)?;
                 types.check(*index_type)?;
             }
-            RawCtfType::Function {
-                ty: RawCtfFunction {
-                    return_type, args, ..
-                },
-                ..
-            } => {
+            RawCtfType::Function(RawCtfFunction {
+                return_type, args, ..
+            }) => {
                 types.check(*return_type)?;
                 for arg in args {
                     types.check(*arg)?;
                 }
             }
-            RawCtfType::Struct {
-                ty: RawCtfStruct { members, .. },
-                ..
-            } => {
+            RawCtfType::Struct(RawCtfStruct { members, .. }) => {
                 for RawCtfMember { name, type_id, .. } in members {
                     strings.check(*name)?;
                     types.check(*type_id)?;
                 }
             }
-            RawCtfType::Union {
-                ty: RawCtfUnion { members, .. },
-                ..
-            } => {
+            RawCtfType::Union(RawCtfUnion { members, .. }) => {
                 for RawCtfMember { name, type_id, .. } in members {
                     strings.check(*name)?;
                     types.check(*type_id)?;
                 }
             }
-            RawCtfType::Enum {
-                ty: RawCtfEnum { enumerators, .. },
-                ..
-            } => {
+            RawCtfType::Enum(RawCtfEnum { enumerators, .. }) => {
                 for RawCtfEnumerator { name, .. } in enumerators {
                     strings.check(*name)?;
                 }
             }
-            RawCtfType::Forward { .. } => {}
-            RawCtfType::Typedef {
-                ty: RawCtfTypedef { target_type, .. },
-                ..
-            } => {
+            RawCtfType::Forward(..) => {}
+            RawCtfType::Typedef(RawCtfTypedef { target_type, .. }) => {
                 types.check(*target_type)?;
             }
-            RawCtfType::Volatile {
-                ty: RawCtfVolatile { target_type, .. },
-                ..
-            } => {
+            RawCtfType::Volatile(RawCtfVolatile { target_type, .. }) => {
                 types.check(*target_type)?;
             }
-            RawCtfType::Const {
-                ty: RawCtfConst { target_type, .. },
-                ..
-            } => {
+            RawCtfType::Const(RawCtfConst { target_type, .. }) => {
                 types.check(*target_type)?;
             }
-            RawCtfType::Restrict {
-                ty: RawCtfRestrict { target_type, .. },
-                ..
-            } => {
+            RawCtfType::Restrict(RawCtfRestrict { target_type, .. }) => {
                 types.check(*target_type)?;
             }
         }
@@ -432,7 +370,7 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
 /// necessary.
 fn update_large_enums(types: &mut TypeTable, strings: &StringTable) -> Result<()> {
     let iter = types.as_slice_mut().iter_mut().filter_map(|t| match t {
-        RawCtfType::Enum { ty, .. } => Some(ty),
+        RawCtfType::Enum(ty) => Some(ty),
         _ => None,
     });
 
@@ -571,7 +509,7 @@ impl TypeTable {
 
         let mut types = Vec::new();
         // First slot is empty, but we use Unknown as a placeholder
-        types.push(RawCtfType::Unknown { id });
+        types.push(RawCtfType::Unknown(RawCtfUnknown { id }));
 
         while *offset < types_data.len() {
             let ty = types_data.gread_with(offset, (id, endian))?;
@@ -731,85 +669,73 @@ impl TryFrom<u8> for FloatType {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum RawCtfType {
-    Unknown { id: TypeId },
-    Integer { id: TypeId, ty: RawCtfInteger },
-    Float { id: TypeId, ty: RawCtfFloat },
-    Pointer { id: TypeId, ty: RawCtfPointer },
-    Array { id: TypeId, ty: RawCtfArray },
-    Function { id: TypeId, ty: RawCtfFunction },
-    Struct { id: TypeId, ty: RawCtfStruct },
-    Union { id: TypeId, ty: RawCtfUnion },
-    Enum { id: TypeId, ty: RawCtfEnum },
-    Forward { id: TypeId, ty: RawCtfForward },
-    Typedef { id: TypeId, ty: RawCtfTypedef },
-    Volatile { id: TypeId, ty: RawCtfVolatile },
-    Const { id: TypeId, ty: RawCtfConst },
-    Restrict { id: TypeId, ty: RawCtfRestrict },
+    Unknown(RawCtfUnknown),
+    Integer(RawCtfInteger),
+    Float(RawCtfFloat),
+    Pointer(RawCtfPointer),
+    Array(RawCtfArray),
+    Function(RawCtfFunction),
+    Struct(RawCtfStruct),
+    Union(RawCtfUnion),
+    Enum(RawCtfEnum),
+    Forward(RawCtfForward),
+    Typedef(RawCtfTypedef),
+    Volatile(RawCtfVolatile),
+    Const(RawCtfConst),
+    Restrict(RawCtfRestrict),
 }
 
 impl RawCtfType {
     pub fn id(&self) -> TypeId {
         match self {
-            Self::Unknown { id } => *id,
-            Self::Integer { id, .. } => *id,
-            Self::Float { id, .. } => *id,
-            Self::Pointer { id, .. } => *id,
-            Self::Array { id, .. } => *id,
-            Self::Function { id, .. } => *id,
-            Self::Struct { id, .. } => *id,
-            Self::Union { id, .. } => *id,
-            Self::Enum { id, .. } => *id,
-            Self::Forward { id, .. } => *id,
-            Self::Typedef { id, .. } => *id,
-            Self::Volatile { id, .. } => *id,
-            Self::Const { id, .. } => *id,
-            Self::Restrict { id, .. } => *id,
+            Self::Unknown(ty) => ty.id,
+            Self::Integer(ty) => ty.id,
+            Self::Float(ty) => ty.id,
+            Self::Pointer(ty) => ty.id,
+            Self::Array(ty) => ty.id,
+            Self::Function(ty) => ty.id,
+            Self::Struct(ty) => ty.id,
+            Self::Union(ty) => ty.id,
+            Self::Enum(ty) => ty.id,
+            Self::Forward(ty) => ty.id,
+            Self::Typedef(ty) => ty.id,
+            Self::Volatile(ty) => ty.id,
+            Self::Const(ty) => ty.id,
+            Self::Restrict(ty) => ty.id,
         }
     }
 
     pub fn kind(&self) -> TypeKind {
         match self {
-            Self::Unknown { .. } => TypeKind::Unknown,
-            Self::Integer { .. } => TypeKind::Integer,
-            Self::Float { .. } => TypeKind::Float,
-            Self::Pointer { .. } => TypeKind::Pointer,
-            Self::Array { .. } => TypeKind::Array,
-            Self::Function { .. } => TypeKind::Function,
-            Self::Struct { .. } => TypeKind::Struct,
-            Self::Union { .. } => TypeKind::Union,
-            Self::Enum { .. } => TypeKind::Enum,
-            Self::Forward { .. } => TypeKind::Forward,
-            Self::Typedef { .. } => TypeKind::Typedef,
-            Self::Volatile { .. } => TypeKind::Volatile,
-            Self::Const { .. } => TypeKind::Const,
-            Self::Restrict { .. } => TypeKind::Restrict,
+            Self::Unknown(..) => TypeKind::Unknown,
+            Self::Integer(..) => TypeKind::Integer,
+            Self::Float(..) => TypeKind::Float,
+            Self::Pointer(..) => TypeKind::Pointer,
+            Self::Array(..) => TypeKind::Array,
+            Self::Function(..) => TypeKind::Function,
+            Self::Struct(..) => TypeKind::Struct,
+            Self::Union(..) => TypeKind::Union,
+            Self::Enum(..) => TypeKind::Enum,
+            Self::Forward(..) => TypeKind::Forward,
+            Self::Typedef(..) => TypeKind::Typedef,
+            Self::Volatile(..) => TypeKind::Volatile,
+            Self::Const(..) => TypeKind::Const,
+            Self::Restrict(..) => TypeKind::Restrict,
         }
     }
 
     pub fn members(&self) -> &[RawCtfMember] {
         match self {
-            RawCtfType::Struct {
-                ty: RawCtfStruct { members, .. },
-                ..
-            } => members.as_slice(),
-            RawCtfType::Union {
-                ty: RawCtfUnion { members, .. },
-                ..
-            } => members.as_slice(),
+            RawCtfType::Struct(RawCtfStruct { members, .. }) => members.as_slice(),
+            RawCtfType::Union(RawCtfUnion { members, .. }) => members.as_slice(),
             _ => &[],
         }
     }
 
     pub fn member(&self, name: &str, ctf: &CtfReader) -> Option<&RawCtfMember> {
         let members = match self {
-            RawCtfType::Struct {
-                ty: RawCtfStruct { members, .. },
-                ..
-            } => members.as_slice(),
-            RawCtfType::Union {
-                ty: RawCtfUnion { members, .. },
-                ..
-            } => members.as_slice(),
+            RawCtfType::Struct(RawCtfStruct { members, .. }) => members.as_slice(),
+            RawCtfType::Union(RawCtfUnion { members, .. }) => members.as_slice(),
             _ => return None,
         };
         members.iter().find(|m| m.name(ctf) == name)
@@ -817,14 +743,8 @@ impl RawCtfType {
 
     pub fn has_member(&self, name: &str, ctf: &CtfReader) -> bool {
         let members = match self {
-            RawCtfType::Struct {
-                ty: RawCtfStruct { members, .. },
-                ..
-            } => members.as_slice(),
-            RawCtfType::Union {
-                ty: RawCtfUnion { members, .. },
-                ..
-            } => members.as_slice(),
+            RawCtfType::Struct(RawCtfStruct { members, .. }) => members.as_slice(),
+            RawCtfType::Union(RawCtfUnion { members, .. }) => members.as_slice(),
             _ => return false,
         };
         members.iter().any(|m| m.name(ctf) == name)
@@ -856,59 +776,20 @@ impl RawCtfType {
 
     fn name_id(&self) -> Option<StrId> {
         let id = match self {
-            Self::Unknown { .. } => return None,
-            Self::Integer {
-                ty: RawCtfInteger { name, .. },
-                ..
-            } => name,
-            Self::Float {
-                ty: RawCtfFloat { name, .. },
-                ..
-            } => name,
-            Self::Pointer {
-                ty: RawCtfPointer { name, .. },
-                ..
-            } => name,
-            Self::Array {
-                ty: RawCtfArray { name, .. },
-                ..
-            } => name,
-            Self::Function {
-                ty: RawCtfFunction { name, .. },
-                ..
-            } => name,
-            Self::Struct {
-                ty: RawCtfStruct { name, .. },
-                ..
-            } => name,
-            Self::Union {
-                ty: RawCtfUnion { name, .. },
-                ..
-            } => name,
-            Self::Enum {
-                ty: RawCtfEnum { name, .. },
-                ..
-            } => name,
-            Self::Forward {
-                ty: RawCtfForward { name },
-                ..
-            } => name,
-            Self::Typedef {
-                ty: RawCtfTypedef { name, .. },
-                ..
-            } => name,
-            Self::Volatile {
-                ty: RawCtfVolatile { name, .. },
-                ..
-            } => name,
-            Self::Const {
-                ty: RawCtfConst { name, .. },
-                ..
-            } => name,
-            Self::Restrict {
-                ty: RawCtfRestrict { name, .. },
-                ..
-            } => name,
+            Self::Unknown(..) => return None,
+            Self::Integer(RawCtfInteger { name, .. }) => name,
+            Self::Float(RawCtfFloat { name, .. }) => name,
+            Self::Pointer(RawCtfPointer { name, .. }) => name,
+            Self::Array(RawCtfArray { name, .. }) => name,
+            Self::Function(RawCtfFunction { name, .. }) => name,
+            Self::Struct(RawCtfStruct { name, .. }) => name,
+            Self::Union(RawCtfUnion { name, .. }) => name,
+            Self::Enum(RawCtfEnum { name, .. }) => name,
+            Self::Forward(RawCtfForward { name, .. }) => name,
+            Self::Typedef(RawCtfTypedef { name, .. }) => name,
+            Self::Volatile(RawCtfVolatile { name, .. }) => name,
+            Self::Const(RawCtfConst { name, .. }) => name,
+            Self::Restrict(RawCtfRestrict { name, .. }) => name,
         };
         Some(*id)
     }
@@ -917,67 +798,39 @@ impl RawCtfType {
     /// types as needed.
     pub fn size(&self, ctf: &CtfReader) -> u64 {
         match self {
-            RawCtfType::Unknown { .. } => 0,
-            RawCtfType::Integer {
-                ty: RawCtfInteger { size, .. },
+            RawCtfType::Unknown(..) => 0,
+            RawCtfType::Integer(RawCtfInteger { size, .. }) => *size,
+            RawCtfType::Float(RawCtfFloat { size, .. }) => *size,
+            RawCtfType::Pointer(..) => POINTER_SIZE,
+            RawCtfType::Array(RawCtfArray {
+                element_type,
+                nelems,
                 ..
-            } => *size,
-            RawCtfType::Float {
-                ty: RawCtfFloat { size, .. },
-                ..
-            } => *size,
-            RawCtfType::Pointer { .. } => POINTER_SIZE,
-            RawCtfType::Array {
-                ty:
-                    RawCtfArray {
-                        element_type,
-                        nelems,
-                        ..
-                    },
-                ..
-            } => {
+            }) => {
                 let elem_size = ctf.ty(*element_type).size(ctf);
                 elem_size * *nelems as u64
             }
-            RawCtfType::Function { .. } => POINTER_SIZE,
-            RawCtfType::Struct {
-                ty: RawCtfStruct { size, .. },
-                ..
-            } => *size,
-            RawCtfType::Union {
-                ty: RawCtfUnion { size, .. },
-                ..
-            } => *size,
-            RawCtfType::Enum {
-                ty: RawCtfEnum { size, .. },
-                ..
-            } => *size,
-            RawCtfType::Forward { .. } => 0,
-            RawCtfType::Typedef {
-                ty: RawCtfTypedef { target_type, .. },
-                ..
-            } => ctf.ty(*target_type).size(ctf),
-            RawCtfType::Volatile {
-                ty: RawCtfVolatile { target_type, .. },
-                ..
-            } => ctf.ty(*target_type).size(ctf),
-            RawCtfType::Const {
-                ty: RawCtfConst { target_type, .. },
-                ..
-            } => ctf.ty(*target_type).size(ctf),
-            RawCtfType::Restrict {
-                ty: RawCtfRestrict { target_type, .. },
-                ..
-            } => ctf.ty(*target_type).size(ctf),
+            RawCtfType::Function(..) => POINTER_SIZE,
+            RawCtfType::Struct(RawCtfStruct { size, .. }) => *size,
+            RawCtfType::Union(RawCtfUnion { size, .. }) => *size,
+            RawCtfType::Enum(RawCtfEnum { size, .. }) => *size,
+            RawCtfType::Forward(..) => 0,
+            RawCtfType::Typedef(RawCtfTypedef { target_type, .. }) => {
+                ctf.ty(*target_type).size(ctf)
+            }
+            RawCtfType::Volatile(RawCtfVolatile { target_type, .. }) => {
+                ctf.ty(*target_type).size(ctf)
+            }
+            RawCtfType::Const(RawCtfConst { target_type, .. }) => ctf.ty(*target_type).size(ctf),
+            RawCtfType::Restrict(RawCtfRestrict { target_type, .. }) => {
+                ctf.ty(*target_type).size(ctf)
+            }
         }
     }
 
     pub fn enumerators(&self) -> &[RawCtfEnumerator] {
         match self {
-            RawCtfType::Enum {
-                ty: RawCtfEnum { enumerators, .. },
-                ..
-            } => enumerators,
+            RawCtfType::Enum(RawCtfEnum { enumerators, .. }) => enumerators,
             _ => &[],
         }
     }
@@ -1004,35 +857,32 @@ impl TryFromCtx<'_, (TypeId, Endian)> for RawCtfType {
         };
 
         let ty = match meta.type_kind()? {
-            TypeKind::Unknown => Self::Unknown { id },
+            TypeKind::Unknown => Self::Unknown(RawCtfUnknown { id }),
             TypeKind::Integer => {
                 let encoding = from.gread_with(offset, endian)?;
-                Self::Integer {
+                Self::Integer(RawCtfInteger {
                     id,
-                    ty: RawCtfInteger {
-                        name,
-                        size,
-                        encoding,
-                    },
-                }
+                    name,
+                    size,
+                    encoding,
+                })
             }
             TypeKind::Float => {
                 let encoding = from.gread_with(offset, endian)?;
-                Self::Float {
+                Self::Float(RawCtfFloat {
                     id,
-                    ty: RawCtfFloat {
-                        name,
-                        size,
-                        encoding,
-                    },
-                }
+                    name,
+                    size,
+                    encoding,
+                })
             }
             TypeKind::Pointer => {
                 let target_type = TypeId::from_u16(size_or_ty)?;
-                Self::Pointer {
+                Self::Pointer(RawCtfPointer {
                     id,
-                    ty: RawCtfPointer { name, target_type },
-                }
+                    name,
+                    target_type,
+                })
             }
             TypeKind::Array => {
                 let element_type_raw = from.gread_with(offset, endian)?;
@@ -1042,15 +892,13 @@ impl TryFromCtx<'_, (TypeId, Endian)> for RawCtfType {
                 let index_type = TypeId::from_u16(index_type_raw)?;
 
                 let nelems = from.gread_with(offset, endian)?;
-                Self::Array {
+                Self::Array(RawCtfArray {
                     id,
-                    ty: RawCtfArray {
-                        name,
-                        element_type,
-                        index_type,
-                        nelems,
-                    },
-                }
+                    name,
+                    element_type,
+                    index_type,
+                    nelems,
+                })
             }
             TypeKind::Function => {
                 let return_type = TypeId::from_u16(size_or_ty)?;
@@ -1074,15 +922,13 @@ impl TryFromCtx<'_, (TypeId, Endian)> for RawCtfType {
                 if !vlen.is_multiple_of(2) {
                     *offset += size_of::<u16>();
                 }
-                Self::Function {
+                Self::Function(RawCtfFunction {
                     id,
-                    ty: RawCtfFunction {
-                        name,
-                        return_type,
-                        args,
-                        is_varargs,
-                    },
-                }
+                    name,
+                    return_type,
+                    args,
+                    is_varargs,
+                })
             }
             TypeKind::Struct => {
                 let vlen = meta.vlen();
@@ -1098,14 +944,12 @@ impl TryFromCtx<'_, (TypeId, Endian)> for RawCtfType {
                         members.push(member);
                     }
                 }
-                Self::Struct {
+                Self::Struct(RawCtfStruct {
                     id,
-                    ty: RawCtfStruct {
-                        name,
-                        size,
-                        members,
-                    },
-                }
+                    name,
+                    size,
+                    members,
+                })
             }
             TypeKind::Union => {
                 let vlen = meta.vlen();
@@ -1121,14 +965,12 @@ impl TryFromCtx<'_, (TypeId, Endian)> for RawCtfType {
                         members.push(member);
                     }
                 }
-                Self::Union {
+                Self::Union(RawCtfUnion {
                     id,
-                    ty: RawCtfUnion {
-                        name,
-                        size,
-                        members,
-                    },
-                }
+                    name,
+                    size,
+                    members,
+                })
             }
             TypeKind::Enum => {
                 match size {
@@ -1141,46 +983,45 @@ impl TryFromCtx<'_, (TypeId, Endian)> for RawCtfType {
                     let en = from.gread_with(offset, endian)?;
                     enumerators.push(en);
                 }
-                Self::Enum {
+                Self::Enum(RawCtfEnum {
                     id,
-                    ty: RawCtfEnum {
-                        name,
-                        size,
-                        enumerators,
-                    },
-                }
+                    name,
+                    size,
+                    enumerators,
+                })
             }
-            TypeKind::Forward => Self::Forward {
-                id,
-                ty: RawCtfForward { name },
-            },
+            TypeKind::Forward => Self::Forward(RawCtfForward { id, name }),
             TypeKind::Typedef => {
                 let target_type = TypeId::from_u16(size_or_ty)?;
-                Self::Typedef {
+                Self::Typedef(RawCtfTypedef {
                     id,
-                    ty: RawCtfTypedef { name, target_type },
-                }
+                    name,
+                    target_type,
+                })
             }
             TypeKind::Volatile => {
                 let target_type = TypeId::from_u16(size_or_ty)?;
-                Self::Volatile {
+                Self::Volatile(RawCtfVolatile {
                     id,
-                    ty: RawCtfVolatile { name, target_type },
-                }
+                    name,
+                    target_type,
+                })
             }
             TypeKind::Const => {
                 let target_type = TypeId::from_u16(size_or_ty)?;
-                Self::Const {
+                Self::Const(RawCtfConst {
                     id,
-                    ty: RawCtfConst { name, target_type },
-                }
+                    name,
+                    target_type,
+                })
             }
             TypeKind::Restrict => {
                 let target_type = TypeId::from_u16(size_or_ty)?;
-                Self::Restrict {
+                Self::Restrict(RawCtfRestrict {
                     id,
-                    ty: RawCtfRestrict { name, target_type },
-                }
+                    name,
+                    target_type,
+                })
             }
         };
 
@@ -1189,7 +1030,13 @@ impl TryFromCtx<'_, (TypeId, Endian)> for RawCtfType {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct RawCtfUnknown {
+    pub id: TypeId,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfInteger {
+    pub id: TypeId,
     pub name: StrId,
     pub size: u64,
     pub encoding: IntegerEncoding,
@@ -1197,6 +1044,7 @@ pub struct RawCtfInteger {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfFloat {
+    pub id: TypeId,
     pub name: StrId,
     pub size: u64,
     pub encoding: FloatEncoding,
@@ -1204,12 +1052,14 @@ pub struct RawCtfFloat {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfPointer {
+    pub id: TypeId,
     pub name: StrId,
     pub target_type: TypeId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfArray {
+    pub id: TypeId,
     pub name: StrId,
     pub element_type: TypeId,
     pub index_type: TypeId,
@@ -1218,6 +1068,7 @@ pub struct RawCtfArray {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfFunction {
+    pub id: TypeId,
     pub name: StrId,
     pub return_type: TypeId,
     pub args: Vec<TypeId>,
@@ -1226,6 +1077,7 @@ pub struct RawCtfFunction {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfStruct {
+    pub id: TypeId,
     pub name: StrId,
     pub size: u64,
     pub members: Vec<RawCtfMember>,
@@ -1240,6 +1092,7 @@ pub struct RawCtfMember {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfUnion {
+    pub id: TypeId,
     pub name: StrId,
     pub size: u64,
     pub members: Vec<RawCtfMember>,
@@ -1247,6 +1100,7 @@ pub struct RawCtfUnion {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfEnum {
+    pub id: TypeId,
     pub name: StrId,
     pub size: u64,
     pub enumerators: Vec<RawCtfEnumerator>,
@@ -1260,29 +1114,34 @@ pub struct RawCtfEnumerator {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfForward {
+    pub id: TypeId,
     pub name: StrId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfTypedef {
+    pub id: TypeId,
     pub name: StrId,
     pub target_type: TypeId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfVolatile {
+    pub id: TypeId,
     pub name: StrId,
     pub target_type: TypeId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfConst {
+    pub id: TypeId,
     pub name: StrId,
     pub target_type: TypeId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfRestrict {
+    pub id: TypeId,
     pub name: StrId,
     pub target_type: TypeId,
 }
