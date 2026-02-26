@@ -16,11 +16,17 @@ use std::str;
 
 mod error;
 mod strings;
+mod types;
 mod view;
 
 pub use error::Error;
 pub use strings::StringTable;
-pub use view::{CtfView, FunctionSig};
+pub use types::{
+    CtfArray, CtfConst, CtfEnum, CtfEnumerator, CtfEnumeratorIter, CtfFloat, CtfForward,
+    CtfFunction, CtfFunctionArgIter, CtfInteger, CtfMember, CtfMemberIter, CtfPointer, CtfRestrict,
+    CtfStruct, CtfType, CtfTypedef, CtfUnion, CtfUnknown, CtfVolatile,
+};
+pub use view::CtfView;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -192,16 +198,6 @@ impl CtfReader {
             .find(|t| t.kind() == kind && t.name(self) == name)
     }
 
-    pub fn tys_by_name(&self) -> HashMap<&str, &RawCtfType> {
-        self.types()
-            .iter()
-            .map(|t| {
-                let name = t.name(self);
-                (name, t)
-            })
-            .collect()
-    }
-
     pub fn labels(&self) -> &[CtfLabel] {
         &self.labels
     }
@@ -220,8 +216,8 @@ impl CtfReader {
 
     /// Build an indexed view for efficient lookups.
     ///
-    /// The returned `CtfView` provides O(1) name-based type lookups and
-    /// unified access to all CTF data.
+    /// The returned `CtfView` provides fast name-based type lookups and
+    /// to `CtfType`.
     pub fn view(&self) -> CtfView<'_> {
         CtfView::new(self)
     }
