@@ -16,9 +16,11 @@ use std::str;
 
 mod error;
 mod strings;
+mod view;
 
 pub use error::Error;
 pub use strings::StringTable;
+pub use view::{CtfView, FunctionSig};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -245,6 +247,14 @@ impl CtfReader {
 
     pub fn str(&self, id: StrId) -> &str {
         self.strings.get(id)
+    }
+
+    /// Build an indexed view for efficient lookups.
+    ///
+    /// The returned `CtfView` provides O(1) name-based type lookups and
+    /// unified access to all CTF data.
+    pub fn view(&self) -> CtfView<'_> {
+        CtfView::new(self)
     }
 }
 
