@@ -25,6 +25,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 const CTF_MAGIC_BYTES_BE: [u8; 2] = [0xcf, 0xf1];
 const CTF_MAGIC_BYTES_LE: [u8; 2] = [0xf1, 0xcf];
 
+// This assumes that the arch of the CTF data matches the target.
+const POINTER_SIZE: u64 = size_of::<*const ()>() as u64;
+
 pub struct CtfReader {
     preamble: CtfPreamble,
     header: CtfHeader,
@@ -162,7 +165,7 @@ impl CtfReader {
                 ty: CtfFloat { size, .. },
                 ..
             } => *size,
-            CtfType::Pointer { .. } => 8,
+            CtfType::Pointer { .. } => POINTER_SIZE,
             CtfType::Array {
                 ty:
                     CtfArray {
@@ -175,7 +178,7 @@ impl CtfReader {
                 let elem_size = self.ty_size(*element_type);
                 elem_size * *nelems as u64
             }
-            CtfType::Function { .. } => 8,
+            CtfType::Function { .. } => POINTER_SIZE,
             CtfType::Struct {
                 ty: CtfStruct { size, .. },
                 ..
@@ -910,7 +913,7 @@ impl CtfType {
                 ty: CtfFloat { size, .. },
                 ..
             } => *size,
-            CtfType::Pointer { .. } => 8,
+            CtfType::Pointer { .. } => POINTER_SIZE,
             CtfType::Array {
                 ty:
                     CtfArray {
@@ -923,7 +926,7 @@ impl CtfType {
                 let elem_size = ctf.ty(*element_type).size(ctf);
                 elem_size * *nelems as u64
             }
-            CtfType::Function { .. } => 8,
+            CtfType::Function { .. } => POINTER_SIZE,
             CtfType::Struct {
                 ty: CtfStruct { size, .. },
                 ..
