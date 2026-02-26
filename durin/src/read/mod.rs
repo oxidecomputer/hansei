@@ -149,7 +149,7 @@ impl CtfReader {
         &self.header
     }
 
-    pub fn ty(&self, id: TypeId) -> &CtfType {
+    pub fn ty(&self, id: TypeId) -> &RawCtfType {
         // UNWRAP: We validate all type ids are valid during construction.
         self.types.ty_checked(id).unwrap()
     }
@@ -158,19 +158,19 @@ impl CtfReader {
     /// types as needed.
     pub fn ty_size(&self, id: TypeId) -> u64 {
         match self.ty(id) {
-            CtfType::Unknown { .. } => 0,
-            CtfType::Integer {
-                ty: CtfInteger { size, .. },
+            RawCtfType::Unknown { .. } => 0,
+            RawCtfType::Integer {
+                ty: RawCtfInteger { size, .. },
                 ..
             } => *size,
-            CtfType::Float {
-                ty: CtfFloat { size, .. },
+            RawCtfType::Float {
+                ty: RawCtfFloat { size, .. },
                 ..
             } => *size,
-            CtfType::Pointer { .. } => POINTER_SIZE,
-            CtfType::Array {
+            RawCtfType::Pointer { .. } => POINTER_SIZE,
+            RawCtfType::Array {
                 ty:
-                    CtfArray {
+                    RawCtfArray {
                         element_type,
                         nelems,
                         ..
@@ -180,50 +180,50 @@ impl CtfReader {
                 let elem_size = self.ty_size(*element_type);
                 elem_size * *nelems as u64
             }
-            CtfType::Function { .. } => POINTER_SIZE,
-            CtfType::Struct {
-                ty: CtfStruct { size, .. },
+            RawCtfType::Function { .. } => POINTER_SIZE,
+            RawCtfType::Struct {
+                ty: RawCtfStruct { size, .. },
                 ..
             } => *size,
-            CtfType::Union {
-                ty: CtfUnion { size, .. },
+            RawCtfType::Union {
+                ty: RawCtfUnion { size, .. },
                 ..
             } => *size,
-            CtfType::Enum {
-                ty: CtfEnum { size, .. },
+            RawCtfType::Enum {
+                ty: RawCtfEnum { size, .. },
                 ..
             } => *size,
-            CtfType::Forward { .. } => 0,
-            CtfType::Typedef {
-                ty: CtfTypedef { target_type, .. },
+            RawCtfType::Forward { .. } => 0,
+            RawCtfType::Typedef {
+                ty: RawCtfTypedef { target_type, .. },
                 ..
             } => self.ty_size(*target_type),
-            CtfType::Volatile {
-                ty: CtfVolatile { target_type, .. },
+            RawCtfType::Volatile {
+                ty: RawCtfVolatile { target_type, .. },
                 ..
             } => self.ty_size(*target_type),
-            CtfType::Const {
-                ty: CtfConst { target_type, .. },
+            RawCtfType::Const {
+                ty: RawCtfConst { target_type, .. },
                 ..
             } => self.ty_size(*target_type),
-            CtfType::Restrict {
-                ty: CtfRestrict { target_type, .. },
+            RawCtfType::Restrict {
+                ty: RawCtfRestrict { target_type, .. },
                 ..
             } => self.ty_size(*target_type),
         }
     }
 
-    pub fn types(&self) -> &[CtfType] {
+    pub fn types(&self) -> &[RawCtfType] {
         self.types.as_slice()
     }
 
-    pub fn find_ty<'ctf>(&'ctf self, name: &str, kind: TypeKind) -> Option<&'ctf CtfType> {
+    pub fn find_ty<'ctf>(&'ctf self, name: &str, kind: TypeKind) -> Option<&'ctf RawCtfType> {
         self.types()
             .iter()
             .find(|t| t.kind() == kind && t.name(self) == name)
     }
 
-    pub fn tys_by_name(&self) -> HashMap<&str, &CtfType> {
+    pub fn tys_by_name(&self) -> HashMap<&str, &RawCtfType> {
         self.types()
             .iter()
             .map(|t| {
@@ -337,18 +337,18 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
             strings.check(id)?;
         };
         match ty {
-            CtfType::Unknown { .. } => {}
-            CtfType::Integer { .. } => {}
-            CtfType::Float { .. } => {}
-            CtfType::Pointer {
-                ty: CtfPointer { target_type, .. },
+            RawCtfType::Unknown { .. } => {}
+            RawCtfType::Integer { .. } => {}
+            RawCtfType::Float { .. } => {}
+            RawCtfType::Pointer {
+                ty: RawCtfPointer { target_type, .. },
                 ..
             } => {
                 types.check(*target_type)?;
             }
-            CtfType::Array {
+            RawCtfType::Array {
                 ty:
-                    CtfArray {
+                    RawCtfArray {
                         element_type,
                         index_type,
                         ..
@@ -358,8 +358,8 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
                 types.check(*element_type)?;
                 types.check(*index_type)?;
             }
-            CtfType::Function {
-                ty: CtfFunction {
+            RawCtfType::Function {
+                ty: RawCtfFunction {
                     return_type, args, ..
                 },
                 ..
@@ -369,53 +369,53 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
                     types.check(*arg)?;
                 }
             }
-            CtfType::Struct {
-                ty: CtfStruct { members, .. },
+            RawCtfType::Struct {
+                ty: RawCtfStruct { members, .. },
                 ..
             } => {
-                for CtfMember { name, type_id, .. } in members {
+                for RawCtfMember { name, type_id, .. } in members {
                     strings.check(*name)?;
                     types.check(*type_id)?;
                 }
             }
-            CtfType::Union {
-                ty: CtfUnion { members, .. },
+            RawCtfType::Union {
+                ty: RawCtfUnion { members, .. },
                 ..
             } => {
-                for CtfMember { name, type_id, .. } in members {
+                for RawCtfMember { name, type_id, .. } in members {
                     strings.check(*name)?;
                     types.check(*type_id)?;
                 }
             }
-            CtfType::Enum {
-                ty: CtfEnum { enumerators, .. },
+            RawCtfType::Enum {
+                ty: RawCtfEnum { enumerators, .. },
                 ..
             } => {
-                for CtfEnumerator { name, .. } in enumerators {
+                for RawCtfEnumerator { name, .. } in enumerators {
                     strings.check(*name)?;
                 }
             }
-            CtfType::Forward { .. } => {}
-            CtfType::Typedef {
-                ty: CtfTypedef { target_type, .. },
+            RawCtfType::Forward { .. } => {}
+            RawCtfType::Typedef {
+                ty: RawCtfTypedef { target_type, .. },
                 ..
             } => {
                 types.check(*target_type)?;
             }
-            CtfType::Volatile {
-                ty: CtfVolatile { target_type, .. },
+            RawCtfType::Volatile {
+                ty: RawCtfVolatile { target_type, .. },
                 ..
             } => {
                 types.check(*target_type)?;
             }
-            CtfType::Const {
-                ty: CtfConst { target_type, .. },
+            RawCtfType::Const {
+                ty: RawCtfConst { target_type, .. },
                 ..
             } => {
                 types.check(*target_type)?;
             }
-            CtfType::Restrict {
-                ty: CtfRestrict { target_type, .. },
+            RawCtfType::Restrict {
+                ty: RawCtfRestrict { target_type, .. },
                 ..
             } => {
                 types.check(*target_type)?;
@@ -432,7 +432,7 @@ fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<(
 /// necessary.
 fn update_large_enums(types: &mut TypeTable, strings: &StringTable) -> Result<()> {
     let iter = types.as_slice_mut().iter_mut().filter_map(|t| match t {
-        CtfType::Enum { ty, .. } => Some(ty),
+        RawCtfType::Enum { ty, .. } => Some(ty),
         _ => None,
     });
 
@@ -557,7 +557,7 @@ impl TryFromCtx<'_, Endian> for CtfLabel {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 struct TypeTable {
-    types: Vec<CtfType>,
+    types: Vec<RawCtfType>,
 }
 
 impl TypeTable {
@@ -571,7 +571,7 @@ impl TypeTable {
 
         let mut types = Vec::new();
         // First slot is empty, but we use Unknown as a placeholder
-        types.push(CtfType::Unknown { id });
+        types.push(RawCtfType::Unknown { id });
 
         while *offset < types_data.len() {
             let ty = types_data.gread_with(offset, (id, endian))?;
@@ -583,7 +583,7 @@ impl TypeTable {
         Ok(Self { types })
     }
 
-    pub fn ty_checked(&self, id: TypeId) -> Result<&CtfType> {
+    pub fn ty_checked(&self, id: TypeId) -> Result<&RawCtfType> {
         let Some(ty) = self.types.get(id.get() as usize) else {
             return Err(Error::missing_type(id));
         };
@@ -596,11 +596,11 @@ impl TypeTable {
         Ok(())
     }
 
-    pub fn as_slice(&self) -> &[CtfType] {
+    pub fn as_slice(&self) -> &[RawCtfType] {
         &self.types
     }
 
-    pub fn as_slice_mut(&mut self) -> &mut [CtfType] {
+    pub fn as_slice_mut(&mut self) -> &mut [RawCtfType] {
         &mut self.types
     }
 }
@@ -730,24 +730,24 @@ impl TryFrom<u8> for FloatType {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum CtfType {
+pub enum RawCtfType {
     Unknown { id: TypeId },
-    Integer { id: TypeId, ty: CtfInteger },
-    Float { id: TypeId, ty: CtfFloat },
-    Pointer { id: TypeId, ty: CtfPointer },
-    Array { id: TypeId, ty: CtfArray },
-    Function { id: TypeId, ty: CtfFunction },
-    Struct { id: TypeId, ty: CtfStruct },
-    Union { id: TypeId, ty: CtfUnion },
-    Enum { id: TypeId, ty: CtfEnum },
-    Forward { id: TypeId, ty: CtfForward },
-    Typedef { id: TypeId, ty: CtfTypedef },
-    Volatile { id: TypeId, ty: CtfVolatile },
-    Const { id: TypeId, ty: CtfConst },
-    Restrict { id: TypeId, ty: CtfRestrict },
+    Integer { id: TypeId, ty: RawCtfInteger },
+    Float { id: TypeId, ty: RawCtfFloat },
+    Pointer { id: TypeId, ty: RawCtfPointer },
+    Array { id: TypeId, ty: RawCtfArray },
+    Function { id: TypeId, ty: RawCtfFunction },
+    Struct { id: TypeId, ty: RawCtfStruct },
+    Union { id: TypeId, ty: RawCtfUnion },
+    Enum { id: TypeId, ty: RawCtfEnum },
+    Forward { id: TypeId, ty: RawCtfForward },
+    Typedef { id: TypeId, ty: RawCtfTypedef },
+    Volatile { id: TypeId, ty: RawCtfVolatile },
+    Const { id: TypeId, ty: RawCtfConst },
+    Restrict { id: TypeId, ty: RawCtfRestrict },
 }
 
-impl CtfType {
+impl RawCtfType {
     pub fn id(&self) -> TypeId {
         match self {
             Self::Unknown { id } => *id,
@@ -786,28 +786,28 @@ impl CtfType {
         }
     }
 
-    pub fn members(&self) -> &[CtfMember] {
+    pub fn members(&self) -> &[RawCtfMember] {
         match self {
-            CtfType::Struct {
-                ty: CtfStruct { members, .. },
+            RawCtfType::Struct {
+                ty: RawCtfStruct { members, .. },
                 ..
             } => members.as_slice(),
-            CtfType::Union {
-                ty: CtfUnion { members, .. },
+            RawCtfType::Union {
+                ty: RawCtfUnion { members, .. },
                 ..
             } => members.as_slice(),
             _ => &[],
         }
     }
 
-    pub fn member(&self, name: &str, ctf: &CtfReader) -> Option<&CtfMember> {
+    pub fn member(&self, name: &str, ctf: &CtfReader) -> Option<&RawCtfMember> {
         let members = match self {
-            CtfType::Struct {
-                ty: CtfStruct { members, .. },
+            RawCtfType::Struct {
+                ty: RawCtfStruct { members, .. },
                 ..
             } => members.as_slice(),
-            CtfType::Union {
-                ty: CtfUnion { members, .. },
+            RawCtfType::Union {
+                ty: RawCtfUnion { members, .. },
                 ..
             } => members.as_slice(),
             _ => return None,
@@ -817,12 +817,12 @@ impl CtfType {
 
     pub fn has_member(&self, name: &str, ctf: &CtfReader) -> bool {
         let members = match self {
-            CtfType::Struct {
-                ty: CtfStruct { members, .. },
+            RawCtfType::Struct {
+                ty: RawCtfStruct { members, .. },
                 ..
             } => members.as_slice(),
-            CtfType::Union {
-                ty: CtfUnion { members, .. },
+            RawCtfType::Union {
+                ty: RawCtfUnion { members, .. },
                 ..
             } => members.as_slice(),
             _ => return false,
@@ -830,8 +830,11 @@ impl CtfType {
         members.iter().any(|m| m.name(ctf) == name)
     }
 
-    /// Return all members of the `CtfType` resolved into full `CtfTypes`.
-    pub fn members_resolved<'ctf>(&self, ctf: &'ctf CtfReader) -> Vec<(&'ctf str, &'ctf CtfType)> {
+    /// Return all members of the `RawCtfType` resolved into full `RawCtfTypes`.
+    pub fn members_resolved<'ctf>(
+        &self,
+        ctf: &'ctf CtfReader,
+    ) -> Vec<(&'ctf str, &'ctf RawCtfType)> {
         let members = self.members();
 
         let mut resolved = Vec::with_capacity(members.len());
@@ -855,55 +858,55 @@ impl CtfType {
         let id = match self {
             Self::Unknown { .. } => return None,
             Self::Integer {
-                ty: CtfInteger { name, .. },
+                ty: RawCtfInteger { name, .. },
                 ..
             } => name,
             Self::Float {
-                ty: CtfFloat { name, .. },
+                ty: RawCtfFloat { name, .. },
                 ..
             } => name,
             Self::Pointer {
-                ty: CtfPointer { name, .. },
+                ty: RawCtfPointer { name, .. },
                 ..
             } => name,
             Self::Array {
-                ty: CtfArray { name, .. },
+                ty: RawCtfArray { name, .. },
                 ..
             } => name,
             Self::Function {
-                ty: CtfFunction { name, .. },
+                ty: RawCtfFunction { name, .. },
                 ..
             } => name,
             Self::Struct {
-                ty: CtfStruct { name, .. },
+                ty: RawCtfStruct { name, .. },
                 ..
             } => name,
             Self::Union {
-                ty: CtfUnion { name, .. },
+                ty: RawCtfUnion { name, .. },
                 ..
             } => name,
             Self::Enum {
-                ty: CtfEnum { name, .. },
+                ty: RawCtfEnum { name, .. },
                 ..
             } => name,
             Self::Forward {
-                ty: CtfForward { name },
+                ty: RawCtfForward { name },
                 ..
             } => name,
             Self::Typedef {
-                ty: CtfTypedef { name, .. },
+                ty: RawCtfTypedef { name, .. },
                 ..
             } => name,
             Self::Volatile {
-                ty: CtfVolatile { name, .. },
+                ty: RawCtfVolatile { name, .. },
                 ..
             } => name,
             Self::Const {
-                ty: CtfConst { name, .. },
+                ty: RawCtfConst { name, .. },
                 ..
             } => name,
             Self::Restrict {
-                ty: CtfRestrict { name, .. },
+                ty: RawCtfRestrict { name, .. },
                 ..
             } => name,
         };
@@ -914,19 +917,19 @@ impl CtfType {
     /// types as needed.
     pub fn size(&self, ctf: &CtfReader) -> u64 {
         match self {
-            CtfType::Unknown { .. } => 0,
-            CtfType::Integer {
-                ty: CtfInteger { size, .. },
+            RawCtfType::Unknown { .. } => 0,
+            RawCtfType::Integer {
+                ty: RawCtfInteger { size, .. },
                 ..
             } => *size,
-            CtfType::Float {
-                ty: CtfFloat { size, .. },
+            RawCtfType::Float {
+                ty: RawCtfFloat { size, .. },
                 ..
             } => *size,
-            CtfType::Pointer { .. } => POINTER_SIZE,
-            CtfType::Array {
+            RawCtfType::Pointer { .. } => POINTER_SIZE,
+            RawCtfType::Array {
                 ty:
-                    CtfArray {
+                    RawCtfArray {
                         element_type,
                         nelems,
                         ..
@@ -936,43 +939,43 @@ impl CtfType {
                 let elem_size = ctf.ty(*element_type).size(ctf);
                 elem_size * *nelems as u64
             }
-            CtfType::Function { .. } => POINTER_SIZE,
-            CtfType::Struct {
-                ty: CtfStruct { size, .. },
+            RawCtfType::Function { .. } => POINTER_SIZE,
+            RawCtfType::Struct {
+                ty: RawCtfStruct { size, .. },
                 ..
             } => *size,
-            CtfType::Union {
-                ty: CtfUnion { size, .. },
+            RawCtfType::Union {
+                ty: RawCtfUnion { size, .. },
                 ..
             } => *size,
-            CtfType::Enum {
-                ty: CtfEnum { size, .. },
+            RawCtfType::Enum {
+                ty: RawCtfEnum { size, .. },
                 ..
             } => *size,
-            CtfType::Forward { .. } => 0,
-            CtfType::Typedef {
-                ty: CtfTypedef { target_type, .. },
+            RawCtfType::Forward { .. } => 0,
+            RawCtfType::Typedef {
+                ty: RawCtfTypedef { target_type, .. },
                 ..
             } => ctf.ty(*target_type).size(ctf),
-            CtfType::Volatile {
-                ty: CtfVolatile { target_type, .. },
+            RawCtfType::Volatile {
+                ty: RawCtfVolatile { target_type, .. },
                 ..
             } => ctf.ty(*target_type).size(ctf),
-            CtfType::Const {
-                ty: CtfConst { target_type, .. },
+            RawCtfType::Const {
+                ty: RawCtfConst { target_type, .. },
                 ..
             } => ctf.ty(*target_type).size(ctf),
-            CtfType::Restrict {
-                ty: CtfRestrict { target_type, .. },
+            RawCtfType::Restrict {
+                ty: RawCtfRestrict { target_type, .. },
                 ..
             } => ctf.ty(*target_type).size(ctf),
         }
     }
 
-    pub fn enumerators(&self) -> &[CtfEnumerator] {
+    pub fn enumerators(&self) -> &[RawCtfEnumerator] {
         match self {
-            CtfType::Enum {
-                ty: CtfEnum { enumerators, .. },
+            RawCtfType::Enum {
+                ty: RawCtfEnum { enumerators, .. },
                 ..
             } => enumerators,
             _ => &[],
@@ -980,7 +983,7 @@ impl CtfType {
     }
 }
 
-impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
+impl TryFromCtx<'_, (TypeId, Endian)> for RawCtfType {
     type Error = Error;
 
     fn try_from_ctx(from: &[u8], ctx: (TypeId, Endian)) -> Result<(Self, usize)> {
@@ -1006,7 +1009,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 let encoding = from.gread_with(offset, endian)?;
                 Self::Integer {
                     id,
-                    ty: CtfInteger {
+                    ty: RawCtfInteger {
                         name,
                         size,
                         encoding,
@@ -1017,7 +1020,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 let encoding = from.gread_with(offset, endian)?;
                 Self::Float {
                     id,
-                    ty: CtfFloat {
+                    ty: RawCtfFloat {
                         name,
                         size,
                         encoding,
@@ -1028,7 +1031,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 let target_type = TypeId::from_u16(size_or_ty)?;
                 Self::Pointer {
                     id,
-                    ty: CtfPointer { name, target_type },
+                    ty: RawCtfPointer { name, target_type },
                 }
             }
             TypeKind::Array => {
@@ -1041,7 +1044,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 let nelems = from.gread_with(offset, endian)?;
                 Self::Array {
                     id,
-                    ty: CtfArray {
+                    ty: RawCtfArray {
                         name,
                         element_type,
                         index_type,
@@ -1073,7 +1076,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 }
                 Self::Function {
                     id,
-                    ty: CtfFunction {
+                    ty: RawCtfFunction {
                         name,
                         return_type,
                         args,
@@ -1086,7 +1089,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 let mut members = Vec::new();
                 if size_or_ty >= LARGE_THRESHOLD {
                     for _ in 0..vlen {
-                        let lmember: LargeCtfMember = from.gread_with(offset, endian)?;
+                        let lmember: LargeRawCtfMember = from.gread_with(offset, endian)?;
                         members.push(lmember.into());
                     }
                 } else {
@@ -1097,7 +1100,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 }
                 Self::Struct {
                     id,
-                    ty: CtfStruct {
+                    ty: RawCtfStruct {
                         name,
                         size,
                         members,
@@ -1109,7 +1112,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 let mut members = Vec::new();
                 if size_or_ty >= LARGE_THRESHOLD {
                     for _ in 0..vlen {
-                        let lmember: LargeCtfMember = from.gread_with(offset, endian)?;
+                        let lmember: LargeRawCtfMember = from.gread_with(offset, endian)?;
                         members.push(lmember.into());
                     }
                 } else {
@@ -1120,7 +1123,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 }
                 Self::Union {
                     id,
-                    ty: CtfUnion {
+                    ty: RawCtfUnion {
                         name,
                         size,
                         members,
@@ -1140,7 +1143,7 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
                 }
                 Self::Enum {
                     id,
-                    ty: CtfEnum {
+                    ty: RawCtfEnum {
                         name,
                         size,
                         enumerators,
@@ -1149,34 +1152,34 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
             }
             TypeKind::Forward => Self::Forward {
                 id,
-                ty: CtfForward { name },
+                ty: RawCtfForward { name },
             },
             TypeKind::Typedef => {
                 let target_type = TypeId::from_u16(size_or_ty)?;
                 Self::Typedef {
                     id,
-                    ty: CtfTypedef { name, target_type },
+                    ty: RawCtfTypedef { name, target_type },
                 }
             }
             TypeKind::Volatile => {
                 let target_type = TypeId::from_u16(size_or_ty)?;
                 Self::Volatile {
                     id,
-                    ty: CtfVolatile { name, target_type },
+                    ty: RawCtfVolatile { name, target_type },
                 }
             }
             TypeKind::Const => {
                 let target_type = TypeId::from_u16(size_or_ty)?;
                 Self::Const {
                     id,
-                    ty: CtfConst { name, target_type },
+                    ty: RawCtfConst { name, target_type },
                 }
             }
             TypeKind::Restrict => {
                 let target_type = TypeId::from_u16(size_or_ty)?;
                 Self::Restrict {
                     id,
-                    ty: CtfRestrict { name, target_type },
+                    ty: RawCtfRestrict { name, target_type },
                 }
             }
         };
@@ -1186,27 +1189,27 @@ impl TryFromCtx<'_, (TypeId, Endian)> for CtfType {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfInteger {
+pub struct RawCtfInteger {
     pub name: StrId,
     pub size: u64,
     pub encoding: IntegerEncoding,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfFloat {
+pub struct RawCtfFloat {
     pub name: StrId,
     pub size: u64,
     pub encoding: FloatEncoding,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfPointer {
+pub struct RawCtfPointer {
     pub name: StrId,
     pub target_type: TypeId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfArray {
+pub struct RawCtfArray {
     pub name: StrId,
     pub element_type: TypeId,
     pub index_type: TypeId,
@@ -1214,7 +1217,7 @@ pub struct CtfArray {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfFunction {
+pub struct RawCtfFunction {
     pub name: StrId,
     pub return_type: TypeId,
     pub args: Vec<TypeId>,
@@ -1222,74 +1225,74 @@ pub struct CtfFunction {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfStruct {
+pub struct RawCtfStruct {
     pub name: StrId,
     pub size: u64,
-    pub members: Vec<CtfMember>,
+    pub members: Vec<RawCtfMember>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfMember {
+pub struct RawCtfMember {
     pub name: StrId,
     pub type_id: TypeId,
     pub offset_bits: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfUnion {
+pub struct RawCtfUnion {
     pub name: StrId,
     pub size: u64,
-    pub members: Vec<CtfMember>,
+    pub members: Vec<RawCtfMember>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfEnum {
+pub struct RawCtfEnum {
     pub name: StrId,
     pub size: u64,
-    pub enumerators: Vec<CtfEnumerator>,
+    pub enumerators: Vec<RawCtfEnumerator>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfEnumerator {
+pub struct RawCtfEnumerator {
     pub name: StrId,
     pub value: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfForward {
+pub struct RawCtfForward {
     pub name: StrId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfTypedef {
+pub struct RawCtfTypedef {
     pub name: StrId,
     pub target_type: TypeId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfVolatile {
+pub struct RawCtfVolatile {
     pub name: StrId,
     pub target_type: TypeId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfConst {
+pub struct RawCtfConst {
     pub name: StrId,
     pub target_type: TypeId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct CtfRestrict {
+pub struct RawCtfRestrict {
     pub name: StrId,
     pub target_type: TypeId,
 }
 
-impl CtfMember {
+impl RawCtfMember {
     pub fn name<'ctf>(&self, ctf: &'ctf CtfReader) -> &'ctf str {
         ctf.str(self.name)
     }
 
-    pub fn ty<'ctf>(&self, ctf: &'ctf CtfReader) -> &'ctf CtfType {
+    pub fn ty<'ctf>(&self, ctf: &'ctf CtfReader) -> &'ctf RawCtfType {
         ctf.ty(self.type_id)
     }
 
@@ -1299,7 +1302,7 @@ impl CtfMember {
     }
 }
 
-impl TryFromCtx<'_, Endian> for CtfMember {
+impl TryFromCtx<'_, Endian> for RawCtfMember {
     type Error = Error;
 
     fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
@@ -1314,7 +1317,7 @@ impl TryFromCtx<'_, Endian> for CtfMember {
         let offset_bits = from.gread_with::<u16>(offset, endian)? as u64;
 
         Ok((
-            CtfMember {
+            RawCtfMember {
                 name,
                 type_id,
                 offset_bits,
@@ -1324,19 +1327,19 @@ impl TryFromCtx<'_, Endian> for CtfMember {
     }
 }
 
-struct LargeCtfMember {
+struct LargeRawCtfMember {
     pub name: StrId,
     pub type_id: TypeId,
     pub offset_bits: u64,
 }
 
-impl From<LargeCtfMember> for CtfMember {
+impl From<LargeRawCtfMember> for RawCtfMember {
     fn from(
-        LargeCtfMember {
+        LargeRawCtfMember {
             name,
             type_id,
             offset_bits,
-        }: LargeCtfMember,
+        }: LargeRawCtfMember,
     ) -> Self {
         Self {
             name,
@@ -1346,7 +1349,7 @@ impl From<LargeCtfMember> for CtfMember {
     }
 }
 
-impl TryFromCtx<'_, Endian> for LargeCtfMember {
+impl TryFromCtx<'_, Endian> for LargeRawCtfMember {
     type Error = Error;
 
     fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
@@ -1366,7 +1369,7 @@ impl TryFromCtx<'_, Endian> for LargeCtfMember {
         let offset_bits = (offset_hi as u64) << 32 | offset_lo as u64;
 
         Ok((
-            LargeCtfMember {
+            LargeRawCtfMember {
                 name,
                 type_id,
                 offset_bits,
@@ -1376,13 +1379,13 @@ impl TryFromCtx<'_, Endian> for LargeCtfMember {
     }
 }
 
-impl CtfEnumerator {
+impl RawCtfEnumerator {
     pub fn name<'ctf>(&self, ctf: &'ctf CtfReader) -> &'ctf str {
         ctf.str(self.name)
     }
 }
 
-impl TryFromCtx<'_, Endian> for CtfEnumerator {
+impl TryFromCtx<'_, Endian> for RawCtfEnumerator {
     type Error = Error;
 
     fn try_from_ctx(from: &'_ [u8], endian: Endian) -> Result<(Self, usize)> {
@@ -1398,7 +1401,7 @@ impl TryFromCtx<'_, Endian> for CtfEnumerator {
         let value: i32 = from.gread_with(offset, endian)?;
 
         Ok((
-            CtfEnumerator {
+            RawCtfEnumerator {
                 name,
                 value: value as u64,
             },
