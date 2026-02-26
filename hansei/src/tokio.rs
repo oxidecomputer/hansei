@@ -41,7 +41,7 @@ impl<'ctf> Context<'ctf> {
         // this is true, but haven't validated.
         let now = RawInstant::try_from(main_lwp.status())?;
 
-        let tokio_info = TokioInfo::new(ctf)?;
+        let tokio_info = TokioInfo::new(&ctf)?;
         Ok(Context {
             proc,
             ctf,
@@ -346,6 +346,10 @@ impl TokioRuntime {
         symbols: &mut HashMap<u64, &'static str>,
         capture_backtraces: bool,
     ) -> Result<Self> {
+        let Some(ctx_ty) = ctf.find("tokio::runtime::context::Context", TypeKind::Struct) else {
+            anyhow::bail!("failed to find tokio::runtime::context::Context CTF type");
+        };
+
         let ctx = Context::new(proc, main_lwp, ctf, symbols).context("failed to create Context")?;
 
         let lwps = proc.lwps()?;

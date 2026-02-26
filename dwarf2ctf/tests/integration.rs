@@ -4,7 +4,8 @@
 #![cfg(target_os = "illumos")]
 
 use assert_cmd::Command as AssertCommand;
-use durin::read::{CtfArray, CtfReader, CtfType};
+use durin::TypeKind;
+use durin::read::CtfReader;
 use tempfile::TempDir;
 
 use std::path::PathBuf;
@@ -82,23 +83,26 @@ fn test_struct_size_and_member_offsets() {
     let test_type = "test_fixture::Point";
     let (bin_path, dir) = compile_rust_fixture(source);
     let ctf = run_and_parse_ctf(&bin_path, &[test_type], &dir);
+    let view = ctf.view();
 
-    let point = ctf
-        .types()
-        .into_iter()
-        .find(|s| s.name(&ctf) == test_type)
+    let point = view
+        .find(test_type, TypeKind::Struct)
         .expect("expected Point struct");
 
     // Point should be 8 bytes (2 * i32)
-    assert_eq!(point.size(&ctf), 8, "Point should be 8 bytes");
+    assert_eq!(point.size(), 8, "Point should be 8 bytes");
     assert_eq!(point.members().len(), 2, "Point should have 2 members");
 
     // Check member offsets (in bits for CTF)
-    let x = point.member("x", &ctf).expect("expected member x");
-    let y = point.member("y", &ctf).expect("expected member y");
+    let x = point.member("x").expect("expected member x");
+    let y = point.member("y").expect("expected member y");
 
-    assert_eq!(x.offset_bits, 0, "x should be at offset 0");
-    assert_eq!(y.offset_bits, 32, "y should be at offset 32 bits (4 bytes)");
+    assert_eq!(x.offset_bits(), 0, "x should be at offset 0");
+    assert_eq!(
+        y.offset_bits(),
+        32,
+        "y should be at offset 32 bits (4 bytes)"
+    );
 }
 
 #[test]
@@ -121,30 +125,26 @@ fn test_struct_with_different_sized_members() {
     let test_type = "test_fixture::Mixed";
     let (bin_path, dir) = compile_rust_fixture(source);
     let ctf = run_and_parse_ctf(&bin_path, &[test_type], &dir);
+    let view = ctf.view();
 
-    let mixed = ctf
-        .types()
-        .into_iter()
-        .find(|s| s.name(&ctf) == test_type)
+    let mixed = view
+        .find(test_type, TypeKind::Struct)
         .expect("expected Mixed struct");
 
     // With #[repr(C)]: a at 0, padding, b at 4, c at 8, padding to 12
-    assert_eq!(
-        mixed.size(&ctf),
-        12,
-        "Mixed should be 12 bytes with C layout"
-    );
+    assert_eq!(mixed.size(), 12, "Mixed should be 12 bytes with C layout");
 
-    let a = mixed.member("a", &ctf).expect("expected member a");
-    let b = mixed.member("b", &ctf).expect("expected member b");
-    let c = mixed.member("c", &ctf).expect("expected member c");
+    let a = mixed.member("a").expect("expected member a");
+    let b = mixed.member("b").expect("expected member b");
+    let c = mixed.member("c").expect("expected member c");
 
-    assert_eq!(a.offset_bits, 0, "a should be at offset 0");
+    assert_eq!(a.offset_bits(), 0, "a should be at offset 0");
     assert_eq!(
-        b.offset_bits, 32,
+        b.offset_bits(),
+        32,
         "b should be at offset 32 bits (after padding)"
     );
-    assert_eq!(c.offset_bits, 64, "c should be at offset 64 bits");
+    assert_eq!(c.offset_bits(), 64, "c should be at offset 64 bits");
 }
 
 #[test]
@@ -178,32 +178,30 @@ fn test_nested_struct_sizes() {
         &["test_fixture::Inner", "test_fixture::Outer"],
         &dir,
     );
+    let view = ctf.view();
 
-    let inner = ctf
-        .types()
-        .into_iter()
-        .find(|s| s.name(&ctf) == "test_fixture::Inner")
+    let inner = view
+        .find("test_fixture::Inner", TypeKind::Struct)
         .expect("expected Inner struct");
 
-    let outer = ctf
-        .types()
-        .into_iter()
-        .find(|s| s.name(&ctf) == "test_fixture::Outer")
+    let outer = view
+        .find("test_fixture::Outer", TypeKind::Struct)
         .expect("expected Outer struct");
 
     // Inner: 8 bytes (i64)
-    assert_eq!(inner.size(&ctf), 8, "Inner should be 8 bytes");
-    assert_eq!(inner.member("value", &ctf).unwrap().offset_bits, 0);
+    assert_eq!(inner.size(), 8, "Inner should be 8 bytes");
+    assert_eq!(inner.member("value").unwrap().offset_bits(), 0);
 
     // Outer: 16 bytes (Inner(8) + extra(4) + padding(4) for alignment)
-    assert_eq!(outer.size(&ctf), 16, "Outer should be 16 bytes");
+    assert_eq!(outer.size(), 16, "Outer should be 16 bytes");
 
-    let inner_member = outer.member("inner", &ctf).expect("expected inner member");
-    let extra_member = outer.member("extra", &ctf).expect("expected extra member");
+    let inner_member = outer.member("inner").expect("expected inner member");
+    let extra_member = outer.member("extra").expect("expected extra member");
 
-    assert_eq!(inner_member.offset_bits, 0, "inner should be at offset 0");
+    assert_eq!(inner_member.offset_bits(), 0, "inner should be at offset 0");
     assert_eq!(
-        extra_member.offset_bits, 64,
+        extra_member.offset_bits(),
+        64,
         "extra should be at offset 64 bits"
     );
 }
@@ -227,29 +225,26 @@ fn test_enum_size_and_variants() {
     let test_type = "test_fixture::Color";
     let (bin_path, dir) = compile_rust_fixture(source);
     let ctf = run_and_parse_ctf(&bin_path, &[test_type], &dir);
+    let view = ctf.view();
 
-    let color = ctf
-        .types()
-        .iter()
-        .find(|e| e.name(&ctf) == test_type)
-        .unwrap();
+    let color = view.find(test_type, TypeKind::Enum).unwrap();
 
     // C enum is typically 4 bytes
-    assert_eq!(color.size(&ctf), 4, "Color enum should be 4 bytes");
+    assert_eq!(color.size(), 4, "Color enum should be 4 bytes");
     assert_eq!(color.enumerators().len(), 3, "Color should have 3 variants");
 
     // Check enumerator values
-    let red = color.enumerators().iter().find(|n| n.name(&ctf) == "Red");
-    let green = color.enumerators().iter().find(|n| n.name(&ctf) == "Green");
-    let blue = color.enumerators().iter().find(|n| n.name(&ctf) == "Blue");
+    let red = color.enumerators().find(|n| n.name() == "Red");
+    let green = color.enumerators().find(|n| n.name() == "Green");
+    let blue = color.enumerators().find(|n| n.name() == "Blue");
 
     assert!(red.is_some(), "expected Red variant");
     assert!(green.is_some(), "expected Green variant");
     assert!(blue.is_some(), "expected Blue variant");
 
-    assert_eq!(red.unwrap().value, 0u64, "Red should have value 0");
-    assert_eq!(green.unwrap().value, 1u64, "Green should have value 1");
-    assert_eq!(blue.unwrap().value, 2u64, "Blue should have value 2");
+    assert_eq!(red.unwrap().value(), 0u64, "Red should have value 0");
+    assert_eq!(green.unwrap().value(), 1u64, "Green should have value 1");
+    assert_eq!(blue.unwrap().value(), 2u64, "Blue should have value 2");
 }
 
 #[test]
@@ -268,24 +263,13 @@ fn test_array_element_count() {
     let test_type = "test_fixture::Wrapper";
     let (bin_path, dir) = compile_rust_fixture(source);
     let ctf = run_and_parse_ctf(&bin_path, &[test_type], &dir);
+    let view = ctf.view();
 
-    let wrapper = ctf
-        .types()
-        .iter()
-        .find(|t| t.name(&ctf) == test_type)
-        .unwrap();
+    let wrapper = view.find(test_type, TypeKind::Struct).unwrap();
+    let inner = wrapper.member("inner").unwrap();
+    let array = inner.ty().as_array().unwrap();
 
-    let inner = wrapper.member("inner", &ctf).unwrap();
-    let array = inner.ty(&ctf);
-    let CtfType::Array {
-        ty: CtfArray { nelems, .. },
-        ..
-    } = array
-    else {
-        panic!("CTF type was not an array");
-    };
-
-    assert_eq!(*nelems, 4);
+    assert_eq!(array.len(), 4);
 }
 
 #[test]
@@ -304,31 +288,19 @@ fn test_tuple_struct_layout() {
     let test_type = "test_fixture::Pair";
     let (bin_path, dir) = compile_rust_fixture(source);
     let ctf = run_and_parse_ctf(&bin_path, &[test_type], &dir);
+    let view = ctf.view();
 
-    let pair = ctf
-        .types()
-        .into_iter()
-        .find(|s| s.name(&ctf) == test_type)
+    let pair = view
+        .find(test_type, TypeKind::Struct)
         .expect("expected Pair struct");
 
     // Pair: i32(4) + padding(4) + i64(8) = 16 bytes
-    assert_eq!(pair.size(&ctf), 16, "Pair should be 16 bytes");
+    assert_eq!(pair.size(), 16, "Pair should be 16 bytes");
     assert_eq!(pair.members().len(), 2, "Pair should have 2 members");
 
-    // Tuple fields are named __0, __1 or 0, 1
-    let members = pair.members();
-    assert!(
-        members
-            .iter()
-            .any(|m| m.name(&ctf) == "__0" || m.name(&ctf) == "0"),
-        "expected first tuple field"
-    );
-    assert!(
-        members
-            .iter()
-            .any(|m| m.name(&ctf) == "__1" || m.name(&ctf) == "1"),
-        "expected second tuple field"
-    );
+    // Tuple fields are named __0, __1
+    assert!(pair.member("__0").is_some(), "expected first tuple field");
+    assert!(pair.member("__1").is_some(), "expected second tuple field");
 }
 
 #[test]
@@ -359,11 +331,10 @@ fn test_complex_struct_offsets() {
     let type_name = "test_fixture::Complex";
     let (bin_path, dir) = compile_rust_fixture(source);
     let ctf = run_and_parse_ctf(&bin_path, &[type_name], &dir);
+    let view = ctf.view();
 
-    let complex = ctf
-        .types()
-        .into_iter()
-        .find(|s| s.name(&ctf) == type_name)
+    let complex = view
+        .find(type_name, TypeKind::Struct)
         .expect("expected Complex struct");
 
     // C layout:
@@ -377,19 +348,19 @@ fn test_complex_struct_offsets() {
     // padding: 6 bytes for u64 alignment
     // total: 32 bytes
 
-    assert_eq!(complex.size(&ctf), 32, "Complex should be 32 bytes");
+    assert_eq!(complex.size(), 32, "Complex should be 32 bytes");
 
-    let flags = complex.member("flags", &ctf).expect("expected flags");
-    let id = complex.member("id", &ctf).expect("expected id");
-    let count = complex.member("count", &ctf).expect("expected count");
-    let data = complex.member("data", &ctf).expect("expected data");
-    let value = complex.member("value", &ctf).expect("expected value");
+    let flags = complex.member("flags").expect("expected flags");
+    let id = complex.member("id").expect("expected id");
+    let count = complex.member("count").expect("expected count");
+    let data = complex.member("data").expect("expected data");
+    let value = complex.member("value").expect("expected value");
 
-    assert_eq!(flags.offset_bits, 0, "flags at 0");
-    assert_eq!(id.offset_bits, 64, "id at 64 bits (8 bytes)");
-    assert_eq!(count.offset_bits, 128, "count at 128 bits (16 bytes)");
-    assert_eq!(data.offset_bits, 160, "data at 160 bits (20 bytes)");
-    assert_eq!(value.offset_bits, 192, "value at 192 bits (24 bytes)");
+    assert_eq!(flags.offset_bits(), 0, "flags at 0");
+    assert_eq!(id.offset_bits(), 64, "id at 64 bits (8 bytes)");
+    assert_eq!(count.offset_bits(), 128, "count at 128 bits (16 bytes)");
+    assert_eq!(data.offset_bits(), 160, "data at 160 bits (20 bytes)");
+    assert_eq!(value.offset_bits(), 192, "value at 192 bits (24 bytes)");
 }
 
 #[test]
@@ -404,9 +375,10 @@ fn test_option_type_exists() {
     let test_type = "core::option::Option<i32>";
     let (bin_path, dir) = compile_rust_fixture(source);
     let ctf = run_and_parse_ctf(&bin_path, &[test_type], &dir);
+    let view = ctf.view();
 
     // Option<T> should produce some type
-    let option_type = ctf.types().iter().find(|t| t.name(&ctf) == test_type);
+    let option_type = view.find(test_type, TypeKind::Struct);
     assert!(option_type.is_some(), "expected Option type");
 }
 
@@ -421,11 +393,9 @@ fn test_result_type_exists() {
 
     let (bin_path, dir) = compile_rust_fixture(source);
     let ctf = run_and_parse_ctf(&bin_path, &["core::result::Result<i32, &str>"], &dir);
+    let view = ctf.view();
 
-    let result_type = ctf
-        .types()
-        .iter()
-        .find(|t| t.name(&ctf) == "core::result::Result<i32,_&str>");
+    let result_type = view.find("core::result::Result<i32,_&str>", TypeKind::Struct);
     assert!(result_type.is_some(), "expected Result type");
 }
 
@@ -444,11 +414,12 @@ fn test_vec_type_exists() {
         &["alloc::vec::Vec<i32, alloc::alloc::Global>"],
         &dir,
     );
+    let view = ctf.view();
 
-    let vec_type = ctf
-        .types()
-        .iter()
-        .find(|t| t.name(&ctf) == "alloc::vec::Vec<i32,_alloc::alloc::Global>");
+    let vec_type = view.find(
+        "alloc::vec::Vec<i32,_alloc::alloc::Global>",
+        TypeKind::Struct,
+    );
     assert!(vec_type.is_some(), "expected Vec type");
 }
 
@@ -480,70 +451,43 @@ fn test_option_nonzero_has_tagged_union() {
     let test_type = "core::option::Option<core::num::nonzero::NonZero<u32>>";
     let (bin_path, dir) = compile_rust_fixture(source);
     let ctf = run_and_parse_ctf(&bin_path, &[test_type], &dir);
+    let view = ctf.view();
 
     // Find the Option<NonZeroU32> struct
-    let option_struct = ctf
-        .types()
-        .into_iter()
-        .find(|s| s.name(&ctf) == test_type)
+    let option_struct = view
+        .find(test_type, TypeKind::Struct)
         .expect("expected Option<NonZeroU32> struct");
 
     // For niche-optimized enums, we should have a __tagged member
-    let tagged = option_struct.member("__tagged", &ctf);
-    assert!(
-        tagged.is_some(),
-        "expected __tagged member for niche-optimized enum"
-    );
-
-    // Find the __tagged union
-    let tagged_union = ctf
-        .types()
-        .into_iter()
-        .find(|u| u.name(&ctf).contains("__tagged"))
-        .expect("expected __tagged union type");
+    let tagged = option_struct.member("__tagged").unwrap();
 
     // The __tagged union should have __discr and __variants members
-    let discr = tagged_union.member("__discr", &ctf);
-    let variants = tagged_union.member("__variants", &ctf);
+    let discr = tagged.ty().member("__discr").unwrap();
+    let variants = tagged.ty().member("__variants");
 
-    assert!(discr.is_some(), "expected __discr member in __tagged union");
     assert!(
         variants.is_some(),
         "expected __variants member in __tagged union"
     );
 
-    // Find the discriminant enum type
-    let discr_enum = ctf
-        .types()
-        .into_iter()
-        .find(|e| e.name(&ctf).contains("__discr_ty"))
-        .expect("expected __discr_ty enum type");
-
     // The discriminant enum should have a None variant with value 0
-    let none = discr_enum
-        .enumerators()
-        .iter()
-        .find(|n| n.name(&ctf) == "None");
+    let none = discr.ty().enumerator("None");
     assert!(
         none.is_some(),
         "expected None enumerator in discriminant enum"
     );
     assert_eq!(
-        none.unwrap().value,
+        none.unwrap().value(),
         0u64,
         "None should have discriminant value 0"
     );
 
     // Find the __variants union
-    let variants_union = ctf
-        .types()
-        .into_iter()
-        .find(|u| u.name(&ctf).contains("__variants"))
-        .expect("expected __variants union type");
+    let variants_union = tagged.ty().member("__variants").unwrap();
 
     // The __variants union should have None and Some members
-    let none_member = variants_union.member("None", &ctf);
-    let some_member = variants_union.member("Some", &ctf);
+    let none_member = variants_union.ty().member("None");
+    let some_member = variants_union.ty().member("Some");
 
     assert!(
         none_member.is_some(),
@@ -575,31 +519,22 @@ fn test_option_custom_enum_has_tagged_union() {
     let test_type = "core::option::Option<test_fixture::Status>";
     let (bin_path, dir) = compile_rust_fixture(source);
     let ctf = run_and_parse_ctf(&bin_path, &[test_type], &dir);
+    let view = ctf.view();
 
     // Find the Option<Status> struct
-    let ty = ctf
-        .types()
-        .into_iter()
-        .find(|s| s.name(&ctf) == test_type)
-        .unwrap();
+    let ty = view.find(test_type, TypeKind::Struct).unwrap();
 
-    // If we found the Option struct, check for __tagged union structure
-    let tagged = ty.member("__tagged", &ctf);
-    if tagged.is_some() {
-        // Niche-optimized case: look for __discr_ty with None variant
-        let discr_enum = ctf
-            .types()
-            .into_iter()
-            .find(|e| e.name(&ctf).contains("__discr_ty") && e.name(&ctf).contains("Option"));
+    dbg!(ty);
+    let tagged = ty.member("__tagged").unwrap();
 
-        if let Some(discr) = discr_enum {
-            // The None variant should have a discriminant value > 2 (since Status uses 0,1,2)
-            let none = discr.enumerators().iter().find(|n| n.name(&ctf) == "None");
-            assert!(none.is_some(), "expected None enumerator");
-            assert!(
-                none.unwrap().value > 2,
-                "None should have discriminant value > 2 (out of range for Status)"
-            );
-        }
-    }
+    // Niche-optimized case: look for __discr_ty with None variant
+    let discr_enum = tagged.ty().member("__discr").unwrap();
+
+    // The None variant should have a discriminant value > 2 (since Status uses 0,1,2)
+    let none = discr_enum.ty().enumerator("None");
+    assert!(none.is_some(), "expected None enumerator");
+    assert!(
+        none.unwrap().value() > 2,
+        "None should have discriminant value > 2 (out of range for Status)"
+    );
 }

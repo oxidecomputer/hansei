@@ -7,7 +7,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use durin::read::CtfReader;
+use durin::read::{CtfReader, CtfView};
 use proc::{Mappings, Proc};
 use reify::ParseCtx;
 use reify::ParseWithCtf;
@@ -134,13 +134,13 @@ fn spawn_test_binary(tmpdir: &Path) -> TestProc {
 
 /// Context for reading types from a process using CTF.
 struct TestContext<'a> {
-    ctf: &'a CtfReader,
+    ctf: &'a CtfView<'a>,
     proc: &'a Proc,
     mappings: &'a Mappings,
 }
 
 impl<'a> ParseCtx<'a> for TestContext<'a> {
-    fn ctf(&self) -> &'a CtfReader {
+    fn ctf(&self) -> &'a CtfView<'a> {
         self.ctf
     }
 
@@ -164,7 +164,7 @@ impl<'a> ParseWithCtf<'a, TestContext<'a>> for Foo {
         ctx: &TestContext<'a>,
         info: &reify::TypeInfoRef<'_, 'a>,
     ) -> reify::Result<Self> {
-        match info.active_variant(ctx)? {
+        match info.active_variant()? {
             ("A", variant_info) => {
                 let val = variant_info.parse(ctx)?;
                 Ok(Foo::A(val))
@@ -190,11 +190,12 @@ fn read_global_point() {
     // Load CTF and attach to process
     let ctf_bytes = std::fs::read(&ctf_path).expect("failed to read CTF");
     let ctf = CtfReader::load(&ctf_bytes).expect("failed to load CTF");
+    let view = ctf.view();
     let proc = Proc::grab_pid(pid).expect("failed to open process");
     let mappings = proc.mappings().expect("failed to get mappings");
 
     let ctx = TestContext {
-        ctf: &ctf,
+        ctf: &view,
         proc: &proc,
         mappings: &mappings,
     };
@@ -206,8 +207,8 @@ fn read_global_point() {
         .st_value;
 
     // Find the Point type in CTF
-    let point_ty = ctf
-        .find_ty("test_types::Point", durin::TypeKind::Struct)
+    let point_ty = view
+        .find("test_types::Point", durin::TypeKind::Struct)
         .expect("Point type not found in CTF");
 
     // Read the value
@@ -215,12 +216,12 @@ fn read_global_point() {
 
     // Extract x and y values
     let x: i32 = info
-        .member(&ctx, "x")
+        .member("x")
         .expect("x member")
         .parse(&ctx)
         .expect("parse x");
     let y: i32 = info
-        .member(&ctx, "y")
+        .member("y")
         .expect("y member")
         .parse(&ctx)
         .expect("parse y");
@@ -239,11 +240,12 @@ fn read_global_foo() {
 
     let ctf_bytes = std::fs::read(&ctf_path).expect("failed to read CTF");
     let ctf = CtfReader::load(&ctf_bytes).expect("failed to load CTF");
+    let view = ctf.view();
     let proc = Proc::grab_pid(pid).expect("failed to open process");
     let mappings = proc.mappings().expect("failed to get mappings");
 
     let ctx = TestContext {
-        ctf: &ctf,
+        ctf: &view,
         proc: &proc,
         mappings: &mappings,
     };
@@ -253,8 +255,8 @@ fn read_global_foo() {
         .expect("GLOBAL_FOO symbol not found")
         .st_value;
 
-    let foo_ty = ctf
-        .find_ty("test_types::Foo", durin::TypeKind::Struct)
+    let foo_ty = view
+        .find("test_types::Foo", durin::TypeKind::Struct)
         .expect("Foo type not found in CTF");
 
     let info = reify::TypeInfo::from_addr(&ctx, foo_ty, addr).expect("failed to read type");
