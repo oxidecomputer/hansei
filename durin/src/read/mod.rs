@@ -716,7 +716,6 @@ impl TryFrom<u8> for FloatType {
     }
 }
 
-// TODO handle large structs
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum CtfType {
     Unknown { id: TypeId },
