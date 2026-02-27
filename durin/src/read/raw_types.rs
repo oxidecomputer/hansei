@@ -304,32 +304,6 @@ impl RawCtfType {
         members.iter().find(|m| m.name(ctf) == name)
     }
 
-    pub fn has_member(&self, name: &str, ctf: &CtfReader) -> bool {
-        let members = match self {
-            RawCtfType::Struct(RawCtfStruct { members, .. }) => members.as_slice(),
-            RawCtfType::Union(RawCtfUnion { members, .. }) => members.as_slice(),
-            _ => return false,
-        };
-        members.iter().any(|m| m.name(ctf) == name)
-    }
-
-    /// Return all members of the `RawCtfType` resolved into full `RawCtfTypes`.
-    pub fn members_resolved<'ctf>(
-        &self,
-        ctf: &'ctf CtfReader,
-    ) -> Vec<(&'ctf str, &'ctf RawCtfType)> {
-        let members = self.members();
-
-        let mut resolved = Vec::with_capacity(members.len());
-        for member in members {
-            let mem_name = ctf.str(member.name);
-            let mem_ty = ctf.ty(member.type_id);
-            resolved.push((mem_name, mem_ty));
-        }
-
-        resolved
-    }
-
     pub fn name<'ctf>(&self, ctf: &'ctf CtfReader) -> &'ctf str {
         let Some(id) = self.name_id() else {
             return "";
