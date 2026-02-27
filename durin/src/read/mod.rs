@@ -667,7 +667,7 @@ impl TryFrom<u8> for FloatType {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum RawCtfType {
     Unknown(RawCtfUnknown),
     Integer(RawCtfInteger),
@@ -1339,6 +1339,41 @@ impl TryFrom<u16> for TypeKind {
         Ok(ty)
     }
 }
+
+macro_rules! impl_ord {
+    ( $( $name:ty ),+) => {
+        $(
+        impl std::cmp::Ord for $name {
+            fn cmp(&self, other: &$name) -> std::cmp::Ordering {
+                self.id.cmp(&other.id)
+            }
+        }
+
+        impl std::cmp::PartialOrd for $name {
+            fn partial_cmp(&self, other: &$name) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        )+
+    };
+}
+
+impl_ord!(
+    RawCtfUnknown,
+    RawCtfInteger,
+    RawCtfFloat,
+    RawCtfPointer,
+    RawCtfArray,
+    RawCtfFunction,
+    RawCtfStruct,
+    RawCtfUnion,
+    RawCtfEnum,
+    RawCtfForward,
+    RawCtfTypedef,
+    RawCtfVolatile,
+    RawCtfConst,
+    RawCtfRestrict
+);
 
 #[cfg(test)]
 mod tests {
