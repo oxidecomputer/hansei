@@ -119,7 +119,7 @@ impl<'a> CtfWriter<'a> {
             labels: Vec::new(),
             elf: opts.elf,
             endian: opts.endian.unwrap_or_default().into(),
-            compress: opts.compress.unwrap_or(true), // Use compression by default.
+            compress: !opts.no_compress.unwrap_or_default(), // Use compression by default.
             truncate_str_len: opts.truncate_str_len,
             replace_spaces: opts.replace_spaces,
         }
@@ -600,7 +600,7 @@ struct Opts<'a> {
     truncate_str_len: Option<usize>,
     replace_spaces: Option<&'static str>,
     endian: Option<crate::Endian>,
-    compress: Option<bool>,
+    no_compress: Option<bool>,
 }
 
 #[derive(Default, Debug)]
@@ -647,8 +647,8 @@ impl<'a> CtfWriterBuilder<'a> {
     }
 
     /// Whether to compress the CTF data.
-    pub fn with_compression(mut self, use_compression: bool) -> Self {
-        self.opts.compress = Some(use_compression);
+    pub fn with_compression_disabled(mut self, disable_compression: bool) -> Self {
+        self.opts.no_compress = Some(disable_compression);
         self
     }
 }
@@ -1594,7 +1594,9 @@ mod tests {
 
     #[test]
     fn test_use_compression() {
-        let mut writer = CtfWriterBuilder::new().with_compression(true).build();
+        let mut writer = CtfWriterBuilder::new()
+            .with_compression_disabled(false)
+            .build();
         writer
             .add_type(CtfType::Integer {
                 name: "i32".to_string(),
@@ -1614,7 +1616,9 @@ mod tests {
 
     #[test]
     fn test_no_compression() {
-        let mut writer = CtfWriterBuilder::new().with_compression(false).build();
+        let mut writer = CtfWriterBuilder::new()
+            .with_compression_disabled(true)
+            .build();
         writer
             .add_type(CtfType::Integer {
                 name: "i32".to_string(),
