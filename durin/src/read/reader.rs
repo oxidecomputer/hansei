@@ -183,6 +183,10 @@ impl CtfReader {
         self.strings.get(id)
     }
 
+    pub fn string_table(&self) -> &StringTable {
+        &self.strings
+    }
+
     /// Build an indexed view for efficient lookups.
     ///
     /// The returned `CtfView` provides fast name-based type lookups and access
