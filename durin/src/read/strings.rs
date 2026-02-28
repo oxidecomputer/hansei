@@ -77,6 +77,11 @@ impl StringTable {
         // SAFETY: We've already confirmed this str is valid UTF-8.
         unsafe { str::from_utf8_unchecked(substr) }
     }
+
+    /// Returns a slice containing the raw bytes of the `StringTable`.
+    pub fn inner(&self) -> &[u8] {
+        &self.inner
+    }
 }
 
 impl From<UncheckedStringTable> for StringTable {
