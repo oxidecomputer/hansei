@@ -352,6 +352,11 @@ impl<'a> CtfUnknown<'a> {
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
     }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfUnknown {
+        self.raw
+    }
 }
 
 impl<'a> From<CtfUnknown<'a>> for CtfType<'a> {
@@ -399,6 +404,11 @@ impl<'a> CtfInteger<'a> {
     /// Converts `self` into a `CtfType`.
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
+    }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfInteger {
+        self.raw
     }
 }
 
@@ -451,6 +461,11 @@ impl<'a> CtfFloat<'a> {
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
     }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfFloat {
+        self.raw
+    }
 }
 
 impl<'a> From<CtfFloat<'a>> for CtfType<'a> {
@@ -497,6 +512,11 @@ impl<'a> CtfPointer<'a> {
     /// Converts `self` into a `CtfType`.
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
+    }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfPointer {
+        self.raw
     }
 }
 
@@ -559,6 +579,11 @@ impl<'a> CtfArray<'a> {
     /// Converts `self` into a `CtfType`.
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
+    }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfArray {
+        self.raw
     }
 }
 
@@ -626,6 +651,11 @@ impl<'a> CtfFunction<'a> {
     /// Converts `self` into a `CtfType`.
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
+    }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfFunction {
+        self.raw
     }
 }
 
@@ -731,6 +761,11 @@ impl<'a> CtfStruct<'a> {
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
     }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfStruct {
+        self.raw
+    }
 }
 
 impl<'a> From<CtfStruct<'a>> for CtfType<'a> {
@@ -804,6 +839,11 @@ impl<'a> CtfUnion<'a> {
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
     }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfUnion {
+        self.raw
+    }
 }
 
 impl<'a> From<CtfUnion<'a>> for CtfType<'a> {
@@ -851,6 +891,11 @@ impl<'a> CtfMember<'a> {
     /// Return the member's offset in bytes.
     pub fn offset(&self) -> u64 {
         self.raw.offset_bits / 8
+    }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfMember {
+        self.raw
     }
 }
 
@@ -948,6 +993,11 @@ impl<'a> CtfEnum<'a> {
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
     }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfEnum {
+        self.raw
+    }
 }
 
 impl<'a> From<CtfEnum<'a>> for CtfType<'a> {
@@ -985,6 +1035,11 @@ impl<'a> CtfEnumerator<'a> {
     /// Return the enumerator's value.
     pub fn value(&self) -> u64 {
         self.raw.value
+    }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfEnumerator {
+        self.raw
     }
 }
 
@@ -1050,6 +1105,11 @@ impl<'a> CtfForward<'a> {
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
     }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfForward {
+        self.raw
+    }
 }
 
 impl<'a> From<CtfForward<'a>> for CtfType<'a> {
@@ -1094,6 +1154,11 @@ impl<'a> CtfTypedef<'a> {
     /// Converts `self` into a `CtfType`.
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
+    }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfTypedef {
+        self.raw
     }
 }
 
@@ -1141,6 +1206,11 @@ impl<'a> CtfVolatile<'a> {
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
     }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfVolatile {
+        self.raw
+    }
 }
 
 impl<'a> From<CtfVolatile<'a>> for CtfType<'a> {
@@ -1187,6 +1257,11 @@ impl<'a> CtfConst<'a> {
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
     }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfConst {
+        self.raw
+    }
 }
 
 impl<'a> From<CtfConst<'a>> for CtfType<'a> {
@@ -1232,6 +1307,11 @@ impl<'a> CtfRestrict<'a> {
     /// Converts `self` into a `CtfType`.
     pub fn into_ctf_type(self) -> CtfType<'a> {
         self.into()
+    }
+
+    /// Access the inner raw CTF value.
+    pub fn raw(&self) -> &RawCtfRestrict {
+        self.raw
     }
 }
 
