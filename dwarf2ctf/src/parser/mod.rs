@@ -1933,7 +1933,7 @@ fn stub_to_ctf_type(
                 .iter()
                 .map(|e| CtfEnumerator {
                     name: e.name.clone(),
-                    value: e.value as i32,
+                    value: e.value,
                 })
                 .collect();
 
@@ -2032,9 +2032,9 @@ fn build_variant_part_members(
         .variants
         .iter()
         .filter_map(|v| {
-            v.discriminant_value.map(|val| CtfEnumerator {
+            v.discriminant_value.map(|value| CtfEnumerator {
                 name: v.name.clone(),
-                value: val as i32,
+                value,
             })
         })
         .collect();

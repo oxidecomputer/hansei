@@ -60,6 +60,14 @@ impl StringTable {
     /// supported.
     pub fn get(&self, id: StrId) -> &str {
         // SAFETY: We confirmed all StrIds prior to construction.
+        let raw = unsafe { self.get_unchecked(id) };
+        raw.split("@@").next().unwrap_or(raw)
+    }
+
+    /// Get the original string from the table without stripping our `@@`
+    /// suffixes for large enum values.
+    pub(crate) fn get_raw(&self, id: StrId) -> &str {
+        // SAFETY: We confirmed all StrIds prior to construction.
         unsafe { self.get_unchecked(id) }
     }
 
