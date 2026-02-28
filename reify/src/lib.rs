@@ -21,7 +21,7 @@ pub struct Error {
 #[derive(thiserror::Error, Debug)]
 enum ErrorKind {
     #[error("invalid discriminant value {discrim} for type {ty:?}")]
-    InvalidDiscriminantValue { ty: TypeId, discrim: u64 },
+    InvalidDiscriminantValue { ty: TypeId, discrim: i64 },
     #[error("unable to read member at range {start}..{end} from buf with len {len}")]
     InvalidMemberRange { start: u16, end: u16, len: u16 },
     #[error("enumerator {enum_name} not found for type {ty:?}")]
@@ -68,7 +68,7 @@ impl Error {
         &self.backtrace
     }
 
-    pub fn invalid_discriminant_value(ty: TypeId, discrim: u64) -> Self {
+    pub fn invalid_discriminant_value(ty: TypeId, discrim: i64) -> Self {
         Self::new(ErrorKind::InvalidDiscriminantValue { ty, discrim })
     }
 
@@ -514,9 +514,6 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             }
         };
 
-        // Remove any large discriminant values we've smuggled in via the
-        // enumerator name.
-        let name = name.splitn(2, "@@").next().unwrap_or_default();
         let Some(selected_variant) = variants.member(name) else {
             return Err(Error::no_member(self.ty.id(), name.to_string()));
         };
@@ -568,7 +565,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         info
     }
 
-    fn read_discriminant(&self) -> Result<(u64, CtfEnum<'ctf>)> {
+    fn read_discriminant(&self) -> Result<(i64, CtfEnum<'ctf>)> {
         let size = self.ty.size();
         if self.bytes.len() < size as usize {
             return Err(Error::unexpected_len(self.bytes.len() as u32, size as u32));
@@ -587,10 +584,10 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             ));
         };
         let discrim_value = match discr_enum.size() {
-            1 => self.bytes[0] as u64,
-            2 => u16::from_le_bytes(*self.bytes.first_chunk::<2>().unwrap()) as u64,
-            4 => u32::from_le_bytes(*self.bytes.first_chunk::<4>().unwrap()) as u64,
-            8 => u64::from_le_bytes(*self.bytes.first_chunk::<8>().unwrap()),
+            1 => self.bytes[0] as i64,
+            2 => i16::from_le_bytes(*self.bytes.first_chunk::<2>().unwrap()) as i64,
+            4 => i32::from_le_bytes(*self.bytes.first_chunk::<4>().unwrap()) as i64,
+            8 => i64::from_le_bytes(*self.bytes.first_chunk::<8>().unwrap()),
             _ => unreachable!(), // validated during parsing
         };
         Ok((discrim_value, discr_ty))

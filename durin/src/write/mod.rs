@@ -88,6 +88,7 @@ pub struct CtfWriter<'a> {
     elf: Option<&'a Elf<'a>>,
     endian: Endian,
     compress: bool,
+    allow_large_enums: bool,
     truncate_str_len: Option<usize>,
     replace_spaces: Option<&'static str>,
 }
@@ -120,6 +121,7 @@ impl<'a> CtfWriter<'a> {
             elf: opts.elf,
             endian: opts.endian.unwrap_or_default().into(),
             compress: !opts.no_compress.unwrap_or_default(), // Use compression by default.
+            allow_large_enums: opts.large_enums.unwrap_or_default(),
             truncate_str_len: opts.truncate_str_len,
             replace_spaces: opts.replace_spaces,
         }
@@ -128,6 +130,27 @@ impl<'a> CtfWriter<'a> {
     /// Add a type to the writer. Returns the assigned type ID. Will fail if
     /// all available type IDs have been consumed.
     pub fn add_type(&mut self, ctf_type: CtfType) -> Result<TypeId> {
+        let mut ctf_type = ctf_type;
+        if let CtfType::Enum {
+            name, enumerators, ..
+        } = &mut ctf_type
+        {
+            for e in enumerators {
+                if i32::try_from(e.value).is_err() {
+                    if !self.allow_large_enums {
+                        return Err(Error::enum_value_too_large(name.clone(), e.value));
+                    }
+
+                    let encoded_name = format!("{}@@{:#x}@@", e.name, e.value);
+                    e.name = encoded_name;
+
+                    // Truncate the value to i32 for compatibility with CTF.
+                    // The reader will need to retrieve the full value from the
+                    // enumerator name.
+                    e.value = (e.value as i32) as i64;
+                }
+            }
+        }
         let type_offset = self.types.len() as u16;
         let Ok(type_id) = TypeId::from_u16(type_offset) else {
             return Err(Error::type_ids_exhausted());
@@ -580,7 +603,7 @@ impl<'a> CtfWriter<'a> {
                 for enumerator in enumerators {
                     let enum_name_offset = strings.add_string(&enumerator.name);
                     buffer.gwrite_with(enum_name_offset, offset, endian)?;
-                    buffer.gwrite_with(enumerator.value, offset, endian)?;
+                    buffer.gwrite_with(enumerator.value as i32, offset, endian)?;
                 }
             }
             CtfType::Unknown => {
@@ -598,6 +621,7 @@ impl<'a> CtfWriter<'a> {
 struct Opts<'a> {
     elf: Option<&'a Elf<'a>>,
     truncate_str_len: Option<usize>,
+    large_enums: Option<bool>,
     replace_spaces: Option<&'static str>,
     endian: Option<crate::Endian>,
     no_compress: Option<bool>,
@@ -635,6 +659,21 @@ impl<'a> CtfWriterBuilder<'a> {
     /// buffer length.
     pub fn with_truncate_str_len(mut self, len: usize) -> Self {
         self.opts.truncate_str_len = Some(len);
+        self
+    }
+
+    /// Whether to support enumerator values larger than an `i32`. If this is
+    /// `false`, the `CtfWriter` will return an error when attempting to add an
+    /// enumerator value that cannot be represented as an `i32`.
+    ///
+    /// The CTF format requires that all enumerator values be represented by a
+    /// four-byte number, however, Rust enums may use an eight-byte value for a
+    /// discriminant on a 64-bit host. If set, we smuggle in the full value in
+    /// the name of the enumerator, e.g., `FOO` will become
+    /// `FOO@@0xdeadbeefcafebead@@`, with the value in the CTF truncated to an
+    /// `i32`. `CtfReader` will transparently remove the `@@..@@` suffix.
+    pub fn with_large_enum_values(mut self, large_enums: bool) -> Self {
+        self.opts.large_enums = Some(large_enums);
         self
     }
 
@@ -851,7 +890,7 @@ impl CtfType {
 #[derive(Clone, Debug)]
 pub struct CtfEnumerator {
     pub name: String,
-    pub value: i32,
+    pub value: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -1654,6 +1693,114 @@ mod tests {
         let bytes = writer.generate_ctf().unwrap();
         let reader = crate::read::CtfReader::load(&bytes).unwrap();
         assert!(reader.find_ty("my$cool$type", TypeKind::Integer).is_some());
+    }
+
+    #[test]
+    fn test_large_enum_value_rejected_by_default() {
+        let mut writer = CtfWriter::new();
+        let result = writer.add_type(CtfType::Enum {
+            name: "BigEnum".to_string(),
+            size: 8,
+            enumerators: vec![CtfEnumerator {
+                name: "TOO_BIG".to_string(),
+                value: u32::MAX as i64 + 1,
+            }],
+        });
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::enum_value_too_large("BigEnum".to_string(), u32::MAX as i64 + 1).to_string()
+        );
+    }
+
+    #[test]
+    fn test_large_enum_value_allowed_with_option() {
+        let mut writer = CtfWriterBuilder::new().with_large_enum_values(true).build();
+        writer
+            .add_type(CtfType::Enum {
+                name: "BigEnum".to_string(),
+                size: 8,
+                enumerators: vec![
+                    CtfEnumerator {
+                        name: "SMALL".to_string(),
+                        value: 42,
+                    },
+                    CtfEnumerator {
+                        name: "JUST_RIGHT".to_string(),
+                        value: i32::MAX as i64,
+                    },
+                    CtfEnumerator {
+                        name: "BIG".to_string(),
+                        value: i64::MAX,
+                    },
+                    CtfEnumerator {
+                        name: "TOP_BIT".to_string(),
+                        value: i64::MIN,
+                    },
+                ],
+            })
+            .unwrap();
+        let bytes = writer.generate_ctf().unwrap();
+
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        let raw = reader.find_ty("BigEnum", TypeKind::Enum).unwrap();
+        let ty = crate::read::CtfType::from_raw(raw, &reader);
+        let e = ty.as_enum().unwrap();
+
+        let enums: Vec<_> = e.enumerators().collect();
+        assert_eq!(enums.len(), 4);
+
+        // Small value is unchanged.
+        assert_eq!(enums[0].name(), "SMALL");
+        assert_eq!(enums[0].value(), 42);
+
+        // Still fits.
+        assert_eq!(enums[1].name(), "JUST_RIGHT");
+        assert_eq!(enums[1].value(), i32::MAX as i64);
+
+        // Large value is recovered from the encoded name.
+        assert_eq!(enums[2].name(), "BIG");
+        assert_eq!(enums[2].value(), i64::MAX);
+
+        // Largest possible hex is OK.
+        assert_eq!(enums[3].name(), "TOP_BIT");
+        assert_eq!(enums[3].value(), i64::MIN);
+
+        let st = reader.string_table();
+
+        let big_raw = enums[2].raw();
+        assert_eq!(st.get_raw(big_raw.name), format!("BIG@@{:#x}@@", i64::MAX));
+
+        let top_raw = enums[3].raw();
+        assert_eq!(
+            st.get_raw(top_raw.name),
+            format!("TOP_BIT@@{:#x}@@", i64::MIN)
+        );
+    }
+
+    #[test]
+    fn test_enum_value_at_i32_max_not_encoded() {
+        let mut writer = CtfWriter::new();
+        writer
+            .add_type(CtfType::Enum {
+                name: "MaxI32".to_string(),
+                size: 4,
+                enumerators: vec![CtfEnumerator {
+                    name: "MAX".to_string(),
+                    value: i32::MAX as i64,
+                }],
+            })
+            .unwrap();
+        let bytes = writer.generate_ctf().unwrap();
+
+        let reader = crate::read::CtfReader::load(&bytes).unwrap();
+        let raw = reader.find_ty("MaxI32", TypeKind::Enum).unwrap();
+        let ty = crate::read::CtfType::from_raw(raw, &reader);
+        let e = ty.as_enum().unwrap();
+        let enums: Vec<_> = e.enumerators().collect();
+
+        // Should not be encoded.
+        assert_eq!(enums[0].name(), "MAX");
+        assert_eq!(enums[0].value(), i32::MAX as i64);
     }
 
     #[test]

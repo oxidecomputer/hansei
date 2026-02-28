@@ -242,9 +242,9 @@ fn test_enum_size_and_variants() {
     assert!(green.is_some(), "expected Green variant");
     assert!(blue.is_some(), "expected Blue variant");
 
-    assert_eq!(red.unwrap().value(), 0u64, "Red should have value 0");
-    assert_eq!(green.unwrap().value(), 1u64, "Green should have value 1");
-    assert_eq!(blue.unwrap().value(), 2u64, "Blue should have value 2");
+    assert_eq!(red.unwrap().value(), 0, "Red should have value 0");
+    assert_eq!(green.unwrap().value(), 1, "Green should have value 1");
+    assert_eq!(blue.unwrap().value(), 2, "Blue should have value 2");
 }
 
 #[test]
@@ -478,7 +478,7 @@ fn test_option_nonzero_has_tagged_union() {
     );
     assert_eq!(
         none.unwrap().value(),
-        0u64,
+        0,
         "None should have discriminant value 0"
     );
 

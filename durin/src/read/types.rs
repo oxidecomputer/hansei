@@ -1033,7 +1033,7 @@ impl<'a> CtfEnumerator<'a> {
     }
 
     /// Return the enumerator's value.
-    pub fn value(&self) -> u64 {
+    pub fn value(&self) -> i64 {
         self.raw.value
     }
 

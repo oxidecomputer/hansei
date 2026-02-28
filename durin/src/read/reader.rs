@@ -345,7 +345,7 @@ fn update_large_enums(types: &mut TypeTable, strings: &StringTable) -> Result<()
 
     for ty in iter {
         for enm in &mut ty.enumerators {
-            let name = strings.get(enm.name);
+            let name = strings.get_raw(enm.name);
             if name.ends_with("@@") {
                 let hex_num = name
                     .split("@@")
@@ -354,11 +354,12 @@ fn update_large_enums(types: &mut TypeTable, strings: &StringTable) -> Result<()
                 let bare_hex = hex_num.trim_start_matches("0x");
 
                 // The Rust standard says the default representation of
-                // discriminants is isize, but top-bit niches will result in
-                // a value > isize::MAX, so we use u64.
+                // discriminants is isize, so we need an `i64`. However, this
+                // cannot parse `i64::MIN` without an overflow error, so we
+                // start with a `u64` and cast that to `i64`.
                 let full_value = u64::from_str_radix(bare_hex, 16)
                     .map_err(|_| Error::invalid_enum_value(name.to_string()))?;
-                enm.value = full_value
+                enm.value = full_value as i64;
             }
         }
     }

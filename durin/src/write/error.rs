@@ -8,6 +8,8 @@ pub struct Error {
 
 #[derive(thiserror::Error, Debug)]
 enum ErrorKind {
+    #[error("value {value} for enum \"{name}\" cannot be represented as an i32")]
+    EnumValueTooLarge { name: String, value: i64 },
     #[error("limit on number of types reached")]
     TypeIdsExhausted,
     #[error("failed to write CTF data")]
@@ -36,6 +38,10 @@ impl Error {
     /// Returns the backtrace captured when the error was created.
     pub fn backtrace(&self) -> &std::backtrace::Backtrace {
         &self.backtrace
+    }
+
+    pub fn enum_value_too_large(name: String, value: i64) -> Self {
+        Self::new(ErrorKind::EnumValueTooLarge { name, value })
     }
 
     pub fn type_ids_exhausted() -> Self {

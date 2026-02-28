@@ -646,7 +646,7 @@ pub struct RawCtfEnum {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RawCtfEnumerator {
     pub name: StrId,
-    pub value: u64,
+    pub value: i64,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -791,7 +791,7 @@ impl TryFromCtx<'_, Endian> for RawCtfEnumerator {
         let name = StrId::from_u32(name_raw)?;
 
         // CTF requires that enum values be 4 bytes, but we're going to work
-        // around this by passing long values in the name. Parse the inline
+        // around this by passing larger values in the name. Parse the inline
         // value as an i32. Once all strings are parsed we will take a second
         // pass to update the values as needed.
         let value: i32 = from.gread_with(offset, endian)?;
@@ -799,7 +799,7 @@ impl TryFromCtx<'_, Endian> for RawCtfEnumerator {
         Ok((
             RawCtfEnumerator {
                 name,
-                value: value as u64,
+                value: value as i64,
             },
             *offset,
         ))
