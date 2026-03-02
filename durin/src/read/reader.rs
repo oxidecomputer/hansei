@@ -9,7 +9,7 @@ pub struct CtfReader {
     preamble: CtfPreamble,
     header: CtfHeader,
     labels: Vec<CtfLabel>,
-    objects: Vec<TypeId>,
+    objects: Vec<Option<TypeId>>,
     functions: Vec<TypeId>,
     types: TypeTable,
     strings: StringTable,
@@ -171,7 +171,7 @@ impl CtfReader {
         &self.labels
     }
 
-    pub fn objects(&self) -> &[TypeId] {
+    pub fn objects(&self) -> &[Option<TypeId>] {
         &self.objects
     }
 
@@ -212,7 +212,7 @@ fn read_labels(header: &CtfHeader, data: &[u8], endian: Endian) -> Result<Vec<Ct
     Ok(labels)
 }
 
-fn read_objects(header: &CtfHeader, data: &[u8], endian: Endian) -> Result<Vec<TypeId>> {
+fn read_objects(header: &CtfHeader, data: &[u8], endian: Endian) -> Result<Vec<Option<TypeId>>> {
     let obj_start = header.objtoff as usize;
     let obj_end = header.funcoff as usize;
     let obj_data = &data[obj_start..obj_end];
@@ -222,9 +222,13 @@ fn read_objects(header: &CtfHeader, data: &[u8], endian: Endian) -> Result<Vec<T
     let mut objects = Vec::new();
     while *offset < obj_data.len() {
         let raw_id: u16 = obj_data.gread_with(offset, endian)?;
-        let object = TypeId::from_u16(raw_id)?;
+        if raw_id == 0 {
+            objects.push(None);
+        } else {
+            let object = TypeId::from_u16(raw_id)?;
 
-        objects.push(object);
+            objects.push(Some(object));
+        }
     }
 
     Ok(objects)
@@ -248,8 +252,8 @@ fn validate_labels(
 }
 
 /// Iterate over objects and confirm that all type references are valid.
-fn validate_objects(objects: &[TypeId], types: &TypeTable) -> Result<()> {
-    for ty in objects {
+fn validate_objects(objects: &[Option<TypeId>], types: &TypeTable) -> Result<()> {
+    for ty in objects.iter().flatten() {
         types.check(*ty)?;
     }
 
