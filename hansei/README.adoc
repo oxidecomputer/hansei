@@ -12,12 +12,20 @@ WARNING: DO NOT USE RUN THIS AGAINST A PROCESS YOU CARE ABOUT.
 
 == Usage
 
-First, build an optimized copy of the target binary with full debug information enabled.
+Building `hansei` itself requires `bindgen`, which in turn uses `libclang`. Ensure that the following are set, adjusting the LLVM version as-needed:
+
+[source,shell]
+----
+export LIBCLANG_PATH=/opt/ooce/llvm-15/lib
+export LD_LIBRARY_PATH=/opt/ooce/llvm-15/lib:$LD_LIBRARY_PATH
+----
+
+You will need to build an optimized copy of the target binary with full debug information enabled.
 
 [source,toml]
 ----
 [profile.release]
-debug =  true
+debug = true
 ----
 
 In theory a dev build should work, but they don't. I haven't run down why this is, I wouldn't expect the struct layout
