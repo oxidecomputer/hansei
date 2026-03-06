@@ -90,14 +90,14 @@ impl CtfReader {
         let mut types = TypeTable::load(&header, &data, endian)?;
 
         // Strings are endian-agnostic.
-        let unchecked_strings = UncheckedStringTable::new(&header, &data);
+        let mut unchecked_strings = UncheckedStringTable::new(&header, &data);
 
         // TODO how expensive is this check? Do we care?
         // If this is a real library we should make this optional.
-        validate_labels(&labels, &types, &unchecked_strings)?;
+        validate_labels(&labels, &types, &mut unchecked_strings)?;
         validate_objects(&objects, &types)?;
         validate_functions(&functions, &types)?;
-        validate_types(&types, &unchecked_strings)?;
+        validate_types(&types, &mut unchecked_strings)?;
 
         // We've now checked every source of StrIds and know that all
         // ids present point to a valid `&str`.
@@ -239,7 +239,7 @@ fn read_objects(header: &CtfHeader, data: &[u8], endian: Endian) -> Result<Vec<O
 fn validate_labels(
     labels: &[CtfLabel],
     types: &TypeTable,
-    strings: &UncheckedStringTable,
+    strings: &mut UncheckedStringTable,
 ) -> Result<()> {
     for label in labels {
         strings.check(label.name)?;
@@ -273,7 +273,7 @@ fn validate_functions(functions: &[TypeId], _types: &TypeTable) -> Result<()> {
 
 /// Iterate over types and confirm that all type and string references are
 /// valid.
-fn validate_types(types: &TypeTable, strings: &UncheckedStringTable) -> Result<()> {
+fn validate_types(types: &TypeTable, strings: &mut UncheckedStringTable) -> Result<()> {
     for ty in types.as_slice() {
         if let Some(id) = ty.name_id() {
             strings.check(id)?;
