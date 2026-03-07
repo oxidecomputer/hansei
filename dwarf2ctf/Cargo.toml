@@ -8,7 +8,6 @@ anyhow = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true }
 durin = { workspace = true }
-flate2 = { workspace = true }
 gimli = { workspace = true }
 goblin = { workspace = true }
 memmap2 = { workspace = true }
