@@ -594,6 +594,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "print-ctf"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "durin",
+]
+
+[[package]]
 name = "proc"
 version = "0.1.0"
 dependencies = [
