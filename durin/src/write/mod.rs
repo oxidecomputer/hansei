@@ -11,6 +11,7 @@ use goblin::elf::section_header::SHN_UNDEF;
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT};
 use scroll::ctx::TryIntoCtx;
 use scroll::{Endian, Pwrite};
+use tracing::trace;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -73,6 +74,14 @@ impl StringTable {
         }
 
         self.strings.push(0); // null terminator
+
+        trace!(
+            index = offset,
+            original_string = s,
+            updated_string = updated.as_ref(),
+            "Inserted string into StringTable"
+        );
+
         offset
     }
 
@@ -156,7 +165,14 @@ impl<'a> CtfWriter<'a> {
             return Err(Error::type_ids_exhausted());
         };
 
+        trace!(
+            id = ?type_id,
+            ty = ?ctf_type,
+            "Add type to CtfWriter",
+        );
+
         self.types.push(ctf_type);
+
         Ok(type_id)
     }
 
@@ -169,6 +185,12 @@ impl<'a> CtfWriter<'a> {
     /// generated CTF if `CtfWriterBuilder::with_elf` was passed when
     /// constructing the `CtfWriter`.
     pub fn add_func(&mut self, name: String, func: FuncInfo) {
+        trace!(
+            name = name,
+            func = ?func,
+            "Add function to CtfWriter",
+        );
+
         self.funcs.insert(name, func);
     }
 
@@ -179,6 +201,8 @@ impl<'a> CtfWriter<'a> {
 
     /// Add a label to the writer.
     pub fn add_label(&mut self, name: String) {
+        trace!(label = name, "Add label to CtfWriter",);
+
         self.labels.push(name);
     }
 
@@ -197,12 +221,24 @@ impl<'a> CtfWriter<'a> {
         };
 
         self.types.push(CtfType::Unknown); // placeholder
+
+        trace!(
+            id = ?type_id,
+            "Reserved TypeId",
+        );
+
         Ok(type_id)
     }
 
     /// Replace a placeholder type at the given ID with the actual type.
     /// The type_id must have been previously reserved with `reserve_type_id`.
     pub fn set_type(&mut self, type_id: TypeId, ctf_type: CtfType) {
+        trace!(
+            id = ?type_id,
+            ty = ?ctf_type,
+            "Updated TypeId",
+        );
+
         self.types[type_id.get() as usize] = ctf_type;
     }
 
