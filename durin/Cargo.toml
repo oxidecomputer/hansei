@@ -8,3 +8,4 @@ flate2 = { workspace = true }
 goblin = { workspace = true }
 scroll = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }

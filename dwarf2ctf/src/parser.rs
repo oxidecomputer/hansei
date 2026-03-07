@@ -73,12 +73,14 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 .unwrap_or(0)
                 != 0;
 
-            // Skip declarations
+            // Skip forward declarations.
             let is_declaration = entry
                 .attr(gimli::DW_AT_declaration)?
-                .and_then(|attr| attr.value().udata_value())
-                .unwrap_or(0)
-                != 0;
+                .map(|attr| match attr.value() {
+                    gimli::AttributeValue::Flag(v) => Ok(v),
+                    other => anyhow::bail!("unexpected attr type for DW_AT_declaration {other:?}"),
+                })
+                .unwrap_or(Ok(false))?;
 
             if is_inline || is_declaration {
                 continue;
@@ -228,6 +230,19 @@ impl<'a, R: Reader<Offset = usize>> DwarfParser<'a, R> {
                 | gimli::DW_TAG_enumeration_type
                 | gimli::DW_TAG_typedef => {}
                 _ => continue,
+            }
+
+            // Skip declarations (forward references without members/size)
+            // DW_AT_declaration is encoded as a Flag (DW_FORM_flag_present).
+            let is_declaration = entry
+                .attr(gimli::DW_AT_declaration)?
+                .map(|attr| match attr.value() {
+                    gimli::AttributeValue::Flag(v) => Ok(v),
+                    other => anyhow::bail!("unexpected attr type for DW_AT_declaration {other:?}"),
+                })
+                .unwrap_or(Ok(false))?;
+            if is_declaration {
+                continue;
             }
 
             // Get the entry's name

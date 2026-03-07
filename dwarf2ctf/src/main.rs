@@ -11,6 +11,7 @@ use goblin::elf::section_header::{
 };
 use memmap2::Mmap;
 use scroll::{LE, Pwrite};
+use tracing_subscriber::EnvFilter;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -238,6 +239,12 @@ fn align_up(align: u64, cur_off: &mut usize, out: &mut Vec<u8>) {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_writer(std::io::stderr)
+        .init();
+
     let debug_file =
         File::open(&args.elf).with_context(|| format!("failed to open {}", args.elf.display()))?;
     let debug_bytes = unsafe {
@@ -282,7 +289,8 @@ fn main() -> Result<()> {
 
     let mut builder = CtfWriterBuilder::new()
         .with_truncate_str_len(1024)
-        .with_replace_spaces("_");
+        .with_replace_spaces("_")
+        .with_large_enum_values(true);
     if args.bin_out.is_some() {
         builder = builder.with_elf(&debug_elf);
     }

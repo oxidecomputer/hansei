@@ -61,16 +61,16 @@ impl<'a> CtfView<'a> {
     /// Find a type by name and kind.
     ///
     /// If multiple types have the same name (but different kinds), only the first match is returned.
-    pub fn find_all(&self, name: &str) -> impl Iterator<Item = CtfType<'a>> {
-        self.by_name
-            .get(name)
-            .into_iter()
-            .flatten()
-            .map(|&id| self.get(id))
+    pub fn find_all(
+        &self,
+        name: &str,
+    ) -> impl ExactSizeIterator<Item = CtfType<'a>> + DoubleEndedIterator {
+        let ids = self.by_name.get(name).map(|v| v.as_slice()).unwrap_or(&[]);
+        ids.iter().map(|&id| self.get(id))
     }
 
     /// Iterate over all types as wrapped `CtfType`.
-    pub fn types(&self) -> impl Iterator<Item = CtfType<'a>> + '_ {
+    pub fn types(&self) -> impl ExactSizeIterator<Item = CtfType<'a>> + DoubleEndedIterator {
         self.reader
             .types()
             .iter()
