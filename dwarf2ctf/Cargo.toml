@@ -8,12 +8,12 @@ anyhow = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true }
 durin = { workspace = true }
-flate2 = { workspace = true }
 gimli = { workspace = true }
 goblin = { workspace = true }
 memmap2 = { workspace = true }
 petgraph = { workspace = true }
 scroll = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

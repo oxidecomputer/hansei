@@ -163,6 +163,11 @@ impl StrId {
         // StrId 0 is always present and points to an empty string.
         Self::default()
     }
+
+    /// Returns the inner `u32` value of the `StrId`.
+    pub fn get(&self) -> u32 {
+        self.0
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
