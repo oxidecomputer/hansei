@@ -268,7 +268,6 @@ dependencies = [
  "camino",
  "clap",
  "durin",
- "flate2",
  "gimli",
  "goblin",
  "memmap2",
