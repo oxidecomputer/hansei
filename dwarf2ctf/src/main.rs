@@ -289,7 +289,8 @@ fn main() -> Result<()> {
 
     let mut builder = CtfWriterBuilder::new()
         .with_truncate_str_len(1024)
-        .with_replace_spaces("_");
+        .with_replace_spaces("_")
+        .with_large_enum_values(true);
     if args.bin_out.is_some() {
         builder = builder.with_elf(&debug_elf);
     }
