@@ -219,6 +219,29 @@ pub enum TypeKind {
     Restrict = 13,
 }
 
+impl fmt::Display for TypeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let desc = match self {
+            Self::Unknown => "unknown",
+            Self::Integer => "int",
+            Self::Float => "float",
+            Self::Pointer => "pointer",
+            Self::Array => "array",
+            Self::Function => "fn",
+            Self::Struct => "struct",
+            Self::Union => "union",
+            Self::Enum => "enum",
+            Self::Forward => "forward",
+            Self::Typedef => "typedef",
+            Self::Volatile => "volatile",
+            Self::Const => "const",
+            Self::Restrict => "restrict",
+        };
+
+        write!(f, "{desc}")
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Default, Debug)]
 pub struct IntegerEncoding {
     pub bits: u16,
@@ -328,4 +351,3 @@ mod testhelper {
         encoding.flags = IntegerFlags(0xff);
     }
 }
-
