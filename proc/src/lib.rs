@@ -2,7 +2,7 @@ use libproc_sys::{
     BIND_GLOBAL, BIND_LOCAL, GElf_Sym, Lfree, Lgrab, Lgrab_error, Lstatus, MA_ANON, MA_BREAK,
     MA_EXEC, MA_READ, MA_SHARED, MA_WRITE, MAXPATHLEN, PGRAB_NOSTOP, PGRAB_RDONLY, PGRAB_RETAIN,
     PR_SYMTAB, PRELEASE_CLEAR, Paddr_to_map, Pexecname, Pgrab, Pgrab_core, Pgrab_error,
-    Plookup_by_addr, Plookup_by_name, Plwp_getregs, Plwp_iter, Plwp_main_stack,
+    Plookup_by_addr, Plookup_by_name, Plwp_getname, Plwp_getregs, Plwp_iter, Plwp_main_stack,
     Pmapping_iter_resolved, Pread, Prelease, Psetrun, Pstatus, Pstop, Psymbol_iter, REG_CS, REG_DS,
     REG_ERR, REG_ES, REG_FS, REG_FSBASE, REG_GS, REG_GSBASE, REG_R8, REG_R9, REG_R10, REG_R11,
     REG_R12, REG_R13, REG_R14, REG_R15, REG_RAX, REG_RBP, REG_RBX, REG_RCX, REG_RDI, REG_RDX,
@@ -44,6 +44,8 @@ enum ErrorKind {
     MapIterFailed,
     #[error("failed to get exec name")]
     NoExecName,
+    #[error("failed to get lwp name")]
+    NoLwpName,
     #[error("no nul byte in C string")]
     NoNul(#[from] FromBytesUntilNulError),
     #[error("error: {0}")] // TODO better message
@@ -94,6 +96,10 @@ impl Error {
 
     pub fn no_exec_name() -> Self {
         Self::new(ErrorKind::NoExecName)
+    }
+
+    pub fn no_lwp_name() -> Self {
+        Self::new(ErrorKind::NoLwpName)
     }
 
     pub fn no_nul(e: FromBytesUntilNulError) -> Self {
@@ -599,6 +605,32 @@ impl Proc {
             return Err(Error::lgrab_failed(msg));
         };
         Ok(Lwp { handle })
+    }
+
+    pub fn lwp_name(&self, lwpid: u32) -> Result<String> {
+        // This length includes the trailing NUL.
+        const THREAD_NAME_MAX: usize = 32;
+        let mut buf = [0; THREAD_NAME_MAX];
+
+        // SAFETY: Our handle and buf ptr are valid.
+        let ret = unsafe {
+            Plwp_getname(
+                self.handle.as_ptr(),
+                lwpid,
+                buf.as_mut_ptr(),
+                THREAD_NAME_MAX,
+            )
+        };
+        if ret != 0 {
+            return Err(Error::no_lwp_name());
+        }
+
+        // SAFETY: We know buf has a valid address and we have passed the correct
+        // buffer length to `Plwp_getname`.
+        let c_msg = unsafe { CStr::from_ptr(buf.as_ptr()) };
+        let name = c_msg.to_string_lossy().to_string();
+
+        Ok(name)
     }
 
     pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
