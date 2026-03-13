@@ -1406,9 +1406,7 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
                     let is_discr = discr_offset.is_some_and(|off| child.entry().offset() == off);
                     if is_discr {
                         let mut member = self.extract_member_stub(unit, child.entry())?;
-                        if member.name.is_empty() {
-                            member.name = "__discr".to_string();
-                        }
+                        member.name = "__discr".to_string();
                         if let Some(type_ref) = member.type_ref {
                             deps.push(type_ref);
                         }
@@ -2013,6 +2011,13 @@ fn build_variant_part_members(
         // of the variant type references have a `DW_AT_data_member_location` at offset
         // 0, which would overlap with the discriminant if that were present. If there
         // is an overlap, then we know that niche optimization is being used.
+        //
+        // We must also verify the discriminant actually overlaps with the variant
+        // data. Async state machines (and other enums) can have a discriminant at
+        // a large offset (e.g., at the end of the struct) while variant members
+        // start at offset 0, which is NOT niche optimization.
+        let discr_overlaps_variants = discr.offset_bytes * 8 == union_offset_bits;
+
         let member_at_zero = variant_part.variants.iter().any(|v| {
             v.members.iter().any(|m| {
                 let type_id = resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map);
@@ -2036,7 +2041,7 @@ fn build_variant_part_members(
             header_offset,
         );
 
-        member_at_zero || nested_discr
+        discr_overlaps_variants && (member_at_zero || nested_discr)
     } else {
         false
     };

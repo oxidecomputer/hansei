@@ -583,11 +583,12 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
                 format!("{} ({:?})", self.ty.name(), self.ty.id()),
             ));
         };
+        let offset = discriminant.offset() as usize;
         let discrim_value = match discr_enum.size() {
-            1 => self.bytes[0] as i64,
-            2 => i16::from_le_bytes(*self.bytes.first_chunk::<2>().unwrap()) as i64,
-            4 => i32::from_le_bytes(*self.bytes.first_chunk::<4>().unwrap()) as i64,
-            8 => i64::from_le_bytes(*self.bytes.first_chunk::<8>().unwrap()),
+            1 => self.bytes[offset] as i64,
+            2 => i16::from_le_bytes(*self.bytes[offset..].first_chunk::<2>().unwrap()) as i64,
+            4 => i32::from_le_bytes(*self.bytes[offset..].first_chunk::<4>().unwrap()) as i64,
+            8 => i64::from_le_bytes(*self.bytes[offset..].first_chunk::<8>().unwrap()),
             _ => unreachable!(), // validated during parsing
         };
         Ok((discrim_value, discr_ty))
