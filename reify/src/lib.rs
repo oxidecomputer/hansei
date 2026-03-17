@@ -347,6 +347,10 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         }
     }
 
+    pub fn is_enum(&self) -> bool {
+        self.member("__discr").ok().is_some()
+    }
+
     pub fn try_select_variant(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
         let (discrim_value, discrim_ty) = self.read_discriminant()?;
 
