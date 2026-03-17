@@ -91,6 +91,26 @@ struct Source {
     core: Option<PathBuf>,
 }
 
+impl Source {
+    fn open_proc(&self, destructive: bool) -> Result<Proc> {
+        match (self.pid, &self.core) {
+            (Some(pid), None) => {
+                anyhow::ensure!(
+                    destructive,
+                    "This command is potentially destructive when run against live \
+                processes. Pass the `-w` / `--destructive` flag to allow it."
+                );
+
+                Proc::grab_pid(pid).with_context(|| "failed to grab pid {pid}")
+            }
+            (None, Some(core)) => {
+                Proc::open_core(core).with_context(|| format!("failed to open {}", core.display()))
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
 fn main() {
     let args = Cli::parse();
 
@@ -111,21 +131,7 @@ fn main() {
 }
 
 fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
-    let proc = match (args.source.pid, &args.source.core) {
-        (Some(pid), None) => {
-            anyhow::ensure!(
-                args.destructive,
-                "This command is potentially destructive when run against live \
-                processes. Pass the `-w` / `--destructive` flag to allow it."
-            );
-
-            Proc::grab_pid(pid).with_context(|| "failed to grab pid {pid}")?
-        }
-        (None, Some(core)) => {
-            Proc::open_core(core).with_context(|| format!("failed to open {}", core.display()))?
-        }
-        _ => unreachable!(),
-    };
+    let proc = args.source.open_proc(args.destructive)?;
     let main_lwp = proc.lwp_handle(1)?;
 
     let ctf_bytes =
