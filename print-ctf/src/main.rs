@@ -55,14 +55,14 @@ fn exec(args: &Cli) -> Result<()> {
         };
 
         for ctf_ty in iter {
-            writeln!(out, "{}", format_type(&ctf_ty, depth, args.max_depth))?;
+            writeln!(out, "{}", format_type(&ctf_ty, depth, args.max_depth, 0))?;
         }
     }
 
     Ok(())
 }
 
-fn format_type(ty: &CtfType, depth: usize, max_depth: usize) -> String {
+fn format_type(ty: &CtfType, depth: usize, max_depth: usize, abs_offset: u64) -> String {
     if depth > max_depth {
         return String::new();
     }
@@ -114,7 +114,12 @@ fn format_type(ty: &CtfType, depth: usize, max_depth: usize) -> String {
                 if s.members().len() > 0 {
                     desc.push_str(", members:");
                 }
-                desc.push_str(&format_members(s.members(), depth + 1, max_depth));
+                desc.push_str(&format_members(
+                    s.members(),
+                    depth + 1,
+                    max_depth,
+                    abs_offset,
+                ));
             }
         }
         CtfType::Union(u) => {
@@ -124,7 +129,12 @@ fn format_type(ty: &CtfType, depth: usize, max_depth: usize) -> String {
                 if u.members().len() > 0 {
                     desc.push_str(", members:");
                 }
-                desc.push_str(&format_members(u.members(), depth + 1, max_depth));
+                desc.push_str(&format_members(
+                    u.members(),
+                    depth + 1,
+                    max_depth,
+                    abs_offset,
+                ));
             }
         }
         CtfType::Enum(e) => {
@@ -161,28 +171,36 @@ fn format_type(ty: &CtfType, depth: usize, max_depth: usize) -> String {
     desc
 }
 
-fn format_members(members: CtfMemberIter, depth: usize, max_depth: usize) -> String {
+fn format_members(
+    members: CtfMemberIter,
+    depth: usize,
+    max_depth: usize,
+    abs_offset: u64,
+) -> String {
     let mut desc = String::new();
     if depth > max_depth {
         return desc;
     }
 
     for member in members {
-        let member_desc = format_type(&member.ty(), depth, max_depth);
+        let mem_abs_off = abs_offset + member.offset();
+        let member_desc = format_type(&member.ty(), depth, max_depth, mem_abs_off);
         if member_desc.is_empty() {
             desc.push_str(&format!(
-                "\n{}{}, offset {}, {}",
+                "\n{}{}, offset {}, abs_offset: {}, {}",
                 "  ".repeat(depth),
                 member.name(),
                 member.offset(),
+                mem_abs_off,
                 ty_title(&member.ty())
             ));
         } else {
             desc.push_str(&format!(
-                "\n{}{}, offset {}, {}",
+                "\n{}{}, offset {}, abs_offset {}, {}",
                 "  ".repeat(depth),
                 member.name(),
                 member.offset(),
+                mem_abs_off,
                 member_desc,
             ));
         }
