@@ -1888,8 +1888,12 @@ fn stub_to_ctf_type(
                 }
             }
 
-            // Sort members by offset for consistent CTF output
+            // Sort members by offset for consistent CTF output and
+            // deduplicate.  Rust async-fn environments can produce DWARF
+            // with the same member listed more than once (e.g. two `self`
+            // entries at the same offset).
             ctf_members.sort_by_key(|m| m.offset_bits);
+            ctf_members.dedup_by(|a, b| a.name == b.name && a.offset_bits == b.offset_bits);
 
             Ok(CtfType::Struct {
                 name: name.clone(),
@@ -2087,8 +2091,10 @@ fn build_variant_part_members(
     let mut max_variant_size: u32 = 0;
 
     for variant in &variant_part.variants {
-        // Adjust member offsets to be relative to the union start
-        let adjusted_members: Vec<CtfMember> = variant
+        // Adjust member offsets to be relative to the union start and
+        // deduplicate (rustc can emit the same member twice in async-fn
+        // environment DWARF).
+        let mut adjusted_members: Vec<CtfMember> = variant
             .members
             .iter()
             .map(|m| CtfMember {
@@ -2097,6 +2103,8 @@ fn build_variant_part_members(
                 offset_bits: (m.offset_bytes * 8).saturating_sub(union_offset_bits),
             })
             .collect();
+        adjusted_members.sort_by_key(|m| m.offset_bits);
+        adjusted_members.dedup_by(|a, b| a.name == b.name && a.offset_bits == b.offset_bits);
 
         // Calculate variant struct size
         let variant_size = parent_struct_size.saturating_sub((union_offset_bits / 8) as u32);
