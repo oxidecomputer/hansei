@@ -46,7 +46,7 @@ impl TryFromCtx<'_, Endian> for CtfHeader {
             return Err(Error::misaligned_object_offset(objtoff));
         }
         let funcoff = from.gread_with(offset, endian)?;
-        if funcoff % 4 != 0 {
+        if funcoff % 2 != 0 {
             return Err(Error::misaligned_func_offset(funcoff));
         }
         let typeoff = from.gread_with(offset, endian)?;

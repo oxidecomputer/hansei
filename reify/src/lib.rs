@@ -347,6 +347,10 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         }
     }
 
+    pub fn is_enum(&self) -> bool {
+        self.member("__discr").ok().is_some()
+    }
+
     pub fn try_select_variant(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
         let (discrim_value, discrim_ty) = self.read_discriminant()?;
 
@@ -583,11 +587,12 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
                 format!("{} ({:?})", self.ty.name(), self.ty.id()),
             ));
         };
+        let offset = discriminant.offset() as usize;
         let discrim_value = match discr_enum.size() {
-            1 => self.bytes[0] as i64,
-            2 => i16::from_le_bytes(*self.bytes.first_chunk::<2>().unwrap()) as i64,
-            4 => i32::from_le_bytes(*self.bytes.first_chunk::<4>().unwrap()) as i64,
-            8 => i64::from_le_bytes(*self.bytes.first_chunk::<8>().unwrap()),
+            1 => self.bytes[offset] as i64,
+            2 => i16::from_le_bytes(*self.bytes[offset..].first_chunk::<2>().unwrap()) as i64,
+            4 => i32::from_le_bytes(*self.bytes[offset..].first_chunk::<4>().unwrap()) as i64,
+            8 => i64::from_le_bytes(*self.bytes[offset..].first_chunk::<8>().unwrap()),
             _ => unreachable!(), // validated during parsing
         };
         Ok((discrim_value, discr_ty))
@@ -602,6 +607,493 @@ impl fmt::Debug for TypeInfoRef<'_, '_> {
             .field("bytes", &self.bytes)
             .finish()
     }
+}
+
+impl fmt::Display for TypeInfoRef<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_display_value(f, self, 0, 16)
+    }
+}
+
+impl fmt::Display for TypeInfo<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.as_ref(), f)
+    }
+}
+
+pub struct DisplayValue<'a, 'buf, 'ctf: 'buf> {
+    info: &'a TypeInfoRef<'buf, 'ctf>,
+    depth: usize,
+    max_depth: usize,
+}
+
+impl fmt::Display for DisplayValue<'_, '_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_display_value(f, self.info, self.depth, self.max_depth)
+    }
+}
+
+impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
+    pub fn display(&self) -> DisplayValue<'_, 'buf, 'ctf> {
+        DisplayValue {
+            info: self,
+            depth: 0,
+            max_depth: 8,
+        }
+    }
+
+    pub fn display_with_depth(&self, max_depth: usize) -> DisplayValue<'_, 'buf, 'ctf> {
+        DisplayValue {
+            info: self,
+            depth: 0,
+            max_depth,
+        }
+    }
+}
+
+/// Wrapper that carries depth state for recursive formatting.
+struct DisplayRecurse<'buf, 'ctf: 'buf> {
+    info: TypeInfoRef<'buf, 'ctf>,
+    depth: usize,
+    max_depth: usize,
+}
+
+impl fmt::Display for DisplayRecurse<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_display_value(f, &self.info, self.depth, self.max_depth)
+    }
+}
+
+fn write_display_value(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, '_>,
+    depth: usize,
+    max_depth: usize,
+) -> fmt::Result {
+    let ty = info.ty;
+    let bytes = info.bytes;
+
+    if bytes.is_empty() && ty.size() == 0 {
+        return write!(f, "{}", ty.name());
+    }
+
+    if depth >= max_depth {
+        return write!(f, "...");
+    }
+
+    if (bytes.len() as u64) < ty.size() {
+        return write!(f, "<truncated>");
+    }
+
+    match ty {
+        CtfType::Integer(int_ty) => {
+            let enc = int_ty.encoding();
+            let flags = enc.flags;
+            let size = int_ty.size();
+
+            if flags.is_bool() {
+                return write!(f, "{}", bytes[0] != 0);
+            }
+
+            if flags.is_char() {
+                let ch = bytes[0];
+                return if ch.is_ascii_graphic() || ch == b' ' {
+                    write!(f, "'{}'", ch as char)
+                } else {
+                    write!(f, "'\\x{:02x}'", ch)
+                };
+            }
+
+            if flags.is_signed() {
+                match size {
+                    1 => write!(f, "{}", bytes[0] as i8),
+                    2 => write!(f, "{}", i16::from_le_bytes(bytes[..2].try_into().unwrap())),
+                    4 => write!(f, "{}", i32::from_le_bytes(bytes[..4].try_into().unwrap())),
+                    8 => write!(f, "{}", i64::from_le_bytes(bytes[..8].try_into().unwrap())),
+                    _ => write_hex_bytes(f, bytes),
+                }
+            } else {
+                match size {
+                    1 => write!(f, "{}", bytes[0]),
+                    2 => write!(f, "{}", u16::from_le_bytes(bytes[..2].try_into().unwrap())),
+                    4 => write!(f, "{}", u32::from_le_bytes(bytes[..4].try_into().unwrap())),
+                    8 => write!(f, "{}", u64::from_le_bytes(bytes[..8].try_into().unwrap())),
+                    _ => write_hex_bytes(f, bytes),
+                }
+            }
+        }
+
+        CtfType::Float(float_ty) => match float_ty.size() {
+            4 => write!(f, "{}", f32::from_le_bytes(bytes[..4].try_into().unwrap())),
+            8 => write!(f, "{}", f64::from_le_bytes(bytes[..8].try_into().unwrap())),
+            _ => write_hex_bytes(f, bytes),
+        },
+
+        CtfType::Pointer(_) => {
+            if bytes.len() < 8 {
+                return write!(f, "<truncated>");
+            }
+            let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            if addr == 0 {
+                write!(f, "null")
+            } else {
+                write!(f, "0x{:x}", addr)
+            }
+        }
+
+        CtfType::Struct(_) => {
+            let name = ty.name();
+            let pretty = f.alternate();
+
+            // Rust enum: has __discr member
+            if ty.member("__discr").is_some() {
+                return write_rust_enum(f, info, name, pretty, depth, max_depth);
+            }
+
+            // Regular struct
+            write_struct_fields(f, info, name, pretty, depth, max_depth)
+        }
+
+        CtfType::Union(_) => {
+            // Rust enum tagged union pattern (e.g. __tagged unions with
+            // __discr + __variants).
+            if ty.member("__discr").is_some() && ty.member("__variants").is_some() {
+                let name = ty.name();
+                let enum_name = name.strip_suffix("::__tagged").unwrap_or(name);
+                let pretty = f.alternate();
+                return write_rust_enum(f, info, enum_name, pretty, depth, max_depth);
+            }
+
+            let name = ty.name();
+            if !name.is_empty() {
+                write!(f, "{} ", name)?;
+            }
+            write!(f, "{{ ")?;
+            write_hex_bytes(f, bytes)?;
+            write!(f, " }}")
+        }
+
+        CtfType::Enum(enum_ty) => {
+            let size = enum_ty.size();
+            let discrim = match size {
+                1 => bytes[0] as i64,
+                2 => i16::from_le_bytes(bytes[..2].try_into().unwrap()) as i64,
+                4 => i32::from_le_bytes(bytes[..4].try_into().unwrap()) as i64,
+                8 => i64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                _ => return write_hex_bytes(f, bytes),
+            };
+
+            for e in enum_ty.enumerators() {
+                if e.value() == discrim {
+                    return write!(f, "{}", e.name());
+                }
+            }
+            write!(f, "{}", discrim)
+        }
+
+        CtfType::Array(arr_ty) => {
+            let elem_ty = arr_ty.element_type();
+            let elem_size = elem_ty.size() as usize;
+            let count = arr_ty.len() as usize;
+            let pretty = f.alternate();
+
+            write!(f, "[")?;
+            for i in 0..count {
+                let start = i * elem_size;
+                let end = start + elem_size;
+                if let Some(elem_bytes) = bytes.get(start..end) {
+                    if pretty {
+                        writeln!(f)?;
+                        write_indent(f, depth + 1)?;
+                    } else if i > 0 {
+                        write!(f, ", ")?;
+                    }
+
+                    let child = DisplayRecurse {
+                        info: TypeInfoRef {
+                            ty: elem_ty,
+                            addr: info.addr + start as u64,
+                            bytes: elem_bytes,
+                        },
+                        depth: depth + 1,
+                        max_depth,
+                    };
+                    if pretty {
+                        write!(f, "{:#},", child)?;
+                    } else {
+                        write!(f, "{}", child)?;
+                    }
+                } else {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "<truncated>")?;
+                    break;
+                }
+            }
+            if pretty && count > 0 {
+                writeln!(f)?;
+                write_indent(f, depth)?;
+            }
+            write!(f, "]")
+        }
+
+        CtfType::Typedef(_) | CtfType::Volatile(_) | CtfType::Const(_) | CtfType::Restrict(_) => {
+            if let Some(target) = ty.target() {
+                let child = DisplayRecurse {
+                    info: TypeInfoRef {
+                        ty: target,
+                        addr: info.addr,
+                        bytes,
+                    },
+                    depth: depth + 1,
+                    max_depth,
+                };
+                if f.alternate() {
+                    write!(f, "{:#}", child)
+                } else {
+                    write!(f, "{}", child)
+                }
+            } else {
+                let name = ty.name();
+                if !name.is_empty() {
+                    write!(f, "{} ", name)?;
+                }
+                write_hex_bytes(f, bytes)
+            }
+        }
+
+        _ => {
+            let name = ty.name();
+            if !name.is_empty() {
+                write!(f, "{} ", name)?;
+            }
+            write_hex_bytes(f, bytes)
+        }
+    }
+}
+
+fn write_struct_fields(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, '_>,
+    name: &str,
+    pretty: bool,
+    depth: usize,
+    max_depth: usize,
+) -> fmt::Result {
+    let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
+
+    if !name.is_empty() {
+        write!(f, "{}", name)?;
+    }
+    write!(f, " {{")?;
+
+    for (i, member) in members.iter().enumerate() {
+        let mem_ty = member.ty();
+        let start = member.offset() as usize;
+        let end = start + mem_ty.size() as usize;
+
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        } else if i > 0 {
+            write!(f, ",")?;
+        }
+        write!(f, " {}: ", member.name())?;
+
+        if let Some(mem_bytes) = info.bytes.get(start..end) {
+            let child = DisplayRecurse {
+                info: TypeInfoRef {
+                    ty: mem_ty,
+                    addr: info.addr + member.offset(),
+                    bytes: mem_bytes,
+                },
+                depth: depth + 1,
+                max_depth,
+            };
+            if pretty {
+                write!(f, "{:#}", child)?;
+            } else {
+                write!(f, "{}", child)?;
+            }
+        } else {
+            write!(f, "<truncated>")?;
+        }
+
+        if pretty {
+            write!(f, ",")?;
+        }
+    }
+
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+fn write_rust_enum(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, '_>,
+    name: &str,
+    pretty: bool,
+    depth: usize,
+    max_depth: usize,
+) -> fmt::Result {
+    // Resolve variant without peeling so we preserve the full struct for
+    // display (active_variant calls .peel() which collapses wrapper structs
+    // and can land on inner tagged unions, losing structural info).
+    let Ok((discrim, discrim_ty)) = info.read_discriminant() else {
+        if !name.is_empty() {
+            write!(f, "{} ", name)?;
+        }
+        return write_hex_bytes(f, info.bytes);
+    };
+
+    let Some(variants_member) = info.ty.member("__variants") else {
+        if !name.is_empty() {
+            write!(f, "{} ", name)?;
+        }
+        return write_hex_bytes(f, info.bytes);
+    };
+    let variants = variants_member.ty();
+
+    let is_niche_optimized = variants.members().len() == 2 && discrim_ty.enumerators().len() == 1;
+
+    let enumerator = discrim_ty.enumerators().find(|e| e.value() == discrim);
+
+    write!(f, "{name} ")?;
+    let variant_name = match (enumerator, is_niche_optimized) {
+        (Some(e), _) => e.name(),
+        (None, true) => {
+            let Some(var) = variants
+                .members()
+                .find(|m| m.name() != discrim_ty.enumerators().nth(0).unwrap().name())
+            else {
+                if !name.is_empty() {
+                    write!(f, "{} ", name)?;
+                }
+                return Ok(()); // write_hex_bytes(f, info.bytes);
+            };
+            var.name()
+        }
+        (None, false) => {
+            if !name.is_empty() {
+                write!(f, "{} ", name)?;
+            }
+            return Ok(()); // write_hex_bytes(f, info.bytes);
+        }
+    };
+
+    let Some(selected_variant) = variants.member(variant_name) else {
+        if !name.is_empty() {
+            write!(f, "{} ", name)?;
+        }
+        return write_hex_bytes(f, info.bytes);
+    };
+    let variant_ty = selected_variant.ty();
+    let start = selected_variant.offset() as usize;
+    let end = start + variant_ty.size() as usize;
+    let Some(variant_bytes) = info.bytes.get(start..end) else {
+        if !name.is_empty() {
+            write!(f, "{} ", name)?;
+        }
+        return write_hex_bytes(f, info.bytes);
+    };
+    let variant_addr = info.addr + selected_variant.offset();
+    // NOTE: no .peel() — we keep the variant struct intact for display.
+    let variant_info = TypeInfoRef {
+        ty: variant_ty,
+        addr: variant_addr,
+        bytes: variant_bytes,
+    }
+    .peel();
+
+    if !name.is_empty() {
+        write!(f, "{}::", name)?;
+    }
+    write!(f, "{}", variant_name)?;
+
+    // Zero-sized variant (unit variant)
+    if variant_ty.size() == 0 {
+        return Ok(());
+    }
+
+    let members: Vec<_> = variant_info
+        .ty
+        .members()
+        .filter(|m| m.ty().size() > 0)
+        .collect();
+
+    if members.is_empty() {
+        return Ok(());
+    }
+
+    write!(f, " {{")?;
+    for (i, member) in members.iter().enumerate() {
+        let mem_ty = member.ty();
+        let mem_start = member.offset() as usize;
+        let mem_end = mem_start + mem_ty.size() as usize;
+
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        } else if i > 0 {
+            write!(f, ",")?;
+        }
+        write!(f, " {}: ", member.name())?;
+
+        if let Some(mem_bytes) = variant_info.bytes.get(mem_start..mem_end) {
+            let child = DisplayRecurse {
+                info: TypeInfoRef {
+                    ty: mem_ty,
+                    addr: variant_info.addr + member.offset(),
+                    bytes: mem_bytes,
+                },
+                depth: depth + 1,
+                max_depth,
+            };
+            if pretty {
+                write!(f, "{:#}", child)?;
+            } else {
+                write!(f, "{}", child)?;
+            }
+        } else {
+            write!(f, "<truncated>")?;
+        }
+
+        if pretty {
+            write!(f, ",")?;
+        }
+    }
+
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+fn write_indent(f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
+    for _ in 0..depth {
+        write!(f, "    ")?;
+    }
+    Ok(())
+}
+
+fn write_hex_bytes(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    write!(f, "[")?;
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "0x{:02x}", b)?;
+    }
+    write!(f, "]")
 }
 
 impl<'buf, 'ctf: 'buf> From<&'buf TypeInfo<'ctf>> for TypeInfoRef<'buf, 'ctf> {
