@@ -27,7 +27,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    Dump(Dump),
+    #[command(visible_alias = "dump")]
+    SchedulerDump(Dump),
     Poll(Poll),
 }
 
@@ -116,7 +117,7 @@ fn main() {
 
     let res = match args.action {
         Action::Poll(poll) => exec_poll(poll, Term::stdout()),
-        Action::Dump(dump) => exec_dump(dump, &mut io::stdout().lock()),
+        Action::SchedulerDump(dump) => exec_dump(dump, &mut io::stdout().lock()),
     };
     if let Err(e) = res {
         if let Some(io_err) = e.downcast_ref::<io::Error>()
