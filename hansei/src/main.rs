@@ -30,6 +30,35 @@ enum Action {
     #[command(visible_alias = "dump")]
     SchedulerDump(Dump),
     Poll(Poll),
+    #[command(visible_alias = "trace")]
+    TaskTrace(TaskTrace),
+}
+
+#[derive(Args)]
+struct TaskTrace {
+    #[command(flatten)]
+    source: Source,
+
+    /// The address of the task in hexadecimal, e.g., 0x1234.
+    #[clap(long, short)]
+    addr: String,
+
+    /// The type of the task.
+    #[clap(long = "type", short)]
+    ty: String,
+
+    /// The CTF file to read.
+    #[clap(long, short)]
+    ctf: PathBuf,
+
+    /// Pausing a live process is potentially destructive.
+    /// Required if --pid is passed.
+    #[arg(long, short = 'w')]
+    destructive: bool,
+
+    /// Show the variables present at each await point.
+    #[clap(long, short)]
+    verbose: bool,
 }
 
 #[derive(Args)]
@@ -118,6 +147,7 @@ fn main() {
     let res = match args.action {
         Action::Poll(poll) => exec_poll(poll, Term::stdout()),
         Action::SchedulerDump(dump) => exec_dump(dump, &mut io::stdout().lock()),
+        Action::TaskTrace(dump) => exec_trace(dump, &mut io::stdout().lock()),
     };
     if let Err(e) = res {
         if let Some(io_err) = e.downcast_ref::<io::Error>()
@@ -294,4 +324,91 @@ fn maybe_style<T: Display>(
         Some(last) if now - last < HIGHLIGHT_DUR => console::style(value).green().bold(),
         _ => console::style(value),
     }
+}
+
+struct TraceContext<'ctf> {
+    pub proc: &'ctf Proc,
+    pub ctf: durin::read::CtfView<'ctf>,
+    pub mappings: proc::Mappings,
+}
+
+impl<'ctf> reify::ParseCtx<'ctf> for TraceContext<'ctf> {
+    fn proc(&self) -> &'ctf Proc {
+        self.proc
+    }
+
+    fn ctf(&self) -> &durin::read::CtfView<'ctf> {
+        &self.ctf
+    }
+
+    fn mappings(&self) -> &proc::Mappings {
+        &self.mappings
+    }
+}
+
+fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
+    let addr_str = args.addr.strip_prefix("0x").unwrap_or(args.addr.as_str());
+    let addr =
+        u64::from_str_radix(addr_str, 16).context("failed to parse address as hexadecimal")?;
+
+    let proc = args.source.open_proc(args.destructive)?;
+
+    let ctf_bytes =
+        fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
+    let ctf = CtfReader::load(&ctf_bytes).context("failed to load CTF")?;
+    let view = ctf.view();
+
+    let ctx = TraceContext {
+        proc: &proc,
+        ctf: view,
+        mappings: proc.mappings()?,
+    };
+    let Some(task_ty) = ctx.ctf.find(&args.ty, durin::TypeKind::Struct) else {
+        anyhow::bail!("failed to find task CTF type");
+    };
+
+    let info = reify::TypeInfo::from_addr(&ctx, task_ty, addr)
+        .with_context(|| format!("failed to parse {:#x} as {}", addr, args.ty))?;
+
+    let Ok(stage) = info.member("core").and_then(|c| c.member("stage")) else {
+        anyhow::bail!("failed to find the future");
+    };
+
+    let (state, active) = stage.active_variant()?;
+    if state != "Running" {
+        anyhow::bail!("task is in {state} state, no trace available");
+    }
+
+    writeln!(out, "{}", stage.ty.name())?;
+    let mut active = active.to_owned();
+
+    while let Ok((await_point, var)) = active.as_ref().active_variant() {
+        writeln!(out, "    suspended at await point {}", await_point)?;
+
+        // TODO: this is hilariously overbroad.
+        if let Some(lock) = var.try_member("lock")? {
+            let addr: u64 = lock.parse(&ctx)?;
+            writeln!(out, "    blocked on mutex at {addr:#x}")?;
+        }
+
+        if args.verbose && !var.is_enum() {
+            writeln!(out, "    Arguments:")?;
+            for m in var.ty.members().filter(|m| m.name() != "__awaitee") {
+                let mm = var.member(m.name())?;
+                writeln!(out, "      {}: {}", m.name(), mm.display_with_depth(1))?;
+            }
+        }
+
+        writeln!(out, "waiting on: {}", var.ty.name())?;
+
+        // We have an explicit awaitee.
+        if let Some(aw) = var.try_member("__awaitee")? {
+            active = aw.to_owned();
+        } else {
+            // Move down to the next nested type.
+            active = var.to_owned();
+        }
+    }
+
+    Ok(())
 }
