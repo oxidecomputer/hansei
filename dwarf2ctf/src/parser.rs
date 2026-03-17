@@ -1406,9 +1406,7 @@ impl<'a, R: Reader<Offset = usize>> DependencyCollector<'a, R> {
                     let is_discr = discr_offset.is_some_and(|off| child.entry().offset() == off);
                     if is_discr {
                         let mut member = self.extract_member_stub(unit, child.entry())?;
-                        if member.name.is_empty() {
-                            member.name = "__discr".to_string();
-                        }
+                        member.name = "__discr".to_string();
                         if let Some(type_ref) = member.type_ref {
                             deps.push(type_ref);
                         }
@@ -1890,8 +1888,12 @@ fn stub_to_ctf_type(
                 }
             }
 
-            // Sort members by offset for consistent CTF output
+            // Sort members by offset for consistent CTF output and
+            // deduplicate.  Rust async-fn environments can produce DWARF
+            // with the same member listed more than once (e.g. two `self`
+            // entries at the same offset).
             ctf_members.sort_by_key(|m| m.offset_bits);
+            ctf_members.dedup_by(|a, b| a.name == b.name && a.offset_bits == b.offset_bits);
 
             Ok(CtfType::Struct {
                 name: name.clone(),
@@ -2013,6 +2015,13 @@ fn build_variant_part_members(
         // of the variant type references have a `DW_AT_data_member_location` at offset
         // 0, which would overlap with the discriminant if that were present. If there
         // is an overlap, then we know that niche optimization is being used.
+        //
+        // We must also verify the discriminant actually overlaps with the variant
+        // data. Async state machines (and other enums) can have a discriminant at
+        // a large offset (e.g., at the end of the struct) while variant members
+        // start at offset 0, which is NOT niche optimization.
+        let discr_overlaps_variants = discr.offset_bytes * 8 == union_offset_bits;
+
         let member_at_zero = variant_part.variants.iter().any(|v| {
             v.members.iter().any(|m| {
                 let type_id = resolve_type_ref(m.type_ref.as_ref(), header_offset, global_type_map);
@@ -2036,7 +2045,7 @@ fn build_variant_part_members(
             header_offset,
         );
 
-        member_at_zero || nested_discr
+        discr_overlaps_variants && (member_at_zero || nested_discr)
     } else {
         false
     };
@@ -2082,8 +2091,10 @@ fn build_variant_part_members(
     let mut max_variant_size: u32 = 0;
 
     for variant in &variant_part.variants {
-        // Adjust member offsets to be relative to the union start
-        let adjusted_members: Vec<CtfMember> = variant
+        // Adjust member offsets to be relative to the union start and
+        // deduplicate (rustc can emit the same member twice in async-fn
+        // environment DWARF).
+        let mut adjusted_members: Vec<CtfMember> = variant
             .members
             .iter()
             .map(|m| CtfMember {
@@ -2092,6 +2103,8 @@ fn build_variant_part_members(
                 offset_bits: (m.offset_bytes * 8).saturating_sub(union_offset_bits),
             })
             .collect();
+        adjusted_members.sort_by_key(|m| m.offset_bits);
+        adjusted_members.dedup_by(|a, b| a.name == b.name && a.offset_bits == b.offset_bits);
 
         // Calculate variant struct size
         let variant_size = parent_struct_size.saturating_sub((union_offset_bits / 8) as u32);
