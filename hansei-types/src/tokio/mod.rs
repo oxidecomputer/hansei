@@ -4,6 +4,8 @@
 
 //! Tokio specific types that are loadable from CTF and/or DWARF debug info
 
+pub mod ctf;
+
 use crate::unwind::Backtrace;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
