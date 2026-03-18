@@ -5,12 +5,13 @@
 //! Tokio specific types that are loadable from CTF and/or DWARF debug info
 
 pub mod ctf;
+pub mod dwarf;
 
-use crate::unwind::Backtrace;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::mem;
 use std::time::{Duration, Instant};
+use unwind::Backtrace;
 
 #[derive(Debug)]
 pub struct TokioRuntime {

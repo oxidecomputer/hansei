@@ -14,7 +14,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub mod tokio;
-pub mod unwind;
 
 #[cfg(not(target_os = "illumos"))]
 compile_error!("this crate only supports illumos");

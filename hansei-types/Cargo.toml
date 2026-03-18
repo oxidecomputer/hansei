@@ -5,12 +5,17 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
+camino.workspace = true
 debugdb.workspace = true
 derive_more.workspace = true
 durin.workspace = true
 humantime.workspace = true
 proc.workspace = true
+memmap2.workspace = true
+object.workspace = true
+rangemap.workspace = true
 regex.workspace = true
 reify.workspace = true
 rustc-demangle.workspace = true
 semver.workspace = true
+unwind.workspace = true

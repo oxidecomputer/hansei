@@ -1,0 +1,24 @@
+[package]
+name = "spelunkio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+debugdb.workspace = true
+derive_more.workspace = true
+clap.workspace = true
+camino.workspace = true
+gimli.workspace = true
+hansei-types.workspace = true
+memmap2.workspace = true
+object.workspace = true
+proc.workspace = true
+rangemap.workspace = true
+reedline.workspace = true
+subprocess.workspace = true
+swrite.workspace = true
+unwind.workspace = true
+
+[[bin]]
+name = "spelunkio"
