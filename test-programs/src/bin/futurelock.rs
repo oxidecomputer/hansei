@@ -1,0 +1,70 @@
+use futures::FutureExt;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+use tokio::time::sleep;
+
+fn main() {
+    // `oxide-tokio-rt` re-exports the Tokio runtime builder type.
+    let mut builder = oxide_tokio_rt::Builder::new_multi_thread();
+
+    // Set the desired number of worker threads to 4.
+    builder.worker_threads(4);
+
+    // Run the application using the configured builder.
+    oxide_tokio_rt::run_builder(&mut builder, async {
+        // Create a lock that will be shared by multiple tasks.
+        let lock = Arc::new(Mutex::new(()));
+
+        // Start a background task that takes the lock and holds it for a few
+        // seconds.  This is just to simulate some contention.  This function only
+        // returns once the lock has been taken in the background task.
+        start_background_task(lock.clone()).await;
+
+        // The guts of the example.
+        do_stuff(lock.clone()).await;
+    })
+}
+
+// Starts a background task that grabs the lock, holds it for 5 seconds,
+// and then drops it.  Returns once the task is holding the lock.
+// The purpose of this is to simulate contention.
+async fn start_background_task(lock: Arc<Mutex<()>>) {
+    // Use a channel to coordinate with the task so that it can tell us when
+    // its taken the lock.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ = tokio::spawn(async move {
+        println!("background task: start");
+        let _guard = lock.lock().await;
+        let _ = tx.send(());
+        sleep(Duration::from_secs(5)).await;
+        println!("background task: done (dropping lock)")
+    });
+    // Wait for the task to take the lock before returning.
+    let _ = rx.await;
+}
+
+// The guts of the example
+async fn do_stuff(lock: Arc<Mutex<()>>) {
+    let mut future1 = do_async_thing("op1", lock.clone()).boxed();
+
+    // Try to execute `future1`.  If it takes more than 500ms, do
+    // a related thing instead.
+    println!("do_stuff: entering select");
+    tokio::select! {
+        _ = &mut future1 => {
+            println!("do_stuff: arm1 future finished");
+        }
+        _ = sleep(Duration::from_millis(500)) => {
+            do_async_thing("op2", lock.clone()).await;
+        }
+    };
+    println!("do_stuff: all done");
+}
+
+async fn do_async_thing(label: &str, lock: Arc<Mutex<()>>) {
+    println!("{label}: started");
+    let _ = lock.lock().await;
+    println!("{label}: acquired lock");
+    println!("{label}: done");
+}
