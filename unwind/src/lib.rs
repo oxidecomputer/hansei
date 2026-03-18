@@ -1,4 +1,8 @@
-pub use hansei_types::unwind::{Backtrace, Frame};
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! Stack unwinding for core dumps using DWARF `.eh_frame` CFI.
 
 use anyhow::{Context as _, Result};
 use gimli::{
@@ -8,7 +12,7 @@ use gimli::{
 use goblin::elf::Elf;
 use goblin::elf::header::{EI_CLASS, ELFCLASS64};
 use goblin::elf::program_header::PT_LOAD;
-use proc::{Proc, Reg, Regs, x86_64::*};
+use proc::{Proc, Reg, Regs, SymbolBuf, x86_64::*};
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -20,6 +24,43 @@ const PT_SUNW_UNWIND: u32 = 0x6464e550;
 
 // TODO - does this actually matter?
 const _: () = assert!(usize::BITS == 64, "host system must be 64-bit");
+
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct Backtrace {
+    pub frames: Vec<Frame>,
+}
+
+impl Backtrace {
+    pub fn new(frames: Vec<Frame>) -> Self {
+        Self { frames }
+    }
+
+    pub fn stack_trace(&self, max_frames: usize) -> Vec<String> {
+        self.frames
+            .iter()
+            .take(max_frames)
+            .map(|frame| {
+                let mangled = frame
+                    .symbol
+                    .as_ref()
+                    .map(|s| s.name.as_str())
+                    .unwrap_or_default();
+                format!(
+                    "{:#018x} {:#}",
+                    frame.regs.rip,
+                    rustc_demangle::demangle(mangled)
+                )
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Frame {
+    pub pc: u64,
+    pub regs: Regs,
+    pub symbol: Option<SymbolBuf>,
+}
 
 pub fn load_frames(core: &Proc) -> Result<BTreeMap<u32, Backtrace>> {
     let addrs = AddrRanges::parse(&core).context("could not parse address mappings")?;

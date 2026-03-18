@@ -1,6 +1,7 @@
 use futures::FutureExt;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::spawn;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
@@ -9,16 +10,20 @@ fn main() {
     let mut builder = oxide_tokio_rt::Builder::new_multi_thread();
     builder.worker_threads(4);
     oxide_tokio_rt::run_builder(&mut builder, async {
-        // Create a lock that will be shared by multiple tasks.
-        let lock = Arc::new(Mutex::new(()));
+        let h = spawn(async move {
+            // Create a lock that will be shared by multiple tasks.
+            let lock = Arc::new(Mutex::new(()));
 
-        // Start a background task that takes the lock and holds it for a few
-        // seconds.  This is just to simulate some contention.  This function only
-        // returns once the lock has been taken in the background task.
-        start_background_task(lock.clone()).await;
+            // Start a background task that takes the lock and holds it for a few
+            // seconds.  This is just to simulate some contention.  This function only
+            // returns once the lock has been taken in the background task.
+            start_background_task(lock.clone()).await;
 
-        // The guts of the example.
-        do_stuff(lock.clone()).await;
+            // The guts of the example.
+            do_stuff(lock.clone()).await;
+        });
+
+        h.await.unwrap()
     })
 }
 
