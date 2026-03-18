@@ -638,10 +638,13 @@ dependencies = [
  "anyhow",
  "debugdb",
  "derive_more 2.1.1",
+ "durin",
  "humantime",
  "proc",
+ "regex",
  "reify",
  "rustc-demangle",
+ "semver",
 ]
 
 [[package]]

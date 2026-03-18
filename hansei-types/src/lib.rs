@@ -5,7 +5,6 @@
 //! Useful types for building async debuggers based on tokio
 
 pub mod tokio;
-pub mod tokio_ctf;
 pub mod unwind;
 
 use derive_more::Display;
