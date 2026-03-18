@@ -10,6 +10,7 @@ console = { workspace = true }
 durin = { workspace = true }
 gimli = { workspace = true }
 goblin = { workspace = true }
+hansei-types = { workspace = true }
 humantime = { workspace = true }
 proc = { workspace = true }
 regex = { workspace = true }
