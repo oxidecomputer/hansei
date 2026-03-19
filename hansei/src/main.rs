@@ -1,4 +1,4 @@
-use crate::tokio::{Context, MinTokioState, TokioRuntime};
+use crate::tokio::{Context, MinTokioState, parse_runtime};
 
 use anyhow::{Context as _, Result};
 use clap::{ArgAction, Args, Parser, Subcommand};
@@ -171,7 +171,7 @@ fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
     let view = ctf.view();
 
     let mut symbols = HashMap::new();
-    let runtime = TokioRuntime::parse(
+    let runtime = parse_runtime(
         view,
         &proc,
         &main_lwp,

@@ -1,0 +1,16 @@
+[package]
+name = "hansei-types"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+debugdb.workspace = true
+derive_more.workspace = true
+durin.workspace = true
+humantime.workspace = true
+proc.workspace = true
+regex.workspace = true
+reify.workspace = true
+rustc-demangle.workspace = true
+semver.workspace = true
