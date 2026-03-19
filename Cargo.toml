@@ -6,6 +6,7 @@ members = [
     "dwarf2ctf",
     "findargs",
     "hansei",
+    "hansei-types",
     "libproc-sys",
     "print-ctf",
     "proc",
@@ -20,11 +21,14 @@ assert_cmd = "2.0"
 bindgen = { version = "0.72", default-features = false }
 clap = { version = "4.5.51", features = ["derive"] }
 console = "0.16"
+debugdb = { git = "https://github.com/andrewjstone/debugdb", branch = "spelunkio-2" }
+derive_more = { version = "2.1.1", features = ["from", "display"] }
 durin = { path = "durin", version = "0.1.0" }
 fallible-iterator = "0.3.0"
 flate2 = "1.1.5"
 gimli = { version = "0.32", features = ["fallible-iterator"] }
 goblin = "0.10.3"
+hansei-types = { path = "hansei-types" }
 humantime = "2.3"
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
 memmap2 = "0.9.9"
