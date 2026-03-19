@@ -4,14 +4,10 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
+/// This is the demo program from RFD 609, but using oxide-tokio-rt
 fn main() {
-    // `oxide-tokio-rt` re-exports the Tokio runtime builder type.
     let mut builder = oxide_tokio_rt::Builder::new_multi_thread();
-
-    // Set the desired number of worker threads to 4.
     builder.worker_threads(4);
-
-    // Run the application using the configured builder.
     oxide_tokio_rt::run_builder(&mut builder, async {
         // Create a lock that will be shared by multiple tasks.
         let lock = Arc::new(Mutex::new(()));
