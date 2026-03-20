@@ -47,5 +47,5 @@ tokio = "1.47.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-[profile.release]
+[profile.release.package.test-programs]
 debug = true
