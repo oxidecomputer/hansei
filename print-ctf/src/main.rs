@@ -19,6 +19,10 @@ struct Cli {
     /// top-level type without expanding members.
     #[clap(short = 'd', long, default_value_t = 3)]
     max_depth: usize,
+
+    /// Only print type and member names
+    #[clap(long, short)]
+    quiet: bool,
 }
 
 fn main() {
@@ -55,32 +59,46 @@ fn exec(args: &Cli) -> Result<()> {
         };
 
         for ctf_ty in iter {
-            writeln!(out, "{}", format_type(&ctf_ty, depth, args.max_depth, 0))?;
+            writeln!(
+                out,
+                "{}",
+                format_type(&ctf_ty, depth, args.max_depth, 0, args.quiet)
+            )?;
         }
     }
 
     Ok(())
 }
 
-fn format_type(ty: &CtfType, depth: usize, max_depth: usize, abs_offset: u64) -> String {
+fn format_type(
+    ty: &CtfType,
+    depth: usize,
+    max_depth: usize,
+    abs_offset: u64,
+    quiet: bool,
+) -> String {
     if depth > max_depth {
         return String::new();
     }
 
-    let mut desc = ty_title(ty);
+    let mut desc = ty_title(ty, quiet);
 
     match ty {
         CtfType::Unknown(_u) => {
             // No further formatting.
         }
         CtfType::Integer(i) => {
-            desc.push_str(&format!(", size {}, encoding {:?}", i.size(), i.encoding()));
+            if !quiet {
+                desc.push_str(&format!(", size {}, encoding {:?}", i.size(), i.encoding()));
+            }
         }
         CtfType::Float(f) => {
-            desc.push_str(&format!(", size {}, encoding {:?}", f.size(), f.encoding()));
+            if !quiet {
+                desc.push_str(&format!(", size {}, encoding {:?}", f.size(), f.encoding()));
+            }
         }
         CtfType::Pointer(p) => {
-            desc.push_str(&format!(", target {}", ty_title(&p.target())));
+            desc.push_str(&format!(", target {}", ty_title(&p.target(), quiet)));
         }
         CtfType::Array(a) => {
             desc.push_str(&format!(
@@ -92,7 +110,7 @@ fn format_type(ty: &CtfType, depth: usize, max_depth: usize, abs_offset: u64) ->
         CtfType::Function(f) => {
             desc.push_str(&format!(
                 ", return type {}, is_varargs: {}",
-                ty_title(&f.return_type()),
+                ty_title(&f.return_type(), quiet),
                 f.is_varargs(),
             ));
             if f.arg_count() > 0 {
@@ -109,7 +127,9 @@ fn format_type(ty: &CtfType, depth: usize, max_depth: usize, abs_offset: u64) ->
             todo!()
         }
         CtfType::Struct(s) => {
-            desc.push_str(&format!(", size: {}", s.size()));
+            if !quiet {
+                desc.push_str(&format!(", size: {}", s.size()));
+            }
             if depth < max_depth {
                 if s.members().len() > 0 {
                     desc.push_str(", members:");
@@ -119,11 +139,14 @@ fn format_type(ty: &CtfType, depth: usize, max_depth: usize, abs_offset: u64) ->
                     depth + 1,
                     max_depth,
                     abs_offset,
+                    quiet,
                 ));
             }
         }
         CtfType::Union(u) => {
-            desc.push_str(&format!(", size: {}", u.size()));
+            if !quiet {
+                desc.push_str(&format!(", size: {}", u.size()));
+            }
 
             if depth < max_depth {
                 if u.members().len() > 0 {
@@ -134,6 +157,7 @@ fn format_type(ty: &CtfType, depth: usize, max_depth: usize, abs_offset: u64) ->
                     depth + 1,
                     max_depth,
                     abs_offset,
+                    quiet,
                 ));
             }
         }
@@ -155,16 +179,16 @@ fn format_type(ty: &CtfType, depth: usize, max_depth: usize, abs_offset: u64) ->
             // No further formatting.
         }
         CtfType::Typedef(t) => {
-            desc.push_str(&format!(", target {}", ty_title(&t.target())));
+            desc.push_str(&format!(", target {}", ty_title(&t.target(), quiet)));
         }
         CtfType::Volatile(v) => {
-            desc.push_str(&format!(", target {}", ty_title(&v.target())));
+            desc.push_str(&format!(", target {}", ty_title(&v.target(), quiet)));
         }
         CtfType::Const(c) => {
-            desc.push_str(&format!(", target {}", ty_title(&c.target())));
+            desc.push_str(&format!(", target {}", ty_title(&c.target(), quiet)));
         }
         CtfType::Restrict(r) => {
-            desc.push_str(&format!(", target {}", ty_title(&r.target())));
+            desc.push_str(&format!(", target {}", ty_title(&r.target(), quiet)));
         }
     }
 
@@ -176,6 +200,7 @@ fn format_members(
     depth: usize,
     max_depth: usize,
     abs_offset: u64,
+    quiet: bool,
 ) -> String {
     let mut desc = String::new();
     if depth > max_depth {
@@ -184,31 +209,53 @@ fn format_members(
 
     for member in members {
         let mem_abs_off = abs_offset + member.offset();
-        let member_desc = format_type(&member.ty(), depth, max_depth, mem_abs_off);
+        let member_desc = format_type(&member.ty(), depth, max_depth, mem_abs_off, quiet);
         if member_desc.is_empty() {
-            desc.push_str(&format!(
-                "\n{}{}, offset {}, abs_offset: {}, {}",
-                "  ".repeat(depth),
-                member.name(),
-                member.offset(),
-                mem_abs_off,
-                ty_title(&member.ty())
-            ));
+            if quiet {
+                desc.push_str(&format!(
+                    "\n{}{}, {}",
+                    "  ".repeat(depth),
+                    member.name(),
+                    ty_title(&member.ty(), quiet)
+                ));
+            } else {
+                desc.push_str(&format!(
+                    "\n{}{}, offset {}, abs_offset: {}, {}",
+                    "  ".repeat(depth),
+                    member.name(),
+                    member.offset(),
+                    mem_abs_off,
+                    ty_title(&member.ty(), quiet)
+                ));
+            }
         } else {
-            desc.push_str(&format!(
-                "\n{}{}, offset {}, abs_offset {}, {}",
-                "  ".repeat(depth),
-                member.name(),
-                member.offset(),
-                mem_abs_off,
-                member_desc,
-            ));
+            if quiet {
+                desc.push_str(&format!(
+                    "\n{}{}, {}",
+                    "  ".repeat(depth),
+                    member.name(),
+                    member_desc,
+                ));
+            } else {
+                desc.push_str(&format!(
+                    "\n{}{}, offset {}, abs_offset {}, {}",
+                    "  ".repeat(depth),
+                    member.name(),
+                    member.offset(),
+                    mem_abs_off,
+                    member_desc,
+                ));
+            }
         }
     }
 
     desc
 }
 
-fn ty_title(ty: &CtfType) -> String {
-    format!("<{}> {} {}", ty.id().get(), ty.kind(), ty.name())
+fn ty_title(ty: &CtfType, quiet: bool) -> String {
+    if quiet {
+        format!("{} {}", ty.kind(), ty.name())
+    } else {
+        format!("<{}> {} {}", ty.id().get(), ty.kind(), ty.name())
+    }
 }
