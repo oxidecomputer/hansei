@@ -379,6 +379,9 @@ fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
         anyhow::bail!("task is in {state} state, no trace available");
     }
 
+    let task_id: u64 = info.member("core")?.member("task_id")?.parse(&ctx)?;
+
+    writeln!(out, "Task {task_id}:")?;
     writeln!(out, "{}", stage.ty.name())?;
     let mut active = active.to_owned();
 
