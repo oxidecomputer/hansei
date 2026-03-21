@@ -4,8 +4,8 @@
 
 //! Useful types for building async debuggers based on tokio
 
+pub mod debugger;
 pub mod tokio;
-pub mod unwind;
 
 use derive_more::Display;
 use std::fmt;

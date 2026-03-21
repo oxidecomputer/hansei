@@ -11,7 +11,9 @@ members = [
     "print-ctf",
     "proc",
     "reify",
+    "spelunkio",
     "test-programs",
+    "unwind",
 ]
 
 [workspace.dependencies]
@@ -32,18 +34,23 @@ hansei-types = { path = "hansei-types" }
 humantime = "2.3"
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
 memmap2 = "0.9.9"
+object = "0.33"
 petgraph = "0.7"
 predicates = "3.1"
 proc = { path = "proc", version = "0.1.0" }
 rangemap = "1.7.0"
+reedline = "0.38"
 reify = { path = "reify", version = "0.1.0" }
 regex = "1.12"
 rustc-demangle = "0.1.27"
 scroll = "0.13.0"
 semver = "1.0"
+subprocess = "1.0.0"
+swrite = "0.1.0"
 tempfile = "3.14"
 thiserror = "2.0.17"
 tokio = "1.47.0"
+unwind = { path = "unwind" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
