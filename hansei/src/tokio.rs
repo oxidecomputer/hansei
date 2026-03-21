@@ -36,7 +36,7 @@ pub fn parse_runtime(
     let brk_range = status.brk_range;
 
     let backtraces = if capture_backtraces {
-        let bt = crate::unwind::load_frames(&proc)?;
+        let bt = unwind::load_frames(&proc)?;
         Some(bt)
     } else {
         None
