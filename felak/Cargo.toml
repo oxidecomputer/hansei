@@ -1,0 +1,22 @@
+[package]
+name = "felak"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "dump-dwarf"
+
+[dependencies]
+foldhash.workspace = true
+gimli.workspace = true
+memmap2.workspace = true
+mimalloc.workspace = true
+object.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+object.workspace = true
+tempfile.workspace = true

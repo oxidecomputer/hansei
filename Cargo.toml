@@ -4,6 +4,7 @@ members = [
     "disentangler",
     "durin",
     "dwarf2ctf",
+    "felak",
     "findargs",
     "hansei",
     "libproc-sys",
@@ -22,11 +23,14 @@ console = "0.16"
 durin = { path = "durin", version = "0.1.0" }
 fallible-iterator = "0.3.0"
 flate2 = "1.1.5"
+foldhash = "0.2"
 gimli = { version = "0.32", features = ["fallible-iterator"] }
 goblin = "0.10.3"
 humantime = "2.3"
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
 memmap2 = "0.9.9"
+mimalloc = { version = "*", features = ["v3"] }
+object = "0.38"
 petgraph = "0.7"
 predicates = "3.1"
 proc = { path = "proc", version = "0.1.0" }

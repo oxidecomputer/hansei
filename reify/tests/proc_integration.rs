@@ -7,7 +7,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use durin::read::{CtfReader, CtfView};
+use durin::read::{CtfReader, CtfType, CtfView};
 use proc::{Mappings, Proc};
 use reify::ParseCtx;
 use reify::ParseWithCtf;
@@ -134,21 +134,16 @@ fn spawn_test_binary(tmpdir: &Path) -> TestProc {
 
 /// Context for reading types from a process using CTF.
 struct TestContext<'a> {
-    ctf: &'a CtfView<'a>,
     proc: &'a Proc,
     mappings: &'a Mappings,
 }
 
-impl<'a> ParseCtx<'a> for TestContext<'a> {
-    fn ctf(&self) -> &'a CtfView<'a> {
-        self.ctf
-    }
-
-    fn proc(&self) -> &'a Proc {
+impl ParseCtx for TestContext<'_> {
+    fn proc(&self) -> &Proc {
         self.proc
     }
 
-    fn mappings(&self) -> &'a Mappings {
+    fn mappings(&self) -> &Mappings {
         self.mappings
     }
 }
@@ -159,10 +154,10 @@ enum Foo {
     B(i8),
 }
 
-impl<'a> ParseWithCtf<'a, TestContext<'a>> for Foo {
+impl<'a> ParseWithCtf<'a, CtfType<'a>, TestContext<'_>> for Foo {
     fn parse_with_ctf(
-        ctx: &TestContext<'a>,
-        info: &reify::TypeInfoRef<'_, 'a>,
+        ctx: &TestContext<'_>,
+        info: &reify::TypeInfoRef<'_, 'a, CtfType<'a>>,
     ) -> reify::Result<Self> {
         match info.active_variant()? {
             ("A", variant_info) => {
@@ -179,7 +174,7 @@ impl<'a> ParseWithCtf<'a, TestContext<'a>> for Foo {
 }
 
 #[test]
-fn read_global_point() {
+fn test_read_global_point() {
     let tmpdir = setup_test_binary();
     let ctf_path = generate_ctf(tmpdir.path());
 
@@ -195,7 +190,6 @@ fn read_global_point() {
     let mappings = proc.mappings().expect("failed to get mappings");
 
     let ctx = TestContext {
-        ctf: &view,
         proc: &proc,
         mappings: &mappings,
     };
@@ -231,7 +225,7 @@ fn read_global_point() {
 }
 
 #[test]
-fn read_global_foo() {
+fn test_read_global_foo() {
     let tmpdir = setup_test_binary();
     let ctf_path = generate_ctf(tmpdir.path());
 
@@ -245,7 +239,6 @@ fn read_global_foo() {
     let mappings = proc.mappings().expect("failed to get mappings");
 
     let ctx = TestContext {
-        ctf: &view,
         proc: &proc,
         mappings: &mappings,
     };
