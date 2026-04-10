@@ -1,5 +1,8 @@
-use durin::read::{CtfEnum, CtfType, CtfView};
-use durin::{TypeId, TypeKind};
+pub mod debug_type;
+
+pub use debug_type::TypeKind;
+use debug_type::{DebugMember, DebugType, TypeClass};
+
 use proc::{Mappings, Proc};
 
 use std::fmt;
@@ -20,21 +23,21 @@ pub struct Error {
 
 #[derive(thiserror::Error, Debug)]
 enum ErrorKind {
-    #[error("invalid discriminant value {discrim} for type {ty:?}")]
-    InvalidDiscriminantValue { ty: TypeId, discrim: i64 },
+    #[error("invalid discriminant value {discrim} for type {ty}")]
+    InvalidDiscriminantValue { ty: String, discrim: i64 },
     #[error("unable to read member at range {start}..{end} from buf with len {len}")]
     InvalidMemberRange { start: u16, end: u16, len: u16 },
-    #[error("enumerator {enum_name} not found for type {ty:?}")]
-    NoEnumerator { ty: TypeId, enum_name: String },
-    #[error("member {member_name} not found for type {ty:?}")]
-    NoMember { ty: TypeId, member_name: String },
+    #[error("enumerator {enum_name} not found for type {ty}")]
+    NoEnumerator { ty: String, enum_name: String },
+    #[error("member {member_name} not found for type {ty}")]
+    NoMember { ty: String, member_name: String },
     #[error("attempted to dereference invalid address {addr:#x}")]
     InvalidAddr { addr: u64 },
     #[error("failed to parse type {0}")]
     ParseType(String),
     #[error("data length {actual} is does not match expected {expected} length")]
     UnexpectedLen { actual: u32, expected: u32 },
-    #[error("expected a {expected:?} but found a {actual:?} when parsing {name}")]
+    #[error("expected a {expected} but found a {actual} when parsing {name}")]
     UnexpectedType {
         actual: TypeKind,
         expected: TypeKind,
@@ -42,6 +45,8 @@ enum ErrorKind {
     },
     #[error("expected enum variant {expected} was not active")]
     UnexpectedVariant { expected: String },
+    #[error("{0} is not an enum type")]
+    NotAnEnum(String),
 }
 
 impl Error {
@@ -68,7 +73,7 @@ impl Error {
         &self.backtrace
     }
 
-    pub fn invalid_discriminant_value(ty: TypeId, discrim: i64) -> Self {
+    pub fn invalid_discriminant_value(ty: String, discrim: i64) -> Self {
         Self::new(ErrorKind::InvalidDiscriminantValue { ty, discrim })
     }
 
@@ -76,11 +81,11 @@ impl Error {
         Self::new(ErrorKind::InvalidMemberRange { start, end, len })
     }
 
-    pub fn no_enumerator(ty: TypeId, enum_name: String) -> Self {
+    pub fn no_enumerator(ty: String, enum_name: String) -> Self {
         Self::new(ErrorKind::NoEnumerator { ty, enum_name })
     }
 
-    pub fn no_member(ty: TypeId, member_name: String) -> Self {
+    pub fn no_member(ty: String, member_name: String) -> Self {
         Self::new(ErrorKind::NoMember { ty, member_name })
     }
 
@@ -107,6 +112,10 @@ impl Error {
     pub fn unexpected_variant(expected: String) -> Self {
         Self::new(ErrorKind::UnexpectedVariant { expected })
     }
+
+    pub fn not_an_enum(ty: String) -> Self {
+        Self::new(ErrorKind::NotAnEnum(ty))
+    }
 }
 
 impl std::fmt::Display for Error {
@@ -121,94 +130,103 @@ impl std::error::Error for Error {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TypeInfo — owned typed buffer
+// ---------------------------------------------------------------------------
+
 #[derive(Clone)]
-pub struct TypeInfo<'ctf> {
-    pub ty: CtfType<'ctf>,
+pub struct TypeInfo<'a, T: DebugType<'a>> {
+    pub ty: T,
     pub addr: u64,
     pub buf: Box<[u8]>,
+    _marker: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
+impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfo<'a, T> {
     /// Read the type directly at the address provided.
-    /// Wrapper types will be unwrapped if present. TODO
-    pub fn from_addr<Ctx: ParseCtx<'ctf>>(ctx: &Ctx, ty: CtfType<'ctf>, addr: u64) -> Result<Self> {
-        let vec = ctx.proc().read_type(ctx, addr, ty)?;
+    pub fn from_addr<Ctx: ParseCtx>(ctx: &Ctx, ty: T, addr: u64) -> Result<Self> {
+        let vec = ctx.proc().read_bytes(addr, ty.size())?;
         let buf = vec.into_boxed_slice();
 
-        Ok(Self { ty, addr, buf })
+        Ok(Self {
+            ty,
+            addr,
+            buf,
+            _marker: std::marker::PhantomData,
+        })
     }
 
-    pub fn as_ref(&'buf self) -> TypeInfoRef<'buf, 'ctf> {
+    pub fn as_ref(&'buf self) -> TypeInfoRef<'buf, 'a, T> {
         self.into()
     }
 
     /// Refresh the contents of the buffer from `Proc` memory from the current
     /// address.
-    pub fn refresh<Ctx: ParseCtx<'ctf>>(&mut self, ctx: &Ctx) -> Result<()> {
-        let vec = ctx.proc().read_type(ctx, self.addr, self.ty)?;
+    pub fn refresh<Ctx: ParseCtx>(&mut self, ctx: &Ctx) -> Result<()> {
+        let vec = ctx.proc().read_bytes(self.addr, self.ty.size())?;
         let buf = vec.into_boxed_slice();
 
         self.buf = buf;
         Ok(())
     }
 
-    pub fn try_member(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+    pub fn try_member(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a, T>>> {
         self.as_ref().try_member(name)
     }
 
-    pub fn member(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
+    pub fn member(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'a, T>> {
         self.as_ref().member(name)
     }
 
-    pub fn try_deref_ptr<Ctx: ParseCtx<'ctf>>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'ctf>>> {
+    pub fn try_deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a, T>>> {
         self.as_ref().try_deref_ptr(ctx)
     }
 
-    pub fn deref_ptr<Ctx: ParseCtx<'ctf>>(&self, ctx: &Ctx) -> Result<TypeInfo<'ctf>> {
+    pub fn deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<TypeInfo<'a, T>> {
         self.as_ref().deref_ptr(ctx)
     }
 
-    pub fn try_select_variant(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+    pub fn try_select_variant(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a, T>>> {
         self.as_ref().try_select_variant(name)
     }
 
-    pub fn select_variant(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
+    pub fn select_variant(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'a, T>> {
         self.as_ref().select_variant(name)
     }
 
-    pub fn array_elements(&'buf self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
+    pub fn array_elements(&'buf self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a, T>>> {
         array_elements(self.ty, self.addr, &self.buf)
     }
 
-    pub fn parse<T, Ctx>(&self, ctx: &Ctx) -> Result<T>
+    pub fn parse<V, Ctx>(&self, ctx: &Ctx) -> Result<V>
     where
-        T: ParseWithCtf<'ctf, Ctx>,
-        Ctx: ParseCtx<'ctf>,
+        V: ParseWithCtf<'a, T, Ctx>,
+        Ctx: ParseCtx,
     {
         self.as_ref().parse(ctx)
     }
 
-    pub fn box2<Ctx: ParseCtx<'ctf>>(
+    pub fn box2<Ctx: ParseCtx>(
         &'buf self,
         ctx: &Ctx,
-    ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>>
+    ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a, T>>>
     where
-        'ctf: 'buf,
+        'a: 'buf,
     {
-        boxed_slice_elements(&self, ctx)
+        boxed_slice_elements(self, ctx)
     }
 
-    /// Parse the elements of a boxed slice, returning them in a Vec.
-    pub fn boxed_slice_elements<T, Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<()>
+    /// Pass the elements of a boxed slice to the provided closure.
+    pub fn boxed_slice_elements<Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<()>
     where
-        F: FnMut(&TypeInfoRef<'_, '_>) -> Result<()>,
-        Ctx: ParseCtx<'ctf>,
+        F: FnMut(&TypeInfoRef<'_, 'a, T>) -> Result<()>,
+        Ctx: ParseCtx,
     {
         let proc = ctx.proc();
 
         let len: u64 = self.member("length")?.parse(ctx)?;
         let ptr = self.member("data_ptr")?;
-        let Some(pointer) = self.ty.as_pointer() else {
+        let Some(param_ty) = ptr.ty.pointer_target() else {
             return Err(Error::unexpected_type(
                 ptr.ty.kind(),
                 TypeKind::Pointer,
@@ -216,19 +234,19 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
             ));
         };
 
-        let param_ty = pointer.target();
         let elem_size = param_ty.size();
 
         let p: u64 = ptr.parse(ctx)?;
         let total_len = len * param_ty.size();
 
-        let raw = proc.read_bytes(ctx, p, total_len)?;
+        let raw = proc.read_bytes(p, total_len)?;
 
         for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
             let item_info = TypeInfoRef {
                 ty: param_ty,
                 addr: p + (i as u64) * elem_size,
                 bytes: chunk,
+                _marker: std::marker::PhantomData,
             }
             .peel();
             f(&item_info)?;
@@ -238,44 +256,54 @@ impl<'buf, 'ctf: 'buf> TypeInfo<'ctf> {
     }
 }
 
-impl<'buf, 'ctf: 'buf> From<TypeInfoRef<'buf, 'ctf>> for TypeInfo<'ctf> {
+impl<'buf, 'a: 'buf, T: DebugType<'a>> From<TypeInfoRef<'buf, 'a, T>> for TypeInfo<'a, T> {
     #[inline]
-    fn from(TypeInfoRef { ty, addr, bytes }: TypeInfoRef<'buf, 'ctf>) -> Self {
+    fn from(
+        TypeInfoRef {
+            ty, addr, bytes, ..
+        }: TypeInfoRef<'buf, 'a, T>,
+    ) -> Self {
         Self {
             ty,
             addr,
             buf: bytes.to_vec().into_boxed_slice(),
+            _marker: std::marker::PhantomData,
         }
     }
 }
 
-impl fmt::Debug for TypeInfo<'_> {
+impl fmt::Debug for TypeInfo<'_, impl DebugType<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TypeInfo")
-            .field("ty", &format_args!("TypeId({})", self.ty.id().get()))
+            .field("ty", &self.ty)
             .field("addr", &format_args!("{:#x}", self.addr))
             .field("buf", &self.buf)
             .finish()
     }
 }
 
+// ---------------------------------------------------------------------------
+// TypeInfoRef — borrowed typed buffer
+// ---------------------------------------------------------------------------
+
 #[derive(Clone)]
-pub struct TypeInfoRef<'buf, 'ctf: 'buf> {
-    pub ty: CtfType<'ctf>,
+pub struct TypeInfoRef<'buf, 'a: 'buf, T: DebugType<'a>> {
+    pub ty: T,
     pub addr: u64,
     pub bytes: &'buf [u8],
+    _marker: std::marker::PhantomData<&'a ()>,
 }
 
-impl Eq for TypeInfoRef<'_, '_> {}
+impl<'buf, 'a: 'buf, T: DebugType<'a>> Eq for TypeInfoRef<'buf, 'a, T> {}
 
-impl PartialEq for TypeInfoRef<'_, '_> {
+impl<'buf, 'a: 'buf, T: DebugType<'a> + PartialEq> PartialEq for TypeInfoRef<'buf, 'a, T> {
     fn eq(&self, other: &Self) -> bool {
         self.ty == other.ty && self.addr == other.addr && self.bytes == other.bytes
     }
 }
 
-impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
-    pub fn try_member(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
+impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
+    pub fn try_member(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a, T>>> {
         let Some(member) = self.ty.member(name) else {
             return Ok(None);
         };
@@ -289,36 +317,46 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         };
         let addr = self.addr + member.offset();
 
-        Ok(Some(TypeInfoRef { ty, addr, bytes }.peel()))
+        Ok(Some(
+            TypeInfoRef {
+                ty,
+                addr,
+                bytes,
+                _marker: std::marker::PhantomData,
+            }
+            .peel(),
+        ))
     }
 
-    pub fn member(&self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
+    pub fn member(&self, name: &str) -> Result<TypeInfoRef<'buf, 'a, T>> {
         let Some(member) = self.try_member(name)? else {
-            return Err(Error::no_member(self.ty.id(), name.to_string()));
+            return Err(Error::no_member(
+                self.ty.name().to_string(),
+                name.to_string(),
+            ));
         };
 
         Ok(member)
     }
 
-    pub fn try_deref_ptr<Ctx: ParseCtx<'ctf>>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'ctf>>> {
+    pub fn try_deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a, T>>> {
         let proc = ctx.proc();
 
         let peeled = self.clone().peel();
-        let Some(ptr_ty) = peeled.ty.as_pointer() else {
+        let Some(target_ty) = peeled.ty.pointer_target() else {
             return Err(Error::unexpected_type(
                 self.ty.kind(),
                 TypeKind::Pointer,
-                format!("{} ({:?})", self.ty.name(), self.ty.id()),
+                format!("{} ({:?})", self.ty.name(), self.ty),
             ));
         };
-        let target_ty = ptr_ty.target();
 
         let Some(&bytes) = self.bytes.first_chunk::<8>() else {
             return Err(Error::unexpected_len(self.bytes.len() as u32, 8));
         };
 
         let addr = u64::from_le_bytes(bytes);
-        let Ok(vec) = proc.read_type(ctx, addr, target_ty) else {
+        let Ok(vec) = proc.read_bytes(addr, target_ty.size()) else {
             // TODO return an error?
             return Ok(None);
         };
@@ -329,6 +367,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             ty: target_ty,
             addr,
             bytes: &buf,
+            _marker: std::marker::PhantomData,
         }
         .peel();
 
@@ -336,10 +375,11 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
             ty: unwrapped.ty,
             addr,
             buf,
+            _marker: std::marker::PhantomData,
         }))
     }
 
-    pub fn deref_ptr<Ctx: ParseCtx<'ctf>>(&self, ctx: &Ctx) -> Result<TypeInfo<'ctf>> {
+    pub fn deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<TypeInfo<'a, T>> {
         match self.try_deref_ptr(ctx) {
             Ok(Some(i)) => Ok(i),
             Ok(None) => Err(Error::invalid_addr(self.addr)),
@@ -348,64 +388,37 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
     }
 
     pub fn is_enum(&self) -> bool {
-        self.member("__discr").ok().is_some()
+        self.ty.active_variant(self.bytes).is_some()
     }
 
-    pub fn try_select_variant(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'ctf>>> {
-        let (discrim_value, discrim_ty) = self.read_discriminant()?;
-
-        let Some(variants_member) = self.ty.member("__variants") else {
-            return Err(Error::no_member(self.ty.id(), "__variants".to_string()));
+    pub fn try_select_variant(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a, T>>> {
+        let Some(result) = self.ty.check_variant(self.bytes, name) else {
+            return Err(Error::not_an_enum(self.ty.name().to_string()));
         };
-        let variants = variants_member.ty();
-
-        // In niche-optimized enums only one enumerator will be defined, with two
-        // possible variants.
-        let is_niche_optimized =
-            variants.members().len() == 2 && discrim_ty.enumerators().len() == 1;
-
-        // Find the enumerator whose name matches our expected value. It is common
-        // common for our expected name to be missing due to niche-optimized enums.
-        let enumerator = discrim_ty.enumerators().find(|e| e.name() == name);
-
-        match (enumerator, is_niche_optimized) {
-            (Some(e), _) => {
-                if e.value() != discrim_value {
-                    return Ok(None);
-                }
-            }
-            (None, true) => {
-                // The single defined enumerator for a niche-optimized enum matches
-                // the discriminant, but we're looking for an undefined variant. We
-                // can deduce that we've hit the variant we don't want.
-                if discrim_value == discrim_ty.enumerators().nth(0).unwrap().value() {
-                    return Ok(None);
-                }
-            }
-            (None, false) => {
-                // Not a niche-optimized enum, so each variant should have a
-                // matching enumerator, but we didn't find it. User error.
-                return Err(Error::no_enumerator(variants.id(), name.to_string()));
-            }
-        }
-
-        let Some(selected_variant) = variants.member(name) else {
-            return Err(Error::no_member(self.ty.id(), name.to_string()));
+        let Some((var_ty, offset)) = result? else {
+            return Ok(None);
         };
-        let ty = selected_variant.ty();
 
-        let start = selected_variant.offset() as u16;
-        let end = start + ty.size() as u16;
+        let start = offset as u16;
+        let end = start + var_ty.size() as u16;
         let Some(bytes) = self.bytes.get(start as usize..end as usize) else {
             let len = self.bytes.len() as u16;
             return Err(Error::invalid_member_range(start, end, len));
         };
-        let addr = self.addr + selected_variant.offset();
+        let addr = self.addr + offset;
 
-        Ok(Some(TypeInfoRef { ty, addr, bytes }.peel()))
+        Ok(Some(
+            TypeInfoRef {
+                ty: var_ty,
+                addr,
+                bytes,
+                _marker: std::marker::PhantomData,
+            }
+            .peel(),
+        ))
     }
 
-    pub fn select_variant(&self, name: &str) -> Result<TypeInfoRef<'buf, 'ctf>> {
+    pub fn select_variant(&self, name: &str) -> Result<TypeInfoRef<'buf, 'a, T>> {
         let Some(info) = self.try_select_variant(name)? else {
             return Err(Error::unexpected_variant(name.to_string()));
         };
@@ -413,65 +426,66 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         Ok(info)
     }
 
-    pub fn parse<T: ParseWithCtf<'ctf, Ctx>, Ctx: ParseCtx<'ctf>>(&self, ctx: &Ctx) -> Result<T> {
-        T::parse_with_ctf(ctx, &self).map_err(|e| Error::parse_type(self.ty.name()).with_source(e))
+    pub fn parse<V: ParseWithCtf<'a, T, Ctx>, Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<V> {
+        V::parse_with_ctf(ctx, self).map_err(|e| Error::parse_type(self.ty.name()).with_source(e))
     }
 
-    pub fn to_owned(&self) -> TypeInfo<'ctf> {
+    pub fn to_owned(&self) -> TypeInfo<'a, T> {
         self.clone().into()
     }
 
-    pub fn with_ty(mut self, ty: CtfType<'ctf>) -> TypeInfoRef<'buf, 'ctf> {
+    pub fn with_ty(mut self, ty: T) -> TypeInfoRef<'buf, 'a, T> {
         self.ty = ty;
         self
     }
 
-    pub fn with_addr(mut self, addr: u64) -> TypeInfoRef<'buf, 'ctf> {
+    pub fn with_addr(mut self, addr: u64) -> TypeInfoRef<'buf, 'a, T> {
         self.addr = addr;
         self
     }
 
-    pub fn with_buf(mut self, buf: &'buf [u8]) -> TypeInfoRef<'buf, 'ctf> {
-        self.bytes = &buf;
+    pub fn with_buf(mut self, buf: &'buf [u8]) -> TypeInfoRef<'buf, 'a, T> {
+        self.bytes = buf;
         self
     }
 
     /// Get an iterator of `TypeInfoRef`s over the elements of an array.
-    pub fn array_elements(&self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
+    pub fn array_elements(&self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a, T>>> {
         array_elements(self.ty, self.addr, self.bytes)
     }
 
-    /// Pass the `TypeInfoRef` of the elements of a boxed slice to the provided closure.
-    pub fn boxed_slice_elements<T, Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<Vec<T>>
+    /// Pass the `TypeInfoRef` of the elements of a boxed slice to the
+    /// provided closure.
+    pub fn boxed_slice_elements<V, Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<Vec<V>>
     where
-        F: FnMut(&TypeInfoRef<'_, '_>) -> Result<T>,
-        Ctx: ParseCtx<'ctf>,
+        F: FnMut(&TypeInfoRef<'_, 'a, T>) -> Result<V>,
+        Ctx: ParseCtx,
     {
         let proc = ctx.proc();
 
         let len: u64 = self.member("length")?.parse(ctx)?;
         let ptr = self.member("data_ptr")?;
-        let Some(ptr_ty) = ptr.ty.as_pointer() else {
+        let Some(param_ty) = ptr.ty.pointer_target() else {
             return Err(Error::unexpected_type(
                 ptr.ty.kind(),
                 TypeKind::Pointer,
                 self.ty.name().to_string(),
             ));
         };
-        let param_ty = ptr_ty.target();
         let elem_size = param_ty.size();
 
         let p: u64 = ptr.parse(ctx)?;
         let total_len = len * param_ty.size();
 
         let mut out = Vec::with_capacity(len as usize);
-        let raw = proc.read_bytes(ctx, p, total_len)?;
+        let raw = proc.read_bytes(p, total_len)?;
 
         for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
             let item_info = TypeInfoRef {
                 ty: param_ty,
                 addr: p + (i as u64) * elem_size,
                 bytes: chunk,
+                _marker: std::marker::PhantomData,
             }
             .peel();
             let item = f(&item_info)?;
@@ -481,64 +495,37 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         Ok(out)
     }
 
-    pub fn active_variant(&'buf self) -> Result<(&'ctf str, TypeInfoRef<'buf, 'ctf>)> {
-        let (discrim, discrim_ty) = self.read_discriminant()?;
+    pub fn active_variant(&'buf self) -> Result<(&'a str, TypeInfoRef<'buf, 'a, T>)> {
+        let (name, var_ty, offset) = self
+            .ty
+            .active_variant(self.bytes)
+            .ok_or_else(|| Error::not_an_enum(self.ty.name().to_string()))??;
 
-        let Some(variants_member) = self.ty.member("__variants") else {
-            return Err(Error::no_member(self.ty.id(), "__variants".to_string()));
-        };
-        let variants = variants_member.ty();
-
-        // In niche-optimized enums only one enumerator will be defined, with two
-        // possible variants.
-        let is_niche_optimized =
-            variants.members().len() == 2 && discrim_ty.enumerators().len() == 1;
-
-        // Find the enumerator whose name matches our expected value. It is common
-        // common for our expected name to be missing due to niche-optimized enums.
-        let enumerator = discrim_ty.enumerators().find(|e| e.value() == discrim);
-
-        let name = match (enumerator, is_niche_optimized) {
-            (Some(e), _) => e.name(),
-            (None, true) => {
-                // UNWRAP: We know there are only two variants as this is
-                // niche-optimized, so the one that doesn't match the only
-                // enumerator must be active.
-                let var = variants
-                    .members()
-                    .find(|m| m.name() != discrim_ty.enumerators().nth(0).unwrap().name())
-                    .unwrap();
-                var.name()
-            }
-            (None, false) => {
-                // Not a niche-optimized enum, so each variant should have a
-                // matching enumerator, but we didn't find it. The discriminant
-                // value is incorrect.
-                return Err(Error::invalid_discriminant_value(self.ty.id(), discrim));
-            }
-        };
-
-        let Some(selected_variant) = variants.member(name) else {
-            return Err(Error::no_member(self.ty.id(), name.to_string()));
-        };
-        let ty = selected_variant.ty();
-
-        let start = selected_variant.offset() as u16;
-        let end = start + ty.size() as u16;
-        let Some(bytes) = self.bytes.get(start as usize..end as usize) else {
+        let start = offset as usize;
+        let end = start + var_ty.size() as usize;
+        let Some(bytes) = self.bytes.get(start..end) else {
             let len = self.bytes.len() as u16;
-            return Err(Error::invalid_member_range(start, end, len));
+            return Err(Error::invalid_member_range(start as u16, end as u16, len));
         };
-        let addr = self.addr + selected_variant.offset();
+        let addr = self.addr + offset;
 
-        Ok((name, TypeInfoRef { ty, addr, bytes }.peel()))
+        Ok((
+            name,
+            TypeInfoRef {
+                ty: var_ty,
+                addr,
+                bytes,
+                _marker: std::marker::PhantomData,
+            }
+            .peel(),
+        ))
     }
 
-    /// Check if the type is a wrapper struct, and return its inner type is it
-    /// is. This are defined as a struct with only a single sized member. The
+    /// Check if the type is a wrapper struct, and return its inner type if it
+    /// is. These are defined as a struct with only a single sized member. The
     /// buffer will be adjusted if the member is smaller than the parent
     /// struct.
-    pub fn peel(self) -> TypeInfoRef<'buf, 'ctf> {
+    pub fn peel(self) -> TypeInfoRef<'buf, 'a, T> {
         let mut info = self;
 
         loop {
@@ -568,73 +555,60 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 
         info
     }
+}
 
-    fn read_discriminant(&self) -> Result<(i64, CtfEnum<'ctf>)> {
-        let size = self.ty.size();
-        if self.bytes.len() < size as usize {
-            return Err(Error::unexpected_len(self.bytes.len() as u32, size as u32));
+impl<'buf, 'a: 'buf, T: DebugType<'a>> From<&'buf TypeInfo<'a, T>> for TypeInfoRef<'buf, 'a, T> {
+    #[inline]
+    fn from(TypeInfo { ty, addr, buf, .. }: &'buf TypeInfo<'a, T>) -> Self {
+        Self {
+            ty: *ty,
+            addr: *addr,
+            bytes: buf,
+            _marker: std::marker::PhantomData,
         }
-
-        let Some(discriminant) = self.ty.member("__discr") else {
-            return Err(Error::no_member(self.ty.id(), "__discr".to_string()));
-        };
-
-        let discr_enum = discriminant.ty();
-        let Some(discr_ty) = discr_enum.as_enum() else {
-            return Err(Error::unexpected_type(
-                self.ty.kind(),
-                TypeKind::Enum,
-                format!("{} ({:?})", self.ty.name(), self.ty.id()),
-            ));
-        };
-        let offset = discriminant.offset() as usize;
-        let discrim_value = match discr_enum.size() {
-            1 => self.bytes[offset] as i64,
-            2 => i16::from_le_bytes(*self.bytes[offset..].first_chunk::<2>().unwrap()) as i64,
-            4 => i32::from_le_bytes(*self.bytes[offset..].first_chunk::<4>().unwrap()) as i64,
-            8 => i64::from_le_bytes(*self.bytes[offset..].first_chunk::<8>().unwrap()),
-            _ => unreachable!(), // validated during parsing
-        };
-        Ok((discrim_value, discr_ty))
     }
 }
 
-impl fmt::Debug for TypeInfoRef<'_, '_> {
+impl<T: DebugType<'_>> fmt::Debug for TypeInfoRef<'_, '_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TypeInfoRef")
-            .field("ty", &format_args!("TypeId({})", self.ty.id().get()))
+            .field("ty", &self.ty)
             .field("addr", &format_args!("{:#x}", self.addr))
             .field("bytes", &self.bytes)
             .finish()
     }
 }
 
-impl fmt::Display for TypeInfoRef<'_, '_> {
+// ---------------------------------------------------------------------------
+// Display
+// ---------------------------------------------------------------------------
+
+impl<T: DebugType<'_>> fmt::Display for TypeInfoRef<'_, '_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_display_value(f, self, 0, 16)
     }
 }
 
-impl fmt::Display for TypeInfo<'_> {
+impl<T: DebugType<'_>> fmt::Display for TypeInfo<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.as_ref(), f)
     }
 }
 
-pub struct DisplayValue<'a, 'buf, 'ctf: 'buf> {
-    info: &'a TypeInfoRef<'buf, 'ctf>,
+pub struct DisplayValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>> {
+    info: &'r TypeInfoRef<'buf, 'a, T>,
     depth: usize,
     max_depth: usize,
 }
 
-impl fmt::Display for DisplayValue<'_, '_, '_> {
+impl<T: DebugType<'_>> fmt::Display for DisplayValue<'_, '_, '_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_display_value(f, self.info, self.depth, self.max_depth)
     }
 }
 
-impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
-    pub fn display(&self) -> DisplayValue<'_, 'buf, 'ctf> {
+impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
+    pub fn display(&self) -> DisplayValue<'_, 'buf, 'a, T> {
         DisplayValue {
             info: self,
             depth: 0,
@@ -642,7 +616,7 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
         }
     }
 
-    pub fn display_with_depth(&self, max_depth: usize) -> DisplayValue<'_, 'buf, 'ctf> {
+    pub fn display_with_depth(&self, max_depth: usize) -> DisplayValue<'_, 'buf, 'a, T> {
         DisplayValue {
             info: self,
             depth: 0,
@@ -652,21 +626,21 @@ impl<'buf, 'ctf: 'buf> TypeInfoRef<'buf, 'ctf> {
 }
 
 /// Wrapper that carries depth state for recursive formatting.
-struct DisplayRecurse<'buf, 'ctf: 'buf> {
-    info: TypeInfoRef<'buf, 'ctf>,
+struct DisplayRecurse<'buf, 'a: 'buf, T: DebugType<'a>> {
+    info: TypeInfoRef<'buf, 'a, T>,
     depth: usize,
     max_depth: usize,
 }
 
-impl fmt::Display for DisplayRecurse<'_, '_> {
+impl<T: DebugType<'_>> fmt::Display for DisplayRecurse<'_, '_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_display_value(f, &self.info, self.depth, self.max_depth)
     }
 }
 
-fn write_display_value(
+fn write_display_value<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, '_>,
+    info: &TypeInfoRef<'_, 'a, T>,
     depth: usize,
     max_depth: usize,
 ) -> fmt::Result {
@@ -685,17 +659,18 @@ fn write_display_value(
         return write!(f, "<truncated>");
     }
 
-    match ty {
-        CtfType::Integer(int_ty) => {
-            let enc = int_ty.encoding();
-            let flags = enc.flags;
-            let size = int_ty.size();
-
-            if flags.is_bool() {
+    match ty.classify() {
+        TypeClass::Integer {
+            size,
+            is_signed,
+            is_bool,
+            is_char,
+        } => {
+            if is_bool {
                 return write!(f, "{}", bytes[0] != 0);
             }
 
-            if flags.is_char() {
+            if is_char {
                 let ch = bytes[0];
                 return if ch.is_ascii_graphic() || ch == b' ' {
                     write!(f, "'{}'", ch as char)
@@ -704,7 +679,7 @@ fn write_display_value(
                 };
             }
 
-            if flags.is_signed() {
+            if is_signed {
                 match size {
                     1 => write!(f, "{}", bytes[0] as i8),
                     2 => write!(f, "{}", i16::from_le_bytes(bytes[..2].try_into().unwrap())),
@@ -723,13 +698,13 @@ fn write_display_value(
             }
         }
 
-        CtfType::Float(float_ty) => match float_ty.size() {
+        TypeClass::Float { size } => match size {
             4 => write!(f, "{}", f32::from_le_bytes(bytes[..4].try_into().unwrap())),
             8 => write!(f, "{}", f64::from_le_bytes(bytes[..8].try_into().unwrap())),
             _ => write_hex_bytes(f, bytes),
         },
 
-        CtfType::Pointer(_) => {
+        TypeClass::Pointer { .. } => {
             if bytes.len() < 8 {
                 return write!(f, "<truncated>");
             }
@@ -741,29 +716,13 @@ fn write_display_value(
             }
         }
 
-        CtfType::Struct(_) => {
+        TypeClass::Struct => {
             let name = ty.name();
             let pretty = f.alternate();
-
-            // Rust enum: has __discr member
-            if ty.member("__discr").is_some() {
-                return write_rust_enum(f, info, name, pretty, depth, max_depth);
-            }
-
-            // Regular struct
             write_struct_fields(f, info, name, pretty, depth, max_depth)
         }
 
-        CtfType::Union(_) => {
-            // Rust enum tagged union pattern (e.g. __tagged unions with
-            // __discr + __variants).
-            if ty.member("__discr").is_some() && ty.member("__variants").is_some() {
-                let name = ty.name();
-                let enum_name = name.strip_suffix("::__tagged").unwrap_or(name);
-                let pretty = f.alternate();
-                return write_rust_enum(f, info, enum_name, pretty, depth, max_depth);
-            }
-
+        TypeClass::Union => {
             let name = ty.name();
             if !name.is_empty() {
                 write!(f, "{} ", name)?;
@@ -773,28 +732,24 @@ fn write_display_value(
             write!(f, " }}")
         }
 
-        CtfType::Enum(enum_ty) => {
-            let size = enum_ty.size();
-            let discrim = match size {
-                1 => bytes[0] as i64,
-                2 => i16::from_le_bytes(bytes[..2].try_into().unwrap()) as i64,
-                4 => i32::from_le_bytes(bytes[..4].try_into().unwrap()) as i64,
-                8 => i64::from_le_bytes(bytes[..8].try_into().unwrap()),
-                _ => return write_hex_bytes(f, bytes),
-            };
-
-            for e in enum_ty.enumerators() {
-                if e.value() == discrim {
-                    return write!(f, "{}", e.name());
-                }
-            }
-            write!(f, "{}", discrim)
+        TypeClass::RustEnum => {
+            let name = ty.name();
+            let pretty = f.alternate();
+            write_rust_enum(f, info, name, pretty, depth, max_depth)
         }
 
-        CtfType::Array(arr_ty) => {
-            let elem_ty = arr_ty.element_type();
-            let elem_size = elem_ty.size() as usize;
-            let count = arr_ty.len() as usize;
+        TypeClass::CEnum => {
+            // For C-style enums, try to find the active variant name.
+            if let Some(Ok((name, _, _))) = ty.active_variant(bytes) {
+                write!(f, "{}", name)
+            } else {
+                write_hex_bytes(f, bytes)
+            }
+        }
+
+        TypeClass::Array { element, count } => {
+            let elem_size = element.size() as usize;
+            let count = count as usize;
             let pretty = f.alternate();
 
             write!(f, "[")?;
@@ -811,9 +766,10 @@ fn write_display_value(
 
                     let child = DisplayRecurse {
                         info: TypeInfoRef {
-                            ty: elem_ty,
+                            ty: element,
                             addr: info.addr + start as u64,
                             bytes: elem_bytes,
+                            _marker: std::marker::PhantomData,
                         },
                         depth: depth + 1,
                         max_depth,
@@ -838,32 +794,25 @@ fn write_display_value(
             write!(f, "]")
         }
 
-        CtfType::Typedef(_) | CtfType::Volatile(_) | CtfType::Const(_) | CtfType::Restrict(_) => {
-            if let Some(target) = ty.target() {
-                let child = DisplayRecurse {
-                    info: TypeInfoRef {
-                        ty: target,
-                        addr: info.addr,
-                        bytes,
-                    },
-                    depth: depth + 1,
-                    max_depth,
-                };
-                if f.alternate() {
-                    write!(f, "{:#}", child)
-                } else {
-                    write!(f, "{}", child)
-                }
+        TypeClass::Wrapper(inner) => {
+            let child = DisplayRecurse {
+                info: TypeInfoRef {
+                    ty: inner,
+                    addr: info.addr,
+                    bytes,
+                    _marker: std::marker::PhantomData,
+                },
+                depth: depth + 1,
+                max_depth,
+            };
+            if f.alternate() {
+                write!(f, "{:#}", child)
             } else {
-                let name = ty.name();
-                if !name.is_empty() {
-                    write!(f, "{} ", name)?;
-                }
-                write_hex_bytes(f, bytes)
+                write!(f, "{}", child)
             }
         }
 
-        _ => {
+        TypeClass::Opaque => {
             let name = ty.name();
             if !name.is_empty() {
                 write!(f, "{} ", name)?;
@@ -873,9 +822,9 @@ fn write_display_value(
     }
 }
 
-fn write_struct_fields(
+fn write_struct_fields<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, '_>,
+    info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     pretty: bool,
     depth: usize,
@@ -907,6 +856,7 @@ fn write_struct_fields(
                     ty: mem_ty,
                     addr: info.addr + member.offset(),
                     bytes: mem_bytes,
+                    _marker: std::marker::PhantomData,
                 },
                 depth: depth + 1,
                 max_depth,
@@ -934,80 +884,39 @@ fn write_struct_fields(
     write!(f, "}}")
 }
 
-fn write_rust_enum(
+fn write_rust_enum<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, '_>,
+    info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     pretty: bool,
     depth: usize,
     max_depth: usize,
 ) -> fmt::Result {
-    // Resolve variant without peeling so we preserve the full struct for
-    // display (active_variant calls .peel() which collapses wrapper structs
-    // and can land on inner tagged unions, losing structural info).
-    let Ok((discrim, discrim_ty)) = info.read_discriminant() else {
+    let Ok((variant_name, var_ty, offset)) = info
+        .ty
+        .active_variant(info.bytes)
+        .unwrap_or_else(|| Err(Error::not_an_enum(name.to_string())))
+    else {
         if !name.is_empty() {
             write!(f, "{} ", name)?;
         }
         return write_hex_bytes(f, info.bytes);
     };
 
-    let Some(variants_member) = info.ty.member("__variants") else {
-        if !name.is_empty() {
-            write!(f, "{} ", name)?;
-        }
-        return write_hex_bytes(f, info.bytes);
-    };
-    let variants = variants_member.ty();
-
-    let is_niche_optimized = variants.members().len() == 2 && discrim_ty.enumerators().len() == 1;
-
-    let enumerator = discrim_ty.enumerators().find(|e| e.value() == discrim);
-
-    write!(f, "{name} ")?;
-    let variant_name = match (enumerator, is_niche_optimized) {
-        (Some(e), _) => e.name(),
-        (None, true) => {
-            let Some(var) = variants
-                .members()
-                .find(|m| m.name() != discrim_ty.enumerators().nth(0).unwrap().name())
-            else {
-                if !name.is_empty() {
-                    write!(f, "{} ", name)?;
-                }
-                return Ok(()); // write_hex_bytes(f, info.bytes);
-            };
-            var.name()
-        }
-        (None, false) => {
-            if !name.is_empty() {
-                write!(f, "{} ", name)?;
-            }
-            return Ok(()); // write_hex_bytes(f, info.bytes);
-        }
-    };
-
-    let Some(selected_variant) = variants.member(variant_name) else {
-        if !name.is_empty() {
-            write!(f, "{} ", name)?;
-        }
-        return write_hex_bytes(f, info.bytes);
-    };
-    let variant_ty = selected_variant.ty();
-    let start = selected_variant.offset() as usize;
-    let end = start + variant_ty.size() as usize;
+    let start = offset as usize;
+    let end = start + var_ty.size() as usize;
     let Some(variant_bytes) = info.bytes.get(start..end) else {
         if !name.is_empty() {
             write!(f, "{} ", name)?;
         }
         return write_hex_bytes(f, info.bytes);
     };
-    let variant_addr = info.addr + selected_variant.offset();
-    // NOTE: no .peel() — we keep the variant struct intact for display.
+    let variant_addr = info.addr + offset;
     let variant_info = TypeInfoRef {
-        ty: variant_ty,
+        ty: var_ty,
         addr: variant_addr,
         bytes: variant_bytes,
+        _marker: std::marker::PhantomData,
     }
     .peel();
 
@@ -1017,7 +926,7 @@ fn write_rust_enum(
     write!(f, "{}", variant_name)?;
 
     // Zero-sized variant (unit variant)
-    if variant_ty.size() == 0 {
+    if var_ty.size() == 0 {
         return Ok(());
     }
 
@@ -1051,6 +960,7 @@ fn write_rust_enum(
                     ty: mem_ty,
                     addr: variant_info.addr + member.offset(),
                     bytes: mem_bytes,
+                    _marker: std::marker::PhantomData,
                 },
                 depth: depth + 1,
                 max_depth,
@@ -1096,34 +1006,26 @@ fn write_hex_bytes(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
     write!(f, "]")
 }
 
-impl<'buf, 'ctf: 'buf> From<&'buf TypeInfo<'ctf>> for TypeInfoRef<'buf, 'ctf> {
-    #[inline]
-    fn from(TypeInfo { ty, addr, buf }: &'buf TypeInfo<'ctf>) -> Self {
-        Self {
-            ty: *ty,
-            addr: *addr,
-            bytes: &buf,
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// ParseCtx & ParseWithCtf
+// ---------------------------------------------------------------------------
 
-pub trait ParseCtx<'ctf> {
-    fn ctf(&self) -> &CtfView<'ctf>;
-    fn proc(&self) -> &'ctf Proc;
+pub trait ParseCtx {
+    fn proc(&self) -> &Proc;
     fn mappings(&self) -> &Mappings;
 }
 
-/// Parse a byte slice as a type using CTF.
-pub trait ParseWithCtf<'ctf, Ctx>: Sized
+/// Parse a byte slice as a type using debug type information.
+pub trait ParseWithCtf<'a, Ty: DebugType<'a>, Ctx>: Sized
 where
-    Ctx: ParseCtx<'ctf>,
+    Ctx: ParseCtx,
 {
-    /// Attempt to read `Self` from the CTF type information.
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self>;
+    /// Attempt to read `Self` from the debug type information.
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self>;
 }
 
-impl<'ctf, Ctx: ParseCtx<'ctf>> ParseWithCtf<'ctf, Ctx> for u8 {
-    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef) -> Result<Self> {
+impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for u8 {
+    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -1134,8 +1036,8 @@ impl<'ctf, Ctx: ParseCtx<'ctf>> ParseWithCtf<'ctf, Ctx> for u8 {
     }
 }
 
-impl<'ctf, Ctx: ParseCtx<'ctf>> ParseWithCtf<'ctf, Ctx> for i8 {
-    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef) -> Result<Self> {
+impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for i8 {
+    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -1146,8 +1048,8 @@ impl<'ctf, Ctx: ParseCtx<'ctf>> ParseWithCtf<'ctf, Ctx> for i8 {
     }
 }
 
-impl<'ctf, Ctx: ParseCtx<'ctf>> ParseWithCtf<'ctf, Ctx> for bool {
-    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef) -> Result<Self> {
+impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for bool {
+    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -1158,10 +1060,10 @@ impl<'ctf, Ctx: ParseCtx<'ctf>> ParseWithCtf<'ctf, Ctx> for bool {
     }
 }
 
-macro_rules! ctf_num_impl {
+macro_rules! num_impl {
     ($num_ty:ty) => {
-        impl<'ctf, Ctx: ParseCtx<'ctf>> ParseWithCtf<'ctf, Ctx> for $num_ty {
-            fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef) -> Result<Self> {
+        impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for $num_ty {
+            fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
                 if info.bytes.len() != size_of::<Self>() {
                     return Err(Error::unexpected_len(
                         info.bytes.len() as u32,
@@ -1173,27 +1075,30 @@ macro_rules! ctf_num_impl {
         }
     };
 }
-ctf_num_impl!(u16);
-ctf_num_impl!(u32);
-ctf_num_impl!(u64);
-ctf_num_impl!(i16);
-ctf_num_impl!(i32);
-ctf_num_impl!(i64);
-ctf_num_impl!(f32);
-ctf_num_impl!(f64);
+num_impl!(u16);
+num_impl!(u32);
+num_impl!(u64);
+num_impl!(i16);
+num_impl!(i32);
+num_impl!(i64);
+num_impl!(f32);
+num_impl!(f64);
 
-impl<'ctf, T, Ctx> ParseWithCtf<'ctf, Ctx> for Option<T>
+impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithCtf<'a, Ty, Ctx> for Option<V>
 where
-    T: ParseWithCtf<'ctf, Ctx>,
-    Ctx: ParseCtx<'ctf>,
+    V: ParseWithCtf<'a, Ty, Ctx>,
+    Ctx: ParseCtx,
 {
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         let var = info.active_variant()?;
         let value = match var {
-            ("Some", var_info) => T::parse_with_ctf(ctx, &var_info)?,
+            ("Some", var_info) => V::parse_with_ctf(ctx, &var_info)?,
             ("None", _) => return Ok(None),
             (s, _) => {
-                return Err(Error::no_enumerator(info.ty.id(), s.to_string()));
+                return Err(Error::no_enumerator(
+                    info.ty.name().to_string(),
+                    s.to_string(),
+                ));
             }
         };
 
@@ -1201,12 +1106,12 @@ where
     }
 }
 
-impl<'ctf, T, Ctx> ParseWithCtf<'ctf, Ctx> for Vec<T>
+impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithCtf<'a, Ty, Ctx> for Vec<V>
 where
-    T: ParseWithCtf<'ctf, Ctx>,
-    Ctx: ParseCtx<'ctf>,
+    V: ParseWithCtf<'a, Ty, Ctx>,
+    Ctx: ParseCtx,
 {
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         let proc = ctx.proc();
 
         let len: u64 = info.member("len")?.parse(ctx)?;
@@ -1223,15 +1128,16 @@ where
         let p: u64 = ptr.parse(ctx)?;
         let total_len = len * param_ty.size();
 
-        let raw = proc.read_bytes(ctx, p, total_len)?;
+        let raw = proc.read_bytes(p, total_len)?;
         let mut out = Vec::with_capacity(len as usize);
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
                 ty: param_ty,
                 addr: info.addr + (i as u64) * param_size,
                 bytes: chunk,
+                _marker: std::marker::PhantomData,
             };
-            let item = T::parse_with_ctf(ctx, &item_info)?;
+            let item = V::parse_with_ctf(ctx, &item_info)?;
             out.push(item);
         }
 
@@ -1239,38 +1145,38 @@ where
     }
 }
 
-impl<'ctf, T, Ctx> ParseWithCtf<'ctf, Ctx> for Box<[T]>
+impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithCtf<'a, Ty, Ctx> for Box<[V]>
 where
-    T: ParseWithCtf<'ctf, Ctx>,
-    Ctx: ParseCtx<'ctf>,
+    V: ParseWithCtf<'a, Ty, Ctx>,
+    Ctx: ParseCtx,
 {
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         let proc = ctx.proc();
 
         let len: u64 = info.member("length")?.parse(ctx)?;
         let ptr = info.member("data_ptr")?;
-        let Some(ptr_ty) = ptr.ty.as_pointer() else {
+        let Some(param_ty) = ptr.ty.pointer_target() else {
             return Err(Error::unexpected_type(
                 ptr.ty.kind(),
                 TypeKind::Pointer,
                 info.ty.name().to_string(),
             ));
         };
-        let param_ty = ptr_ty.target();
         let param_size = param_ty.size();
 
         let p: u64 = ptr.parse(ctx)?;
         let total_len = len * param_ty.size();
 
-        let raw = proc.read_bytes(ctx, p, total_len)?;
+        let raw = proc.read_bytes(p, total_len)?;
         let mut out = Vec::with_capacity(len as usize);
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
                 ty: param_ty,
                 addr: info.addr + (i as u64) * param_size,
                 bytes: chunk,
+                _marker: std::marker::PhantomData,
             };
-            let item = T::parse_with_ctf(ctx, &item_info)?;
+            let item = V::parse_with_ctf(ctx, &item_info)?;
             out.push(item);
         }
 
@@ -1278,38 +1184,37 @@ where
     }
 }
 
-impl<'ctf, T, Ctx, const N: usize> ParseWithCtf<'ctf, Ctx> for [T; N]
+impl<'a, Ty: DebugType<'a>, V, Ctx, const N: usize> ParseWithCtf<'a, Ty, Ctx> for [V; N]
 where
-    T: ParseWithCtf<'ctf, Ctx>,
-    Ctx: ParseCtx<'ctf>,
+    V: ParseWithCtf<'a, Ty, Ctx>,
+    Ctx: ParseCtx,
 {
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
                 size_of::<Self>() as u32,
             ));
         }
-        let Some(array_ty) = info.ty.as_array() else {
+
+        let Some((elem_ty, _count)) = info.ty.array_info() else {
             return Err(Error::unexpected_type(
                 info.ty.kind(),
                 TypeKind::Array,
                 info.ty.name().to_string(),
             ));
         };
-
-        let elem_ty = array_ty.element_type();
         let size = elem_ty.size() as usize;
-        let len = array_ty.len() as usize;
 
-        let mut items = Vec::with_capacity(len);
+        let mut items = Vec::with_capacity(N);
         for (i, slice) in info.bytes.chunks(size).enumerate() {
             let slice_info = TypeInfoRef {
                 ty: elem_ty,
                 addr: info.addr + (i * size) as u64,
                 bytes: slice,
+                _marker: std::marker::PhantomData,
             };
-            let item = T::parse_with_ctf(ctx, &slice_info)?;
+            let item = V::parse_with_ctf(ctx, &slice_info)?;
             items.push(item);
         }
         let Ok(arr) = items.try_into() else {
@@ -1319,13 +1224,13 @@ where
     }
 }
 
-impl<'ctf, Ctx: ParseCtx<'ctf>> ParseWithCtf<'ctf, Ctx> for String {
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'ctf>) -> Result<Self> {
+impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for String {
+    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         let proc = ctx.proc();
 
         let len: u64 = info.member("length")?.parse(ctx)?;
         let ptr: u64 = info.member("data_ptr")?.parse(ctx)?;
-        let data = proc.read_bytes(ctx, ptr, len)?;
+        let data = proc.read_bytes(ptr, len)?;
 
         let out = String::from_utf8_lossy(&data).to_string();
 
@@ -1335,12 +1240,12 @@ impl<'ctf, Ctx: ParseCtx<'ctf>> ParseWithCtf<'ctf, Ctx> for String {
 
 // Split this into a free function to fix lifetime issues from calling
 // `TypeInfoRef` methods from `TypeInfo`.
-fn array_elements<'buf, 'ctf: 'buf>(
-    ty: CtfType<'ctf>,
+fn array_elements<'buf, 'a: 'buf, T: DebugType<'a>>(
+    ty: T,
     addr: u64,
     bytes: &'buf [u8],
-) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
-    let Some(array) = ty.as_array() else {
+) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a, T>>> {
+    let Some((elem_ty, _count)) = ty.array_info() else {
         return Err(Error::unexpected_type(
             ty.kind(),
             TypeKind::Array,
@@ -1348,15 +1253,16 @@ fn array_elements<'buf, 'ctf: 'buf>(
         ));
     };
 
-    let elem_size = array.element_type().size() as usize;
+    let elem_size = elem_ty.size() as usize;
     let iter = bytes
         .chunks_exact(elem_size)
         .enumerate()
         .map(move |(i, chunk)| {
             TypeInfoRef {
-                ty: array.element_type(),
+                ty: elem_ty,
                 addr: addr + (i * elem_size) as u64,
                 bytes: chunk,
+                _marker: std::marker::PhantomData,
             }
             .peel()
         });
@@ -1364,10 +1270,10 @@ fn array_elements<'buf, 'ctf: 'buf>(
 }
 
 /// Parse the elements of a boxed slice, returning them in a Vec.
-fn boxed_slice_elements<'buf, 'ctf: 'buf, Ctx: ParseCtx<'ctf>>(
-    ptr_info: &'buf TypeInfo<'ctf>,
+fn boxed_slice_elements<'buf, 'a: 'buf, T: DebugType<'a>, Ctx: ParseCtx>(
+    ptr_info: &'buf TypeInfo<'a, T>,
     _ctx: &Ctx, //TODO REMOVE ME
-) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'ctf>>> {
+) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a, T>>> {
     // todo check len?
     let elem_size = ptr_info.ty.size();
     let iter = ptr_info
@@ -1379,33 +1285,25 @@ fn boxed_slice_elements<'buf, 'ctf: 'buf, Ctx: ParseCtx<'ctf>>(
                 ty: ptr_info.ty,
                 addr: ptr_info.addr + (i as u64) * elem_size,
                 bytes: chunk,
+                _marker: std::marker::PhantomData,
             }
             .peel()
         });
     Ok(iter)
 }
 
-pub trait ReadFromProc<'ctf, Ctx>
-where
-    Ctx: ParseCtx<'ctf>,
-{
-    /// Read the size of the provided type at address, returning None if the
-    /// address is unmapped.
-    fn read_type(&self, ctx: &Ctx, addr: u64, ty: CtfType<'ctf>) -> Result<Vec<u8>>;
+// ---------------------------------------------------------------------------
+// ReadFromProc
+// ---------------------------------------------------------------------------
 
-    /// Read `len` bytes at address, returning None if the address is unmapped.
-    fn read_bytes(&self, ctx: &Ctx, addr: u64, len: u64) -> Result<Vec<u8>>;
+pub trait ReadFromProc {
+    /// Read `len` bytes at address, returning an error if the address is
+    /// unmapped.
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>>;
 }
 
-impl<'ctf, Ctx> ReadFromProc<'ctf, Ctx> for Proc
-where
-    Ctx: ParseCtx<'ctf>,
-{
-    fn read_type(&self, ctx: &Ctx, addr: u64, ty: CtfType<'ctf>) -> Result<Vec<u8>> {
-        self.read_bytes(ctx, addr, ty.size() as u64)
-    }
-
-    fn read_bytes(&self, _ctx: &Ctx, addr: u64, len: u64) -> Result<Vec<u8>> {
+impl ReadFromProc for Proc {
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; len as usize];
 
         // TODO we may also receive an EOF here, need better error
