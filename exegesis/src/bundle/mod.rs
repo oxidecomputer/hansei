@@ -6,6 +6,7 @@
 mod io;
 mod schema;
 mod strings;
+mod view;
 
 pub use io::{Error, FORMAT_VERSION, MAGIC, Result};
 pub use schema::{
@@ -15,6 +16,10 @@ pub use schema::{
     VariantDef, VariantShape, strip_llvm_suffix,
 };
 pub use strings::{StrRef, StringInterner, StringTable};
+pub use view::{
+    ActiveVariant, BundleMember, BundleMemberIter, BundleType, BundleView, POINTER_SIZE,
+    VariantError,
+};
 
 #[cfg(test)]
 mod tests;
