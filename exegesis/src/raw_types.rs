@@ -234,6 +234,8 @@ pub struct RawEnum<S> {
     /// Generic type arguments of this instantiation
     /// (`DW_TAG_template_type_parameter` children), in declaration order.
     pub template_params: Box<[RawGenericParameter<S>]>,
+    /// Location of the type's declaration in the source.
+    pub source_loc: Option<Box<SourceLoc<S>>>,
 }
 
 /// The variant layout of an enum.
@@ -304,6 +306,8 @@ pub struct RawStruct<S> {
     /// Generic type arguments of this instantiation
     /// (`DW_TAG_template_type_parameter` children), in declaration order.
     pub template_params: Box<[RawGenericParameter<S>]>,
+    /// Location of the type's declaration in the source.
+    pub source_loc: Option<Box<SourceLoc<S>>>,
 }
 
 /// Information on a type parameter binding for an instance of a generic type.
@@ -323,6 +327,10 @@ pub struct RawMember<S> {
     pub offset: u64,
     /// The `TypeId` of the member type.
     pub type_id: TypeId,
+    /// Location of the member's declaration in the source. For coroutine
+    /// enums the variant members carry the coordinates of the suspend
+    /// point — i.e. the awaited expression itself.
+    pub source_loc: Option<Box<SourceLoc<S>>>,
 }
 
 /// A function or subroutine in a program.

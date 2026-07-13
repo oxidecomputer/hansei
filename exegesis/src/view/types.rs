@@ -1,6 +1,7 @@
 use crate::raw_types::{
     Encoding, NsId, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember, RawPointer,
-    RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawVariant, VariantShape,
+    RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawVariant, SourceLoc,
+    VariantShape,
 };
 use crate::reader::DwReader;
 use crate::string_table::StrId;
@@ -267,6 +268,14 @@ impl<'a> Enum<'a> {
     /// instantiation, in declaration order.
     pub fn template_params(&self) -> TemplateParamIter<'a> {
         TemplateParamIter::new(&self.raw.template_params, self.collector)
+    }
+
+    /// Declaration coordinates of this type, if recorded.
+    pub fn source_loc(&self) -> Option<SourceLocView<'a>> {
+        self.raw
+            .source_loc
+            .as_deref()
+            .map(|loc| SourceLocView::new(loc, self.collector))
     }
 
     /// Returns the variant shape of this enum.
@@ -580,6 +589,14 @@ impl<'a> Struct<'a> {
         TemplateParamIter::new(&self.raw.template_params, self.collector)
     }
 
+    /// Declaration coordinates of this type, if recorded.
+    pub fn source_loc(&self) -> Option<SourceLocView<'a>> {
+        self.raw
+            .source_loc
+            .as_deref()
+            .map(|loc| SourceLocView::new(loc, self.collector))
+    }
+
     /// Find a member by name.
     pub fn member(&self, name: &str) -> Option<Member<'a>> {
         self.raw
@@ -643,6 +660,16 @@ impl<'a> Member<'a> {
 
     pub fn offset(&self) -> u64 {
         self.raw.offset
+    }
+
+    /// Declaration coordinates of this member, if recorded. For coroutine
+    /// enums the variant members carry the coordinates of the suspend
+    /// point — i.e. the awaited expression itself.
+    pub fn source_loc(&self) -> Option<SourceLocView<'a>> {
+        self.raw
+            .source_loc
+            .as_deref()
+            .map(|loc| SourceLocView::new(loc, self.collector))
     }
 
     pub fn raw(&self) -> &RawMember<StrId> {
@@ -893,6 +920,14 @@ impl<'a> StaticVariable<'a> {
         self.raw.addr
     }
 
+    /// Declaration coordinates of this variable, if recorded.
+    pub fn source_loc(&self) -> Option<SourceLocView<'a>> {
+        if self.raw.source_loc.is_empty() {
+            return None;
+        }
+        Some(SourceLocView::new(&self.raw.source_loc, self.collector))
+    }
+
     pub fn raw(&self) -> &RawStaticVariable<StrId> {
         self.raw
     }
@@ -968,6 +1003,14 @@ impl<'a> Func<'a> {
     /// instantiation, in declaration order.
     pub fn template_params(&self) -> TemplateParamIter<'a> {
         TemplateParamIter::new(&self.raw.template_params, self.collector)
+    }
+
+    /// Declaration coordinates of this function, if recorded.
+    pub fn source_loc(&self) -> Option<SourceLocView<'a>> {
+        self.raw
+            .source_loc
+            .as_deref()
+            .map(|loc| SourceLocView::new(loc, self.collector))
     }
 
     pub fn noreturn(&self) -> bool {
@@ -1141,6 +1184,55 @@ impl<'a> Iterator for TemplateParamIter<'a> {
 }
 
 impl ExactSizeIterator for TemplateParamIter<'_> {}
+
+// --- SourceLocView ---
+
+/// Declaration coordinates (`DW_AT_decl_file`/`line`/`column`) with the
+/// file and directory resolved through the unit's line-program file table.
+#[derive(Copy, Clone)]
+pub struct SourceLocView<'a> {
+    raw: &'a SourceLoc<StrId>,
+    collector: &'a DwReader<'a>,
+}
+
+impl<'a> SourceLocView<'a> {
+    pub(crate) fn new(raw: &'a SourceLoc<StrId>, collector: &'a DwReader<'a>) -> Self {
+        Self { raw, collector }
+    }
+
+    /// The source file name, as recorded in the line-program file table.
+    pub fn file(&self) -> Option<&'a str> {
+        self.raw.file.map(|id| self.collector.strings.get(id))
+    }
+
+    /// The directory of the source file, if recorded.
+    pub fn dir(&self) -> Option<&'a str> {
+        self.raw.dir.map(|id| self.collector.strings.get(id))
+    }
+
+    /// 1-indexed line number.
+    pub fn line(&self) -> Option<NonZero<u64>> {
+        self.raw.line
+    }
+
+    /// 1-indexed column number.
+    pub fn column(&self) -> Option<NonZero<u64>> {
+        self.raw.column
+    }
+
+    pub fn raw(&self) -> &SourceLoc<StrId> {
+        self.raw
+    }
+}
+
+impl fmt::Debug for SourceLocView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SourceLocView")
+            .field("file", &self.file())
+            .field("line", &self.line())
+            .finish()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2199,6 +2291,132 @@ mod tests {
                 "expected v0-mangled linkage name, got {linkage:?}"
             );
             assert!(linkage.contains("4swap"), "linkage {linkage:?} should encode 'swap'");
+        });
+    }
+
+    // ---- Declaration coordinates ----
+
+    /// 1-indexed line of the first fixture-source line containing `needle`.
+    fn src_line(needle: &str) -> u64 {
+        let pos = testhelper::shared_src()
+            .lines()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not found in fixture source"));
+        pos as u64 + 1
+    }
+
+    #[test]
+    fn test_func_decl_coords() {
+        with_view!(view => {
+            let f = view
+                .find_func("testlib::generics::swap<u32, u64>")
+                .unwrap();
+            let loc = f.source_loc().expect("swap should have decl coords");
+            assert_eq!(loc.file(), Some("lib.rs"));
+            assert_eq!(loc.line().unwrap().get(), src_line("pub fn swap<A, B>"));
+        });
+    }
+
+    #[test]
+    fn test_type_decl_coords_absent() {
+        with_view!(view => {
+            // rustc (1.97) does not emit DW_AT_decl_file/line on type DIEs
+            // (that's behind -Zdebug-info-type-line-numbers), so future
+            // provenance must come from the defining subprogram or static
+            // instead. These assertions are the drift canary: if a rustc
+            // bump starts emitting type decl coords, the reader already
+            // carries them and this test tells us to start using them.
+            let t = view
+                .find("testlib::generics::Pair<u32, u64>", TypeKind::Struct)
+                .unwrap();
+            assert!(t.as_struct().unwrap().source_loc().is_none());
+
+            let t = view
+                .find("testlib::generics::Either<u32, u64>", TypeKind::Enum)
+                .unwrap();
+            assert!(t.as_enum().unwrap().source_loc().is_none());
+        });
+    }
+
+    #[test]
+    fn test_static_decl_coords() {
+        with_view!(view => {
+            let v = view
+                .find_var("testlib::generics::PAIR")
+                .expect("PAIR not found");
+            let loc = v.source_loc().expect("PAIR should have decl coords");
+            assert_eq!(loc.file(), Some("lib.rs"));
+            assert_eq!(loc.line().unwrap().get(), src_line("pub static PAIR:"));
+        });
+    }
+
+    // ---- Async coroutine types ----
+
+    #[test]
+    fn test_async_fn_env_is_enum_with_decl_coords() {
+        with_view!(view => {
+            // The coroutine type lives in a namespace named after the
+            // async fn itself.
+            let t = view
+                .find("testlib::asyncs::chain::{async_fn_env#0}", TypeKind::Enum)
+                .expect("chain's coroutine type not found");
+            let e = t.as_enum().unwrap();
+
+            // The coroutine type itself has no decl coords (see
+            // test_type_decl_coords_absent); provenance comes from the
+            // async fn's subprogram, which does.
+            assert!(e.source_loc().is_none());
+            let f = view
+                .find_func("testlib::asyncs::chain")
+                .expect("chain subprogram not found");
+            let loc = f.source_loc().expect("async fn should have decl coords");
+            assert_eq!(loc.file(), Some("lib.rs"));
+            assert_eq!(loc.line().unwrap().get(), src_line("pub async fn chain"));
+
+            // And it has the coroutine variant set, including a suspend
+            // point for the single await. The variant *members* are named
+            // "0", "1", ...; the human-readable state names are the
+            // payload struct types.
+            let super::VariantShapeView::Many { variants, .. } = e.shape() else {
+                panic!("expected Many shape for a coroutine enum");
+            };
+            let names: Vec<_> = variants
+                .filter_map(|(_, v)| v.ty().name().map(str::to_owned))
+                .collect();
+            for expected in ["Unresumed", "Returned", "Panicked", "Suspend0"] {
+                assert!(
+                    names.iter().any(|n| n == expected),
+                    "coroutine variants {names:?} missing {expected:?}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn test_await_point_decl_coords() {
+        with_view!(view => {
+            // Coroutine variant members carry the decl coordinates of the
+            // suspend point itself — the awaited expression's source line.
+            // This is the raw material for await-point → source-line
+            // reporting (plan §13.5).
+            let t = view
+                .find("testlib::asyncs::chain::{async_fn_env#0}", TypeKind::Enum)
+                .unwrap();
+            let super::VariantShapeView::Many { variants, .. } =
+                t.as_enum().unwrap().shape()
+            else {
+                panic!("expected Many shape for a coroutine enum");
+            };
+            let suspend = variants
+                .map(|(_, v)| v)
+                .find(|v| v.ty().name() == Some("Suspend0"))
+                .expect("no Suspend0 variant");
+            let loc = suspend
+                .member()
+                .source_loc()
+                .expect("suspend variant member should have decl coords");
+            assert_eq!(loc.file(), Some("lib.rs"));
+            assert_eq!(loc.line().unwrap().get(), src_line("leaf(x).await"));
         });
     }
 

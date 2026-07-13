@@ -310,6 +310,7 @@ impl<'dw> CodegenUnit<'dw> {
             })?;
         }
 
+        let source_loc = boxed_source_loc(common.source_loc);
         if let Some(shape) = variant_shape {
             self.add_type(
                 common.debug_offset,
@@ -320,6 +321,7 @@ impl<'dw> CodegenUnit<'dw> {
                     alignment: common.alignment,
                     shape,
                     template_params: template_params.into_boxed_slice(),
+                    source_loc,
                 },
             );
         } else {
@@ -331,6 +333,7 @@ impl<'dw> CodegenUnit<'dw> {
                     size: common.size.unwrap_or_default(),
                     members: members.into_boxed_slice(),
                     template_params: template_params.into_boxed_slice(),
+                    source_loc,
                 },
             );
         }
@@ -386,6 +389,7 @@ impl<'dw> CodegenUnit<'dw> {
                     enumerators: enumerators.into_boxed_slice(),
                 },
                 template_params: Box::default(),
+                source_loc: boxed_source_loc(common.source_loc),
             },
         );
 
@@ -596,6 +600,10 @@ impl<'dw> CodegenUnit<'dw> {
     }
 }
 
+/// Box a [`SourceLoc`] for storage, or `None` if it carries no information.
+fn boxed_source_loc<S>(loc: SourceLoc<S>) -> Option<Box<SourceLoc<S>>> {
+    if loc.is_empty() { None } else { Some(Box::new(loc)) }
+}
 
 fn process_member<'dw>(
     unit: &UnitRef<Slice<'dw>>,
@@ -630,6 +638,7 @@ fn process_member<'dw>(
         name: common.name,
         offset,
         type_id,
+        source_loc: boxed_source_loc(common.source_loc),
     })
 }
 

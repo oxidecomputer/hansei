@@ -296,6 +296,9 @@ fn intern_type<'dw>(strings: &mut StringTable<'dw>, ty: RawType<&'dw str>) -> Ra
             alignment: e.alignment,
             shape: intern_variant_shape(strings, e.shape),
             template_params: intern_generic_params(strings, e.template_params),
+            source_loc: e
+                .source_loc
+                .map(|loc| Box::new(intern_source_loc(strings, *loc))),
         }),
         RawType::Struct(s) => RawType::Struct(RawStruct {
             name: intern(s.name),
@@ -308,6 +311,9 @@ fn intern_type<'dw>(strings: &mut StringTable<'dw>, ty: RawType<&'dw str>) -> Ra
                 .map(|m| intern_member(strings, m))
                 .collect(),
             template_params: intern_generic_params(strings, s.template_params),
+            source_loc: s
+                .source_loc
+                .map(|loc| Box::new(intern_source_loc(strings, *loc))),
         }),
     }
 }
@@ -332,6 +338,9 @@ fn intern_member<'dw>(strings: &mut StringTable<'dw>, m: RawMember<&'dw str>) ->
         name: m.name.map(|s| strings.intern(s)),
         offset: m.offset,
         type_id: m.type_id,
+        source_loc: m
+            .source_loc
+            .map(|loc| Box::new(intern_source_loc(strings, *loc))),
     }
 }
 
