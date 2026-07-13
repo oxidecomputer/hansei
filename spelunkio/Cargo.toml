@@ -12,7 +12,8 @@ camino.workspace = true
 gimli.workspace = true
 hansei-types.workspace = true
 memmap2.workspace = true
-object.workspace = true
+# Pinned to match debugdb's object version; the workspace is on a newer one.
+object = "0.33"
 proc.workspace = true
 rangemap.workspace = true
 reedline.workspace = true
