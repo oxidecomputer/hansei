@@ -6,7 +6,7 @@
 
 use super::*;
 
-use durin::read::CtfView;
+use durin::read::{CtfType, CtfView};
 use durin::{TypeId, TypeKind};
 use proc::{Mappings, Proc};
 use regex::Regex;
@@ -67,11 +67,8 @@ impl<'ctf> Context<'ctf> {
     }
 }
 
-impl<'ctf> ParseCtx<'ctf> for Context<'ctf> {
-    fn ctf(&self) -> &CtfView<'ctf> {
-        &self.ctf
-    }
-    fn proc(&self) -> &'ctf Proc {
+impl ParseCtx for Context<'_> {
+    fn proc(&self) -> &Proc {
         self.proc
     }
     fn mappings(&self) -> &Mappings {
@@ -153,12 +150,8 @@ struct TimeContext<'ctf> {
     ctx: &'ctf Context<'ctf>,
 }
 
-impl<'ctf> ParseCtx<'ctf> for TimeContext<'ctf> {
-    fn ctf(&self) -> &CtfView<'ctf> {
-        self.ctx.ctf()
-    }
-
-    fn proc(&self) -> &'ctf Proc {
+impl ParseCtx for TimeContext<'_> {
+    fn proc(&self) -> &Proc {
         self.ctx.proc()
     }
 
@@ -171,8 +164,11 @@ impl<'ctf> ParseCtx<'ctf> for TimeContext<'ctf> {
 // ParseWithCtf implementations
 // ---------------------------------------------------------------------------
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for ThreadCtx {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for ThreadCtx {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let current_task_id = info.member("current_task_id")?.parse(ctx)?;
         let thread_id = info.member("thread_id")?.parse(ctx)?;
         let runtime = info.member("runtime")?.parse(ctx)?;
@@ -226,8 +222,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for ThreadCtx {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for EnterRuntime {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for EnterRuntime {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         match info.active_variant()? {
             ("Entered", var_info) => {
                 let allow_block_in_place = var_info.parse(ctx)?;
@@ -236,20 +235,29 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for EnterRuntime {
                 })
             }
             ("NotEntered", _) => Ok(Self::NotEntered),
-            (other, _) => Err(reify::Error::no_enumerator(info.ty.id(), other.to_string())),
+            (other, _) => Err(reify::Error::no_enumerator(
+                info.ty.name().to_string(),
+                other.to_string(),
+            )),
         }
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Budget {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Budget {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let inner = info.parse(ctx)?;
         Ok(Self(inner))
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Scheduler {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Scheduler {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let shared = info.member("shared")?.parse(ctx)?;
         let driver = info.member("driver")?.parse(ctx)?;
 
@@ -257,8 +265,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Scheduler {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for WorkerCore {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for WorkerCore {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let global_queue_interval = info.member("global_queue_interval")?.parse(ctx)?;
         let tick = info.member("tick")?.parse(ctx)?;
         let lifo_enabled = info.member("lifo_enabled")?.parse(ctx)?;
@@ -294,8 +305,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for WorkerCore {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Parker {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Parker {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let state = info
             .deref_ptr(ctx)?
             .member("data")?
@@ -306,8 +320,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Parker {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for WorkerStats {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for WorkerStats {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let batch = info.member("batch")?.parse(ctx)?;
         let tasks_polled_in_batch = info.member("tasks_polled_in_batch")?.parse(ctx)?;
         let task_poll_time_ewma = info.member("task_poll_time_ewma")?.parse(ctx)?;
@@ -320,8 +337,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for WorkerStats {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for MetricsBatch {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for MetricsBatch {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let busy_duration_total = info.member("busy_duration_total")?.parse(ctx)?;
         let processing_scheduled_tasks_started_at = info
             .member("processing_scheduled_tasks_started_at")?
@@ -352,8 +372,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for MetricsBatch {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Shared {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Shared {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let remotes = info.member("remotes")?.parse(ctx)?;
         let config = info.member("config")?.parse(ctx)?;
         let inject_len = info.member("inject")?.parse(ctx)?;
@@ -384,8 +407,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Shared {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Remote {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Remote {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let steal = info
             .member("steal")?
             .deref_ptr(ctx)?
@@ -397,8 +423,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Remote {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Idle {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Idle {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         const UNPARK_SHIFT: u64 = 16;
         const UNPARK_MASK: u64 = !SEARCH_MASK;
         const SEARCH_MASK: u64 = (1 << UNPARK_SHIFT) - 1;
@@ -416,8 +445,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Idle {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for OwnedTasks {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for OwnedTasks {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let closed = info.member("closed")?.parse(ctx)?;
 
         let list_info = info.member("list")?;
@@ -462,8 +494,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for OwnedTasks {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskAddr {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for TaskAddr {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let addr = info.parse(ctx)?;
         if !ctx.mappings.contains_addr(addr) {
             return Err(Error::invalid_addr(addr));
@@ -472,8 +507,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskAddr {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Synced {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Synced {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let idle_sleepers = info
             .member("idle")?
             .parse::<Vec<u64>, _>(ctx)?
@@ -504,15 +542,21 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Synced {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Inject {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Inject {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let len = info.member("len")?.parse(ctx)?;
         Ok(Inject { len })
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Config {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Config {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let global_queue_interval = info.member("global_queue_interval")?.parse(ctx)?;
         let event_interval = info.member("event_interval")?.parse(ctx)?;
         let disable_lifo_slot = info.member("disable_lifo_slot")?.parse(ctx)?;
@@ -525,8 +569,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Config {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for SchedulerMetrics {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for SchedulerMetrics {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let remote_schedule_count = info.member("remote_schedule_count")?.parse(ctx)?;
         let budget_forced_yield_count = info.member("budget_forced_yield_count")?.parse(ctx)?;
 
@@ -537,8 +584,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for SchedulerMetrics {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for WorkerMetrics {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for WorkerMetrics {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let busy_duration_total = info.member("busy_duration_total")?.parse(ctx)?;
         let queue_depth = info.member("queue_depth")?.parse(ctx)?;
         let thread_id = info.member("thread_id")?.member("data")?.parse(ctx)?;
@@ -569,8 +619,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for WorkerMetrics {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskQueue {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for TaskQueue {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let head: u64 = info.member("head")?.parse(ctx)?;
         let tail: u32 = info.member("tail")?.parse(ctx)?;
 
@@ -590,8 +643,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskQueue {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for TaskHeader {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let state = info.member("state")?.parse(ctx)?;
         let runtime_id = info.member("owner_id")?.parse(ctx)?;
 
@@ -599,7 +655,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
 
         let id_offset: u64 = vtable_info.member("id_offset")?.parse(ctx)?;
         let id_addr = info.addr + id_offset;
-        let id_bytes = ctx.proc.read_bytes(ctx, id_addr, size_of::<u64>() as u64)?;
+        let id_bytes = ctx.proc.read_bytes(id_addr, size_of::<u64>() as u64)?;
         let id = u64::from_le_bytes(id_bytes.try_into().unwrap());
 
         // This is the offset from the Header address to the address of
@@ -613,7 +669,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
 
         // The CTF isn't aware we have a *Location here, so manually find the type and parse.
         let spawn_ty = ctx.ctf.get(ctx.tokio_info.location_id);
-        let spawn_buf = ctx.proc.read_type(ctx, spawn_ptr, spawn_ty)?;
+        let spawn_buf = ctx.proc.read_bytes(spawn_ptr, spawn_ty.size())?;
         let spawn_info = info.clone().with_ty(spawn_ty).with_buf(&spawn_buf);
         let spawn_location = spawn_info.parse(ctx)?;
 
@@ -623,7 +679,7 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
         let trailer_ptr = info.addr + trailer_offset;
 
         let trailer_ty = ctx.ctf.get(ctx.tokio_info.trailer_id);
-        let trailer_buf = ctx.proc.read_type(ctx, trailer_ptr, trailer_ty)?;
+        let trailer_buf = ctx.proc.read_bytes(trailer_ptr, trailer_ty.size())?;
         let trailer_info = info.clone().with_ty(trailer_ty).with_buf(&trailer_buf);
         let waker = trailer_info.member("waker")?.parse(ctx)?;
 
@@ -637,8 +693,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TaskHeader {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Location {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Location {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let filename = info.member("filename")?.parse(ctx)?;
         let line = info.member("line")?.parse(ctx)?;
         let col = info.member("col")?.parse(ctx)?;
@@ -651,8 +710,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Location {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for DriverHandle {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for DriverHandle {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let io = info.member("io")?.parse(ctx)?;
         let time = info.member("time")?.select_variant("Some")?.parse(ctx)?;
         let clock = info.member("clock")?.member("data")?.parse(ctx)?;
@@ -661,8 +723,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for DriverHandle {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoHandle {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for IoHandle {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         match info.active_variant()? {
             ("Enabled", info) => {
                 let inner = info.parse(ctx)?;
@@ -672,13 +737,19 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoHandle {
                 let inner = info.parse(ctx)?;
                 Ok(IoHandle::Disabled(inner))
             }
-            (other, info) => Err(Error::no_enumerator(info.ty.id(), other.to_string())),
+            (other, info) => Err(Error::no_enumerator(
+                info.ty.name().to_string(),
+                other.to_string(),
+            )),
         }
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoEnabled {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for IoEnabled {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let num_pending_release = info.member("registrations")?.parse(ctx)?;
         let metrics = info.member("metrics")?.parse(ctx)?;
         let waker_fd = info.member("waker")?.parse(ctx)?;
@@ -695,16 +766,22 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoEnabled {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoDisabled {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for IoDisabled {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let park = info.deref_ptr(ctx)?.member("data")?.parse(ctx)?;
 
         Ok(Self { park })
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoSynced {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for IoSynced {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let is_shutdown = info.member("is_shutdown")?.parse(ctx)?;
         let mut registrations = Vec::new();
         if let Some(mut head_info) = info
@@ -738,8 +815,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoSynced {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for ScheduledIo {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for ScheduledIo {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let readiness = info.member("readiness")?.parse(ctx)?;
         let waiters = info.member("waiters")?.member("data")?.parse(ctx)?;
 
@@ -747,15 +827,21 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for ScheduledIo {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Ready {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Ready {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let inner = info.parse(ctx)?;
         Ok(Self(inner))
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Waiters {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Waiters {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let mut list = Vec::new();
         if let Some(mut head_info) = info
             .member("list")?
@@ -800,8 +886,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Waiters {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Waiter {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Waiter {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let interest = info.member("interest")?.parse(ctx)?;
         let is_ready = info.member("is_ready")?.parse(ctx)?;
 
@@ -819,15 +908,21 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Waiter {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Interest {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Interest {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let inner = info.parse(ctx)?;
         Ok(Self(inner))
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Waker {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Waker {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let data = info.member("data")?.parse(ctx)?;
         let vtable_info = info.member("vtable")?.deref_ptr(ctx)?;
 
@@ -873,15 +968,21 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Waker {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for ParkThread {
-    fn parse_with_ctf(ctx: &Context<'ctf>, info: &TypeInfoRef<'_, 'ctf>) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for ParkThread {
+    fn parse_with_ctf(
+        ctx: &Context<'ctf>,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let state = info.member("state")?.parse(ctx)?;
         Ok(Self(state))
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoDriverMetrics {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for IoDriverMetrics {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let fd_registered_count = info.member("fd_registered_count")?.parse(ctx)?;
         let fd_deregistered_count = info.member("fd_deregistered_count")?.parse(ctx)?;
         let ready_count = info.member("ready_count")?.parse(ctx)?;
@@ -894,8 +995,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for IoDriverMetrics {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TimeHandle {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for TimeHandle {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let time_source = info.member("time_source")?.parse(ctx)?;
 
         let mut inner = info.member("inner")?;
@@ -921,8 +1025,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TimeHandle {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for RawInstant {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for RawInstant {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let tv_sec = info.member("tv_sec")?.parse(ctx)?;
         let tv_nsec = info.member("tv_nsec")?.parse(ctx)?;
 
@@ -930,8 +1037,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for RawInstant {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Clock {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Clock {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let base = info.member("base")?.parse(ctx)?;
         let unfrozen = info.member("unfrozen")?.parse(ctx)?;
         let enable_pausing = info.member("enable_pausing")?.parse(ctx)?;
@@ -944,8 +1054,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Clock {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Wheel {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for Wheel {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let elapsed = info.member("elapsed")?.parse(ctx)?;
 
         let levels_info = info.member("levels")?.deref_ptr(ctx)?;
@@ -991,8 +1104,11 @@ impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for Wheel {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, TimeContext<'ctf>> for Level {
-    fn parse_with_ctf(time_ctx: &TimeContext, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, TimeContext<'ctf>> for Level {
+    fn parse_with_ctf(
+        time_ctx: &TimeContext,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let TimeContext { ctx, .. } = *time_ctx;
         let level = info.member("level")?.parse(ctx)?;
         let occupied = info.member("occupied")?.parse(ctx)?;
@@ -1044,8 +1160,11 @@ impl<'ctf> ParseWithCtf<'ctf, TimeContext<'ctf>> for Level {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, TimeContext<'ctf>> for TimerShared {
-    fn parse_with_ctf(time_ctx: &TimeContext, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, TimeContext<'ctf>> for TimerShared {
+    fn parse_with_ctf(
+        time_ctx: &TimeContext,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let TimeContext { elapsed, ctx } = *time_ctx;
 
         let registered_when = info.member("registered_when")?.parse(ctx)?;
@@ -1078,16 +1197,22 @@ impl<'ctf> ParseWithCtf<'ctf, TimeContext<'ctf>> for TimerShared {
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for TimerState {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for TimerState {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let inner = info.parse(ctx)?;
 
         Ok(Self(inner))
     }
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for WakerState {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for WakerState {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let inner = info.parse(ctx)?;
 
         Ok(Self(inner))

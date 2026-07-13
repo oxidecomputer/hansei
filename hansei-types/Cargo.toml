@@ -12,7 +12,8 @@ durin.workspace = true
 humantime.workspace = true
 proc.workspace = true
 memmap2.workspace = true
-object.workspace = true
+# Pinned to match debugdb's object version; the workspace is on a newer one.
+object = "0.33"
 rangemap.workspace = true
 regex.workspace = true
 reify.workspace = true

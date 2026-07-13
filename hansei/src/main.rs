@@ -325,19 +325,15 @@ fn maybe_style<T: Display>(
     }
 }
 
-struct TraceContext<'ctf> {
-    pub proc: &'ctf Proc,
-    pub ctf: durin::read::CtfView<'ctf>,
+struct TraceContext<'a> {
+    pub proc: &'a Proc,
+    pub ctf: durin::read::CtfView<'a>,
     pub mappings: proc::Mappings,
 }
 
-impl<'ctf> reify::ParseCtx<'ctf> for TraceContext<'ctf> {
-    fn proc(&self) -> &'ctf Proc {
+impl reify::ParseCtx for TraceContext<'_> {
+    fn proc(&self) -> &Proc {
         self.proc
-    }
-
-    fn ctf(&self) -> &durin::read::CtfView<'ctf> {
-        &self.ctf
     }
 
     fn mappings(&self) -> &proc::Mappings {

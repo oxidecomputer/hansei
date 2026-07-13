@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use durin::TypeKind;
-use durin::read::CtfView;
+use durin::read::{CtfType, CtfView};
 use proc::{Lwp, LwpInfo, Proc, Regs};
 use reify::{ParseWithCtf, TypeInfo, TypeInfoRef};
 
@@ -97,7 +97,10 @@ pub struct MinTokioState {
 }
 
 impl MinTokioState {
-    pub fn find_type_info<'a>(ctx: &Context<'a>, lwps: &[LwpInfo]) -> Result<TypeInfo<'a>> {
+    pub fn find_type_info<'a>(
+        ctx: &Context<'a>,
+        lwps: &[LwpInfo],
+    ) -> Result<TypeInfo<'a, CtfType<'a>>> {
         let status = ctx.proc.status();
         let brk_range = status.brk_range;
 
@@ -145,7 +148,7 @@ impl MinTokioState {
         Ok(sched_info)
     }
 
-    pub fn parse<'a>(ctx: &Context<'a>, info: &TypeInfo<'a>) -> Result<Self> {
+    pub fn parse<'a>(ctx: &Context<'a>, info: &TypeInfo<'a, CtfType<'a>>) -> Result<Self> {
         let scheduler = info
             .parse::<MinScheduler, _>(&ctx)
             .context("failed to parse scheduler")?;
@@ -175,8 +178,11 @@ pub struct MinThreadCtx {
     pub budget: Budget,
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for MinThreadCtx {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for MinThreadCtx {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let current_task_id = info.member("current_task_id")?.parse(ctx)?;
         let thread_id = info.member("thread_id")?.parse(ctx)?;
         let runtime = info.member("runtime")?.parse(ctx)?;
@@ -222,8 +228,11 @@ pub struct MinScheduler {
     pub synced: Synced,
 }
 
-impl<'ctf> ParseWithCtf<'ctf, Context<'ctf>> for MinScheduler {
-    fn parse_with_ctf(ctx: &Context, info: &TypeInfoRef) -> reify::Result<Self> {
+impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for MinScheduler {
+    fn parse_with_ctf(
+        ctx: &Context,
+        info: &TypeInfoRef<'_, 'ctf, CtfType<'ctf>>,
+    ) -> reify::Result<Self> {
         let info = info.member("shared")?;
         let mut parkers = Vec::new();
         info.member("remotes")?.boxed_slice_elements(ctx, |info| {
