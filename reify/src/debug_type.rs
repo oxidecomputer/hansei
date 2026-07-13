@@ -296,6 +296,140 @@ impl<'a> DebugMember<'a> for CtfMember<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Bundle implementation
+// ---------------------------------------------------------------------------
+
+use exegesis::Encoding;
+use exegesis::bundle::{BundleMember, BundleMemberIter, BundleType, TypeDef, VariantError};
+
+impl<'a> DebugType<'a> for BundleType<'a> {
+    type Member = BundleMember<'a>;
+    type MemberIter = BundleMemberIter<'a>;
+
+    fn size(&self) -> u64 {
+        BundleType::size(self)
+    }
+
+    fn name(&self) -> &'a str {
+        BundleType::name(self)
+    }
+
+    fn kind(&self) -> TypeKind {
+        match self.def() {
+            TypeDef::Base { encoding, .. } => match encoding {
+                Encoding::Float => TypeKind::Float,
+                _ => TypeKind::Integer,
+            },
+            TypeDef::Pointer { .. } => TypeKind::Pointer,
+            TypeDef::Array { .. } => TypeKind::Array,
+            TypeDef::Struct { .. } => TypeKind::Struct,
+            TypeDef::Union { .. } => TypeKind::Union,
+            TypeDef::Enum { .. } | TypeDef::CEnum { .. } => TypeKind::Enum,
+            TypeDef::Opaque { .. } => TypeKind::Other,
+        }
+    }
+
+    fn member(&self, name: &str) -> Option<Self::Member> {
+        BundleType::member(self, name)
+    }
+
+    fn members(&self) -> Self::MemberIter {
+        BundleType::members(self)
+    }
+
+    fn pointer_target(&self) -> Option<Self> {
+        BundleType::pointer_target(self)
+    }
+
+    fn array_info(&self) -> Option<(Self, u64)> {
+        BundleType::array_info(self)
+    }
+
+    fn peel_wrappers(&self) -> Self {
+        // Wrapper kinds (typedef/const/volatile) are resolved away at
+        // extraction time and never appear in bundles.
+        *self
+    }
+
+    fn active_variant(&self, bytes: &[u8]) -> Option<Result<(&'a str, Self, u64)>> {
+        let decoded = BundleType::active_variant(self, bytes)?;
+        Some(
+            decoded
+                .map(|v| (v.name, v.ty, v.offset))
+                .map_err(|e| bundle_variant_error(self, e)),
+        )
+    }
+
+    fn check_variant(&self, bytes: &[u8], name: &str) -> Option<Result<Option<(Self, u64)>>> {
+        let checked = BundleType::check_variant(self, bytes, name)?;
+        Some(checked.map_err(|e| match e {
+            VariantError::NoSuchVariant => {
+                crate::Error::no_enumerator(self.name().to_string(), name.to_string())
+            }
+            other => bundle_variant_error(self, other),
+        }))
+    }
+
+    fn classify(&self) -> TypeClass<Self> {
+        match self.def() {
+            TypeDef::Base { size, encoding, .. } => match encoding {
+                Encoding::Float => TypeClass::Float { size: *size },
+                _ => TypeClass::Integer {
+                    size: *size,
+                    is_signed: matches!(encoding, Encoding::Signed | Encoding::SignedChar),
+                    is_bool: matches!(encoding, Encoding::Boolean),
+                    is_char: matches!(
+                        encoding,
+                        Encoding::SignedChar | Encoding::UnsignedChar | Encoding::UtfChar
+                    ),
+                },
+            },
+            TypeDef::Pointer { .. } => TypeClass::Pointer {
+                target: self.pointer_target().expect("pointer has a target"),
+            },
+            TypeDef::Array { .. } => {
+                let (element, count) = self.array_info().expect("array has element info");
+                TypeClass::Array { element, count }
+            }
+            TypeDef::Struct { .. } => TypeClass::Struct,
+            TypeDef::Union { .. } => TypeClass::Union,
+            TypeDef::Enum { .. } => TypeClass::RustEnum,
+            TypeDef::CEnum { .. } => TypeClass::CEnum,
+            TypeDef::Opaque { .. } => TypeClass::Opaque,
+        }
+    }
+}
+
+impl<'a> DebugMember<'a> for BundleMember<'a> {
+    type Type = BundleType<'a>;
+
+    fn name(&self) -> &'a str {
+        BundleMember::name(self)
+    }
+
+    fn ty(&self) -> BundleType<'a> {
+        BundleMember::ty(self)
+    }
+
+    fn offset(&self) -> u64 {
+        BundleMember::offset(self)
+    }
+}
+
+/// Map a bundle variant-decode failure onto reify's error type.
+fn bundle_variant_error(ty: &BundleType<'_>, e: VariantError) -> crate::Error {
+    match e {
+        VariantError::ShortBuffer { needed, len } => {
+            crate::Error::unexpected_len(len as u32, needed as u32)
+        }
+        VariantError::NoVariantMatch { raw } => {
+            crate::Error::invalid_discriminant_value(ty.name().to_string(), raw as i64)
+        }
+        other => crate::Error::parse_type(format!("{}: {other}", ty.name())),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CTF enum helpers
 // ---------------------------------------------------------------------------
 
@@ -440,4 +574,242 @@ fn ctf_check_variant<'a>(
     let offset = selected.offset();
 
     Ok(Some((ty, offset)))
+}
+
+// ---------------------------------------------------------------------------
+// Bundle backend conformance tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::{DebugType, TypeKind};
+    use crate::TypeInfoRef;
+
+    use exegesis::Encoding;
+    use exegesis::bundle::{
+        Bundle, BundleTypeId, BundleView, DiscrDef, DiscrValue, DiscrValues, DynFutureTable,
+        FORMAT_VERSION, InfraTypes, MemberDef, Meta, ProvenanceTable, StaticsTable,
+        StringInterner, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
+    };
+
+    const U32: BundleTypeId = BundleTypeId(0);
+    const U64: BundleTypeId = BundleTypeId(1);
+    const BOOL: BundleTypeId = BundleTypeId(2);
+    const U8: BundleTypeId = BundleTypeId(3);
+    const UNIT: BundleTypeId = BundleTypeId(4);
+    const POINT: BundleTypeId = BundleTypeId(5);
+    const MSG: BundleTypeId = BundleTypeId(6);
+    const OPT: BundleTypeId = BundleTypeId(7);
+    const WRAP: BundleTypeId = BundleTypeId(8);
+    const PTR: BundleTypeId = BundleTypeId(9);
+    const ARR: BundleTypeId = BundleTypeId(10);
+
+    /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
+    ///
+    /// - `Point { x: u32 @0, y: u32 @4 }`
+    /// - `Msg` — tagged enum, u8 discr @0: `A(Point)@8 | B(u64)@8 | C(unit)@8`
+    /// - `Opt` — niche enum, u64 discr @0: `None(unit)=0 | Some(u64) default`
+    /// - `Wrap { inner: Point @0 }` — single-member wrapper for peel()
+    /// - `*Point`, `[u32; 3]`
+    fn test_bundle() -> Bundle {
+        let mut strings = StringInterner::new();
+        let mut s = |name: &str| strings.intern(name);
+
+        let (u32n, u64n, booln, u8n, unitn) = (s("u32"), s("u64"), s("bool"), s("u8"), s("Unit"));
+        let (pointn, xn, yn) = (s("Point"), s("x"), s("y"));
+        let (msgn, an, bn, cn) = (s("Msg"), s("A"), s("B"), s("C"));
+        let (optn, nonen, somen) = (s("Opt"), s("None"), s("Some"));
+        let (wrapn, innern) = (s("Wrap"), s("inner"));
+
+        let m = |name, ty, offset| MemberDef { name, ty, offset };
+        let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
+
+        let types = vec![
+            TypeDef::Base { name: u32n, size: 4, encoding: Encoding::Unsigned },
+            TypeDef::Base { name: u64n, size: 8, encoding: Encoding::Unsigned },
+            TypeDef::Base { name: booln, size: 1, encoding: Encoding::Boolean },
+            TypeDef::Base { name: u8n, size: 1, encoding: Encoding::Unsigned },
+            TypeDef::Struct { name: unitn, size: 0, members: vec![] },
+            TypeDef::Struct {
+                name: pointn,
+                size: 8,
+                members: vec![m(xn, U32, 0), m(yn, U32, 4)],
+            },
+            TypeDef::Enum {
+                name: msgn,
+                size: 16,
+                shape: VariantShape {
+                    discr: Some(DiscrDef { offset: 0, ty: U8 }),
+                    variants: vec![
+                        VariantDef { name: an, discr_values: tag(0), payload: m(an, POINT, 8) },
+                        VariantDef { name: bn, discr_values: tag(1), payload: m(bn, U64, 8) },
+                        VariantDef { name: cn, discr_values: tag(2), payload: m(cn, UNIT, 8) },
+                    ],
+                },
+            },
+            TypeDef::Enum {
+                name: optn,
+                size: 8,
+                shape: VariantShape {
+                    discr: Some(DiscrDef { offset: 0, ty: U64 }),
+                    variants: vec![
+                        VariantDef { name: nonen, discr_values: tag(0), payload: m(nonen, UNIT, 0) },
+                        VariantDef { name: somen, discr_values: None, payload: m(somen, U64, 0) },
+                    ],
+                },
+            },
+            TypeDef::Struct { name: wrapn, size: 8, members: vec![m(innern, POINT, 0)] },
+            TypeDef::Pointer { name: None, target: POINT },
+            TypeDef::Array { elem: U32, count: 3 },
+        ];
+
+        let b = Bundle {
+            meta: Meta { format_version: FORMAT_VERSION, ..Default::default() },
+            strings: strings.finish(),
+            types: TypeTable { types, name_index: vec![] },
+            tasks: TaskTable::default(),
+            dyn_futures: DynFutureTable::default(),
+            statics: StaticsTable::default(),
+            infra: InfraTypes {
+                header: U32,
+                vtable: U32,
+                trailer: U32,
+                context: U32,
+                scheduler_handle: U32,
+                mt_handle: U32,
+                location: U32,
+                raw_waker_vtable: U32,
+            },
+            provenance: ProvenanceTable::default(),
+        };
+        b.validate().expect("test bundle must validate");
+        b
+    }
+
+    #[test]
+    fn test_kind_mapping() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let kind = |id| v.ty(id).unwrap().kind();
+        assert_eq!(kind(U32), TypeKind::Integer);
+        assert_eq!(kind(BOOL), TypeKind::Integer);
+        assert_eq!(kind(POINT), TypeKind::Struct);
+        assert_eq!(kind(MSG), TypeKind::Enum);
+        assert_eq!(kind(PTR), TypeKind::Pointer);
+        assert_eq!(kind(ARR), TypeKind::Array);
+    }
+
+    #[test]
+    fn test_member_access_and_display() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let r = TypeInfoRef::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
+
+        let y = r.member("y").expect("member y");
+        assert_eq!(y.addr, 0x1004);
+        assert_eq!(format!("{}", y.display()), "2");
+        assert!(r.try_member("z").expect("no error").is_none());
+
+        let shown = format!("{}", r.display());
+        assert!(shown.contains("x: 1") && shown.contains("y: 2"), "got {shown:?}");
+    }
+
+    #[test]
+    fn test_active_variant_through_typeinfo() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let msg = v.ty(MSG).unwrap();
+
+        let mut bytes = [0u8; 16];
+        bytes[0] = 1;
+        bytes[8..].copy_from_slice(&42u64.to_le_bytes());
+        let r = TypeInfoRef::new(msg, 0, &bytes);
+        assert!(r.is_enum());
+
+        let (name, payload) = r.active_variant().expect("decode failed");
+        assert_eq!(name, "B");
+        assert_eq!(format!("{}", payload.display()), "42");
+
+        // Struct payload: bytes window starts at the payload offset.
+        bytes[0] = 0;
+        bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&8u32.to_le_bytes());
+        let r = TypeInfoRef::new(msg, 0, &bytes);
+        let (name, payload) = r.active_variant().expect("decode failed");
+        assert_eq!(name, "A");
+        assert_eq!(format!("{}", payload.member("x").unwrap().display()), "7");
+
+        // Struct types are not enums.
+        let p = TypeInfoRef::new(v.ty(POINT).unwrap(), 0, &bytes[8..16]);
+        assert!(!p.is_enum());
+        assert!(p.active_variant().is_err());
+    }
+
+    #[test]
+    fn test_select_variant_through_typeinfo() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mut bytes = [0u8; 16];
+        bytes[0] = 1;
+        let r = TypeInfoRef::new(v.ty(MSG).unwrap(), 0, &bytes);
+
+        assert!(r.try_select_variant("B").expect("no error").is_some());
+        assert!(r.try_select_variant("A").expect("no error").is_none());
+        // Unknown variant names are an error, not "inactive".
+        assert!(r.try_select_variant("Nope").is_err());
+    }
+
+    #[test]
+    fn test_niche_variant_through_typeinfo() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let opt = v.ty(OPT).unwrap();
+
+        let bytes = 0u64.to_le_bytes();
+        let (name, _) = TypeInfoRef::new(opt, 0, &bytes).active_variant().unwrap();
+        assert_eq!(name, "None");
+
+        let bytes = 0xdead_beefu64.to_le_bytes();
+        let r = TypeInfoRef::new(opt, 0, &bytes);
+        let (name, payload) = r.active_variant().unwrap();
+        assert_eq!(name, "Some");
+        assert_eq!(format!("{}", payload.display()), "3735928559");
+    }
+
+    #[test]
+    fn test_invalid_discriminant_is_error() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mut bytes = [0u8; 16];
+        bytes[0] = 9;
+        let r = TypeInfoRef::new(v.ty(MSG).unwrap(), 0, &bytes);
+        let err = r.active_variant().expect_err("tag 9 must not decode");
+        let msg = format!("{err}");
+        assert!(msg.contains("discriminant") || msg.contains("Msg"), "got {msg:?}");
+    }
+
+    #[test]
+    fn test_peel_single_member_wrapper() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let peeled = TypeInfoRef::new(v.ty(WRAP).unwrap(), 0, &bytes).peel();
+        assert_eq!(DebugType::name(&peeled.ty), "Point");
+        assert_eq!(format!("{}", peeled.member("y").unwrap().display()), "4");
+    }
+
+    #[test]
+    fn test_array_elements_through_typeinfo() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [10u32, 20, 30].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let r = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &bytes);
+        let shown: Vec<String> = r
+            .array_elements()
+            .expect("array elements")
+            .map(|e| format!("{}", e.display()))
+            .collect();
+        assert_eq!(shown, ["10", "20", "30"]);
+    }
 }
