@@ -1,9 +1,9 @@
 use crate::cgu::CodegenUnit;
 use crate::parallel_fold::OrderedParallelFold;
 use crate::raw_types::{
-    NamespaceTable, NsId, RawBase, RawEnum, RawEnumerator, RawMember, RawPointer,
-    RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawVariant, SourceLoc,
-    VariantShape,
+    NamespaceTable, NsId, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember,
+    RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawVariant,
+    SourceLoc, VariantShape,
 };
 use crate::string_table::{StrId, StringTable};
 use crate::{Error, FuncId, Result, Slice};
@@ -213,6 +213,9 @@ impl<'dw> DwReader<'dw> {
             for param in func.formal_parameters.iter_mut() {
                 param.type_id = param.type_id.map(|id| self.canonicalize(id));
             }
+            for param in func.template_params.iter_mut() {
+                param.type_id = self.canonicalize(param.type_id);
+            }
             let func = intern_func(&mut self.strings, func);
             self.functions.insert(func_id, func);
         }
@@ -292,6 +295,7 @@ fn intern_type<'dw>(strings: &mut StringTable<'dw>, ty: RawType<&'dw str>) -> Ra
             size: e.size,
             alignment: e.alignment,
             shape: intern_variant_shape(strings, e.shape),
+            template_params: intern_generic_params(strings, e.template_params),
         }),
         RawType::Struct(s) => RawType::Struct(RawStruct {
             name: intern(s.name),
@@ -301,14 +305,26 @@ fn intern_type<'dw>(strings: &mut StringTable<'dw>, ty: RawType<&'dw str>) -> Ra
                 .members
                 .into_vec()
                 .into_iter()
-                .map(|m| RawMember {
-                    name: intern(m.name),
-                    offset: m.offset,
-                    type_id: m.type_id,
-                })
+                .map(|m| intern_member(strings, m))
                 .collect(),
+            template_params: intern_generic_params(strings, s.template_params),
         }),
     }
+}
+
+/// Convert a boxed slice of `RawGenericParameter<&'dw str>` into interned form.
+fn intern_generic_params<'dw>(
+    strings: &mut StringTable<'dw>,
+    params: Box<[RawGenericParameter<&'dw str>]>,
+) -> Box<[RawGenericParameter<StrId>]> {
+    params
+        .into_vec()
+        .into_iter()
+        .map(|p| RawGenericParameter {
+            name: p.name.map(|s| strings.intern(s)),
+            type_id: p.type_id,
+        })
+        .collect()
 }
 
 fn intern_member<'dw>(strings: &mut StringTable<'dw>, m: RawMember<&'dw str>) -> RawMember<StrId> {
@@ -434,6 +450,7 @@ fn intern_func<'dw>(
             .collect(),
         abstract_origin: func.abstract_origin,
         linkage_name: intern_opt(strings, func.linkage_name),
+        template_params: intern_generic_params(strings, func.template_params),
         noreturn: func.noreturn,
     }
 }

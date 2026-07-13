@@ -1,6 +1,6 @@
 use crate::raw_types::{
-    Encoding, NsId, RawBase, RawEnum, RawEnumerator, RawMember, RawPointer, RawStaticVariable,
-    RawStruct, RawSubParameter, RawFunc, RawType, RawVariant, VariantShape,
+    Encoding, NsId, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember, RawPointer,
+    RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawVariant, VariantShape,
 };
 use crate::reader::DwReader;
 use crate::string_table::StrId;
@@ -261,6 +261,12 @@ impl<'a> Enum<'a> {
 
     pub fn alignment(&self) -> Option<NonZero<u64>> {
         self.raw.alignment
+    }
+
+    /// Return an iterator over the generic type arguments of this
+    /// instantiation, in declaration order.
+    pub fn template_params(&self) -> TemplateParamIter<'a> {
+        TemplateParamIter::new(&self.raw.template_params, self.collector)
     }
 
     /// Returns the variant shape of this enum.
@@ -566,6 +572,12 @@ impl<'a> Struct<'a> {
             index: 0,
             collector: self.collector,
         }
+    }
+
+    /// Return an iterator over the generic type arguments of this
+    /// instantiation, in declaration order.
+    pub fn template_params(&self) -> TemplateParamIter<'a> {
+        TemplateParamIter::new(&self.raw.template_params, self.collector)
     }
 
     /// Find a member by name.
@@ -952,6 +964,12 @@ impl<'a> Func<'a> {
         }
     }
 
+    /// Return an iterator over the generic type arguments of this
+    /// instantiation, in declaration order.
+    pub fn template_params(&self) -> TemplateParamIter<'a> {
+        TemplateParamIter::new(&self.raw.template_params, self.collector)
+    }
+
     pub fn noreturn(&self) -> bool {
         self.raw.noreturn
     }
@@ -1036,6 +1054,93 @@ impl<'a> Iterator for ParamIter<'a> {
 }
 
 impl ExactSizeIterator for ParamIter<'_> {}
+
+// --- TemplateParam ---
+
+/// A generic type argument binding (`DW_TAG_template_type_parameter`) on a
+/// monomorphized function or type instantiation: the parameter's declared
+/// name (e.g. `T`) and the concrete type bound in this instantiation.
+#[derive(Copy, Clone)]
+pub struct TemplateParam<'a> {
+    raw: &'a RawGenericParameter<StrId>,
+    collector: &'a DwReader<'a>,
+}
+
+impl<'a> TemplateParam<'a> {
+    pub fn name(&self) -> Option<&'a str> {
+        self.raw.name.map(|id| self.collector.strings.get(id))
+    }
+
+    /// Returns the concrete type bound to this parameter.
+    pub fn ty(&self) -> Type<'a> {
+        let canonical_id = self.collector.canonicalize(self.raw.type_id);
+        let raw = self
+            .collector
+            .types
+            .get(&canonical_id)
+            .expect("template parameter TypeId not found in collector");
+        Type::from_raw(raw, self.collector)
+    }
+
+    pub fn type_id(&self) -> TypeId {
+        self.raw.type_id
+    }
+
+    pub fn raw(&self) -> &RawGenericParameter<StrId> {
+        self.raw
+    }
+}
+
+impl fmt::Debug for TemplateParam<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TemplateParam")
+            .field("name", &self.name())
+            .field("type_name", &self.ty().name())
+            .finish()
+    }
+}
+
+// --- TemplateParamIter ---
+
+#[derive(Clone, Debug)]
+pub struct TemplateParamIter<'a> {
+    params: &'a [RawGenericParameter<StrId>],
+    index: usize,
+    collector: &'a DwReader<'a>,
+}
+
+impl<'a> TemplateParamIter<'a> {
+    pub(crate) fn new(
+        params: &'a [RawGenericParameter<StrId>],
+        collector: &'a DwReader<'a>,
+    ) -> Self {
+        Self {
+            params,
+            index: 0,
+            collector,
+        }
+    }
+}
+
+impl<'a> Iterator for TemplateParamIter<'a> {
+    type Item = TemplateParam<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let param = self.params.get(self.index)?;
+        self.index += 1;
+        Some(TemplateParam {
+            raw: param,
+            collector: self.collector,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.params.len() - self.index;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for TemplateParamIter<'_> {}
 
 #[cfg(test)]
 mod tests {
@@ -1988,4 +2093,139 @@ mod tests {
             assert_eq!(ns.depth(), 3);
         });
     }
+
+    // ---- Template parameters ----
+
+    #[test]
+    fn test_func_template_params() {
+        with_view!(view => {
+            let f = view
+                .find_func("testlib::generics::swap<u32, u64>")
+                .expect("swap<u32, u64> not found");
+            let params: Vec<_> = f.template_params().collect();
+            assert_eq!(params.len(), 2);
+            assert_eq!(params[0].name(), Some("A"));
+            assert_eq!(params[0].ty().name(), Some("u32"));
+            assert_eq!(params[0].ty().kind(), TypeKind::Base);
+            assert_eq!(params[1].name(), Some("B"));
+            assert_eq!(params[1].ty().name(), Some("u64"));
+        });
+    }
+
+    #[test]
+    fn test_template_param_iter_exact_size() {
+        with_view!(view => {
+            let f = view
+                .find_func("testlib::generics::swap<u32, u64>")
+                .unwrap();
+            let mut iter = f.template_params();
+            assert_eq!(iter.len(), 2);
+            iter.next();
+            assert_eq!(iter.len(), 1);
+        });
+    }
+
+    #[test]
+    fn test_non_generic_func_has_no_template_params() {
+        with_view!(view => {
+            let f = view.find_func("testlib::shapes::add_points").unwrap();
+            assert_eq!(f.template_params().len(), 0);
+        });
+    }
+
+    #[test]
+    fn test_struct_template_params() {
+        with_view!(view => {
+            let t = view
+                .find("testlib::generics::Pair<u32, u64>", TypeKind::Struct)
+                .expect("Pair<u32, u64> not found");
+            let s = t.as_struct().unwrap();
+            let params: Vec<_> = s.template_params().collect();
+            assert_eq!(params.len(), 2);
+            assert_eq!(params[0].name(), Some("A"));
+            assert_eq!(params[0].ty().name(), Some("u32"));
+            assert_eq!(params[1].name(), Some("B"));
+            assert_eq!(params[1].ty().name(), Some("u64"));
+
+            // The two instantiations are distinct types with distinct
+            // bindings, not deduplicated into one.
+            let t = view
+                .find("testlib::generics::Pair<u64, u32>", TypeKind::Struct)
+                .expect("Pair<u64, u32> not found");
+            let params: Vec<_> = t.as_struct().unwrap().template_params().collect();
+            assert_eq!(params[0].ty().name(), Some("u64"));
+            assert_eq!(params[1].ty().name(), Some("u32"));
+        });
+    }
+
+    #[test]
+    fn test_enum_template_params() {
+        with_view!(view => {
+            // rustc (1.97) does not put DW_TAG_template_type_parameter on
+            // the enum DIE itself; this assertion is the drift canary.
+            let t = view
+                .find("testlib::generics::Either<u32, u64>", TypeKind::Enum)
+                .expect("Either<u32, u64> not found");
+            assert_eq!(t.as_enum().unwrap().template_params().len(), 0);
+
+            // The bindings ARE recorded on each variant payload struct,
+            // which is nested in the enum's namespace. This is how an
+            // enum instantiation's generic arguments are recovered (e.g.
+            // T from Stage<T>'s Running payload).
+            let t = view
+                .find(
+                    "testlib::generics::Either<u32, u64>::Left",
+                    TypeKind::Struct,
+                )
+                .expect("Left payload struct not found");
+            let params: Vec<_> = t.as_struct().unwrap().template_params().collect();
+            assert_eq!(params.len(), 2);
+            assert_eq!(params[0].name(), Some("L"));
+            assert_eq!(params[0].ty().name(), Some("u32"));
+            assert_eq!(params[1].name(), Some("R"));
+            assert_eq!(params[1].ty().name(), Some("u64"));
+        });
+    }
+
+    #[test]
+    fn test_generic_fn_linkage_name_is_v0() {
+        with_view!(view => {
+            let f = view
+                .find_func("testlib::generics::swap<u32, u64>")
+                .unwrap();
+            let linkage = f.linkage_name().expect("swap should have linkage name");
+            assert!(
+                linkage.starts_with("_R"),
+                "expected v0-mangled linkage name, got {linkage:?}"
+            );
+            assert!(linkage.contains("4swap"), "linkage {linkage:?} should encode 'swap'");
+        });
+    }
+
+    #[test]
+    fn test_drop_glue_template_param_binds_coroutine() {
+        with_view!(view => {
+            // The dyn-future join (plan §5.3) resolves a vtable's
+            // drop_glue<T> symbol and needs T as a DIE reference: the
+            // instantiation's template parameter binds the coroutine
+            // type directly.
+            let f = view
+                .functions()
+                .map(|(_, f)| f)
+                .find(|f| {
+                    f.name()
+                        .is_some_and(|n| n.starts_with("drop_glue<testlib::asyncs::leaf"))
+                })
+                .expect("drop_glue<leaf coroutine> not found");
+            assert!(f.linkage_name().is_some_and(|l| l.starts_with("_R")));
+
+            let params: Vec<_> = f.template_params().collect();
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].name(), Some("T"));
+            let ty = params[0].ty();
+            assert_eq!(ty.kind(), TypeKind::Enum);
+            assert_eq!(ty.name(), Some("{async_fn_env#0}"));
+        });
+    }
 }
+

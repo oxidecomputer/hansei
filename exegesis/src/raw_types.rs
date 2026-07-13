@@ -231,6 +231,9 @@ pub struct RawEnum<S> {
     pub alignment: Option<NonZero<u64>>,
     /// The variant layout of the enum.
     pub shape: VariantShape<S>,
+    /// Generic type arguments of this instantiation
+    /// (`DW_TAG_template_type_parameter` children), in declaration order.
+    pub template_params: Box<[RawGenericParameter<S>]>,
 }
 
 /// The variant layout of an enum.
@@ -298,8 +301,9 @@ pub struct RawStruct<S> {
     // pub alignment: Option<NonZero<u64>>,
     /// The members of the struct.
     pub members: Box<[RawMember<S>]>,
-    // /// Generic parameters of this type, if any.
-    // pub generic_parameters: Box<[GenericParameter<S>]>,
+    /// Generic type arguments of this instantiation
+    /// (`DW_TAG_template_type_parameter` children), in declaration order.
+    pub template_params: Box<[RawGenericParameter<S>]>,
 }
 
 /// Information on a type parameter binding for an instance of a generic type.
@@ -345,6 +349,11 @@ pub struct RawFunc<S> {
     /// from `name` -- which it tends to be in languages with hierarchical
     /// namespaces.
     pub linkage_name: Option<S>,
+    /// Generic type arguments of this instantiation
+    /// (`DW_TAG_template_type_parameter` children), in declaration order.
+    /// For a monomorphized `poll::<T, S>` these bind `T` and `S` as type
+    /// references rather than name strings.
+    pub template_params: Box<[RawGenericParameter<S>]>,
     /// If `true`, this function is expected not to return, meaning that any
     /// code after a call to this function is theoretically unreachable.
     ///

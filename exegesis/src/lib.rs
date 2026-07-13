@@ -14,8 +14,8 @@ pub use reader::{DwReader, ReadArgs, Targets};
 pub use string_table::StrId;
 pub use view::{
     Base, DwView, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace,
-    NsFuncIter, NsTypeIter, NsVarIter, Param, ParamIter, Pointer, StaticVariable, Struct, Type,
-    Variant, VariantIter, VariantShapeView,
+    NsFuncIter, NsTypeIter, NsVarIter, Param, ParamIter, Pointer, StaticVariable, Struct,
+    TemplateParam, TemplateParamIter, Type, Variant, VariantIter, VariantShapeView,
 };
 
 use gimli::{EndianSlice, RunTimeEndian, UnitSectionOffset};

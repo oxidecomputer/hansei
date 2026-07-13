@@ -2,8 +2,8 @@ mod types;
 
 pub use types::{
     Base, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace, NsFuncIter,
-    NsTypeIter, NsVarIter, Param, ParamIter, Pointer, StaticVariable, Struct, Type, Variant,
-    VariantIter, VariantShapeView,
+    NsTypeIter, NsVarIter, Param, ParamIter, Pointer, StaticVariable, Struct, TemplateParam,
+    TemplateParamIter, Type, Variant, VariantIter, VariantShapeView,
 };
 
 use crate::raw_types::NsId;
