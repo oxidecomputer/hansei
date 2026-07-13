@@ -303,6 +303,17 @@ impl<'buf, 'a: 'buf, T: DebugType<'a> + PartialEq> PartialEq for TypeInfoRef<'bu
 }
 
 impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
+    /// Wrap an already-read buffer. Useful when the bytes come from
+    /// somewhere other than a live target (tests, snapshots).
+    pub fn new(ty: T, addr: u64, bytes: &'buf [u8]) -> Self {
+        Self {
+            ty,
+            addr,
+            bytes,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
     pub fn try_member(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a, T>>> {
         let Some(member) = self.ty.member(name) else {
             return Ok(None);
