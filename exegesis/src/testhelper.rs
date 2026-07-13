@@ -166,7 +166,49 @@ pub mod enums {
         opt_ref: core::option::Option::None,
     };
 }
+
+pub mod generics {
+    pub struct Pair<A, B> {
+        pub first: A,
+        pub second: B,
+    }
+
+    pub enum Either<L, R> {
+        Left(L),
+        Right(R),
+    }
+
+    pub fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
+        Pair { first: p.second, second: p.first }
+    }
+
+    pub static PAIR: Pair<u32, u64> = Pair { first: 1, second: 2 };
+    pub static EITHER: Either<u32, u64> = Either::Left(1);
+
+    // Forces monomorphization of swap::<u32, u64>.
+    pub fn use_swap() -> Pair<u64, u32> {
+        swap(Pair { first: 3, second: 4 })
+    }
+}
+
+pub mod asyncs {
+    /// Leaf async fn: no awaits, but still compiled to a coroutine type.
+    pub async fn leaf(x: u32) -> u32 {
+        x + 1
+    }
+
+    /// One await point; its coroutine holds leaf's env as an __awaitee.
+    pub async fn chain(x: u32) -> u32 {
+        leaf(x).await + 1
+    }
+
+    // Forces codegen of both async state machines.
+    pub fn make() -> impl core::future::Future<Output = u32> {
+        chain(5)
+    }
+}
 "##;
+
 
 /// Scaffold a Rust lib crate, write the given source, and build it.
 ///

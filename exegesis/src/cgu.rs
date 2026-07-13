@@ -276,6 +276,7 @@ impl<'dw> CodegenUnit<'dw> {
         assert!(entry.tag() == gimli::DW_TAG_structure_type);
 
         let mut members = Vec::new();
+        let mut template_params = Vec::new();
         let mut variant_shape: Option<VariantShape<&'dw str>> = None;
         let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
 
@@ -292,6 +293,10 @@ impl<'dw> CodegenUnit<'dw> {
                             gimli::DW_TAG_member => {
                                 let m = process_member(unit, cursor)?;
                                 members.push(m);
+                            }
+                            gimli::DW_TAG_template_type_parameter => {
+                                template_params
+                                    .extend(process_generic_parameter(unit, cursor)?);
                             }
                             _ => {
                                 this.parse_nested_types(unit, cursor)?;
@@ -314,6 +319,7 @@ impl<'dw> CodegenUnit<'dw> {
                     size: common.size.unwrap_or_default(),
                     alignment: common.alignment,
                     shape,
+                    template_params: template_params.into_boxed_slice(),
                 },
             );
         } else {
@@ -324,6 +330,7 @@ impl<'dw> CodegenUnit<'dw> {
                     namespace: self.ns,
                     size: common.size.unwrap_or_default(),
                     members: members.into_boxed_slice(),
+                    template_params: template_params.into_boxed_slice(),
                 },
             );
         }
@@ -378,6 +385,7 @@ impl<'dw> CodegenUnit<'dw> {
                     repr_type_id,
                     enumerators: enumerators.into_boxed_slice(),
                 },
+                template_params: Box::default(),
             },
         );
 
@@ -535,6 +543,7 @@ impl<'dw> CodegenUnit<'dw> {
         })?;
 
         let mut formal_parameters = vec![];
+        let mut template_params = vec![];
         if entry.has_children() {
             while let Some(()) = cursor.next_entry()? {
                 if let Some(child) = cursor.current() {
@@ -542,9 +551,9 @@ impl<'dw> CodegenUnit<'dw> {
                         gimli::DW_TAG_formal_parameter => {
                             formal_parameters.push(process_sub_parameter(unit, cursor)?);
                         }
-                        // gimli::DW_TAG_template_type_parameter => {
-                        //     generic_parameters.push(process_generic_parameter(unit, cursor)?);
-                        // }
+                        gimli::DW_TAG_template_type_parameter => {
+                            template_params.extend(process_generic_parameter(unit, cursor)?);
+                        }
                         // gimli::DW_TAG_inlined_subroutine => {
                         //     inlines.push(process_inlined_subroutine(unit, cursor)?);
                         // }
@@ -578,6 +587,7 @@ impl<'dw> CodegenUnit<'dw> {
                 formal_parameters: formal_parameters.into_boxed_slice(),
                 abstract_origin,
                 linkage_name,
+                template_params: template_params.into_boxed_slice(),
                 noreturn,
             },
         );
@@ -585,6 +595,7 @@ impl<'dw> CodegenUnit<'dw> {
         Ok(())
     }
 }
+
 
 fn process_member<'dw>(
     unit: &UnitRef<Slice<'dw>>,
@@ -792,19 +803,29 @@ fn parse_enumerator<'dw>(
     })
 }
 
+/// Parse a `DW_TAG_template_type_parameter` into a [`RawGenericParameter`].
+///
+/// Returns `None` for parameters with no `DW_AT_type` (e.g. bindings rustc
+/// chooses not to describe); the caller records what is present rather than
+/// failing the whole DIE.
 fn process_generic_parameter<'dw>(
     unit: &UnitRef<Slice<'dw>>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
-) -> Result<RawGenericParameter<&'dw str>> {
+) -> Result<Option<RawGenericParameter<&'dw str>>> {
     let entry = cursor.current().unwrap();
     assert!(entry.tag() == gimli::DW_TAG_template_type_parameter);
 
     let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
 
-    Ok(RawGenericParameter {
+    let Some(type_id) = common.type_id else {
+        debug!("template type parameter {:?} has no type", common.name);
+        return Ok(None);
+    };
+
+    Ok(Some(RawGenericParameter {
         name: common.name,
-        type_id: common.type_id.unwrap().into(),
-    })
+        type_id: type_id.into(),
+    }))
 }
 
 fn process_sub_parameter<'dw>(
