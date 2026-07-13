@@ -1,0 +1,351 @@
+//! The bundle's serialized data model.
+//!
+//! Design rules (see `HANSEI_V0_MANGLING_PLAN.md` §5):
+//!
+//! - Symbol join tables are keyed by **mangled v0 names**, never demangled
+//!   text; demangling is display-only. Lookups strip any `.llvm.<hash>`
+//!   suffix before matching (the suffix is a path-sensitive artifact of
+//!   LLVM symbol internalization, not part of the name).
+//! - Maps are `BTreeMap` rather than `HashMap` so that encoding a bundle is
+//!   deterministic: same input, same bytes.
+//! - All cross-references are dense indices ([`BundleTypeId`],
+//!   [`TaskEntryId`], [`StrRef`]) validated up front by
+//!   [`Bundle::validate`](super::Bundle::validate), so readers may index
+//!   without per-access checks.
+
+use crate::bundle::strings::{StrRef, StringTable};
+use crate::raw_types::Encoding;
+
+use serde::{Deserialize, Serialize};
+
+use std::collections::BTreeMap;
+
+/// Index into [`TypeTable::types`].
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub struct BundleTypeId(pub u32);
+
+/// Index into [`TaskTable::entries`].
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub struct TaskEntryId(pub u32);
+
+/// A complete bundle: everything `hansei` needs from the debug binary.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Bundle {
+    pub meta: Meta,
+    pub strings: StringTable,
+    pub types: TypeTable,
+    pub tasks: TaskTable,
+    pub dyn_futures: DynFutureTable,
+    pub statics: StaticsTable,
+    pub infra: InfraTypes,
+    pub provenance: ProvenanceTable,
+}
+
+/// Identity and validation data for the producing binary (§5.1).
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct Meta {
+    /// Copy of the header's format version, for tools that inspect a decoded
+    /// bundle without the framing.
+    pub format_version: u32,
+    /// From the producer's `DW_AT_producer`.
+    pub rustc_version: String,
+    /// Tokio version, when recoverable from DWARF.
+    pub tokio_version: Option<semver::Version>,
+    /// Identity of the debug binary the bundle was extracted from.
+    pub debug_binary: BinaryIdent,
+    /// Command line of the extraction, for provenance.
+    pub extract_args: String,
+    /// Mangled task poll symbols sampled (or all) for target match-rate
+    /// validation at attach time.
+    pub symbol_fingerprint: Vec<String>,
+}
+
+/// Identity of the ELF the bundle was produced from.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct BinaryIdent {
+    /// Path basename of the debug binary.
+    pub basename: String,
+    /// GNU build-id note contents, if present.
+    pub build_id: Option<Vec<u8>>,
+    /// sha256 of the whole ELF file.
+    pub sha256: [u8; 32],
+}
+
+/// The layout graph (§5.2): an index-based arena of type definitions.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct TypeTable {
+    pub types: Vec<TypeDef>,
+    /// By-name index for the (rarer) name-based lookups: pairs of
+    /// (fully-qualified name, type id), sorted by the *resolved string*
+    /// so lookups can binary-search without materializing owned keys.
+    /// Multiple ids may share one name (e.g. identical instantiations from
+    /// different CUs).
+    pub name_index: Vec<(StrRef, BundleTypeId)>,
+}
+
+impl TypeTable {
+    /// Get a type definition by id.
+    pub fn get(&self, id: BundleTypeId) -> Option<&TypeDef> {
+        self.types.get(id.0 as usize)
+    }
+
+    /// All type ids whose fully-qualified name is exactly `name`.
+    ///
+    /// `strings` must be the same table the ids were interned into.
+    pub fn find_by_name<'a>(
+        &'a self,
+        strings: &'a StringTable,
+        name: &'a str,
+    ) -> impl Iterator<Item = BundleTypeId> + 'a {
+        let lo = self
+            .name_index
+            .partition_point(|&(r, _)| strings.get(r).unwrap_or("") < name);
+        self.name_index[lo..]
+            .iter()
+            .take_while(move |&&(r, _)| strings.get(r) == Some(name))
+            .map(|&(_, id)| id)
+    }
+}
+
+/// One entry in a type table: layout information for a single type.
+///
+/// Wrapper kinds reify peels (typedef/const/volatile) are resolved away at
+/// extraction time and never appear here.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum TypeDef {
+    /// A primitive with a known encoding.
+    Base { name: StrRef, size: u64, encoding: Encoding },
+    /// A pointer or reference to another type.
+    Pointer { name: Option<StrRef>, target: BundleTypeId },
+    /// A fixed-length array.
+    Array { elem: BundleTypeId, count: u64 },
+    /// A struct (or tuple/closure environment — anything with plain members).
+    Struct { name: StrRef, size: u64, members: Vec<MemberDef> },
+    /// A union.
+    Union { name: StrRef, size: u64, members: Vec<MemberDef> },
+    /// A Rust enum: DWARF variant parts, represented faithfully including
+    /// niche encodings.
+    Enum { name: StrRef, size: u64, shape: VariantShape },
+    /// A C-style enumeration: named integer constants over a repr type.
+    CEnum {
+        name: StrRef,
+        size: u64,
+        repr: BundleTypeId,
+        enumerators: Vec<(StrRef, i128)>,
+    },
+    /// A type the extractor could not model. Recorded explicitly (with a
+    /// `--stats` counter at extraction time) so omissions are never silent.
+    Opaque { name: StrRef, size: Option<u64> },
+}
+
+/// A named, typed field at a byte offset within a struct or union.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct MemberDef {
+    pub name: StrRef,
+    pub ty: BundleTypeId,
+    pub offset: u64,
+}
+
+/// The variant structure of a Rust enum, mirroring DWARF variant parts
+/// (not CTF's synthetic `__discr`/`__variants` encoding).
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct VariantShape {
+    /// `None` for single-variant / univariant enums with no discriminant.
+    pub discr: Option<DiscrDef>,
+    pub variants: Vec<VariantDef>,
+}
+
+/// Where and what the discriminant is.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct DiscrDef {
+    pub offset: u64,
+    pub ty: BundleTypeId,
+}
+
+/// One enum variant and the discriminant value(s) that select it.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct VariantDef {
+    pub name: StrRef,
+    /// Explicit tag value(s), or `None` for the "default" variant in niche
+    /// encodings (`DW_AT_discr_value` absent).
+    pub discr_values: Option<DiscrValues>,
+    /// The variant's payload member (offset + type).
+    pub payload: MemberDef,
+}
+
+/// The discriminant values selecting a variant.
+///
+/// Values are the raw discriminant bits (two's complement for signed
+/// discriminant types — interpret per [`DiscrDef::ty`]'s encoding). u128
+/// width covers the DWARFv4 two-u64-block encoding; ranges cover DWARFv5
+/// `DW_AT_discr_list`.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct DiscrValues(pub Vec<DiscrValue>);
+
+/// A single discriminant value or inclusive range.
+#[derive(Copy, Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum DiscrValue {
+    Value(u128),
+    Range(u128, u128),
+}
+
+impl DiscrValues {
+    /// Does `raw` (the discriminant's raw bits) select this variant?
+    pub fn matches(&self, raw: u128) -> bool {
+        self.0.iter().any(|v| match *v {
+            DiscrValue::Value(x) => x == raw,
+            DiscrValue::Range(lo, hi) => (lo..=hi).contains(&raw),
+        })
+    }
+}
+
+/// The task join table (§5.3): mangled vtable-fn symbol → spawned future.
+///
+/// Every monomorphized vtable fn of an instantiation (`poll`, `dealloc`,
+/// `try_read_output`, `drop_join_handle_slow`, `drop_abort_handle`,
+/// `shutdown`) keys the same entry, so any of them resolved from the
+/// target's memory identifies the task's concrete future type.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct TaskTable {
+    /// Mangled linkage name → entry. Keys are stored without `.llvm.<hash>`
+    /// suffixes; use [`TaskTable::lookup`] which strips them.
+    pub by_symbol: BTreeMap<String, TaskEntryId>,
+    pub entries: Vec<TaskFutureEntry>,
+}
+
+impl TaskTable {
+    /// Look up a mangled symbol as read from the target's symtab.
+    pub fn lookup(&self, symbol: &str) -> Option<&TaskFutureEntry> {
+        let id = *self.by_symbol.get(strip_llvm_suffix(symbol))?;
+        self.entries.get(id.0 as usize)
+    }
+}
+
+/// Type-table ids for one `tokio::runtime::task` instantiation.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct TaskFutureEntry {
+    /// `T`: the spawned future's concrete type.
+    pub future: BundleTypeId,
+    /// `tokio::runtime::task::core::Cell<T, S>`.
+    pub cell: BundleTypeId,
+    /// `tokio::runtime::task::core::Stage<T>`.
+    pub stage: BundleTypeId,
+    /// `S`: the scheduler (multi_thread vs current_thread handle).
+    pub scheduler: BundleTypeId,
+    /// Demangled name of `T`, for display only.
+    pub display_name: StrRef,
+}
+
+/// Join table for `Box<dyn Future>` / `Pin<Box<dyn ...>>` awaitees (§5.3):
+/// linkage names of `<T as core::future::Future>::poll` and
+/// `core::ptr::drop_glue::<T>` (rustc ≥ 1.97's spelling of what used to be
+/// `drop_in_place`) → `T`'s type id.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct DynFutureTable {
+    /// Keys are stored without `.llvm.<hash>` suffixes; use
+    /// [`DynFutureTable::lookup`] which strips them.
+    pub by_symbol: BTreeMap<String, BundleTypeId>,
+}
+
+impl DynFutureTable {
+    /// Look up a mangled symbol as read from the target's symtab.
+    pub fn lookup(&self, symbol: &str) -> Option<BundleTypeId> {
+        self.by_symbol.get(strip_llvm_suffix(symbol)).copied()
+    }
+}
+
+/// Strip the `.llvm.<decimal>` suffix LLVM appends to internalized copies of
+/// a symbol. The suffix is path-sensitive across separate compilations and
+/// must never participate in a join (see `docs/v0-mangling-spike.md`).
+pub fn strip_llvm_suffix(symbol: &str) -> &str {
+    match symbol.rfind(".llvm.") {
+        Some(i) if symbol[i + ".llvm.".len()..].bytes().all(|b| b.is_ascii_digit())
+            && i + ".llvm.".len() < symbol.len() =>
+        {
+            &symbol[..i]
+        }
+        _ => symbol,
+    }
+}
+
+/// Named statics whose *addresses* must be resolved in the target's symtab
+/// at attach time (§5.4).
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub enum StaticRole {
+    /// The TLS key holding each thread's `tokio::runtime::context::Context`
+    /// (std's `__RUST_STD_INTERNAL_VAL` static for tokio's `CONTEXT`).
+    TlsContextKey,
+    /// Tokio's task `WAKER_VTABLE` static, identifying task wakers found in
+    /// resource waiter lists.
+    TaskWakerVtable,
+}
+
+/// A static's symbol names: the mangled name is the join key, the demangled
+/// form is for diagnostics only.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct StaticDef {
+    pub symbol: String,
+    pub display: String,
+}
+
+/// Role → symbol to resolve via `Plookup_by_name` on the target.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct StaticsTable {
+    pub entries: BTreeMap<StaticRole, StaticDef>,
+}
+
+/// Type-table ids for the non-generic tokio infrastructure types (§5.4).
+///
+/// These replace `dwarf2ctf -t` hand-feeding; extraction fails loudly if any
+/// is missing from the debug binary's DWARF.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct InfraTypes {
+    /// `tokio::runtime::task::core::Header`.
+    pub header: BundleTypeId,
+    /// `tokio::runtime::task::raw::Vtable` — `#[repr(Rust)]`, so its field
+    /// offsets must come from here, never from declaration order.
+    pub vtable: BundleTypeId,
+    /// `tokio::runtime::task::core::Trailer`.
+    pub trailer: BundleTypeId,
+    /// `tokio::runtime::context::Context`.
+    pub context: BundleTypeId,
+    /// `tokio::runtime::scheduler::Handle` (enum).
+    pub scheduler_handle: BundleTypeId,
+    /// `tokio::runtime::scheduler::multi_thread::Handle` (behind an `Arc`).
+    pub mt_handle: BundleTypeId,
+    /// `core::panic::Location`.
+    pub location: BundleTypeId,
+    /// `core::task::RawWakerVTable`.
+    pub raw_waker_vtable: BundleTypeId,
+}
+
+/// Where each task future comes from (§5.5), indexed by [`TaskEntryId`]
+/// (parallel to [`TaskTable::entries`]).
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct ProvenanceTable {
+    pub entries: Vec<Provenance>,
+}
+
+/// Source provenance for one future type.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Provenance {
+    /// `DW_AT_decl_file`/`line` of the coroutine type or its async fn.
+    pub decl: Option<SourceLoc>,
+    pub kind: FutureKind,
+}
+
+/// What kind of source construct produced a future type.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum FutureKind {
+    AsyncFn,
+    AsyncBlock,
+    Combinator,
+    Manual,
+}
+
+/// A file/line pair, file interned in the bundle's string table.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SourceLoc {
+    pub file: StrRef,
+    pub line: u32,
+}

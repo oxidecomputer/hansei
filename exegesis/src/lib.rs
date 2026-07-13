@@ -1,3 +1,4 @@
+pub mod bundle;
 mod cgu;
 mod parallel_fold;
 pub mod raw_types;
