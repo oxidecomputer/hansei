@@ -1,7 +1,0 @@
-= felak
-
-_Felak_ is a Dwarvish word for a stone-cutting tool, from the language of the
-Dwarves (Khuzdul) in J.R.R. Tolkien's legendarium.
-
-This library parses Rust program data -- types, statics, and DWARF debug
-information -- from core dumps and ELF binaries.

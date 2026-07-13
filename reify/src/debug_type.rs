@@ -34,7 +34,7 @@ impl fmt::Display for TypeKind {
 
 /// Core trait: a type from debug information.
 ///
-/// Both `durin::read::CtfType<'a>` and `felak::view::Type<'a>` implement
+/// Both `durin::read::CtfType<'a>` and `exegesis::view::Type<'a>` implement
 /// this, allowing `TypeInfo` and `TypeInfoRef` to work with either backend.
 pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug {
     type Member: DebugMember<'a, Type = Self>;

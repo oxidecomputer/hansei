@@ -531,6 +531,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "exegesis"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "foldhash 0.2.0",
+ "gimli 0.32.3",
+ "memmap2",
+ "mimalloc",
+ "object 0.38.1",
+ "regex",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -557,22 +574,6 @@ dependencies = [
  "cfg-if",
  "rustix 1.1.4",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "felak"
-version = "0.1.0"
-dependencies = [
- "foldhash 0.2.0",
- "gimli 0.32.3",
- "memmap2",
- "mimalloc",
- "object 0.38.1",
- "regex",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

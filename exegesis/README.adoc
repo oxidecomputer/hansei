@@ -1,0 +1,12 @@
+= exegesis
+
+_Exegesis_: critical interpretation of an impenetrable source text.
+
+This crate (formerly `felak`) parses Rust program data -- types, statics,
+and DWARF debug information -- from core dumps and ELF binaries. It is the
+home of the async debug bundle work: the lib is the DWARF parsing layer,
+and the `exegesis` binary (behind the default `cli` feature) hosts the
+extraction and inspection subcommands, starting with `dump-dwarf`.
+
+Consumers that only need the lib (e.g. `hansei` via `reify`) should depend
+on it with `default-features = false` to skip the CLI stack.

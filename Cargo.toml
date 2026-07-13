@@ -4,7 +4,7 @@ members = [
     "disentangler",
     "durin",
     "dwarf2ctf",
-    "felak",
+    "exegesis",
     "findargs",
     "hansei",
     "hansei-types",
@@ -27,6 +27,7 @@ console = "0.16"
 debugdb = { git = "https://github.com/andrewjstone/debugdb", branch = "spelunkio-2" }
 derive_more = { version = "2.1.1", features = ["from", "display"] }
 durin = { path = "durin", version = "0.1.0" }
+exegesis = { path = "exegesis", version = "0.1.0", default-features = false }
 fallible-iterator = "0.3.0"
 flate2 = "1.1.5"
 foldhash = "0.2"
