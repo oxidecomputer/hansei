@@ -9,9 +9,13 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
+// 1.97.0: first release with v0 symbol mangling by default, so linkage
+// names in fixtures match what the bundle join tables will see. Bumping
+// the pin is a deliberate change — these tests double as the canary for
+// DWARF-shape and mangling drift across toolchains.
 const TOOLCHAIN: &str = r#"
 [toolchain]
-channel = "1.94.0"
+channel = "1.97.0"
 profile = "default"
 "#;
 
