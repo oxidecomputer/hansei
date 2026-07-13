@@ -209,6 +209,10 @@ pub mod asyncs {
 }
 "##;
 
+/// The fixture source, for tests that assert on declaration coordinates.
+pub fn shared_src() -> &'static str {
+    SHARED_SRC
+}
 
 /// Scaffold a Rust lib crate, write the given source, and build it.
 ///
