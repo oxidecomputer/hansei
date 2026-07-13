@@ -175,10 +175,12 @@ pub struct VariantDef {
 
 /// The discriminant values selecting a variant.
 ///
-/// Values are the raw discriminant bits (two's complement for signed
-/// discriminant types — interpret per [`DiscrDef::ty`]'s encoding). u128
-/// width covers the DWARFv4 two-u64-block encoding; ranges cover DWARFv5
-/// `DW_AT_discr_list`.
+/// Values are the discriminant's raw bits **zero-extended to u128** — the
+/// same representation a little-endian read of the discriminant's bytes
+/// produces, so decoding is a direct comparison regardless of the
+/// discriminant type's signedness (a signed `-1i8` tag is stored as
+/// `0xff`). u128 width covers the DWARFv4 two-u64-block encoding; ranges
+/// cover DWARFv5 `DW_AT_discr_list`.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct DiscrValues(pub Vec<DiscrValue>);
 
