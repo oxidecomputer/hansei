@@ -193,7 +193,10 @@ pub struct RawPointer<S> {
 
 /// The encoding of a `Base` type.
 /// Section 5.1.1, page 104.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+///
+/// Also serialized directly into bundles (see [`crate::bundle`]); the
+/// bundle format version must be bumped if variants change.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Encoding {
     /// Linear machine address.
     Address,

@@ -1,0 +1,20 @@
+//! The async debug bundle: a serialized description of a debug binary's
+//! tokio runtime, keyed by v0 mangled symbol names so a separately-compiled
+//! target binary can be interpreted without any address ever crossing
+//! between the two (see `HANSEI_V0_MANGLING_PLAN.md` §5).
+
+mod io;
+mod schema;
+mod strings;
+
+pub use io::{Error, FORMAT_VERSION, MAGIC, Result};
+pub use schema::{
+    BinaryIdent, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues, DynFutureTable,
+    FutureKind, InfraTypes, MemberDef, Meta, Provenance, ProvenanceTable, SourceLoc, StaticDef,
+    StaticRole, StaticsTable, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable,
+    VariantDef, VariantShape, strip_llvm_suffix,
+};
+pub use strings::{StrRef, StringInterner, StringTable};
+
+#[cfg(test)]
+mod tests;
