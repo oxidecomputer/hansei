@@ -1,7 +1,7 @@
 use crate::raw_types::{
-    CommonAttrs, Encoding, NamespaceTable, NsId, RawBase, RawEnum, RawEnumerator,
+    CommonAttrs, Encoding, NamespaceTable, NsId, RawArray, RawBase, RawEnum, RawEnumerator,
     RawGenericParameter, RawInlinedSubroutine, RawMember, RawPointer, RawStaticVariable, RawStruct,
-    RawSubParameter, RawFunc, RawType, RawVariant, SourceLoc, VariantShape,
+    RawSubParameter, RawFunc, RawType, RawUnion, RawVariant, SourceLoc, VariantShape,
 };
 use crate::{Error, FuncId, Result, Slice, TypeId, VarId};
 
@@ -131,6 +131,8 @@ impl<'dw> CodegenUnit<'dw> {
             gimli::DW_TAG_namespace => self.parse_namespace(unit, cursor),
             gimli::DW_TAG_pointer_type => self.parse_pointer_type(unit, cursor),
             gimli::DW_TAG_structure_type => self.process_struct(unit, cursor),
+            gimli::DW_TAG_union_type => self.process_union(unit, cursor),
+            gimli::DW_TAG_array_type => self.parse_array_type(unit, cursor),
             gimli::DW_TAG_enumeration_type => self.parse_enumeration_type(unit, cursor),
             gimli::DW_TAG_variable => self.process_static_variable(unit, cursor),
             gimli::DW_TAG_subprogram => self.process_function(unit, cursor),
@@ -337,6 +339,116 @@ impl<'dw> CodegenUnit<'dw> {
                 },
             );
         }
+
+        Ok(())
+    }
+
+    /// Parse a `DW_TAG_union_type` into a [`RawUnion`]. Structurally a
+    /// struct without variant parts: members, template parameters, and
+    /// nested type definitions.
+    fn process_union(
+        &mut self,
+        unit: &UnitRef<Slice<'dw>>,
+        cursor: &mut EntriesCursor<Slice<'dw>>,
+    ) -> Result<()> {
+        let Some(entry) = cursor.current() else {
+            return Ok(());
+        };
+        assert!(entry.tag() == gimli::DW_TAG_union_type);
+
+        let mut members = Vec::new();
+        let mut template_params = Vec::new();
+        let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
+
+        let ns = self.namespaces.insert(self.ns, common.name.unwrap_or(ANON));
+
+        if entry.has_children() {
+            self.with_namespace(ns, |this| {
+                while let Some(()) = cursor.next_entry()? {
+                    if let Some(child) = cursor.current() {
+                        match child.tag() {
+                            gimli::DW_TAG_member => {
+                                let m = process_member(unit, cursor)?;
+                                members.push(m);
+                            }
+                            gimli::DW_TAG_template_type_parameter => {
+                                template_params
+                                    .extend(process_generic_parameter(unit, cursor)?);
+                            }
+                            _ => {
+                                this.parse_nested_types(unit, cursor)?;
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                Ok::<_, Error>(())
+            })?;
+        }
+
+        self.add_type(
+            common.debug_offset,
+            RawUnion {
+                name: common.name,
+                namespace: self.ns,
+                size: common.size.unwrap_or_default(),
+                members: members.into_boxed_slice(),
+                template_params: template_params.into_boxed_slice(),
+                source_loc: boxed_source_loc(common.source_loc),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Parse a `DW_TAG_array_type` into a [`RawArray`]: the element type
+    /// from `DW_AT_type`, the length from the `DW_AT_count` of the
+    /// `DW_TAG_subrange_type` child.
+    fn parse_array_type(
+        &mut self,
+        unit: &UnitRef<Slice<'dw>>,
+        cursor: &mut EntriesCursor<Slice<'dw>>,
+    ) -> Result<()> {
+        let entry = cursor.current().unwrap();
+        assert!(entry.tag() == gimli::DW_TAG_array_type);
+
+        let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
+
+        let Some(elem) = common.type_id else {
+            debug!(
+                "array type missing element typeid at {:x?}",
+                common.debug_offset
+            );
+            return cursor.consume_entry();
+        };
+
+        let mut count = None;
+        if entry.has_children() {
+            while let Some(()) = cursor.next_entry()? {
+                if let Some(child) = cursor.current() {
+                    if child.tag() == gimli::DW_TAG_subrange_type
+                        && count.is_none()
+                        && let Some(attr) = child.attr(gimli::DW_AT_count)?
+                    {
+                        count = attr.value().udata_value();
+                    }
+                    cursor.consume_entry()?;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        self.add_type(
+            common.debug_offset,
+            RawArray {
+                elem_type_id: TypeId(elem),
+                // A subrange without DW_AT_count means the length is
+                // unknown (C flexible arrays); model it as zero-length.
+                count: count.unwrap_or(0),
+            },
+        );
 
         Ok(())
     }
