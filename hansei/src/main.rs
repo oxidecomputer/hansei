@@ -1,4 +1,6 @@
-use crate::tokio::{Context, Lifecycle, MinTokioState, bundle, find_thd_context, parse_runtime};
+use crate::tokio::{
+    Context, Lifecycle, MinTokioState, bundle, find_thd_context, graph, parse_runtime,
+};
 
 use anyhow::{Context as _, Result};
 use clap::{ArgAction, Args, Parser, Subcommand};
@@ -34,7 +36,36 @@ enum Action {
     #[command(visible_alias = "trace")]
     TaskTrace(TaskTrace),
     Tasks(Tasks),
+    Graph(Graph),
     Snapshot(SnapshotCmd),
+}
+
+/// Print the waker-based task dependency graph: what every task is
+/// waiting on, and any futurelock — a lock future granted or queued on
+/// a contended semaphore that its task stopped polling and so can
+/// never complete or release (RFD 609).
+#[derive(Args)]
+struct Graph {
+    #[command(flatten)]
+    source: Source,
+
+    /// The debug bundle to read (produced by `exegesis extract`).
+    #[clap(long, short)]
+    bundle: PathBuf,
+
+    /// Proceed even if the bundle's symbols don't all resolve in the target.
+    #[arg(long)]
+    force: bool,
+
+    /// Find worker threads with the legacy TSD byte-pattern heuristic
+    /// instead of the TLS key named by the bundle.
+    #[arg(long)]
+    heuristic_discovery: bool,
+
+    /// Pausing a live process is potentially destructive.
+    /// Required if --pid is passed.
+    #[arg(long, short = 'w')]
+    destructive: bool,
 }
 
 /// Capture a replayable snapshot of everything the bundle-backed
@@ -229,6 +260,7 @@ fn main() {
         Action::SchedulerDump(dump) => exec_dump(dump, &mut io::stdout().lock()),
         Action::TaskTrace(dump) => exec_trace(dump, &mut io::stdout().lock()),
         Action::Tasks(tasks) => exec_tasks(tasks, &mut io::stdout().lock()),
+        Action::Graph(graph) => exec_graph(graph, &mut io::stdout().lock()),
         Action::Snapshot(snap) => exec_snapshot(snap, &mut io::stdout().lock()),
     };
     if let Err(e) = res {
@@ -824,14 +856,20 @@ fn exec_snapshot(args: SnapshotCmd, out: &mut dyn io::Write) -> Result<()> {
         }
     }
 
+    // Drive the dependency analysis too — wake queues and the
+    // off-path acquire scan — so its reads are in the snapshot. Its
+    // failures duplicate the per-task warnings above.
+    let analysis = graph::analyze(&ctx, &list);
+
     let snapshot = recorder.snapshot().context("failed to assemble snapshot")?;
     snapshot
         .save(&args.output)
         .with_context(|| format!("failed to write {}", args.output.display()))?;
     writeln!(
         out,
-        "captured {} tasks ({chains} await chains) to {}",
+        "captured {} tasks ({chains} await chains, {} futurelocks) to {}",
         list.tasks.len(),
+        analysis.futurelocks.len(),
         args.output.display()
     )?;
     Ok(())
@@ -924,5 +962,110 @@ fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
         writeln!(io::stderr(), "warning: {err:#}")?;
     }
 
+    Ok(())
+}
+
+fn exec_graph(args: Graph, out: &mut dyn io::Write) -> Result<()> {
+    let proc = args.source.open_proc(args.destructive)?;
+    let bundle = Bundle::load(&args.bundle)
+        .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
+    let view = BundleView::new(&bundle);
+    let ctx = bundle::Context::new(&proc, view)?;
+    check_fingerprint(&ctx, args.force)?;
+
+    let workers = discover_workers(&proc, &ctx, args.heuristic_discovery)?;
+    let shared = ctx.find_shared(&workers)?;
+    let list = ctx.enumerate_tasks(&shared)?;
+    for err in &list.errors {
+        writeln!(io::stderr(), "warning: {err:#}")?;
+    }
+
+    let analysis = graph::analyze(&ctx, &list);
+    for err in &analysis.errors {
+        writeln!(io::stderr(), "warning: {err:#}")?;
+    }
+
+    // One wait edge per task ([`graph::Analysis::waits`] parallels the
+    // task list).
+    let mut rows = vec![[
+        "TASK".to_string(),
+        "STATE".to_string(),
+        "WAITING ON".to_string(),
+    ]];
+    for (task, wait) in list.tasks.iter().zip(&analysis.waits) {
+        let id = match task.task_id {
+            Some(id) => id.to_string(),
+            None => format!("{:?}", task.addr),
+        };
+        let target = wait
+            .target
+            .as_ref()
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        rows.push([id, task.state.lifecycle().to_string(), target]);
+    }
+    let mut widths = [0usize; 2];
+    for row in &rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.len());
+        }
+    }
+    for row in &rows {
+        let [id, state, target] = row;
+        writeln!(
+            out,
+            "{id:<w0$}  {state:<w1$}  {target}",
+            w0 = widths[0],
+            w1 = widths[1],
+        )?;
+    }
+
+    for fl in &analysis.futurelocks {
+        writeln!(out)?;
+        print_futurelock(fl, out)?;
+    }
+    if analysis.futurelocks.is_empty() {
+        writeln!(out, "\nno futurelock detected")?;
+    }
+    Ok(())
+}
+
+/// Render one futurelock diagnosis: who holds what, where the
+/// abandoned future is parked, and who is stuck behind it.
+fn print_futurelock(fl: &graph::Futurelock, out: &mut dyn io::Write) -> Result<()> {
+    let acq = &fl.acquire;
+    let semaphore = match acq.owner {
+        Some(owner) => format!("a {owner} (semaphore {:#x})", acq.semaphore),
+        None => format!("the semaphore at {:#x}", acq.semaphore),
+    };
+    let held = if acq.granted() {
+        let plural = if acq.num_permits == 1 { "" } else { "s" };
+        format!("{} granted permit{plural}", acq.num_permits)
+    } else {
+        "a place in the wake queue".to_string()
+    };
+    writeln!(
+        out,
+        "futurelock: {} holds {held} of {semaphore} in a future it stopped polling:",
+        fl.holder
+    )?;
+    let loc = acq
+        .await_loc
+        .as_ref()
+        .map(|(file, line)| format!(" — {file}:{line}"))
+        .unwrap_or_default();
+    writeln!(out, "  `{}` ({})", acq.local, acq.future)?;
+    writeln!(out, "  held across {} state {}{loc}", acq.frame, acq.state)?;
+    if fl.blocked.is_empty() {
+        writeln!(out, "  nothing is blocked behind it yet")?;
+    } else {
+        let blocked = fl
+            .blocked
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(out, "  blocked behind it: {blocked}")?;
+    }
     Ok(())
 }
