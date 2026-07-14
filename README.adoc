@@ -13,8 +13,9 @@ These are the workspace members that may be useful:
 * durin: Read and write CTF files.
 * exegesis: Read DWARF and extract *debug bundles* describing a binary's async runtime; also the bundle format's
   reader and type views.
-* hansei: Inspect the state of the `tokio` multi-threaded runtime in a core dump or live process: task listings
-  and automatic await-chain traces (bundles), scheduler dumps and polling (CTF).
+* hansei: Inspect the state of the `tokio` multi-threaded runtime in a core dump or live process: task listings,
+  automatic await-chain traces, and task dependency graphs with futurelock detection (bundles); scheduler dumps
+  and polling (CTF).
 * hansei-types: The tokio-introspection library behind hansei, generic over both debug-info backends.
 * proc: Minimal bindings for illumos `libproc`, plus replayable target snapshots.
 * reify: Interpret a process's memory through a debug-info backend (CTF or bundle).
