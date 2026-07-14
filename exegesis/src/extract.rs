@@ -30,7 +30,7 @@ use crate::raw_types::{NsId, RawType, VariantShape as RawVariantShape};
 use crate::view::{DwView, Func, SourceLocView};
 use crate::{DwReader, Encoding, TypeId};
 
-use object::Object;
+use object::{Object, ObjectSymbol};
 use sha2::Digest;
 use tracing::{debug, warn};
 
@@ -120,6 +120,9 @@ pub struct ExtractStats {
     pub infra_missing: Vec<String>,
     /// Statics that were not found.
     pub statics_missing: Vec<String>,
+    /// Statics recovered from the symbol table because the DWARF carried no
+    /// `DW_TAG_variable` DIE for them (§5.4 fallback, e.g. illumos builds).
+    pub statics_from_symtab: usize,
     /// `--include-type` roots resolved.
     pub include_roots: usize,
     /// `--include-type` names that matched nothing.
@@ -174,6 +177,13 @@ impl fmt::Display for ExtractStats {
         }
         for name in &self.statics_missing {
             writeln!(f, "  MISSING static:         {name}")?;
+        }
+        if self.statics_from_symtab > 0 {
+            writeln!(
+                f,
+                "  statics via symtab:     {}",
+                self.statics_from_symtab
+            )?;
         }
         Ok(())
     }
@@ -243,13 +253,25 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
         sha256: sha2::Sha256::digest(&*obj_bytes).into(),
     };
 
-    extract_from_view(&view, ident, opts)
+    // Named statics can be absent from `.debug_info` yet present in the
+    // symbol table (§5.4): illumos release builds emit no `DW_TAG_variable`
+    // DIE for tokio/std dependency statics such as `WAKER_VTABLE`, but keep
+    // the symbol in `.symtab`/`.dynsym`. Gather both symbol tables so
+    // `find_statics` can fall back to a mangled-name match.
+    let symbols: Vec<&str> = obj
+        .symbols()
+        .chain(obj.dynamic_symbols())
+        .filter_map(|s| s.name().ok())
+        .collect();
+
+    extract_from_view(&view, &symbols, ident, opts)
 }
 
 /// Extract a bundle from an already-parsed DWARF view. Split from
 /// [`extract_file`] so tests can drive extraction on in-memory objects.
 pub fn extract_from_view(
     view: &DwView<'_>,
+    symbols: &[&str],
     ident: BinaryIdent,
     opts: &ExtractOptions,
 ) -> Result<(Bundle, ExtractStats)> {
@@ -537,7 +559,7 @@ pub fn extract_from_view(
         }
     }
 
-    let statics = find_statics(view, &mut stats);
+    let statics = find_statics(view, symbols, &mut stats);
 
     if !opts.allow_missing_infra
         && (!stats.infra_missing.is_empty() || !stats.statics_missing.is_empty())
@@ -839,6 +861,7 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
 /// that differs across platforms and std versions.
 fn find_statics(
     view: &DwView<'_>,
+    symbols: &[&str],
     stats: &mut ExtractStats,
 ) -> BTreeMap<StaticRole, StaticDef> {
     let waker_ns = view.find_ns(WAKER_NS).map(|n| n.id());
@@ -879,6 +902,26 @@ fn find_statics(
         }
     }
 
+    // Fall back to the symbol table for any static the DWARF sweep missed.
+    // On some targets (notably illumos release builds) rustc emits no
+    // `DW_TAG_variable` DIE for these tokio/std dependency statics, yet the
+    // symbol survives in `.symtab`/`.dynsym`; the mangled v0 name is all the
+    // bundle needs, since the consumer resolves the address by name anyway.
+    if out.len() < 2 {
+        for &sym in symbols {
+            let stripped = strip(sym);
+            if let Some(role) = match_static_symbol(stripped) {
+                out.entry(role).or_insert_with(|| {
+                    stats.statics_from_symtab += 1;
+                    StaticDef {
+                        symbol: stripped.to_owned(),
+                        display: format!("{:#}", rustc_demangle::demangle(sym)),
+                    }
+                });
+            }
+        }
+    }
+
     if !out.contains_key(&StaticRole::TlsContextKey) {
         stats
             .statics_missing
@@ -890,6 +933,29 @@ fn find_statics(
             .push("TaskWakerVtable (tokio::runtime::task::waker::WAKER_VTABLE)".to_owned());
     }
     out
+}
+
+/// Match an ELF symbol-table name to a named static (§5.4) by its v0-mangled
+/// shape. Used as a fallback when the DWARF carries no `DW_TAG_variable` DIE
+/// for the static (e.g. illumos release builds), where the symbol is still
+/// present in `.symtab`/`.dynsym`.
+///
+/// The match keys on the length-prefixed path segments of the mangled name so
+/// it is independent of the crate disambiguator (which varies per build) and
+/// of the thread-local implementation (`native` vs `os`), which changes the
+/// symbol's namespace nesting but not the `tokio::runtime::context::CONTEXT`
+/// prefix or the trailing `__RUST_STD_INTERNAL_VAL` identifier.
+fn match_static_symbol(sym: &str) -> Option<StaticRole> {
+    if sym.ends_with("5tokio7runtime4task5waker12WAKER_VTABLE") {
+        return Some(StaticRole::TaskWakerVtable);
+    }
+    // Several crates define a `__RUST_STD_INTERNAL_VAL` thread-local; take the
+    // one under `tokio::runtime::context::CONTEXT`, not, say,
+    // `std::sync::mpmc::context` or `tokio::task::local::CURRENT`.
+    if sym.contains("5tokio7runtime7context7CONTEXT") && sym.ends_with("__RUST_STD_INTERNAL_VAL") {
+        return Some(StaticRole::TlsContextKey);
+    }
+    None
 }
 
 /// Determine a task future's provenance (§5.5): coroutine env types name
@@ -1310,5 +1376,46 @@ impl<'a> Emitter<'a> {
             self.interner.finish(),
             opaque,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{match_static_symbol, StaticRole};
+
+    // v0-mangled symbols observed in an illumos futurelock release build,
+    // whose DWARF omits the `DW_TAG_variable` DIE for these statics.
+    #[test]
+    fn test_match_waker_vtable_symbol() {
+        let sym = "_RNvNtNtNtCsjd01hASgEtw_5tokio7runtime4task5waker12WAKER_VTABLE";
+        assert_eq!(match_static_symbol(sym), Some(StaticRole::TaskWakerVtable));
+    }
+
+    #[test]
+    fn test_match_tls_context_symbol() {
+        let sym =
+            "_RNvNCNvNtNtCsjd01hASgEtw_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+        assert_eq!(match_static_symbol(sym), Some(StaticRole::TlsContextKey));
+    }
+
+    // Other crates define a `__RUST_STD_INTERNAL_VAL`; only the one nested
+    // under `tokio::runtime::context::CONTEXT` is the tokio context key.
+    #[test]
+    fn test_reject_foreign_internal_val_symbols() {
+        let mpmc_context =
+            "_RNvNCNvNvMNtNtNtCsijgp68BdGXk_3std4sync4mpmc7contextNtB8_7Context4with7CONTEXT023___RUST_STD_INTERNAL_VAL";
+        let tokio_local =
+            "_RNvNCNvNtNtCsjd01hASgEtw_5tokio4task5local7CURRENT023___RUST_STD_INTERNAL_VAL";
+        let parking_lot =
+            "_RNvNCNvNvNtCs6eIw0jaMQft_16parking_lot_core11parking_lot16with_thread_data11THREAD_DATA023___RUST_STD_INTERNAL_VAL";
+        assert_eq!(match_static_symbol(mpmc_context), None);
+        assert_eq!(match_static_symbol(tokio_local), None);
+        assert_eq!(match_static_symbol(parking_lot), None);
+    }
+
+    #[test]
+    fn test_ignore_unrelated_symbols() {
+        assert_eq!(match_static_symbol("main"), None);
+        assert_eq!(match_static_symbol(""), None);
     }
 }
