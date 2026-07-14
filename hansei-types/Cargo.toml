@@ -9,6 +9,7 @@ camino.workspace = true
 debugdb.workspace = true
 derive_more.workspace = true
 durin.workspace = true
+exegesis.workspace = true
 humantime.workspace = true
 proc.workspace = true
 memmap2.workspace = true

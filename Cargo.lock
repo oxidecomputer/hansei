@@ -856,6 +856,7 @@ dependencies = [
  "debugdb",
  "derive_more 2.1.1",
  "durin",
+ "exegesis",
  "humantime",
  "memmap2",
  "object 0.33.0",
