@@ -90,6 +90,9 @@ pub struct Context<'b, T> {
     symbols: RefCell<HashMap<u64, Option<String>>>,
     /// Task vtables decoded from target memory, keyed by vtable address.
     vtables: RefCell<HashMap<u64, TaskVtable>>,
+    /// Memoized address of tokio's task `WAKER_VTABLE` static in the
+    /// target (`None` once resolution failed).
+    waker_vtable: RefCell<Option<Option<u64>>>,
 }
 
 impl<'b, T: Target> Context<'b, T> {
@@ -101,6 +104,7 @@ impl<'b, T: Target> Context<'b, T> {
             mappings,
             symbols: RefCell::new(HashMap::new()),
             vtables: RefCell::new(HashMap::new()),
+            waker_vtable: RefCell::new(None),
         })
     }
 
@@ -871,27 +875,34 @@ impl<'b, T: Target> Context<'b, T> {
     fn read_join_handle(&self, handle: &TypeInfo<'b, BundleType<'b>>) -> Result<WaitTarget> {
         // JoinHandle.raw: RawTask, which peels to the NonNull<Header>.
         let addr: u64 = handle.member("raw")?.parse(self)?;
+        let task_id = self
+            .header_task_id(addr)
+            .context("failed to identify the joined task")?;
+        Ok(WaitTarget::Task { addr, task_id })
+    }
+
+    /// Resolve a bare task `Header` pointer from target memory to its
+    /// task id, going through the task's own vtable for the id offset.
+    /// JoinHandles and task wakers both hand us such pointers.
+    fn header_task_id(&self, addr: u64) -> Result<Option<u64>> {
         ensure!(
             self.mappings.contains_addr(addr),
-            "JoinHandle task pointer {addr:#x} is unmapped"
+            "task Header pointer {addr:#x} is unmapped"
         );
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
         let header = TypeInfo::from_addr(self, header_ty, addr)
-            .with_context(|| format!("failed to read the joined task Header at {addr:#x}"))?;
+            .with_context(|| format!("failed to read the task Header at {addr:#x}"))?;
         let vtable_addr: u64 = header.member("vtable")?.parse(self)?;
         let vtable = self
             .task_vtable(vtable_addr)
             .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
         let raw_id = self.proc.read_u64(addr + vtable.id_offset).map_err(|e| {
             anyhow!(e).context(format!(
-                "failed to read the joined task id at {addr:#x}+{:#x}",
+                "failed to read the task id at {addr:#x}+{:#x}",
                 vtable.id_offset
             ))
         })?;
-        Ok(WaitTarget::Task {
-            addr,
-            task_id: (raw_id != 0).then_some(raw_id),
-        })
+        Ok((raw_id != 0).then_some(raw_id))
     }
 
     /// `batch_semaphore::Acquire`: queued on the semaphore that backs
@@ -919,13 +930,117 @@ impl<'b, T: Target> Context<'b, T> {
                 .find(|(prefix, _)| name.starts_with(prefix))
                 .map(|(_, owner)| *owner)
         });
+        let waiters = self
+            .semaphore_waiters(&sem)
+            .context("failed to walk the semaphore's wait queue")?;
         Ok(WaitTarget::Semaphore {
             addr,
             owner,
             num_permits,
             available: raw >> 1,
             closed: raw & 1 != 0,
+            waiters,
         })
+    }
+
+    /// Walk a semaphore's wait queue: who its permits will wake, in wake
+    /// order. tokio enqueues waiters at the list head and wakes from the
+    /// tail, so the walk runs front-to-back and is reversed at the end.
+    fn semaphore_waiters(
+        &self,
+        sem: &TypeInfo<'b, BundleType<'b>>,
+    ) -> Result<Vec<SemaphoreWaiter>> {
+        // Semaphore.waiters is a loom Mutex over the Waitlist; both the
+        // parking_lot and std mutexes beneath it spell the payload
+        // member `data`.
+        let queue = sem.member("waiters")?.member("data")?.member("queue")?;
+        let Some(head) = queue.member("head")?.try_select_variant("Some")? else {
+            return Ok(Vec::new());
+        };
+        // The Some payload peels through the NonNull to the raw Waiter
+        // pointer: its target is the layout each node decodes with.
+        let waiter_ty = head
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("the wait-queue head is not pointer-shaped"))?;
+
+        let mut waiters = Vec::new();
+        let mut visited = HashSet::new();
+        let mut cur = Some(head.parse::<u64, _>(self)?);
+        while let Some(addr) = cur {
+            ensure!(
+                self.mappings.contains_addr(addr),
+                "wait-queue pointer {addr:#x} is unmapped"
+            );
+            ensure!(visited.insert(addr), "wait-queue cycle at {addr:#x}");
+            let node = TypeInfo::from_addr(self, waiter_ty, addr)
+                .with_context(|| format!("failed to read the Waiter at {addr:#x}"))?;
+            waiters.push(SemaphoreWaiter {
+                addr,
+                needed: node.member("state")?.parse(self)?,
+                waker: self.read_queued_waker(&node)?,
+            });
+            cur = node
+                .member("pointers")?
+                .member("next")?
+                .try_select_variant("Some")?
+                .map(|ptr| ptr.parse(self))
+                .transpose()?;
+        }
+        waiters.reverse();
+        Ok(waiters)
+    }
+
+    /// Decode the waker registered in a wait-queue node. Task wakers are
+    /// recognized by their vtable: tokio builds them as `(data = the
+    /// task's Header, vtable = &WAKER_VTABLE)`, and the bundle names that
+    /// static (§3.6).
+    fn read_queued_waker(&self, node: &TypeInfo<'b, BundleType<'b>>) -> Result<QueuedWaker> {
+        // Waiter.waker: UnsafeCell<Option<Waker>>; the Some payload
+        // peels through the Waker to its RawWaker.
+        let Some(raw) = node.member("waker")?.try_select_variant("Some")? else {
+            return Ok(QueuedWaker::Unarmed);
+        };
+        let data: u64 = raw.member("data")?.parse(self)?;
+        let vtable: u64 = raw.member("vtable")?.parse(self)?;
+        if self.task_waker_vtable() == Some(vtable) {
+            let task_id = self
+                .header_task_id(data)
+                .context("failed to identify the task behind a queued waker")?;
+            Ok(QueuedWaker::Task {
+                addr: data,
+                task_id,
+            })
+        } else {
+            Ok(QueuedWaker::Other { vtable })
+        }
+    }
+
+    /// The target address of tokio's task `WAKER_VTABLE` static,
+    /// resolved once through the target's symtab. The static may exist
+    /// only as an `.llvm.<hash>`-suffixed internalized copy, like any
+    /// other join symbol.
+    fn task_waker_vtable(&self) -> Option<u64> {
+        if let Some(cached) = *self.waker_vtable.borrow() {
+            return cached;
+        }
+        let resolved = (|| {
+            let def = self
+                .view
+                .bundle()
+                .statics
+                .entries
+                .get(&StaticRole::TaskWakerVtable)?;
+            if let Some(sym) = self.proc.lookup_symbol_by_name(&def.symbol) {
+                return Some(sym.st_value);
+            }
+            let all = self.proc.symbols().ok()?;
+            all.iter()
+                .find(|s| strip_llvm_suffix(&s.name) == def.symbol)
+                .map(|s| s.st_value)
+        })();
+        *self.waker_vtable.borrow_mut() = Some(resolved);
+        resolved
     }
 }
 
@@ -1115,7 +1230,35 @@ pub enum WaitTarget {
         num_permits: u64,
         available: u64,
         closed: bool,
+        /// The semaphore's wait queue, in wake order.
+        waiters: Vec<SemaphoreWaiter>,
     },
+}
+
+/// One node in a semaphore's wait queue.
+#[derive(Clone, Debug)]
+pub struct SemaphoreWaiter {
+    /// The `Waiter` node's address; it lives inside the suspended
+    /// `Acquire` future itself.
+    pub addr: u64,
+    /// Permits this waiter still needs. A released permit is assigned
+    /// here, so 0 means the waiter has been granted everything it asked
+    /// for and merely awaits its next poll.
+    pub needed: u64,
+    /// Who waking this node schedules.
+    pub waker: QueuedWaker,
+}
+
+/// The waker registered in a wait-queue node.
+#[derive(Clone, Debug)]
+pub enum QueuedWaker {
+    /// A tokio task waker: the wake edge points at this task.
+    Task { addr: u64, task_id: Option<u64> },
+    /// Not a task waker (a `block_on` thread, say) — or the
+    /// `WAKER_VTABLE` static could not be resolved in the target.
+    Other { vtable: u64 },
+    /// No waker registered.
+    Unarmed,
 }
 
 impl fmt::Display for WaitTarget {
@@ -1142,6 +1285,7 @@ impl fmt::Display for WaitTarget {
                 num_permits,
                 available,
                 closed,
+                waiters,
             } => {
                 match owner {
                     Some(owner) => write!(f, "a {owner} (semaphore {addr:#x})")?,
@@ -1154,6 +1298,23 @@ impl fmt::Display for WaitTarget {
                 )?;
                 if *closed {
                     write!(f, ", closed")?;
+                }
+                if !waiters.is_empty() {
+                    write!(f, "; wake queue:")?;
+                    for (i, w) in waiters.iter().enumerate() {
+                        let sep = if i == 0 { " " } else { ", " };
+                        match &w.waker {
+                            QueuedWaker::Task {
+                                task_id: Some(id), ..
+                            } => write!(f, "{sep}task {id}")?,
+                            QueuedWaker::Task {
+                                addr,
+                                task_id: None,
+                            } => write!(f, "{sep}the task at {addr:#x}")?,
+                            QueuedWaker::Other { .. } => write!(f, "{sep}a non-task waiter")?,
+                            QueuedWaker::Unarmed => write!(f, "{sep}an unarmed waiter")?,
+                        }
+                    }
                 }
                 Ok(())
             }
