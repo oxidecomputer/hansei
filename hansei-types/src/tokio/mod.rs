@@ -11,6 +11,7 @@ pub mod bundle;
 pub mod ctf;
 #[cfg(target_os = "illumos")]
 pub mod dwarf;
+pub mod graph;
 
 #[cfg(target_os = "illumos")]
 use anyhow::Context as _;
