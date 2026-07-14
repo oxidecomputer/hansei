@@ -471,13 +471,27 @@ impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for OwnedTasks {
                 .map(|i| i.to_owned())
             {
                 loop {
-                    let addr = head_ptr.parse(ctx)?;
+                    let addr: TaskAddr = head_ptr.parse(ctx)?;
                     let task_info = head_ptr.deref_ptr(ctx)?;
                     let task = task_info.parse(ctx)?;
                     tasks.insert(addr, task);
 
-                    let Some(next_info) =
-                        task_info.member("queue_next")?.try_select_variant("Some")?
+                    // The owned list is threaded through the task Trailer's
+                    // `owned: linked_list::Pointers<Header>`, reached via the
+                    // vtable's trailer_offset. `Header.queue_next` is the
+                    // inject-queue link, and is None for a parked task.
+                    let vtable_info = task_info.member("vtable")?.deref_ptr(ctx)?;
+                    let trailer_offset: u64 = vtable_info.member("trailer_offset")?.parse(ctx)?;
+                    let trailer_addr = addr.0 + trailer_offset;
+
+                    let trailer_ty = ctx.ctf.get(ctx.tokio_info.trailer_id);
+                    let trailer_buf = ctx.proc.read_bytes(trailer_addr, trailer_ty.size())?;
+                    let trailer_info = TypeInfoRef::new(trailer_ty, trailer_addr, &trailer_buf);
+
+                    let Some(next_info) = trailer_info
+                        .member("owned")?
+                        .member("next")?
+                        .try_select_variant("Some")?
                     else {
                         break;
                     };
