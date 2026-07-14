@@ -79,6 +79,18 @@ const SEMAPHORE_OWNERS: &[(&str, &str)] = &[
     ("tokio::sync::semaphore", "tokio::sync::Semaphore"),
 ];
 
+/// The primitive wrapping an acquired semaphore, when the frame that
+/// awaits the `Acquire` leaf names it.
+fn semaphore_owner(chain: &AwaitChain<'_>) -> Option<&'static str> {
+    chain.frames.iter().rev().nth(1).and_then(|frame| {
+        let name = frame.future.ty.name();
+        SEMAPHORE_OWNERS
+            .iter()
+            .find(|(prefix, _)| name.starts_with(prefix))
+            .map(|(_, owner)| *owner)
+    })
+}
+
 /// Everything needed to interpret a target process through a loaded bundle.
 pub struct Context<'b, T> {
     pub proc: &'b T,
@@ -923,13 +935,7 @@ impl<'b, T: Target> Context<'b, T> {
         // `permits` keeps the available count shifted above the CLOSED
         // bit.
         let raw: u64 = sem.member("permits")?.parse(self)?;
-        let owner = chain.frames.iter().rev().nth(1).and_then(|frame| {
-            let name = frame.future.ty.name();
-            SEMAPHORE_OWNERS
-                .iter()
-                .find(|(prefix, _)| name.starts_with(prefix))
-                .map(|(_, owner)| *owner)
-        });
+        let owner = semaphore_owner(chain);
         let waiters = self
             .semaphore_waiters(&sem)
             .context("failed to walk the semaphore's wait queue")?;
@@ -1042,6 +1048,145 @@ impl<'b, T: Target> Context<'b, T> {
         *self.waker_vtable.borrow_mut() = Some(resolved);
         resolved
     }
+
+    // -----------------------------------------------------------------------
+    // Off-path lock futures (RFD 609 futurelock)
+    // -----------------------------------------------------------------------
+
+    /// Scan a chain's frames for lock futures parked in locals, off the
+    /// active poll path.
+    ///
+    /// The `__awaitee` spine is the only thing a suspended task will
+    /// poll next; a `batch_semaphore::Acquire` reachable instead
+    /// through some frame's saved locals belongs to a future the task
+    /// stopped polling (an abandoned `select!` arm, typically). If
+    /// that acquire is still queued — or worse, was already granted
+    /// its permits — the task holds a place in line for a resource it
+    /// can never take or release until the active await completes:
+    /// the RFD 609 futurelock.
+    ///
+    /// Most locals are not futures; those are expected and skipped, as
+    /// are trait objects whose concrete type is not in the bundle.
+    /// Each local's own await chain is inspected, but the scan does
+    /// not recurse into *its* locals.
+    pub fn abandoned_acquires(&self, chain: &AwaitChain<'b>) -> Vec<AbandonedAcquire> {
+        // The chain's own leaf acquire, when there is one: the same
+        // future may also be reachable as a local (`&mut fut` in a
+        // still-active select! arm), and that is not abandonment.
+        let active_node = chain
+            .frames
+            .last()
+            .filter(|_| matches!(chain.end, ChainEnd::Leaf))
+            .filter(|f| {
+                matches!(
+                    leaf_kind(f.future.ty.name()),
+                    Some(LeafKind::SemaphoreAcquire)
+                )
+            })
+            .and_then(|f| f.future.member("node").ok().map(|node| node.addr));
+
+        let mut found = Vec::new();
+        for frame in &chain.frames {
+            let Some(state) = &frame.state else { continue };
+            let payload = state.payload.as_ref();
+            // The same positional slicing as the locals display: a
+            // coroutine state may alias an upvar and a saved local.
+            let mut seen = HashSet::new();
+            for m in payload.ty.members() {
+                if m.ty().size() == 0
+                    || m.name().starts_with("__")
+                    || !seen.insert((m.name(), m.offset()))
+                {
+                    continue;
+                }
+                let start = m.offset() as usize;
+                let Some(bytes) = payload.bytes.get(start..start + m.ty().size() as usize) else {
+                    continue;
+                };
+                let local = TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes);
+                let Some((future, owner, fields)) = self.local_acquire(&local) else {
+                    continue;
+                };
+                if Some(fields.node) == active_node || !fields.queued {
+                    // On the poll path after all, or never enqueued:
+                    // it holds nothing.
+                    continue;
+                }
+                found.push(AbandonedAcquire {
+                    frame: frame.future.ty.name().to_owned(),
+                    state: state.name.to_owned(),
+                    await_loc: state.await_loc.map(|(file, line)| (file.to_owned(), line)),
+                    local: m.name().to_owned(),
+                    future,
+                    owner,
+                    semaphore: fields.semaphore,
+                    node: fields.node,
+                    num_permits: fields.num_permits,
+                    needed: fields.needed,
+                });
+            }
+        }
+        found
+    }
+
+    /// Interpret one local as a future and check whether its await
+    /// chain bottoms out in a semaphore acquire.
+    fn local_acquire(
+        &self,
+        local: &TypeInfoRef<'_, 'b, BundleType<'b>>,
+    ) -> Option<(String, Option<&'static str>, AcquireFields)> {
+        let peeled = local.clone().peel();
+        let root = if let Some(dp) = peeled.ty.dyn_pointer() {
+            match self.resolve_dyn_future(&peeled, &dp) {
+                Ok(DynAwaitee::Resolved { future, .. }) => future,
+                Ok(DynAwaitee::Unknown { .. }) | Err(_) => return None,
+            }
+        } else {
+            local.to_owned()
+        };
+        let chain = self.await_chain(root);
+        if !matches!(chain.end, ChainEnd::Leaf) {
+            return None;
+        }
+        let leaf = chain.frames.last()?;
+        if !matches!(
+            leaf_kind(leaf.future.ty.name()),
+            Some(LeafKind::SemaphoreAcquire)
+        ) {
+            return None;
+        }
+        let fields = self.read_acquire_fields(&leaf.future).ok()?;
+        let future = chain.frames.first()?.future.ty.name().to_owned();
+        Some((future, semaphore_owner(&chain), fields))
+    }
+
+    /// The raw fields of a `batch_semaphore::Acquire`, read in place.
+    fn read_acquire_fields(&self, acquire: &TypeInfo<'b, BundleType<'b>>) -> Result<AcquireFields> {
+        let node = acquire.member("node")?;
+        Ok(AcquireFields {
+            semaphore: acquire.member("semaphore")?.parse(self)?,
+            node: node.addr,
+            num_permits: acquire.member("num_permits")?.parse(self)?,
+            needed: node.member("state")?.parse(self)?,
+            queued: acquire.member("queued")?.parse(self)?,
+        })
+    }
+}
+
+/// The raw fields of a `batch_semaphore::Acquire` future.
+struct AcquireFields {
+    /// Address of the contended `Semaphore`.
+    semaphore: u64,
+    /// Address of the `Waiter` node embedded in the acquire.
+    node: u64,
+    num_permits: u64,
+    /// `Waiter.state`: permits still needed; 0 once fully granted.
+    needed: u64,
+    /// Whether the node was enqueued and has not since been dequeued
+    /// by a completing poll or a drop. Stays stale-`true` after a
+    /// grant until the future is polled again — which is exactly what
+    /// makes an abandoned grant observable.
+    queued: bool,
 }
 
 impl<T: Target> ParseCtx for Context<'_, T> {
@@ -1247,6 +1392,42 @@ pub struct SemaphoreWaiter {
     pub needed: u64,
     /// Who waking this node schedules.
     pub waker: QueuedWaker,
+}
+
+/// A lock future parked in a suspended frame's locals, off the active
+/// poll path, still queued on — or already granted — a semaphore
+/// (RFD 609; see [`Context::abandoned_acquires`]).
+#[derive(Clone, Debug)]
+pub struct AbandonedAcquire {
+    /// Type name of the frame whose locals hold the future.
+    pub frame: String,
+    /// The suspend state that frame is parked in, and the awaited
+    /// expression it is suspended at, when recorded.
+    pub state: String,
+    pub await_loc: Option<(String, u32)>,
+    /// The local's name in that frame.
+    pub local: String,
+    /// The held future's concrete type (dyn-resolved when boxed).
+    pub future: String,
+    /// The primitive wrapping the semaphore, when the future's own
+    /// chain names it.
+    pub owner: Option<&'static str>,
+    /// Address of the contended `Semaphore`.
+    pub semaphore: u64,
+    /// The abandoned `Waiter` node (it appears in the semaphore's wake
+    /// queue while still ungranted).
+    pub node: u64,
+    /// Permits the acquire asked for, and how many it still needs.
+    pub num_permits: u64,
+    pub needed: u64,
+}
+
+impl AbandonedAcquire {
+    /// Whether the acquire was granted everything it asked for: the
+    /// future holds the resource and, unpolled, can never release it.
+    pub fn granted(&self) -> bool {
+        self.needed == 0
+    }
 }
 
 /// The waker registered in a wait-queue node.
