@@ -61,22 +61,44 @@ struct Tasks {
     destructive: bool,
 }
 
+/// Print a task's await chain. With `--bundle`, tasks are selected by id
+/// (see `hansei tasks`) and the future type is resolved automatically via
+/// the symbol join; with `--ctf`, the task address and concrete future
+/// type must be supplied by hand.
 #[derive(Args)]
+#[command(group = clap::ArgGroup::new("debug_info").required(true).args(["ctf", "bundle"]))]
 struct TaskTrace {
     #[command(flatten)]
     source: Source,
 
-    /// The address of the task in hexadecimal, e.g., 0x1234.
-    #[clap(long, short)]
-    addr: String,
+    /// The id of the task to trace, from `hansei tasks` (bundle mode).
+    #[clap(long, requires = "bundle")]
+    task_id: Option<u64>,
 
-    /// The type of the task.
-    #[clap(long = "type", short)]
-    ty: String,
+    /// The address of the task in hexadecimal, e.g., 0x1234 (CTF mode).
+    #[clap(long, short, requires = "ctf")]
+    addr: Option<String>,
+
+    /// The type of the task (CTF mode).
+    #[clap(long = "type", short, requires = "ctf")]
+    ty: Option<String>,
 
     /// The CTF file to read.
     #[clap(long, short)]
-    ctf: PathBuf,
+    ctf: Option<PathBuf>,
+
+    /// The debug bundle to read (produced by `exegesis extract`).
+    #[clap(long, short)]
+    bundle: Option<PathBuf>,
+
+    /// Proceed even if the bundle's symbols don't all resolve in the target.
+    #[arg(long)]
+    force: bool,
+
+    /// Find worker threads with the legacy TSD byte-pattern heuristic
+    /// instead of the TLS key named by the bundle.
+    #[arg(long)]
+    heuristic_discovery: bool,
 
     /// Pausing a live process is potentially destructive.
     /// Required if --pid is passed.
@@ -371,14 +393,25 @@ impl reify::ParseCtx for TraceContext<'_> {
 }
 
 fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
-    let addr_str = args.addr.strip_prefix("0x").unwrap_or(args.addr.as_str());
+    if args.bundle.is_some() {
+        exec_trace_bundle(args, out)
+    } else {
+        exec_trace_ctf(args, out)
+    }
+}
+
+fn exec_trace_ctf(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
+    let (Some(addr), Some(ty), Some(ctf_path)) = (&args.addr, &args.ty, &args.ctf) else {
+        anyhow::bail!("CTF tracing requires --addr and --type");
+    };
+    let addr_str = addr.strip_prefix("0x").unwrap_or(addr.as_str());
     let addr =
         u64::from_str_radix(addr_str, 16).context("failed to parse address as hexadecimal")?;
 
     let proc = args.source.open_proc(args.destructive)?;
 
     let ctf_bytes =
-        fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
+        fs::read(ctf_path).with_context(|| format!("failed to read {}", ctf_path.display()))?;
     let ctf = CtfReader::load(&ctf_bytes).context("failed to load CTF")?;
     let view = ctf.view();
 
@@ -387,12 +420,12 @@ fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
         ctf: view,
         mappings: proc.mappings()?,
     };
-    let Some(task_ty) = ctx.ctf.find(&args.ty, durin::TypeKind::Struct) else {
+    let Some(task_ty) = ctx.ctf.find(ty, durin::TypeKind::Struct) else {
         anyhow::bail!("failed to find task CTF type");
     };
 
     let info = reify::TypeInfo::from_addr(&ctx, task_ty, addr)
-        .with_context(|| format!("failed to parse {:#x} as {}", addr, args.ty))?;
+        .with_context(|| format!("failed to parse {addr:#x} as {ty}"))?;
 
     let Ok(stage) = info.member("core").and_then(|c| c.member("stage")) else {
         anyhow::bail!("failed to find the future");
@@ -440,52 +473,235 @@ fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
     Ok(())
 }
 
-fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
-    let proc = args.source.open_proc(args.destructive)?;
+fn exec_trace_bundle(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
+    let Some(task_id) = args.task_id else {
+        anyhow::bail!("bundle tracing requires --task-id (list tasks with `hansei tasks`)");
+    };
+    let bundle_path = args
+        .bundle
+        .as_ref()
+        .expect("clap group guarantees --bundle");
 
-    let bundle = Bundle::load(&args.bundle)
-        .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
+    let proc = args.source.open_proc(args.destructive)?;
+    let bundle = Bundle::load(bundle_path)
+        .with_context(|| format!("failed to load bundle {}", bundle_path.display()))?;
     let view = BundleView::new(&bundle);
     let ctx = bundle::Context::new(&proc, view)?;
+    check_fingerprint(&ctx, args.force)?;
 
-    // Attach-time validation: a bundle from a different commit/toolchain
-    // must never silently misinterpret memory.
-    let fp = ctx.validate_fingerprint();
-    if !fp.is_complete() {
-        let mut sample = fp
-            .missing
-            .iter()
-            .take(5)
-            .map(|s| format!("  {:#}", rustc_demangle::demangle(s)))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if fp.missing.len() > 5 {
-            sample.push_str(&format!("\n  ... and {} more", fp.missing.len() - 5));
-        }
-        anyhow::ensure!(
-            args.force,
-            "only {}/{} bundle symbols resolve in the target — the bundle does \
-             not match this binary. Missing, for example:\n{}\n\
-             Pass --force to proceed anyway.",
-            fp.matched,
-            fp.total,
-            sample
+    let workers = discover_workers(&proc, &ctx, args.heuristic_discovery)?;
+    let shared = ctx.find_shared(&workers)?;
+    let list = ctx.enumerate_tasks(&shared)?;
+    for err in &list.errors {
+        writeln!(io::stderr(), "warning: {err:#}")?;
+    }
+
+    let Some(task) = list.tasks.iter().find(|t| t.task_id == Some(task_id)) else {
+        let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
+        anyhow::bail!(
+            "the runtime owns no task with id {task_id}; it owns {} task(s): {ids:?}",
+            list.tasks.len()
         );
+    };
+
+    let name = match &task.future {
+        bundle::FutureInfo::Known(known) => known.display_name.clone(),
+        bundle::FutureInfo::Unknown {
+            poll_symbol: Some(sym),
+        } => format!("<unknown: {:#}>", rustc_demangle::demangle(sym)),
+        bundle::FutureInfo::Unknown { poll_symbol: None } => "<unknown>".to_string(),
+    };
+    writeln!(out, "Task {task_id}: {name} ({})", task.state.lifecycle())?;
+    if let Some(loc) = &task.spawn_location {
+        writeln!(out, "Spawned at: {loc}")?;
+    }
+    if let bundle::FutureInfo::Known(known) = &task.future
+        && let Some((file, line)) = &known.decl
+    {
+        writeln!(out, "Defined at: {file}:{line}")?;
+    }
+
+    // A mid-poll task is being mutated while we read it; anything below
+    // may be torn.
+    if task.state.lifecycle() == Lifecycle::Running {
+        let lwp = workers
+            .iter()
+            .find(|w| w.current_task_id == Some(task_id))
+            .map(|w| format!(" on LWP {}", w.tid))
+            .unwrap_or_default();
         writeln!(
             io::stderr(),
-            "warning: only {}/{} bundle symbols resolve in the target; \
-             output may be wrong",
-            fp.matched,
-            fp.total
+            "warning: task {task_id} is running{lwp}; its state may be torn"
         )?;
     }
 
+    writeln!(out)?;
+    match ctx.task_stage(task)? {
+        bundle::TaskStage::Running(future) => {
+            let chain = ctx.await_chain(future);
+            print_await_chain(&chain, args.verbose, out)?;
+        }
+        bundle::TaskStage::Finished(result) => {
+            // Result<T::Output, JoinError>: Ok is a normal return, Err a
+            // panic or cancellation.
+            writeln!(
+                out,
+                "The task has finished; its output has not been consumed:"
+            )?;
+            writeln!(out, "  {:#}", result.as_ref().display_with_depth(4))?;
+        }
+        bundle::TaskStage::Consumed => {
+            writeln!(out, "The task has finished and its output was consumed.")?;
+        }
+    }
+    Ok(())
+}
+
+/// Render an await chain, one line per future, with the coroutine state
+/// and awaited expression where known, and the live locals when verbose.
+fn print_await_chain(
+    chain: &bundle::AwaitChain<'_>,
+    verbose: bool,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    for (i, frame) in chain.frames.iter().enumerate() {
+        let dyn_marker = if frame.dyn_symbol.is_some() {
+            " [dyn]"
+        } else {
+            ""
+        };
+        writeln!(out, "{i:>3}: {}{dyn_marker}", frame.future.ty.name())?;
+
+        let Some(state) = &frame.state else { continue };
+        let loc = state
+            .await_loc
+            .map(|(file, line)| format!(" — {file}:{line}"))
+            .unwrap_or_default();
+        writeln!(out, "     state {}{loc}", state.name)?;
+
+        if verbose {
+            let payload = state.payload.as_ref();
+            // `__…` members are compiler-generated (the awaitee itself
+            // and liveness slots), not source-level locals. A coroutine
+            // state may hold the same name twice (a captured upvar and a
+            // saved local), so members are sliced positionally, never
+            // looked up by name.
+            let mut seen = std::collections::HashSet::new();
+            let locals: Vec<_> = payload
+                .ty
+                .members()
+                .filter(|m| {
+                    m.ty().size() > 0
+                        && !m.name().starts_with("__")
+                        && seen.insert((m.name(), m.offset()))
+                })
+                .collect();
+            if !locals.is_empty() {
+                writeln!(out, "     locals:")?;
+            }
+            for m in locals {
+                let start = m.offset() as usize;
+                let end = start + m.ty().size() as usize;
+                match payload.bytes.get(start..end) {
+                    Some(bytes) => {
+                        let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes)
+                            .peel();
+                        writeln!(out, "       {}: {}", m.name(), v.display_with_depth(2))?;
+                    }
+                    None => writeln!(out, "       {}: <unreadable>", m.name())?,
+                }
+            }
+        }
+    }
+
+    match &chain.end {
+        bundle::ChainEnd::Leaf => {}
+        bundle::ChainEnd::UnknownDyn {
+            pointee,
+            poll_symbol,
+        } => {
+            writeln!(
+                out,
+                "the chain continues into a {pointee} whose concrete type is not in the bundle"
+            )?;
+            if let Some(sym) = poll_symbol {
+                writeln!(
+                    out,
+                    "     its poll fn is {:#} ({sym})",
+                    rustc_demangle::demangle(sym)
+                )?;
+            }
+        }
+        bundle::ChainEnd::DepthLimit => {
+            writeln!(
+                out,
+                "await chain truncated after {} futures (depth bound); corrupt memory?",
+                chain.frames.len()
+            )?;
+        }
+        bundle::ChainEnd::Cycle { addr } => {
+            writeln!(
+                out,
+                "await chain truncated: it loops back to {addr:#x}; corrupt memory?"
+            )?;
+        }
+        bundle::ChainEnd::Error(e) => {
+            writeln!(out, "await chain truncated: {e:#}")?;
+        }
+    }
+    Ok(())
+}
+
+/// Attach-time bundle validation (§5.1), shared by all bundle-mode
+/// subcommands: a bundle from a different commit/toolchain must never
+/// silently misinterpret memory. `force` downgrades refusal to a warning.
+fn check_fingerprint(ctx: &bundle::Context<'_>, force: bool) -> Result<()> {
+    let fp = ctx.validate_fingerprint();
+    if fp.is_complete() {
+        return Ok(());
+    }
+    let mut sample = fp
+        .missing
+        .iter()
+        .take(5)
+        .map(|s| format!("  {:#}", rustc_demangle::demangle(s)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if fp.missing.len() > 5 {
+        sample.push_str(&format!("\n  ... and {} more", fp.missing.len() - 5));
+    }
+    anyhow::ensure!(
+        force,
+        "only {}/{} bundle symbols resolve in the target — the bundle does \
+         not match this binary. Missing, for example:\n{}\n\
+         Pass --force to proceed anyway.",
+        fp.matched,
+        fp.total,
+        sample
+    );
+    writeln!(
+        io::stderr(),
+        "warning: only {}/{} bundle symbols resolve in the target; \
+         output may be wrong",
+        fp.matched,
+        fp.total
+    )?;
+    Ok(())
+}
+
+/// Find the LWPs holding a tokio `Context`: the pthread-key flow (§3.0),
+/// or the legacy byte-pattern heuristic on request.
+fn discover_workers(
+    proc: &Proc,
+    ctx: &bundle::Context<'_>,
+    heuristic: bool,
+) -> Result<Vec<bundle::Worker>> {
     let lwps = proc.lwps().context("failed to read lwps")?;
-    let workers = if args.heuristic_discovery {
+    let workers = if heuristic {
         let brk_range = proc.status().brk_range;
         let mut workers = Vec::new();
         for lwp in &lwps {
-            if let Some(addr) = find_thd_context(&lwp.regs, &brk_range, &proc)? {
+            if let Some(addr) = find_thd_context(&lwp.regs, &brk_range, proc)? {
                 workers.push(ctx.worker_at(lwp.tid, addr)?);
             }
         }
@@ -497,7 +713,19 @@ fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
         !workers.is_empty(),
         "no LWP has a tokio Context in thread-local storage; is this a tokio program?"
     );
+    Ok(workers)
+}
 
+fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
+    let proc = args.source.open_proc(args.destructive)?;
+
+    let bundle = Bundle::load(&args.bundle)
+        .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
+    let view = BundleView::new(&bundle);
+    let ctx = bundle::Context::new(&proc, view)?;
+    check_fingerprint(&ctx, args.force)?;
+
+    let workers = discover_workers(&proc, &ctx, args.heuristic_discovery)?;
     let shared = ctx.find_shared(&workers)?;
     let list = ctx.enumerate_tasks(&shared)?;
 
