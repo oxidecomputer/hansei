@@ -5,6 +5,7 @@ use std::ops::Range;
 
 #[cfg(target_os = "illumos")]
 mod illumos;
+pub mod snapshot;
 #[cfg(target_os = "illumos")]
 pub use illumos::{Lwp, Proc};
 
@@ -276,7 +277,7 @@ impl From<Reg> for gimli::Register {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct Regs {
     pub r15: u64,
     pub r14: u64,
@@ -429,7 +430,7 @@ pub struct Status {
     pub stack_range: Range<u64>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct LwpInfo {
     /// The LWP's thread id.
     pub tid: u32,
@@ -454,13 +455,13 @@ impl fmt::Debug for LwpInfo {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Timespec {
     pub tv_sec: i64,
     pub tv_nsec: i64,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Mappings {
     pub(crate) inner: Vec<LoadedObjectWithPath>,
 }
@@ -513,7 +514,7 @@ impl IntoIterator for Mappings {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct LoadedObjectWithPath {
     pub path: Option<String>,
     pub vaddr: u64,
@@ -559,7 +560,7 @@ impl fmt::Debug for LoadedObjectWithPath {
 /// The bit values are fixed by illumos's `<sys/procfs.h>` and are stable
 /// ABI, so they are spelled out here rather than taken from libproc-sys;
 /// snapshots captured on illumos decode them on any platform.
-#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct MapFlags(pub u32);
 
 impl MapFlags {
@@ -671,7 +672,7 @@ pub struct Symbol<'a> {
     pub st_size: u64,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SymbolBuf {
     pub name: String,
     pub st_name: usize,
