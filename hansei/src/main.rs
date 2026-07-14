@@ -1,9 +1,10 @@
-use crate::tokio::{Context, MinTokioState, parse_runtime};
+use crate::tokio::{Context, Lifecycle, MinTokioState, bundle, find_thd_context, parse_runtime};
 
 use anyhow::{Context as _, Result};
 use clap::{ArgAction, Args, Parser, Subcommand};
 use console::{StyledObject, Term};
 use durin::read::CtfReader;
+use exegesis::bundle::{Bundle, BundleView};
 use proc::Proc;
 
 use std::collections::HashMap;
@@ -31,6 +32,33 @@ enum Action {
     Poll(Poll),
     #[command(visible_alias = "trace")]
     TaskTrace(TaskTrace),
+    Tasks(Tasks),
+}
+
+/// List every task owned by the runtime: id, lifecycle state, concrete
+/// future type, spawn location, and where the future is defined.
+#[derive(Args)]
+struct Tasks {
+    #[command(flatten)]
+    source: Source,
+
+    /// The debug bundle to read (produced by `exegesis extract`).
+    #[clap(long, short)]
+    bundle: PathBuf,
+
+    /// Proceed even if the bundle's symbols don't all resolve in the target.
+    #[arg(long)]
+    force: bool,
+
+    /// Find worker threads with the legacy TSD byte-pattern heuristic
+    /// instead of the TLS key named by the bundle.
+    #[arg(long)]
+    heuristic_discovery: bool,
+
+    /// Pausing a live process is potentially destructive.
+    /// Required if --pid is passed.
+    #[arg(long, short = 'w')]
+    destructive: bool,
 }
 
 #[derive(Args)]
@@ -147,6 +175,7 @@ fn main() {
         Action::Poll(poll) => exec_poll(poll, Term::stdout()),
         Action::SchedulerDump(dump) => exec_dump(dump, &mut io::stdout().lock()),
         Action::TaskTrace(dump) => exec_trace(dump, &mut io::stdout().lock()),
+        Action::Tasks(tasks) => exec_tasks(tasks, &mut io::stdout().lock()),
     };
     if let Err(e) = res {
         if let Some(io_err) = e.downcast_ref::<io::Error>()
@@ -406,6 +435,144 @@ fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
             // Move down to the next nested type.
             active = var.to_owned();
         }
+    }
+
+    Ok(())
+}
+
+fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
+    let proc = args.source.open_proc(args.destructive)?;
+
+    let bundle = Bundle::load(&args.bundle)
+        .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
+    let view = BundleView::new(&bundle);
+    let ctx = bundle::Context::new(&proc, view)?;
+
+    // Attach-time validation: a bundle from a different commit/toolchain
+    // must never silently misinterpret memory.
+    let fp = ctx.validate_fingerprint();
+    if !fp.is_complete() {
+        let mut sample = fp
+            .missing
+            .iter()
+            .take(5)
+            .map(|s| format!("  {:#}", rustc_demangle::demangle(s)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if fp.missing.len() > 5 {
+            sample.push_str(&format!("\n  ... and {} more", fp.missing.len() - 5));
+        }
+        anyhow::ensure!(
+            args.force,
+            "only {}/{} bundle symbols resolve in the target — the bundle does \
+             not match this binary. Missing, for example:\n{}\n\
+             Pass --force to proceed anyway.",
+            fp.matched,
+            fp.total,
+            sample
+        );
+        writeln!(
+            io::stderr(),
+            "warning: only {}/{} bundle symbols resolve in the target; \
+             output may be wrong",
+            fp.matched,
+            fp.total
+        )?;
+    }
+
+    let lwps = proc.lwps().context("failed to read lwps")?;
+    let workers = if args.heuristic_discovery {
+        let brk_range = proc.status().brk_range;
+        let mut workers = Vec::new();
+        for lwp in &lwps {
+            if let Some(addr) = find_thd_context(&lwp.regs, &brk_range, &proc)? {
+                workers.push(ctx.worker_at(lwp.tid, addr)?);
+            }
+        }
+        workers
+    } else {
+        ctx.find_workers(&lwps)?
+    };
+    anyhow::ensure!(
+        !workers.is_empty(),
+        "no LWP has a tokio Context in thread-local storage; is this a tokio program?"
+    );
+
+    let shared = ctx.find_shared(&workers)?;
+    let list = ctx.enumerate_tasks(&shared)?;
+
+    // Which LWP is polling which task right now (§3.2).
+    let polling: HashMap<u64, u32> = workers
+        .iter()
+        .filter_map(|w| w.current_task_id.map(|id| (id, w.tid)))
+        .collect();
+
+    let mut rows = vec![[
+        "TASK".to_string(),
+        "STATE".to_string(),
+        "FUTURE".to_string(),
+        "SPAWNED AT".to_string(),
+        "DEFINED AT".to_string(),
+    ]];
+    for task in &list.tasks {
+        let id = match task.task_id {
+            Some(id) => id.to_string(),
+            None => format!("{:?}", task.addr),
+        };
+        let state = match (task.state.lifecycle(), task.task_id) {
+            (Lifecycle::Running, Some(id)) if polling.contains_key(&id) => {
+                format!("running (lwp {})", polling[&id])
+            }
+            (lifecycle, _) => lifecycle.to_string(),
+        };
+        let (future, defined) = match &task.future {
+            bundle::FutureInfo::Known(known) => (
+                known.display_name.clone(),
+                known
+                    .decl
+                    .as_ref()
+                    .map(|(file, line)| format!("{file}:{line}"))
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
+            bundle::FutureInfo::Unknown {
+                poll_symbol: Some(sym),
+            } => (
+                format!("<unknown: {:#}>", rustc_demangle::demangle(sym)),
+                "-".to_string(),
+            ),
+            bundle::FutureInfo::Unknown { poll_symbol: None } => {
+                ("<unknown>".to_string(), "-".to_string())
+            }
+        };
+        let spawned = task
+            .spawn_location
+            .as_ref()
+            .map(|loc| loc.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        rows.push([id, state, future, spawned, defined]);
+    }
+
+    let mut widths = [0usize; 5];
+    for row in &rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.len());
+        }
+    }
+    for row in &rows {
+        let [id, state, future, spawned, defined] = row;
+        writeln!(
+            out,
+            "{id:<w0$}  {state:<w1$}  {future:<w2$}  {spawned:<w3$}  {defined}",
+            w0 = widths[0],
+            w1 = widths[1],
+            w2 = widths[2],
+            w3 = widths[3],
+        )?;
+    }
+    writeln!(out, "\n{} tasks", list.tasks.len())?;
+
+    for err in &list.errors {
+        writeln!(io::stderr(), "warning: {err:#}")?;
     }
 
     Ok(())

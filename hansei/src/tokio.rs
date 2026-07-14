@@ -8,14 +8,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::mem;
 use std::ops::Range;
 
+pub use hansei_types::tokio::bundle;
 pub use hansei_types::tokio::ctf::{Context, TokioInfo};
 pub use hansei_types::tokio::{
     Budget, Clock, Config, DriverHandle, EnterRuntime, Expiration, Idle, Inject, Interest,
-    IoDisabled, IoDriverMetrics, IoEnabled, IoHandle, IoSynced, Level, MetricsBatch, OwnedTasks,
-    ParkThread, Parker, RawInstant, Ready, Remote, ScheduledIo, Scheduler, SchedulerMetrics,
-    Shared, Synced, TaskAddr, TaskHeader, TaskQueue, ThreadCtx, TimeHandle, TimerShared, TimerSlot,
-    TimerState, TokioRuntime, Waiter, Waiters, Waker, WakerState, Wheel, WorkerCore, WorkerMetrics,
-    WorkerState, WorkerStats,
+    IoDisabled, IoDriverMetrics, IoEnabled, IoHandle, IoSynced, Level, Lifecycle, MetricsBatch,
+    OwnedTasks, ParkThread, Parker, RawInstant, Ready, Remote, ScheduledIo, Scheduler,
+    SchedulerMetrics, Shared, Synced, TaskAddr, TaskHeader, TaskQueue, TaskState, ThreadCtx,
+    TimeHandle, TimerShared, TimerSlot, TimerState, TokioRuntime, Waiter, Waiters, Waker,
+    WakerState, Wheel, WorkerCore, WorkerMetrics, WorkerState, WorkerStats,
 };
 
 pub fn parse_runtime(
@@ -273,7 +274,7 @@ impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for MinScheduler {
 /// Find the address of the thread-local `tokio::runtime::context::Context` for
 /// this LWP, if present. The first three u64s of this type form a
 /// recognizeable pattern unlikely to be replicated by other types.
-fn find_thd_context(regs: &Regs, brk_range: &Range<u64>, proc: &Proc) -> Result<Option<u64>> {
+pub fn find_thd_context(regs: &Regs, brk_range: &Range<u64>, proc: &Proc) -> Result<Option<u64>> {
     let tls = proc
         .tsd_from_regs(regs)
         .context("failed to get thread-local data")?;

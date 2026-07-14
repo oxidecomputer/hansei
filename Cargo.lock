@@ -837,6 +837,7 @@ dependencies = [
  "clap",
  "console",
  "durin",
+ "exegesis",
  "hansei-types",
  "humantime",
  "proc",
