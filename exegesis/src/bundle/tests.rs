@@ -749,6 +749,92 @@ mod view_tests {
         );
     }
 
+    /// A coroutine-shaped enum, as rustc 1.97 emits it (§5.5): variant
+    /// members are numbered ("0", "1", …); the state names live on the
+    /// payload structs; suspend variants carry the awaited expression's
+    /// decl coordinates.
+    fn coroutine_bundle() -> Bundle {
+        let mut b = super::tiny_bundle();
+        let mut strings = StringInterner::new();
+        let u8n = strings.intern("u8");
+        let envn = strings.intern("app::work::{async_fn_env#0}");
+        let unresumed = strings.intern("app::work::{async_fn_env#0}::Unresumed");
+        let suspend0 = strings.intern("app::work::{async_fn_env#0}::Suspend0");
+        let file = strings.intern("src/work.rs");
+        let v0 = strings.intern("0");
+        let v3 = strings.intern("3");
+
+        let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
+        b.types = TypeTable {
+            types: vec![
+                // 0: u8
+                TypeDef::Base { name: u8n, size: 1, encoding: Encoding::Unsigned },
+                // 1: Unresumed payload
+                TypeDef::Struct { name: unresumed, size: 8, members: vec![] },
+                // 2: Suspend0 payload
+                TypeDef::Struct { name: suspend0, size: 8, members: vec![] },
+                // 3: the coroutine env
+                TypeDef::Enum {
+                    name: envn,
+                    size: 8,
+                    shape: VariantShape {
+                        discr: Some(DiscrDef { offset: 0, ty: BundleTypeId(0) }),
+                        variants: vec![
+                            VariantDef {
+                                name: v0,
+                                discr_values: tag(0),
+                                payload: MemberDef { name: v0, ty: BundleTypeId(1), offset: 0 },
+                                decl: None,
+                            },
+                            VariantDef {
+                                name: v3,
+                                discr_values: tag(3),
+                                payload: MemberDef { name: v3, ty: BundleTypeId(2), offset: 0 },
+                                decl: Some(SourceLoc { file, line: 18 }),
+                            },
+                        ],
+                    },
+                },
+            ],
+            name_index: vec![],
+        };
+        b.strings = strings.finish();
+        b.validate().expect("test bundle must validate");
+        b
+    }
+
+    #[test]
+    fn test_coroutine_state_names_and_decl() {
+        let b = coroutine_bundle();
+        let e = BundleView::new(&b).ty(BundleTypeId(3)).unwrap();
+
+        // Numbered variant members resolve their state name through the
+        // payload struct; the awaited expression's decl coords surface on
+        // the suspend variant.
+        let v = e.active_variant(&[0u8; 8]).unwrap().unwrap();
+        assert_eq!(v.name, "0");
+        assert_eq!(v.state_name(), "Unresumed");
+        assert_eq!(v.decl, None);
+
+        let v = e.active_variant(&[3, 0, 0, 0, 0, 0, 0, 0]).unwrap().unwrap();
+        assert_eq!(v.name, "3");
+        assert_eq!(v.state_name(), "Suspend0");
+        assert_eq!(v.decl, Some(("src/work.rs", 18)));
+    }
+
+    #[test]
+    fn test_named_variants_keep_their_names() {
+        // Ordinary enums name the variant member itself; state_name must
+        // not second-guess it from the payload type.
+        let b = enum_bundle(
+            Some((0, U8_ID)),
+            vec![("Running", vals(&[0]), U64_ID, 8), ("Consumed", vals(&[1]), UNIT_ID, 0)],
+        );
+        let e = BundleView::new(&b).ty(ENUM_ID).unwrap();
+        let v = e.active_variant(&[0u8; 24]).unwrap().unwrap();
+        assert_eq!(v.state_name(), "Running");
+    }
+
     #[test]
     fn test_view_structural_accessors() {
         let mut b = super::tiny_bundle();
