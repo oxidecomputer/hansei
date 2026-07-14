@@ -18,7 +18,7 @@
 set -euo pipefail
 
 TOOLCHAIN=1.97.0
-ALL_PROGRAMS=(futurelock simple-await nested-await dyn-future select-combinator many-tasks)
+ALL_PROGRAMS=(futurelock simple-await nested-await dyn-future select-combinator many-tasks sleep-join)
 
 cd "$(dirname "$0")"
 FIXTURES="$PWD/fixtures"
