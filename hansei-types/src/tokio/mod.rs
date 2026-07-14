@@ -5,15 +5,23 @@
 //! Tokio specific types that are loadable from CTF and/or DWARF debug info
 
 pub mod bundle;
+// The CTF and debugdb-based DWARF paths read live targets through
+// libproc; only the bundle path compiles everywhere.
+#[cfg(target_os = "illumos")]
 pub mod ctf;
+#[cfg(target_os = "illumos")]
 pub mod dwarf;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+#[cfg(target_os = "illumos")]
+use std::collections::BTreeMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::mem;
 use std::time::{Duration, Instant};
+#[cfg(target_os = "illumos")]
 use unwind::Backtrace;
 
+#[cfg(target_os = "illumos")]
 #[derive(Debug)]
 pub struct TokioRuntime {
     pub workers: BTreeMap<u32, WorkerState>,
@@ -21,6 +29,7 @@ pub struct TokioRuntime {
     pub now: Instant,
 }
 
+#[cfg(target_os = "illumos")]
 impl TokioRuntime {
     pub fn active_workers(&self) -> Vec<&WorkerState> {
         let len = self.scheduler.shared.active_workers.len();
@@ -43,6 +52,7 @@ impl TokioRuntime {
     }
 }
 
+#[cfg(target_os = "illumos")]
 #[derive(Clone, PartialEq, Debug)]
 pub struct WorkerState {
     pub thd_ctx: ThreadCtx,
