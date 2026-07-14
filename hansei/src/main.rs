@@ -6,6 +6,7 @@ use console::{StyledObject, Term};
 use durin::read::CtfReader;
 use exegesis::bundle::{Bundle, BundleView};
 use proc::Proc;
+use proc::snapshot::Recorder;
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -33,6 +34,36 @@ enum Action {
     #[command(visible_alias = "trace")]
     TaskTrace(TaskTrace),
     Tasks(Tasks),
+    Snapshot(SnapshotCmd),
+}
+
+/// Capture a replayable snapshot of everything the bundle-backed
+/// analysis reads from the target: task enumeration and every task's
+/// await chain are driven once with a recording wrapper in place, and
+/// the memory, symbol, and LWP state they touched is written out.
+/// Together with a bundle extracted from a *separate* build of the
+/// same source, the snapshot feeds the offline two-binary tests.
+#[derive(Args)]
+struct SnapshotCmd {
+    #[command(flatten)]
+    source: Source,
+
+    /// The debug bundle to read (produced by `exegesis extract`).
+    #[clap(long, short)]
+    bundle: PathBuf,
+
+    /// Where to write the snapshot.
+    #[clap(long, short)]
+    output: PathBuf,
+
+    /// Proceed even if the bundle's symbols don't all resolve in the target.
+    #[arg(long)]
+    force: bool,
+
+    /// Pausing a live process is potentially destructive.
+    /// Required if --pid is passed.
+    #[arg(long, short = 'w')]
+    destructive: bool,
 }
 
 /// List every task owned by the runtime: id, lifecycle state, concrete
@@ -198,6 +229,7 @@ fn main() {
         Action::SchedulerDump(dump) => exec_dump(dump, &mut io::stdout().lock()),
         Action::TaskTrace(dump) => exec_trace(dump, &mut io::stdout().lock()),
         Action::Tasks(tasks) => exec_tasks(tasks, &mut io::stdout().lock()),
+        Action::Snapshot(snap) => exec_snapshot(snap, &mut io::stdout().lock()),
     };
     if let Err(e) = res {
         if let Some(io_err) = e.downcast_ref::<io::Error>()
@@ -657,7 +689,7 @@ fn print_await_chain(
 /// Attach-time bundle validation (§5.1), shared by all bundle-mode
 /// subcommands: a bundle from a different commit/toolchain must never
 /// silently misinterpret memory. `force` downgrades refusal to a warning.
-fn check_fingerprint(ctx: &bundle::Context<'_, Proc>, force: bool) -> Result<()> {
+fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool) -> Result<()> {
     let fp = ctx.validate_fingerprint();
     if fp.is_complete() {
         return Ok(());
@@ -716,6 +748,74 @@ fn discover_workers(
         "no LWP has a tokio Context in thread-local storage; is this a tokio program?"
     );
     Ok(workers)
+}
+
+/// Drive the full bundle-backed analysis with a recording Target in
+/// place, then persist what it read (plan §11.3). Every task's stage
+/// and await chain is walked so the snapshot can answer the offline
+/// tests' whole question set; walk problems are warnings, not errors,
+/// since a partially-traceable target is still worth capturing.
+fn exec_snapshot(args: SnapshotCmd, out: &mut dyn io::Write) -> Result<()> {
+    let proc = args.source.open_proc(args.destructive)?;
+    let bundle = Bundle::load(&args.bundle)
+        .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
+    let view = BundleView::new(&bundle);
+
+    let recorder = Recorder::new(&proc);
+    let ctx = bundle::Context::new(&recorder, view)?;
+    check_fingerprint(&ctx, args.force)?;
+
+    let lwps = proc.lwps().context("failed to read lwps")?;
+    let workers = ctx.find_workers(&lwps)?;
+    anyhow::ensure!(
+        !workers.is_empty(),
+        "no LWP has a tokio Context in thread-local storage; is this a tokio program?"
+    );
+    let shared = ctx.find_shared(&workers)?;
+    let list = ctx.enumerate_tasks(&shared)?;
+    for err in &list.errors {
+        writeln!(io::stderr(), "warning: {err:#}")?;
+    }
+
+    let mut chains = 0usize;
+    for task in &list.tasks {
+        if let bundle::FutureInfo::Unknown { .. } = task.future {
+            continue;
+        }
+        match ctx.task_stage(task) {
+            Ok(bundle::TaskStage::Running(future)) => {
+                let chain = ctx.await_chain(future);
+                if let bundle::ChainEnd::Error(e) = &chain.end {
+                    writeln!(
+                        io::stderr(),
+                        "warning: await chain of task {:?} is incomplete: {e:#}",
+                        task.addr
+                    )?;
+                }
+                chains += 1;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                writeln!(
+                    io::stderr(),
+                    "warning: failed to read the stage of task {:?}: {e:#}",
+                    task.addr
+                )?;
+            }
+        }
+    }
+
+    let snapshot = recorder.snapshot().context("failed to assemble snapshot")?;
+    snapshot
+        .save(&args.output)
+        .with_context(|| format!("failed to write {}", args.output.display()))?;
+    writeln!(
+        out,
+        "captured {} tasks ({chains} await chains) to {}",
+        list.tasks.len(),
+        args.output.display()
+    )?;
+    Ok(())
 }
 
 fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
