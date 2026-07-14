@@ -383,6 +383,8 @@ struct TraceContext<'a> {
 }
 
 impl reify::ParseCtx for TraceContext<'_> {
+    type Target = Proc;
+
     fn proc(&self) -> &Proc {
         self.proc
     }

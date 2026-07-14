@@ -3,13 +3,10 @@ pub mod debug_type;
 pub use debug_type::TypeKind;
 use debug_type::{DebugMember, DebugType, TypeClass};
 
-use proc::{Mappings, Proc};
+use proc::Mappings;
 
 use std::fmt;
 use std::str;
-
-#[cfg(not(target_os = "illumos"))]
-compile_error!("this crate only supports illumos");
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -1023,7 +1020,11 @@ fn write_hex_bytes(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
 // ---------------------------------------------------------------------------
 
 pub trait ParseCtx {
-    fn proc(&self) -> &Proc;
+    /// The target being read: a live process or core on illumos, or a
+    /// captured snapshot anywhere.
+    type Target: ReadFromProc;
+
+    fn proc(&self) -> &Self::Target;
     fn mappings(&self) -> &Mappings;
 }
 
@@ -1314,13 +1315,9 @@ pub trait ReadFromProc {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>>;
 }
 
-impl ReadFromProc for Proc {
+impl<T: proc::Target> ReadFromProc for T {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; len as usize];
-
-        // TODO we may also receive an EOF here, need better error
-        self.pread_exact(&mut buf, addr)
-            .map_err(|e| Error::invalid_addr(addr).with_source(e))?;
-        Ok(buf)
+        proc::Target::read_bytes(self, addr, len)
+            .map_err(|e| Error::invalid_addr(addr).with_source(e))
     }
 }

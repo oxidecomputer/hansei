@@ -775,6 +775,8 @@ impl<'b> Context<'b> {
 }
 
 impl ParseCtx for Context<'_> {
+    type Target = Proc;
+
     fn proc(&self) -> &Proc {
         self.proc
     }

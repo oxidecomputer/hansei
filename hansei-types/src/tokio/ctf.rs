@@ -68,6 +68,8 @@ impl<'ctf> Context<'ctf> {
 }
 
 impl ParseCtx for Context<'_> {
+    type Target = Proc;
+
     fn proc(&self) -> &Proc {
         self.proc
     }
@@ -151,6 +153,8 @@ struct TimeContext<'ctf> {
 }
 
 impl ParseCtx for TimeContext<'_> {
+    type Target = Proc;
+
     fn proc(&self) -> &Proc {
         self.ctx.proc()
     }

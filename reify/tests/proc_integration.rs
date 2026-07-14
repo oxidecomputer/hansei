@@ -3,6 +3,9 @@
 //! These tests generate a test binary with known types and values,
 //! then use CTF to read those values from the running process.
 
+// Reading a live process requires libproc.
+#![cfg(target_os = "illumos")]
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -139,6 +142,8 @@ struct TestContext<'a> {
 }
 
 impl ParseCtx for TestContext<'_> {
+    type Target = Proc;
+
     fn proc(&self) -> &Proc {
         self.proc
     }
