@@ -7,7 +7,8 @@
 //! decoding that makes `active_variant` a direct decode with no heuristics.
 
 use crate::bundle::schema::{
-    Bundle, BundleTypeId, MemberDef, TaskFutureEntry, TypeDef, VariantDef, VariantShape,
+    Bundle, BundleTypeId, MemberDef, Provenance, TaskEntryId, TaskFutureEntry, TypeDef, VariantDef,
+    VariantShape, strip_llvm_suffix,
 };
 use crate::raw_types::Encoding;
 
@@ -56,6 +57,27 @@ impl<'a> BundleView<'a> {
     /// in the task join table.
     pub fn task_for_symbol(&self, symbol: &str) -> Option<&'a TaskFutureEntry> {
         self.bundle.tasks.lookup(symbol)
+    }
+
+    /// Like [`BundleView::task_for_symbol`], but also returns the entry id,
+    /// which indexes the parallel [`Provenance`] table.
+    pub fn task_entry_for_symbol(
+        &self,
+        symbol: &str,
+    ) -> Option<(TaskEntryId, &'a TaskFutureEntry)> {
+        let id = *self.bundle.tasks.by_symbol.get(strip_llvm_suffix(symbol))?;
+        let entry = self.bundle.tasks.entries.get(id.0 as usize)?;
+        Some((id, entry))
+    }
+
+    /// Source provenance for a task entry.
+    pub fn provenance(&self, id: TaskEntryId) -> Option<&'a Provenance> {
+        self.bundle.provenance.entries.get(id.0 as usize)
+    }
+
+    /// Resolve an interned string.
+    pub fn str(&self, r: crate::bundle::strings::StrRef) -> Option<&'a str> {
+        self.bundle.strings.get(r)
     }
 
     /// Look up a dyn-future symbol (`<T as Future>::poll` or
@@ -203,10 +225,7 @@ impl<'a> BundleType<'a> {
     /// discriminant's raw bits at its recorded offset, match them against
     /// each variant's explicit values/ranges, and otherwise select the
     /// default (niche) variant. No heuristics.
-    pub fn active_variant(
-        &self,
-        bytes: &[u8],
-    ) -> Option<Result<ActiveVariant<'a>, VariantError>> {
+    pub fn active_variant(&self, bytes: &[u8]) -> Option<Result<ActiveVariant<'a>, VariantError>> {
         let shape = self.variant_shape()?;
         Some(self.decode_variant(shape, bytes))
     }
@@ -221,16 +240,13 @@ impl<'a> BundleType<'a> {
         let shape = self.variant_shape()?;
         // An unknown variant name is an error, not "inactive" — matching
         // the CTF backend's behavior.
-        if !shape
-            .variants
-            .iter()
-            .any(|v| self.str(v.name) == name)
-        {
+        if !shape.variants.iter().any(|v| self.str(v.name) == name) {
             return Some(Err(VariantError::NoSuchVariant));
         }
-        Some(self.decode_variant(shape, bytes).map(|active| {
-            (active.name == name).then_some((active.ty, active.offset))
-        }))
+        Some(
+            self.decode_variant(shape, bytes)
+                .map(|active| (active.name == name).then_some((active.ty, active.offset))),
+        )
     }
 
     fn decode_variant(
@@ -253,12 +269,13 @@ impl<'a> BundleType<'a> {
                     return Err(VariantError::BadDiscriminantSize { size });
                 }
                 let start = discr.offset as usize;
-                let raw_bytes = bytes
-                    .get(start..start + size)
-                    .ok_or(VariantError::ShortBuffer {
-                        needed: start + size,
-                        len: bytes.len(),
-                    })?;
+                let raw_bytes =
+                    bytes
+                        .get(start..start + size)
+                        .ok_or(VariantError::ShortBuffer {
+                            needed: start + size,
+                            len: bytes.len(),
+                        })?;
                 // The discriminant's raw bits, zero-extended: DiscrValues
                 // store the same representation (see schema docs).
                 let mut raw: u128 = 0;
