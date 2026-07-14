@@ -1416,8 +1416,12 @@ version = "0.1.0"
 dependencies = [
  "gimli 0.32.3",
  "libproc-sys",
+ "postcard",
  "scroll 0.13.0",
+ "serde",
  "thiserror 2.0.18",
+ "zstd",
+ "zstd-sys",
 ]
 
 [[package]]
