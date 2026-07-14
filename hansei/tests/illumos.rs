@@ -670,6 +670,108 @@ Defined at: sleep-join.rs:15
 }
 
 // ---------------------------------------------------------------------------
+// Dependency graph and futurelock diagnosis (§3.6, §10)
+// ---------------------------------------------------------------------------
+
+/// Run `hansei graph` and return its output.
+fn graph(bundle: &Path, source: &Source) -> String {
+    let mut args = vec!["graph", "--bundle", bundle.to_str().unwrap()];
+    let source_args = source.args();
+    args.extend(source_args.iter().map(String::as_str));
+    hansei_ok(&args)
+}
+
+/// Format rows the way the graph table does: two-space separated
+/// columns, each padded to its widest cell.
+fn graph_table(rows: &[[&str; 3]]) -> String {
+    let mut widths = [0usize; 2];
+    for row in rows {
+        for (w, cell) in widths.iter_mut().zip(row.iter()) {
+            *w = (*w).max(cell.len());
+        }
+    }
+    rows.iter()
+        .map(|[task, state, target]| {
+            format!(
+                "{task:<w0$}  {state:<w1$}  {target}\n",
+                w0 = widths[0],
+                w1 = widths[1]
+            )
+        })
+        .collect()
+}
+
+/// The RFD 609 diagnosis, fully automatic: the contended Mutex's wake
+/// queue resolves to the blocked task itself, and the abandoned
+/// `future1` is found in do_stuff's locals holding the granted permit
+/// it can never release.
+#[test]
+#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
+fn test_futurelock_graph() {
+    let bundle = fixtures().bundle("futurelock");
+    for_each_source("futurelock", |source| {
+        let rows = list_tasks(&bundle, source);
+        let task = task_with_future(
+            &rows,
+            "futurelock::main::{async_block#0}::{async_block_env#0}",
+        );
+        let id = task.id.as_str();
+
+        let wait = format!(
+            "a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, \
+             0 available; wake queue: task {id}"
+        );
+        let mut expected = graph_table(&[["TASK", "STATE", "WAITING ON"], [id, "idle", &wait]]);
+        expected.push_str(&format!(
+            "\nfuturelock: task {id} holds 1 granted permit of a tokio::sync::Mutex \
+             (semaphore 0xADDR) in a future it stopped polling:\n  \
+             `future1` (futurelock::do_async_thing::{{async_fn_env#0}})\n  \
+             held across futurelock::do_stuff::{{async_fn_env#0}} state Suspend1 \
+             — futurelock.rs:60\n  \
+             blocked behind it: task {id}\n"
+        ));
+        assert_eq!(
+            normalize(&graph(&bundle, source)),
+            expected,
+            "({})",
+            source.describe()
+        );
+    });
+}
+
+/// Wait edges without a diagnosis: the joiner's JoinHandle edge points
+/// at the sleeper, the sleeper waits on the timer, and a healthy
+/// runtime reports no futurelock.
+#[test]
+#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
+fn test_sleep_join_graph() {
+    let bundle = fixtures().bundle("sleep-join");
+    for_each_source("sleep-join", |source| {
+        let rows = list_tasks(&bundle, source);
+        let sleeper = task_with_future(&rows, "sleep_join::sleeper::{async_fn_env#0}");
+        let joiner = task_with_future(&rows, "sleep_join::joiner::{async_fn_env#0}");
+
+        let join_edge = format!("task {} (JoinHandle)", sleeper.id);
+        let mut expected = graph_table(&[
+            ["TASK", "STATE", "WAITING ON"],
+            [
+                &sleeper.id,
+                "idle",
+                "the timer: deadline TS on the target's monotonic clock",
+            ],
+            [&joiner.id, "idle", &join_edge],
+        ]);
+        expected.push_str("\nno futurelock detected\n");
+        assert_eq!(
+            normalize(&graph(&bundle, source)),
+            expected,
+            "({})",
+            source.describe()
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Symbol match-rate tests (§11.4 item 4)
 // ---------------------------------------------------------------------------
 
