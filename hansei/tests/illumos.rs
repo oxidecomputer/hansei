@@ -43,6 +43,7 @@ const PROGRAMS: &[&str] = &[
     "dyn-future",
     "futurelock",
     "many-tasks",
+    "sleep-join",
 ];
 
 /// The hand-fed roots the CTF pipeline needs (hansei README): types
@@ -345,6 +346,15 @@ fn trace(bundle: &Path, source: &Source, task_id: &str, verbose: bool) -> String
     hansei_ok(&args)
 }
 
+/// Mask the run-varying values a trace can carry — heap addresses and
+/// timer deadlines — so goldens compare exactly.
+fn normalize(trace: &str) -> String {
+    let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
+    let deadlines = regex::Regex::new(r"deadline \d+\.\d{3}s").unwrap();
+    let masked = addrs.replace_all(trace, "0xADDR");
+    deadlines.replace_all(&masked, "deadline TS").into_owned()
+}
+
 /// Assert every named local appears in a verbose trace. Values are live
 /// memory (addresses and the like) and deliberately not asserted; the
 /// exact per-frame local sets are pinned by the offline two-binary
@@ -541,11 +551,12 @@ Defined at: futurelock.rs:13
   5: tokio::sync::mutex::{{impl#10}}::acquire::{{async_fn_env#0}}<()>
      state Suspend1 — src/sync/mutex.rs:658
   6: tokio::sync::batch_semaphore::Acquire
+     waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available
 ",
             id = task.id
         );
         assert_eq!(
-            trace(&bundle, source, &task.id, false),
+            normalize(&trace(&bundle, source, &task.id, false)),
             expected,
             "({})",
             source.describe()
@@ -592,6 +603,65 @@ Defined at: many-tasks.rs:9
         );
         assert_eq!(
             trace(&bundle, source, &task.id, false),
+            expected,
+            "({})",
+            source.describe()
+        );
+    });
+}
+
+/// The leaf-future knowledge base (§3.6): a task parked on the timer
+/// reports its deadline, and a task awaiting a JoinHandle reports which
+/// task it waits for — the dependency edge, joined across the two
+/// binaries by nothing but the leaf's type name.
+#[test]
+#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
+fn test_sleep_join_acceptance() {
+    let bundle = fixtures().bundle("sleep-join");
+    for_each_source("sleep-join", |source| {
+        let rows = list_tasks(&bundle, source);
+        assert_eq!(rows.len(), 2, "({}) {rows:#?}", source.describe());
+        let sleeper = task_with_future(&rows, "sleep_join::sleeper::{async_fn_env#0}");
+        let joiner = task_with_future(&rows, "sleep_join::joiner::{async_fn_env#0}");
+        assert_eq!(sleeper.state, "idle", "({})", source.describe());
+        assert_eq!(joiner.state, "idle", "({})", source.describe());
+
+        let expected = format!(
+            "\
+Task {id}: sleep_join::sleeper::{{async_fn_env#0}} (idle)
+Spawned at: test-programs/src/bin/sleep-join.rs:26:22
+Defined at: sleep-join.rs:9
+
+  0: sleep_join::sleeper::{{async_fn_env#0}}
+     state Suspend0 — sleep-join.rs:11
+  1: tokio::time::sleep::Sleep
+     waiting on the timer: deadline TS on the target's monotonic clock
+",
+            id = sleeper.id
+        );
+        assert_eq!(
+            normalize(&trace(&bundle, source, &sleeper.id, false)),
+            expected,
+            "({})",
+            source.describe()
+        );
+
+        let expected = format!(
+            "\
+Task {id}: sleep_join::joiner::{{async_fn_env#0}} (idle)
+Spawned at: test-programs/src/bin/sleep-join.rs:27:23
+Defined at: sleep-join.rs:15
+
+  0: sleep_join::joiner::{{async_fn_env#0}}
+     state Suspend0 — sleep-join.rs:17
+  1: tokio::runtime::task::join::JoinHandle<u32>
+     waiting on task {sleeper_id} (JoinHandle)
+",
+            id = joiner.id,
+            sleeper_id = sleeper.id
+        );
+        assert_eq!(
+            trace(&bundle, source, &joiner.id, false),
             expected,
             "({})",
             source.describe()
