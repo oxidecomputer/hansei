@@ -4,11 +4,20 @@
 //!
 //! Usage: tls_spike <pid|core-path> [mangled-poll-symbol]
 
+#![cfg_attr(not(target_os = "illumos"), allow(unused))]
+
+#[cfg(target_os = "illumos")]
 use proc::Proc;
 
 const TLS_KEY_SYM: &str =
     "_RNvNCNvNtNtCscIwcofkaqOM_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
 
+#[cfg(not(target_os = "illumos"))]
+fn main() {
+    eprintln!("tls_spike only runs on illumos");
+}
+
+#[cfg(target_os = "illumos")]
 fn main() {
     let mut args = std::env::args().skip(1);
     let target = args.next().expect("usage: tls_spike <pid|core> [poll-sym]");

@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 gimli = { workspace = true }
-libproc-sys = { workspace = true }
 scroll = { workspace = true }
 thiserror = { workspace = true }
+
+[target.'cfg(target_os = "illumos")'.dependencies]
+libproc-sys = { workspace = true }
