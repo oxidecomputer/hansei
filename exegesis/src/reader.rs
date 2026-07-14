@@ -43,6 +43,9 @@ pub struct DwReader<'dw> {
     pub namespaces: NamespaceTable<StrId>,
     /// Interned string table for all strings found in types and variables.
     pub strings: StringTable<'dw>,
+    /// The `DW_AT_producer` of the first compile unit that carries one
+    /// (compiler identification, e.g. the rustc version).
+    pub producer: Option<StrId>,
 }
 
 /// The namespaces and targets to collect from the DWARF.
@@ -156,6 +159,7 @@ impl<'dw> DwReader<'dw> {
             functions: HashMap::new(),
             namespaces: NamespaceTable::new(),
             strings: StringTable::new(),
+            producer: None,
         }
     }
 
@@ -166,6 +170,10 @@ impl<'dw> DwReader<'dw> {
     /// types are deduplicated by the canonical TypeId of their target.
     fn ingest(&mut self, mut cgu: CodegenUnit<'dw>) {
         let ns_remap = self.remap_namespaces(&cgu.namespaces);
+
+        if self.producer.is_none() {
+            self.producer = cgu.producer.map(|p| self.strings.intern(p));
+        }
 
         for (type_id, mut ty) in cgu.types.drain() {
             remap_ns_in_place(&mut ty, &ns_remap);
