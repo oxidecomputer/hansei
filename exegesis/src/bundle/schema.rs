@@ -171,6 +171,11 @@ pub struct VariantDef {
     pub discr_values: Option<DiscrValues>,
     /// The variant's payload member (offset + type).
     pub payload: MemberDef,
+    /// Declaration coordinates of the variant member. For coroutine state
+    /// machines rustc records the *awaited expression* here, so a
+    /// `SuspendN` variant's `decl` is its await point's source line
+    /// (§13.5).
+    pub decl: Option<SourceLoc>,
 }
 
 /// The discriminant values selecting a variant.

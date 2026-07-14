@@ -165,7 +165,10 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                         None => "default".to_string(),
                         Some(dv) => format!("{:?}", dv.0),
                     };
-                    println!("      {} ({vals}) +{} : [{}]",
+                    let decl = v.decl
+                        .map(|l| format!(" @ {}:{}", s(l.file), l.line))
+                        .unwrap_or_default();
+                    println!("      {} ({vals}) +{} : [{}]{decl}",
                         s(v.name), v.payload.offset, v.payload.ty.0);
                 }
             }
