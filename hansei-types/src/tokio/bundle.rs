@@ -12,7 +12,7 @@
 //! symtab locates it, and its value indexes each LWP's fast-TSD slots to
 //! find that thread's `tokio::runtime::context::Context`.
 
-use super::{Location, TaskAddr, TaskState};
+use super::{Location, RawInstant, TaskAddr, TaskState};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use exegesis::bundle::{
@@ -24,6 +24,7 @@ use reify::{ParseCtx, TypeInfo, TypeInfoRef};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 /// Hard bound on await-chain depth: anything deeper indicates corrupt
 /// memory (or a pathological program), and the walk must report it
@@ -35,6 +36,48 @@ const MAX_AWAIT_DEPTH: usize = 64;
 /// method is `poll`, so it is slot 3.
 const VTABLE_SLOT_DROP: u64 = 0;
 const VTABLE_SLOT_FUTURE_POLL: u64 = 3;
+
+/// The leaf-future knowledge base (§3.6): the wait primitives hansei
+/// can interpret, keyed by leaf type-name prefix. It grows one row (and
+/// one reader fn) at a time, with no structural change.
+///
+/// The chain walker consults it too: a matching awaitee is a leaf even
+/// when it peels to a pointer — a `JoinHandle` peels to the joined
+/// task's `NonNull<Header>`, and following that would walk into another
+/// task entirely.
+const LEAF_FUTURES: &[(&str, LeafKind)] = &[
+    ("tokio::time::sleep::Sleep", LeafKind::Sleep),
+    (
+        "tokio::runtime::task::join::JoinHandle<",
+        LeafKind::JoinHandle,
+    ),
+    (
+        "tokio::sync::batch_semaphore::Acquire",
+        LeafKind::SemaphoreAcquire,
+    ),
+];
+
+#[derive(Copy, Clone, Debug)]
+enum LeafKind {
+    Sleep,
+    JoinHandle,
+    SemaphoreAcquire,
+}
+
+fn leaf_kind(name: &str) -> Option<LeafKind> {
+    LEAF_FUTURES
+        .iter()
+        .find(|(prefix, _)| name.starts_with(prefix))
+        .map(|(_, kind)| *kind)
+}
+
+/// Awaiter-frame prefixes naming the primitive whose semaphore an
+/// `Acquire` leaf is queued on.
+const SEMAPHORE_OWNERS: &[(&str, &str)] = &[
+    ("tokio::sync::mutex::", "tokio::sync::Mutex"),
+    ("tokio::sync::rwlock", "tokio::sync::RwLock"),
+    ("tokio::sync::semaphore", "tokio::sync::Semaphore"),
+];
 
 /// Everything needed to interpret a target process through a loaded bundle.
 pub struct Context<'b, T> {
@@ -707,6 +750,10 @@ impl<'b, T: Target> Context<'b, T> {
                     }
                     Err(e) => break ChainEnd::Error(e),
                 }
+            } else if leaf_kind(awaitee.ty.name()).is_some() {
+                // A recognized wait primitive is a leaf regardless of its
+                // shape; [`Context::wait_target`] interprets it.
+                cur = awaitee.to_owned();
             } else if peeled.ty.pointer_target().is_some() {
                 // `(&mut fut).await`, `Box<fut>`: follow the thin pointer.
                 match peeled.deref_ptr(self) {
@@ -771,6 +818,114 @@ impl<'b, T: Target> Context<'b, T> {
             }
         }
         Ok(DynAwaitee::Unknown { poll_symbol })
+    }
+
+    // -----------------------------------------------------------------------
+    // The leaf-future knowledge base (§3.6)
+    // -----------------------------------------------------------------------
+
+    /// What the chain's leaf future is waiting on, when it is a
+    /// recognized primitive.
+    ///
+    /// `None` for incomplete chains and unrecognized leaves; `Some(Err)`
+    /// when the leaf was recognized but its innards could not be read
+    /// (torn memory, or a tokio whose internals moved).
+    pub fn wait_target(&self, chain: &AwaitChain<'b>) -> Option<Result<WaitTarget>> {
+        if !matches!(chain.end, ChainEnd::Leaf) {
+            return None;
+        }
+        let leaf = chain.frames.last()?;
+        let kind = leaf_kind(leaf.future.ty.name())?;
+        Some(match kind {
+            LeafKind::Sleep => self.read_sleep(&leaf.future),
+            LeafKind::JoinHandle => self.read_join_handle(&leaf.future),
+            LeafKind::SemaphoreAcquire => self.read_acquire(&leaf.future, chain),
+        })
+    }
+
+    /// `tokio::time::Sleep`: the deadline its timer entry registered.
+    fn read_sleep(&self, sleep: &TypeInfo<'b, BundleType<'b>>) -> Result<WaitTarget> {
+        let entry = sleep.member("entry")?;
+        let deadline = match entry.try_member("deadline")? {
+            // Older tokios: `entry` is the TimerEntry itself.
+            Some(deadline) => deadline,
+            // tokio 1.52's `runtime::Timer` is an enum over the two
+            // timer implementations (traditional wheel vs time_alt);
+            // both variants carry the registered deadline.
+            None => entry.active_variant()?.1.member("deadline")?,
+        };
+        // The deadline is tokio's Instant, which peels down to the std
+        // Timespec on the target's monotonic clock.
+        let tv_sec: i64 = deadline.member("tv_sec")?.parse(self)?;
+        let tv_nsec: u32 = deadline.member("tv_nsec")?.parse(self)?;
+        Ok(WaitTarget::Timer {
+            deadline: RawInstant {
+                tv_sec: tv_sec as u64,
+                tv_nsec,
+            },
+        })
+    }
+
+    /// A `JoinHandle<T>`: the task being awaited — a dependency edge
+    /// between tasks (§3.6).
+    fn read_join_handle(&self, handle: &TypeInfo<'b, BundleType<'b>>) -> Result<WaitTarget> {
+        // JoinHandle.raw: RawTask, which peels to the NonNull<Header>.
+        let addr: u64 = handle.member("raw")?.parse(self)?;
+        ensure!(
+            self.mappings.contains_addr(addr),
+            "JoinHandle task pointer {addr:#x} is unmapped"
+        );
+        let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
+        let header = TypeInfo::from_addr(self, header_ty, addr)
+            .with_context(|| format!("failed to read the joined task Header at {addr:#x}"))?;
+        let vtable_addr: u64 = header.member("vtable")?.parse(self)?;
+        let vtable = self
+            .task_vtable(vtable_addr)
+            .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
+        let raw_id = self.proc.read_u64(addr + vtable.id_offset).map_err(|e| {
+            anyhow!(e).context(format!(
+                "failed to read the joined task id at {addr:#x}+{:#x}",
+                vtable.id_offset
+            ))
+        })?;
+        Ok(WaitTarget::Task {
+            addr,
+            task_id: (raw_id != 0).then_some(raw_id),
+        })
+    }
+
+    /// `batch_semaphore::Acquire`: queued on the semaphore that backs
+    /// tokio's Mutex, RwLock, and Semaphore. The semaphore address
+    /// identifies the contended resource; the frame that awaits the
+    /// Acquire names which primitive wraps it.
+    fn read_acquire(
+        &self,
+        acquire: &TypeInfo<'b, BundleType<'b>>,
+        chain: &AwaitChain<'b>,
+    ) -> Result<WaitTarget> {
+        let semaphore = acquire.member("semaphore")?;
+        let addr: u64 = semaphore.parse(self)?;
+        let num_permits: u64 = acquire.member("num_permits")?.parse(self)?;
+        let sem = semaphore
+            .deref_ptr(self)
+            .context("failed to read the Semaphore")?;
+        // `permits` keeps the available count shifted above the CLOSED
+        // bit.
+        let raw: u64 = sem.member("permits")?.parse(self)?;
+        let owner = chain.frames.iter().rev().nth(1).and_then(|frame| {
+            let name = frame.future.ty.name();
+            SEMAPHORE_OWNERS
+                .iter()
+                .find(|(prefix, _)| name.starts_with(prefix))
+                .map(|(_, owner)| *owner)
+        });
+        Ok(WaitTarget::Semaphore {
+            addr,
+            owner,
+            num_permits,
+            available: raw >> 1,
+            closed: raw & 1 != 0,
+        })
     }
 }
 
@@ -940,6 +1095,70 @@ pub enum ChainEnd {
     Cycle { addr: u64 },
     /// Reading or decoding below the last frame failed.
     Error(anyhow::Error),
+}
+
+/// What a leaf future is waiting on (§3.6).
+#[derive(Clone, Debug)]
+pub enum WaitTarget {
+    /// `tokio::time::Sleep`: parked on the timer wheel until a deadline
+    /// on the target's monotonic clock.
+    Timer { deadline: RawInstant },
+    /// A `JoinHandle`: waiting for another task to finish — a
+    /// dependency edge between tasks.
+    Task { addr: u64, task_id: Option<u64> },
+    /// `batch_semaphore::Acquire`: queued on the semaphore that backs
+    /// tokio's Mutex, RwLock, and Semaphore.
+    Semaphore {
+        addr: u64,
+        /// The wrapping primitive, when the awaiting frame names it.
+        owner: Option<&'static str>,
+        num_permits: u64,
+        available: u64,
+        closed: bool,
+    },
+}
+
+impl fmt::Display for WaitTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Timer { deadline } => write!(
+                f,
+                "the timer: deadline {}.{:03}s on the target's monotonic clock",
+                deadline.tv_sec,
+                deadline.tv_nsec / 1_000_000
+            ),
+            Self::Task {
+                task_id: Some(id), ..
+            } => write!(f, "task {id} (JoinHandle)"),
+            Self::Task {
+                addr,
+                task_id: None,
+            } => {
+                write!(f, "the task at {addr:#x} (JoinHandle)")
+            }
+            Self::Semaphore {
+                addr,
+                owner,
+                num_permits,
+                available,
+                closed,
+            } => {
+                match owner {
+                    Some(owner) => write!(f, "a {owner} (semaphore {addr:#x})")?,
+                    None => write!(f, "the semaphore at {addr:#x}")?,
+                }
+                let plural = if *num_permits == 1 { "" } else { "s" };
+                write!(
+                    f,
+                    ": {num_permits} permit{plural} requested, {available} available"
+                )?;
+                if *closed {
+                    write!(f, ", closed")?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// The outcome of resolving one `dyn Future` awaitee.
