@@ -18,6 +18,7 @@
 
 use exegesis::bundle::{Bundle, BundleView};
 use hansei_types::tokio::bundle::{AwaitChain, ChainEnd, Context, FutureInfo, TaskStage};
+use hansei_types::tokio::graph;
 use proc::Target;
 use proc::snapshot::Snapshot;
 
@@ -39,9 +40,19 @@ fn load(program: &str) -> (Bundle, Snapshot) {
     (bundle, snapshot)
 }
 
+/// Mask the run-varying values the analysis output carries — heap
+/// addresses and timer deadlines — so goldens compare exactly.
+fn mask(s: &str) -> String {
+    let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
+    let deadlines = regex::Regex::new(r"deadline \d+\.\d{3}s").unwrap();
+    deadlines
+        .replace_all(&addrs.replace_all(s, "0xADDR"), "deadline TS")
+        .into_owned()
+}
+
 /// Run the full offline pipeline — fingerprint, discovery, enumeration,
-/// stage decode, await chains — and render it as a golden-friendly
-/// summary.
+/// stage decode, await chains, and the dependency analysis — and render
+/// it as a golden-friendly summary.
 fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
     let view = BundleView::new(bundle);
     let ctx = Context::new(snapshot, view).expect("snapshot has mappings");
@@ -62,7 +73,16 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
         list.errors
     );
 
-    for task in &list.tasks {
+    // The dependency analysis (§3.6/§10): wait targets come from it so
+    // the per-task lines and the diagnoses agree by construction.
+    let analysis = graph::analyze(&ctx, &list);
+    assert!(
+        analysis.errors.is_empty(),
+        "graph analysis reported errors: {:?}",
+        analysis.errors
+    );
+
+    for (task, wait) in list.tasks.iter().zip(&analysis.waits) {
         let id = task.task_id.expect("every fixture task has an id");
         let (future, defined) = match &task.future {
             FutureInfo::Known(known) => (
@@ -92,10 +112,42 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
         match ctx.task_stage(task).expect("stage decodes") {
             TaskStage::Running(future) => {
                 render_chain(&mut out, &ctx.await_chain(future));
+                if let Some(target) = &wait.target {
+                    writeln!(out, "  waiting on {}", mask(&target.to_string())).unwrap();
+                }
             }
             TaskStage::Finished(_) => writeln!(out, "  finished").unwrap(),
             TaskStage::Consumed => writeln!(out, "  consumed").unwrap(),
         }
+    }
+
+    for fl in &analysis.futurelocks {
+        let acq = &fl.acquire;
+        let grant = if acq.granted() {
+            "granted"
+        } else {
+            "queued for"
+        };
+        let owner = acq.owner.map(|o| format!("the {o} ")).unwrap_or_default();
+        let loc = acq
+            .await_loc
+            .as_ref()
+            .map(|(file, line)| format!(" @ {file}:{line}"))
+            .unwrap_or_default();
+        let blocked: Vec<String> = fl.blocked.iter().map(ToString::to_string).collect();
+        writeln!(
+            out,
+            "futurelock: {} holds `{}` ({}), {grant} {} permit(s) of {}semaphore {}",
+            fl.holder,
+            acq.local,
+            acq.future,
+            acq.num_permits,
+            owner,
+            mask(&format!("{:#x}", acq.semaphore)),
+        )
+        .unwrap();
+        writeln!(out, "  held across {} {}{loc}", acq.frame, acq.state).unwrap();
+        writeln!(out, "  blocked: [{}]", blocked.join(", ")).unwrap();
     }
     out
 }
@@ -245,6 +297,39 @@ task 5 idle futurelock::main::{async_block#0}::{async_block_env#0}
   await tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()> Suspend1 @ src/sync/mutex.rs:658 locals [self]
   await tokio::sync::batch_semaphore::Acquire
   end leaf
+  waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+futurelock: task 5 holds `future1` (futurelock::do_async_thing::{async_fn_env#0}), granted 1 permit(s) of the tokio::sync::Mutex semaphore 0xADDR
+  held across futurelock::do_stuff::{async_fn_env#0} Suspend1 @ futurelock.rs:60
+  blocked: [task 5]
+"#,
+    );
+}
+
+/// The leaf-future wait targets and dependency edges, offline: the
+/// sleeper reports its (masked) timer deadline, the joiner reports the
+/// sleeper's id through its JoinHandle, and a healthy runtime yields
+/// no futurelock diagnosis.
+#[test]
+fn test_sleep_join_offline() {
+    assert_summary(
+        "sleep-join",
+        r#"
+fingerprint 17/17
+workers 3
+task 3 idle sleep_join::sleeper::{async_fn_env#0}
+  spawned test-programs/src/bin/sleep-join.rs:26:22
+  defined sleep-join.rs:9
+  await sleep_join::sleeper::{async_fn_env#0} Suspend0 @ sleep-join.rs:11 locals [ready]
+  await tokio::time::sleep::Sleep
+  end leaf
+  waiting on the timer: deadline TS on the target's monotonic clock
+task 4 idle sleep_join::joiner::{async_fn_env#0}
+  spawned test-programs/src/bin/sleep-join.rs:27:23
+  defined sleep-join.rs:15
+  await sleep_join::joiner::{async_fn_env#0} Suspend0 @ sleep-join.rs:17 locals [ready, handle]
+  await tokio::runtime::task::join::JoinHandle<u32>
+  end leaf
+  waiting on task 3 (JoinHandle)
 "#,
     );
 }
