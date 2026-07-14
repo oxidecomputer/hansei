@@ -31,7 +31,7 @@ FIXTURES="$PWD/fixtures"
 
 # Program -> the stdout line marking its parked steady state. Reads
 # block on the child's stdout; there are no timing sleeps anywhere.
-PROGRAMS=(simple-await nested-await dyn-future futurelock)
+PROGRAMS=(simple-await nested-await dyn-future futurelock sleep-join)
 marker() {
     case "$1" in
         # Deadlocked for good once the background task drops the lock
