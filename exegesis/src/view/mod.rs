@@ -105,6 +105,25 @@ impl<'a> DwView<'a> {
             .unwrap_or_default()
     }
 
+    /// Find the canonical [`TypeId`]s of all types matching a path.
+    ///
+    /// Like [`DwView::find_all`], but returns the ids for callers that
+    /// need to track type identity (e.g. extraction).
+    pub fn find_all_ids(&self, path: &str) -> Vec<TypeId> {
+        let Some((ns_id, type_name)) = self.resolve_path(path) else {
+            return Vec::new();
+        };
+        self.by_name
+            .get(type_name)
+            .map(|ids| {
+                ids.iter()
+                    .filter(|&&id| self.get(id).namespace_id() == ns_id)
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Iterate over all canonical types.
     pub fn types(&self) -> impl Iterator<Item = (TypeId, Type<'a>)> + '_ {
         self.collector
