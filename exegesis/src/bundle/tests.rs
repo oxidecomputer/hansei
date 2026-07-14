@@ -835,6 +835,84 @@ mod view_tests {
         assert_eq!(v.state_name(), "Running");
     }
 
+    /// A `Box<dyn Future>`-shaped wide pointer: a `pointer` member
+    /// targeting the unsized `(dyn …)` struct plus a `vtable` pointer.
+    fn dyn_bundle() -> Bundle {
+        let mut b = super::tiny_bundle();
+        let mut strings = StringInterner::new();
+        let usizen = strings.intern("usize");
+        let dynn = strings.intern("(dyn core::future::future::Future<Output=u32> + core::marker::Send)");
+        let boxn = strings.intern("alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global>");
+        let plainn = strings.intern("app::NotDyn");
+        let pointer = strings.intern("pointer");
+        let vtable = strings.intern("vtable");
+
+        b.types = TypeTable {
+            types: vec![
+                // 0: usize
+                TypeDef::Base { name: usizen, size: 8, encoding: Encoding::Unsigned },
+                // 1: the unsized dyn type
+                TypeDef::Struct { name: dynn, size: 0, members: vec![] },
+                // 2: *dyn
+                TypeDef::Pointer { name: None, target: BundleTypeId(1) },
+                // 3: [usize; 4]
+                TypeDef::Array { elem: BundleTypeId(0), count: 4 },
+                // 4: &[usize; 4]
+                TypeDef::Pointer { name: None, target: BundleTypeId(3) },
+                // 5: Box<dyn Future>
+                TypeDef::Struct {
+                    name: boxn,
+                    size: 16,
+                    members: vec![
+                        MemberDef { name: pointer, ty: BundleTypeId(2), offset: 0 },
+                        MemberDef { name: vtable, ty: BundleTypeId(4), offset: 8 },
+                    ],
+                },
+                // 6: a sized struct (not a trait object)
+                TypeDef::Struct { name: plainn, size: 8, members: vec![] },
+                // 7: *NotDyn
+                TypeDef::Pointer { name: None, target: BundleTypeId(6) },
+                // 8: { pointer: *NotDyn, vtable: &[usize; 4] }
+                TypeDef::Struct {
+                    name: plainn,
+                    size: 16,
+                    members: vec![
+                        MemberDef { name: pointer, ty: BundleTypeId(7), offset: 0 },
+                        MemberDef { name: vtable, ty: BundleTypeId(4), offset: 8 },
+                    ],
+                },
+                // 9: { pointer: *dyn } without a vtable member
+                TypeDef::Struct {
+                    name: plainn,
+                    size: 8,
+                    members: vec![MemberDef { name: pointer, ty: BundleTypeId(2), offset: 0 }],
+                },
+            ],
+            name_index: vec![],
+        };
+        b.strings = strings.finish();
+        b.validate().expect("test bundle must validate");
+        b
+    }
+
+    #[test]
+    fn test_dyn_pointer_detection() {
+        let b = dyn_bundle();
+        let view = BundleView::new(&b);
+
+        let dp = view.ty(BundleTypeId(5)).unwrap().dyn_pointer().expect("Box<dyn> detected");
+        assert_eq!(dp.data_offset, 0);
+        assert_eq!(dp.vtable_offset, 8);
+        assert!(dp.pointee.name().starts_with("(dyn core::future"));
+
+        // Pointer to a sized type: not a trait object.
+        assert!(view.ty(BundleTypeId(8)).unwrap().dyn_pointer().is_none());
+        // No vtable member: not a wide pointer.
+        assert!(view.ty(BundleTypeId(9)).unwrap().dyn_pointer().is_none());
+        // Non-structs never match.
+        assert!(view.ty(BundleTypeId(0)).unwrap().dyn_pointer().is_none());
+    }
+
     #[test]
     fn test_view_structural_accessors() {
         let mut b = super::tiny_bundle();
