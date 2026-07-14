@@ -13,9 +13,9 @@ pub use raw_types::{Encoding, NamespaceTable, NsEntry, NsId};
 pub use reader::{DwReader, ReadArgs, Targets};
 pub use string_table::StrId;
 pub use view::{
-    Base, DwView, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace,
+    Array, Base, DwView, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace,
     NsFuncIter, NsTypeIter, NsVarIter, Param, ParamIter, Pointer, SourceLocView, StaticVariable,
-    Struct, TemplateParam, TemplateParamIter, Type, Variant, VariantIter, VariantShapeView,
+    Struct, TemplateParam, TemplateParamIter, Type, Union, Variant, VariantIter, VariantShapeView,
 };
 
 use gimli::{EndianSlice, RunTimeEndian, UnitSectionOffset};
@@ -27,6 +27,8 @@ pub enum TypeKind {
     Pointer,
     Enum,
     Struct,
+    Union,
+    Array,
 }
 
 use std::fmt;

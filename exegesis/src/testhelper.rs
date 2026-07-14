@@ -191,6 +191,36 @@ pub mod generics {
     }
 }
 
+pub mod blobs {
+    /// A plain union, plus a generic one to carry template params.
+    pub union IntOrFloat {
+        pub i: u32,
+        pub f: f32,
+    }
+
+    pub union Slot<T: Copy> {
+        pub empty: (),
+        pub value: T,
+    }
+
+    /// Arrays as members, in two sizes plus a repeated element type to
+    /// exercise array dedup by (element, count).
+    pub struct Buffers {
+        pub bytes: [u8; 16],
+        pub more_bytes: [u8; 16],
+        pub words: [u64; 3],
+    }
+
+    pub static EITHER_NUM: IntOrFloat = IntOrFloat { i: 7 };
+    pub static SLOT: Slot<u32> = Slot { value: 5 };
+    pub static BUFS: Buffers = Buffers {
+        bytes: [0; 16],
+        more_bytes: [1; 16],
+        words: [2; 3],
+    };
+    pub static RAW_TABLE: [u32; 4] = [1, 2, 3, 4];
+}
+
 pub mod asyncs {
     /// Leaf async fn: no awaits, but still compiled to a coroutine type.
     pub async fn leaf(x: u32) -> u32 {

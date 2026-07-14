@@ -2,8 +2,8 @@ use crate::cgu::CodegenUnit;
 use crate::parallel_fold::OrderedParallelFold;
 use crate::raw_types::{
     NamespaceTable, NsId, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember,
-    RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawVariant,
-    SourceLoc, VariantShape,
+    RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawUnion,
+    RawVariant, SourceLoc, VariantShape,
 };
 use crate::string_table::{StrId, StringTable};
 use crate::{Error, FuncId, Result, Slice};
@@ -29,6 +29,10 @@ pub struct DwReader<'dw> {
     name_index: HashMap<(Option<NsId>, Option<StrId>), TypeId>,
     /// Pointer dedup index: canonical target TypeId → canonical pointer TypeId.
     pointer_index: HashMap<TypeId, TypeId>,
+    /// Array dedup index: canonical (element TypeId, count) → canonical
+    /// array TypeId. Arrays are anonymous, so like unnamed pointers they
+    /// dedup structurally rather than by name.
+    array_index: HashMap<(TypeId, u64), TypeId>,
     /// Substitution map: non-canonical TypeId → canonical TypeId.
     subs: HashMap<TypeId, TypeId>,
     /// All static variables, keyed by their VarId.
@@ -146,6 +150,7 @@ impl<'dw> DwReader<'dw> {
             types: HashMap::new(),
             name_index: HashMap::new(),
             pointer_index: HashMap::new(),
+            array_index: HashMap::new(),
             subs: HashMap::new(),
             variables: HashMap::new(),
             functions: HashMap::new(),
@@ -175,6 +180,17 @@ impl<'dw> DwReader<'dw> {
                         self.subs.insert(type_id, canonical_ptr);
                     } else {
                         self.pointer_index.insert(canonical_target, type_id);
+                    }
+                }
+                RawType::Array(a) => {
+                    // Arrays are anonymous: dedup by canonical element and
+                    // count.
+                    let key = (self.canonicalize(a.elem_type_id), a.count);
+                    self.types.insert(type_id, ty);
+                    if let Some(&canonical_array) = self.array_index.get(&key) {
+                        self.subs.insert(type_id, canonical_array);
+                    } else {
+                        self.array_index.insert(key, type_id);
                     }
                 }
                 _ => {
@@ -271,6 +287,9 @@ fn type_name_key(ty: &RawType<StrId>) -> (Option<NsId>, Option<StrId>) {
         RawType::Enum(e) => (e.namespace, e.name),
         RawType::Pointer(p) => (None, p.name),
         RawType::Struct(s) => (s.namespace, s.name),
+        RawType::Union(u) => (u.namespace, u.name),
+        // Arrays never reach the named-dedup path (see `ingest`).
+        RawType::Array(_) => (None, None),
     }
 }
 
@@ -315,6 +334,22 @@ fn intern_type<'dw>(strings: &mut StringTable<'dw>, ty: RawType<&'dw str>) -> Ra
                 .source_loc
                 .map(|loc| Box::new(intern_source_loc(strings, *loc))),
         }),
+        RawType::Union(u) => RawType::Union(RawUnion {
+            name: intern(u.name),
+            namespace: u.namespace,
+            size: u.size,
+            members: u
+                .members
+                .into_vec()
+                .into_iter()
+                .map(|m| intern_member(strings, m))
+                .collect(),
+            template_params: intern_generic_params(strings, u.template_params),
+            source_loc: u
+                .source_loc
+                .map(|loc| Box::new(intern_source_loc(strings, *loc))),
+        }),
+        RawType::Array(a) => RawType::Array(a),
     }
 }
 
@@ -475,6 +510,7 @@ fn remap_ns_in_place(ty: &mut RawType<&str>, ns_remap: &HashMap<NsId, NsId>) {
         RawType::Base(b) => remap(&mut b.namespace),
         RawType::Enum(e) => remap(&mut e.namespace),
         RawType::Struct(s) => remap(&mut s.namespace),
-        RawType::Pointer(_) => {}
+        RawType::Union(u) => remap(&mut u.namespace),
+        RawType::Pointer(_) | RawType::Array(_) => {}
     }
 }

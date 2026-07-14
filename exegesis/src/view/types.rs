@@ -1,7 +1,7 @@
 use crate::raw_types::{
-    Encoding, NsId, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember, RawPointer,
-    RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawVariant, SourceLoc,
-    VariantShape,
+    Encoding, NsId, RawArray, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember,
+    RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawUnion,
+    RawVariant, SourceLoc, VariantShape,
 };
 use crate::reader::DwReader;
 use crate::string_table::StrId;
@@ -21,6 +21,8 @@ pub enum Type<'a> {
     Pointer(Pointer<'a>),
     Enum(Enum<'a>),
     Struct(Struct<'a>),
+    Union(Union<'a>),
+    Array(Array<'a>),
 }
 
 impl<'a> Type<'a> {
@@ -43,6 +45,14 @@ impl<'a> Type<'a> {
                 raw: inner,
                 collector,
             }),
+            RawType::Union(inner) => Type::Union(Union {
+                raw: inner,
+                collector,
+            }),
+            RawType::Array(inner) => Type::Array(Array {
+                raw: inner,
+                collector,
+            }),
         }
     }
 
@@ -53,6 +63,8 @@ impl<'a> Type<'a> {
             Type::Pointer(_) => TypeKind::Pointer,
             Type::Enum(_) => TypeKind::Enum,
             Type::Struct(_) => TypeKind::Struct,
+            Type::Union(_) => TypeKind::Union,
+            Type::Array(_) => TypeKind::Array,
         }
     }
 
@@ -63,6 +75,8 @@ impl<'a> Type<'a> {
             Type::Pointer(_) => None,
             Type::Enum(t) => t.raw.namespace,
             Type::Struct(t) => t.raw.namespace,
+            Type::Union(t) => t.raw.namespace,
+            Type::Array(_) => None,
         }
     }
 
@@ -73,6 +87,8 @@ impl<'a> Type<'a> {
             Type::Pointer(t) => t.name(),
             Type::Enum(t) => t.name(),
             Type::Struct(t) => t.name(),
+            Type::Union(t) => t.name(),
+            Type::Array(_) => None,
         }
     }
 
@@ -80,6 +96,7 @@ impl<'a> Type<'a> {
     pub fn members(&'a self) -> MemberIter<'a> {
         match self {
             Type::Struct(t) => t.members(),
+            Type::Union(t) => t.members(),
             _ => MemberIter {
                 members: &[],
                 index: 0,
@@ -116,12 +133,28 @@ impl<'a> Type<'a> {
         }
     }
 
+    pub fn as_union(&self) -> Option<Union<'a>> {
+        match self {
+            Type::Union(t) => Some(*t),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<Array<'a>> {
+        match self {
+            Type::Array(t) => Some(*t),
+            _ => None,
+        }
+    }
+
     fn collector(&self) -> &DwReader<'a> {
         match self {
             Self::Base(b) => b.collector,
             Self::Pointer(p) => p.collector,
             Self::Enum(e) => e.collector,
             Self::Struct(s) => s.collector,
+            Self::Union(u) => u.collector,
+            Self::Array(a) => a.collector,
         }
     }
 }
@@ -133,6 +166,8 @@ impl fmt::Debug for Type<'_> {
             Type::Pointer(t) => fmt::Debug::fmt(t, f),
             Type::Enum(t) => fmt::Debug::fmt(t, f),
             Type::Struct(t) => fmt::Debug::fmt(t, f),
+            Type::Union(t) => fmt::Debug::fmt(t, f),
+            Type::Array(t) => fmt::Debug::fmt(t, f),
         }
     }
 }
@@ -626,6 +661,140 @@ impl fmt::Debug for Struct<'_> {
             .field("name", &self.name())
             .field("size", &self.size())
             .field("member_count", &self.member_count())
+            .finish()
+    }
+}
+
+// --- Union ---
+
+#[derive(Copy, Clone)]
+pub struct Union<'a> {
+    raw: &'a RawUnion<StrId>,
+    collector: &'a DwReader<'a>,
+}
+
+impl<'a> Union<'a> {
+    pub fn name(&self) -> Option<&'a str> {
+        self.raw.name.map(|id| self.collector.strings.get(id))
+    }
+
+    pub fn namespace(&self) -> Option<Namespace<'a>> {
+        self.raw
+            .namespace
+            .map(|id| Namespace::new(id, self.collector))
+    }
+
+    pub fn size(&self) -> u64 {
+        self.raw.size
+    }
+
+    /// The number of members in the union.
+    pub fn member_count(&self) -> usize {
+        self.raw.members.len()
+    }
+
+    /// Return an iterator over members of this union.
+    pub fn members(&self) -> MemberIter<'a> {
+        MemberIter {
+            members: &self.raw.members,
+            index: 0,
+            collector: self.collector,
+        }
+    }
+
+    /// Return an iterator over the generic type arguments of this
+    /// instantiation, in declaration order.
+    pub fn template_params(&self) -> TemplateParamIter<'a> {
+        TemplateParamIter::new(&self.raw.template_params, self.collector)
+    }
+
+    /// Declaration coordinates of this type, if recorded.
+    pub fn source_loc(&self) -> Option<SourceLocView<'a>> {
+        self.raw
+            .source_loc
+            .as_deref()
+            .map(|loc| SourceLocView::new(loc, self.collector))
+    }
+
+    /// Find a member by name.
+    pub fn member(&self, name: &str) -> Option<Member<'a>> {
+        self.raw
+            .members
+            .iter()
+            .find(|m| m.name.map(|id| self.collector.strings.get(id)) == Some(name))
+            .map(|m| Member {
+                raw: m,
+                collector: self.collector,
+            })
+    }
+
+    pub fn raw(&self) -> &RawUnion<StrId> {
+        self.raw
+    }
+}
+
+impl<'a> From<Union<'a>> for Type<'a> {
+    fn from(val: Union<'a>) -> Self {
+        Type::Union(val)
+    }
+}
+
+impl fmt::Debug for Union<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Union")
+            .field("name", &self.name())
+            .field("size", &self.size())
+            .field("member_count", &self.member_count())
+            .finish()
+    }
+}
+
+// --- Array ---
+
+#[derive(Copy, Clone)]
+pub struct Array<'a> {
+    raw: &'a RawArray,
+    collector: &'a DwReader<'a>,
+}
+
+impl<'a> Array<'a> {
+    /// Returns the element type.
+    pub fn elem(&self) -> Type<'a> {
+        let canonical_id = self.collector.canonicalize(self.raw.elem_type_id);
+        let raw = self
+            .collector
+            .types
+            .get(&canonical_id)
+            .expect("array element TypeId not found in collector");
+        Type::from_raw(raw, self.collector)
+    }
+
+    /// Returns the element's `TypeId`.
+    pub fn elem_type_id(&self) -> TypeId {
+        self.raw.elem_type_id
+    }
+
+    /// The number of elements.
+    pub fn count(&self) -> u64 {
+        self.raw.count
+    }
+
+    pub fn raw(&self) -> &RawArray {
+        self.raw
+    }
+}
+
+impl<'a> From<Array<'a>> for Type<'a> {
+    fn from(val: Array<'a>) -> Self {
+        Type::Array(val)
+    }
+}
+
+impl fmt::Debug for Array<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Array")
+            .field("elem", &self.elem().name())
+            .field("count", &self.count())
             .finish()
     }
 }
@@ -2445,5 +2614,104 @@ mod tests {
             assert_eq!(ty.name(), Some("{async_fn_env#0}"));
         });
     }
-}
 
+    // ---- L. Unions and arrays ----
+
+    #[test]
+    fn test_union_members() {
+        with_view!(view => {
+            let ty = view
+                .find("testlib::blobs::IntOrFloat", TypeKind::Union)
+                .expect("IntOrFloat not found");
+            let u = ty.as_union().unwrap();
+            assert_eq!(u.name(), Some("IntOrFloat"));
+            assert_eq!(u.size(), 4);
+            assert_eq!(u.member_count(), 2);
+
+            let i = u.member("i").expect("member i");
+            assert_eq!(i.offset(), 0);
+            assert_eq!(i.ty().name(), Some("u32"));
+            let f = u.member("f").expect("member f");
+            assert_eq!(f.offset(), 0);
+            assert_eq!(f.ty().name(), Some("f32"));
+        });
+    }
+
+    #[test]
+    fn test_union_template_params() {
+        with_view!(view => {
+            let ty = view
+                .find("testlib::blobs::Slot<u32>", TypeKind::Union)
+                .expect("Slot<u32> not found");
+            let u = ty.as_union().unwrap();
+            let params: Vec<_> = u.template_params().collect();
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].name(), Some("T"));
+            assert_eq!(params[0].ty().name(), Some("u32"));
+        });
+    }
+
+    #[test]
+    fn test_union_namespace() {
+        with_view!(view => {
+            let ty = view
+                .find("testlib::blobs::IntOrFloat", TypeKind::Union)
+                .unwrap();
+            let u = ty.as_union().unwrap();
+            assert_eq!(u.namespace().unwrap().full_name(), "testlib::blobs");
+        });
+    }
+
+    #[test]
+    fn test_array_members() {
+        with_view!(view => {
+            let ty = view
+                .find("testlib::blobs::Buffers", TypeKind::Struct)
+                .expect("Buffers not found");
+            let s = ty.as_struct().unwrap();
+
+            let bytes = s.member("bytes").unwrap().ty();
+            assert_eq!(bytes.kind(), TypeKind::Array);
+            assert!(bytes.name().is_none());
+            let arr = bytes.as_array().unwrap();
+            assert_eq!(arr.count(), 16);
+            assert_eq!(arr.elem().name(), Some("u8"));
+
+            let words = s.member("words").unwrap().ty().as_array().unwrap();
+            assert_eq!(words.count(), 3);
+            assert_eq!(words.elem().name(), Some("u64"));
+        });
+    }
+
+    #[test]
+    fn test_array_dedup_by_elem_and_count() {
+        with_view!(view => {
+            let ty = view
+                .find("testlib::blobs::Buffers", TypeKind::Struct)
+                .unwrap();
+            let s = ty.as_struct().unwrap();
+            let collector = view.collector();
+
+            // Same (element, count) → one canonical array type.
+            let a = collector.canonicalize(s.member("bytes").unwrap().type_id());
+            let b = collector.canonicalize(s.member("more_bytes").unwrap().type_id());
+            assert_eq!(a, b);
+
+            // Different count → different canonical type.
+            let c = collector.canonicalize(s.member("words").unwrap().type_id());
+            assert_ne!(a, c);
+        });
+    }
+
+    #[test]
+    fn test_static_of_array_type() {
+        with_view!(view => {
+            let v = view
+                .find_var("testlib::blobs::RAW_TABLE")
+                .expect("RAW_TABLE not found");
+            let arr = v.ty().as_array().expect("RAW_TABLE should be an array");
+            assert_eq!(arr.count(), 4);
+            assert_eq!(arr.elem().name(), Some("u32"));
+        });
+    }
+}

@@ -116,6 +116,8 @@ pub enum RawType<S> {
     Pointer(RawPointer<S>),
     Enum(RawEnum<S>),
     Struct(RawStruct<S>),
+    Union(RawUnion<S>),
+    Array(RawArray),
 }
 
 impl<S: Copy> RawType<S> {
@@ -125,6 +127,8 @@ impl<S: Copy> RawType<S> {
             Self::Pointer(p) => p.name,
             Self::Enum(e) => e.name,
             Self::Struct(s) => s.name,
+            Self::Union(u) => u.name,
+            Self::Array(_) => None,
         }
     }
 
@@ -134,6 +138,8 @@ impl<S: Copy> RawType<S> {
             Self::Pointer(_) => None,
             Self::Enum(e) => e.namespace,
             Self::Struct(s) => s.namespace,
+            Self::Union(u) => u.namespace,
+            Self::Array(_) => None,
         }
     }
 }
@@ -159,6 +165,18 @@ impl<S> From<RawEnum<S>> for RawType<S> {
 impl<S> From<RawStruct<S>> for RawType<S> {
     fn from(s: RawStruct<S>) -> Self {
         Self::Struct(s)
+    }
+}
+
+impl<S> From<RawUnion<S>> for RawType<S> {
+    fn from(u: RawUnion<S>) -> Self {
+        Self::Union(u)
+    }
+}
+
+impl<S> From<RawArray> for RawType<S> {
+    fn from(a: RawArray) -> Self {
+        Self::Array(a)
     }
 }
 
@@ -308,6 +326,37 @@ pub struct RawStruct<S> {
     pub template_params: Box<[RawGenericParameter<S>]>,
     /// Location of the type's declaration in the source.
     pub source_loc: Option<Box<SourceLoc<S>>>,
+}
+
+/// A Rust union (`DW_TAG_union_type`), e.g. `MaybeUninit<T>`.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct RawUnion<S> {
+    /// The name of the union.
+    pub name: Option<S>,
+    /// The namespace of the union.
+    pub namespace: Option<NsId>,
+    /// The size of the union in bytes.
+    pub size: u64,
+    /// The members of the union. All share offset 0 in practice, but the
+    /// DWARF offsets are preserved.
+    pub members: Box<[RawMember<S>]>,
+    /// Generic type arguments of this instantiation
+    /// (`DW_TAG_template_type_parameter` children), in declaration order.
+    pub template_params: Box<[RawGenericParameter<S>]>,
+    /// Location of the type's declaration in the source.
+    pub source_loc: Option<Box<SourceLoc<S>>>,
+}
+
+/// A fixed-length array (`DW_TAG_array_type`), e.g. `[u8; 16]`.
+///
+/// Arrays are anonymous in DWARF; the element type and count are their
+/// identity.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct RawArray {
+    /// The element type.
+    pub elem_type_id: TypeId,
+    /// The number of elements (`DW_AT_count` of the subrange child).
+    pub count: u64,
 }
 
 /// Information on a type parameter binding for an instance of a generic type.
