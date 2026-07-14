@@ -19,7 +19,7 @@ use exegesis::bundle::{
     BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, TaskEntryId,
     TaskFutureEntry, TypeDef, strip_llvm_suffix,
 };
-use proc::{LwpInfo, Mappings, Proc};
+use proc::{LwpInfo, Mappings, Target};
 use reify::{ParseCtx, TypeInfo, TypeInfoRef};
 
 use std::cell::RefCell;
@@ -37,8 +37,8 @@ const VTABLE_SLOT_DROP: u64 = 0;
 const VTABLE_SLOT_FUTURE_POLL: u64 = 3;
 
 /// Everything needed to interpret a target process through a loaded bundle.
-pub struct Context<'b> {
-    pub proc: &'b Proc,
+pub struct Context<'b, T> {
+    pub proc: &'b T,
     pub view: BundleView<'b>,
     pub mappings: Mappings,
     /// Target text address → mangled symtab name (`None` when the address
@@ -49,8 +49,8 @@ pub struct Context<'b> {
     vtables: RefCell<HashMap<u64, TaskVtable>>,
 }
 
-impl<'b> Context<'b> {
-    pub fn new(proc: &'b Proc, view: BundleView<'b>) -> Result<Self> {
+impl<'b, T: Target> Context<'b, T> {
+    pub fn new(proc: &'b T, view: BundleView<'b>) -> Result<Self> {
         let mappings = proc.mappings().context("failed to read target mappings")?;
         Ok(Self {
             proc,
@@ -774,10 +774,10 @@ impl<'b> Context<'b> {
     }
 }
 
-impl ParseCtx for Context<'_> {
-    type Target = Proc;
+impl<T: Target> ParseCtx for Context<'_, T> {
+    type Target = T;
 
-    fn proc(&self) -> &Proc {
+    fn proc(&self) -> &T {
         self.proc
     }
 

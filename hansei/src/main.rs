@@ -657,7 +657,7 @@ fn print_await_chain(
 /// Attach-time bundle validation (§5.1), shared by all bundle-mode
 /// subcommands: a bundle from a different commit/toolchain must never
 /// silently misinterpret memory. `force` downgrades refusal to a warning.
-fn check_fingerprint(ctx: &bundle::Context<'_>, force: bool) -> Result<()> {
+fn check_fingerprint(ctx: &bundle::Context<'_, Proc>, force: bool) -> Result<()> {
     let fp = ctx.validate_fingerprint();
     if fp.is_complete() {
         return Ok(());
@@ -695,7 +695,7 @@ fn check_fingerprint(ctx: &bundle::Context<'_>, force: bool) -> Result<()> {
 /// or the legacy byte-pattern heuristic on request.
 fn discover_workers(
     proc: &Proc,
-    ctx: &bundle::Context<'_>,
+    ctx: &bundle::Context<'_, Proc>,
     heuristic: bool,
 ) -> Result<Vec<bundle::Worker>> {
     let lwps = proc.lwps().context("failed to read lwps")?;

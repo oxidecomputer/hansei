@@ -5,19 +5,23 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
-camino.workspace = true
-debugdb.workspace = true
 derive_more.workspace = true
-durin.workspace = true
 exegesis.workspace = true
 humantime.workspace = true
 proc.workspace = true
+reify.workspace = true
+
+# The CTF and debugdb-based DWARF paths read live targets through
+# libproc; only the bundle path compiles everywhere.
+[target.'cfg(target_os = "illumos")'.dependencies]
+camino.workspace = true
+debugdb.workspace = true
+durin.workspace = true
 memmap2.workspace = true
 # Pinned to match debugdb's object version; the workspace is on a newer one.
 object = "0.33"
 rangemap.workspace = true
 regex.workspace = true
-reify.workspace = true
 rustc-demangle.workspace = true
 semver.workspace = true
 unwind.workspace = true

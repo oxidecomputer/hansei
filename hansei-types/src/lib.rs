@@ -4,6 +4,7 @@
 
 //! Useful types for building async debuggers based on tokio
 
+#[cfg(target_os = "illumos")]
 pub mod debugger;
 pub mod tokio;
 
