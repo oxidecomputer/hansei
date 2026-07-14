@@ -21,6 +21,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Extract an async debug bundle from a debug binary's DWARF.
+    Extract {
+        /// Debug binary (or any DWARF-bearing object).
+        binary: PathBuf,
+        /// Output bundle path.
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Print extraction statistics.
+        #[arg(long)]
+        stats: bool,
+        /// Extra root types to include, by fully-qualified name.
+        #[arg(long = "include-type")]
+        include_types: Vec<String>,
+        /// Extract even when tokio infrastructure types or statics are
+        /// missing (placeholders are emitted instead).
+        #[arg(long)]
+        allow_missing_infra: bool,
+    },
     /// Parse a binary's DWARF and summarize its types and statics.
     DumpDwarf {
         /// ELF binary (or object file) with DWARF debug info.
@@ -45,10 +63,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     match Cli::parse().cmd {
+        Cmd::Extract {
+            binary,
+            output,
+            stats,
+            include_types,
+            allow_missing_infra,
+        } => extract(&binary, &output, stats, include_types, allow_missing_infra),
         Cmd::DumpDwarf { binary } => dump_dwarf(&binary),
         Cmd::Stats { bundle } => stats(&bundle),
         Cmd::Dump { bundle } => dump(&bundle),
     }
+}
+
+fn extract(
+    binary: &Path,
+    output: &Path,
+    print_stats: bool,
+    include_types: Vec<String>,
+    allow_missing_infra: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let opts = exegesis::extract::ExtractOptions {
+        include_types,
+        allow_missing_infra,
+        extract_args: std::env::args().skip(1).collect::<Vec<_>>().join(" "),
+    };
+    let (bundle, stats) = exegesis::extract::extract_file(binary, &opts)?;
+    bundle.save(output)?;
+    println!(
+        "wrote {} ({} types, {} task entries, {} dyn futures)",
+        output.display(),
+        bundle.types.types.len(),
+        bundle.tasks.entries.len(),
+        bundle.dyn_futures.by_symbol.len(),
+    );
+    if print_stats {
+        print!("{stats}");
+    }
+    Ok(())
 }
 
 fn dump_dwarf(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
