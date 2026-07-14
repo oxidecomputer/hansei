@@ -150,6 +150,9 @@ impl Bundle {
                     for v in &shape.variants {
                         check_str(what, v.name)?;
                         check_member(what, &v.payload)?;
+                        if let Some(loc) = &v.decl {
+                            check_str(what, loc.file)?;
+                        }
                     }
                 }
                 TypeDef::CEnum { name, repr, enumerators, .. } => {

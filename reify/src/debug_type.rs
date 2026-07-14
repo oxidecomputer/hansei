@@ -641,9 +641,9 @@ mod bundle_tests {
                 shape: VariantShape {
                     discr: Some(DiscrDef { offset: 0, ty: U8 }),
                     variants: vec![
-                        VariantDef { name: an, discr_values: tag(0), payload: m(an, POINT, 8) },
-                        VariantDef { name: bn, discr_values: tag(1), payload: m(bn, U64, 8) },
-                        VariantDef { name: cn, discr_values: tag(2), payload: m(cn, UNIT, 8) },
+                        VariantDef { name: an, discr_values: tag(0), payload: m(an, POINT, 8), decl: None },
+                        VariantDef { name: bn, discr_values: tag(1), payload: m(bn, U64, 8), decl: None },
+                        VariantDef { name: cn, discr_values: tag(2), payload: m(cn, UNIT, 8), decl: None },
                     ],
                 },
             },
@@ -653,8 +653,8 @@ mod bundle_tests {
                 shape: VariantShape {
                     discr: Some(DiscrDef { offset: 0, ty: U64 }),
                     variants: vec![
-                        VariantDef { name: nonen, discr_values: tag(0), payload: m(nonen, UNIT, 0) },
-                        VariantDef { name: somen, discr_values: None, payload: m(somen, U64, 0) },
+                        VariantDef { name: nonen, discr_values: tag(0), payload: m(nonen, UNIT, 0), decl: None },
+                        VariantDef { name: somen, discr_values: None, payload: m(somen, U64, 0), decl: None },
                     ],
                 },
             },

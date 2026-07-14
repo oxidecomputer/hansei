@@ -113,6 +113,14 @@ fn random_bundle(seed: u64) -> Bundle {
                                 ])),
                             },
                             payload: member(&mut rng, &mut strings, v),
+                            decl: if rng.below(3) == 0 {
+                                Some(SourceLoc {
+                                    file: strings.intern("src/lib.rs"),
+                                    line: (rng.next() % 10_000) as u32,
+                                })
+                            } else {
+                                None
+                            },
                         })
                         .collect(),
                 },
@@ -512,6 +520,7 @@ mod view_tests {
                 name: strings.intern(name),
                 discr_values,
                 payload: MemberDef { name: strings.intern(name), ty, offset },
+                decl: None,
             })
             .collect();
 
