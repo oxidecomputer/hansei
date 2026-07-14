@@ -16,14 +16,25 @@ use super::{Location, TaskAddr, TaskState};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use exegesis::bundle::{
-    BundleType, BundleTypeId, BundleView, FutureKind, StaticRole, TaskEntryId, TaskFutureEntry,
-    TypeDef, strip_llvm_suffix,
+    BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, TaskEntryId,
+    TaskFutureEntry, TypeDef, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, Proc};
-use reify::{ParseCtx, TypeInfo};
+use reify::{ParseCtx, TypeInfo, TypeInfoRef};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+
+/// Hard bound on await-chain depth: anything deeper indicates corrupt
+/// memory (or a pathological program), and the walk must report it
+/// rather than hang (§3.5).
+const MAX_AWAIT_DEPTH: usize = 64;
+
+/// Rust vtables place the drop-in-place glue in slot 0, size and align
+/// in slots 1 and 2, and the trait's methods after; `Future`'s only
+/// method is `poll`, so it is slot 3.
+const VTABLE_SLOT_DROP: u64 = 0;
+const VTABLE_SLOT_FUTURE_POLL: u64 = 3;
 
 /// Everything needed to interpret a target process through a loaded bundle.
 pub struct Context<'b> {
@@ -501,6 +512,266 @@ impl<'b> Context<'b> {
             .transpose()?;
         Ok(next)
     }
+
+    // -----------------------------------------------------------------------
+    // Task tracing (§3.4–§3.5)
+    // -----------------------------------------------------------------------
+
+    /// Decode a task's `Stage<T>` (§3.4): the future lives at
+    /// `header_addr + offset(Cell.core) + offset(Core.stage)`, and the
+    /// stage's discriminant says whether the state machine is resident.
+    ///
+    /// Requires the future type to have been resolved (§3.3); an unknown
+    /// future has no `Cell` layout to interpret the memory with, and we
+    /// never guess.
+    pub fn task_stage(&self, task: &Task) -> Result<TaskStage<'b>> {
+        let known = match &task.future {
+            FutureInfo::Known(known) => known,
+            FutureInfo::Unknown { poll_symbol } => {
+                let sym = poll_symbol
+                    .as_ref()
+                    .map(|s| format!(" (poll symbol {s})"))
+                    .unwrap_or_default();
+                bail!("the task's future type is not in the bundle{sym}; nothing can be traced");
+            }
+        };
+        let entry = self.task_entry(known.entry);
+        let cell_ty = self.infra_ty(entry.cell, &format!("the Cell of {}", known.display_name))?;
+        let cell = TypeInfo::from_addr(self, cell_ty, task.addr.0)
+            .with_context(|| format!("failed to read the task Cell at {:?}", task.addr))?;
+        // Cell.core.stage peels through CoreStage and the UnsafeCells down
+        // to the Stage<T> enum.
+        let stage = cell.member("core")?.member("stage")?;
+        let (state, payload) = stage
+            .active_variant()
+            .context("failed to decode the task's Stage")?;
+        match state {
+            // The payload peels to its single sized member: T itself for
+            // Running, Result<T::Output, JoinError> for Finished.
+            "Running" => Ok(TaskStage::Running(payload.to_owned())),
+            "Finished" => Ok(TaskStage::Finished(payload.to_owned())),
+            "Consumed" => Ok(TaskStage::Consumed),
+            other => bail!("unexpected Stage variant {other:?}"),
+        }
+    }
+
+    /// Walk a resident future's await chain (§3.5), outermost future
+    /// first.
+    ///
+    /// The walk never fails outright: whatever decoded cleanly is in
+    /// [`AwaitChain::frames`], and [`AwaitChain::end`] says why it
+    /// stopped. Corrupt memory is contained by the depth bound and an
+    /// (address, type) cycle guard.
+    pub fn await_chain(&self, root: TypeInfo<'b, BundleType<'b>>) -> AwaitChain<'b> {
+        let mut frames: Vec<AwaitFrame<'b>> = Vec::new();
+        let mut visited: HashSet<(u64, BundleTypeId)> = HashSet::new();
+        let mut cur = root;
+        // The dyn-vtable symbol that identified `cur`, when it was not
+        // reached structurally.
+        let mut dyn_symbol: Option<String> = None;
+
+        let end = loop {
+            if frames.len() >= MAX_AWAIT_DEPTH {
+                break ChainEnd::DepthLimit;
+            }
+            if !visited.insert((cur.addr, cur.ty.id())) {
+                break ChainEnd::Cycle { addr: cur.addr };
+            }
+
+            // A future that *is* a dyn wide pointer (a spawned
+            // `Pin<Box<dyn Future>>`): resolve the concrete type through
+            // its vtable before decoding anything.
+            if let Some(dp) = cur.as_ref().peel().ty.dyn_pointer() {
+                match self.resolve_dyn_future(&cur.as_ref().peel(), &dp) {
+                    Ok(DynAwaitee::Resolved { future, symbol }) => {
+                        cur = future;
+                        dyn_symbol = Some(symbol);
+                        continue;
+                    }
+                    Ok(DynAwaitee::Unknown { poll_symbol }) => {
+                        break ChainEnd::UnknownDyn {
+                            pointee: dp.pointee.name().to_owned(),
+                            poll_symbol,
+                        };
+                    }
+                    Err(e) => break ChainEnd::Error(e),
+                }
+            }
+
+            // Decode the coroutine state. Non-enums are leaf futures:
+            // sync primitives, I/O futures, combinator structs.
+            let decoded = match cur.ty.active_variant(&cur.buf) {
+                None => {
+                    frames.push(AwaitFrame {
+                        future: cur,
+                        state: None,
+                        dyn_symbol,
+                    });
+                    break ChainEnd::Leaf;
+                }
+                Some(Ok(v)) => v,
+                Some(Err(e)) => {
+                    let err = anyhow!(e).context(format!(
+                        "failed to decode the state of {} at {:#x}",
+                        cur.ty.name(),
+                        cur.addr,
+                    ));
+                    frames.push(AwaitFrame {
+                        future: cur,
+                        state: None,
+                        dyn_symbol,
+                    });
+                    break ChainEnd::Error(err);
+                }
+            };
+
+            // Coroutine variant members are numbered; their state names
+            // live on the payload structs (§5.5). Ordinary enums (sync
+            // primitives, combinators like MaybeDone) are leaves: an
+            // await chain is linear, while a combinator may hold several
+            // pending futures — per-combinator knowledge is §9 scope.
+            let is_coroutine_state =
+                !decoded.name.is_empty() && decoded.name.bytes().all(|b| b.is_ascii_digit());
+
+            // Slice out the variant payload *without* peeling: its
+            // members are the state's live locals.
+            let start = decoded.offset as usize;
+            let size = decoded.ty.size() as usize;
+            let Some(bytes) = cur.buf.get(start..start + size) else {
+                let err = anyhow!(
+                    "variant payload {}..{} does not fit {} bytes of {}",
+                    start,
+                    start + size,
+                    cur.buf.len(),
+                    cur.ty.name(),
+                );
+                frames.push(AwaitFrame {
+                    future: cur,
+                    state: None,
+                    dyn_symbol,
+                });
+                break ChainEnd::Error(err);
+            };
+            let payload = TypeInfoRef::new(decoded.ty, cur.addr + decoded.offset, bytes).to_owned();
+            frames.push(AwaitFrame {
+                future: cur,
+                state: Some(FrameState {
+                    name: decoded.state_name(),
+                    await_loc: decoded.decl,
+                    payload,
+                }),
+                dyn_symbol: dyn_symbol.take(),
+            });
+            if !is_coroutine_state {
+                break ChainEnd::Leaf;
+            }
+
+            // A suspended coroutine stores what it awaits in the
+            // variant's `__awaitee` member; states that aren't waiting
+            // (Unresumed, Returned, Panicked) have none.
+            let payload = &frames.last().unwrap().state.as_ref().unwrap().payload;
+            let Some(member) = payload.ty.member("__awaitee") else {
+                break ChainEnd::Leaf;
+            };
+            let start = member.offset() as usize;
+            let size = member.ty().size() as usize;
+            let Some(bytes) = payload.buf.get(start..start + size) else {
+                break ChainEnd::Error(anyhow!(
+                    "__awaitee {}..{} does not fit {} bytes of {}",
+                    start,
+                    start + size,
+                    payload.buf.len(),
+                    payload.ty.name(),
+                ));
+            };
+            let awaitee = TypeInfoRef::new(member.ty(), payload.addr + member.offset(), bytes);
+
+            // Wrappers (Pin, mainly) hide what the pointer-shaped
+            // awaitees really are; plain awaitees keep their own type so
+            // the chain reports e.g. `oneshot::Receiver<u32>` rather than
+            // whatever its innards peel down to.
+            let peeled = awaitee.clone().peel();
+            if let Some(dp) = peeled.ty.dyn_pointer() {
+                // A boxed trait object: only its vtable knows the
+                // concrete type (§3.5).
+                match self.resolve_dyn_future(&peeled, &dp) {
+                    Ok(DynAwaitee::Resolved { future, symbol }) => {
+                        cur = future;
+                        dyn_symbol = Some(symbol);
+                    }
+                    Ok(DynAwaitee::Unknown { poll_symbol }) => {
+                        break ChainEnd::UnknownDyn {
+                            pointee: dp.pointee.name().to_owned(),
+                            poll_symbol,
+                        };
+                    }
+                    Err(e) => break ChainEnd::Error(e),
+                }
+            } else if peeled.ty.pointer_target().is_some() {
+                // `(&mut fut).await`, `Box<fut>`: follow the thin pointer.
+                match peeled.deref_ptr(self) {
+                    Ok(info) => cur = info,
+                    Err(e) => {
+                        break ChainEnd::Error(
+                            anyhow!(e).context("failed to follow an awaited pointer"),
+                        );
+                    }
+                }
+            } else {
+                cur = awaitee.to_owned();
+            }
+        };
+
+        AwaitChain { frames, end }
+    }
+
+    /// Resolve a `dyn Future` wide pointer (§3.5): read its data and
+    /// vtable pointers from the already-read payload bytes, resolve the
+    /// vtable's poll fn — or its drop glue, for polls internalized out of
+    /// the symtab — through the *target's* symtab, and join the mangled
+    /// symbol against the bundle's dyn-future table. Never guesses.
+    fn resolve_dyn_future(
+        &self,
+        ptr: &TypeInfoRef<'_, 'b, BundleType<'b>>,
+        dp: &DynPointer<'b>,
+    ) -> Result<DynAwaitee<'b>> {
+        let word = |off: u64| -> Result<u64> {
+            let bytes = ptr
+                .bytes
+                .get(off as usize..off as usize + 8)
+                .ok_or_else(|| anyhow!("wide-pointer bytes truncated at +{off:#x}"))?;
+            Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
+        };
+        let data = word(dp.data_offset)?;
+        let vtable = word(dp.vtable_offset)?;
+        ensure!(
+            self.mappings.contains_addr(data),
+            "dyn future data pointer {data:#x} is unmapped"
+        );
+        ensure!(
+            self.mappings.contains_addr(vtable),
+            "dyn future vtable pointer {vtable:#x} is unmapped"
+        );
+
+        let mut poll_symbol = None;
+        for slot in [VTABLE_SLOT_FUTURE_POLL, VTABLE_SLOT_DROP] {
+            let fn_addr = self.proc.read_u64(vtable + slot * 8).map_err(|e| {
+                anyhow!(e).context(format!("failed to read slot {slot} of vtable {vtable:#x}"))
+            })?;
+            let Some(symbol) = self.symbol_at(fn_addr) else {
+                continue;
+            };
+            if slot == VTABLE_SLOT_FUTURE_POLL {
+                poll_symbol = Some(symbol.clone());
+            }
+            if let Some(ty) = self.view.dyn_future_for_symbol(&symbol) {
+                let future = TypeInfo::from_addr(self, ty, data)
+                    .with_context(|| format!("failed to read {} at {data:#x}", ty.name()))?;
+                return Ok(DynAwaitee::Resolved { future, symbol });
+            }
+        }
+        Ok(DynAwaitee::Unknown { poll_symbol })
+    }
 }
 
 impl ParseCtx for Context<'_> {
@@ -597,4 +868,86 @@ pub struct KnownFuture {
     pub decl: Option<(String, u32)>,
     /// The mangled vtable-fn symbol the join matched on.
     pub symbol: String,
+}
+
+/// A task's decoded `Stage<T>` (§3.4).
+#[derive(Debug)]
+pub enum TaskStage<'b> {
+    /// The state machine is resident; walk it with
+    /// [`Context::await_chain`].
+    Running(TypeInfo<'b, BundleType<'b>>),
+    /// `Result<T::Output, JoinError>`: the task returned, panicked, or
+    /// was cancelled, and the output has not been consumed yet.
+    Finished(TypeInfo<'b, BundleType<'b>>),
+    /// The output was already taken through the join handle.
+    Consumed,
+}
+
+/// The await chain of a resident future (§3.5), outermost future first.
+#[derive(Debug)]
+pub struct AwaitChain<'b> {
+    pub frames: Vec<AwaitFrame<'b>>,
+    /// Why the walk stopped; anything but [`ChainEnd::Leaf`] left the
+    /// chain incomplete.
+    pub end: ChainEnd,
+}
+
+/// One future in an await chain.
+#[derive(Debug)]
+pub struct AwaitFrame<'b> {
+    /// The future being polled at this depth.
+    pub future: TypeInfo<'b, BundleType<'b>>,
+    /// The decoded coroutine state; `None` for plain (leaf) futures.
+    pub state: Option<FrameState<'b>>,
+    /// The mangled symbol that identified this frame, when it was
+    /// reached through a `dyn Future` vtable in target memory.
+    pub dyn_symbol: Option<String>,
+}
+
+/// A coroutine frame's decoded state.
+#[derive(Debug)]
+pub struct FrameState<'b> {
+    /// The human-readable state name (`Unresumed`, `Suspend0`, …).
+    pub name: &'b str,
+    /// The awaited expression's source location, when the debug info
+    /// recorded it (§5.5).
+    pub await_loc: Option<(&'b str, u32)>,
+    /// The active variant's payload: the state's live locals, including
+    /// compiler-generated `__…` slots and the `__awaitee` itself.
+    pub payload: TypeInfo<'b, BundleType<'b>>,
+}
+
+/// Why an await-chain walk stopped.
+#[derive(Debug)]
+pub enum ChainEnd {
+    /// Bottomed out normally: a non-coroutine leaf future, or a state
+    /// with nothing awaited.
+    Leaf,
+    /// A `dyn Future` awaitee whose vtable symbols joined nothing in the
+    /// bundle; the raw poll symbol is reported and nothing is guessed
+    /// (§3.3).
+    UnknownDyn {
+        /// The `dyn Trait` spelling, for display.
+        pointee: String,
+        /// The mangled symbol the vtable's poll slot resolved to, if any.
+        poll_symbol: Option<String>,
+    },
+    /// The depth bound was hit.
+    DepthLimit,
+    /// The same (address, type) pair reappeared.
+    Cycle { addr: u64 },
+    /// Reading or decoding below the last frame failed.
+    Error(anyhow::Error),
+}
+
+/// The outcome of resolving one `dyn Future` awaitee.
+enum DynAwaitee<'b> {
+    /// The vtable joined: the concrete future, read from target memory,
+    /// and the symbol that identified it.
+    Resolved {
+        future: TypeInfo<'b, BundleType<'b>>,
+        symbol: String,
+    },
+    /// No vtable symbol joined the bundle's dyn-future table.
+    Unknown { poll_symbol: Option<String> },
 }
