@@ -65,7 +65,20 @@ also reports what the task is actually waiting on:
 
 * `tokio::time::Sleep` — the registered timer deadline;
 * `JoinHandle<T>` — the id of the awaited task (a dependency edge between tasks);
-* `tokio::sync::batch_semaphore::Acquire` — the contended `Mutex`/`RwLock`/`Semaphore` and its permit counts.
+* `tokio::sync::batch_semaphore::Acquire` — the contended `Mutex`/`RwLock`/`Semaphore`, its permit counts,
+  and its wake queue: the tasks its permits will wake, in order.
+
+Those edges assemble into the runtime-wide dependency graph:
+
+[source,shell]
+----
+hansei graph --bundle app.bundle --core ${PATH_TO_CORE}
+----
+
+prints one wait edge per task and diagnoses any *futurelock* (RFD 609): a lock future found in a
+suspended frame's locals — off its task's poll path, so it will never be polled again — while granted, or
+queued for, a contended semaphore's permits. The diagnosis names the holding task, the local and frame
+the abandoned future is parked in, and the tasks blocked behind it.
 
 At attach time the bundle's symbol fingerprint is resolved against the target's symtab; anything less than a
 100% match is refused (`--force` to override) so a wrong bundle can never silently misinterpret memory. Should
