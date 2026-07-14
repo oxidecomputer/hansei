@@ -300,6 +300,9 @@ impl<'a> BundleType<'a> {
             name: self.str(selected.name),
             ty: self.at(selected.payload.ty),
             offset: selected.payload.offset,
+            decl: selected
+                .decl
+                .and_then(|loc| Some((self.bundle.strings.get(loc.file)?, loc.line))),
         })
     }
 }
@@ -322,6 +325,29 @@ pub struct ActiveVariant<'a> {
     pub ty: BundleType<'a>,
     /// The payload's byte offset within the enum.
     pub offset: u64,
+    /// The variant member's declaration coordinates — for coroutine
+    /// suspend states, the awaited expression's source file and line
+    /// (§13.5).
+    pub decl: Option<(&'a str, u32)>,
+}
+
+impl<'a> ActiveVariant<'a> {
+    /// The variant's human-readable name.
+    ///
+    /// Coroutine state machines number their variant members ("0", "1",
+    /// …) and carry the state name (`Unresumed`, `SuspendN`, …) on the
+    /// payload struct instead (§5.5); ordinary enums name the variant
+    /// member itself. Numbered variants resolve to the payload name's
+    /// trailing path segment.
+    pub fn state_name(&self) -> &'a str {
+        if !self.name.is_empty() && !self.name.bytes().all(|b| b.is_ascii_digit()) {
+            return self.name;
+        }
+        match self.ty.name().rsplit("::").next() {
+            Some(seg) if !seg.is_empty() && seg != ANON => seg,
+            _ => self.name,
+        }
+    }
 }
 
 /// Why a variant decode failed. The reify backend maps these onto
