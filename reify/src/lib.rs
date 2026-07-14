@@ -561,6 +561,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
 
             // TODO VALIDATE AHEAD OF TIME
             info.bytes = info.bytes.get(start..end).unwrap();
+            info.addr += start as u64;
             info.ty = mem_ty;
         }
 
