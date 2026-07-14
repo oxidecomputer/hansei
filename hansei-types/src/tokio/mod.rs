@@ -1173,7 +1173,7 @@ impl WakerState {
     const WAKING: u64 = 0b10;
 
     pub fn is_waiting(&self) -> bool {
-        self.0 & Self::WAITING != 0
+        self.0 == Self::WAITING
     }
 
     pub fn is_registering(&self) -> bool {
