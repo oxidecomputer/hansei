@@ -35,13 +35,18 @@ fi
 
 PROGRAMS=("${@:-${ALL_PROGRAMS[@]}}")
 
+# Overridable so capture-snapshots.sh can produce two *separate*
+# compilations of the same sources (the two-binary constraint, §11.3).
+BIN_DIR="${REGEN_BIN_DIR:-$FIXTURES/bin}"
+TARGET_DIR="${REGEN_TARGET_DIR:-$FIXTURES/target}"
+
 # Full debug info for every crate in the graph, not just test-programs:
 # tokio's own CUs carry the statics (CONTEXT, WAKER_VTABLE) the extractor
 # needs. A dedicated target dir keeps this profile from thrashing the
 # regular build cache.
 export RUSTFLAGS="--cfg tokio_unstable"
 export CARGO_PROFILE_RELEASE_DEBUG=2
-export CARGO_TARGET_DIR="$FIXTURES/target"
+export CARGO_TARGET_DIR="$TARGET_DIR"
 
 bins=()
 for p in "${PROGRAMS[@]}"; do
@@ -49,12 +54,12 @@ for p in "${PROGRAMS[@]}"; do
 done
 cargo "+$TOOLCHAIN" build --release -p test-programs "${bins[@]}"
 
-mkdir -p "$FIXTURES/bin"
+mkdir -p "$BIN_DIR"
 for p in "${PROGRAMS[@]}"; do
-    cp -f "$FIXTURES/target/release/$p" "$FIXTURES/bin/$p"
+    cp -f "$TARGET_DIR/release/$p" "$BIN_DIR/$p"
     if [[ "$(uname)" == "Darwin" ]]; then
         # Mach-O executables don't carry DWARF; link it into a dSYM.
-        dsymutil "$FIXTURES/bin/$p" -o "$FIXTURES/bin/$p.dSYM"
+        dsymutil "$BIN_DIR/$p" -o "$BIN_DIR/$p.dSYM"
     fi
-    echo "regen.sh: built $FIXTURES/bin/$p"
+    echo "regen.sh: built $BIN_DIR/$p"
 done
