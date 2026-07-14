@@ -468,8 +468,13 @@ pub struct RawStaticVariable<S> {
     pub namespace: Option<NsId>,
     /// Type contained in variable.
     pub type_id: TypeId,
-    /// Address in memory.
-    pub addr: u64,
+    /// Address in memory. `None` when the location is not a plain address
+    /// (e.g. TLS statics, whose `DW_OP_form_tls_address` locations cannot
+    /// be resolved statically) — such variables still matter for their
+    /// linkage names.
+    pub addr: Option<u64>,
+    /// Mangled symbol name (`DW_AT_linkage_name`), when present.
+    pub linkage_name: Option<S>,
     /// Location of variable declaration in the source code.
     pub source_loc: SourceLoc<S>,
 }

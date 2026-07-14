@@ -518,45 +518,47 @@ impl<'dw> CodegenUnit<'dw> {
 
         let mut linkage_name = None;
         let mut addr = None;
-        let mut skip = false;
 
         let offset = entry.offset().to_unit_section_offset(unit);
         let common = CommonAttrs::from_entry(unit, entry, |attr| {
             match attr.name() {
                 gimli::DW_AT_linkage_name => {
-                    linkage_name = Some(attr.attr_string(unit)?);
+                    linkage_name = Some(attr.attr_str(unit)?);
                 }
                 gimli::DW_AT_location => {
-                    let e = attr.exprloc_value().unwrap();
+                    let Some(e) = attr.exprloc_value() else {
+                        debug!("non-exprloc static location at {offset:#x?}");
+                        return Ok(());
+                    };
                     let mut eval = e.evaluation(unit.encoding());
                     let mut result = eval.evaluate()?;
                     loop {
                         match result {
                             gimli::EvaluationResult::Complete => {
                                 let r = eval.result();
-                                if r.len() == 1 {
-                                    match &r[0].location {
+                                if let [piece] = &r[..] {
+                                    match &piece.location {
                                         gimli::Location::Address { address } => {
                                             addr = Some(*address);
-                                            break;
                                         }
                                         x => {
-                                            panic!("unexpected static location: {x:?}");
+                                            debug!("unexpected static location: {x:?}");
                                         }
                                     }
                                 } else {
                                     // TODO handle u128s
                                     debug!("unhandled eval results for {:?}: {r:?}", linkage_name);
-                                    skip = true;
-                                    break;
                                 }
+                                break;
                             }
                             EvaluationResult::RequiresRelocatedAddress(a) => {
                                 result = eval.resume_with_relocated_address(a)?;
                             }
                             other => {
+                                // TLS statics land here (their locations
+                                // need a runtime TLS base); keep the
+                                // variable with no address.
                                 debug!("unhandled location expression at {offset:#x?}: {other:?}");
-                                skip = true;
                                 break;
                             }
                         }
@@ -567,34 +569,27 @@ impl<'dw> CodegenUnit<'dw> {
             Ok(())
         })?;
 
-        let Some(addr) = addr else {
-            // panic!("no addr for static");
+        // Variables with unresolvable locations (TLS statics, in
+        // particular) are kept: their linkage names are still meaningful
+        // to extraction even when no static address exists.
+        if addr.is_none() {
             debug!("no addr for static {:?}", common.name);
-            return cursor.consume_entry();
-            // skip!
-            // return Ok(());
-        };
+        }
 
         let type_id = match common.type_id {
             Some(t) => TypeId(t),
             None => return cursor.consume_entry(),
         };
 
-        // let name = if linkage_name.is_none() {
-        //     // This is a heuristic for detecting #[no_mangle] Rust variables.
-        //     common.name
-        // } else {
-        //     self.format_path(common.name)
-        // };
-
         self.add_var(
             offset,
             RawStaticVariable {
-                name: common.name, // self.format_path(common.name),
+                name: common.name,
                 namespace: self.ns,
                 type_id,
                 source_loc: common.source_loc,
                 addr,
+                linkage_name,
             },
         );
         Ok(())
@@ -1152,22 +1147,12 @@ impl ConsumeEntry for EntriesCursor<'_, '_, Slice<'_>> {
 
 /// Extension trait to simplify reading strings from an `Attribute`.
 pub(crate) trait DwString<'dw> {
-    /// Read the `AttributeValue` as a `String`, returning an error if it
-    /// does not have a string form.
-    fn attr_string(&self, unit: &UnitRef<Slice>) -> Result<String>;
-
     /// Read the `AttributeValue` as an `&str`, returning an error if it
     /// does not have a string form or is not UTF-8 encoded.
     fn attr_str(&self, unit: &UnitRef<Slice<'dw>>) -> Result<&'dw str>;
 }
 
 impl<'dw> DwString<'dw> for Attribute<Slice<'dw>> {
-    fn attr_string(&self, unit: &UnitRef<Slice>) -> Result<String> {
-        let raw = unit.dwarf.attr_string(unit.unit, self.value())?;
-        let s = String::from_utf8_lossy(raw.slice());
-        Ok(s.to_string())
-    }
-
     fn attr_str(&self, unit: &UnitRef<Slice<'dw>>) -> Result<&'dw str> {
         let raw = unit.dwarf.attr_string(unit.unit, self.value())?;
         let s = std::str::from_utf8(raw.slice()).map_err(|_| Error::InvalidUtf8)?;

@@ -566,6 +566,7 @@ dependencies = [
  "object 0.38.1",
  "postcard",
  "regex",
+ "rustc-demangle",
  "semver",
  "serde",
  "tempfile",

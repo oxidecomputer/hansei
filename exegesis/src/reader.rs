@@ -431,6 +431,7 @@ fn intern_var<'dw>(
         namespace: var.namespace,
         type_id: var.type_id,
         addr: var.addr,
+        linkage_name: intern(var.linkage_name),
         source_loc: SourceLoc {
             file: intern(var.source_loc.file),
             dir: intern(var.source_loc.dir),
