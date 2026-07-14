@@ -551,7 +551,7 @@ Defined at: futurelock.rs:13
   5: tokio::sync::mutex::{{impl#10}}::acquire::{{async_fn_env#0}}<()>
      state Suspend1 — src/sync/mutex.rs:658
   6: tokio::sync::batch_semaphore::Acquire
-     waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available
+     waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task {id}
 ",
             id = task.id
         );
