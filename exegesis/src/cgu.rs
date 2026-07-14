@@ -21,6 +21,8 @@ const UNNAMED_CGU: &str = "<unnamed_cgu>";
 pub struct CodegenUnit<'dw> {
     /// Name of this codegen unit.
     pub name: &'dw str,
+    /// The `DW_AT_producer` string (compiler identification), if present.
+    pub producer: Option<&'dw str>,
     /// Starting offset of this unit in the debug info section.
     pub offset: UnitSectionOffset,
     /// Current namespace context.
@@ -92,9 +94,14 @@ impl<'dw> CodegenUnit<'dw> {
             Some(attr) => attr.attr_str(unit)?,
             None => UNNAMED_CGU,
         };
+        let producer = match entry.attr(gimli::DW_AT_producer)? {
+            Some(attr) => Some(attr.attr_str(unit)?),
+            None => None,
+        };
 
         let mut cgu = Self {
             name,
+            producer,
             offset,
             ns: None,
             namespaces: NamespaceTable::new(),

@@ -2741,4 +2741,20 @@ mod tests {
             assert_eq!(demangled, "testlib::shapes::GLOBAL_COUNT");
         });
     }
+
+    #[test]
+    fn test_producer_records_rustc_version() {
+        with_view!(view => {
+            let producer = view
+                .collector()
+                .producer
+                .map(|id| view.collector().strings.get(id))
+                .expect("fixture CU should carry DW_AT_producer");
+            assert!(
+                producer.contains("rustc version"),
+                "unexpected producer: {producer}"
+            );
+        });
+    }
 }
+
