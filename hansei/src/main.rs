@@ -574,6 +574,16 @@ fn exec_trace_bundle(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
             print_await_chain(&chain, args.verbose, out)?;
+            // The leaf-future knowledge base (§3.6): name what the task
+            // is actually waiting on when the leaf is a known primitive.
+            match ctx.wait_target(&chain) {
+                Some(Ok(target)) => writeln!(out, "     waiting on {target}")?,
+                Some(Err(e)) => writeln!(
+                    io::stderr(),
+                    "warning: failed to read what the leaf future waits on: {e:#}"
+                )?,
+                None => {}
+            }
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
@@ -789,6 +799,15 @@ fn exec_snapshot(args: SnapshotCmd, out: &mut dyn io::Write) -> Result<()> {
                     writeln!(
                         io::stderr(),
                         "warning: await chain of task {:?} is incomplete: {e:#}",
+                        task.addr
+                    )?;
+                }
+                // Drive the leaf-future interpretation too, so its reads
+                // are in the snapshot for the offline tests.
+                if let Some(Err(e)) = ctx.wait_target(&chain) {
+                    writeln!(
+                        io::stderr(),
+                        "warning: failed to read what task {:?} waits on: {e:#}",
                         task.addr
                     )?;
                 }

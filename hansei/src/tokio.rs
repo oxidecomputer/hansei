@@ -268,4 +268,3 @@ impl<'ctf> ParseWithCtf<'ctf, CtfType<'ctf>, Context<'ctf>> for MinScheduler {
         })
     }
 }
-
