@@ -18,12 +18,18 @@
 
 #![cfg(feature = "illumos-integration")]
 
+use durin::TypeKind;
+use durin::read::CtfReader;
 use exegesis::bundle::{Bundle, BundleView};
 use exegesis::extract::{ExtractOptions, extract_file};
 use hansei_types::tokio::bundle::Context as BundleContext;
+use hansei_types::tokio::ctf::Context as CtfContext;
+use hansei_types::tokio::{OwnedTasks, find_thd_context};
 use proc::Proc;
+use reify::TypeInfo;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -39,8 +45,24 @@ const PROGRAMS: &[&str] = &[
     "many-tasks",
 ];
 
+/// The hand-fed roots the CTF pipeline needs (hansei README): types
+/// reached via bare offsets or `void*` have no DWARF cross-reference and
+/// must be requested explicitly.
+const CTF_TYPES: &[&str] = &[
+    "tokio::runtime::context::Context",
+    "tokio::runtime::task::core::Trailer",
+    "core::panic::location::Location",
+    "alloc::sync::Arc<tokio::runtime::park::Inner, alloc::alloc::Global>",
+];
+
 fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+}
+
+fn target_dir() -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root().join("target"))
 }
 
 struct Fixtures {
@@ -648,4 +670,155 @@ fn test_mismatched_bundle_refused() {
     let fp = ctx.validate_fingerprint();
     assert!(fp.matched > 0, "no symbols matched at all");
     assert!(fp.matched < fp.total, "{}/{}", fp.matched, fp.total);
+}
+
+// ---------------------------------------------------------------------------
+// CTF ↔ bundle differential (§11.4 item 5)
+// ---------------------------------------------------------------------------
+
+/// Build (once) and return the dwarf2ctf binary that turns the debug
+/// build's DWARF into the CTF the legacy pipeline consumes.
+fn dwarf2ctf_bin() -> PathBuf {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let status = Command::new(cargo)
+            .current_dir(workspace_root())
+            .args(["build", "--release", "-p", "dwarf2ctf"])
+            .status()
+            .expect("failed to run cargo");
+        assert!(status.success(), "building dwarf2ctf failed");
+        target_dir().join("release/dwarf2ctf")
+    })
+    .clone()
+}
+
+/// Generate the CTF for a program's debug binary (build B, same side as
+/// the bundle).
+fn generate_ctf(program: &str, dir: &Path) -> PathBuf {
+    let ctf = dir.join(format!("{program}.ctf"));
+    let mut cmd = Command::new(dwarf2ctf_bin());
+    cmd.arg(fixtures().debug_binary(program))
+        .arg("-c")
+        .arg(&ctf);
+    for ty in CTF_TYPES {
+        cmd.args(["-t", ty]);
+    }
+    let out = cmd.output().expect("failed to run dwarf2ctf");
+    assert!(
+        out.status.success(),
+        "dwarf2ctf failed for {program}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    ctf
+}
+
+/// Enumerate the same core through both pipelines and assert the shared
+/// fields — task count, per-task state bits, IDs, spawn locations —
+/// agree exactly. This pins the bundle backend to the battle-tested CTF
+/// one, and keeps CTF honest afterward.
+fn assert_pipelines_agree(program: &str, core: &Path, bundle_path: &Path, ctf_path: &Path) {
+    let proc = Proc::open_core(core).expect("failed to open the core");
+    let lwps = proc.lwps().expect("failed to read lwps");
+
+    // The bundle pipeline: TLS-key discovery, symbol-join enumeration.
+    let bundle = Bundle::load(bundle_path).expect("bundle loads");
+    let view = BundleView::new(&bundle);
+    let bctx = BundleContext::new(&proc, view).expect("bundle context");
+    let workers = bctx.find_workers(&lwps).expect("TLS-key discovery");
+    let shared = bctx.find_shared(&workers).expect("a MultiThread runtime");
+    let list = bctx.enumerate_tasks(&shared).expect("the owned-task walk");
+    assert!(
+        list.errors.is_empty(),
+        "{program}: bundle task walk reported errors: {:?}",
+        list.errors
+    );
+
+    // The CTF pipeline: heuristic discovery, hand-fed type roots.
+    let ctf_bytes = fs::read(ctf_path).expect("failed to read the CTF");
+    let reader = CtfReader::load(&ctf_bytes).expect("failed to load the CTF");
+    let main_lwp = proc.lwp_handle(1).expect("main LWP");
+    let symbols = HashMap::new();
+    let cctx = CtfContext::new(&proc, &main_lwp, reader.view(), &symbols).expect("CTF context");
+    let ctx_ty = cctx
+        .ctf
+        .find("tokio::runtime::context::Context", TypeKind::Struct)
+        .expect("the CTF has Context");
+
+    let brk_range = proc.status().brk_range;
+    let mut owned: Option<OwnedTasks> = None;
+    for lwp in &lwps {
+        let found = find_thd_context(&lwp.regs, &brk_range, &proc)
+            .expect("failed to probe thread-local storage");
+        let Some(addr) = found else { continue };
+        let info = TypeInfo::from_addr(&cctx, ctx_ty, addr).expect("failed to read Context");
+        let shard = info
+            .member("current")
+            .and_then(|i| i.member("handle"))
+            .and_then(|i| i.member("value"))
+            .and_then(|i| i.select_variant("Some"))
+            .and_then(|i| i.select_variant("MultiThread"))
+            .and_then(|i| i.deref_ptr(&cctx))
+            .and_then(|i| {
+                i.member("data")
+                    .and_then(|i| i.member("shared"))
+                    .and_then(|i| i.member("owned"))
+                    .and_then(|i| i.parse(&cctx))
+            })
+            .expect("failed to parse OwnedTasks via CTF");
+        owned = Some(shard);
+        break;
+    }
+    let owned = owned.expect("heuristic discovery found no worker Context");
+
+    // The shared fields, exactly (§11.4 item 5).
+    assert_eq!(
+        owned.count as usize,
+        list.tasks.len(),
+        "{program}: OwnedTasks.count disagrees with the bundle walk"
+    );
+    assert_eq!(
+        owned.tasks.len(),
+        list.tasks.len(),
+        "{program}: the CTF walk found {} task(s), the bundle walk {}",
+        owned.tasks.len(),
+        list.tasks.len()
+    );
+    for task in &list.tasks {
+        let header = owned
+            .tasks
+            .get(&task.addr)
+            .unwrap_or_else(|| panic!("{program}: the CTF walk missed task {:?}", task.addr));
+        assert_eq!(
+            header.state, task.state.0,
+            "{program}: state bits differ for task {:?}",
+            task.addr
+        );
+        assert_eq!(
+            Some(header.id),
+            task.task_id,
+            "{program}: ids differ for task {:?}",
+            task.addr
+        );
+        assert_eq!(
+            Some(&header.spawn_location),
+            task.spawn_location.as_ref(),
+            "{program}: spawn locations differ for task {:?}",
+            task.addr
+        );
+    }
+}
+
+#[test]
+#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
+fn test_ctf_bundle_differential() {
+    let dir = tempfile::tempdir().expect("failed to create a tempdir");
+    for program in PROGRAMS {
+        let ctf = generate_ctf(program, dir.path());
+        let parked = Parked::spawn(program);
+        let core = gcore(parked.pid(), dir.path());
+        assert_pipelines_agree(program, &core, &fixtures().bundle(program), &ctf);
+        drop(parked);
+        fs::remove_file(&core).expect("failed to remove the core");
+    }
 }
