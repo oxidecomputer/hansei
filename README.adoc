@@ -1,6 +1,7 @@
 = Durin
 
-A suite of tools for creating and using illumos CTF debug information for Rust binaries.
+A suite of tools for creating and using debug information — illumos CTF and DWARF-derived debug bundles — for
+Rust binaries.
 
 Experimental and mostly untested, expect bugs.
 
@@ -10,9 +11,13 @@ These are the workspace members that may be useful:
 
 * dwarf2ctf: Convert DWARF to CTF for specified types.
 * durin: Read and write CTF files.
-* hansei: Dump and poll the state of the `tokio` multi-threaded runtime in a core dump or live process.
-* proc: Minimal bindings for illumos `libproc`.
-* reify: Using a CTF file, interpret a process's state.
+* exegesis: Read DWARF and extract *debug bundles* describing a binary's async runtime; also the bundle format's
+  reader and type views.
+* hansei: Inspect the state of the `tokio` multi-threaded runtime in a core dump or live process: task listings
+  and automatic await-chain traces (bundles), scheduler dumps and polling (CTF).
+* hansei-types: The tokio-introspection library behind hansei, generic over both debug-info backends.
+* proc: Minimal bindings for illumos `libproc`, plus replayable target snapshots.
+* reify: Interpret a process's memory through a debug-info backend (CTF or bundle).
 
 == What's with the name?
 
