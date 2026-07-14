@@ -18,7 +18,10 @@
 
 #![cfg(feature = "illumos-integration")]
 
+use exegesis::bundle::{Bundle, BundleView};
 use exegesis::extract::{ExtractOptions, extract_file};
+use hansei_types::tokio::bundle::Context as BundleContext;
+use proc::Proc;
 
 use std::collections::HashSet;
 use std::fs;
@@ -572,4 +575,77 @@ Defined at: many-tasks.rs:9
             source.describe()
         );
     });
+}
+
+// ---------------------------------------------------------------------------
+// Symbol match-rate tests (§11.4 item 4)
+// ---------------------------------------------------------------------------
+
+/// A same-recipe pair fingerprints at exactly 100%.
+#[test]
+#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
+fn test_fingerprint_complete_on_matched_pair() {
+    let parked = Parked::spawn("simple-await");
+    let dir = tempfile::tempdir().expect("failed to create a tempdir");
+    let core = gcore(parked.pid(), dir.path());
+
+    let proc = Proc::open_core(&core).expect("failed to open the core");
+    let bundle = Bundle::load(&fixtures().bundle("simple-await")).expect("bundle loads");
+    let view = BundleView::new(&bundle);
+    let ctx = BundleContext::new(&proc, view).expect("context");
+
+    let fp = ctx.validate_fingerprint();
+    assert!(fp.total > 0, "the bundle carries a fingerprint");
+    assert!(
+        fp.is_complete(),
+        "expected a 100% symbol match on a same-recipe pair, got {}/{}; missing: {:#?}",
+        fp.matched,
+        fp.total,
+        fp.missing
+    );
+}
+
+/// A bundle from a different program shares tokio-internal
+/// instantiations with the target but misses its program-specific ones:
+/// the fingerprint lands strictly between zero and complete, and the
+/// default <100% policy refuses it with a pointed diagnostic.
+#[test]
+#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
+fn test_mismatched_bundle_refused() {
+    let parked = Parked::spawn("simple-await");
+    let dir = tempfile::tempdir().expect("failed to create a tempdir");
+    let core = gcore(parked.pid(), dir.path());
+    let wrong_bundle = fixtures().bundle("futurelock");
+
+    let out = hansei(&[
+        "tasks",
+        "--bundle",
+        wrong_bundle.to_str().unwrap(),
+        "--core",
+        core.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a mismatched bundle must be refused, but hansei succeeded:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        stderr.contains("does not match this binary"),
+        "diagnostic does not name the mismatch:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--force"),
+        "diagnostic does not mention the override:\n{stderr}"
+    );
+
+    // The mismatch is partial, not total: different programs share the
+    // tokio-internal task instantiations.
+    let proc = Proc::open_core(&core).expect("failed to open the core");
+    let bundle = Bundle::load(&wrong_bundle).expect("bundle loads");
+    let view = BundleView::new(&bundle);
+    let ctx = BundleContext::new(&proc, view).expect("context");
+    let fp = ctx.validate_fingerprint();
+    assert!(fp.matched > 0, "no symbols matched at all");
+    assert!(fp.matched < fp.total, "{}/{}", fp.matched, fp.total);
 }
