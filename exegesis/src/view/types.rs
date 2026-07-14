@@ -1085,8 +1085,18 @@ impl<'a> StaticVariable<'a> {
         self.raw.type_id
     }
 
-    pub fn addr(&self) -> u64 {
+    /// The variable's static address, or `None` when its location is not
+    /// a plain address (e.g. TLS statics).
+    pub fn addr(&self) -> Option<u64> {
         self.raw.addr
+    }
+
+    /// The variable's mangled symbol name (`DW_AT_linkage_name`), if
+    /// present.
+    pub fn linkage_name(&self) -> Option<&'a str> {
+        self.raw
+            .linkage_name
+            .map(|id| self.collector.strings.get(id))
     }
 
     /// Declaration coordinates of this variable, if recorded.
@@ -1108,7 +1118,7 @@ impl fmt::Debug for StaticVariable<'_> {
             .field("name", &self.name())
             .field("type_id", &self.type_id())
             .field("type_name", &self.ty().name())
-            .field("addr", &format_args!("{:#x}", self.addr()))
+            .field("addr", &self.addr().map(|a| format!("{a:#x}")))
             .finish()
     }
 }
@@ -2712,6 +2722,23 @@ mod tests {
             let arr = v.ty().as_array().expect("RAW_TABLE should be an array");
             assert_eq!(arr.count(), 4);
             assert_eq!(arr.elem().name(), Some("u32"));
+        });
+    }
+
+    // ---- M. Static linkage names and producer ----
+
+    #[test]
+    fn test_static_variable_linkage_name() {
+        with_view!(view => {
+            let v = view
+                .find_var("testlib::shapes::GLOBAL_COUNT")
+                .unwrap();
+            // v0 mangled (the fixture pins a ≥1.97 toolchain), and the
+            // demangled form round-trips to the full path.
+            let mangled = v.linkage_name().expect("static should have linkage name");
+            assert!(mangled.starts_with("_R"), "not v0-mangled: {mangled}");
+            let demangled = format!("{:#}", rustc_demangle::demangle(mangled));
+            assert_eq!(demangled, "testlib::shapes::GLOBAL_COUNT");
         });
     }
 }
