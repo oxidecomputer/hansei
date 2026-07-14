@@ -249,6 +249,34 @@ impl<'a> BundleType<'a> {
         )
     }
 
+    /// If this is a trait-object wide pointer (`&dyn Trait`,
+    /// `Box<dyn Trait>`), decompose it into its data-pointer and vtable
+    /// members.
+    ///
+    /// rustc's debuginfo spells every wide pointer as a struct with a
+    /// `pointer` member targeting the unsized `dyn Trait` type itself
+    /// (named `(dyn …)`) and a `vtable` member (`&[usize; N]`). The
+    /// vtable's *contents* live in the target binary; only the member
+    /// offsets come from here (§3.5).
+    pub fn dyn_pointer(&self) -> Option<DynPointer<'a>> {
+        if !matches!(self.def(), TypeDef::Struct { .. }) {
+            return None;
+        }
+        let data = self.member("pointer")?;
+        let vtable = self.member("vtable")?;
+        vtable.ty().pointer_target()?;
+        let pointee = data.ty().pointer_target()?;
+        let name = pointee.name();
+        if !(name.starts_with("dyn ") || name.starts_with("(dyn ")) {
+            return None;
+        }
+        Some(DynPointer {
+            data_offset: data.offset(),
+            vtable_offset: vtable.offset(),
+            pointee,
+        })
+    }
+
     fn decode_variant(
         &self,
         shape: &'a VariantShape,
@@ -348,6 +376,18 @@ impl<'a> ActiveVariant<'a> {
             _ => self.name,
         }
     }
+}
+
+/// A trait-object wide pointer decomposed into its parts (§3.5).
+#[derive(Copy, Clone, Debug)]
+pub struct DynPointer<'a> {
+    /// Byte offset of the data pointer within the wide-pointer struct.
+    pub data_offset: u64,
+    /// Byte offset of the vtable pointer.
+    pub vtable_offset: u64,
+    /// The unsized `dyn Trait` type the data pointer targets (display
+    /// only — its layout is a zero-sized placeholder).
+    pub pointee: BundleType<'a>,
 }
 
 /// Why a variant decode failed. The reify backend maps these onto
