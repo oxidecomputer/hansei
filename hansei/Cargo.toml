@@ -3,6 +3,16 @@ name = "hansei"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# The on-box integration suite (tests/illumos.rs, plan §11.4). It builds
+# fixture binaries, attaches to live processes, and takes cores; run it
+# via tests/illumos/run.sh (or on-box with
+# `cargo test -p hansei --features illumos-integration -- --ignored`).
+illumos-integration = []
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
