@@ -518,11 +518,127 @@ impl fmt::Debug for TaskHeader {
     }
 }
 
+/// The raw `Header.state` bitfield of a task, with the derived lifecycle
+/// classification (plan §3.2).
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct TaskState(pub u64);
+
+impl TaskState {
+    /// The task is currently being run.
+    const RUNNING: u64 = 0b0001;
+    /// The task is complete. Once set, never unset.
+    const COMPLETE: u64 = 0b0010;
+    /// The task has been pushed into a run queue.
+    const NOTIFIED: u64 = 0b100;
+    /// The join handle is still around.
+    const JOIN_INTEREST: u64 = 0b1_000;
+    /// A join handle waker has been set.
+    const JOIN_WAKER: u64 = 0b10_000;
+    /// The task has been forcibly cancelled.
+    const CANCELLED: u64 = 0b100_000;
+
+    const STATE_MASK: u64 = Self::RUNNING
+        | Self::COMPLETE
+        | Self::NOTIFIED
+        | Self::JOIN_INTEREST
+        | Self::JOIN_WAKER
+        | Self::CANCELLED;
+    const REF_COUNT_MASK: u64 = !Self::STATE_MASK;
+    const REF_COUNT_SHIFT: u64 = Self::REF_COUNT_MASK.count_zeros() as u64;
+
+    pub fn is_running(&self) -> bool {
+        self.0 & Self::RUNNING != 0
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.0 & Self::COMPLETE != 0
+    }
+
+    pub fn is_notified(&self) -> bool {
+        self.0 & Self::NOTIFIED != 0
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0 & Self::CANCELLED != 0
+    }
+
+    pub fn is_join_interested(&self) -> bool {
+        self.0 & Self::JOIN_INTEREST != 0
+    }
+
+    pub fn is_join_waker_set(&self) -> bool {
+        self.0 & Self::JOIN_WAKER != 0
+    }
+
+    pub fn ref_count(&self) -> u64 {
+        (self.0 & Self::REF_COUNT_MASK) >> Self::REF_COUNT_SHIFT
+    }
+
+    /// Derived lifecycle classification (plan §3.2). `COMPLETE` wins over
+    /// `RUNNING` (the final poll sets both until the ref is dropped), and
+    /// `NOTIFIED` only matters while the task is idle.
+    pub fn lifecycle(&self) -> Lifecycle {
+        if self.is_complete() {
+            Lifecycle::Complete
+        } else if self.is_running() {
+            Lifecycle::Running
+        } else if self.is_notified() {
+            Lifecycle::Queued
+        } else {
+            Lifecycle::Idle
+        }
+    }
+}
+
+impl fmt::Debug for TaskState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TaskState")
+            .field("lifecycle", &self.lifecycle())
+            .field("ref_count", &self.ref_count())
+            .field("is_cancelled", &self.is_cancelled())
+            .field("is_join_interested", &self.is_join_interested())
+            .field("is_join_waker_set", &self.is_join_waker_set())
+            .field("bits", &format_args!("{:#b}", self.0))
+            .finish()
+    }
+}
+
+/// What a task is doing right now, derived from its state bits.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Lifecycle {
+    /// Mid-poll on some worker thread.
+    Running,
+    /// Notified while idle: sitting in a run queue, not yet picked up.
+    Queued,
+    /// Suspended, waiting on a waker.
+    Idle,
+    /// Finished: returned, panicked, or cancelled.
+    Complete,
+}
+
+impl fmt::Display for Lifecycle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let desc = match self {
+            Self::Running => "running",
+            Self::Queued => "queued",
+            Self::Idle => "idle",
+            Self::Complete => "complete",
+        };
+        f.write_str(desc)
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Location {
     pub filename: String,
     pub line: u32,
     pub col: u32,
+}
+
+impl fmt::Display for Location {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}:{}", self.filename, self.line, self.col)
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -1066,5 +1182,64 @@ impl fmt::Debug for WakerState {
             .field("is_waking", &self.is_waking())
             .field("inner", &format_args!("{:#b}", self.0))
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Lifecycle, TaskState};
+
+    const RUNNING: u64 = 0b0001;
+    const COMPLETE: u64 = 0b0010;
+    const NOTIFIED: u64 = 0b100;
+    const JOIN_INTEREST: u64 = 0b1_000;
+    const JOIN_WAKER: u64 = 0b10_000;
+    const CANCELLED: u64 = 0b100_000;
+    const REF_ONE: u64 = 1 << 6;
+
+    /// Every lifecycle classification from plan §3.2, including tokio's
+    /// INITIAL_STATE (0xCC: ref count 3, NOTIFIED | JOIN_INTEREST) and
+    /// concurrently-set flag combinations.
+    #[test]
+    fn test_lifecycle_classification() {
+        let cases: &[(u64, Lifecycle)] = &[
+            // INITIAL_STATE: freshly spawned, queued for its first poll.
+            (0xCC, Lifecycle::Queued),
+            (2 * REF_ONE, Lifecycle::Idle),
+            (2 * REF_ONE | JOIN_INTEREST | JOIN_WAKER, Lifecycle::Idle),
+            (2 * REF_ONE | NOTIFIED, Lifecycle::Queued),
+            (2 * REF_ONE | RUNNING, Lifecycle::Running),
+            // Woken again while mid-poll: still running.
+            (2 * REF_ONE | RUNNING | NOTIFIED, Lifecycle::Running),
+            (REF_ONE | COMPLETE, Lifecycle::Complete),
+            // The final poll sets COMPLETE while RUNNING is still set.
+            (REF_ONE | COMPLETE | RUNNING, Lifecycle::Complete),
+            (REF_ONE | COMPLETE | CANCELLED, Lifecycle::Complete),
+            // Cancelled but not yet complete: still waiting to be polled.
+            (2 * REF_ONE | NOTIFIED | CANCELLED, Lifecycle::Queued),
+        ];
+        for &(bits, expected) in cases {
+            let state = TaskState(bits);
+            assert_eq!(state.lifecycle(), expected, "state bits {bits:#b}");
+        }
+    }
+
+    #[test]
+    fn test_state_flags_and_ref_count() {
+        let initial = TaskState(0xCC);
+        assert_eq!(initial.ref_count(), 3);
+        assert!(initial.is_notified());
+        assert!(initial.is_join_interested());
+        assert!(!initial.is_running());
+        assert!(!initial.is_complete());
+        assert!(!initial.is_cancelled());
+        assert!(!initial.is_join_waker_set());
+
+        let state = TaskState(5 * REF_ONE | RUNNING | JOIN_WAKER | CANCELLED);
+        assert_eq!(state.ref_count(), 5);
+        assert!(state.is_running());
+        assert!(state.is_join_waker_set());
+        assert!(state.is_cancelled());
+        assert!(!state.is_notified());
     }
 }
