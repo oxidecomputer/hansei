@@ -4,6 +4,7 @@
 
 //! Tokio specific types that are loadable from CTF and/or DWARF debug info
 
+pub mod bundle;
 pub mod ctf;
 pub mod dwarf;
 
