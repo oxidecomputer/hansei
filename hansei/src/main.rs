@@ -170,6 +170,10 @@ struct TaskTrace {
     /// Show the variables present at each await point.
     #[clap(long, short)]
     verbose: bool,
+
+    /// Maximum depth to recurse when formatting variable values.
+    #[arg(long, default_value_t = 2, requires = "verbose")]
+    value_depth: usize,
 }
 
 #[derive(Args)]
@@ -521,7 +525,8 @@ fn exec_trace_ctf(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
             writeln!(out, "    Arguments:")?;
             for m in var.ty.members().filter(|m| m.name() != "__awaitee") {
                 let mm = var.member(m.name())?;
-                writeln!(out, "      {}: {}", m.name(), mm.display_with_depth(1))?;
+                let value = format!("{:#}", mm.display_with_depth(args.value_depth));
+                print_variable(out, "      ", m.name(), &value)?;
             }
         }
 
@@ -608,7 +613,7 @@ fn exec_trace_bundle(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
     match ctx.task_stage(task)? {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
-            print_await_chain(&chain, args.verbose, out)?;
+            print_await_chain(&chain, args.verbose, args.value_depth, out)?;
             // The leaf-future knowledge base (§3.6): name what the task
             // is actually waiting on when the leaf is a known primitive.
             match ctx.wait_target(&chain) {
@@ -641,6 +646,7 @@ fn exec_trace_bundle(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
 fn print_await_chain(
     chain: &bundle::AwaitChain<'_>,
     verbose: bool,
+    value_depth: usize,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     for (i, frame) in chain.frames.iter().enumerate() {
@@ -685,7 +691,8 @@ fn print_await_chain(
                     Some(bytes) => {
                         let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes)
                             .peel();
-                        writeln!(out, "       {}: {}", m.name(), v.display_with_depth(2))?;
+                        let value = format!("{:#}", v.display_with_depth(value_depth));
+                        print_variable(out, "       ", m.name(), &value)?;
                     }
                     None => writeln!(out, "       {}: <unreadable>", m.name())?,
                 }
@@ -743,6 +750,42 @@ fn print_await_chain(
         }
     }
     Ok(())
+}
+
+/// Print a named variable compactly when it fits on one line, or as an
+/// indented block when the value formatter expands an aggregate.
+fn print_variable(out: &mut dyn io::Write, indent: &str, name: &str, value: &str) -> Result<()> {
+    if value.contains('\n') {
+        writeln!(out, "{indent}{name}:")?;
+        for line in value.lines() {
+            writeln!(out, "{indent}  {line}")?;
+        }
+    } else {
+        writeln!(out, "{indent}{name}: {value}")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod variable_format_tests {
+    use super::print_variable;
+
+    #[test]
+    fn scalar_stays_on_the_name_line() {
+        let mut out = Vec::new();
+        print_variable(&mut out, "  ", "count", "42").unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "  count: 42\n");
+    }
+
+    #[test]
+    fn aggregate_is_indented_below_the_name() {
+        let mut out = Vec::new();
+        print_variable(&mut out, "  ", "point", "Point {\n    x: 1,\n    y: 2,\n}").unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "  point:\n    Point {\n        x: 1,\n        y: 2,\n    }\n"
+        );
+    }
 }
 
 /// Attach-time bundle validation (§5.1), shared by all bundle-mode
