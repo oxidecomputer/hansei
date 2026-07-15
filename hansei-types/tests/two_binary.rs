@@ -96,6 +96,9 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
             FutureInfo::Unknown { poll_symbol } => {
                 panic!("unresolved future type (poll symbol {poll_symbol:?})")
             }
+            FutureInfo::Ambiguous { symbol, candidates } => {
+                panic!("ambiguous future type ({symbol}: {candidates:?})")
+            }
         };
         let spawned = task
             .spawn_location

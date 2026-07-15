@@ -502,13 +502,26 @@ impl<'b, T: Target> Context<'b, T> {
             vt.drop_abort_handle,
             vt.shutdown,
         ];
+        let mut ambiguous: Option<(String, Vec<String>)> = None;
         for addr in candidates.into_iter().flatten() {
             let Some(symbol) = self.symbol_at(addr) else {
                 continue;
             };
-            let Some((entry_id, entry)) = self.view.task_entry_for_symbol(&symbol) else {
-                continue;
+            let entry_id = match self.view.task_ids_for_symbol(&symbol) {
+                SymbolLookup::Unique(id) => id,
+                SymbolLookup::Ambiguous(ids) => {
+                    let names = ids
+                        .into_iter()
+                        .filter_map(|id| self.view.bundle().tasks.entries.get(id.0 as usize))
+                        .filter_map(|entry| self.view.str(entry.display_name))
+                        .map(str::to_owned)
+                        .collect();
+                    ambiguous.get_or_insert((symbol, names));
+                    continue;
+                }
+                SymbolLookup::Missing => continue,
             };
+            let entry = &self.view.bundle().tasks.entries[entry_id.0 as usize];
             let display_name = self
                 .view
                 .str(entry.display_name)
@@ -526,6 +539,9 @@ impl<'b, T: Target> Context<'b, T> {
                 decl,
                 symbol,
             });
+        }
+        if let Some((symbol, candidates)) = ambiguous {
+            return FutureInfo::Ambiguous { symbol, candidates };
         }
         FutureInfo::Unknown {
             poll_symbol: self.symbol_at(vt.poll),
@@ -634,6 +650,10 @@ impl<'b, T: Target> Context<'b, T> {
                     .unwrap_or_default();
                 bail!("the task's future type is not in the bundle{sym}; nothing can be traced");
             }
+            FutureInfo::Ambiguous { symbol, candidates } => bail!(
+                "the task's normalized future symbol {symbol} is ambiguous: {}; nothing can be traced",
+                candidates.join(", ")
+            ),
         };
         let entry = self.task_entry(known.entry);
         let cell_ty = self.infra_ty(entry.cell, &format!("the Cell of {}", known.display_name))?;
@@ -1337,6 +1357,11 @@ pub enum FutureInfo {
     /// nothing is guessed.
     Unknown {
         poll_symbol: Option<String>,
+    },
+    /// Normalization joined the vtable functions to distinct task entries.
+    Ambiguous {
+        symbol: String,
+        candidates: Vec<String>,
     },
 }
 
