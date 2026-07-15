@@ -19,11 +19,12 @@ use exegesis::bundle::{
     BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, TaskEntryId,
     TaskFutureEntry, TypeDef, strip_llvm_suffix,
 };
-use proc::{LwpInfo, Mappings, Target};
+use exegesis::symbols::normalized_v0_key;
+use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::{ParseCtx, TypeInfo, TypeInfoRef};
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 /// Hard bound on await-chain depth: anything deeper indicates corrupt
@@ -100,11 +101,14 @@ pub struct Context<'b, T> {
     /// resolves to no symbol). Mangled names are the join keys; demangling
     /// is display-only.
     symbols: RefCell<HashMap<u64, Option<String>>>,
+    /// Normalized object-symbol name → target symbols. Populated lazily
+    /// because most commands do not need named statics.
+    object_symbols: RefCell<Option<HashMap<String, Vec<SymbolBuf>>>>,
     /// Task vtables decoded from target memory, keyed by vtable address.
     vtables: RefCell<HashMap<u64, TaskVtable>>,
     /// Memoized address of tokio's task `WAKER_VTABLE` static in the
-    /// target (`None` once resolution failed).
-    waker_vtable: RefCell<Option<Option<u64>>>,
+    /// target, including a cached diagnostic when resolution is ambiguous.
+    waker_vtable: RefCell<Option<std::result::Result<Option<u64>, String>>>,
 }
 
 impl<'b, T: Target> Context<'b, T> {
@@ -115,6 +119,7 @@ impl<'b, T: Target> Context<'b, T> {
             view,
             mappings,
             symbols: RefCell::new(HashMap::new()),
+            object_symbols: RefCell::new(None),
             vtables: RefCell::new(HashMap::new()),
             waker_vtable: RefCell::new(None),
         })
@@ -146,6 +151,40 @@ impl<'b, T: Target> Context<'b, T> {
         name
     }
 
+    /// Resolve a named static exactly when possible, then by a normalized v0
+    /// key. Aliases at one address are benign; multiple addresses are not.
+    fn object_symbol(&self, name: &str) -> Result<Option<SymbolBuf>> {
+        if let Some(symbol) = self.proc.lookup_symbol_by_name(name) {
+            return Ok(Some(symbol));
+        }
+        let Some(key) = normalized_v0_key(name) else {
+            return Ok(None);
+        };
+        if self.object_symbols.borrow().is_none() {
+            let mut index: HashMap<String, Vec<SymbolBuf>> = HashMap::new();
+            for symbol in self.proc.object_symbols()? {
+                if let Some(key) = normalized_v0_key(&symbol.name) {
+                    index.entry(key).or_default().push(symbol);
+                }
+            }
+            *self.object_symbols.borrow_mut() = Some(index);
+        }
+        let symbols = self.object_symbols.borrow();
+        let Some(candidates) = symbols.as_ref().unwrap().get(&key) else {
+            return Ok(None);
+        };
+        let by_addr: BTreeMap<u64, &SymbolBuf> =
+            candidates.iter().map(|symbol| (symbol.st_value, symbol)).collect();
+        match by_addr.len() {
+            0 => Ok(None),
+            1 => Ok(Some((*by_addr.values().next().unwrap()).clone())),
+            _ => bail!(
+                "normalized static {name} matched multiple target addresses: {}",
+                by_addr.keys().map(|addr| format!("{addr:#x}")).collect::<Vec<_>>().join(", ")
+            ),
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Attach-time validation (§5.1)
     // -----------------------------------------------------------------------
@@ -166,11 +205,14 @@ impl<'b, T: Target> Context<'b, T> {
         // A symbol may exist in the target only as `.llvm.<hash>`-suffixed
         // internalized copies; those still count as a match (the suffix is
         // path-sensitive and never participates in joins).
-        if !missing.is_empty()
-            && let Ok(all) = self.proc.symbols()
-        {
+        if !missing.is_empty() && let Ok(all) = self.proc.symbols() {
             let stripped: HashSet<&str> = all.iter().map(|s| strip_llvm_suffix(&s.name)).collect();
-            missing.retain(|s| !stripped.contains(s.as_str()));
+            let normalized: HashSet<String> =
+                all.iter().filter_map(|s| normalized_v0_key(&s.name)).collect();
+            missing.retain(|s| {
+                !stripped.contains(s.as_str())
+                    && normalized_v0_key(s).is_none_or(|key| !normalized.contains(&key))
+            });
         }
 
         Fingerprint {
@@ -201,8 +243,7 @@ impl<'b, T: Target> Context<'b, T> {
                 )
             })?;
         let sym = self
-            .proc
-            .lookup_symbol_by_name(&def.symbol)
+            .object_symbol(&def.symbol)?
             .ok_or_else(|| {
                 anyhow!(
                     "TLS key static {} ({}) not found in the target's symtab; \
@@ -1009,7 +1050,7 @@ impl<'b, T: Target> Context<'b, T> {
         };
         let data: u64 = raw.member("data")?.parse(self)?;
         let vtable: u64 = raw.member("vtable")?.parse(self)?;
-        if self.task_waker_vtable() == Some(vtable) {
+        if self.task_waker_vtable()? == Some(vtable) {
             let task_id = self
                 .header_task_id(data)
                 .context("failed to identify the task behind a queued waker")?;
@@ -1026,27 +1067,24 @@ impl<'b, T: Target> Context<'b, T> {
     /// resolved once through the target's symtab. The static may exist
     /// only as an `.llvm.<hash>`-suffixed internalized copy, like any
     /// other join symbol.
-    fn task_waker_vtable(&self) -> Option<u64> {
-        if let Some(cached) = *self.waker_vtable.borrow() {
-            return cached;
+    fn task_waker_vtable(&self) -> Result<Option<u64>> {
+        if let Some(cached) = self.waker_vtable.borrow().as_ref() {
+            return cached.clone().map_err(anyhow::Error::msg);
         }
-        let resolved = (|| {
+        let resolved: std::result::Result<Option<u64>, String> = (|| {
             let def = self
                 .view
                 .bundle()
                 .statics
                 .entries
-                .get(&StaticRole::TaskWakerVtable)?;
-            if let Some(sym) = self.proc.lookup_symbol_by_name(&def.symbol) {
-                return Some(sym.st_value);
-            }
-            let all = self.proc.symbols().ok()?;
-            all.iter()
-                .find(|s| strip_llvm_suffix(&s.name) == def.symbol)
-                .map(|s| s.st_value)
+                .get(&StaticRole::TaskWakerVtable)
+                .ok_or_else(|| "bundle records no task WAKER_VTABLE static".to_owned())?;
+            self.object_symbol(&def.symbol)
+                .map(|symbol| symbol.map(|s| s.st_value))
+                .map_err(|error| format!("{error:#}"))
         })();
-        *self.waker_vtable.borrow_mut() = Some(resolved);
-        resolved
+        *self.waker_vtable.borrow_mut() = Some(resolved.clone());
+        resolved.map_err(anyhow::Error::msg)
     }
 
     // -----------------------------------------------------------------------
