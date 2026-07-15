@@ -28,7 +28,7 @@ pub const MAGIC: [u8; 8] = *b"prosnap\0";
 
 /// Bumped freely on schema change; there is no cross-version
 /// compatibility requirement (same-tool-reads-it rule).
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -69,6 +69,9 @@ pub struct Snapshot {
     /// by-address lookups for addresses the capture never resolved, and
     /// the whole-symtab scan.
     functions: Vec<SymbolBuf>,
+    /// The target executable's object symtab, used for normalized lookup of
+    /// named statics whose crate disambiguators differ between builds.
+    objects: Vec<SymbolBuf>,
     /// By-address lookups observed at capture time, including misses.
     /// Authoritative over `functions`: libproc may resolve an address
     /// to a symbol outside the function-symbol mask (weak symbols,
@@ -156,11 +159,19 @@ impl Target for Snapshot {
         if let Some(recorded) = self.by_name.get(name) {
             return recorded.clone();
         }
-        self.functions.iter().find(|s| s.name == name).cloned()
+        self.functions
+            .iter()
+            .chain(&self.objects)
+            .find(|s| s.name == name)
+            .cloned()
     }
 
     fn symbols(&self) -> TargetResult<Vec<SymbolBuf>> {
         Ok(self.functions.clone())
+    }
+
+    fn object_symbols(&self) -> TargetResult<Vec<SymbolBuf>> {
+        Ok(self.objects.clone())
     }
 
     fn mappings(&self) -> TargetResult<Mappings> {
@@ -198,10 +209,13 @@ impl<'a, T: Target> Recorder<'a, T> {
     pub fn snapshot(&self) -> TargetResult<Snapshot> {
         let mut functions = self.target.symbols()?;
         functions.sort_by_key(|s| s.st_value);
+        let mut objects = self.target.object_symbols()?;
+        objects.sort_by_key(|s| s.st_value);
 
         Ok(Snapshot {
             memory: merge_reads(&self.reads.borrow()),
             functions,
+            objects,
             by_addr: self.by_addr.borrow().clone(),
             by_name: self.by_name.borrow().clone(),
             mappings: self.target.mappings()?,
@@ -275,6 +289,10 @@ impl<T: Target> Target for Recorder<'_, T> {
 
     fn symbols(&self) -> TargetResult<Vec<SymbolBuf>> {
         self.target.symbols()
+    }
+
+    fn object_symbols(&self) -> TargetResult<Vec<SymbolBuf>> {
+        self.target.object_symbols()
     }
 
     fn mappings(&self) -> TargetResult<Mappings> {
@@ -353,6 +371,10 @@ mod tests {
 
         fn symbols(&self) -> TargetResult<Vec<SymbolBuf>> {
             Ok(self.functions.clone())
+        }
+
+        fn object_symbols(&self) -> TargetResult<Vec<SymbolBuf>> {
+            Ok(self.objects.clone())
         }
 
         fn mappings(&self) -> TargetResult<Mappings> {

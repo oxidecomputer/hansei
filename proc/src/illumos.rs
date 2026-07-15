@@ -15,6 +15,7 @@ use libproc_sys::{
     Psymbol_iter, REG_CS, REG_DS, REG_ERR, REG_ES, REG_FS, REG_FSBASE, REG_GS, REG_GSBASE, REG_R8,
     REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15, REG_RAX, REG_RBP, REG_RBX,
     REG_RCX, REG_RDI, REG_RDX, REG_RFL, REG_RIP, REG_RSI, REG_RSP, REG_SS, REG_TRAPNO, TYPE_FUNC,
+    TYPE_OBJECT,
     gregset_t, lwpstatus_t, pid_t, prmap_t, ps_lwphandle, ps_prochandle, stack_t,
 };
 
@@ -434,7 +435,7 @@ impl Proc {
         self.addr_to_map(addr).is_some()
     }
 
-    pub fn symbols(&self) -> Result<Vec<SymbolBuf>> {
+    fn symbols_with_mask(&self, type_mask: u32) -> Result<Vec<SymbolBuf>> {
         mod callback {
             use super::*;
 
@@ -488,9 +489,9 @@ impl Proc {
             }
         }
 
-        // Search for function symbols in the executable only.
+        // Search the executable only; callers select functions or objects.
         const PR_OBJ_EXEC: *const c_char = ptr::null();
-        let fmask = TYPE_FUNC | BIND_GLOBAL | BIND_LOCAL;
+        let fmask = type_mask | BIND_GLOBAL | BIND_LOCAL;
 
         let mut symbols = Vec::new();
         let ret = unsafe {
@@ -509,6 +510,14 @@ impl Proc {
         } else {
             Err(Error::symbol_iter_failed())
         }
+    }
+
+    pub fn symbols(&self) -> Result<Vec<SymbolBuf>> {
+        self.symbols_with_mask(TYPE_FUNC)
+    }
+
+    pub fn object_symbols(&self) -> Result<Vec<SymbolBuf>> {
+        self.symbols_with_mask(TYPE_OBJECT)
     }
 
     pub fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {
@@ -604,6 +613,10 @@ impl Target for Proc {
 
     fn symbols(&self) -> Result<Vec<SymbolBuf>> {
         Proc::symbols(self)
+    }
+
+    fn object_symbols(&self) -> Result<Vec<SymbolBuf>> {
+        Proc::object_symbols(self)
     }
 
     fn mappings(&self) -> Result<Mappings> {
