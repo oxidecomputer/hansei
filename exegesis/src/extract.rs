@@ -29,6 +29,7 @@ use crate::bundle::{
 use crate::raw_types::{NsId, RawType, VariantShape as RawVariantShape};
 use crate::view::{DwView, Func, SourceLocView};
 use crate::{DwReader, Encoding, TypeId};
+use crate::symbols::normalized_value_index;
 
 use object::{Object, ObjectSymbol};
 use sha2::Digest;
@@ -674,16 +675,20 @@ pub fn extract_from_view(
     stats.types_emitted = types.types.len();
     stats.opaque_types = opaque_count;
 
+    let task_normalized = normalized_value_index(&by_symbol);
+    let dyn_normalized = normalized_value_index(&dyn_table);
     let bundle = Bundle {
         meta,
         strings,
         types,
         tasks: TaskTable {
             by_symbol,
+            by_normalized_symbol: task_normalized,
             entries,
         },
         dyn_futures: DynFutureTable {
             by_symbol: dyn_table,
+            by_normalized_symbol: dyn_normalized,
         },
         statics: StaticsTable { entries: statics },
         infra: InfraTypes {

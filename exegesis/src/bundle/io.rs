@@ -12,6 +12,7 @@ use crate::bundle::schema::{
     Bundle, BundleTypeId, StaticsTable, TypeDef, strip_llvm_suffix,
 };
 use crate::bundle::strings::StrRef;
+use crate::symbols::normalized_value_index;
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -22,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -184,6 +185,19 @@ impl Bundle {
                 return corrupt(format!("task table: entry id {} out of range", id.0));
             }
         }
+        for (sym, ids) in &self.tasks.by_normalized_symbol {
+            if ids.is_empty() {
+                return corrupt(format!("normalized task key {sym:?} has no entries"));
+            }
+            for id in ids {
+                if (id.0 as usize) >= self.tasks.entries.len() {
+                    return corrupt(format!("normalized task table: entry id {} out of range", id.0));
+                }
+            }
+        }
+        if self.tasks.by_normalized_symbol != normalized_value_index(&self.tasks.by_symbol) {
+            return corrupt("normalized task table is inconsistent with raw symbols".to_owned());
+        }
         for (i, e) in self.tasks.entries.iter().enumerate() {
             let what = &format!("task entry {i}");
             check_ty(what, e.future)?;
@@ -198,6 +212,21 @@ impl Bundle {
                 return corrupt(format!("dyn future key {sym:?} has .llvm suffix"));
             }
             check_ty("dyn future table", *id)?;
+        }
+        for (sym, ids) in &self.dyn_futures.by_normalized_symbol {
+            if ids.is_empty() {
+                return corrupt(format!("normalized dyn future key {sym:?} has no entries"));
+            }
+            for id in ids {
+                check_ty("normalized dyn future table", *id)?;
+            }
+        }
+        if self.dyn_futures.by_normalized_symbol
+            != normalized_value_index(&self.dyn_futures.by_symbol)
+        {
+            return corrupt(
+                "normalized dyn future table is inconsistent with raw symbols".to_owned(),
+            );
         }
 
         let StaticsTable { entries: _ } = &self.statics; // plain strings, nothing to check

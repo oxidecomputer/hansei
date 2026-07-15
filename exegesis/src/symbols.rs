@@ -12,6 +12,23 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Raw v0 symbols grouped by a build-independent prototype key.
 pub type NormalizedSymbols = BTreeMap<String, Vec<String>>;
 
+/// Build a normalized multimap and collapse raw aliases that resolve to the
+/// same semantic value.
+pub fn normalized_value_index<V: Copy + Ord>(
+    symbols: &BTreeMap<String, V>,
+) -> BTreeMap<String, Vec<V>> {
+    let mut index: BTreeMap<String, BTreeSet<V>> = BTreeMap::new();
+    for (symbol, value) in symbols {
+        if let Some(key) = normalized_v0_key(symbol) {
+            index.entry(key).or_default().insert(*value);
+        }
+    }
+    index
+        .into_iter()
+        .map(|(key, values)| (key, values.into_iter().collect()))
+        .collect()
+}
+
 /// Produce a prototype normalized key for a v0-mangled Rust symbol.
 ///
 /// LLVM's internalization suffix is excluded independently.  Non-v0 and
@@ -46,7 +63,8 @@ pub fn normalized_symbol_index<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_symbol_index, normalized_v0_key};
+    use super::{normalized_symbol_index, normalized_v0_key, normalized_value_index};
+    use std::collections::BTreeMap;
 
     const DEBUG: &str =
         "_RNvNCNvNtNtCs4y941wpZLOZ_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
@@ -77,5 +95,23 @@ mod tests {
     fn non_v0_symbols_are_rejected() {
         assert_eq!(normalized_v0_key("malloc"), None);
         assert_eq!(normalized_v0_key("_ZN3fooE"), None);
+    }
+
+    #[test]
+    fn value_index_collapses_codegen_aliases() {
+        let symbols = BTreeMap::from([
+            (DEBUG.to_owned(), 7),
+            (NODEBUG.to_owned(), 7),
+        ]);
+        assert_eq!(normalized_value_index(&symbols).values().next(), Some(&vec![7]));
+    }
+
+    #[test]
+    fn value_index_preserves_semantic_ambiguity() {
+        let symbols = BTreeMap::from([
+            (DEBUG.to_owned(), 7),
+            (NODEBUG.to_owned(), 9),
+        ]);
+        assert_eq!(normalized_value_index(&symbols).values().next(), Some(&vec![7, 9]));
     }
 }

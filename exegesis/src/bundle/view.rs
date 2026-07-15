@@ -8,7 +8,7 @@
 
 use crate::bundle::schema::{
     Bundle, BundleTypeId, MemberDef, Provenance, TaskEntryId, TaskFutureEntry, TypeDef, VariantDef,
-    VariantShape, strip_llvm_suffix,
+    SymbolLookup, VariantShape,
 };
 use crate::raw_types::Encoding;
 
@@ -65,7 +65,7 @@ impl<'a> BundleView<'a> {
         &self,
         symbol: &str,
     ) -> Option<(TaskEntryId, &'a TaskFutureEntry)> {
-        let id = *self.bundle.tasks.by_symbol.get(strip_llvm_suffix(symbol))?;
+        let SymbolLookup::Unique(id) = self.bundle.tasks.lookup_id(symbol) else { return None };
         let entry = self.bundle.tasks.entries.get(id.0 as usize)?;
         Some((id, entry))
     }
