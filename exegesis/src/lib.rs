@@ -5,6 +5,7 @@ mod parallel_fold;
 pub mod raw_types;
 pub mod reader;
 pub mod string_table;
+pub mod symbols;
 pub mod view;
 
 #[cfg(test)]
