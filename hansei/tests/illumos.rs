@@ -362,8 +362,17 @@ fn normalize(trace: &str) -> String {
 fn assert_locals(verbose_trace: &str, names: &[&str]) {
     for name in names {
         assert!(
-            verbose_trace.contains(&format!("\n       {name}: ")),
+            verbose_trace.contains(&format!("\n       {name}:")),
             "local {name} missing from trace:\n{verbose_trace}"
+        );
+    }
+}
+
+fn assert_not_locals(verbose_trace: &str, names: &[&str]) {
+    for name in names {
+        assert!(
+            !verbose_trace.contains(&format!("\n       {name}:")),
+            "inactive local {name} present in trace:\n{verbose_trace}"
         );
     }
 }
@@ -446,6 +455,10 @@ Defined at: nested-await.rs:16
             "({})",
             source.describe()
         );
+
+        let verbose = trace(&bundle, source, &task.id, true);
+        assert!(verbose.matches("\n     locals:\n").count() <= 1);
+        assert_not_locals(&verbose, &["nested", "inner"]);
     });
 }
 
@@ -562,10 +575,12 @@ Defined at: futurelock.rs:13
             source.describe()
         );
 
-        // The boxed, never-again-polled future1 is still held across
-        // do_stuff's suspension — the futurelock signature.
+        // These belong to outer coroutine stages. The trace still shows
+        // those stages, but only prints locals for the innermost active
+        // stage because their overlapping storage now represents it.
         let verbose = trace(&bundle, source, &task.id, true);
-        assert_locals(&verbose, &["lock", "future1", "disabled", "label"]);
+        assert_not_locals(&verbose, &["lock", "future1", "disabled", "label"]);
+        assert!(verbose.matches("\n     locals:\n").count() <= 1);
     });
 }
 
