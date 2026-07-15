@@ -14,6 +14,12 @@ struct Args {
     left: PathBuf,
     /// Second ELF or Mach-O binary.
     right: PathBuf,
+    /// Retain only normalized names containing this text.
+    #[arg(long)]
+    filter: Option<String>,
+    /// Print this many representative ambiguous buckets.
+    #[arg(long, default_value_t = 0)]
+    show_ambiguous: usize,
 }
 
 fn read_symbols(path: &Path) -> Result<NormalizedSymbols, Box<dyn std::error::Error>> {
@@ -29,8 +35,12 @@ fn read_symbols(path: &Path) -> Result<NormalizedSymbols, Box<dyn std::error::Er
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let left_index = read_symbols(&args.left)?;
-    let right_index = read_symbols(&args.right)?;
+    let mut left_index = read_symbols(&args.left)?;
+    let mut right_index = read_symbols(&args.right)?;
+    if let Some(filter) = &args.filter {
+        left_index.retain(|key, _| key.contains(filter));
+        right_index.retain(|key, _| key.contains(filter));
+    }
     let left_raw: BTreeSet<&str> = left_index.values().flatten().map(String::as_str).collect();
     let right_raw: BTreeSet<&str> = right_index.values().flatten().map(String::as_str).collect();
 
@@ -57,5 +67,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("left collisions:    {left_collisions}");
     println!("right collisions:   {right_collisions}");
     println!("ambiguous matches:  {ambiguous_matches}");
+
+    for (key, left) in left_index
+        .iter()
+        .filter(|(key, left)| {
+            right_index
+                .get(*key)
+                .is_some_and(|right| left.len() > 1 || right.len() > 1)
+        })
+        .take(args.show_ambiguous)
+    {
+        let right = &right_index[key];
+        println!("\n{key}");
+        print_bucket("left", left);
+        print_bucket("right", right);
+    }
     Ok(())
+}
+
+fn print_bucket(label: &str, symbols: &[String]) {
+    println!("  {label} ({}):", symbols.len());
+    for symbol in symbols.iter().take(4) {
+        println!("    {symbol}");
+    }
+    if symbols.len() > 4 {
+        println!("    ... {} more", symbols.len() - 4);
+    }
 }
