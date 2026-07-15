@@ -525,6 +525,7 @@ fn exec_trace_ctf(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
 
     let active_stage = stages.len().checked_sub(1);
     for (i, (await_point, var)) in stages.iter().enumerate() {
+        let var = var.as_ref();
         writeln!(out, "    suspended at await point {}", await_point)?;
 
         // TODO: this is hilariously overbroad.
