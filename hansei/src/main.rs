@@ -576,6 +576,9 @@ fn exec_trace_bundle(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
             poll_symbol: Some(sym),
         } => format!("<unknown: {:#}>", rustc_demangle::demangle(sym)),
         bundle::FutureInfo::Unknown { poll_symbol: None } => "<unknown>".to_string(),
+        bundle::FutureInfo::Ambiguous { candidates, .. } => {
+            format!("<ambiguous: {}>", candidates.join(" | "))
+        }
     };
     writeln!(out, "Task {task_id}: {name} ({})", task.state.lifecycle())?;
     if let Some(loc) = &task.spawn_location {
@@ -835,7 +838,7 @@ fn exec_snapshot(args: SnapshotCmd, out: &mut dyn io::Write) -> Result<()> {
 
     let mut chains = 0usize;
     for task in &list.tasks {
-        if let bundle::FutureInfo::Unknown { .. } = task.future {
+        if !matches!(task.future, bundle::FutureInfo::Known(_)) {
             continue;
         }
         match ctx.task_stage(task) {
@@ -944,6 +947,10 @@ fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
             bundle::FutureInfo::Unknown { poll_symbol: None } => {
                 ("<unknown>".to_string(), "-".to_string())
             }
+            bundle::FutureInfo::Ambiguous { candidates, .. } => (
+                format!("<ambiguous: {}>", candidates.join(" | ")),
+                "-".to_string(),
+            ),
         };
         let spawned = task
             .spawn_location

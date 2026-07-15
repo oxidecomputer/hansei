@@ -70,6 +70,11 @@ impl<'a> BundleView<'a> {
         Some((id, entry))
     }
 
+    /// Resolve a task symbol without discarding semantic ambiguity.
+    pub fn task_ids_for_symbol(&self, symbol: &str) -> SymbolLookup<TaskEntryId> {
+        self.bundle.tasks.lookup_id(symbol)
+    }
+
     /// Source provenance for a task entry.
     pub fn provenance(&self, id: TaskEntryId) -> Option<&'a Provenance> {
         self.bundle.provenance.entries.get(id.0 as usize)
