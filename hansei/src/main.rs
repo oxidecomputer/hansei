@@ -654,24 +654,34 @@ fn print_await_chain(
     value_depth: usize,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let active_stage = chain.frames.iter().rposition(|frame| frame.state.is_some());
+    let active_frame = chain.frames.len().checked_sub(1);
     for (i, frame) in chain.frames.iter().enumerate() {
+        let active = Some(i) == active_frame;
+        let marker = if active { '*' } else { ' ' };
         let dyn_marker = if frame.dyn_symbol.is_some() {
             " [dyn]"
         } else {
             ""
         };
-        writeln!(out, "{i:>3}: {}{dyn_marker}", frame.future.ty.name())?;
+        writeln!(
+            out,
+            "{marker}{i:>2}: {}{dyn_marker}",
+            frame.future.ty.name()
+        )?;
 
-        let Some(state) = &frame.state else { continue };
-        let loc = state
-            .await_loc
-            .map(|(file, line)| format!(" — {file}:{line}"))
-            .unwrap_or_default();
-        writeln!(out, "     state {}{loc}", state.name)?;
+        if let Some(state) = &frame.state {
+            let loc = state
+                .await_loc
+                .map(|(file, line)| format!(" — {file}:{line}"))
+                .unwrap_or_default();
+            writeln!(out, "     state {}{loc}", state.name)?;
+        }
 
-        if verbose && Some(i) == active_stage {
-            let payload = state.payload.as_ref();
+        if verbose && active {
+            let payload = match &frame.state {
+                Some(state) => state.payload.as_ref(),
+                None => frame.future.as_ref(),
+            };
             // `__…` members are compiler-generated (the awaitee itself
             // and liveness slots), not source-level locals. A coroutine
             // state may hold the same name twice (a captured upvar and a
