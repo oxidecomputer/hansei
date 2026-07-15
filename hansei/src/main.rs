@@ -708,6 +708,20 @@ fn print_await_chain(
                 )?;
             }
         }
+        bundle::ChainEnd::AmbiguousDyn {
+            pointee,
+            symbol,
+            candidates,
+        } => {
+            writeln!(
+                out,
+                "the chain continues into a {pointee}, but its normalized poll symbol is ambiguous"
+            )?;
+            writeln!(out, "     poll fn: {symbol}")?;
+            for candidate in candidates {
+                writeln!(out, "     candidate: {candidate}")?;
+            }
+        }
         bundle::ChainEnd::DepthLimit => {
             writeln!(
                 out,

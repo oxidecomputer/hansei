@@ -16,8 +16,8 @@ use super::{Location, RawInstant, TaskAddr, TaskState};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use exegesis::bundle::{
-    BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, TaskEntryId,
-    TaskFutureEntry, TypeDef, strip_llvm_suffix,
+    BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, SymbolLookup,
+    TaskEntryId, TaskFutureEntry, TypeDef, strip_llvm_suffix,
 };
 use exegesis::symbols::normalized_v0_key;
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
@@ -694,6 +694,13 @@ impl<'b, T: Target> Context<'b, T> {
                             poll_symbol,
                         };
                     }
+                    Ok(DynAwaitee::Ambiguous { symbol, candidates }) => {
+                        break ChainEnd::AmbiguousDyn {
+                            pointee: dp.pointee.name().to_owned(),
+                            symbol,
+                            candidates,
+                        };
+                    }
                     Err(e) => break ChainEnd::Error(e),
                 }
             }
@@ -805,6 +812,13 @@ impl<'b, T: Target> Context<'b, T> {
                             poll_symbol,
                         };
                     }
+                    Ok(DynAwaitee::Ambiguous { symbol, candidates }) => {
+                        break ChainEnd::AmbiguousDyn {
+                            pointee: dp.pointee.name().to_owned(),
+                            symbol,
+                            candidates,
+                        };
+                    }
                     Err(e) => break ChainEnd::Error(e),
                 }
             } else if leaf_kind(awaitee.ty.name()).is_some() {
@@ -868,10 +882,22 @@ impl<'b, T: Target> Context<'b, T> {
             if slot == VTABLE_SLOT_FUTURE_POLL {
                 poll_symbol = Some(symbol.clone());
             }
-            if let Some(ty) = self.view.dyn_future_for_symbol(&symbol) {
-                let future = TypeInfo::from_addr(self, ty, data)
-                    .with_context(|| format!("failed to read {} at {data:#x}", ty.name()))?;
-                return Ok(DynAwaitee::Resolved { future, symbol });
+            match self.view.dyn_future_ids_for_symbol(&symbol) {
+                SymbolLookup::Unique(id) => {
+                    let ty = self.view.ty(id).expect("validated bundle type id");
+                    let future = TypeInfo::from_addr(self, ty, data)
+                        .with_context(|| format!("failed to read {} at {data:#x}", ty.name()))?;
+                    return Ok(DynAwaitee::Resolved { future, symbol });
+                }
+                SymbolLookup::Ambiguous(ids) => {
+                    let candidates = ids
+                        .into_iter()
+                        .filter_map(|id| self.view.ty(id))
+                        .map(|ty| ty.name().to_owned())
+                        .collect();
+                    return Ok(DynAwaitee::Ambiguous { symbol, candidates });
+                }
+                SymbolLookup::Missing => {}
             }
         }
         Ok(DynAwaitee::Unknown { poll_symbol })
@@ -1177,7 +1203,9 @@ impl<'b, T: Target> Context<'b, T> {
         let root = if let Some(dp) = peeled.ty.dyn_pointer() {
             match self.resolve_dyn_future(&peeled, &dp) {
                 Ok(DynAwaitee::Resolved { future, .. }) => future,
-                Ok(DynAwaitee::Unknown { .. }) | Err(_) => return None,
+                Ok(DynAwaitee::Unknown { .. } | DynAwaitee::Ambiguous { .. }) | Err(_) => {
+                    return None;
+                }
             }
         } else {
             local.to_owned()
@@ -1387,6 +1415,15 @@ pub enum ChainEnd {
         /// The mangled symbol the vtable's poll slot resolved to, if any.
         poll_symbol: Option<String>,
     },
+    /// Normalization joined the vtable symbol to distinct concrete types.
+    AmbiguousDyn {
+        /// The `dyn Trait` spelling, for display.
+        pointee: String,
+        /// The target's raw mangled symbol.
+        symbol: String,
+        /// Concrete bundle type names sharing the normalized key.
+        candidates: Vec<String>,
+    },
     /// The depth bound was hit.
     DepthLimit,
     /// The same (address, type) pair reappeared.
@@ -1551,4 +1588,6 @@ enum DynAwaitee<'b> {
     },
     /// No vtable symbol joined the bundle's dyn-future table.
     Unknown { poll_symbol: Option<String> },
+    /// The normalized symbol joined more than one concrete bundle type.
+    Ambiguous { symbol: String, candidates: Vec<String> },
 }

@@ -86,6 +86,11 @@ impl<'a> BundleView<'a> {
         let id = self.bundle.dyn_futures.lookup(symbol)?;
         self.ty(id)
     }
+
+    /// Resolve a dyn-future symbol without discarding semantic ambiguity.
+    pub fn dyn_future_ids_for_symbol(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
+        self.bundle.dyn_futures.lookup_id(symbol)
+    }
 }
 
 impl fmt::Debug for BundleView<'_> {
