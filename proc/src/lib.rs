@@ -150,6 +150,11 @@ pub trait Target {
     /// Every function symbol in the target executable's symtab.
     fn symbols(&self) -> Result<Vec<SymbolBuf>>;
 
+    /// Every object symbol in the target executable's symtab.
+    fn object_symbols(&self) -> Result<Vec<SymbolBuf>> {
+        Ok(Vec::new())
+    }
+
     /// The target's memory mappings.
     fn mappings(&self) -> Result<Mappings>;
 
