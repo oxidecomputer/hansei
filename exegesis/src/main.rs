@@ -172,7 +172,13 @@ fn stats(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("  strings:         {}", bundle.strings.len());
     println!("  task entries:    {} ({} symbol keys)",
         bundle.tasks.entries.len(), bundle.tasks.by_symbol.len());
+    println!("    normalized     {} keys ({} ambiguous)",
+        bundle.tasks.by_normalized_symbol.len(),
+        bundle.tasks.by_normalized_symbol.values().filter(|ids| ids.len() > 1).count());
     println!("  dyn futures:     {}", bundle.dyn_futures.by_symbol.len());
+    println!("    normalized     {} keys ({} ambiguous)",
+        bundle.dyn_futures.by_normalized_symbol.len(),
+        bundle.dyn_futures.by_normalized_symbol.values().filter(|ids| ids.len() > 1).count());
     println!("  statics:         {}", bundle.statics.entries.len());
     let with_decl = bundle.provenance.entries.iter().filter(|p| p.decl.is_some()).count();
     println!("  provenance:      {}/{} with source location",
