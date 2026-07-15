@@ -168,6 +168,7 @@ fn random_bundle(seed: u64) -> Bundle {
         by_symbol: (0..rng.below(6))
             .map(|i| (format!("_RNvX_dyn{i}_poll"), any_ty(&mut rng)))
             .collect(),
+        by_normalized_symbol: BTreeMap::new(),
     };
 
     let mut statics = StaticsTable::default();
@@ -236,7 +237,7 @@ fn random_bundle(seed: u64) -> Bundle {
         },
         strings: table,
         types: TypeTable { types, name_index },
-        tasks: TaskTable { by_symbol, entries },
+        tasks: TaskTable { by_symbol, by_normalized_symbol: BTreeMap::new(), entries },
         dyn_futures,
         statics,
         infra: InfraTypes {
@@ -436,6 +437,29 @@ fn test_symbol_lookup_is_mangled_exact_match() {
     assert!(b.tasks.lookup("_RINvNtNtNtC_5tokio_otherE").is_none());
     assert_eq!(b.dyn_futures.lookup("_RNvX_dynE.llvm.1"), Some(BundleTypeId(0)));
     assert_eq!(b.dyn_futures.lookup("_RNvX_dynE"), Some(BundleTypeId(0)));
+}
+
+#[test]
+fn test_symbol_lookup_falls_back_to_normalized_name() {
+    const DEBUG: &str =
+        "_RNvNCNvNtNtCs4y941wpZLOZ_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+    const NODEBUG: &str =
+        "_RNvNCNvNtNtCsbdypcaruIt3_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+
+    let entry = TaskFutureEntry {
+        future: BundleTypeId(0),
+        cell: BundleTypeId(0),
+        stage: BundleTypeId(0),
+        scheduler: BundleTypeId(0),
+        display_name: StrRef(0),
+    };
+    let by_symbol = BTreeMap::from([(DEBUG.to_owned(), TaskEntryId(0))]);
+    let tasks = TaskTable {
+        by_normalized_symbol: crate::symbols::normalized_value_index(&by_symbol),
+        by_symbol,
+        entries: vec![entry],
+    };
+    assert!(tasks.lookup(NODEBUG).is_some());
 }
 
 #[test]

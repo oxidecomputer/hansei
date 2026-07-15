@@ -15,6 +15,7 @@
 
 use crate::bundle::strings::{StrRef, StringTable};
 use crate::raw_types::Encoding;
+use crate::symbols::normalized_v0_key;
 
 use serde::{Deserialize, Serialize};
 
@@ -217,13 +218,39 @@ pub struct TaskTable {
     /// Mangled linkage name → entry. Keys are stored without `.llvm.<hash>`
     /// suffixes; use [`TaskTable::lookup`] which strips them.
     pub by_symbol: BTreeMap<String, TaskEntryId>,
+    /// Normalized linkage name → distinct semantic entries. Multiple raw
+    /// codegen copies of one entry collapse to one id.
+    pub by_normalized_symbol: BTreeMap<String, Vec<TaskEntryId>>,
     pub entries: Vec<TaskFutureEntry>,
 }
 
+/// Result of exact-then-normalized symbol resolution.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SymbolLookup<T> {
+    Missing,
+    Unique(T),
+    Ambiguous(Vec<T>),
+}
+
 impl TaskTable {
+    pub fn lookup_id(&self, symbol: &str) -> SymbolLookup<TaskEntryId> {
+        let symbol = strip_llvm_suffix(symbol);
+        if let Some(id) = self.by_symbol.get(symbol) {
+            return SymbolLookup::Unique(*id);
+        }
+        let Some(key) = normalized_v0_key(symbol) else {
+            return SymbolLookup::Missing;
+        };
+        match self.by_normalized_symbol.get(&key).map(Vec::as_slice) {
+            Some([id]) => SymbolLookup::Unique(*id),
+            Some(ids) if !ids.is_empty() => SymbolLookup::Ambiguous(ids.to_vec()),
+            _ => SymbolLookup::Missing,
+        }
+    }
+
     /// Look up a mangled symbol as read from the target's symtab.
     pub fn lookup(&self, symbol: &str) -> Option<&TaskFutureEntry> {
-        let id = *self.by_symbol.get(strip_llvm_suffix(symbol))?;
+        let SymbolLookup::Unique(id) = self.lookup_id(symbol) else { return None };
         self.entries.get(id.0 as usize)
     }
 }
@@ -252,12 +279,29 @@ pub struct DynFutureTable {
     /// Keys are stored without `.llvm.<hash>` suffixes; use
     /// [`DynFutureTable::lookup`] which strips them.
     pub by_symbol: BTreeMap<String, BundleTypeId>,
+    pub by_normalized_symbol: BTreeMap<String, Vec<BundleTypeId>>,
 }
 
 impl DynFutureTable {
+    pub fn lookup_id(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
+        let symbol = strip_llvm_suffix(symbol);
+        if let Some(id) = self.by_symbol.get(symbol) {
+            return SymbolLookup::Unique(*id);
+        }
+        let Some(key) = normalized_v0_key(symbol) else {
+            return SymbolLookup::Missing;
+        };
+        match self.by_normalized_symbol.get(&key).map(Vec::as_slice) {
+            Some([id]) => SymbolLookup::Unique(*id),
+            Some(ids) if !ids.is_empty() => SymbolLookup::Ambiguous(ids.to_vec()),
+            _ => SymbolLookup::Missing,
+        }
+    }
+
     /// Look up a mangled symbol as read from the target's symtab.
     pub fn lookup(&self, symbol: &str) -> Option<BundleTypeId> {
-        self.by_symbol.get(strip_llvm_suffix(symbol)).copied()
+        let SymbolLookup::Unique(id) = self.lookup_id(symbol) else { return None };
+        Some(id)
     }
 }
 
