@@ -511,8 +511,20 @@ fn exec_trace_ctf(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
     writeln!(out, "Task {task_id}:")?;
     writeln!(out, "{}", stage.ty.name())?;
     let mut active = active.to_owned();
+    let mut stages = Vec::new();
 
     while let Ok((await_point, var)) = active.as_ref().active_variant() {
+        let next = if let Some(aw) = var.try_member("__awaitee")? {
+            aw.to_owned()
+        } else {
+            var.to_owned()
+        };
+        stages.push((await_point.to_owned(), var.to_owned()));
+        active = next;
+    }
+
+    let active_stage = stages.len().checked_sub(1);
+    for (i, (await_point, var)) in stages.iter().enumerate() {
         writeln!(out, "    suspended at await point {}", await_point)?;
 
         // TODO: this is hilariously overbroad.
@@ -521,7 +533,7 @@ fn exec_trace_ctf(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
             writeln!(out, "    blocked on mutex at {addr:#x}")?;
         }
 
-        if args.verbose && !var.is_enum() {
+        if args.verbose && Some(i) == active_stage && !var.is_enum() {
             writeln!(out, "    Arguments:")?;
             for m in var.ty.members().filter(|m| m.name() != "__awaitee") {
                 let mm = var.member(m.name())?;
@@ -531,14 +543,6 @@ fn exec_trace_ctf(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
         }
 
         writeln!(out, "waiting on: {}", var.ty.name())?;
-
-        // We have an explicit awaitee.
-        if let Some(aw) = var.try_member("__awaitee")? {
-            active = aw.to_owned();
-        } else {
-            // Move down to the next nested type.
-            active = var.to_owned();
-        }
     }
 
     Ok(())
@@ -649,6 +653,7 @@ fn print_await_chain(
     value_depth: usize,
     out: &mut dyn io::Write,
 ) -> Result<()> {
+    let active_stage = chain.frames.iter().rposition(|frame| frame.state.is_some());
     for (i, frame) in chain.frames.iter().enumerate() {
         let dyn_marker = if frame.dyn_symbol.is_some() {
             " [dyn]"
@@ -664,7 +669,7 @@ fn print_await_chain(
             .unwrap_or_default();
         writeln!(out, "     state {}{loc}", state.name)?;
 
-        if verbose {
+        if verbose && Some(i) == active_stage {
             let payload = state.payload.as_ref();
             // `__…` members are compiler-generated (the awaitee itself
             // and liveness slots), not source-level locals. A coroutine
