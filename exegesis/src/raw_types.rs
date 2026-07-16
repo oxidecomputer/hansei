@@ -486,6 +486,7 @@ pub(crate) struct CommonAttrs<'dw> {
     pub alignment: Option<NonZero<u64>>,
     pub type_id: Option<UnitSectionOffset>,
     pub is_decl: bool,
+    pub specification: Option<UnitSectionOffset>,
     pub debug_offset: UnitSectionOffset,
     pub source_loc: SourceLoc<&'dw str>,
 }
@@ -503,6 +504,7 @@ impl<'dw> CommonAttrs<'dw> {
         let mut alignment = None;
         let mut type_id = None;
         let mut is_decl = false;
+        let mut specification = None;
         let mut source_loc = SourceLoc::default();
         let offset = entry.offset().to_unit_section_offset(unit);
 
@@ -524,6 +526,13 @@ impl<'dw> CommonAttrs<'dw> {
                     _ => panic!("unexpected type type: {:?}", attr.value()),
                 },
                 gimli::DW_AT_declaration => is_decl = true,
+                gimli::DW_AT_specification => match attr.value() {
+                    AttributeValue::UnitRef(o) => {
+                        specification = Some(o.to_unit_section_offset(unit));
+                    }
+                    AttributeValue::DebugInfoRef(o) => specification = Some(o.into()),
+                    _ => debug!("unexpected specification type: {:?}", attr.value()),
+                },
                 gimli::DW_AT_decl_file => {
                     let AttributeValue::FileIndex(f) = attr.value() else {
                         debug!("unexpected decl_file type: {:?}", attr.value());
@@ -563,6 +572,7 @@ impl<'dw> CommonAttrs<'dw> {
             alignment,
             type_id,
             is_decl,
+            specification,
             source_loc,
             debug_offset: offset,
         })
