@@ -618,7 +618,7 @@ fn exec_trace_bundle(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
     match ctx.task_stage(task)? {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
-            print_await_chain(&chain, args.verbose, args.value_depth, out)?;
+            print_await_chain(&ctx, &chain, args.verbose, args.value_depth, out)?;
             // The leaf-future knowledge base (§3.6): name what the task
             // is actually waiting on when the leaf is a known primitive.
             match ctx.wait_target(&chain) {
@@ -651,8 +651,9 @@ fn exec_trace_bundle(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
 
 /// Render an await chain, one line per future, with the coroutine state
 /// and awaited expression where known, and the live locals when verbose.
-fn print_await_chain(
-    chain: &bundle::AwaitChain<'_>,
+fn print_await_chain<'b, T: proc::Target>(
+    ctx: &bundle::Context<'b, T>,
+    chain: &bundle::AwaitChain<'b>,
     verbose: bool,
     value_depth: usize,
     out: &mut dyn io::Write,
@@ -739,7 +740,24 @@ fn print_await_chain(
                     Some(bytes) => {
                         let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes)
                             .peel();
-                        let value = format!("{:#}", v.display_with_depth(value_depth));
+                        let value = if v.ty.pointer_target().is_some() {
+                            match v.try_deref_ptr(ctx) {
+                                Ok(Some(pointee)) => format!(
+                                    "{:#x} -> {:#}",
+                                    pointee.addr,
+                                    pointee.as_ref().display_with_depth(value_depth)
+                                ),
+                                Ok(None) => {
+                                    format!("{} -> <unreadable>", v.display_with_depth(value_depth))
+                                }
+                                Err(e) => format!(
+                                    "{} -> <unreadable: {e}>",
+                                    v.display_with_depth(value_depth)
+                                ),
+                            }
+                        } else {
+                            format!("{:#}", v.display_with_depth(value_depth))
+                        };
                         print_variable(out, &value_indent, m.name(), &value)?;
                     }
                     None => writeln!(out, "{value_indent}{}: <unreadable>", m.name())?,
