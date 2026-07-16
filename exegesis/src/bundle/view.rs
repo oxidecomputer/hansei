@@ -138,6 +138,12 @@ impl<'a> BundleType<'a> {
             .expect("BundleTypeId out of range in validated bundle")
     }
 
+    /// Custom display instructions resolved from this type's DWARF at
+    /// extraction time.
+    pub fn debug_format(&self) -> Option<&'a crate::bundle::DebugFormat> {
+        self.bundle.types.debug_formats.get(&self.id)
+    }
+
     fn at(&self, id: BundleTypeId) -> BundleType<'a> {
         BundleType {
             bundle: self.bundle,

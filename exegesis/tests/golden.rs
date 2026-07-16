@@ -274,6 +274,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     for sym in &bundle.meta.symbol_fingerprint {
         assert!(sym.starts_with("_R"), "{program}: non-v0 fingerprint {sym:?}");
     }
+    assert!(
+        bundle
+            .types
+            .debug_formats
+            .values()
+            .any(|format| matches!(format, exegesis::bundle::DebugFormat::Transparent { .. })),
+        "{program}: no transparent known-type formats were extracted"
+    );
 }
 
 fn run_golden(program: &str) {

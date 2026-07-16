@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -42,6 +42,33 @@ pub enum Error {
     Encode(#[source] postcard::Error),
     #[error("corrupt bundle: {0}")]
     Corrupt(String),
+}
+
+fn check_format_path<'a>(
+    bundle: &'a Bundle,
+    root: BundleTypeId,
+    mut def: &'a TypeDef,
+    path: &[u32],
+    what: &str,
+) -> Result<()> {
+    let mut seen = vec![root];
+    for (step, &member_index) in path.iter().enumerate() {
+        let members = match def {
+            TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
+            _ => return Err(Error::Corrupt(format!(
+                "{what} for type {}: step {step} traverses a non-aggregate type", root.0))),
+        };
+        let member = members.get(member_index as usize).ok_or_else(|| Error::Corrupt(format!(
+            "{what} for type {}: member index {member_index} out of range at step {step}",
+            root.0)))?;
+        if seen.contains(&member.ty) {
+            return Err(Error::Corrupt(format!(
+                "{what} for type {} contains a type cycle at step {step}", root.0)));
+        }
+        seen.push(member.ty);
+        def = bundle.types.get(member.ty).expect("member type validated before formats");
+    }
+    Ok(())
 }
 
 impl Bundle {
@@ -162,6 +189,25 @@ impl Bundle {
                     for (ename, _) in enumerators {
                         check_str(what, *ename)?;
                     }
+                }
+            }
+        }
+
+        for (&id, format) in &self.types.debug_formats {
+            check_ty("debug format", id)?;
+            let def = self.types.get(id).expect("checked above");
+            match format {
+                crate::bundle::schema::DebugFormat::Transparent { member } => {
+                    check_format_path(self, id, def, &[*member], "transparent debug format")?;
+                }
+                crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::Atomic { value },
+                ) => {
+                    if value.is_empty() {
+                        return corrupt(format!(
+                            "atomic debug format for type {} has an empty member path", id.0));
+                    }
+                    check_format_path(self, id, def, value, "atomic debug format")?;
                 }
             }
         }

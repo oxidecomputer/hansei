@@ -41,6 +41,7 @@ fn tiny_bundle() -> Bundle {
         strings: strings.finish(),
         types: TypeTable {
             types: vec![TypeDef::Base { name, size: 8, encoding: Encoding::Unsigned }],
+            debug_formats: BTreeMap::new(),
             name_index: vec![(name, ty)],
         },
         tasks: TaskTable::default(),
@@ -236,7 +237,7 @@ fn random_bundle(seed: u64) -> Bundle {
             symbol_fingerprint: (0..rng.below(20)).map(|i| format!("_RINv_fp{i}")).collect(),
         },
         strings: table,
-        types: TypeTable { types, name_index },
+        types: TypeTable { types, debug_formats: BTreeMap::new(), name_index },
         tasks: TaskTable { by_symbol, by_normalized_symbol: BTreeMap::new(), entries },
         dyn_futures,
         statics,
@@ -360,6 +361,16 @@ fn test_validate_rejects_oob_str_ref() {
 }
 
 #[test]
+fn test_validate_rejects_bad_debug_format_path() {
+    let mut b = tiny_bundle();
+    b.types.debug_formats.insert(
+        BundleTypeId(0),
+        DebugFormat::Transparent { member: 0 },
+    );
+    assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
+}
+
+#[test]
 fn test_validate_rejects_provenance_length_mismatch() {
     let mut b = tiny_bundle();
     b.provenance.entries.push(Provenance { decl: None, kind: FutureKind::Manual });
@@ -473,6 +484,7 @@ fn test_find_by_name() {
             TypeDef::Base { name: b_, size: 2, encoding: Encoding::Unsigned },
             TypeDef::Base { name: b_, size: 4, encoding: Encoding::Unsigned },
         ],
+        debug_formats: BTreeMap::new(),
         name_index: vec![
             (a, BundleTypeId(0)),
             (b_, BundleTypeId(1)),
@@ -558,7 +570,11 @@ mod view_tests {
         });
 
         b.strings = strings.finish();
-        b.types = TypeTable { types, name_index: vec![] };
+        b.types = TypeTable {
+            types,
+            debug_formats: std::collections::BTreeMap::new(),
+            name_index: vec![],
+        };
         b.infra = InfraTypes {
             header: BundleTypeId(0),
             vtable: BundleTypeId(0),
@@ -820,6 +836,7 @@ mod view_tests {
                     },
                 },
             ],
+            debug_formats: std::collections::BTreeMap::new(),
             name_index: vec![],
         };
         b.strings = strings.finish();
@@ -912,6 +929,7 @@ mod view_tests {
                     members: vec![MemberDef { name: pointer, ty: BundleTypeId(2), offset: 0 }],
                 },
             ],
+            debug_formats: std::collections::BTreeMap::new(),
             name_index: vec![],
         };
         b.strings = strings.finish();
@@ -960,6 +978,7 @@ mod view_tests {
                 TypeDef::Pointer { name: None, target: BundleTypeId(1) },
                 TypeDef::Array { elem: BundleTypeId(0), count: 3 },
             ],
+            debug_formats: std::collections::BTreeMap::new(),
             name_index: vec![(point, BundleTypeId(1)), (u32n, BundleTypeId(0))],
         };
         b.validate().expect("test bundle must validate");

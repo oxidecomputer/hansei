@@ -240,6 +240,13 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 println!("[{i}] opaque {} size={size:?}", s(*name));
             }
         }
+        if let Some(format) = bundle
+            .types
+            .debug_formats
+            .get(&exegesis::bundle::BundleTypeId(i as u32))
+        {
+            println!("      debug: {format:?}");
+        }
     }
 
     println!("== tasks ({}) ==", bundle.tasks.entries.len());
