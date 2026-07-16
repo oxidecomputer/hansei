@@ -3,16 +3,16 @@ program: simple-await
 [tasks]
 task: simple_await::work::{async_fn_env#0}
   kind: AsyncFn
-  decl: simple-await.rs:15
+  decl: simple-await.rs:16
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<simple_await::work::{async_fn_env#0}>
   variants:
-    Unresumed @ simple-await.rs:15
-    Returned @ simple-await.rs:27
-    Panicked @ simple-await.rs:27
-    Suspend0 @ simple-await.rs:19
-    Suspend1 @ simple-await.rs:21
+    Unresumed @ simple-await.rs:16
+    Returned @ simple-await.rs:32
+    Panicked @ simple-await.rs:32
+    Suspend0 @ simple-await.rs:22
+    Suspend1 @ simple-await.rs:24
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<simple_await::main::{async_block_env#0}>> (poll)

@@ -1054,6 +1054,7 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
     dyn_pointer_debug_format(reader, id)
         .or_else(|| raw_waker_vtable_debug_format(reader, id))
         .or_else(|| function_pointer_debug_format(reader, id))
+        .or_else(|| ip_address_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
@@ -1379,6 +1380,26 @@ fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
         wake: member("wake")?,
         wake_by_ref: member("wake_by_ref")?,
         drop: member("drop")?,
+    }))
+}
+
+fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let expected_octets = match fq_name(reader, id).as_deref()? {
+        "core::net::ip_addr::Ipv4Addr" => 4,
+        "core::net::ip_addr::Ipv6Addr" => 16,
+        _ => return None,
+    };
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let (index, member) = unique_member(reader, &st.members, "octets")?;
+    if member.offset != 0 {
+        return None;
+    }
+    let RawType::Array(array) = reader.canonical_type(member.type_id)? else { return None };
+    if array.count != expected_octets || !is_unsigned_integer(reader, array.elem_type_id, 1) {
+        return None;
+    }
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::IpAddress {
+        octets: index as u32,
     }))
 }
 

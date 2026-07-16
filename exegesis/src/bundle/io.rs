@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -406,6 +406,38 @@ impl Bundle {
                     {
                         return corrupt(format!(
                             "RawWakerVTable debug format for type {} reuses a member",
+                            id.0
+                        ));
+                    }
+                }
+                crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::IpAddress { octets },
+                ) => {
+                    let target = format_path_target(
+                        self,
+                        id,
+                        def,
+                        &[*octets],
+                        "IP-address debug format",
+                    )?;
+                    let Some(TypeDef::Array { elem, count }) = self.types.get(target) else {
+                        return corrupt(format!(
+                            "IP-address debug format for type {} does not target an array",
+                            id.0
+                        ));
+                    };
+                    let Some(TypeDef::Base { size, encoding, .. }) = self.types.get(*elem) else {
+                        return corrupt(format!(
+                            "IP-address debug format for type {} does not contain base-type octets",
+                            id.0
+                        ));
+                    };
+                    if *size != 1
+                        || !matches!(encoding, crate::raw_types::Encoding::Unsigned)
+                        || !matches!(count, 4 | 16)
+                    {
+                        return corrupt(format!(
+                            "IP-address debug format for type {} does not contain 4 or 16 u8 octets",
                             id.0
                         ));
                     }

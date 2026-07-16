@@ -768,6 +768,18 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 proc,
             );
         }
+        if let DebugFormat::Known(KnownFormat::IpAddress { octets, offset }) = format {
+            let Some(bytes) = byte_range(bytes, offset, octets.size()) else {
+                return write!(f, "<truncated>");
+            };
+            return match <&[u8; 4]>::try_from(bytes) {
+                Ok(octets) => write!(f, "{}", std::net::Ipv4Addr::from(*octets)),
+                Err(_) => match <&[u8; 16]>::try_from(bytes) {
+                    Ok(octets) => write!(f, "{}", std::net::Ipv6Addr::from(*octets)),
+                    Err(_) => write!(f, "<invalid IP address layout>"),
+                },
+            };
+        }
         if let DebugFormat::Known(format @ KnownFormat::BTreeMap { .. }) = format {
             return write_btree_map(
                 f,
@@ -791,6 +803,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::FunctionPointer) => unreachable!(),
             DebugFormat::Known(KnownFormat::DynPointer { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::IpAddress { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::BTreeMap { .. }) => unreachable!(),
         };
         let start = offset as usize;

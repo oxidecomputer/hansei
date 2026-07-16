@@ -131,6 +131,8 @@ pub enum KnownFormat {
         wake_by_ref: u32,
         drop: u32,
     },
+    /// Display the octets of an IPv4 or IPv6 address in standard notation.
+    IpAddress { octets: u32 },
     /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
     /// its initialized key/value entries.
     ///

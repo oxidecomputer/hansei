@@ -153,6 +153,8 @@ pub enum KnownFormat<T> {
         wake_by_ref_offset: u64,
         drop_offset: u64,
     },
+    /// Display an IPv4 or IPv6 address in standard notation.
+    IpAddress { octets: T, offset: u64 },
     /// Display a BTreeMap by walking its initialized nodes in key order.
     BTreeMap {
         root: T,
@@ -537,6 +539,24 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     drop_offset,
                 }))
             }
+            BundleFormat::Known(BundleKnownFormat::IpAddress { octets }) => {
+                let (octets, offset) = project(*self, &[*octets])?;
+                let (octet, count) = octets.array_info()?;
+                if !matches!(count, 4 | 16)
+                    || !matches!(
+                        octet.classify(),
+                        TypeClass::Integer {
+                            size: 1,
+                            is_signed: false,
+                            is_bool: false,
+                            is_char: false,
+                        }
+                    )
+                {
+                    return None;
+                }
+                Some(DebugFormat::Known(KnownFormat::IpAddress { octets, offset }))
+            }
             BundleFormat::Known(BundleKnownFormat::BTreeMap {
                 root,
                 length,
@@ -852,6 +872,10 @@ mod bundle_tests {
     const BTREE_SLOTS: BundleTypeId = BundleTypeId(32);
     const BTREE_INTERNAL: BundleTypeId = BundleTypeId(33);
     const BTREE_EDGES: BundleTypeId = BundleTypeId(34);
+    const IPV4_OCTETS: BundleTypeId = BundleTypeId(35);
+    const IPV4: BundleTypeId = BundleTypeId(36);
+    const IPV6_OCTETS: BundleTypeId = BundleTypeId(37);
+    const IPV6: BundleTypeId = BundleTypeId(38);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -898,6 +922,11 @@ mod bundle_tests {
             s("edges"),
         );
         let (uninitn, some2n, none2n) = (s("uninit"), s("Some"), s("None"));
+        let (ipv4n, ipv6n, octetsn) = (
+            s("core::net::ip_addr::Ipv4Addr"),
+            s("core::net::ip_addr::Ipv6Addr"),
+            s("octets"),
+        );
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1044,6 +1073,18 @@ mod bundle_tests {
                 members: vec![m(datan, BTREE_LEAF, 0), m(edgesn, BTREE_EDGES, 24)],
             },
             TypeDef::Array { elem: BTREE_LEAF_PTR, count: 3 },
+            TypeDef::Array { elem: U8, count: 4 },
+            TypeDef::Struct {
+                name: ipv4n,
+                size: 4,
+                members: vec![m(octetsn, IPV4_OCTETS, 0)],
+            },
+            TypeDef::Array { elem: U8, count: 16 },
+            TypeDef::Struct {
+                name: ipv6n,
+                size: 16,
+                members: vec![m(octetsn, IPV6_OCTETS, 0)],
+            },
         ];
 
         let b = Bundle {
@@ -1105,6 +1146,12 @@ mod bundle_tests {
                         internal_edges: 1,
                         edge: vec![],
                     }),
+                ), (
+                    IPV4,
+                    BundleDebugFormat::Known(BundleKnownFormat::IpAddress { octets: 0 }),
+                ), (
+                    IPV6,
+                    BundleDebugFormat::Known(BundleKnownFormat::IpAddress { octets: 0 }),
                 )]),
                 name_index: vec![(pointn, POINT)],
             },
@@ -1154,6 +1201,23 @@ mod bundle_tests {
 
         let shown = format!("{}", r.display());
         assert!(shown.contains("x: 1") && shown.contains("y: 2"), "got {shown:?}");
+    }
+
+    #[test]
+    fn test_ip_addresses_use_standard_notation() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ipv4 = [192, 0, 2, 1];
+        assert_eq!(
+            format!("{}", TypeInfoRef::new(v.ty(IPV4).unwrap(), 0, &ipv4).display()),
+            "192.0.2.1"
+        );
+
+        let ipv6 = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert_eq!(
+            format!("{}", TypeInfoRef::new(v.ty(IPV6).unwrap(), 0, &ipv6).display()),
+            "2001:db8::1"
+        );
     }
 
     #[test]
