@@ -980,6 +980,14 @@ fn write_display_value<'a, T: DebugType<'a>>(
             let elem_size = element.size() as usize;
             let count = count as usize;
             let pretty = f.alternate();
+            let hex_elements = matches!(
+                element.classify(),
+                TypeClass::Integer {
+                    is_bool: false,
+                    is_char: false,
+                    ..
+                }
+            );
 
             write!(f, "[")?;
             for i in 0..count {
@@ -1004,7 +1012,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                         max_depth,
                         proc,
                         visited,
-                        hex_integers,
+                        hex_integers: hex_elements,
                     };
                     if pretty {
                         write!(f, "{:#},", child)?;

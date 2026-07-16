@@ -1294,6 +1294,36 @@ mod bundle_tests {
     }
 
     #[test]
+    fn test_integer_arrays_display_as_zero_padded_hex() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+
+        let bytes: Vec<u8> = [1u32, 0xabcdef, u32::MAX]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let array = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", array.display()),
+            "[0x00000001, 0x00abcdef, 0xffffffff]"
+        );
+
+        let bytes: Vec<u8> = [1u64, 0xabcdef, u64::MAX]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let array = TypeInfoRef::new(v.ty(VTABLE_ARRAY).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", array.display()),
+            "[0x0000000000000001, 0x0000000000abcdef, 0xffffffffffffffff]"
+        );
+        assert_eq!(
+            format!("{:#}", array.display()),
+            "[\n    0x0000000000000001,\n    0x0000000000abcdef,\n    0xffffffffffffffff,\n]"
+        );
+    }
+
+    #[test]
     fn test_target_display_recurses_through_pointers() {
         struct Reader;
 
