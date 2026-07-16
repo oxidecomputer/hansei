@@ -876,6 +876,297 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| atomic_debug_format(reader, id))
 }
 
+#[derive(Clone, Debug)]
+struct RawBTreeMapFormat {
+    root: u32,
+    length: u32,
+    root_node: Vec<u32>,
+    height: u32,
+    node: Vec<u32>,
+    key: TypeId,
+    value: TypeId,
+    leaf: TypeId,
+    leaf_len: u32,
+    leaf_keys: u32,
+    leaf_values: u32,
+    internal: TypeId,
+    internal_data: u32,
+    internal_edges: u32,
+    edge: Vec<u32>,
+}
+
+/// Recognize the private node layout of `BTreeMap<K, V, A>`. Unlike the
+/// simpler known formats, this retains a few referenced types until emission
+/// so they can be translated to bundle ids.
+fn btree_map_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawBTreeMapFormat> {
+    if fq_name(reader, id)?.split('<').next()? != "alloc::collections::btree::map::BTreeMap" {
+        return None;
+    }
+    let RawType::Struct(map) = reader.canonical_type(id)? else { return None };
+    let [key_param, value_param, alloc_param] = map.template_params.as_ref() else { return None };
+    if key_param.name.map(|name| reader.strings.get(name)) != Some("K")
+        || value_param.name.map(|name| reader.strings.get(name)) != Some("V")
+        || alloc_param.name.map(|name| reader.strings.get(name)) != Some("A")
+    {
+        return None;
+    }
+    let key = reader.canonicalize(key_param.type_id);
+    let value = reader.canonicalize(value_param.type_id);
+
+    let (root, root_member) = unique_member(reader, &map.members, "root")?;
+    let (length, length_member) = unique_member(reader, &map.members, "length")?;
+    if root == length || !is_unsigned_integer(reader, length_member.type_id, 8) {
+        return None;
+    }
+
+    let RawType::Enum(root_option) = reader.canonical_type(root_member.type_id)? else {
+        return None;
+    };
+    if fq_name(reader, root_member.type_id)?.split('<').next()? != "core::option::Option" {
+        return None;
+    }
+    let some = raw_variant(reader, root_option, "Some")?;
+    let mut node_refs = Vec::new();
+    find_type_paths(
+        reader,
+        reader.canonicalize(some.type_id),
+        &|candidate| is_btree_node_ref(reader, candidate, key, value),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut node_refs,
+    );
+    let [(root_node, node_ref)] = node_refs.as_slice() else { return None };
+    let RawType::Struct(node_ref_ty) = reader.canonical_type(*node_ref)? else { return None };
+    let (height, height_member) = unique_member(reader, &node_ref_ty.members, "height")?;
+    if !is_unsigned_integer(reader, height_member.type_id, 8) {
+        return None;
+    }
+
+    let (node_member_index, node_member) = unique_member(reader, &node_ref_ty.members, "node")?;
+    let mut node_pointers = Vec::new();
+    find_pointer_paths(
+        reader,
+        reader.canonicalize(node_member.type_id),
+        &|target| is_btree_node(reader, target, "LeafNode", key, value),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut node_pointers,
+    );
+    let [(node_tail, leaf)] = node_pointers.as_slice() else { return None };
+    let mut node = vec![node_member_index as u32];
+    node.extend_from_slice(node_tail);
+
+    let RawType::Struct(leaf_ty) = reader.canonical_type(*leaf)? else { return None };
+    let (leaf_len, leaf_len_member) = unique_member(reader, &leaf_ty.members, "len")?;
+    if !is_unsigned_integer(reader, leaf_len_member.type_id, 2) {
+        return None;
+    }
+    let (leaf_keys, keys_member) = unique_member(reader, &leaf_ty.members, "keys")?;
+    let (leaf_values, values_member) = unique_member(reader, &leaf_ty.members, "vals")?;
+    let RawType::Array(keys) = reader.canonical_type(keys_member.type_id)? else { return None };
+    let RawType::Array(values) = reader.canonical_type(values_member.type_id)? else { return None };
+    if keys.count == 0
+        || keys.count != values.count
+        || maybe_uninit_target(reader, keys.elem_type_id) != Some(key)
+        || maybe_uninit_target(reader, values.elem_type_id) != Some(value)
+    {
+        return None;
+    }
+
+    let (_, parent_member) = unique_member(reader, &leaf_ty.members, "parent")?;
+    let RawType::Enum(parent_option) = reader.canonical_type(parent_member.type_id)? else {
+        return None;
+    };
+    let parent_some = raw_variant(reader, parent_option, "Some")?;
+    let mut parent_pointers = Vec::new();
+    find_pointer_paths(
+        reader,
+        reader.canonicalize(parent_some.type_id),
+        &|target| is_btree_node(reader, target, "InternalNode", key, value),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut parent_pointers,
+    );
+    let [(_, internal)] = parent_pointers.as_slice() else { return None };
+    let RawType::Struct(internal_ty) = reader.canonical_type(*internal)? else { return None };
+    let (internal_data, data_member) = unique_member(reader, &internal_ty.members, "data")?;
+    if reader.canonicalize(data_member.type_id) != *leaf || data_member.offset != 0 {
+        return None;
+    }
+    let (internal_edges, edges_member) = unique_member(reader, &internal_ty.members, "edges")?;
+    let RawType::Array(edges) = reader.canonical_type(edges_member.type_id)? else { return None };
+    if edges.count != keys.count + 1 {
+        return None;
+    }
+    let mut edge_pointers = Vec::new();
+    find_pointer_paths(
+        reader,
+        reader.canonicalize(edges.elem_type_id),
+        &|target| reader.canonicalize(target) == *leaf,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut edge_pointers,
+    );
+    let [(edge, _)] = edge_pointers.as_slice() else { return None };
+
+    Some(RawBTreeMapFormat {
+        root: root as u32,
+        length: length as u32,
+        root_node: root_node.clone(),
+        height: height as u32,
+        node,
+        key,
+        value,
+        leaf: *leaf,
+        leaf_len: leaf_len as u32,
+        leaf_keys: leaf_keys as u32,
+        leaf_values: leaf_values as u32,
+        internal: *internal,
+        internal_data: internal_data as u32,
+        internal_edges: internal_edges as u32,
+        edge: edge.clone(),
+    })
+}
+
+fn unique_member<'a>(
+    reader: &DwReader<'_>,
+    members: &'a [crate::raw_types::RawMember<crate::StrId>],
+    expected: &str,
+) -> Option<(usize, &'a crate::raw_types::RawMember<crate::StrId>)> {
+    let mut matches = members.iter().enumerate().filter(|(_, member)| {
+        member.name.map(|name| reader.strings.get(name)) == Some(expected)
+    });
+    let found = matches.next()?;
+    matches.next().is_none().then_some(found)
+}
+
+fn raw_variant<'a>(
+    reader: &DwReader<'_>,
+    en: &'a crate::raw_types::RawEnum<crate::StrId>,
+    expected: &str,
+) -> Option<&'a crate::raw_types::RawMember<crate::StrId>> {
+    let variants: Vec<_> = match &en.shape {
+        RawVariantShape::One(variant) => vec![&variant.member],
+        RawVariantShape::Many { variants, .. } => {
+            variants.iter().map(|(_, variant)| &variant.member).collect()
+        }
+        RawVariantShape::Zero | RawVariantShape::CStyle { .. } => return None,
+    };
+    let mut matches = variants.into_iter().filter(|member| {
+        member.name.map(|name| reader.strings.get(name)) == Some(expected)
+    });
+    let found = matches.next()?;
+    matches.next().is_none().then_some(found)
+}
+
+fn is_unsigned_integer(reader: &DwReader<'_>, id: TypeId, size: u64) -> bool {
+    matches!(
+        reader.canonical_type(id),
+        Some(RawType::Base(base)) if base.size == size && base.encoding == Encoding::Unsigned
+    )
+}
+
+fn is_btree_node_ref(reader: &DwReader<'_>, id: TypeId, key: TypeId, value: TypeId) -> bool {
+    let Some(RawType::Struct(st)) = reader.canonical_type(id) else { return false };
+    fq_name(reader, id)
+        .is_some_and(|name| name.split('<').next() == Some("alloc::collections::btree::node::NodeRef"))
+        && st.template_params.len() == 4
+        && reader.canonicalize(st.template_params[1].type_id) == key
+        && reader.canonicalize(st.template_params[2].type_id) == value
+}
+
+fn is_btree_node(
+    reader: &DwReader<'_>,
+    id: TypeId,
+    kind: &str,
+    key: TypeId,
+    value: TypeId,
+) -> bool {
+    let Some(RawType::Struct(st)) = reader.canonical_type(id) else { return false };
+    let expected = match kind {
+        "LeafNode" => "alloc::collections::btree::node::LeafNode",
+        "InternalNode" => "alloc::collections::btree::node::InternalNode",
+        _ => return false,
+    };
+    fq_name(reader, id).is_some_and(|name| name.split('<').next() == Some(expected))
+        && st.template_params.len() == 2
+        && reader.canonicalize(st.template_params[0].type_id) == key
+        && reader.canonicalize(st.template_params[1].type_id) == value
+}
+
+fn maybe_uninit_target(reader: &DwReader<'_>, id: TypeId) -> Option<TypeId> {
+    let RawType::Union(union) = reader.canonical_type(id)? else { return None };
+    if fq_name(reader, id)?.split('<').next()? != "core::mem::maybe_uninit::MaybeUninit" {
+        return None;
+    }
+    let [param] = union.template_params.as_ref() else { return None };
+    (param.name.map(|name| reader.strings.get(name)) == Some("T"))
+        .then(|| reader.canonicalize(param.type_id))
+}
+
+fn find_type_paths(
+    reader: &DwReader<'_>,
+    current: TypeId,
+    matches: &impl Fn(TypeId) -> bool,
+    path: &mut Vec<u32>,
+    seen: &mut Vec<TypeId>,
+    found: &mut Vec<(Vec<u32>, TypeId)>,
+) {
+    let current = reader.canonicalize(current);
+    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
+        return;
+    }
+    if matches(current) {
+        found.push((path.clone(), current));
+        return;
+    }
+    let members = match reader.canonical_type(current) {
+        Some(RawType::Struct(st)) => st.members.as_ref(),
+        Some(RawType::Union(union)) => union.members.as_ref(),
+        _ => return,
+    };
+    seen.push(current);
+    for (index, member) in members.iter().enumerate().filter(|(_, member)| member.offset == 0) {
+        path.push(index as u32);
+        find_type_paths(reader, member.type_id, matches, path, seen, found);
+        path.pop();
+    }
+    seen.pop();
+}
+
+fn find_pointer_paths(
+    reader: &DwReader<'_>,
+    current: TypeId,
+    matches: &impl Fn(TypeId) -> bool,
+    path: &mut Vec<u32>,
+    seen: &mut Vec<TypeId>,
+    found: &mut Vec<(Vec<u32>, TypeId)>,
+) {
+    let current = reader.canonicalize(current);
+    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
+        return;
+    }
+    if let Some(RawType::Pointer(pointer)) = reader.canonical_type(current) {
+        let target = reader.canonicalize(pointer.target_type_id);
+        if matches(target) {
+            found.push((path.clone(), target));
+        }
+        return;
+    }
+    let members = match reader.canonical_type(current) {
+        Some(RawType::Struct(st)) => st.members.as_ref(),
+        Some(RawType::Union(union)) => union.members.as_ref(),
+        _ => return,
+    };
+    seen.push(current);
+    for (index, member) in members.iter().enumerate().filter(|(_, member)| member.offset == 0) {
+        path.push(index as u32);
+        find_pointer_paths(reader, member.type_id, matches, path, seen, found);
+        path.pop();
+    }
+    seen.pop();
+}
+
 fn function_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let RawType::Pointer(pointer) = reader.canonical_type(id)? else { return None };
     reader
@@ -1444,7 +1735,26 @@ impl<'a> Emitter<'a> {
         while let Some((tid, bid)) = self.pending.pop_front() {
             let def = self.convert(tid);
             self.defs[bid.0 as usize] = def;
-            if let Some(format) = known_debug_format(self.reader, tid) {
+            if let Some(format) = btree_map_debug_format(self.reader, tid) {
+                let format = crate::bundle::KnownFormat::BTreeMap {
+                    root: format.root,
+                    length: format.length,
+                    root_node: format.root_node,
+                    height: format.height,
+                    node: format.node,
+                    key: self.reserve(format.key),
+                    value: self.reserve(format.value),
+                    leaf: self.reserve(format.leaf),
+                    leaf_len: format.leaf_len,
+                    leaf_keys: format.leaf_keys,
+                    leaf_values: format.leaf_values,
+                    internal: self.reserve(format.internal),
+                    internal_data: format.internal_data,
+                    internal_edges: format.internal_edges,
+                    edge: format.edge,
+                };
+                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(format) = known_debug_format(self.reader, tid) {
                 self.debug_formats.insert(bid, format);
             }
         }

@@ -147,6 +147,30 @@ pub enum KnownFormat<T> {
         wake_by_ref_offset: u64,
         drop_offset: u64,
     },
+    /// Display a BTreeMap by walking its initialized nodes in key order.
+    BTreeMap {
+        root: T,
+        root_offset: u64,
+        root_node: T,
+        root_node_offset: u64,
+        length: T,
+        length_offset: u64,
+        height: T,
+        height_offset: u64,
+        node_offset: u64,
+        key: T,
+        value: T,
+        leaf: T,
+        leaf_len: T,
+        leaf_len_offset: u64,
+        keys_offset: u64,
+        key_slots: u64,
+        values_offset: u64,
+        internal: T,
+        edges_offset: u64,
+        edge: T,
+        edge_pointer_offset: u64,
+    },
 }
 
 /// A member (field) of a struct, union, or enum variant payload.
@@ -507,6 +531,81 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     drop_offset,
                 }))
             }
+            BundleFormat::Known(BundleKnownFormat::BTreeMap {
+                root,
+                length,
+                root_node,
+                height,
+                node,
+                key,
+                value,
+                leaf,
+                leaf_len,
+                leaf_keys,
+                leaf_values,
+                internal,
+                internal_data: _,
+                internal_edges,
+                edge: edge_path,
+            }) => {
+                let (root, root_offset) = project(*self, &[*root])?;
+                let (some, some_offset) = root.variant("Some")?;
+                let (root_node, root_node_offset) = project(some, root_node)?;
+                let (length, length_offset) = project(*self, &[*length])?;
+                let (height, height_offset) = project(root_node, &[*height])?;
+                let (node, node_offset) = project(root_node, node)?;
+                node.pointer_target()?;
+
+                let key = self.related_type(*key);
+                let value = self.related_type(*value);
+                let leaf = self.related_type(*leaf);
+                let (leaf_len, leaf_len_offset) = project(leaf, &[*leaf_len])?;
+                let (keys, keys_offset) = project(leaf, &[*leaf_keys])?;
+                let (key_slot, key_slots) = keys.array_info()?;
+                if key_slot.size() != key.size() {
+                    return None;
+                }
+                let (values, values_offset) = project(leaf, &[*leaf_values])?;
+                let (value_slot, value_slots) = values.array_info()?;
+                if value_slot.size() != value.size() || value_slots != key_slots {
+                    return None;
+                }
+
+                let internal = self.related_type(*internal);
+                let (edges, edges_offset) = project(internal, &[*internal_edges])?;
+                let (edge, edge_slots) = edges.array_info()?;
+                if edge_slots != key_slots + 1 {
+                    return None;
+                }
+                let (edge_pointer, edge_pointer_offset) = project(edge, edge_path)?;
+                edge_pointer.pointer_target()?;
+
+                Some(DebugFormat::Known(KnownFormat::BTreeMap {
+                    root,
+                    root_offset,
+                    root_node,
+                    root_node_offset: root_offset
+                        .checked_add(some_offset)?
+                        .checked_add(root_node_offset)?,
+                    length,
+                    length_offset,
+                    height,
+                    height_offset,
+                    node_offset,
+                    key,
+                    value,
+                    leaf,
+                    leaf_len,
+                    leaf_len_offset,
+                    keys_offset,
+                    key_slots,
+                    values_offset,
+                    internal,
+                    edges_offset,
+                    edge,
+                    edge_pointer_offset,
+                }))
+            }
         }
     }
 
@@ -734,6 +833,15 @@ mod bundle_tests {
     const RAW_WAKER_VTABLE: BundleTypeId = BundleTypeId(23);
     const FUNCTION_TARGET: BundleTypeId = BundleTypeId(24);
     const FUNCTION_PTR: BundleTypeId = BundleTypeId(25);
+    const BTREE_MAP: BundleTypeId = BundleTypeId(26);
+    const BTREE_ROOT: BundleTypeId = BundleTypeId(27);
+    const BTREE_NODE_REF: BundleTypeId = BundleTypeId(28);
+    const BTREE_LEAF_PTR: BundleTypeId = BundleTypeId(29);
+    const BTREE_LEAF: BundleTypeId = BundleTypeId(30);
+    const MAYBE_U32: BundleTypeId = BundleTypeId(31);
+    const BTREE_SLOTS: BundleTypeId = BundleTypeId(32);
+    const BTREE_INTERNAL: BundleTypeId = BundleTypeId(33);
+    const BTREE_EDGES: BundleTypeId = BundleTypeId(34);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -762,6 +870,24 @@ mod bundle_tests {
         let atomic_ptrn = s("Atomic<*mut Point>");
         let (loom_atomicn, loom_celln, tuple0n) =
             (s("AtomicU32"), s("LoomUnsafeCell<Point>"), s("__0"));
+        let btree_mapn = s("alloc::collections::btree::map::BTreeMap<u32, u32>");
+        let btree_rootn = s("Option<NodeRef>");
+        let btree_node_refn = s("NodeRef");
+        let btree_leafn = s("LeafNode");
+        let maybe_u32n = s("MaybeUninit<u32>");
+        let btree_internaln = s("InternalNode");
+        let (rootn, lengthn, heightn, noden2, lenn, keysn, valsn, datan, edgesn) = (
+            s("root"),
+            s("length"),
+            s("height"),
+            s("node"),
+            s("len"),
+            s("keys"),
+            s("vals"),
+            s("data"),
+            s("edges"),
+        );
+        let (uninitn, some2n, none2n) = (s("uninit"), s("Some"), s("None"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -855,6 +981,59 @@ mod bundle_tests {
             },
             TypeDef::Opaque { name: unresolvedn, size: None },
             TypeDef::Pointer { name: None, target: FUNCTION_TARGET },
+            TypeDef::Struct {
+                name: btree_mapn,
+                size: 24,
+                members: vec![m(rootn, BTREE_ROOT, 0), m(lengthn, U64, 16)],
+            },
+            TypeDef::Enum {
+                name: btree_rootn,
+                size: 16,
+                shape: VariantShape {
+                    discr: Some(DiscrDef { offset: 0, ty: U64 }),
+                    variants: vec![
+                        VariantDef {
+                            name: none2n,
+                            discr_values: tag(0),
+                            payload: m(none2n, UNIT, 0),
+                            decl: None,
+                        },
+                        VariantDef {
+                            name: some2n,
+                            discr_values: None,
+                            payload: m(some2n, BTREE_NODE_REF, 0),
+                            decl: None,
+                        },
+                    ],
+                },
+            },
+            TypeDef::Struct {
+                name: btree_node_refn,
+                size: 16,
+                members: vec![m(noden2, BTREE_LEAF_PTR, 0), m(heightn, U64, 8)],
+            },
+            TypeDef::Pointer { name: None, target: BTREE_LEAF },
+            TypeDef::Struct {
+                name: btree_leafn,
+                size: 20,
+                members: vec![
+                    m(lenn, U8, 0),
+                    m(keysn, BTREE_SLOTS, 4),
+                    m(valsn, BTREE_SLOTS, 12),
+                ],
+            },
+            TypeDef::Union {
+                name: maybe_u32n,
+                size: 4,
+                members: vec![m(uninitn, UNIT, 0), m(valuen, U32, 0)],
+            },
+            TypeDef::Array { elem: MAYBE_U32, count: 2 },
+            TypeDef::Struct {
+                name: btree_internaln,
+                size: 48,
+                members: vec![m(datan, BTREE_LEAF, 0), m(edgesn, BTREE_EDGES, 24)],
+            },
+            TypeDef::Array { elem: BTREE_LEAF_PTR, count: 3 },
         ];
 
         let b = Bundle {
@@ -897,6 +1076,25 @@ mod bundle_tests {
                 ), (
                     FUNCTION_PTR,
                     BundleDebugFormat::Known(BundleKnownFormat::FunctionPointer),
+                ), (
+                    BTREE_MAP,
+                    BundleDebugFormat::Known(BundleKnownFormat::BTreeMap {
+                        root: 0,
+                        length: 1,
+                        root_node: vec![],
+                        height: 1,
+                        node: vec![0],
+                        key: U32,
+                        value: U32,
+                        leaf: BTREE_LEAF,
+                        leaf_len: 0,
+                        leaf_keys: 1,
+                        leaf_values: 2,
+                        internal: BTREE_INTERNAL,
+                        internal_data: 0,
+                        internal_edges: 1,
+                        edge: vec![],
+                    }),
                 )]),
                 name_index: vec![],
             },
@@ -1294,5 +1492,55 @@ mod bundle_tests {
         let null = 0u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(FUNCTION_PTR).unwrap(), 0, &null);
         assert_eq!(format!("{}", value.display_from_target(&Reader, 8)), "null");
+    }
+
+    #[test]
+    fn test_btree_map_displays_only_initialized_slots_in_order() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                let mut bytes = vec![0xaa; len as usize];
+                match addr {
+                    0x1000 => {
+                        bytes[0] = 1;
+                        bytes[4..8].copy_from_slice(&2u32.to_le_bytes());
+                        bytes[12..16].copy_from_slice(&20u32.to_le_bytes());
+                        bytes[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
+                        bytes[32..40].copy_from_slice(&0x3000u64.to_le_bytes());
+                    }
+                    0x2000 => {
+                        bytes[0] = 1;
+                        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+                        bytes[12..16].copy_from_slice(&10u32.to_le_bytes());
+                    }
+                    0x3000 => {
+                        bytes[0] = 1;
+                        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+                        bytes[12..16].copy_from_slice(&30u32.to_le_bytes());
+                    }
+                    _ => return Err(crate::Error::invalid_addr(addr)),
+                }
+                Ok(bytes)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mut bytes = [0u8; 24];
+        bytes[..8].copy_from_slice(&0x1000u64.to_le_bytes());
+        bytes[8..16].copy_from_slice(&1u64.to_le_bytes());
+        bytes[16..].copy_from_slice(&3u64.to_le_bytes());
+        let value = TypeInfoRef::new(v.ty(BTREE_MAP).unwrap(), 0x5000, &bytes);
+
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "alloc::collections::btree::map::BTreeMap<u32, u32> { 1: 10, 2: 20, 3: 30 }"
+        );
+        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        assert!(shown.contains("\n    1: 10,"), "{shown}");
+        assert!(shown.contains("\n    2: 20,"), "{shown}");
+        assert!(shown.contains("\n    3: 30,"), "{shown}");
+        assert!(!shown.contains("2863311530"), "unused 0xaa slots leaked: {shown}");
     }
 }

@@ -159,6 +159,19 @@ impl<'a> BundleType<'a> {
         self.bundle.types.debug_formats.get(&self.id)
     }
 
+    /// Resolve another type id from the same validated bundle.
+    pub fn related_type(&self, id: BundleTypeId) -> BundleType<'a> {
+        self.at(id)
+    }
+
+    /// Return a named Rust enum variant's payload type and byte offset,
+    /// without examining a value of the enum.
+    pub fn variant(&self, name: &str) -> Option<(BundleType<'a>, u64)> {
+        let shape = self.variant_shape()?;
+        let variant = shape.variants.iter().find(|variant| self.str(variant.name) == name)?;
+        Some((self.at(variant.payload.ty), variant.payload.offset))
+    }
+
     fn at(&self, id: BundleTypeId) -> BundleType<'a> {
         BundleType {
             bundle: self.bundle,

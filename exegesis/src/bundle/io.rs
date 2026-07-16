@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -47,11 +47,22 @@ pub enum Error {
 fn check_format_path<'a>(
     bundle: &'a Bundle,
     root: BundleTypeId,
-    mut def: &'a TypeDef,
+    def: &'a TypeDef,
     path: &[u32],
     what: &str,
 ) -> Result<()> {
+    format_path_target(bundle, root, def, path, what).map(|_| ())
+}
+
+fn format_path_target<'a>(
+    bundle: &'a Bundle,
+    root: BundleTypeId,
+    mut def: &'a TypeDef,
+    path: &[u32],
+    what: &str,
+) -> Result<BundleTypeId> {
     let mut seen = vec![root];
+    let mut current = root;
     for (step, &member_index) in path.iter().enumerate() {
         let members = match def {
             TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
@@ -66,9 +77,31 @@ fn check_format_path<'a>(
                 "{what} for type {} contains a type cycle at step {step}", root.0)));
         }
         seen.push(member.ty);
+        current = member.ty;
         def = bundle.types.get(member.ty).expect("member type validated before formats");
     }
-    Ok(())
+    Ok(current)
+}
+
+fn type_size(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> Option<u64> {
+    if seen.contains(&id) {
+        return None;
+    }
+    match bundle.types.get(id)? {
+        TypeDef::Base { size, .. }
+        | TypeDef::Struct { size, .. }
+        | TypeDef::Union { size, .. }
+        | TypeDef::Enum { size, .. }
+        | TypeDef::CEnum { size, .. } => Some(*size),
+        TypeDef::Pointer { .. } => Some(crate::bundle::POINTER_SIZE),
+        TypeDef::Array { elem, count } => {
+            seen.push(id);
+            let size = type_size(bundle, *elem, seen)?.checked_mul(*count);
+            seen.pop();
+            size
+        }
+        TypeDef::Opaque { .. } => None,
+    }
 }
 
 fn has_dyn_tail(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> bool {
@@ -373,6 +406,230 @@ impl Bundle {
                     {
                         return corrupt(format!(
                             "RawWakerVTable debug format for type {} reuses a member",
+                            id.0
+                        ));
+                    }
+                }
+                crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::BTreeMap {
+                        root,
+                        length,
+                        root_node,
+                        height,
+                        node,
+                        key,
+                        value,
+                        leaf,
+                        leaf_len,
+                        leaf_keys,
+                        leaf_values,
+                        internal,
+                        internal_data,
+                        internal_edges,
+                        edge,
+                    },
+                ) => {
+                    let map_members = match def {
+                        TypeDef::Struct { members, .. } => members,
+                        _ => {
+                            return corrupt(format!(
+                                "BTreeMap debug format for type {} is not a struct",
+                                id.0
+                            ));
+                        }
+                    };
+                    let member = |index: u32, field: &str| {
+                        map_members.get(index as usize).ok_or_else(|| {
+                            Error::Corrupt(format!(
+                                "BTreeMap debug format for type {}: {field} member index {index} out of range",
+                                id.0
+                            ))
+                        })
+                    };
+                    let root_member = member(*root, "root")?;
+                    let length_member = member(*length, "length")?;
+                    if root == length {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} reuses root as length",
+                            id.0
+                        ));
+                    }
+                    let TypeDef::Enum { shape, .. } = self
+                        .types
+                        .get(root_member.ty)
+                        .expect("member type validated before formats")
+                    else {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} has a non-enum root",
+                            id.0
+                        ));
+                    };
+                    let some = shape
+                        .variants
+                        .iter()
+                        .find(|variant| self.strings.get(variant.name) == Some("Some"))
+                        .ok_or_else(|| Error::Corrupt(format!(
+                            "BTreeMap debug format for type {} root has no Some variant",
+                            id.0
+                        )))?;
+                    let some_def = self.types.get(some.payload.ty).expect("variant type validated");
+                    let node_ref = format_path_target(
+                        self,
+                        some.payload.ty,
+                        some_def,
+                        root_node,
+                        "BTreeMap root-node path",
+                    )?;
+                    let node_ref_def = self.types.get(node_ref).expect("path type validated");
+                    let TypeDef::Struct { members: node_members, .. } = node_ref_def else {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} has a non-struct node ref",
+                            id.0
+                        ));
+                    };
+                    let height_member = node_members.get(*height as usize).ok_or_else(|| {
+                        Error::Corrupt(format!(
+                            "BTreeMap debug format for type {}: height member index {height} out of range",
+                            id.0
+                        ))
+                    })?;
+                    let node_pointer = format_path_target(
+                        self,
+                        node_ref,
+                        node_ref_def,
+                        node,
+                        "BTreeMap node-pointer path",
+                    )?;
+                    if !matches!(self.types.get(node_pointer), Some(TypeDef::Pointer { target, .. }) if target == leaf)
+                    {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} node path does not point to its leaf type",
+                            id.0
+                        ));
+                    }
+
+                    for (field, referenced) in [("key", *key), ("value", *value), ("leaf", *leaf), ("internal", *internal)] {
+                        check_ty(&format!("BTreeMap debug format {} {field}", id.0), referenced)?;
+                    }
+                    let is_unsigned = |member_ty: BundleTypeId, max_size: u64| {
+                        matches!(
+                            self.types.get(member_ty),
+                            Some(TypeDef::Base { size, encoding: crate::raw_types::Encoding::Unsigned, .. })
+                                if *size > 0 && *size <= max_size
+                        )
+                    };
+                    if !is_unsigned(length_member.ty, 8) || !is_unsigned(height_member.ty, 8) {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} has a non-integer length or height",
+                            id.0
+                        ));
+                    }
+
+                    let TypeDef::Struct { members: leaf_members, .. } =
+                        self.types.get(*leaf).expect("leaf id checked")
+                    else {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} leaf is not a struct",
+                            id.0
+                        ));
+                    };
+                    let leaf_member = |index: u32, field: &str| {
+                        leaf_members.get(index as usize).ok_or_else(|| Error::Corrupt(format!(
+                            "BTreeMap debug format for type {}: leaf {field} member index {index} out of range",
+                            id.0
+                        )))
+                    };
+                    let len_member = leaf_member(*leaf_len, "len")?;
+                    let keys_member = leaf_member(*leaf_keys, "keys")?;
+                    let values_member = leaf_member(*leaf_values, "values")?;
+                    if !is_unsigned(len_member.ty, 8) {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} has a non-integer leaf length",
+                            id.0
+                        ));
+                    }
+                    let Some(TypeDef::Array { elem: key_slot, count: key_slots }) =
+                        self.types.get(keys_member.ty)
+                    else {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} keys are not an array",
+                            id.0
+                        ));
+                    };
+                    let Some(TypeDef::Array { elem: value_slot, count: value_slots }) =
+                        self.types.get(values_member.ty)
+                    else {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} values are not an array",
+                            id.0
+                        ));
+                    };
+                    let key_sizes = (
+                        type_size(self, *key_slot, &mut Vec::new()),
+                        type_size(self, *key, &mut Vec::new()),
+                    );
+                    let value_sizes = (
+                        type_size(self, *value_slot, &mut Vec::new()),
+                        type_size(self, *value, &mut Vec::new()),
+                    );
+                    if *key_slots == 0
+                        || key_slots != value_slots
+                        || !matches!(key_sizes, (Some(slot), Some(value)) if slot == value)
+                        || !matches!(value_sizes, (Some(slot), Some(value)) if slot == value)
+                    {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} has incompatible key/value slots",
+                            id.0
+                        ));
+                    }
+
+                    let TypeDef::Struct { members: internal_members, .. } =
+                        self.types.get(*internal).expect("internal id checked")
+                    else {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} internal node is not a struct",
+                            id.0
+                        ));
+                    };
+                    let data = internal_members.get(*internal_data as usize);
+                    if !data.is_some_and(|member| member.offset == 0 && member.ty == *leaf) {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} internal data is not its leaf prefix",
+                            id.0
+                        ));
+                    }
+                    let edges_member = internal_members.get(*internal_edges as usize).ok_or_else(|| {
+                        Error::Corrupt(format!(
+                            "BTreeMap debug format for type {}: internal edges member index {internal_edges} out of range",
+                            id.0
+                        ))
+                    })?;
+                    let Some(TypeDef::Array { elem: edge_elem, count: edge_slots }) =
+                        self.types.get(edges_member.ty)
+                    else {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} edges are not an array",
+                            id.0
+                        ));
+                    };
+                    if *edge_slots != key_slots + 1 {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} has the wrong edge capacity",
+                            id.0
+                        ));
+                    }
+                    let edge_def = self.types.get(*edge_elem).expect("array elem validated");
+                    let edge_pointer = format_path_target(
+                        self,
+                        *edge_elem,
+                        edge_def,
+                        edge,
+                        "BTreeMap edge-pointer path",
+                    )?;
+                    if !matches!(self.types.get(edge_pointer), Some(TypeDef::Pointer { target, .. }) if target == leaf)
+                    {
+                        return corrupt(format!(
+                            "BTreeMap debug format for type {} edge does not point to its leaf type",
                             id.0
                         ));
                     }
