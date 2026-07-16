@@ -634,8 +634,9 @@ mod bundle_tests {
     use exegesis::Encoding;
     use exegesis::bundle::{
         Bundle, BundleTypeId, BundleView, DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue,
-        DiscrValues, DynFutureTable, FORMAT_VERSION, InfraTypes, MemberDef, Meta, ProvenanceTable,
-        StaticsTable, StringInterner, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
+        DiscrValues, DynFutureTable, FORMAT_VERSION, InfraTypes, KnownFormat as BundleKnownFormat,
+        MemberDef, Meta, ProvenanceTable, StaticsTable, StringInterner, TaskTable, TypeDef,
+        TypeTable, VariantDef, VariantShape,
     };
 
     const U32: BundleTypeId = BundleTypeId(0);
@@ -654,6 +655,9 @@ mod bundle_tests {
     const VTABLE_ARRAY: BundleTypeId = BundleTypeId(13);
     const VTABLE_PTR: BundleTypeId = BundleTypeId(14);
     const FAT_PTR: BundleTypeId = BundleTypeId(15);
+    const ATOMIC: BundleTypeId = BundleTypeId(16);
+    const ATOMIC_STORAGE: BundleTypeId = BundleTypeId(17);
+    const ATOMIC_PTR: BundleTypeId = BundleTypeId(18);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -673,6 +677,8 @@ mod bundle_tests {
         let (wrapn, innern) = (s("Wrap"), s("inner"));
         let (noden, valuen, nextn) = (s("Node"), s("value"), s("next"));
         let (fatn, vtablen) = (s("FatPtr"), s("vtable"));
+        let (atomicn, storagen, vn) = (s("Atomic<u32>"), s("AtomicStorage<u32>"), s("v"));
+        let atomic_ptrn = s("Atomic<*mut Point>");
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -723,6 +729,21 @@ mod bundle_tests {
             TypeDef::Array { elem: U64, count: 3 },
             TypeDef::Pointer { name: None, target: VTABLE_ARRAY },
             TypeDef::Struct { name: fatn, size: 8, members: vec![m(vtablen, VTABLE_PTR, 0)] },
+            TypeDef::Struct {
+                name: atomicn,
+                size: 4,
+                members: vec![m(vn, ATOMIC_STORAGE, 0)],
+            },
+            TypeDef::Struct {
+                name: storagen,
+                size: 4,
+                members: vec![m(valuen, U32, 0)],
+            },
+            TypeDef::Struct {
+                name: atomic_ptrn,
+                size: 8,
+                members: vec![m(vn, PTR, 0)],
+            },
         ];
 
         let b = Bundle {
@@ -733,6 +754,12 @@ mod bundle_tests {
                 debug_formats: std::collections::BTreeMap::from([(
                     WRAP,
                     BundleDebugFormat::Transparent { member: 0 },
+                ), (
+                    ATOMIC,
+                    BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: vec![0, 0] }),
+                ), (
+                    ATOMIC_PTR,
+                    BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: vec![0] }),
                 )]),
                 name_index: vec![],
             },
@@ -875,6 +902,32 @@ mod bundle_tests {
         let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
         let value = TypeInfoRef::new(v.ty(WRAP).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display_with_depth(2)), "Point { x: 3, y: 4 }");
+    }
+
+    #[test]
+    fn test_atomic_debug_format_displays_stored_value() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = 42u32.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(ATOMIC).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display_with_depth(1)), "42");
+    }
+
+    #[test]
+    fn test_atomic_pointer_does_not_dereference_stored_address() {
+        struct NoReads;
+
+        impl ReadFromProc for NoReads {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                panic!("atomic pointer formatter unexpectedly read {addr:#x}")
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = 0x1000u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display_from_target(&NoReads, 8)), "0x1000");
     }
 
     #[test]

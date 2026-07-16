@@ -282,6 +282,13 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             .any(|format| matches!(format, exegesis::bundle::DebugFormat::Transparent { .. })),
         "{program}: no transparent known-type formats were extracted"
     );
+    assert!(
+        bundle.types.debug_formats.values().any(|format| matches!(
+            format,
+            exegesis::bundle::DebugFormat::Known(exegesis::bundle::KnownFormat::Atomic { .. })
+        )),
+        "{program}: no atomic known-type formats were extracted"
+    );
 }
 
 fn run_golden(program: &str) {
