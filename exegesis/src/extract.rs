@@ -1057,7 +1057,9 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
+        .or_else(|| unique_debug_format(reader, id))
         .or_else(|| non_null_debug_format(reader, id))
+        .or_else(|| usize_no_high_bit_debug_format(reader, id))
         .or_else(|| atomic_debug_format(reader, id))
 }
 
@@ -1553,6 +1555,11 @@ fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
 }
 
 fn non_null_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let (member, _) = non_null_layout(reader, id)?;
+    Some(DebugFormat::Transparent { member })
+}
+
+fn non_null_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
     let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
@@ -1575,6 +1582,49 @@ fn non_null_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugForma
             return false;
         };
         reader.canonicalize(pointer.target_type_id) == target
+    });
+    let (index, _) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some((index as u32, target))
+}
+
+fn unique_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
+    let name = st.name.map(|name| reader.strings.get(name))?;
+    if namespace != "core::ptr::unique" || !name.starts_with("Unique<") || !name.ends_with('>') {
+        return None;
+    }
+
+    let [param] = st.template_params.as_ref() else { return None };
+    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
+        return None;
+    }
+    let target = reader.canonicalize(param.type_id);
+    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
+        member.offset == 0
+            && member.name.map(|name| reader.strings.get(name)) == Some("pointer")
+            && non_null_layout(reader, member.type_id)
+                .is_some_and(|(_, inner_target)| inner_target == target)
+    });
+    let (index, _) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(DebugFormat::Transparent { member: index as u32 })
+}
+
+fn usize_no_high_bit_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    if fq_name(reader, id).as_deref() != Some("core::num::niche_types::UsizeNoHighBit") {
+        return None;
+    }
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
+        member.offset == 0
+            && member.name.map(|name| reader.strings.get(name)) == Some("__0")
+            && is_unsigned_integer(reader, member.type_id, crate::bundle::POINTER_SIZE)
     });
     let (index, _) = matches.next()?;
     if matches.next().is_some() {
