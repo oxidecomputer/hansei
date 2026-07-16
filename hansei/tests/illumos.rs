@@ -392,7 +392,7 @@ Spawned at: test-programs/src/bin/simple-await.rs:32:21
 Defined at: simple-await.rs:14
 
   0  async fn      simple_await::work::{{async_fn_env#0}}
-     state        Suspend1 — simple-await.rs:18
+     state         Suspend1 — simple-await.rs:18
      awaits:
      └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
@@ -431,13 +431,13 @@ Spawned at: test-programs/src/bin/nested-await.rs:30:21
 Defined at: nested-await.rs:16
 
   0  async fn      nested_await::outer::{{async_fn_env#0}}
-     state        Suspend0 — nested-await.rs:18
+     state         Suspend0 — nested-await.rs:18
      awaits:
      └─  1  async fn      nested_await::middle::{{async_fn_env#0}}
-         state        Suspend0 — nested-await.rs:12
+         state            Suspend0 — nested-await.rs:12
          awaits:
          └─  2  async fn      nested_await::leaf::{{async_fn_env#0}}
-             state        Suspend0 — nested-await.rs:8
+             state            Suspend0 — nested-await.rs:8
              awaits:
              └─* 3  future        tokio::sync::oneshot::Receiver<u32>
 ",
@@ -475,10 +475,10 @@ Spawned at: test-programs/src/bin/dyn-future.rs:44:21
 Defined at: dyn-future.rs:22
 
   0  async fn      dyn_future::driver::{{async_fn_env#0}}
-     state        Suspend0 — dyn-future.rs:29
+     state         Suspend0 — dyn-future.rs:29
      awaits:
      └─  1  async fn      dyn_future::boxed_leaf::{{async_fn_env#0}} [dyn]
-         state        Suspend0 — dyn-future.rs:11
+         state            Suspend0 — dyn-future.rs:11
          awaits:
          └─* 2  future        tokio::sync::oneshot::Receiver<u32>
 ",
@@ -502,7 +502,7 @@ Spawned at: test-programs/src/bin/dyn-future.rs:26:9
 Defined at: dyn-future.rs:14
 
   0  async fn      dyn_future::set_member::{{async_fn_env#0}}
-     state        Suspend0 — dyn-future.rs:15
+     state         Suspend0 — dyn-future.rs:15
      awaits:
      └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
@@ -545,22 +545,22 @@ Spawned at: test-programs/src/bin/futurelock.rs:13:17
 Defined at: futurelock.rs:13
 
   0  async block   futurelock::main::{{async_block#0}}::{{async_block_env#0}}
-     state        Suspend1 — futurelock.rs:23
+     state         Suspend1 — futurelock.rs:23
      awaits:
      └─  1  async fn      futurelock::do_stuff::{{async_fn_env#0}}
-         state        Suspend1 — futurelock.rs:60
+         state            Suspend1 — futurelock.rs:60
          awaits:
          └─  2  async fn      futurelock::do_async_thing::{{async_fn_env#0}}
-             state        Suspend0 — futurelock.rs:68
+             state            Suspend0 — futurelock.rs:68
              awaits:
              └─  3  async fn      tokio::sync::mutex::{{impl#10}}::lock::{{async_fn_env#0}}<()>
-                 state        Suspend0 — src/sync/mutex.rs:455
+                 state            Suspend0 — src/sync/mutex.rs:455
                  awaits:
                  └─  4  async block   tokio::sync::mutex::{{impl#10}}::lock::{{async_fn#0}}::{{async_block_env#0}}<()>
-                     state        Suspend0 — src/sync/mutex.rs:436
+                     state            Suspend0 — src/sync/mutex.rs:436
                      awaits:
                      └─  5  async fn      tokio::sync::mutex::{{impl#10}}::acquire::{{async_fn_env#0}}<()>
-                         state        Suspend1 — src/sync/mutex.rs:658
+                         state            Suspend1 — src/sync/mutex.rs:658
                          awaits:
                          └─* 6  future        tokio::sync::batch_semaphore::Acquire
                              waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task {id}
@@ -608,7 +608,7 @@ Spawned at: test-programs/src/bin/many-tasks.rs:25:13
 Defined at: many-tasks.rs:9
 
   0  async fn      many_tasks::park_task::{{async_fn_env#0}}
-     state        Suspend0 — many-tasks.rs:11
+     state         Suspend0 — many-tasks.rs:11
      awaits:
      └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
@@ -646,7 +646,7 @@ Spawned at: test-programs/src/bin/sleep-join.rs:26:22
 Defined at: sleep-join.rs:9
 
   0  async fn      sleep_join::sleeper::{{async_fn_env#0}}
-     state        Suspend0 — sleep-join.rs:11
+     state         Suspend0 — sleep-join.rs:11
      awaits:
      └─* 1  future        tokio::time::sleep::Sleep
          waiting on the timer: deadline TS on the target's monotonic clock
@@ -667,7 +667,7 @@ Spawned at: test-programs/src/bin/sleep-join.rs:27:23
 Defined at: sleep-join.rs:15
 
   0  async fn      sleep_join::joiner::{{async_fn_env#0}}
-     state        Suspend0 — sleep-join.rs:17
+     state         Suspend0 — sleep-join.rs:17
      awaits:
      └─* 1  future        tokio::runtime::task::join::JoinHandle<u32>
          waiting on task {sleeper_id} (JoinHandle)

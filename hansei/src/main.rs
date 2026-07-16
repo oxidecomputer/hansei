@@ -692,7 +692,15 @@ fn print_await_chain(
                 .await_loc
                 .map(|(file, line)| format!(" — {file}:{line}"))
                 .unwrap_or_default();
-            writeln!(out, "{detail_indent}state        {}{loc}", state.name)?;
+            // Align the state value with the type name above it. Child
+            // nodes have a frame-number column between the tree branch
+            // and the kind label; the state line must account for it.
+            let label_width = state_label_width(i);
+            writeln!(
+                out,
+                "{detail_indent}{:<label_width$} {}{loc}",
+                "state", state.name
+            )?;
         }
 
         if verbose && (frame.state.is_some() || active) {
@@ -804,6 +812,14 @@ fn frame_detail_indent(depth: usize) -> String {
     format!("{} ", "    ".repeat(depth + 1))
 }
 
+fn state_label_width(frame: usize) -> usize {
+    if frame == 0 {
+        13
+    } else {
+        frame.to_string().len() + 15
+    }
+}
+
 /// Classify the outer future type from rustc's generated DWARF basename.
 /// The names are an implementation detail, so an unrecognized state
 /// machine deliberately receives the neutral `async` label.
@@ -857,7 +873,7 @@ fn print_variable(out: &mut dyn io::Write, indent: &str, name: &str, value: &str
 
 #[cfg(test)]
 mod variable_format_tests {
-    use super::{async_kind, print_variable};
+    use super::{async_kind, print_variable, state_label_width};
 
     #[test]
     fn scalar_stays_on_the_name_line() {
@@ -907,6 +923,13 @@ mod variable_format_tests {
             ),
             "async fn"
         );
+    }
+
+    #[test]
+    fn state_alignment_accounts_for_frame_number_width() {
+        assert_eq!(state_label_width(0), 13);
+        assert_eq!(state_label_width(1), 16);
+        assert_eq!(state_label_width(10), 17);
     }
 }
 
