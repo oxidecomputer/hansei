@@ -605,6 +605,9 @@ mod bundle_tests {
     const ARR: BundleTypeId = BundleTypeId(10);
     const NODE: BundleTypeId = BundleTypeId(11);
     const NODE_PTR: BundleTypeId = BundleTypeId(12);
+    const VTABLE_ARRAY: BundleTypeId = BundleTypeId(13);
+    const VTABLE_PTR: BundleTypeId = BundleTypeId(14);
+    const FAT_PTR: BundleTypeId = BundleTypeId(15);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -623,6 +626,7 @@ mod bundle_tests {
         let (optn, nonen, somen) = (s("Opt"), s("None"), s("Some"));
         let (wrapn, innern) = (s("Wrap"), s("inner"));
         let (noden, valuen, nextn) = (s("Node"), s("value"), s("next"));
+        let (fatn, vtablen) = (s("FatPtr"), s("vtable"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -670,6 +674,9 @@ mod bundle_tests {
                 members: vec![m(valuen, U32, 0), m(nextn, NODE_PTR, 8)],
             },
             TypeDef::Pointer { name: None, target: NODE },
+            TypeDef::Array { elem: U64, count: 3 },
+            TypeDef::Pointer { name: None, target: VTABLE_ARRAY },
+            TypeDef::Struct { name: fatn, size: 8, members: vec![m(vtablen, VTABLE_PTR, 0)] },
         ];
 
         let b = Bundle {
@@ -850,5 +857,29 @@ mod bundle_tests {
 
         let shallow = format!("{:#}", root.display_from_target(&Reader, 1));
         assert_eq!(shallow, "0x1000 -> ...");
+    }
+
+    #[test]
+    fn test_vtable_entries_display_in_hex() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x3000);
+                Ok([0x2c557a0u64, 152, 8]
+                    .into_iter()
+                    .flat_map(u64::to_le_bytes)
+                    .collect())
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = 0x3000u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        assert!(shown.contains("0x2c557a0,"), "{shown}");
+        assert!(shown.contains("0x98,"), "{shown}");
+        assert!(shown.contains("0x8,"), "{shown}");
     }
 }
