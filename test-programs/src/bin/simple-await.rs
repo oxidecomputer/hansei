@@ -15,10 +15,15 @@ async fn ready_value() -> u32 {
 async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
     let count: u32 = 3;
     let labels = BTreeMap::from([(1u64, 10u32), (2, 20), (3, 30)]);
+    let values = vec![5u32, 8, 13];
     let first = ready_value().await;
     ready.send(()).expect("main waits for readiness");
     let second = park.await.unwrap_or(0);
-    count + first + second + label_for(&labels, u64::from(second))
+    count
+        + first
+        + second
+        + label_for(&labels, u64::from(second))
+        + values[0]
 }
 
 // Keep the map live across `park.await` so its private layout remains part of
