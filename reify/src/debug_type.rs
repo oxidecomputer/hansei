@@ -104,6 +104,13 @@ pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug {
     fn debug_format(&self) -> Option<DebugFormat<Self>> {
         None
     }
+
+    /// Look up the unique byte size of a fully-qualified type name in the
+    /// same debug-info backend. Used only to corroborate a concrete type
+    /// recovered from a vtable function symbol.
+    fn size_by_name(&self, _name: &str) -> Option<u64> {
+        None
+    }
 }
 
 /// Backend-independent, fully resolved custom display instructions.
@@ -120,6 +127,15 @@ pub enum DebugFormat<T> {
 pub enum KnownFormat<T> {
     /// Display an atomic's stored value without following pointer values.
     Atomic { value: T, offset: u64 },
+    /// Display a Rust trait-object data pointer and vtable.
+    DynPointer {
+        pointer_offset: u64,
+        vtable: T,
+        vtable_offset: u64,
+        drop_in_place: u32,
+        size: u32,
+        align: u32,
+    },
 }
 
 /// A member (field) of a struct, union, or enum variant payload.
@@ -442,7 +458,29 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let (value, offset) = project(*self, value)?;
                 Some(DebugFormat::Known(KnownFormat::Atomic { value, offset }))
             }
+            BundleFormat::Known(BundleKnownFormat::DynPointer {
+                pointer,
+                vtable,
+                drop_in_place,
+                size,
+                align,
+            }) => {
+                let (_, pointer_offset) = project(*self, &[*pointer])?;
+                let (vtable, vtable_offset) = project(*self, &[*vtable])?;
+                Some(DebugFormat::Known(KnownFormat::DynPointer {
+                    pointer_offset,
+                    vtable,
+                    vtable_offset,
+                    drop_in_place: *drop_in_place,
+                    size: *size,
+                    align: *align,
+                }))
+            }
         }
+    }
+
+    fn size_by_name(&self, name: &str) -> Option<u64> {
+        BundleType::size_by_name(self, name)
     }
 }
 
@@ -660,6 +698,8 @@ mod bundle_tests {
     const ATOMIC_PTR: BundleTypeId = BundleTypeId(18);
     const LOOM_ATOMIC: BundleTypeId = BundleTypeId(19);
     const LOOM_CELL: BundleTypeId = BundleTypeId(20);
+    const DYN_TRAIT: BundleTypeId = BundleTypeId(21);
+    const DYN_TRAIT_PTR: BundleTypeId = BundleTypeId(22);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -678,7 +718,8 @@ mod bundle_tests {
         let (optn, nonen, somen) = (s("Opt"), s("None"), s("Some"));
         let (wrapn, innern) = (s("Wrap"), s("inner"));
         let (noden, valuen, nextn) = (s("Node"), s("value"), s("next"));
-        let (fatn, vtablen) = (s("FatPtr"), s("vtable"));
+        let (fatn, pointern, vtablen) = (s("FatPtr"), s("pointer"), s("vtable"));
+        let dyn_traitn = s("dyn app::Trait");
         let (atomicn, storagen, vn) = (s("Atomic<u32>"), s("AtomicStorage<u32>"), s("v"));
         let atomic_ptrn = s("Atomic<*mut Point>");
         let (loom_atomicn, loom_celln, tuple0n) =
@@ -732,7 +773,11 @@ mod bundle_tests {
             TypeDef::Pointer { name: None, target: NODE },
             TypeDef::Array { elem: U64, count: 3 },
             TypeDef::Pointer { name: None, target: VTABLE_ARRAY },
-            TypeDef::Struct { name: fatn, size: 8, members: vec![m(vtablen, VTABLE_PTR, 0)] },
+            TypeDef::Struct {
+                name: fatn,
+                size: 16,
+                members: vec![m(pointern, DYN_TRAIT_PTR, 0), m(vtablen, VTABLE_PTR, 8)],
+            },
             TypeDef::Struct {
                 name: atomicn,
                 size: 4,
@@ -758,6 +803,8 @@ mod bundle_tests {
                 size: 8,
                 members: vec![m(tuple0n, WRAP, 0)],
             },
+            TypeDef::Struct { name: dyn_traitn, size: 0, members: vec![] },
+            TypeDef::Pointer { name: None, target: DYN_TRAIT },
         ];
 
         let b = Bundle {
@@ -780,6 +827,15 @@ mod bundle_tests {
                 ), (
                     LOOM_CELL,
                     BundleDebugFormat::Transparent { member: 0 },
+                ), (
+                    FAT_PTR,
+                    BundleDebugFormat::Known(BundleKnownFormat::DynPointer {
+                        pointer: 0,
+                        vtable: 1,
+                        drop_in_place: 0,
+                        size: 1,
+                        align: 2,
+                    }),
                 )]),
                 name_index: vec![],
             },
@@ -1009,7 +1065,7 @@ mod bundle_tests {
     }
 
     #[test]
-    fn test_vtable_entries_display_in_hex() {
+    fn test_dyn_pointer_formats_unknown_concrete_type() {
         struct Reader;
 
         impl ReadFromProc for Reader {
@@ -1024,11 +1080,88 @@ mod bundle_tests {
 
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let bytes = 0x3000u64.to_le_bytes();
+        let bytes: Vec<u8> = [0x1234u64, 0x3000].into_iter().flat_map(u64::to_le_bytes).collect();
         let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&Reader, 8));
-        assert!(shown.contains("0x0000000002c557a0,"), "{shown}");
-        assert!(shown.contains("0x0000000000000098,"), "{shown}");
-        assert!(shown.contains("0x0000000000000008,"), "{shown}");
+        assert_eq!(
+            shown,
+            concat!(
+                "FatPtr {\n",
+                "    pointer: 0x1234,\n",
+                "    concrete type: <unknown>,\n",
+                "    vtable: {\n",
+                "        drop_in_place: 0x2c557a0,\n",
+                "        size: 152,\n",
+                "        align: 8,\n",
+                "    },\n",
+                "}"
+            )
+        );
+    }
+
+    #[test]
+    fn test_dyn_pointer_infers_concrete_type_from_method_with_null_drop() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x3000);
+                Ok([0u64, 8, 8, 0x4000]
+                    .into_iter()
+                    .flat_map(u64::to_le_bytes)
+                    .collect())
+            }
+
+            fn function_symbol(&self, addr: u64) -> Option<String> {
+                (addr == 0x4000).then(|| "<Point as app::Trait>::run".to_owned())
+            }
+        }
+
+        let mut b = test_bundle();
+        let TypeDef::Array { count, .. } = &mut b.types.types[VTABLE_ARRAY.0 as usize] else {
+            panic!("vtable is not an array");
+        };
+        *count = 4;
+        b.validate().expect("expanded vtable must validate");
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x1234u64, 0x3000].into_iter().flat_map(u64::to_le_bytes).collect();
+        let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        assert!(shown.contains("concrete type: Point,"), "{shown}");
+        assert!(shown.contains("drop_in_place: 0x0,"), "{shown}");
+        assert!(
+            shown.contains("method[3]: 0x4000 -> <Point as app::Trait>::run,"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn test_dyn_pointer_format_is_preserved_in_enum_payload() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x3000);
+                Ok([0u64, 8, 8]
+                    .into_iter()
+                    .flat_map(u64::to_le_bytes)
+                    .collect())
+            }
+        }
+
+        let mut b = test_bundle();
+        let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+            panic!("Opt is not an enum");
+        };
+        *size = 16;
+        shape.variants[1].payload.ty = FAT_PTR;
+        b.validate().expect("modified enum bundle must validate");
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x1234u64, 0x3000].into_iter().flat_map(u64::to_le_bytes).collect();
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        assert!(shown.starts_with("Opt::Some {"), "{shown}");
+        assert!(!shown.contains("FatPtr"), "{shown}");
+        assert!(shown.contains("concrete type: <unknown>,"), "{shown}");
     }
 }

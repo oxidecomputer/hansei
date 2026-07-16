@@ -866,11 +866,68 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
 /// generic parameters are still available; the bundle records only resolved
 /// member indices.
 fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    unsafe_cell_debug_format(reader, id)
+    dyn_pointer_debug_format(reader, id)
+        .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
         .or_else(|| non_null_debug_format(reader, id))
         .or_else(|| atomic_debug_format(reader, id))
+}
+
+/// Recognize rustc's DWARF representation of a Rust trait-object wide
+/// pointer. The bundle records both member indices and the vtable header
+/// ordering so reify never guesses from the private field name or bakes in
+/// rustc's slot numbers independently.
+fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+
+    let mut data_matches = st.members.iter().enumerate().filter(|(_, member)| {
+        if member.name.map(|name| reader.strings.get(name)) != Some("pointer") {
+            return false;
+        }
+        let Some(RawType::Pointer(pointer)) = reader.canonical_type(member.type_id) else {
+            return false;
+        };
+        fq_name(reader, pointer.target_type_id)
+            .is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn "))
+    });
+    let (pointer_index, _) = data_matches.next()?;
+    if data_matches.next().is_some() {
+        return None;
+    }
+
+    let mut vtable_matches = st.members.iter().enumerate().filter(|(_, member)| {
+        if member.name.map(|name| reader.strings.get(name)) != Some("vtable") {
+            return false;
+        }
+        let Some(RawType::Pointer(pointer)) = reader.canonical_type(member.type_id) else {
+            return false;
+        };
+        let Some(RawType::Array(array)) = reader.canonical_type(pointer.target_type_id) else {
+            return false;
+        };
+        if array.count < 3 {
+            return false;
+        }
+        let Some(RawType::Base(base)) = reader.canonical_type(array.elem_type_id) else {
+            return false;
+        };
+        base.size == crate::bundle::POINTER_SIZE
+            && base.encoding == Encoding::Unsigned
+            && base.name.map(|name| reader.strings.get(name)) == Some("usize")
+    });
+    let (vtable_index, _) = vtable_matches.next()?;
+    if vtable_matches.next().is_some() || pointer_index == vtable_index {
+        return None;
+    }
+
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::DynPointer {
+        pointer: pointer_index as u32,
+        vtable: vtable_index as u32,
+        drop_in_place: 0,
+        size: 1,
+        align: 2,
+    }))
 }
 
 fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
