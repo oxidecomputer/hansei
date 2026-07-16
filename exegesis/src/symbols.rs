@@ -61,9 +61,50 @@ pub fn normalized_symbol_index<'a>(
     index
 }
 
+/// Recover the concrete `T` named by a demangled vtable function symbol.
+///
+/// Rust trait-object vtables identify their concrete type through either
+/// `drop_glue::<T>`/`drop_in_place::<T>` or a method named
+/// `<T as Trait>::method`. The returned slice borrows the demangled symbol.
+pub fn concrete_type_from_vtable_symbol(symbol: &str) -> Option<&str> {
+    for marker in ["core::ptr::drop_glue::<", "core::ptr::drop_in_place::<"] {
+        if let Some(rest) = symbol.strip_prefix(marker).and_then(|rest| rest.strip_suffix('>')) {
+            return Some(rest);
+        }
+    }
+
+    let rest = symbol.strip_prefix('<')?;
+    let mut depth = 1usize;
+    for (index, ch) in rest.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 1 && rest[index..].starts_with(" as ") {
+            return Some(&rest[..index]);
+        }
+        if depth == 0 {
+            break;
+        }
+    }
+    None
+}
+
+/// Compare Rust type spellings while ignoring formatting whitespace added
+/// by different debug-info and demangling paths.
+pub fn rust_type_names_equal(left: &str, right: &str) -> bool {
+    left.chars()
+        .filter(|ch| !ch.is_whitespace())
+        .eq(right.chars().filter(|ch| !ch.is_whitespace()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{normalized_symbol_index, normalized_v0_key, normalized_value_index};
+    use super::{
+        concrete_type_from_vtable_symbol, normalized_symbol_index, normalized_v0_key,
+        normalized_value_index, rust_type_names_equal,
+    };
     use std::collections::BTreeMap;
 
     const DEBUG: &str =
@@ -113,5 +154,28 @@ mod tests {
             (NODEBUG.to_owned(), 9),
         ]);
         assert_eq!(normalized_value_index(&symbols).values().next(), Some(&vec![7, 9]));
+    }
+
+    #[test]
+    fn vtable_symbols_recover_concrete_types() {
+        assert_eq!(
+            concrete_type_from_vtable_symbol("core::ptr::drop_glue::<app::Thing<u64>>"),
+            Some("app::Thing<u64>")
+        );
+        assert_eq!(
+            concrete_type_from_vtable_symbol(
+                "<app::Thing<alloc::vec::Vec<u8>> as app::Trait>::method"
+            ),
+            Some("app::Thing<alloc::vec::Vec<u8>>")
+        );
+    }
+
+    #[test]
+    fn rust_type_name_comparison_ignores_demangler_spacing() {
+        assert!(rust_type_names_equal(
+            "slog::Drain<Ok=(), Err=core::convert::Infallible>",
+            "slog::Drain<Ok = (), Err = core::convert::Infallible>"
+        ));
+        assert!(!rust_type_names_equal("app::Thing<u32>", "app::Thing<u64>"));
     }
 }

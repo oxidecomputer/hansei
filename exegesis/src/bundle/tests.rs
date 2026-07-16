@@ -1023,6 +1023,7 @@ mod view_tests {
 
         let view = BundleView::new(&b);
         let s = view.find_by_name("Point").next().expect("Point not found");
+        assert_eq!(s.type_by_name(" Point ").map(|ty| ty.id()), Some(BundleTypeId(1)));
         assert_eq!(s.size(), 8);
         assert_eq!(s.members().len(), 2);
         let m = s.member("y").expect("no member y");
