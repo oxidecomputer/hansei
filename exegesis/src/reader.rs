@@ -9,7 +9,7 @@ use crate::string_table::{StrId, StringTable};
 use crate::{Error, FuncId, Result, Slice};
 use crate::{TypeId, VarId};
 
-use foldhash::{HashMap, HashMapExt};
+use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use gimli::{Dwarf, UnitRef};
 use regex::Regex;
 use tracing::debug;
@@ -25,6 +25,9 @@ use std::num::NonZero;
 pub struct DwReader<'dw> {
     /// All types from all CGUs, keyed by their original TypeId.
     pub types: HashMap<TypeId, RawType<StrId>>,
+    /// `DW_TAG_subroutine_type` DIEs. We retain only their identity so
+    /// pointers can be classified as function pointers.
+    subroutine_types: HashSet<TypeId>,
     /// Name index for named types: (namespace, name) → canonical TypeId.
     name_index: HashMap<(Option<NsId>, Option<StrId>), TypeId>,
     /// Pointer dedup index: canonical target TypeId → canonical pointer TypeId.
@@ -151,6 +154,7 @@ impl<'dw> DwReader<'dw> {
     fn new() -> Self {
         Self {
             types: HashMap::new(),
+            subroutine_types: HashSet::new(),
             name_index: HashMap::new(),
             pointer_index: HashMap::new(),
             array_index: HashMap::new(),
@@ -217,6 +221,8 @@ impl<'dw> DwReader<'dw> {
             }
         }
 
+        self.subroutine_types.extend(cgu.subroutine_types.drain());
+
         // Static variables are unique by address — no dedup needed.
         // Remap namespace and canonicalize type references.
         for (var_id, mut var) in cgu.variables.drain() {
@@ -258,6 +264,11 @@ impl<'dw> DwReader<'dw> {
     /// Returns the canonical type for a given [`TypeId`].
     pub fn canonical_type(&self, id: TypeId) -> Option<&RawType<StrId>> {
         self.types.get(&self.canonicalize(id))
+    }
+
+    /// Whether `id` names a DWARF function-signature DIE.
+    pub(crate) fn is_subroutine_type(&self, id: TypeId) -> bool {
+        self.subroutine_types.contains(&self.canonicalize(id))
     }
 
     /// Produces an iterator over only the canonical types.

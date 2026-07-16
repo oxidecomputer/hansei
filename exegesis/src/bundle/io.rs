@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -236,6 +236,16 @@ impl Bundle {
                             "atomic debug format for type {} has an empty member path", id.0));
                     }
                     check_format_path(self, id, def, value, "atomic debug format")?;
+                }
+                crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::FunctionPointer,
+                ) => {
+                    if !matches!(def, TypeDef::Pointer { .. }) {
+                        return corrupt(format!(
+                            "function-pointer debug format for type {} is not a pointer",
+                            id.0
+                        ));
+                    }
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::DynPointer {
