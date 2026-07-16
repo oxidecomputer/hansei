@@ -21,10 +21,10 @@
 //!    no silent omissions.
 
 use crate::bundle::{
-    BinaryIdent, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues, DynFutureTable,
-    FutureKind, InfraTypes, MemberDef, Meta, Provenance, ProvenanceTable, SourceLoc, StaticDef,
-    StaticRole, StaticsTable, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TaskTable,
-    TypeDef, TypeTable, VariantDef, VariantShape,
+    BinaryIdent, Bundle, BundleTypeId, DebugFormat, DiscrDef, DiscrValue, DiscrValues,
+    DynFutureTable, FutureKind, InfraTypes, MemberDef, Meta, Provenance, ProvenanceTable,
+    SourceLoc, StaticDef, StaticRole, StaticsTable, StrRef, StringInterner, TaskEntryId,
+    TaskFutureEntry, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
 };
 use crate::raw_types::{NsId, RawType, VariantShape as RawVariantShape};
 use crate::view::{DwView, Func, SourceLocView};
@@ -861,6 +861,39 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
     segs.join("::")
 }
 
+/// Recognize types whose source-level Debug representation is simpler than
+/// their private storage layout. Matching happens here, while structured
+/// generic parameters are still available; the bundle records only resolved
+/// member indices.
+fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    unsafe_cell_debug_format(reader, id)
+}
+
+fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
+    let name = st.name.map(|name| reader.strings.get(name))?;
+    if namespace != "core::cell" || !name.starts_with("UnsafeCell<") || !name.ends_with('>') {
+        return None;
+    }
+
+    let [param] = st.template_params.as_ref() else { return None };
+    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
+        return None;
+    }
+    let target = reader.canonicalize(param.type_id);
+    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
+        member.offset == 0
+            && member.name.map(|name| reader.strings.get(name)) == Some("value")
+            && reader.canonicalize(member.type_id) == target
+    });
+    let (index, _) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(DebugFormat::Transparent { member: index as u32 })
+}
+
 /// Locate the named statics (§5.4) by DWARF shape, not by hardcoded
 /// mangled names: the TLS key static's path spelling is a std internal
 /// that differs across platforms and std versions.
@@ -1098,6 +1131,7 @@ struct Emitter<'a> {
     interner: StringInterner,
     ids: BTreeMap<TypeId, BundleTypeId>,
     defs: Vec<TypeDef>,
+    debug_formats: BTreeMap<BundleTypeId, DebugFormat>,
     /// Fully-qualified names for the name index, parallel to `defs`.
     names: Vec<Option<String>>,
     pending: VecDeque<(TypeId, BundleTypeId)>,
@@ -1113,6 +1147,7 @@ impl<'a> Emitter<'a> {
             interner: StringInterner::new(),
             ids: BTreeMap::new(),
             defs: Vec::new(),
+            debug_formats: BTreeMap::new(),
             names: Vec::new(),
             pending: VecDeque::new(),
             unresolved: None,
@@ -1128,6 +1163,9 @@ impl<'a> Emitter<'a> {
         while let Some((tid, bid)) = self.pending.pop_front() {
             let def = self.convert(tid);
             self.defs[bid.0 as usize] = def;
+            if let Some(format) = known_debug_format(self.reader, tid) {
+                self.debug_formats.insert(bid, format);
+            }
         }
         root
     }
@@ -1376,6 +1414,7 @@ impl<'a> Emitter<'a> {
         (
             TypeTable {
                 types: self.defs,
+                debug_formats: self.debug_formats,
                 name_index,
             },
             self.interner.finish(),

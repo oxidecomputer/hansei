@@ -99,6 +99,27 @@ pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug {
 
     /// Classify this type for display formatting.
     fn classify(&self) -> TypeClass<Self>;
+
+    /// Custom display instructions supplied by the debug-info backend.
+    fn debug_format(&self) -> Option<DebugFormat<Self>> {
+        None
+    }
+}
+
+/// Backend-independent, fully resolved custom display instructions.
+#[derive(Copy, Clone, Debug)]
+pub enum DebugFormat<T> {
+    /// Display `target` at `offset` as though it were the containing value.
+    Transparent { target: T, offset: u64 },
+    /// Apply semantics for a known family of types.
+    Known(KnownFormat<T>),
+}
+
+/// Closed set of semantic formatters understood by reify.
+#[derive(Copy, Clone, Debug)]
+pub enum KnownFormat<T> {
+    /// Display an atomic's stored value without following pointer values.
+    Atomic { value: T, offset: u64 },
 }
 
 /// A member (field) of a struct, union, or enum variant payload.
@@ -398,6 +419,31 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             TypeDef::Opaque { .. } => TypeClass::Opaque,
         }
     }
+
+    fn debug_format(&self) -> Option<DebugFormat<Self>> {
+        use exegesis::bundle::{DebugFormat as BundleFormat, KnownFormat as BundleKnownFormat};
+
+        fn project<'a>(mut ty: BundleType<'a>, path: &[u32]) -> Option<(BundleType<'a>, u64)> {
+            let mut offset = 0u64;
+            for &index in path {
+                let member = ty.members().nth(index as usize)?;
+                offset = offset.checked_add(member.offset())?;
+                ty = member.ty();
+            }
+            Some((ty, offset))
+        }
+
+        match BundleType::debug_format(self)? {
+            BundleFormat::Transparent { member } => {
+                let (target, offset) = project(*self, &[*member])?;
+                Some(DebugFormat::Transparent { target, offset })
+            }
+            BundleFormat::Known(BundleKnownFormat::Atomic { value }) => {
+                let (value, offset) = project(*self, value)?;
+                Some(DebugFormat::Known(KnownFormat::Atomic { value, offset }))
+            }
+        }
+    }
 }
 
 impl<'a> DebugMember<'a> for BundleMember<'a> {
@@ -587,9 +633,9 @@ mod bundle_tests {
 
     use exegesis::Encoding;
     use exegesis::bundle::{
-        Bundle, BundleTypeId, BundleView, DiscrDef, DiscrValue, DiscrValues, DynFutureTable,
-        FORMAT_VERSION, InfraTypes, MemberDef, Meta, ProvenanceTable, StaticsTable,
-        StringInterner, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
+        Bundle, BundleTypeId, BundleView, DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue,
+        DiscrValues, DynFutureTable, FORMAT_VERSION, InfraTypes, MemberDef, Meta, ProvenanceTable,
+        StaticsTable, StringInterner, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
     };
 
     const U32: BundleTypeId = BundleTypeId(0);
@@ -682,7 +728,14 @@ mod bundle_tests {
         let b = Bundle {
             meta: Meta { format_version: FORMAT_VERSION, ..Default::default() },
             strings: strings.finish(),
-            types: TypeTable { types, name_index: vec![] },
+            types: TypeTable {
+                types,
+                debug_formats: std::collections::BTreeMap::from([(
+                    WRAP,
+                    BundleDebugFormat::Transparent { member: 0 },
+                )]),
+                name_index: vec![],
+            },
             tasks: TaskTable::default(),
             dyn_futures: DynFutureTable::default(),
             statics: StaticsTable::default(),
@@ -813,6 +866,15 @@ mod bundle_tests {
         let peeled = TypeInfoRef::new(v.ty(WRAP).unwrap(), 0, &bytes).peel();
         assert_eq!(DebugType::name(&peeled.ty), "Point");
         assert_eq!(format!("{}", peeled.member("y").unwrap().display()), "4");
+    }
+
+    #[test]
+    fn test_transparent_debug_format_elides_wrapper() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let value = TypeInfoRef::new(v.ty(WRAP).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display_with_depth(2)), "Point { x: 3, y: 4 }");
     }
 
     #[test]

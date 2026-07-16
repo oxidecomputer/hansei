@@ -1,7 +1,7 @@
 pub mod debug_type;
 
 pub use debug_type::TypeKind;
-use debug_type::{DebugMember, DebugType, TypeClass};
+use debug_type::{DebugFormat, DebugMember, DebugType, KnownFormat, TypeClass};
 
 use proc::Mappings;
 
@@ -718,6 +718,40 @@ fn write_display_value<'a, T: DebugType<'a>>(
 
     if (bytes.len() as u64) < ty.size() {
         return write!(f, "<truncated>");
+    }
+
+    if let Some(format) = ty.debug_format() {
+        let (target, offset, child_proc, child_visited) = match format {
+            DebugFormat::Transparent { target, offset } => (target, offset, proc, visited),
+            DebugFormat::Known(KnownFormat::Atomic { value, offset }) => {
+                // AtomicPtr's Debug implementation reports the stored
+                // address; it does not dereference it.
+                (value, offset, None, None)
+            }
+        };
+        let start = offset as usize;
+        let Some(end) = start.checked_add(target.size() as usize) else {
+            return write!(f, "<truncated>");
+        };
+        let Some(child_bytes) = bytes.get(start..end) else {
+            return write!(f, "<truncated>");
+        };
+        let child = DisplayRecurse {
+            info: TypeInfoRef {
+                ty: target,
+                addr: info.addr + offset,
+                bytes: child_bytes,
+                _marker: std::marker::PhantomData,
+            },
+            // Eliding a representation detail does not consume the user's
+            // value-depth budget.
+            depth,
+            max_depth,
+            proc: child_proc,
+            visited: child_visited,
+            hex_integers,
+        };
+        return if f.alternate() { write!(f, "{child:#}") } else { write!(f, "{child}") };
     }
 
     match ty.classify() {

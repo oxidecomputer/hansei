@@ -76,12 +76,37 @@ pub struct BinaryIdent {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct TypeTable {
     pub types: Vec<TypeDef>,
+    /// Optional display instructions attached to concrete type layouts.
+    /// Types absent from this map use reify's ordinary structural display.
+    pub debug_formats: BTreeMap<BundleTypeId, DebugFormat>,
     /// By-name index for the (rarer) name-based lookups: pairs of
     /// (fully-qualified name, type id), sorted by the *resolved string*
     /// so lookups can binary-search without materializing owned keys.
     /// Multiple ids may share one name (e.g. identical instantiations from
     /// different CUs).
     pub name_index: Vec<(StrRef, BundleTypeId)>,
+}
+
+/// Declarative instructions for displaying a known type.
+///
+/// Member references are indices into the concrete [`TypeDef`]'s member
+/// list. Exegesis resolves and validates them while it still has the source
+/// DWARF's structured generic parameter information; consumers never match
+/// type names or private field names.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum DebugFormat {
+    /// Display one member as though it were the containing value.
+    Transparent { member: u32 },
+    /// Apply semantics for a known family of types.
+    Known(KnownFormat),
+}
+
+/// Closed set of semantic formatters understood by reify.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum KnownFormat {
+    /// Display an atomic's stored value. The path walks zero or more
+    /// concrete struct/union members from the atomic to its value type.
+    Atomic { value: Vec<u32> },
 }
 
 impl TypeTable {
