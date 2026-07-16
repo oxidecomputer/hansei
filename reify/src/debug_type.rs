@@ -658,6 +658,8 @@ mod bundle_tests {
     const ATOMIC: BundleTypeId = BundleTypeId(16);
     const ATOMIC_STORAGE: BundleTypeId = BundleTypeId(17);
     const ATOMIC_PTR: BundleTypeId = BundleTypeId(18);
+    const LOOM_ATOMIC: BundleTypeId = BundleTypeId(19);
+    const LOOM_CELL: BundleTypeId = BundleTypeId(20);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -679,6 +681,8 @@ mod bundle_tests {
         let (fatn, vtablen) = (s("FatPtr"), s("vtable"));
         let (atomicn, storagen, vn) = (s("Atomic<u32>"), s("AtomicStorage<u32>"), s("v"));
         let atomic_ptrn = s("Atomic<*mut Point>");
+        let (loom_atomicn, loom_celln, tuple0n) =
+            (s("AtomicU32"), s("LoomUnsafeCell<Point>"), s("__0"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -744,6 +748,16 @@ mod bundle_tests {
                 size: 8,
                 members: vec![m(vn, PTR, 0)],
             },
+            TypeDef::Struct {
+                name: loom_atomicn,
+                size: 4,
+                members: vec![m(innern, ATOMIC, 0)],
+            },
+            TypeDef::Struct {
+                name: loom_celln,
+                size: 8,
+                members: vec![m(tuple0n, WRAP, 0)],
+            },
         ];
 
         let b = Bundle {
@@ -760,6 +774,12 @@ mod bundle_tests {
                 ), (
                     ATOMIC_PTR,
                     BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: vec![0] }),
+                ), (
+                    LOOM_ATOMIC,
+                    BundleDebugFormat::Transparent { member: 0 },
+                ), (
+                    LOOM_CELL,
+                    BundleDebugFormat::Transparent { member: 0 },
                 )]),
                 name_index: vec![],
             },
@@ -911,6 +931,20 @@ mod bundle_tests {
         let bytes = 42u32.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(ATOMIC).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display_with_depth(1)), "42");
+    }
+
+    #[test]
+    fn test_nested_transparent_formats_do_not_consume_depth() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+
+        let bytes = 42u32.to_le_bytes();
+        let atomic = TypeInfoRef::new(v.ty(LOOM_ATOMIC).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", atomic.display_with_depth(1)), "42");
+
+        let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let cell = TypeInfoRef::new(v.ty(LOOM_CELL).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", cell.display_with_depth(2)), "Point { x: 3, y: 4 }");
     }
 
     #[test]
