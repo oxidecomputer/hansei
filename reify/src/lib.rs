@@ -780,6 +780,17 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 },
             };
         }
+        if let DebugFormat::Known(format @ KnownFormat::Vec { .. }) = format {
+            return write_vec(
+                f,
+                info,
+                format,
+                depth,
+                max_depth,
+                proc,
+                visited,
+            );
+        }
         if let DebugFormat::Known(format @ KnownFormat::BTreeMap { .. }) = format {
             return write_btree_map(
                 f,
@@ -804,6 +815,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::DynPointer { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::IpAddress { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::Vec { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::BTreeMap { .. }) => unreachable!(),
         };
         let start = offset as usize;
@@ -1157,6 +1169,108 @@ fn write_raw_waker_vtable<'a, T: DebugType<'a>>(
         write!(f, " ")?;
     }
     write!(f, "}}")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_vec<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    format: KnownFormat<T>,
+    depth: usize,
+    max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+) -> fmt::Result {
+    let KnownFormat::Vec {
+        pointer_offset,
+        length,
+        length_offset,
+        capacity,
+        capacity_offset,
+        element,
+    } = format
+    else {
+        unreachable!()
+    };
+
+    let Some(len) = read_unsigned_at(info.bytes, length_offset, length.size()) else {
+        return write!(f, "<truncated Vec length>");
+    };
+    let Some(capacity) = read_unsigned_at(info.bytes, capacity_offset, capacity.size()) else {
+        return write!(f, "<truncated Vec capacity>");
+    };
+    let element_size = element.size();
+    if element_size != 0 && len > capacity {
+        return write!(f, "<invalid Vec: length exceeds capacity>");
+    }
+    if len == 0 {
+        return write!(f, "[]");
+    }
+    let Some(pointer) = read_u64_at(info.bytes, pointer_offset) else {
+        return write!(f, "<truncated Vec pointer>");
+    };
+
+    let allocation;
+    if element_size == 0 {
+        allocation = Vec::new();
+    } else {
+        if pointer == 0 {
+            return write!(f, "<invalid Vec: null allocation pointer>");
+        }
+        let Some(byte_len) = len.checked_mul(element_size) else {
+            return write!(f, "<invalid Vec: allocation size overflow>");
+        };
+        let Some(proc) = proc else {
+            return write!(f, "<target unavailable>");
+        };
+        let Ok(bytes) = proc.read_bytes(pointer, byte_len) else {
+            return write!(f, "<unreadable Vec allocation>");
+        };
+        allocation = bytes;
+    }
+
+    let pretty = f.alternate();
+    write!(f, "[")?;
+    for index in 0..len {
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        } else if index != 0 {
+            write!(f, ", ")?;
+        }
+        let Some(offset) = index.checked_mul(element_size) else {
+            return write!(f, "<invalid element offset>");
+        };
+        let Some(bytes) = byte_range(&allocation, offset, element_size) else {
+            return write!(f, "<truncated element>");
+        };
+        let Some(address) = pointer.checked_add(offset) else {
+            return write!(f, "<invalid element address>");
+        };
+        let child = DisplayRecurse {
+            info: TypeInfoRef {
+                ty: element,
+                addr: address,
+                bytes,
+                _marker: std::marker::PhantomData,
+            },
+            depth: depth + 1,
+            max_depth,
+            proc,
+            visited,
+            hex_integers: false,
+        };
+        if pretty {
+            write!(f, "{child:#},")?;
+        } else {
+            write!(f, "{child}")?;
+        }
+    }
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    }
+    write!(f, "]")
 }
 
 #[derive(Copy, Clone)]
