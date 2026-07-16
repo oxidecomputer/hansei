@@ -884,7 +884,9 @@ mod view_tests {
         let usizen = strings.intern("usize");
         let dynn = strings.intern("(dyn core::future::future::Future<Output=u32> + core::marker::Send)");
         let boxn = strings.intern("alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global>");
+        let arc_innern = strings.intern("alloc::sync::ArcInner<(dyn core::future::future::Future<Output=u32> + core::marker::Send)>");
         let plainn = strings.intern("app::NotDyn");
+        let datan = strings.intern("data");
         let pointer = strings.intern("pointer");
         let vtable = strings.intern("vtable");
 
@@ -928,8 +930,34 @@ mod view_tests {
                     size: 8,
                     members: vec![MemberDef { name: pointer, ty: BundleTypeId(2), offset: 0 }],
                 },
+                // 10: an unsized wrapper whose final field is dyn
+                TypeDef::Struct {
+                    name: arc_innern,
+                    size: 16,
+                    members: vec![MemberDef { name: datan, ty: BundleTypeId(1), offset: 16 }],
+                },
+                // 11: *ArcInner<dyn Future>
+                TypeDef::Pointer { name: None, target: BundleTypeId(10) },
+                // 12: a wide pointer to the unsized wrapper
+                TypeDef::Struct {
+                    name: arc_innern,
+                    size: 16,
+                    members: vec![
+                        MemberDef { name: pointer, ty: BundleTypeId(11), offset: 0 },
+                        MemberDef { name: vtable, ty: BundleTypeId(4), offset: 8 },
+                    ],
+                },
             ],
-            debug_formats: std::collections::BTreeMap::new(),
+            debug_formats: std::collections::BTreeMap::from([(
+                BundleTypeId(12),
+                DebugFormat::Known(KnownFormat::DynPointer {
+                    pointer: 0,
+                    vtable: 1,
+                    drop_in_place: 0,
+                    size: 1,
+                    align: 2,
+                }),
+            )]),
             name_index: vec![],
         };
         b.strings = strings.finish();

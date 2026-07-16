@@ -71,6 +71,34 @@ fn check_format_path<'a>(
     Ok(())
 }
 
+fn has_dyn_tail(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> bool {
+    if seen.len() >= 8 || seen.contains(&id) {
+        return false;
+    }
+    let Some(def) = bundle.types.get(id) else {
+        return false;
+    };
+    let name = match def {
+        TypeDef::Struct { name, .. } | TypeDef::Opaque { name, .. } => {
+            bundle.strings.get(*name)
+        }
+        _ => None,
+    };
+    if name.is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn ")) {
+        return true;
+    }
+    let TypeDef::Struct { members, .. } = def else {
+        return false;
+    };
+    let Some(tail) = members.last() else {
+        return false;
+    };
+    seen.push(id);
+    let found = has_dyn_tail(bundle, tail.ty, seen);
+    seen.pop();
+    found
+}
+
 impl Bundle {
     /// Serialize into `w`: header, then zstd-compressed postcard payload.
     ///
@@ -245,18 +273,12 @@ impl Bundle {
                             id.0
                         ));
                     }
-                    let data_target = match self.types.get(data.ty) {
-                        Some(TypeDef::Pointer { target, .. }) => self.types.get(*target),
+                    let data_target_id = match self.types.get(data.ty) {
+                        Some(TypeDef::Pointer { target, .. }) => Some(*target),
                         _ => None,
                     };
-                    let data_target_name = match data_target {
-                        Some(TypeDef::Struct { name, .. }) | Some(TypeDef::Opaque { name, .. }) => {
-                            self.strings.get(*name)
-                        }
-                        _ => None,
-                    };
-                    if !data_target_name
-                        .is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn "))
+                    if !data_target_id
+                        .is_some_and(|target| has_dyn_tail(self, target, &mut Vec::new()))
                     {
                         return corrupt(format!(
                             "dyn-pointer debug format for type {}: data member does not target dyn",
