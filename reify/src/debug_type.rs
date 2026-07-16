@@ -993,8 +993,8 @@ mod bundle_tests {
         let bytes = 0x3000u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&Reader, 8));
-        assert!(shown.contains("0x2c557a0,"), "{shown}");
-        assert!(shown.contains("0x98,"), "{shown}");
-        assert!(shown.contains("0x8,"), "{shown}");
+        assert!(shown.contains("0x0000000002c557a0,"), "{shown}");
+        assert!(shown.contains("0x0000000000000098,"), "{shown}");
+        assert!(shown.contains("0x0000000000000008,"), "{shown}");
     }
 }

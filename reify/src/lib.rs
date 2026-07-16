@@ -776,20 +776,20 @@ fn write_display_value<'a, T: DebugType<'a>>(
 
             if hex_integers {
                 return match size {
-                    1 => write!(f, "{:#x}", bytes[0]),
+                    1 => write!(f, "0x{:02x}", bytes[0]),
                     2 => write!(
                         f,
-                        "{:#x}",
+                        "0x{:04x}",
                         u16::from_le_bytes(bytes[..2].try_into().unwrap())
                     ),
                     4 => write!(
                         f,
-                        "{:#x}",
+                        "0x{:08x}",
                         u32::from_le_bytes(bytes[..4].try_into().unwrap())
                     ),
                     8 => write!(
                         f,
-                        "{:#x}",
+                        "0x{:016x}",
                         u64::from_le_bytes(bytes[..8].try_into().unwrap())
                     ),
                     _ => write_hex_bytes(f, bytes),
