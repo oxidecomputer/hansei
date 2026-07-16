@@ -596,7 +596,7 @@ impl<'a, T: DebugType<'a>> fmt::Debug for TypeInfoRef<'_, 'a, T> {
 
 impl<'a, T: DebugType<'a>> fmt::Display for TypeInfoRef<'_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, self, 0, 16, None, None)
+        write_display_value(f, self, 0, 16, None, None, false)
     }
 }
 
@@ -614,7 +614,7 @@ pub struct DisplayValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>> {
 
 impl<'a, T: DebugType<'a>> fmt::Display for DisplayValue<'_, '_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, self.info, self.depth, self.max_depth, None, None)
+        write_display_value(f, self.info, self.depth, self.max_depth, None, None, false)
     }
 }
 
@@ -634,6 +634,7 @@ impl<'a, T: DebugType<'a>, P: ReadFromProc> fmt::Display for DisplayTargetValue<
             self.max_depth,
             Some(self.proc),
             Some(&self.visited),
+            false,
         )
     }
 }
@@ -678,6 +679,7 @@ struct DisplayRecurse<'buf, 'a: 'buf, T: DebugType<'a>> {
     max_depth: usize,
     proc: Option<&'buf dyn ReadFromProc>,
     visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
 }
 
 impl<'a, T: DebugType<'a>> fmt::Display for DisplayRecurse<'_, 'a, T> {
@@ -689,6 +691,7 @@ impl<'a, T: DebugType<'a>> fmt::Display for DisplayRecurse<'_, 'a, T> {
             self.max_depth,
             self.proc,
             self.visited,
+            self.hex_integers,
         )
     }
 }
@@ -700,6 +703,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
     max_depth: usize,
     proc: Option<&dyn ReadFromProc>,
     visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
 ) -> fmt::Result {
     let ty = info.ty;
     let bytes = info.bytes;
@@ -733,6 +737,28 @@ fn write_display_value<'a, T: DebugType<'a>>(
                     write!(f, "'{}'", ch as char)
                 } else {
                     write!(f, "'\\x{:02x}'", ch)
+                };
+            }
+
+            if hex_integers {
+                return match size {
+                    1 => write!(f, "{:#x}", bytes[0]),
+                    2 => write!(
+                        f,
+                        "{:#x}",
+                        u16::from_le_bytes(bytes[..2].try_into().unwrap())
+                    ),
+                    4 => write!(
+                        f,
+                        "{:#x}",
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    ),
+                    8 => write!(
+                        f,
+                        "{:#x}",
+                        u64::from_le_bytes(bytes[..8].try_into().unwrap())
+                    ),
+                    _ => write_hex_bytes(f, bytes),
                 };
             }
 
@@ -789,6 +815,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                         max_depth,
                         proc: Some(proc),
                         visited: Some(visited),
+                        hex_integers,
                     };
                     if f.alternate() {
                         write!(f, "0x{addr:x} -> {pointee:#}")
@@ -805,7 +832,17 @@ fn write_display_value<'a, T: DebugType<'a>>(
         TypeClass::Struct => {
             let name = ty.name();
             let pretty = f.alternate();
-            write_struct_fields(f, info, name, pretty, depth, max_depth, proc, visited)
+            write_struct_fields(
+                f,
+                info,
+                name,
+                pretty,
+                depth,
+                max_depth,
+                proc,
+                visited,
+                hex_integers,
+            )
         }
 
         TypeClass::Union => {
@@ -821,7 +858,17 @@ fn write_display_value<'a, T: DebugType<'a>>(
         TypeClass::RustEnum => {
             let name = ty.name();
             let pretty = f.alternate();
-            write_rust_enum(f, info, name, pretty, depth, max_depth, proc, visited)
+            write_rust_enum(
+                f,
+                info,
+                name,
+                pretty,
+                depth,
+                max_depth,
+                proc,
+                visited,
+                hex_integers,
+            )
         }
 
         TypeClass::CEnum => {
@@ -861,6 +908,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                         max_depth,
                         proc,
                         visited,
+                        hex_integers,
                     };
                     if pretty {
                         write!(f, "{:#},", child)?;
@@ -894,6 +942,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 max_depth,
                 proc,
                 visited,
+                hex_integers,
             };
             if f.alternate() {
                 write!(f, "{:#}", child)
@@ -921,6 +970,7 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
     max_depth: usize,
     proc: Option<&dyn ReadFromProc>,
     visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
 ) -> fmt::Result {
     let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
 
@@ -954,6 +1004,7 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
                 max_depth,
                 proc,
                 visited,
+                hex_integers: hex_integers || member.name() == "vtable",
             };
             if pretty {
                 write!(f, "{:#}", child)?;
@@ -987,6 +1038,7 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
     max_depth: usize,
     proc: Option<&dyn ReadFromProc>,
     visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
 ) -> fmt::Result {
     let Ok((variant_name, var_ty, offset)) = info
         .ty
@@ -1062,6 +1114,7 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
                 max_depth,
                 proc,
                 visited,
+                hex_integers: hex_integers || member.name() == "vtable",
             };
             if pretty {
                 write!(f, "{:#}", child)?;
