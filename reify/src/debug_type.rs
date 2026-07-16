@@ -164,6 +164,20 @@ pub enum KnownFormat<T> {
         capacity_offset: u64,
         element: T,
     },
+    /// Display a borrowed string as quoted, escaped UTF-8.
+    Str {
+        pointer_offset: u64,
+        length: T,
+        length_offset: u64,
+    },
+    /// Display an owned string as quoted, escaped UTF-8.
+    String {
+        pointer_offset: u64,
+        length: T,
+        length_offset: u64,
+        capacity: T,
+        capacity_offset: u64,
+    },
     /// Display a BTreeMap by walking its initialized nodes in key order.
     BTreeMap {
         root: T,
@@ -585,6 +599,33 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     element: self.related_type(*element),
                 }))
             }
+            BundleFormat::Known(BundleKnownFormat::Str { pointer, length }) => {
+                let (pointer, pointer_offset) = project(*self, &[*pointer])?;
+                pointer.pointer_target()?;
+                let (length, length_offset) = project(*self, &[*length])?;
+                Some(DebugFormat::Known(KnownFormat::Str {
+                    pointer_offset,
+                    length,
+                    length_offset,
+                }))
+            }
+            BundleFormat::Known(BundleKnownFormat::String {
+                pointer,
+                length,
+                capacity,
+            }) => {
+                let (pointer, pointer_offset) = project(*self, pointer)?;
+                pointer.pointer_target()?;
+                let (length, length_offset) = project(*self, length)?;
+                let (capacity, capacity_offset) = project(*self, capacity)?;
+                Some(DebugFormat::Known(KnownFormat::String {
+                    pointer_offset,
+                    length,
+                    length_offset,
+                    capacity,
+                    capacity_offset,
+                }))
+            }
             BundleFormat::Known(BundleKnownFormat::BTreeMap {
                 root,
                 length,
@@ -906,6 +947,8 @@ mod bundle_tests {
     const IPV6: BundleTypeId = BundleTypeId(38);
     const U8_PTR: BundleTypeId = BundleTypeId(39);
     const VEC: BundleTypeId = BundleTypeId(40);
+    const STR: BundleTypeId = BundleTypeId(41);
+    const STRING: BundleTypeId = BundleTypeId(42);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -959,6 +1002,8 @@ mod bundle_tests {
         );
         let (vecn, ptrn, vec_lenn, capacityn) =
             (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
+        let (strn, stringn, data_ptrn, length2n) =
+            (s("&str"), s("alloc::string::String"), s("data_ptr"), s("length"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1127,6 +1172,20 @@ mod bundle_tests {
                     m(capacityn, U64, 16),
                 ],
             },
+            TypeDef::Struct {
+                name: strn,
+                size: 16,
+                members: vec![m(data_ptrn, U8_PTR, 0), m(length2n, U64, 8)],
+            },
+            TypeDef::Struct {
+                name: stringn,
+                size: 24,
+                members: vec![
+                    m(ptrn, U8_PTR, 0),
+                    m(vec_lenn, U64, 8),
+                    m(capacityn, U64, 16),
+                ],
+            },
         ];
 
         let b = Bundle {
@@ -1201,6 +1260,19 @@ mod bundle_tests {
                         length: vec![1],
                         capacity: vec![2],
                         element: U32,
+                    }),
+                ), (
+                    STR,
+                    BundleDebugFormat::Known(BundleKnownFormat::Str {
+                        pointer: 0,
+                        length: 1,
+                    }),
+                ), (
+                    STRING,
+                    BundleDebugFormat::Known(BundleKnownFormat::String {
+                        pointer: vec![0],
+                        length: vec![1],
+                        capacity: vec![2],
                     }),
                 )]),
                 name_index: vec![(pointn, POINT)],
@@ -1302,6 +1374,44 @@ mod bundle_tests {
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
             "<invalid Vec: length exceeds capacity>"
+        );
+    }
+
+    #[test]
+    fn test_str_and_string_display_quoted_utf8() {
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                let bytes: &[u8] = match addr {
+                    0x3000 => b"hi\nthere",
+                    0x4000 => b"owned\ttext",
+                    _ => panic!("unexpected address 0x{addr:x}"),
+                };
+                assert_eq!(len, bytes.len() as u64);
+                Ok(bytes.to_vec())
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let str_bytes: Vec<u8> = [0x3000u64, 8]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(STR).unwrap(), 0, &str_bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "\"hi\\nthere\""
+        );
+
+        let string_bytes: Vec<u8> = [0x4000u64, 10, 16]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(STRING).unwrap(), 0, &string_bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "\"owned\\ttext\""
         );
     }
 

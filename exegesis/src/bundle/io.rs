@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 9;
+pub const FORMAT_VERSION: u32 = 10;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -81,6 +81,60 @@ fn format_path_target<'a>(
         def = bundle.types.get(member.ty).expect("member type validated before formats");
     }
     Ok(current)
+}
+
+fn check_byte_pointer_format(
+    bundle: &Bundle,
+    root: BundleTypeId,
+    def: &TypeDef,
+    path: &[u32],
+    what: &str,
+) -> Result<()> {
+    let pointer = format_path_target(bundle, root, def, path, what)?;
+    let Some(TypeDef::Pointer { target, .. }) = bundle.types.get(pointer) else {
+        return Err(Error::Corrupt(format!(
+            "{what} for type {} does not end at a pointer",
+            root.0
+        )));
+    };
+    if !matches!(
+        bundle.types.get(*target),
+        Some(TypeDef::Base {
+            size: 1,
+            encoding: crate::raw_types::Encoding::Unsigned,
+            ..
+        })
+    ) {
+        return Err(Error::Corrupt(format!(
+            "{what} for type {} does not target u8",
+            root.0
+        )));
+    }
+    Ok(())
+}
+
+fn check_usize_format(
+    bundle: &Bundle,
+    root: BundleTypeId,
+    def: &TypeDef,
+    path: &[u32],
+    what: &str,
+) -> Result<()> {
+    let target = format_path_target(bundle, root, def, path, what)?;
+    if !matches!(
+        bundle.types.get(target),
+        Some(TypeDef::Base {
+            size: crate::bundle::POINTER_SIZE,
+            encoding: crate::raw_types::Encoding::Unsigned,
+            ..
+        })
+    ) {
+        return Err(Error::Corrupt(format!(
+            "{what} for type {} does not end at usize",
+            root.0
+        )));
+    }
+    Ok(())
 }
 
 fn type_size(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> Option<u64> {
@@ -457,54 +511,69 @@ impl Bundle {
                             id.0
                         ));
                     }
-                    let pointer = format_path_target(
+                    check_byte_pointer_format(
                         self,
                         id,
                         def,
                         pointer,
                         "Vec pointer debug format",
                     )?;
-                    let Some(TypeDef::Pointer { target, .. }) = self.types.get(pointer) else {
-                        return corrupt(format!(
-                            "Vec debug format for type {} does not end its pointer path at a pointer",
-                            id.0
-                        ));
-                    };
-                    if !matches!(
-                        self.types.get(*target),
-                        Some(TypeDef::Base {
-                            size: 1,
-                            encoding: crate::raw_types::Encoding::Unsigned,
-                            ..
-                        })
-                    ) {
-                        return corrupt(format!(
-                            "Vec debug format for type {} does not use a byte allocation pointer",
-                            id.0
-                        ));
-                    }
                     for (path, field) in [(length, "length"), (capacity, "capacity")] {
-                        let target = format_path_target(
+                        check_usize_format(
                             self,
                             id,
                             def,
                             path,
                             &format!("Vec {field} debug format"),
                         )?;
-                        if !matches!(
-                            self.types.get(target),
-                            Some(TypeDef::Base {
-                                size: crate::bundle::POINTER_SIZE,
-                                encoding: crate::raw_types::Encoding::Unsigned,
-                                ..
-                            })
-                        ) {
-                            return corrupt(format!(
-                                "Vec debug format for type {} has a non-usize {field}",
-                                id.0
-                            ));
-                        }
                     }
+                }
+                crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::Str { pointer, length },
+                ) => {
+                    check_byte_pointer_format(
+                        self,
+                        id,
+                        def,
+                        &[*pointer],
+                        "str pointer debug format",
+                    )?;
+                    check_usize_format(
+                        self,
+                        id,
+                        def,
+                        &[*length],
+                        "str length debug format",
+                    )?;
+                }
+                crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::String {
+                        pointer,
+                        length,
+                        capacity,
+                    },
+                ) => {
+                    check_byte_pointer_format(
+                        self,
+                        id,
+                        def,
+                        pointer,
+                        "String pointer debug format",
+                    )?;
+                    check_usize_format(
+                        self,
+                        id,
+                        def,
+                        length,
+                        "String length debug format",
+                    )?;
+                    check_usize_format(
+                        self,
+                        id,
+                        def,
+                        capacity,
+                        "String capacity debug format",
+                    )?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::BTreeMap {

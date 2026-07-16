@@ -791,6 +791,40 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 visited,
             );
         }
+        if let DebugFormat::Known(KnownFormat::Str {
+            pointer_offset,
+            length,
+            length_offset,
+        }) = format
+        {
+            return write_utf8_string(
+                f,
+                info.bytes,
+                pointer_offset,
+                length,
+                length_offset,
+                None,
+                proc,
+            );
+        }
+        if let DebugFormat::Known(KnownFormat::String {
+            pointer_offset,
+            length,
+            length_offset,
+            capacity,
+            capacity_offset,
+        }) = format
+        {
+            return write_utf8_string(
+                f,
+                info.bytes,
+                pointer_offset,
+                length,
+                length_offset,
+                Some((capacity, capacity_offset)),
+                proc,
+            );
+        }
         if let DebugFormat::Known(format @ KnownFormat::BTreeMap { .. }) = format {
             return write_btree_map(
                 f,
@@ -816,6 +850,8 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::IpAddress { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Vec { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::Str { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::String { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::BTreeMap { .. }) => unreachable!(),
         };
         let start = offset as usize;
@@ -1169,6 +1205,47 @@ fn write_raw_waker_vtable<'a, T: DebugType<'a>>(
         write!(f, " ")?;
     }
     write!(f, "}}")
+}
+
+fn write_utf8_string<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    bytes: &[u8],
+    pointer_offset: u64,
+    length: T,
+    length_offset: u64,
+    capacity: Option<(T, u64)>,
+    proc: Option<&dyn ReadFromProc>,
+) -> fmt::Result {
+    let Some(len) = read_unsigned_at(bytes, length_offset, length.size()) else {
+        return write!(f, "<truncated string length>");
+    };
+    if let Some((capacity, offset)) = capacity {
+        let Some(capacity) = read_unsigned_at(bytes, offset, capacity.size()) else {
+            return write!(f, "<truncated String capacity>");
+        };
+        if len > capacity {
+            return write!(f, "<invalid String: length exceeds capacity>");
+        }
+    }
+    if len == 0 {
+        return write!(f, "\"\"");
+    }
+    let Some(pointer) = read_u64_at(bytes, pointer_offset) else {
+        return write!(f, "<truncated string pointer>");
+    };
+    if pointer == 0 {
+        return write!(f, "<invalid string: null data pointer>");
+    }
+    let Some(proc) = proc else {
+        return write!(f, "<target unavailable>");
+    };
+    let Ok(bytes) = proc.read_bytes(pointer, len) else {
+        return write!(f, "<unreadable string data>");
+    };
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return write!(f, "<invalid UTF-8 string>");
+    };
+    write!(f, "{text:?}")
 }
 
 #[allow(clippy::too_many_arguments)]

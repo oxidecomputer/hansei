@@ -140,6 +140,14 @@ pub enum KnownFormat {
         capacity: Vec<u32>,
         element: BundleTypeId,
     },
+    /// Display a `&str` as quoted, escaped UTF-8.
+    Str { pointer: u32, length: u32 },
+    /// Display an `alloc::string::String` as quoted, escaped UTF-8.
+    String {
+        pointer: Vec<u32>,
+        length: Vec<u32>,
+        capacity: Vec<u32>,
+    },
     /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
     /// its initialized key/value entries.
     ///

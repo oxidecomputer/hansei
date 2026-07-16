@@ -400,6 +400,24 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle.types.debug_formats.values().any(|format| matches!(
                 format,
                 exegesis::bundle::DebugFormat::Known(
+                    exegesis::bundle::KnownFormat::Str { .. }
+                )
+            )),
+            "{program}: no &str known-type format was extracted"
+        );
+        assert!(
+            bundle.types.debug_formats.values().any(|format| matches!(
+                format,
+                exegesis::bundle::DebugFormat::Known(
+                    exegesis::bundle::KnownFormat::String { .. }
+                )
+            )),
+            "{program}: no String known-type format was extracted"
+        );
+        assert!(
+            bundle.types.debug_formats.values().any(|format| matches!(
+                format,
+                exegesis::bundle::DebugFormat::Known(
                     exegesis::bundle::KnownFormat::BTreeMap { .. }
                 )
             )),

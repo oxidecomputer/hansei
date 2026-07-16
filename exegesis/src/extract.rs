@@ -1055,6 +1055,8 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| raw_waker_vtable_debug_format(reader, id))
         .or_else(|| function_pointer_debug_format(reader, id))
         .or_else(|| ip_address_debug_format(reader, id))
+        .or_else(|| str_debug_format(reader, id))
+        .or_else(|| string_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
@@ -1517,6 +1519,45 @@ fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
     }
     Some(DebugFormat::Known(crate::bundle::KnownFormat::IpAddress {
         octets: index as u32,
+    }))
+}
+
+fn str_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    if fq_name(reader, id).as_deref() != Some("&str") {
+        return None;
+    }
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
+    let (length, length_member) = unique_member(reader, &st.members, "length")?;
+    let RawType::Pointer(raw_pointer) = reader.canonical_type(pointer_member.type_id)? else {
+        return None;
+    };
+    if !is_unsigned_integer(reader, raw_pointer.target_type_id, 1)
+        || !is_unsigned_integer(reader, length_member.type_id, crate::bundle::POINTER_SIZE)
+    {
+        return None;
+    }
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::Str {
+        pointer: pointer as u32,
+        length: length as u32,
+    }))
+}
+
+fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    if fq_name(reader, id).as_deref() != Some("alloc::string::String") {
+        return None;
+    }
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let (vec_index, vec_member) = unique_member(reader, &st.members, "vec")?;
+    let layout = vec_debug_format(reader, vec_member.type_id)?;
+    if !is_unsigned_integer(reader, layout.element, 1) {
+        return None;
+    }
+    let prefix = [vec_index as u32];
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::String {
+        pointer: prefix.iter().copied().chain(layout.pointer).collect(),
+        length: prefix.iter().copied().chain(layout.length).collect(),
+        capacity: prefix.iter().copied().chain(layout.capacity).collect(),
     }))
 }
 
