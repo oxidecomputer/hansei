@@ -18,7 +18,14 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
     let first = ready_value().await;
     ready.send(()).expect("main waits for readiness");
     let second = park.await.unwrap_or(0);
-    count + first + second + labels.values().sum::<u32>()
+    count + first + second + label_for(&labels, u64::from(second))
+}
+
+// Keep the map live across `park.await` so its private layout remains part of
+// the fixture's async state on every target.
+#[inline(never)]
+fn label_for(labels: &BTreeMap<u64, u32>, key: u64) -> u32 {
+    labels.get(&key).copied().unwrap_or(0)
 }
 
 fn main() {
