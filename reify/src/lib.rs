@@ -721,6 +721,9 @@ fn write_display_value<'a, T: DebugType<'a>>(
     }
 
     if let Some(format) = ty.debug_format() {
+        if let DebugFormat::Known(KnownFormat::FunctionPointer) = format {
+            return write_function_pointer(f, info.bytes, proc);
+        }
         if let DebugFormat::Known(KnownFormat::DynPointer {
             pointer_offset,
             vtable,
@@ -771,6 +774,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 // address; it does not dereference it.
                 (value, offset, None, None)
             }
+            DebugFormat::Known(KnownFormat::FunctionPointer) => unreachable!(),
             DebugFormat::Known(KnownFormat::DynPointer { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
         };
@@ -1045,6 +1049,26 @@ struct VtableFunction {
     slot: u32,
     display: String,
     concrete: Option<String>,
+}
+
+fn write_function_pointer(
+    f: &mut fmt::Formatter<'_>,
+    bytes: &[u8],
+    proc: Option<&dyn ReadFromProc>,
+) -> fmt::Result {
+    let Some(address) = read_u64_at(bytes, 0) else {
+        return write!(f, "<truncated>");
+    };
+    if address == 0 {
+        return write!(f, "null");
+    }
+    write!(f, "0x{address:x}")?;
+    if let Some(symbol) = resolve_function_symbol(proc, address) {
+        write!(f, " -> {symbol}")?;
+    } else if proc.is_some() {
+        write!(f, " -> <unknown symbol>")?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

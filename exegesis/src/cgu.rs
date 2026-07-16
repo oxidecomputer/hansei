@@ -5,7 +5,7 @@ use crate::raw_types::{
 };
 use crate::{Error, FuncId, Result, Slice, TypeId, VarId};
 
-use foldhash::{HashMap, HashMapExt, HashSet};
+use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use gimli::{
     Attribute, AttributeValue, EntriesCursor, EvaluationResult, Reader, UnitRef, UnitSectionOffset,
 };
@@ -31,6 +31,9 @@ pub struct CodegenUnit<'dw> {
     pub namespaces: NamespaceTable<&'dw str>,
     /// All collected types, indexed by `TypeId`.
     pub types: HashMap<TypeId, RawType<&'dw str>>,
+    /// DIEs describing function signatures. Their details are deliberately
+    /// not modeled, but pointers targeting them are function pointers.
+    pub subroutine_types: HashSet<TypeId>,
     /// Static variables collected.
     pub variables: HashMap<VarId, RawStaticVariable<&'dw str>>,
     /// Type declarations (names mapped to their `TypeId`s).
@@ -106,6 +109,7 @@ impl<'dw> CodegenUnit<'dw> {
             ns: None,
             namespaces: NamespaceTable::new(),
             types: HashMap::new(),
+            subroutine_types: HashSet::new(),
             variables: HashMap::new(),
             decls: HashMap::new(),
             funcs: HashMap::new(),
@@ -137,6 +141,11 @@ impl<'dw> CodegenUnit<'dw> {
             gimli::DW_TAG_base_type => self.parse_base(unit, cursor),
             gimli::DW_TAG_namespace => self.parse_namespace(unit, cursor),
             gimli::DW_TAG_pointer_type => self.parse_pointer_type(unit, cursor),
+            gimli::DW_TAG_subroutine_type => {
+                let id = TypeId(entry.offset().to_unit_section_offset(unit));
+                self.subroutine_types.insert(id);
+                cursor.consume_entry()
+            }
             gimli::DW_TAG_structure_type => self.process_struct(unit, cursor),
             gimli::DW_TAG_union_type => self.process_union(unit, cursor),
             gimli::DW_TAG_array_type => self.parse_array_type(unit, cursor),

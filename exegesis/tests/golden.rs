@@ -324,6 +324,15 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         bundle.types.debug_formats.values().any(|format| matches!(
             format,
             exegesis::bundle::DebugFormat::Known(
+                exegesis::bundle::KnownFormat::FunctionPointer
+            )
+        )),
+        "{program}: no function-pointer known-type formats were extracted"
+    );
+    assert!(
+        bundle.types.debug_formats.values().any(|format| matches!(
+            format,
+            exegesis::bundle::DebugFormat::Known(
                 exegesis::bundle::KnownFormat::DynPointer { .. }
             )
         )),

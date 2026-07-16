@@ -127,6 +127,9 @@ pub enum DebugFormat<T> {
 pub enum KnownFormat<T> {
     /// Display an atomic's stored value without following pointer values.
     Atomic { value: T, offset: u64 },
+    /// Display a function pointer as an address and symbol without following
+    /// the address as data.
+    FunctionPointer,
     /// Display a Rust trait-object data pointer and vtable.
     DynPointer {
         pointer_offset: u64,
@@ -466,6 +469,9 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let (value, offset) = project(*self, value)?;
                 Some(DebugFormat::Known(KnownFormat::Atomic { value, offset }))
             }
+            BundleFormat::Known(BundleKnownFormat::FunctionPointer) => {
+                Some(DebugFormat::Known(KnownFormat::FunctionPointer))
+            }
             BundleFormat::Known(BundleKnownFormat::DynPointer {
                 pointer,
                 vtable,
@@ -726,6 +732,8 @@ mod bundle_tests {
     const DYN_TRAIT: BundleTypeId = BundleTypeId(21);
     const DYN_TRAIT_PTR: BundleTypeId = BundleTypeId(22);
     const RAW_WAKER_VTABLE: BundleTypeId = BundleTypeId(23);
+    const FUNCTION_TARGET: BundleTypeId = BundleTypeId(24);
+    const FUNCTION_PTR: BundleTypeId = BundleTypeId(25);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -747,6 +755,7 @@ mod bundle_tests {
         let (fatn, pointern, vtablen) = (s("FatPtr"), s("pointer"), s("vtable"));
         let dyn_traitn = s("dyn app::Trait");
         let raw_waker_vtablen = s("core::task::wake::RawWakerVTable");
+        let unresolvedn = s("<unresolved>");
         let (clonen, waken, wake_by_refn, dropn) =
             (s("clone"), s("wake"), s("wake_by_ref"), s("drop"));
         let (atomicn, storagen, vn) = (s("Atomic<u32>"), s("AtomicStorage<u32>"), s("v"));
@@ -844,6 +853,8 @@ mod bundle_tests {
                     m(dropn, PTR, 24),
                 ],
             },
+            TypeDef::Opaque { name: unresolvedn, size: None },
+            TypeDef::Pointer { name: None, target: FUNCTION_TARGET },
         ];
 
         let b = Bundle {
@@ -883,6 +894,9 @@ mod bundle_tests {
                         wake_by_ref: 2,
                         drop: 3,
                     }),
+                ), (
+                    FUNCTION_PTR,
+                    BundleDebugFormat::Known(BundleKnownFormat::FunctionPointer),
                 )]),
                 name_index: vec![],
             },
@@ -1251,5 +1265,34 @@ mod bundle_tests {
                 "}"
             )
         );
+    }
+
+    #[test]
+    fn test_function_pointer_resolves_symbol_without_dereference() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                panic!("function pointer at {addr:#x} must not be dereferenced")
+            }
+
+            fn function_symbol(&self, addr: u64) -> Option<String> {
+                (addr == 0x5000).then(|| "app::callback".to_owned())
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = 0x5000u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(FUNCTION_PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "0x5000 -> app::callback"
+        );
+        assert_eq!(format!("{}", value.display()), "0x5000");
+
+        let null = 0u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(FUNCTION_PTR).unwrap(), 0, &null);
+        assert_eq!(format!("{}", value.display_from_target(&Reader, 8)), "null");
     }
 }

@@ -868,11 +868,19 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
 fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     dyn_pointer_debug_format(reader, id)
         .or_else(|| raw_waker_vtable_debug_format(reader, id))
+        .or_else(|| function_pointer_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
         .or_else(|| non_null_debug_format(reader, id))
         .or_else(|| atomic_debug_format(reader, id))
+}
+
+fn function_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Pointer(pointer) = reader.canonical_type(id)? else { return None };
+    reader
+        .is_subroutine_type(pointer.target_type_id)
+        .then_some(DebugFormat::Known(crate::bundle::KnownFormat::FunctionPointer))
 }
 
 fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {

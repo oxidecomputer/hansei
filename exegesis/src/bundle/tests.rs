@@ -371,6 +371,16 @@ fn test_validate_rejects_bad_debug_format_path() {
 }
 
 #[test]
+fn test_validate_rejects_function_format_on_non_pointer() {
+    let mut b = tiny_bundle();
+    b.types.debug_formats.insert(
+        BundleTypeId(0),
+        DebugFormat::Known(KnownFormat::FunctionPointer),
+    );
+    assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
+}
+
+#[test]
 fn test_validate_rejects_provenance_length_mismatch() {
     let mut b = tiny_bundle();
     b.provenance.entries.push(Provenance { decl: None, kind: FutureKind::Manual });

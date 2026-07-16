@@ -107,6 +107,9 @@ pub enum KnownFormat {
     /// Display an atomic's stored value. The path walks zero or more
     /// concrete struct/union members from the atomic to its value type.
     Atomic { value: Vec<u32> },
+    /// Display a pointer value as a function address and symbol. Function
+    /// pointers must never be followed as data pointers.
+    FunctionPointer,
     /// Display a Rust trait-object wide pointer and its vtable semantically.
     ///
     /// `pointer` and `vtable` index members of the containing aggregate. The
