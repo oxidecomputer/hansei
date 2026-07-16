@@ -866,7 +866,7 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
 /// generic parameters are still available; the bundle records only resolved
 /// member indices.
 fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    unsafe_cell_debug_format(reader, id)
+    unsafe_cell_debug_format(reader, id).or_else(|| atomic_debug_format(reader, id))
 }
 
 fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
@@ -892,6 +892,74 @@ fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
         return None;
     }
     Some(DebugFormat::Transparent { member: index as u32 })
+}
+
+fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
+    let name = st.name.map(|name| reader.strings.get(name))?;
+    if namespace != "core::sync::atomic" || !name.starts_with("Atomic<") || !name.ends_with('>') {
+        return None;
+    }
+
+    let [param] = st.template_params.as_ref() else { return None };
+    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
+        return None;
+    }
+    let target = reader.canonicalize(param.type_id);
+    let mut paths = Vec::new();
+    find_zero_offset_paths(
+        reader,
+        reader.canonicalize(id),
+        target,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut paths,
+    );
+    let [value] = paths.as_slice() else { return None };
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::Atomic {
+        value: value.clone(),
+    }))
+}
+
+/// Find all short, acyclic member paths from `current` to `target` whose
+/// members remain at offset zero. Atomic storage wrappers are layout-only;
+/// requiring one unique path prevents us from guessing when rustc changes
+/// their representation.
+fn find_zero_offset_paths(
+    reader: &DwReader<'_>,
+    current: TypeId,
+    target: TypeId,
+    path: &mut Vec<u32>,
+    seen: &mut Vec<TypeId>,
+    found: &mut Vec<Vec<u32>>,
+) {
+    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
+        return;
+    }
+    if current == target {
+        found.push(path.clone());
+        return;
+    }
+    seen.push(current);
+    let members = match reader.canonical_type(current) {
+        Some(RawType::Struct(st)) => st.members.as_ref(),
+        Some(RawType::Union(u)) => u.members.as_ref(),
+        _ => &[],
+    };
+    for (index, member) in members.iter().enumerate().filter(|(_, member)| member.offset == 0) {
+        path.push(index as u32);
+        find_zero_offset_paths(
+            reader,
+            reader.canonicalize(member.type_id),
+            target,
+            path,
+            seen,
+            found,
+        );
+        path.pop();
+    }
+    seen.pop();
 }
 
 /// Locate the named statics (§5.4) by DWARF shape, not by hardcoded
