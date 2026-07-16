@@ -583,7 +583,7 @@ fn ctf_check_variant<'a>(
 #[cfg(test)]
 mod bundle_tests {
     use super::{DebugType, TypeKind};
-    use crate::TypeInfoRef;
+    use crate::{ReadFromProc, TypeInfoRef};
 
     use exegesis::Encoding;
     use exegesis::bundle::{
@@ -603,6 +603,8 @@ mod bundle_tests {
     const WRAP: BundleTypeId = BundleTypeId(8);
     const PTR: BundleTypeId = BundleTypeId(9);
     const ARR: BundleTypeId = BundleTypeId(10);
+    const NODE: BundleTypeId = BundleTypeId(11);
+    const NODE_PTR: BundleTypeId = BundleTypeId(12);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -620,6 +622,7 @@ mod bundle_tests {
         let (msgn, an, bn, cn) = (s("Msg"), s("A"), s("B"), s("C"));
         let (optn, nonen, somen) = (s("Opt"), s("None"), s("Some"));
         let (wrapn, innern) = (s("Wrap"), s("inner"));
+        let (noden, valuen, nextn) = (s("Node"), s("value"), s("next"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -661,6 +664,12 @@ mod bundle_tests {
             TypeDef::Struct { name: wrapn, size: 8, members: vec![m(innern, POINT, 0)] },
             TypeDef::Pointer { name: None, target: POINT },
             TypeDef::Array { elem: U32, count: 3 },
+            TypeDef::Struct {
+                name: noden,
+                size: 16,
+                members: vec![m(valuen, U32, 0), m(nextn, NODE_PTR, 8)],
+            },
+            TypeDef::Pointer { name: None, target: NODE },
         ];
 
         let b = Bundle {
@@ -811,5 +820,35 @@ mod bundle_tests {
             .map(|e| format!("{}", e.display()))
             .collect();
         assert_eq!(shown, ["10", "20", "30"]);
+    }
+
+    #[test]
+    fn test_target_display_recurses_through_pointers() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                let (value, next) = match addr {
+                    0x1000 => (1u32, 0x2000u64),
+                    0x2000 => (2u32, 0u64),
+                    _ => return Err(crate::Error::invalid_addr(addr)),
+                };
+                let mut bytes = vec![0; 16];
+                bytes[..4].copy_from_slice(&value.to_le_bytes());
+                bytes[8..].copy_from_slice(&next.to_le_bytes());
+                Ok(bytes)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = 0x1000u64.to_le_bytes();
+        let root = TypeInfoRef::new(v.ty(NODE_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", root.display_from_target(&Reader, 8));
+        assert!(shown.contains("value: 1"), "{shown}");
+        assert!(shown.contains("value: 2"), "{shown}");
+
+        let shallow = format!("{:#}", root.display_from_target(&Reader, 1));
+        assert_eq!(shallow, "0x1000 -> ...");
     }
 }
