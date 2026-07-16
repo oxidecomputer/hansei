@@ -31,7 +31,7 @@ use crate::view::{DwView, Func, SourceLocView};
 use crate::{DwReader, Encoding, TypeId};
 use crate::symbols::normalized_value_index;
 
-use object::{Object, ObjectSymbol};
+use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 use sha2::Digest;
 use tracing::{debug, warn};
 
@@ -128,6 +128,15 @@ pub struct ExtractStats {
     pub include_roots: usize,
     /// `--include-type` names that matched nothing.
     pub include_missing: Vec<String>,
+    /// Candidate concrete trait-object types recovered from realized vtables
+    /// in the debug executable.
+    pub vtable_type_hints: usize,
+    /// Concrete trait-object layouts added as bundle roots.
+    pub vtable_type_roots: usize,
+    /// Vtable type hints with no matching DWARF type and byte size.
+    pub vtable_types_missing: usize,
+    /// Vtable type hints that matched multiple distinct DWARF layouts.
+    pub vtable_types_ambiguous: usize,
     /// Total types emitted into the bundle.
     pub types_emitted: usize,
     /// Emitted `Opaque` entries (placeholders included).
@@ -165,6 +174,11 @@ impl fmt::Display for ExtractStats {
         writeln!(f, "  opaque:                 {}", self.opaque_types)?;
         writeln!(f, "  unresolved refs:        {}", self.unresolved_refs)?;
         writeln!(f, "  synthesized enum reprs: {}", self.cenum_synth_repr)?;
+        writeln!(f, "vtable concrete types:")?;
+        writeln!(f, "  hints:                  {}", self.vtable_type_hints)?;
+        writeln!(f, "  rooted:                 {}", self.vtable_type_roots)?;
+        writeln!(f, "  missing:                {}", self.vtable_types_missing)?;
+        writeln!(f, "  ambiguous:              {}", self.vtable_types_ambiguous)?;
         writeln!(
             f,
             "include roots:            {} resolved",
@@ -212,6 +226,160 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct VtableTypeHint {
+    name: String,
+    size: u64,
+}
+
+/// Find concrete types named by vtables that are actually present in the
+/// debug executable. A Rust vtable begins with drop glue, size, and align;
+/// the first method follows that header. Function symbols identify the
+/// concrete type, while size and align keep ordinary function tables from
+/// becoming roots accidentally.
+fn discover_vtable_types<'data, O: Object<'data>>(obj: &O) -> Vec<VtableTypeHint> {
+    let mut text_addresses = BTreeSet::new();
+    let mut concrete_by_address: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+
+    for symbol in obj.symbols().chain(obj.dynamic_symbols()) {
+        let address = symbol.address();
+        if address == 0 {
+            continue;
+        }
+        if symbol.kind() == SymbolKind::Text {
+            text_addresses.insert(address);
+        }
+        let Some(name) = symbol.name().ok() else { continue };
+        let Ok(demangled) = rustc_demangle::try_demangle(strip(name)) else {
+            continue;
+        };
+        let display = format!("{demangled:#}");
+        let Some(concrete) = crate::symbols::concrete_type_from_vtable_symbol(&display) else {
+            continue;
+        };
+        concrete_by_address
+            .entry(address)
+            .or_default()
+            .insert(concrete.to_owned());
+    }
+
+    let mut hints = BTreeSet::new();
+    for section in obj.sections() {
+        if !matches!(section.kind(), SectionKind::Data | SectionKind::ReadOnlyData) {
+            continue;
+        }
+        let Ok(data) = section.uncompressed_data() else { continue };
+        scan_vtable_section(
+            data.as_ref(),
+            section.address(),
+            obj.is_little_endian(),
+            &text_addresses,
+            &concrete_by_address,
+            &mut hints,
+        );
+    }
+    hints.into_iter().collect()
+}
+
+fn scan_vtable_section(
+    data: &[u8],
+    address: u64,
+    little_endian: bool,
+    text_addresses: &BTreeSet<u64>,
+    concrete_by_address: &BTreeMap<u64, BTreeSet<String>>,
+    hints: &mut BTreeSet<VtableTypeHint>,
+) {
+    let first = ((8 - (address & 7)) & 7) as usize;
+    if data.len().saturating_sub(first) < 24 {
+        return;
+    }
+
+    for offset in (first..=data.len() - 24).step_by(8) {
+        let drop = read_object_word(&data[offset..offset + 8], little_endian);
+        let size = read_object_word(&data[offset + 8..offset + 16], little_endian);
+        let align = read_object_word(&data[offset + 16..offset + 24], little_endian);
+        if align == 0 || !align.is_power_of_two() || align > (1 << 30) {
+            continue;
+        }
+        if drop != 0 && !text_addresses.contains(&drop) {
+            continue;
+        }
+
+        let mut concrete = BTreeSet::new();
+        if let Some(names) = concrete_by_address.get(&drop) {
+            concrete.extend(names.iter().cloned());
+        }
+        if let Some(method_bytes) = data.get(offset + 24..offset + 32) {
+            let method = read_object_word(method_bytes, little_endian);
+            if let Some(names) = concrete_by_address.get(&method) {
+                concrete.extend(names.iter().cloned());
+            }
+        }
+        hints.extend(concrete.into_iter().map(|name| VtableTypeHint { name, size }));
+    }
+}
+
+fn read_object_word(bytes: &[u8], little_endian: bool) -> u64 {
+    let bytes: [u8; 8] = bytes.try_into().expect("object word must be eight bytes");
+    if little_endian {
+        u64::from_le_bytes(bytes)
+    } else {
+        u64::from_be_bytes(bytes)
+    }
+}
+
+fn resolve_vtable_type_hints(
+    reader: &DwReader<'_>,
+    hints: &[VtableTypeHint],
+    stats: &mut ExtractStats,
+) -> BTreeSet<TypeId> {
+    let mut by_name: BTreeMap<String, Vec<(TypeId, u64)>> = BTreeMap::new();
+    for (id, _) in reader.canonical_types() {
+        let Some(name) = fq_name(reader, id) else { continue };
+        let Some(size) = raw_type_size(reader, id) else { continue };
+        by_name
+            .entry(crate::symbols::normalized_rust_type_name(&name))
+            .or_default()
+            .push((id, size));
+    }
+
+    stats.vtable_type_hints = hints.len();
+    let mut roots = BTreeSet::new();
+    for hint in hints {
+        let name = crate::symbols::normalized_rust_type_name(&hint.name);
+        let Some(candidates) = by_name.get(&name) else {
+            stats.vtable_types_missing += 1;
+            continue;
+        };
+        let candidates: BTreeSet<_> = candidates
+            .iter()
+            .filter(|(_, size)| *size == hint.size)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut candidates = candidates.into_iter();
+        match (candidates.next(), candidates.next()) {
+            (Some(id), None) => {
+                roots.insert(id);
+            }
+            (None, _) => stats.vtable_types_missing += 1,
+            (Some(_), Some(_)) => stats.vtable_types_ambiguous += 1,
+        }
+    }
+    stats.vtable_type_roots = roots.len();
+    roots
+}
+
+fn raw_type_size(reader: &DwReader<'_>, id: TypeId) -> Option<u64> {
+    match reader.canonical_type(id)? {
+        RawType::Base(base) => Some(base.size),
+        RawType::Pointer(_) => Some(8),
+        RawType::Enum(en) => Some(en.size),
+        RawType::Struct(st) => Some(st.size),
+        RawType::Union(union) => Some(union.size),
+        RawType::Array(array) => raw_type_size(reader, array.elem_type_id)?.checked_mul(array.count),
+    }
+}
 
 /// Extract a bundle from a debug binary (or any DWARF-bearing object).
 pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, ExtractStats)> {
@@ -265,7 +433,9 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
         .filter_map(|s| s.name().ok())
         .collect();
 
-    extract_from_view(&view, &symbols, ident, opts)
+    let vtable_types = discover_vtable_types(&obj);
+
+    extract_from_view_with_vtable_types(&view, &symbols, ident, opts, &vtable_types)
 }
 
 /// Extract a bundle from an already-parsed DWARF view. Split from
@@ -275,6 +445,16 @@ pub fn extract_from_view(
     symbols: &[&str],
     ident: BinaryIdent,
     opts: &ExtractOptions,
+) -> Result<(Bundle, ExtractStats)> {
+    extract_from_view_with_vtable_types(view, symbols, ident, opts, &[])
+}
+
+fn extract_from_view_with_vtable_types(
+    view: &DwView<'_>,
+    symbols: &[&str],
+    ident: BinaryIdent,
+    opts: &ExtractOptions,
+    vtable_types: &[VtableTypeHint],
 ) -> Result<(Bundle, ExtractStats)> {
     let mut stats = ExtractStats::default();
     let reader = view.collector();
@@ -582,6 +762,8 @@ pub fn extract_from_view(
         }
     }
 
+    let vtable_type_ids = resolve_vtable_type_hints(reader, vtable_types, &mut stats);
+
     // --- Phase 3: transitive closure and emission (§7.3). ---
 
     let mut em = Emitter::new(reader);
@@ -646,6 +828,9 @@ pub fn extract_from_view(
         .collect();
 
     for id in include_ids {
+        em.emit(id);
+    }
+    for id in vtable_type_ids {
         em.emit(id);
     }
 
@@ -2016,10 +2201,13 @@ impl<'a> Emitter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_dyn_tail, match_static_symbol, StaticRole};
+    use super::{
+        has_dyn_tail, match_static_symbol, scan_vtable_section, StaticRole, VtableTypeHint,
+    };
     use crate::raw_types::{RawMember, RawStruct, RawType};
     use crate::{DwReader, TypeId};
     use gimli::{DebugInfoOffset, UnitSectionOffset};
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn type_id(offset: usize) -> TypeId {
         TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
@@ -2074,6 +2262,40 @@ mod tests {
         assert!(has_dyn_tail(&reader, inner_id, &mut Vec::new()));
         assert!(has_dyn_tail(&reader, outer_id, &mut Vec::new()));
         assert!(!has_dyn_tail(&reader, plain_id, &mut Vec::new()));
+    }
+
+    #[test]
+    fn test_scan_vtable_section_uses_drop_and_method_symbols() {
+        let drop = 0x1000;
+        let method = 0x2000;
+        let text_addresses = BTreeSet::from([drop, method]);
+        let concrete_by_address = BTreeMap::from([
+            (drop, BTreeSet::from(["app::Dropped".to_owned()])),
+            (method, BTreeSet::from(["app::NullDrop".to_owned()])),
+        ]);
+        let data: Vec<u8> = [drop, 24, 8, 0, 0, 16, 8, method]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let mut hints = BTreeSet::new();
+
+        scan_vtable_section(
+            &data,
+            0,
+            true,
+            &text_addresses,
+            &concrete_by_address,
+            &mut hints,
+        );
+
+        assert!(hints.contains(&VtableTypeHint {
+            name: "app::Dropped".to_owned(),
+            size: 24,
+        }));
+        assert!(hints.contains(&VtableTypeHint {
+            name: "app::NullDrop".to_owned(),
+            size: 16,
+        }));
     }
 
     // v0-mangled symbols observed in an illumos futurelock release build,

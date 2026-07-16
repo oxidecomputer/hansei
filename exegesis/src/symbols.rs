@@ -99,6 +99,12 @@ pub fn rust_type_names_equal(left: &str, right: &str) -> bool {
         .eq(right.chars().filter(|ch| !ch.is_whitespace()))
 }
 
+/// Produce the comparison key used for Rust type names recovered through
+/// different formatting paths.
+pub fn normalized_rust_type_name(name: &str) -> String {
+    name.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
