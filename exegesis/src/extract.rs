@@ -866,7 +866,9 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
 /// generic parameters are still available; the bundle records only resolved
 /// member indices.
 fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    unsafe_cell_debug_format(reader, id).or_else(|| atomic_debug_format(reader, id))
+    unsafe_cell_debug_format(reader, id)
+        .or_else(|| non_null_debug_format(reader, id))
+        .or_else(|| atomic_debug_format(reader, id))
 }
 
 fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
@@ -886,6 +888,37 @@ fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
         member.offset == 0
             && member.name.map(|name| reader.strings.get(name)) == Some("value")
             && reader.canonicalize(member.type_id) == target
+    });
+    let (index, _) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(DebugFormat::Transparent { member: index as u32 })
+}
+
+fn non_null_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
+    let name = st.name.map(|name| reader.strings.get(name))?;
+    if namespace != "core::ptr::non_null" || !name.starts_with("NonNull<") || !name.ends_with('>') {
+        return None;
+    }
+
+    let [param] = st.template_params.as_ref() else { return None };
+    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
+        return None;
+    }
+    let target = reader.canonicalize(param.type_id);
+    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
+        if member.offset != 0
+            || member.name.map(|name| reader.strings.get(name)) != Some("pointer")
+        {
+            return false;
+        }
+        let Some(RawType::Pointer(pointer)) = reader.canonical_type(member.type_id) else {
+            return false;
+        };
+        reader.canonicalize(pointer.target_type_id) == target
     });
     let (index, _) = matches.next()?;
     if matches.next().is_some() {
