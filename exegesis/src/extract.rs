@@ -888,8 +888,7 @@ fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
         let Some(RawType::Pointer(pointer)) = reader.canonical_type(member.type_id) else {
             return false;
         };
-        fq_name(reader, pointer.target_type_id)
-            .is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn "))
+        has_dyn_tail(reader, pointer.target_type_id, &mut Vec::new())
     });
     let (pointer_index, _) = data_matches.next()?;
     if data_matches.next().is_some() {
@@ -928,6 +927,34 @@ fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
         size: 1,
         align: 2,
     }))
+}
+
+/// Whether `id` is a `dyn Trait` type or an unsized aggregate whose final
+/// field recursively contains that dyn tail, such as `ArcInner<dyn Trait>`.
+/// Rust wide pointers carry metadata for either shape.
+fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bool {
+    let id = reader.canonicalize(id);
+    if seen.len() >= 8 || seen.contains(&id) {
+        return false;
+    }
+    let Some(raw) = reader.canonical_type(id) else {
+        return false;
+    };
+    if fq_name(reader, id)
+        .is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn "))
+    {
+        return true;
+    }
+    let RawType::Struct(st) = raw else {
+        return false;
+    };
+    let Some(tail) = st.members.last() else {
+        return false;
+    };
+    seen.push(id);
+    let found = has_dyn_tail(reader, tail.type_id, seen);
+    seen.pop();
+    found
 }
 
 fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
@@ -1649,7 +1676,65 @@ impl<'a> Emitter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{match_static_symbol, StaticRole};
+    use super::{has_dyn_tail, match_static_symbol, StaticRole};
+    use crate::raw_types::{RawMember, RawStruct, RawType};
+    use crate::{DwReader, TypeId};
+    use gimli::{DebugInfoOffset, UnitSectionOffset};
+
+    fn type_id(offset: usize) -> TypeId {
+        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    fn empty_struct(name: crate::StrId) -> RawType<crate::StrId> {
+        RawStruct {
+            name: Some(name),
+            namespace: None,
+            size: 0,
+            members: Box::new([]),
+            template_params: Box::new([]),
+            source_loc: None,
+        }
+        .into()
+    }
+
+    fn wrapper(name: crate::StrId, tail: TypeId) -> RawType<crate::StrId> {
+        RawStruct {
+            name: Some(name),
+            namespace: None,
+            size: 16,
+            members: Box::new([RawMember {
+                name: None,
+                offset: 16,
+                type_id: tail,
+                source_loc: None,
+            }]),
+            template_params: Box::new([]),
+            source_loc: None,
+        }
+        .into()
+    }
+
+    #[test]
+    fn test_has_dyn_tail_through_unsized_wrapper() {
+        let mut reader = DwReader::default();
+        let dyn_id = type_id(1);
+        let inner_id = type_id(2);
+        let outer_id = type_id(3);
+        let plain_id = type_id(4);
+        let dyn_name = reader.strings.intern("dyn app::Trait");
+        let inner_name = reader.strings.intern("alloc::sync::ArcInner<dyn app::Trait>");
+        let outer_name = reader.strings.intern("app::Outer<alloc::sync::ArcInner<dyn app::Trait>>");
+        let plain_name = reader.strings.intern("app::Plain");
+        reader.types.insert(dyn_id, empty_struct(dyn_name));
+        reader.types.insert(inner_id, wrapper(inner_name, dyn_id));
+        reader.types.insert(outer_id, wrapper(outer_name, inner_id));
+        reader.types.insert(plain_id, empty_struct(plain_name));
+
+        assert!(has_dyn_tail(&reader, dyn_id, &mut Vec::new()));
+        assert!(has_dyn_tail(&reader, inner_id, &mut Vec::new()));
+        assert!(has_dyn_tail(&reader, outer_id, &mut Vec::new()));
+        assert!(!has_dyn_tail(&reader, plain_id, &mut Vec::new()));
+    }
 
     // v0-mangled symbols observed in an illumos futurelock release build,
     // whose DWARF omits the `DW_TAG_variable` DIE for these statics.
