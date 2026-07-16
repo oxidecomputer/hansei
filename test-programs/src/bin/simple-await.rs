@@ -19,6 +19,8 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
     let values = vec![5u32, 8, 13];
     let ipv4 = Ipv4Addr::new(192, 0, 2, 1);
     let ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+    let borrowed = "borrowed\ntext";
+    let owned = String::from("owned\ttext");
     let first = ready_value().await;
     ready.send(()).expect("main waits for readiness");
     let second = park.await.unwrap_or(0);
@@ -29,6 +31,8 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
         + values[0]
         + u32::from(ipv4.octets()[3])
         + u32::from(ipv6.octets()[15])
+        + borrowed.len() as u32
+        + owned.len() as u32
 }
 
 // Keep the map live across `park.await` so its private layout remains part of
