@@ -1487,7 +1487,8 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
             let Some(display) = resolve_function_symbol(Some(proc), address) else {
                 continue;
             };
-            let concrete = concrete_type_from_symbol(&display);
+            let concrete = exegesis::symbols::concrete_type_from_vtable_symbol(&display)
+                .map(str::to_owned);
             functions.push(VtableFunction { slot, display, concrete });
         }
     }
@@ -1685,55 +1686,6 @@ fn infer_concrete_type<'a, T: DebugType<'a>>(
         return None;
     }
     Some(candidate)
-}
-
-fn concrete_type_from_symbol(symbol: &str) -> Option<String> {
-    for marker in ["core::ptr::drop_glue::<", "core::ptr::drop_in_place::<"] {
-        if let Some(rest) = symbol.strip_prefix(marker).and_then(|rest| rest.strip_suffix('>')) {
-            return Some(rest.to_owned());
-        }
-    }
-
-    let rest = symbol.strip_prefix('<')?;
-    let mut depth = 1usize;
-    for (index, ch) in rest.char_indices() {
-        match ch {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-        if depth == 1 && rest[index..].starts_with(" as ") {
-            return Some(rest[..index].to_owned());
-        }
-        if depth == 0 {
-            break;
-        }
-    }
-    None
-}
-
-#[cfg(test)]
-mod vtable_symbol_tests {
-    use super::concrete_type_from_symbol;
-
-    #[test]
-    fn concrete_type_from_drop_glue() {
-        assert_eq!(
-            concrete_type_from_symbol("core::ptr::drop_glue::<app::Thing<u64>>").as_deref(),
-            Some("app::Thing<u64>")
-        );
-    }
-
-    #[test]
-    fn concrete_type_from_trait_method_with_nested_generics() {
-        assert_eq!(
-            concrete_type_from_symbol(
-                "<app::Thing<alloc::vec::Vec<u8>> as app::Trait>::method"
-            )
-            .as_deref(),
-            Some("app::Thing<alloc::vec::Vec<u8>>")
-        );
-    }
 }
 
 fn write_struct_fields<'a, T: DebugType<'a>>(

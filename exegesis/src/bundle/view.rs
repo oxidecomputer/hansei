@@ -136,7 +136,14 @@ impl<'a> BundleType<'a> {
             .types
             .name_index
             .iter()
-            .filter(|&&(r, _)| self.bundle.strings.get(r) == Some(name))
+            .filter(|&&(r, _)| {
+                self.bundle
+                    .strings
+                    .get(r)
+                    .is_some_and(|candidate| {
+                        crate::symbols::rust_type_names_equal(candidate, name)
+                    })
+            })
             .map(|&(_, id)| self.at(id).size());
         let size = sizes.next()?;
         sizes.all(|candidate| candidate == size).then_some(size)
@@ -150,7 +157,14 @@ impl<'a> BundleType<'a> {
             .types
             .name_index
             .iter()
-            .filter(|&&(r, _)| self.bundle.strings.get(r) == Some(name))
+            .filter(|&&(r, _)| {
+                self.bundle
+                    .strings
+                    .get(r)
+                    .is_some_and(|candidate| {
+                        crate::symbols::rust_type_names_equal(candidate, name)
+                    })
+            })
             .map(|&(_, id)| id);
         let id = ids.next()?;
         ids.all(|candidate| candidate == id).then(|| self.at(id))
