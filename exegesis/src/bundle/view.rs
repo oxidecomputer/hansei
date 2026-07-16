@@ -142,6 +142,20 @@ impl<'a> BundleType<'a> {
         sizes.all(|candidate| candidate == size).then_some(size)
     }
 
+    /// The unique type associated with a fully-qualified name in this
+    /// bundle. Conflicting same-named layouts make the lookup ambiguous.
+    pub fn type_by_name(&self, name: &str) -> Option<BundleType<'a>> {
+        let mut ids = self
+            .bundle
+            .types
+            .name_index
+            .iter()
+            .filter(|&&(r, _)| self.bundle.strings.get(r) == Some(name))
+            .map(|&(_, id)| id);
+        let id = ids.next()?;
+        ids.all(|candidate| candidate == id).then(|| self.at(id))
+    }
+
     /// The underlying definition.
     ///
     /// Panics if the id is out of range, which cannot happen for bundles

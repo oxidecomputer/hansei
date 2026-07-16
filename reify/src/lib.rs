@@ -746,6 +746,8 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 depth,
                 max_depth,
                 proc,
+                visited,
+                hex_integers,
             );
         }
         if let DebugFormat::Known(KnownFormat::RawWakerVTable {
@@ -1464,6 +1466,8 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
     depth: usize,
     max_depth: usize,
     proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
 ) -> fmt::Result {
     let Some(pointer_address) = read_u64_at(info.bytes, pointer_offset) else {
         return write!(f, "<truncated>");
@@ -1489,6 +1493,7 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
     }
 
     let concrete = infer_concrete_type(info.ty, words.as_deref(), size_slot, &functions);
+    let concrete_ty = concrete.as_deref().and_then(|name| info.ty.type_by_name(name));
     let pretty = f.alternate();
     if let Some(name) = name.filter(|name| !name.is_empty()) {
         write!(f, "{name}")?;
@@ -1496,7 +1501,39 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
     write!(f, " {{")?;
 
     write_dyn_field_prefix(f, pretty, depth)?;
-    write!(f, "pointer: 0x{pointer_address:x},")?;
+    write!(f, "pointer: 0x{pointer_address:x}")?;
+    if let (Some(concrete_ty), Some(proc), Some(visited)) = (concrete_ty, proc, visited) {
+        let key = (pointer_address, concrete_ty.name());
+        if !visited.borrow_mut().insert(key) {
+            write!(f, " -> <cycle>")?;
+        } else {
+            match proc.read_bytes(pointer_address, concrete_ty.size()) {
+                Ok(pointee_bytes) => {
+                    let pointee = DisplayRecurse {
+                        info: TypeInfoRef {
+                            ty: concrete_ty,
+                            addr: pointer_address,
+                            bytes: &pointee_bytes,
+                            _marker: std::marker::PhantomData,
+                        },
+                        depth: depth + 1,
+                        max_depth,
+                        proc: Some(proc),
+                        visited: Some(visited),
+                        hex_integers,
+                    };
+                    if pretty {
+                        write!(f, " -> {pointee:#}")?;
+                    } else {
+                        write!(f, " -> {pointee}")?;
+                    }
+                }
+                Err(_) => write!(f, " -> <unreadable>")?,
+            }
+            visited.borrow_mut().remove(&key);
+        }
+    }
+    write!(f, ",")?;
     write_dyn_field_prefix(f, pretty, depth)?;
     write!(f, "concrete type: {},", concrete.as_deref().unwrap_or("<unknown>"))?;
     write_dyn_field_prefix(f, pretty, depth)?;
@@ -1838,6 +1875,8 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
             depth,
             max_depth,
             proc,
+            visited,
+            hex_integers,
         );
     }
 

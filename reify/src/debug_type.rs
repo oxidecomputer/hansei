@@ -111,6 +111,12 @@ pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug {
     fn size_by_name(&self, _name: &str) -> Option<u64> {
         None
     }
+
+    /// Look up an unambiguous concrete type by its fully-qualified name in
+    /// the same debug-info backend.
+    fn type_by_name(&self, _name: &str) -> Option<Self> {
+        None
+    }
 }
 
 /// Backend-independent, fully resolved custom display instructions.
@@ -612,6 +618,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
     fn size_by_name(&self, name: &str) -> Option<u64> {
         BundleType::size_by_name(self, name)
     }
+
+    fn type_by_name(&self, name: &str) -> Option<Self> {
+        BundleType::type_by_name(self, name)
+    }
 }
 
 impl<'a> DebugMember<'a> for BundleMember<'a> {
@@ -1096,7 +1106,7 @@ mod bundle_tests {
                         edge: vec![],
                     }),
                 )]),
-                name_index: vec![],
+                name_index: vec![(pointn, POINT)],
             },
             tasks: TaskTable::default(),
             dyn_futures: DynFutureTable::default(),
@@ -1394,11 +1404,14 @@ mod bundle_tests {
 
         impl ReadFromProc for Reader {
             fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                assert_eq!(addr, 0x3000);
-                Ok([0u64, 8, 8, 0x4000]
-                    .into_iter()
-                    .flat_map(u64::to_le_bytes)
-                    .collect())
+                match addr {
+                    0x1234 => Ok([1u32, 2].into_iter().flat_map(u32::to_le_bytes).collect()),
+                    0x3000 => Ok([0u64, 8, 8, 0x4000]
+                        .into_iter()
+                        .flat_map(u64::to_le_bytes)
+                        .collect()),
+                    _ => Err(crate::Error::invalid_addr(addr)),
+                }
             }
 
             fn function_symbol(&self, addr: u64) -> Option<String> {
@@ -1416,6 +1429,12 @@ mod bundle_tests {
         let bytes: Vec<u8> = [0x1234u64, 0x3000].into_iter().flat_map(u64::to_le_bytes).collect();
         let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        assert!(
+            shown.contains(
+                "pointer: 0x1234 -> Point {\n         x: 1,\n         y: 2,\n    },"
+            ),
+            "{shown}"
+        );
         assert!(shown.contains("concrete type: Point,"), "{shown}");
         assert!(shown.contains("drop_in_place: 0x0,"), "{shown}");
         assert!(
