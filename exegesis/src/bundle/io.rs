@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -320,6 +320,49 @@ impl Bundle {
                     if slots[0] == slots[1] || slots[0] == slots[2] || slots[1] == slots[2] {
                         return corrupt(format!(
                             "dyn-pointer debug format for type {} reuses a header slot",
+                            id.0
+                        ));
+                    }
+                }
+                crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::RawWakerVTable {
+                        clone,
+                        wake,
+                        wake_by_ref,
+                        drop,
+                    },
+                ) => {
+                    let members = match def {
+                        TypeDef::Struct { members, .. } => members,
+                        _ => {
+                            return corrupt(format!(
+                                "RawWakerVTable debug format for type {} is not a struct",
+                                id.0
+                            ));
+                        }
+                    };
+                    let fields = [*clone, *wake, *wake_by_ref, *drop];
+                    for &field in &fields {
+                        let Some(member) = members.get(field as usize) else {
+                            return corrupt(format!(
+                                "RawWakerVTable debug format for type {} has member index {field} out of range",
+                                id.0
+                            ));
+                        };
+                        if !matches!(self.types.get(member.ty), Some(TypeDef::Pointer { .. })) {
+                            return corrupt(format!(
+                                "RawWakerVTable debug format for type {} has a non-pointer member",
+                                id.0
+                            ));
+                        }
+                    }
+                    if fields
+                        .iter()
+                        .enumerate()
+                        .any(|(index, field)| fields[..index].contains(field))
+                    {
+                        return corrupt(format!(
+                            "RawWakerVTable debug format for type {} reuses a member",
                             id.0
                         ));
                     }

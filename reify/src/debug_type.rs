@@ -136,6 +136,14 @@ pub enum KnownFormat<T> {
         size: u32,
         align: u32,
     },
+    /// Display the fields of `core::task::RawWakerVTable` as function
+    /// addresses and symbols.
+    RawWakerVTable {
+        clone_offset: u64,
+        wake_offset: u64,
+        wake_by_ref_offset: u64,
+        drop_offset: u64,
+    },
 }
 
 /// A member (field) of a struct, union, or enum variant payload.
@@ -476,6 +484,23 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     align: *align,
                 }))
             }
+            BundleFormat::Known(BundleKnownFormat::RawWakerVTable {
+                clone,
+                wake,
+                wake_by_ref,
+                drop,
+            }) => {
+                let (_, clone_offset) = project(*self, &[*clone])?;
+                let (_, wake_offset) = project(*self, &[*wake])?;
+                let (_, wake_by_ref_offset) = project(*self, &[*wake_by_ref])?;
+                let (_, drop_offset) = project(*self, &[*drop])?;
+                Some(DebugFormat::Known(KnownFormat::RawWakerVTable {
+                    clone_offset,
+                    wake_offset,
+                    wake_by_ref_offset,
+                    drop_offset,
+                }))
+            }
         }
     }
 
@@ -700,6 +725,7 @@ mod bundle_tests {
     const LOOM_CELL: BundleTypeId = BundleTypeId(20);
     const DYN_TRAIT: BundleTypeId = BundleTypeId(21);
     const DYN_TRAIT_PTR: BundleTypeId = BundleTypeId(22);
+    const RAW_WAKER_VTABLE: BundleTypeId = BundleTypeId(23);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -720,6 +746,9 @@ mod bundle_tests {
         let (noden, valuen, nextn) = (s("Node"), s("value"), s("next"));
         let (fatn, pointern, vtablen) = (s("FatPtr"), s("pointer"), s("vtable"));
         let dyn_traitn = s("dyn app::Trait");
+        let raw_waker_vtablen = s("core::task::wake::RawWakerVTable");
+        let (clonen, waken, wake_by_refn, dropn) =
+            (s("clone"), s("wake"), s("wake_by_ref"), s("drop"));
         let (atomicn, storagen, vn) = (s("Atomic<u32>"), s("AtomicStorage<u32>"), s("v"));
         let atomic_ptrn = s("Atomic<*mut Point>");
         let (loom_atomicn, loom_celln, tuple0n) =
@@ -805,6 +834,16 @@ mod bundle_tests {
             },
             TypeDef::Struct { name: dyn_traitn, size: 0, members: vec![] },
             TypeDef::Pointer { name: None, target: DYN_TRAIT },
+            TypeDef::Struct {
+                name: raw_waker_vtablen,
+                size: 32,
+                members: vec![
+                    m(clonen, PTR, 0),
+                    m(waken, PTR, 8),
+                    m(wake_by_refn, PTR, 16),
+                    m(dropn, PTR, 24),
+                ],
+            },
         ];
 
         let b = Bundle {
@@ -836,6 +875,14 @@ mod bundle_tests {
                         size: 1,
                         align: 2,
                     }),
+                ), (
+                    RAW_WAKER_VTABLE,
+                    BundleDebugFormat::Known(BundleKnownFormat::RawWakerVTable {
+                        clone: 0,
+                        wake: 1,
+                        wake_by_ref: 2,
+                        drop: 3,
+                    }),
                 )]),
                 name_index: vec![],
             },
@@ -850,7 +897,7 @@ mod bundle_tests {
                 scheduler_handle: U32,
                 mt_handle: U32,
                 location: U32,
-                raw_waker_vtable: U32,
+                raw_waker_vtable: RAW_WAKER_VTABLE,
             },
             provenance: ProvenanceTable::default(),
         };
@@ -1163,5 +1210,46 @@ mod bundle_tests {
         assert!(shown.starts_with("Opt::Some {"), "{shown}");
         assert!(!shown.contains("FatPtr"), "{shown}");
         assert!(shown.contains("concrete type: <unknown>,"), "{shown}");
+    }
+
+    #[test]
+    fn test_raw_waker_vtable_resolves_function_symbols() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                panic!("function pointer at {addr:#x} must not be dereferenced")
+            }
+
+            fn function_symbol(&self, addr: u64) -> Option<String> {
+                match addr {
+                    0x1000 => Some("tokio::runtime::task::waker::clone_waker".to_owned()),
+                    0x2000 => Some("tokio::runtime::task::waker::wake_by_val".to_owned()),
+                    0x3000 => Some("tokio::runtime::task::waker::wake_by_ref".to_owned()),
+                    0x4000 => Some("tokio::runtime::task::waker::drop_waker".to_owned()),
+                    _ => None,
+                }
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x1000u64, 0x2000, 0x3000, 0x4000]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(RAW_WAKER_VTABLE).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        assert_eq!(
+            shown,
+            concat!(
+                "core::task::wake::RawWakerVTable {\n",
+                "    clone: 0x1000 -> tokio::runtime::task::waker::clone_waker,\n",
+                "    wake: 0x2000 -> tokio::runtime::task::waker::wake_by_val,\n",
+                "    wake_by_ref: 0x3000 -> tokio::runtime::task::waker::wake_by_ref,\n",
+                "    drop: 0x4000 -> tokio::runtime::task::waker::drop_waker,\n",
+                "}"
+            )
+        );
     }
 }
