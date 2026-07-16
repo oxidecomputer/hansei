@@ -366,6 +366,27 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                 "{program}: no transparent {prefix} format was extracted"
             );
         }
+        for expected in [
+            "core::net::ip_addr::Ipv4Addr",
+            "core::net::ip_addr::Ipv6Addr",
+        ] {
+            assert!(
+                bundle.types.debug_formats.iter().any(|(id, format)| {
+                    matches!(
+                        format,
+                        exegesis::bundle::DebugFormat::Known(
+                            exegesis::bundle::KnownFormat::IpAddress { .. }
+                        )
+                    ) && match &bundle.types.types[id.0 as usize] {
+                        TypeDef::Struct { name, .. } => {
+                            bundle.strings.get(*name) == Some(expected)
+                        }
+                        _ => false,
+                    }
+                }),
+                "{program}: no IP-address format was extracted for {expected}"
+            );
+        }
         assert!(
             bundle.types.debug_formats.values().any(|format| matches!(
                 format,
