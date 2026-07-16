@@ -622,7 +622,10 @@ fn exec_trace_bundle(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
             // The leaf-future knowledge base (§3.6): name what the task
             // is actually waiting on when the leaf is a known primitive.
             match ctx.wait_target(&chain) {
-                Some(Ok(target)) => writeln!(out, "     waiting on {target}")?,
+                Some(Ok(target)) => {
+                    let indent = frame_detail_indent(chain.frames.len().saturating_sub(1));
+                    writeln!(out, "{indent}waiting on {target}")?;
+                }
                 Some(Err(e)) => writeln!(
                     io::stderr(),
                     "warning: failed to read what the leaf future waits on: {e:#}"
@@ -658,26 +661,41 @@ fn print_await_chain(
     for (i, frame) in chain.frames.iter().enumerate() {
         let active = Some(i) == active_frame;
         let marker = if active { '*' } else { ' ' };
+        let kind = async_kind(
+            frame.future.ty.name(),
+            frame.state.as_ref().map(|state| state.name),
+        );
         let dyn_marker = if frame.dyn_symbol.is_some() {
             " [dyn]"
         } else {
             ""
         };
-        writeln!(
-            out,
-            "{marker}{i:>2}: {}{dyn_marker}",
-            frame.future.ty.name()
-        )?;
+        if i == 0 {
+            writeln!(
+                out,
+                "  {i}  {kind:<13} {}{dyn_marker}",
+                frame.future.ty.name()
+            )?;
+        } else {
+            let indent = frame_node_indent(i);
+            writeln!(
+                out,
+                "{indent}└─{marker} {i}  {kind:<13} {}{dyn_marker}",
+                frame.future.ty.name()
+            )?;
+        }
+
+        let detail_indent = frame_detail_indent(i);
 
         if let Some(state) = &frame.state {
             let loc = state
                 .await_loc
                 .map(|(file, line)| format!(" — {file}:{line}"))
                 .unwrap_or_default();
-            writeln!(out, "     state {}{loc}", state.name)?;
+            writeln!(out, "{detail_indent}state        {}{loc}", state.name)?;
         }
 
-        if verbose && active {
+        if verbose && (frame.state.is_some() || active) {
             let payload = match &frame.state {
                 Some(state) => state.payload.as_ref(),
                 None => frame.future.as_ref(),
@@ -698,8 +716,14 @@ fn print_await_chain(
                 })
                 .collect();
             if !locals.is_empty() {
-                writeln!(out, "     locals:")?;
+                let heading = if frame.state.is_some() {
+                    "locals:"
+                } else {
+                    "fields:"
+                };
+                writeln!(out, "{detail_indent}{heading}")?;
             }
+            let value_indent = format!("{detail_indent}  ");
             for m in locals {
                 let start = m.offset() as usize;
                 let end = start + m.ty().size() as usize;
@@ -708,11 +732,15 @@ fn print_await_chain(
                         let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes)
                             .peel();
                         let value = format!("{:#}", v.display_with_depth(value_depth));
-                        print_variable(out, "       ", m.name(), &value)?;
+                        print_variable(out, &value_indent, m.name(), &value)?;
                     }
-                    None => writeln!(out, "       {}: <unreadable>", m.name())?,
+                    None => writeln!(out, "{value_indent}{}: <unreadable>", m.name())?,
                 }
             }
+        }
+
+        if !active {
+            writeln!(out, "{detail_indent}awaits:")?;
         }
     }
 
@@ -768,6 +796,51 @@ fn print_await_chain(
     Ok(())
 }
 
+fn frame_node_indent(depth: usize) -> String {
+    format!("{} ", "    ".repeat(depth))
+}
+
+fn frame_detail_indent(depth: usize) -> String {
+    format!("{} ", "    ".repeat(depth + 1))
+}
+
+/// Classify the outer future type from rustc's generated DWARF basename.
+/// The names are an implementation detail, so an unrecognized state
+/// machine deliberately receives the neutral `async` label.
+fn async_kind(name: &str, state: Option<&str>) -> &'static str {
+    // Ignore generic arguments: an ordinary wrapper such as
+    // `PollFn<foo::{async_fn_env#0}>` is not itself an async fn.
+    let mut outer = String::with_capacity(name.len());
+    let mut generic_depth = 0usize;
+    for c in name.chars() {
+        match c {
+            '<' => generic_depth += 1,
+            '>' => generic_depth = generic_depth.saturating_sub(1),
+            _ if generic_depth == 0 => outer.push(c),
+            _ => {}
+        }
+    }
+    if outer.rsplit("::").next().is_some_and(|component| {
+        component.starts_with("{async_fn_env#") && component.ends_with('}')
+    }) {
+        "async fn"
+    } else if outer.rsplit("::").next().is_some_and(|component| {
+        component.starts_with("{async_block_env#") && component.ends_with('}')
+    }) {
+        "async block"
+    } else if outer.rsplit("::").next().is_some_and(|component| {
+        component.starts_with("{async_closure_env#") && component.ends_with('}')
+    }) {
+        "async closure"
+    } else if state.is_some_and(|state| {
+        state.starts_with("Suspend") || matches!(state, "Unresumed" | "Returned" | "Panicked")
+    }) {
+        "async"
+    } else {
+        "future"
+    }
+}
+
 /// Print a named variable compactly when it fits on one line, or as an
 /// indented block when the value formatter expands an aggregate.
 fn print_variable(out: &mut dyn io::Write, indent: &str, name: &str, value: &str) -> Result<()> {
@@ -784,7 +857,7 @@ fn print_variable(out: &mut dyn io::Write, indent: &str, name: &str, value: &str
 
 #[cfg(test)]
 mod variable_format_tests {
-    use super::print_variable;
+    use super::{async_kind, print_variable};
 
     #[test]
     fn scalar_stays_on_the_name_line() {
@@ -800,6 +873,39 @@ mod variable_format_tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "  point:\n    Point {\n        x: 1,\n        y: 2,\n    }\n"
+        );
+    }
+
+    #[test]
+    fn classifies_rustc_async_environment_names() {
+        assert_eq!(
+            async_kind("crate::work::{async_fn_env#0}<T>", Some("Suspend0")),
+            "async fn"
+        );
+        assert_eq!(
+            async_kind("crate::work::{async_block_env#2}", Some("Suspend0")),
+            "async block"
+        );
+        assert_eq!(
+            async_kind("crate::work::{async_closure_env#1}", Some("Suspend0")),
+            "async closure"
+        );
+        assert_eq!(async_kind("crate::unknown", Some("Suspend3")), "async");
+        assert_eq!(async_kind("crate::MaybeDone", Some("Done")), "future");
+    }
+
+    #[test]
+    fn classifies_the_outer_future_not_its_type_arguments() {
+        assert_eq!(
+            async_kind("core::future::PollFn<crate::work::{async_fn_env#0}>", None),
+            "future"
+        );
+        assert_eq!(
+            async_kind(
+                "crate::Wrapper<T>::work::{async_fn_env#0}<U>",
+                Some("Suspend0")
+            ),
+            "async fn"
         );
     }
 }
