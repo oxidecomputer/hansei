@@ -94,15 +94,14 @@ pub fn concrete_type_from_vtable_symbol(symbol: &str) -> Option<&str> {
 /// Compare Rust type spellings while ignoring formatting whitespace added
 /// by different debug-info and demangling paths.
 pub fn rust_type_names_equal(left: &str, right: &str) -> bool {
-    left.chars()
-        .filter(|ch| !ch.is_whitespace())
-        .eq(right.chars().filter(|ch| !ch.is_whitespace()))
+    normalized_rust_type_name(left) == normalized_rust_type_name(right)
 }
 
 /// Produce the comparison key used for Rust type names recovered through
 /// different formatting paths.
 pub fn normalized_rust_type_name(name: &str) -> String {
-    name.chars().filter(|ch| !ch.is_whitespace()).collect()
+    let compact: String = name.chars().filter(|ch| !ch.is_whitespace()).collect();
+    compact.replace(",alloc::alloc::Global>", ">")
 }
 
 #[cfg(test)]
@@ -183,5 +182,13 @@ mod tests {
             "slog::Drain<Ok = (), Err = core::convert::Infallible>"
         ));
         assert!(!rust_type_names_equal("app::Thing<u32>", "app::Thing<u64>"));
+    }
+
+    #[test]
+    fn rust_type_name_comparison_ignores_default_global_allocators() {
+        assert!(rust_type_names_equal(
+            "alloc::sync::Arc<dyn app::Trait, alloc::alloc::Global>",
+            "alloc::sync::Arc<dyn app::Trait>"
+        ));
     }
 }
