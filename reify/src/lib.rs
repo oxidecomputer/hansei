@@ -5,6 +5,8 @@ use debug_type::{DebugMember, DebugType, TypeClass};
 
 use proc::Mappings;
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt;
 use std::str;
 
@@ -594,7 +596,7 @@ impl<'a, T: DebugType<'a>> fmt::Debug for TypeInfoRef<'_, 'a, T> {
 
 impl<'a, T: DebugType<'a>> fmt::Display for TypeInfoRef<'_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, self, 0, 16)
+        write_display_value(f, self, 0, 16, None, None)
     }
 }
 
@@ -612,7 +614,27 @@ pub struct DisplayValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>> {
 
 impl<'a, T: DebugType<'a>> fmt::Display for DisplayValue<'_, '_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, self.info, self.depth, self.max_depth)
+        write_display_value(f, self.info, self.depth, self.max_depth, None, None)
+    }
+}
+
+pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc> {
+    info: &'r TypeInfoRef<'buf, 'a, T>,
+    proc: &'r P,
+    max_depth: usize,
+    visited: RefCell<HashSet<(u64, &'a str)>>,
+}
+
+impl<'a, T: DebugType<'a>, P: ReadFromProc> fmt::Display for DisplayTargetValue<'_, '_, 'a, T, P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_display_value(
+            f,
+            self.info,
+            0,
+            self.max_depth,
+            Some(self.proc),
+            Some(&self.visited),
+        )
     }
 }
 
@@ -632,6 +654,21 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             max_depth,
         }
     }
+
+    /// Format this value while recursively reading typed pointees from a
+    /// target. Pointer traversal consumes one level of the depth budget.
+    pub fn display_from_target<'r, P: ReadFromProc>(
+        &'r self,
+        proc: &'r P,
+        max_depth: usize,
+    ) -> DisplayTargetValue<'r, 'buf, 'a, T, P> {
+        DisplayTargetValue {
+            info: self,
+            proc,
+            max_depth,
+            visited: RefCell::new(HashSet::new()),
+        }
+    }
 }
 
 /// Wrapper that carries depth state for recursive formatting.
@@ -639,11 +676,20 @@ struct DisplayRecurse<'buf, 'a: 'buf, T: DebugType<'a>> {
     info: TypeInfoRef<'buf, 'a, T>,
     depth: usize,
     max_depth: usize,
+    proc: Option<&'buf dyn ReadFromProc>,
+    visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
 }
 
 impl<'a, T: DebugType<'a>> fmt::Display for DisplayRecurse<'_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, &self.info, self.depth, self.max_depth)
+        write_display_value(
+            f,
+            &self.info,
+            self.depth,
+            self.max_depth,
+            self.proc,
+            self.visited,
+        )
     }
 }
 
@@ -652,6 +698,8 @@ fn write_display_value<'a, T: DebugType<'a>>(
     info: &TypeInfoRef<'_, 'a, T>,
     depth: usize,
     max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
 ) -> fmt::Result {
     let ty = info.ty;
     let bytes = info.bytes;
@@ -713,22 +761,51 @@ fn write_display_value<'a, T: DebugType<'a>>(
             _ => write_hex_bytes(f, bytes),
         },
 
-        TypeClass::Pointer { .. } => {
+        TypeClass::Pointer { target } => {
             if bytes.len() < 8 {
                 return write!(f, "<truncated>");
             }
             let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
             if addr == 0 {
-                write!(f, "null")
-            } else {
-                write!(f, "0x{:x}", addr)
+                return write!(f, "null");
             }
+            let (Some(proc), Some(visited)) = (proc, visited) else {
+                return write!(f, "0x{addr:x}");
+            };
+            let key = (addr, target.name());
+            if !visited.borrow_mut().insert(key) {
+                return write!(f, "0x{addr:x} -> <cycle>");
+            }
+            let result = match proc.read_bytes(addr, target.size()) {
+                Ok(pointee_bytes) => {
+                    let pointee = DisplayRecurse {
+                        info: TypeInfoRef {
+                            ty: target,
+                            addr,
+                            bytes: &pointee_bytes,
+                            _marker: std::marker::PhantomData,
+                        },
+                        depth: depth + 1,
+                        max_depth,
+                        proc: Some(proc),
+                        visited: Some(visited),
+                    };
+                    if f.alternate() {
+                        write!(f, "0x{addr:x} -> {pointee:#}")
+                    } else {
+                        write!(f, "0x{addr:x} -> {pointee}")
+                    }
+                }
+                Err(_) => write!(f, "0x{addr:x} -> <unreadable>"),
+            };
+            visited.borrow_mut().remove(&key);
+            result
         }
 
         TypeClass::Struct => {
             let name = ty.name();
             let pretty = f.alternate();
-            write_struct_fields(f, info, name, pretty, depth, max_depth)
+            write_struct_fields(f, info, name, pretty, depth, max_depth, proc, visited)
         }
 
         TypeClass::Union => {
@@ -744,7 +821,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
         TypeClass::RustEnum => {
             let name = ty.name();
             let pretty = f.alternate();
-            write_rust_enum(f, info, name, pretty, depth, max_depth)
+            write_rust_enum(f, info, name, pretty, depth, max_depth, proc, visited)
         }
 
         TypeClass::CEnum => {
@@ -782,6 +859,8 @@ fn write_display_value<'a, T: DebugType<'a>>(
                         },
                         depth: depth + 1,
                         max_depth,
+                        proc,
+                        visited,
                     };
                     if pretty {
                         write!(f, "{:#},", child)?;
@@ -813,6 +892,8 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 },
                 depth: depth + 1,
                 max_depth,
+                proc,
+                visited,
             };
             if f.alternate() {
                 write!(f, "{:#}", child)
@@ -838,6 +919,8 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
     pretty: bool,
     depth: usize,
     max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
 ) -> fmt::Result {
     let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
 
@@ -869,6 +952,8 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
                 },
                 depth: depth + 1,
                 max_depth,
+                proc,
+                visited,
             };
             if pretty {
                 write!(f, "{:#}", child)?;
@@ -900,6 +985,8 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
     pretty: bool,
     depth: usize,
     max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
 ) -> fmt::Result {
     let Ok((variant_name, var_ty, offset)) = info
         .ty
@@ -973,6 +1060,8 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
                 },
                 depth: depth + 1,
                 max_depth,
+                proc,
+                visited,
             };
             if pretty {
                 write!(f, "{:#}", child)?;
