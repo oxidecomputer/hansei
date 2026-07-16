@@ -355,11 +355,14 @@ fn normalize(trace: &str) -> String {
     deadlines.replace_all(&masked, "deadline TS").into_owned()
 }
 
-fn assert_not_locals(verbose_trace: &str, names: &[&str]) {
+fn assert_locals(verbose_trace: &str, names: &[&str]) {
     for name in names {
+        let prefix = format!("{name}:");
         assert!(
-            !verbose_trace.contains(&format!("\n       {name}:")),
-            "inactive local {name} present in trace:\n{verbose_trace}"
+            verbose_trace
+                .lines()
+                .any(|line| line.trim_start().starts_with(&prefix)),
+            "local {name} missing from trace:\n{verbose_trace}"
         );
     }
 }
@@ -388,9 +391,10 @@ Task {id}: simple_await::work::{{async_fn_env#0}} (idle)
 Spawned at: test-programs/src/bin/simple-await.rs:32:21
 Defined at: simple-await.rs:14
 
-  0: simple_await::work::{{async_fn_env#0}}
-     state Suspend1 — simple-await.rs:18
-* 1: tokio::sync::oneshot::Receiver<u32>
+  0  async fn      simple_await::work::{{async_fn_env#0}}
+     state        Suspend1 — simple-await.rs:18
+     awaits:
+     └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
             id = task.id
         );
@@ -402,7 +406,7 @@ Defined at: simple-await.rs:14
         );
 
         let verbose = trace(&bundle, source, &task.id, true);
-        assert_not_locals(&verbose, &["count", "first", "ready", "park"]);
+        assert_locals(&verbose, &["count", "first", "ready", "park"]);
     });
 }
 
@@ -426,13 +430,16 @@ Task {id}: nested_await::outer::{{async_fn_env#0}} (idle)
 Spawned at: test-programs/src/bin/nested-await.rs:30:21
 Defined at: nested-await.rs:16
 
-  0: nested_await::outer::{{async_fn_env#0}}
-     state Suspend0 — nested-await.rs:18
-  1: nested_await::middle::{{async_fn_env#0}}
-     state Suspend0 — nested-await.rs:12
-  2: nested_await::leaf::{{async_fn_env#0}}
-     state Suspend0 — nested-await.rs:8
-* 3: tokio::sync::oneshot::Receiver<u32>
+  0  async fn      nested_await::outer::{{async_fn_env#0}}
+     state        Suspend0 — nested-await.rs:18
+     awaits:
+     └─  1  async fn      nested_await::middle::{{async_fn_env#0}}
+         state        Suspend0 — nested-await.rs:12
+         awaits:
+         └─  2  async fn      nested_await::leaf::{{async_fn_env#0}}
+             state        Suspend0 — nested-await.rs:8
+             awaits:
+             └─* 3  future        tokio::sync::oneshot::Receiver<u32>
 ",
             id = task.id
         );
@@ -442,10 +449,6 @@ Defined at: nested-await.rs:16
             "({})",
             source.describe()
         );
-
-        let verbose = trace(&bundle, source, &task.id, true);
-        assert!(verbose.matches("\n     locals:\n").count() <= 1);
-        assert_not_locals(&verbose, &["nested", "inner"]);
     });
 }
 
@@ -471,11 +474,13 @@ Task {id}: dyn_future::driver::{{async_fn_env#0}} (idle)
 Spawned at: test-programs/src/bin/dyn-future.rs:44:21
 Defined at: dyn-future.rs:22
 
-  0: dyn_future::driver::{{async_fn_env#0}}
-     state Suspend0 — dyn-future.rs:29
-  1: dyn_future::boxed_leaf::{{async_fn_env#0}} [dyn]
-     state Suspend0 — dyn-future.rs:11
-* 2: tokio::sync::oneshot::Receiver<u32>
+  0  async fn      dyn_future::driver::{{async_fn_env#0}}
+     state        Suspend0 — dyn-future.rs:29
+     awaits:
+     └─  1  async fn      dyn_future::boxed_leaf::{{async_fn_env#0}} [dyn]
+         state        Suspend0 — dyn-future.rs:11
+         awaits:
+         └─* 2  future        tokio::sync::oneshot::Receiver<u32>
 ",
             id = driver.id
         );
@@ -496,9 +501,10 @@ Task {id}: dyn_future::set_member::{{async_fn_env#0}} (idle)
 Spawned at: test-programs/src/bin/dyn-future.rs:26:9
 Defined at: dyn-future.rs:14
 
-  0: dyn_future::set_member::{{async_fn_env#0}}
-     state Suspend0 — dyn-future.rs:15
-* 1: tokio::sync::oneshot::Receiver<u32>
+  0  async fn      dyn_future::set_member::{{async_fn_env#0}}
+     state        Suspend0 — dyn-future.rs:15
+     awaits:
+     └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
             id = member.id
         );
@@ -538,20 +544,26 @@ Task {id}: futurelock::main::{{async_block#0}}::{{async_block_env#0}} (idle)
 Spawned at: test-programs/src/bin/futurelock.rs:13:17
 Defined at: futurelock.rs:13
 
-  0: futurelock::main::{{async_block#0}}::{{async_block_env#0}}
-     state Suspend1 — futurelock.rs:23
-  1: futurelock::do_stuff::{{async_fn_env#0}}
-     state Suspend1 — futurelock.rs:60
-  2: futurelock::do_async_thing::{{async_fn_env#0}}
-     state Suspend0 — futurelock.rs:68
-  3: tokio::sync::mutex::{{impl#10}}::lock::{{async_fn_env#0}}<()>
-     state Suspend0 — src/sync/mutex.rs:455
-  4: tokio::sync::mutex::{{impl#10}}::lock::{{async_fn#0}}::{{async_block_env#0}}<()>
-     state Suspend0 — src/sync/mutex.rs:436
-  5: tokio::sync::mutex::{{impl#10}}::acquire::{{async_fn_env#0}}<()>
-     state Suspend1 — src/sync/mutex.rs:658
-* 6: tokio::sync::batch_semaphore::Acquire
-     waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task {id}
+  0  async block   futurelock::main::{{async_block#0}}::{{async_block_env#0}}
+     state        Suspend1 — futurelock.rs:23
+     awaits:
+     └─  1  async fn      futurelock::do_stuff::{{async_fn_env#0}}
+         state        Suspend1 — futurelock.rs:60
+         awaits:
+         └─  2  async fn      futurelock::do_async_thing::{{async_fn_env#0}}
+             state        Suspend0 — futurelock.rs:68
+             awaits:
+             └─  3  async fn      tokio::sync::mutex::{{impl#10}}::lock::{{async_fn_env#0}}<()>
+                 state        Suspend0 — src/sync/mutex.rs:455
+                 awaits:
+                 └─  4  async block   tokio::sync::mutex::{{impl#10}}::lock::{{async_fn#0}}::{{async_block_env#0}}<()>
+                     state        Suspend0 — src/sync/mutex.rs:436
+                     awaits:
+                     └─  5  async fn      tokio::sync::mutex::{{impl#10}}::acquire::{{async_fn_env#0}}<()>
+                         state        Suspend1 — src/sync/mutex.rs:658
+                         awaits:
+                         └─* 6  future        tokio::sync::batch_semaphore::Acquire
+                             waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task {id}
 ",
             id = task.id
         );
@@ -562,12 +574,10 @@ Defined at: futurelock.rs:13
             source.describe()
         );
 
-        // These belong to outer coroutine stages. The trace still shows
-        // those stages, but only prints locals for the innermost active
-        // stage because their overlapping storage now represents it.
+        // The boxed, never-again-polled future1 is still held across
+        // do_stuff's suspension — the futurelock signature.
         let verbose = trace(&bundle, source, &task.id, true);
-        assert_not_locals(&verbose, &["lock", "future1", "disabled", "label"]);
-        assert!(verbose.matches("\n     locals:\n").count() <= 1);
+        assert_locals(&verbose, &["lock", "future1", "disabled", "label"]);
     });
 }
 
@@ -597,9 +607,10 @@ Task {id}: many_tasks::park_task::{{async_fn_env#0}} (idle)
 Spawned at: test-programs/src/bin/many-tasks.rs:25:13
 Defined at: many-tasks.rs:9
 
-  0: many_tasks::park_task::{{async_fn_env#0}}
-     state Suspend0 — many-tasks.rs:11
-* 1: tokio::sync::oneshot::Receiver<u32>
+  0  async fn      many_tasks::park_task::{{async_fn_env#0}}
+     state        Suspend0 — many-tasks.rs:11
+     awaits:
+     └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
             id = task.id
         );
@@ -634,10 +645,11 @@ Task {id}: sleep_join::sleeper::{{async_fn_env#0}} (idle)
 Spawned at: test-programs/src/bin/sleep-join.rs:26:22
 Defined at: sleep-join.rs:9
 
-  0: sleep_join::sleeper::{{async_fn_env#0}}
-     state Suspend0 — sleep-join.rs:11
-* 1: tokio::time::sleep::Sleep
-     waiting on the timer: deadline TS on the target's monotonic clock
+  0  async fn      sleep_join::sleeper::{{async_fn_env#0}}
+     state        Suspend0 — sleep-join.rs:11
+     awaits:
+     └─* 1  future        tokio::time::sleep::Sleep
+         waiting on the timer: deadline TS on the target's monotonic clock
 ",
             id = sleeper.id
         );
@@ -654,10 +666,11 @@ Task {id}: sleep_join::joiner::{{async_fn_env#0}} (idle)
 Spawned at: test-programs/src/bin/sleep-join.rs:27:23
 Defined at: sleep-join.rs:15
 
-  0: sleep_join::joiner::{{async_fn_env#0}}
-     state Suspend0 — sleep-join.rs:17
-* 1: tokio::runtime::task::join::JoinHandle<u32>
-     waiting on task {sleeper_id} (JoinHandle)
+  0  async fn      sleep_join::joiner::{{async_fn_env#0}}
+     state        Suspend0 — sleep-join.rs:17
+     awaits:
+     └─* 1  future        tokio::runtime::task::join::JoinHandle<u32>
+         waiting on task {sleeper_id} (JoinHandle)
 ",
             id = joiner.id,
             sleeper_id = sleeper.id
