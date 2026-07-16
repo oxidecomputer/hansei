@@ -5,6 +5,7 @@
 //! a oneshot whose sender is intentionally leaked. `READY` on stdout
 //! means the state is stable — no timing involved.
 
+use std::collections::BTreeMap;
 use tokio::sync::oneshot;
 
 async fn ready_value() -> u32 {
@@ -13,10 +14,11 @@ async fn ready_value() -> u32 {
 
 async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
     let count: u32 = 3;
+    let labels = BTreeMap::from([(1u64, 10u32), (2, 20), (3, 30)]);
     let first = ready_value().await;
     ready.send(()).expect("main waits for readiness");
     let second = park.await.unwrap_or(0);
-    count + first + second
+    count + first + second + labels.values().sum::<u32>()
 }
 
 fn main() {

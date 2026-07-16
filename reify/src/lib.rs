@@ -766,6 +766,18 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 proc,
             );
         }
+        if let DebugFormat::Known(format @ KnownFormat::BTreeMap { .. }) = format {
+            return write_btree_map(
+                f,
+                info,
+                format,
+                depth,
+                max_depth,
+                proc,
+                visited,
+                hex_integers,
+            );
+        }
 
         let (target, offset, child_proc, child_visited) = match format {
             DebugFormat::Transparent { target, offset } => (target, offset, proc, visited),
@@ -777,6 +789,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::FunctionPointer) => unreachable!(),
             DebugFormat::Known(KnownFormat::DynPointer { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::BTreeMap { .. }) => unreachable!(),
         };
         let start = offset as usize;
         let Some(end) = start.checked_add(target.size() as usize) else {
@@ -1121,6 +1134,312 @@ fn write_raw_waker_vtable<'a, T: DebugType<'a>>(
         write!(f, " ")?;
     }
     write!(f, "}}")
+}
+
+#[derive(Copy, Clone)]
+struct BTreeNodeLayout<T> {
+    key: T,
+    value: T,
+    leaf: T,
+    leaf_len: T,
+    leaf_len_offset: u64,
+    keys_offset: u64,
+    key_slots: u64,
+    values_offset: u64,
+    internal: T,
+    edges_offset: u64,
+    edge: T,
+    edge_pointer_offset: u64,
+}
+
+enum BTreeWalkError {
+    Format,
+    Invalid(&'static str),
+}
+
+impl From<fmt::Error> for BTreeWalkError {
+    fn from(_: fmt::Error) -> Self {
+        Self::Format
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_btree_map<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    format: KnownFormat<T>,
+    depth: usize,
+    max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
+) -> fmt::Result {
+    let KnownFormat::BTreeMap {
+        root,
+        root_offset,
+        root_node,
+        root_node_offset,
+        length,
+        length_offset,
+        height,
+        height_offset,
+        node_offset,
+        key,
+        value,
+        leaf,
+        leaf_len,
+        leaf_len_offset,
+        keys_offset,
+        key_slots,
+        values_offset,
+        internal,
+        edges_offset,
+        edge,
+        edge_pointer_offset,
+    } = format
+    else {
+        unreachable!()
+    };
+
+    let Some(map_length) = read_unsigned_at(info.bytes, length_offset, length.size()) else {
+        return write!(f, "<truncated>");
+    };
+    let pretty = f.alternate();
+    write!(f, "{} {{", info.ty.name())?;
+    if map_length == 0 {
+        return write!(f, "}}");
+    }
+
+    let root_start = root_offset as usize;
+    let Some(root_end) = root_start.checked_add(root.size() as usize) else {
+        return write!(f, " <invalid root> }}");
+    };
+    let Some(root_bytes) = info.bytes.get(root_start..root_end) else {
+        return write!(f, " <truncated root> }}");
+    };
+    if !matches!(root.check_variant(root_bytes, "Some"), Some(Ok(Some(_)))) {
+        return write!(f, " <invalid missing root> }}");
+    }
+
+    let root_node_start = root_node_offset as usize;
+    let Some(root_node_end) = root_node_start.checked_add(root_node.size() as usize) else {
+        return write!(f, " <invalid root node> }}");
+    };
+    let Some(root_node_bytes) = info.bytes.get(root_node_start..root_node_end) else {
+        return write!(f, " <truncated root node> }}");
+    };
+    let Some(height) = read_unsigned_at(root_node_bytes, height_offset, height.size()) else {
+        return write!(f, " <truncated height> }}");
+    };
+    let Some(root_address) = read_u64_at(root_node_bytes, node_offset) else {
+        return write!(f, " <truncated node pointer> }}");
+    };
+    let Some(proc) = proc else {
+        return write!(f, " <target unavailable> }}");
+    };
+
+    let layout = BTreeNodeLayout {
+        key,
+        value,
+        leaf,
+        leaf_len,
+        leaf_len_offset,
+        keys_offset,
+        key_slots,
+        values_offset,
+        internal,
+        edges_offset,
+        edge,
+        edge_pointer_offset,
+    };
+    let mut remaining = map_length;
+    let mut node_addresses = HashSet::new();
+    let mut entries = 0usize;
+    let walk = walk_btree_node(
+        proc,
+        layout,
+        root_address,
+        height,
+        &mut remaining,
+        &mut node_addresses,
+        &mut |key_addr, key_bytes, value_addr, value_bytes| {
+            write_btree_entry_prefix(f, pretty, depth, entries)?;
+            entries += 1;
+            let key = DisplayRecurse {
+                info: TypeInfoRef {
+                    ty: layout.key,
+                    addr: key_addr,
+                    bytes: key_bytes,
+                    _marker: std::marker::PhantomData,
+                },
+                depth: depth + 1,
+                max_depth,
+                proc: Some(proc),
+                visited,
+                hex_integers,
+            };
+            let value = DisplayRecurse {
+                info: TypeInfoRef {
+                    ty: layout.value,
+                    addr: value_addr,
+                    bytes: value_bytes,
+                    _marker: std::marker::PhantomData,
+                },
+                depth: depth + 1,
+                max_depth,
+                proc: Some(proc),
+                visited,
+                hex_integers,
+            };
+            if pretty {
+                write!(f, "{key:#}: {value:#},")?;
+            } else {
+                write!(f, "{key}: {value}")?;
+            }
+            Ok(())
+        },
+    );
+
+    match walk {
+        Ok(()) if remaining == 0 => {}
+        Ok(()) => {
+            write_btree_entry_prefix(f, pretty, depth, entries)?;
+            write!(f, "<invalid: tree contains fewer entries than length>")?;
+        }
+        Err(BTreeWalkError::Invalid(reason)) => {
+            write_btree_entry_prefix(f, pretty, depth, entries)?;
+            write!(f, "<invalid: {reason}>")?;
+        }
+        Err(BTreeWalkError::Format) => return Err(fmt::Error),
+    }
+
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+fn write_btree_entry_prefix(
+    f: &mut fmt::Formatter<'_>,
+    pretty: bool,
+    depth: usize,
+    entry: usize,
+) -> fmt::Result {
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth + 1)
+    } else if entry == 0 {
+        write!(f, " ")
+    } else {
+        write!(f, ", ")
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_btree_node<'a, T: DebugType<'a>>(
+    proc: &dyn ReadFromProc,
+    layout: BTreeNodeLayout<T>,
+    address: u64,
+    height: u64,
+    remaining: &mut u64,
+    visited: &mut HashSet<u64>,
+    emit: &mut impl FnMut(u64, &[u8], u64, &[u8]) -> fmt::Result,
+) -> std::result::Result<(), BTreeWalkError> {
+    if address == 0 {
+        return Err(BTreeWalkError::Invalid("null node pointer"));
+    }
+    if height > 64 {
+        return Err(BTreeWalkError::Invalid("implausible tree height"));
+    }
+    if !visited.insert(address) {
+        return Err(BTreeWalkError::Invalid("node cycle"));
+    }
+
+    let result = (|| {
+        let node_type = if height == 0 { layout.leaf } else { layout.internal };
+        let bytes = proc
+            .read_bytes(address, node_type.size())
+            .map_err(|_| BTreeWalkError::Invalid("unreadable node"))?;
+        let Some(len) = read_unsigned_at(&bytes, layout.leaf_len_offset, layout.leaf_len.size())
+        else {
+            return Err(BTreeWalkError::Invalid("truncated node length"));
+        };
+        if len > layout.key_slots {
+            return Err(BTreeWalkError::Invalid("node length exceeds capacity"));
+        }
+
+        for index in 0..len {
+            if height > 0 {
+                let child = btree_edge_address(&bytes, layout, index)?;
+                walk_btree_node(proc, layout, child, height - 1, remaining, visited, emit)?;
+            }
+            if *remaining == 0 {
+                return Err(BTreeWalkError::Invalid("tree contains more entries than length"));
+            }
+            let key_start = layout
+                .keys_offset
+                .checked_add(index.checked_mul(layout.key.size()).ok_or(
+                    BTreeWalkError::Invalid("key offset overflow"),
+                )?)
+                .ok_or(BTreeWalkError::Invalid("key offset overflow"))?;
+            let value_start = layout
+                .values_offset
+                .checked_add(index.checked_mul(layout.value.size()).ok_or(
+                    BTreeWalkError::Invalid("value offset overflow"),
+                )?)
+                .ok_or(BTreeWalkError::Invalid("value offset overflow"))?;
+            let key_bytes = byte_range(&bytes, key_start, layout.key.size())
+                .ok_or(BTreeWalkError::Invalid("truncated key slot"))?;
+            let value_bytes = byte_range(&bytes, value_start, layout.value.size())
+                .ok_or(BTreeWalkError::Invalid("truncated value slot"))?;
+            emit(address + key_start, key_bytes, address + value_start, value_bytes)?;
+            *remaining -= 1;
+        }
+        if height > 0 {
+            let child = btree_edge_address(&bytes, layout, len)?;
+            walk_btree_node(proc, layout, child, height - 1, remaining, visited, emit)?;
+        }
+        Ok(())
+    })();
+    visited.remove(&address);
+    result
+}
+
+fn btree_edge_address<'a, T: DebugType<'a>>(
+    bytes: &[u8],
+    layout: BTreeNodeLayout<T>,
+    index: u64,
+) -> std::result::Result<u64, BTreeWalkError> {
+    let offset = layout
+        .edges_offset
+        .checked_add(
+            index
+                .checked_mul(layout.edge.size())
+                .ok_or(BTreeWalkError::Invalid("edge offset overflow"))?,
+        )
+        .and_then(|offset| offset.checked_add(layout.edge_pointer_offset))
+        .ok_or(BTreeWalkError::Invalid("edge offset overflow"))?;
+    read_u64_at(bytes, offset).ok_or(BTreeWalkError::Invalid("truncated edge slot"))
+}
+
+fn byte_range(bytes: &[u8], offset: u64, size: u64) -> Option<&[u8]> {
+    let start = usize::try_from(offset).ok()?;
+    let end = start.checked_add(usize::try_from(size).ok()?)?;
+    bytes.get(start..end)
+}
+
+fn read_unsigned_at(bytes: &[u8], offset: u64, size: u64) -> Option<u64> {
+    let bytes = byte_range(bytes, offset, size)?;
+    Some(match size {
+        1 => u64::from(bytes[0]),
+        2 => u64::from(u16::from_le_bytes(bytes.try_into().ok()?)),
+        4 => u64::from(u32::from_le_bytes(bytes.try_into().ok()?)),
+        8 => u64::from_le_bytes(bytes.try_into().ok()?),
+        _ => return None,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

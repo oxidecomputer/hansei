@@ -131,6 +131,29 @@ pub enum KnownFormat {
         wake_by_ref: u32,
         drop: u32,
     },
+    /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
+    /// its initialized key/value entries.
+    ///
+    /// Paths are rooted in the type named by their preceding field. The
+    /// root-node path begins at `Option::Some`'s payload, while the edge
+    /// path begins at one element of the internal node's edge array.
+    BTreeMap {
+        root: u32,
+        length: u32,
+        root_node: Vec<u32>,
+        height: u32,
+        node: Vec<u32>,
+        key: BundleTypeId,
+        value: BundleTypeId,
+        leaf: BundleTypeId,
+        leaf_len: u32,
+        leaf_keys: u32,
+        leaf_values: u32,
+        internal: BundleTypeId,
+        internal_data: u32,
+        internal_edges: u32,
+        edge: Vec<u32>,
+    },
 }
 
 impl TypeTable {

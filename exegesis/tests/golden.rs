@@ -347,6 +347,17 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         )),
         "{program}: no RawWakerVTable known-type format was extracted"
     );
+    if program == "simple-await" {
+        assert!(
+            bundle.types.debug_formats.values().any(|format| matches!(
+                format,
+                exegesis::bundle::DebugFormat::Known(
+                    exegesis::bundle::KnownFormat::BTreeMap { .. }
+                )
+            )),
+            "{program}: no BTreeMap known-type format was extracted"
+        );
+    }
 }
 
 fn run_golden(program: &str) {
