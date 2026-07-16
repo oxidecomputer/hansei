@@ -36,8 +36,10 @@ pub struct CodegenUnit<'dw> {
     pub subroutine_types: HashSet<TypeId>,
     /// Static variables collected.
     pub variables: HashMap<VarId, RawStaticVariable<&'dw str>>,
-    /// Type declarations (names mapped to their `TypeId`s).
-    pub decls: HashMap<&'dw str, HashSet<TypeId>>,
+    /// Type DIEs marked with `DW_AT_declaration`.
+    pub type_declarations: HashSet<TypeId>,
+    /// Type DIE → declaration DIE from `DW_AT_specification`.
+    pub type_specifications: HashMap<TypeId, TypeId>,
     /// Functions.
     pub funcs: HashMap<FuncId, RawFunc<&'dw str>>,
 }
@@ -58,9 +60,14 @@ impl<'dw> CodegenUnit<'dw> {
         self.variables.insert(id, var);
     }
 
-    pub fn add_decl(&mut self, offset: UnitSectionOffset, name: &'dw str) {
-        let id = offset.into();
-        self.decls.entry(name).or_default().insert(id);
+    fn record_type_attrs(&mut self, common: &CommonAttrs<'dw>) {
+        let id = TypeId(common.debug_offset);
+        if common.is_decl {
+            self.type_declarations.insert(id);
+        }
+        if let Some(specification) = common.specification {
+            self.type_specifications.insert(id, TypeId(specification));
+        }
     }
 
     pub fn add_function(&mut self, offset: UnitSectionOffset, func: RawFunc<&'dw str>) {
@@ -111,7 +118,8 @@ impl<'dw> CodegenUnit<'dw> {
             types: HashMap::new(),
             subroutine_types: HashSet::new(),
             variables: HashMap::new(),
-            decls: HashMap::new(),
+            type_declarations: HashSet::new(),
+            type_specifications: HashMap::new(),
             funcs: HashMap::new(),
         };
 
@@ -191,6 +199,8 @@ impl<'dw> CodegenUnit<'dw> {
             Ok(())
         })?;
 
+        self.record_type_attrs(&common);
+
         if skip {
             return cursor.consume_entry();
         }
@@ -218,6 +228,8 @@ impl<'dw> CodegenUnit<'dw> {
         assert!(entry.tag() == gimli::DW_TAG_pointer_type);
 
         let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
+
+        self.record_type_attrs(&common);
 
         if common.is_decl {
             //self.add_decl(common.debug_offset, common.name);
@@ -298,6 +310,8 @@ impl<'dw> CodegenUnit<'dw> {
         let mut variant_shape: Option<VariantShape<&'dw str>> = None;
         let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
 
+        self.record_type_attrs(&common);
+
         let ns = self.namespaces.insert(self.ns, common.name.unwrap_or(ANON));
 
         if entry.has_children() {
@@ -376,6 +390,8 @@ impl<'dw> CodegenUnit<'dw> {
         let mut template_params = Vec::new();
         let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
 
+        self.record_type_attrs(&common);
+
         let ns = self.namespaces.insert(self.ns, common.name.unwrap_or(ANON));
 
         if entry.has_children() {
@@ -431,6 +447,8 @@ impl<'dw> CodegenUnit<'dw> {
 
         let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
 
+        self.record_type_attrs(&common);
+
         let Some(elem) = common.type_id else {
             debug!(
                 "array type missing element typeid at {:x?}",
@@ -480,6 +498,8 @@ impl<'dw> CodegenUnit<'dw> {
         assert!(entry.tag() == gimli::DW_TAG_enumeration_type);
 
         let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
+
+        self.record_type_attrs(&common);
 
         if common.is_decl {
             return cursor.consume_entry();

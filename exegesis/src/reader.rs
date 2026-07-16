@@ -30,6 +30,10 @@ pub struct DwReader<'dw> {
     subroutine_types: HashSet<TypeId>,
     /// Substitution map: non-canonical TypeId → canonical TypeId.
     subs: HashMap<TypeId, TypeId>,
+    /// Type DIEs marked with `DW_AT_declaration`.
+    type_declarations: HashSet<TypeId>,
+    /// Type DIE → declaration DIE from `DW_AT_specification`.
+    type_specifications: HashMap<TypeId, TypeId>,
     /// All static variables, keyed by their VarId.
     pub variables: HashMap<VarId, RawStaticVariable<StrId>>,
     /// All functions, keyed by their FuncId.
@@ -149,6 +153,8 @@ impl<'dw> DwReader<'dw> {
             types: HashMap::new(),
             subroutine_types: HashSet::new(),
             subs: HashMap::new(),
+            type_declarations: HashSet::new(),
+            type_specifications: HashMap::new(),
             variables: HashMap::new(),
             functions: HashMap::new(),
             namespaces: NamespaceTable::new(),
@@ -176,6 +182,9 @@ impl<'dw> DwReader<'dw> {
         }
 
         self.subroutine_types.extend(cgu.subroutine_types.drain());
+        self.type_declarations.extend(cgu.type_declarations.drain());
+        self.type_specifications
+            .extend(cgu.type_specifications.drain());
 
         // Static variables are unique by address — no dedup needed.
         // Remap namespaces now; type references are canonicalized on access
@@ -208,6 +217,29 @@ impl<'dw> DwReader<'dw> {
     fn finalize_types(&mut self) {
         self.subs.clear();
 
+        let specifications: Vec<_> = self
+            .type_specifications
+            .iter()
+            .map(|(&definition, &declaration)| (definition, declaration))
+            .collect();
+        for (definition, declaration) in specifications {
+            self.inherit_type_identity(definition, declaration);
+            let canonical = match (
+                self.type_declarations.contains(&definition),
+                self.type_declarations.contains(&declaration),
+            ) {
+                (false, true) => definition,
+                (true, false) => declaration,
+                _ => definition.min(declaration),
+            };
+            let duplicate = if canonical == definition {
+                declaration
+            } else {
+                definition
+            };
+            self.subs.insert(duplicate, canonical);
+        }
+
         let mut named: HashMap<(Option<NsId>, Option<StrId>), Vec<TypeId>> = HashMap::new();
         for (&id, ty) in &self.types {
             if !matches!(ty, RawType::Pointer(p) if p.name.is_none())
@@ -217,7 +249,7 @@ impl<'dw> DwReader<'dw> {
             }
         }
         for ids in named.values() {
-            self.alias_to_lowest(ids);
+            self.alias_named_types(ids);
         }
 
         loop {
@@ -256,6 +288,74 @@ impl<'dw> DwReader<'dw> {
             if id != canonical {
                 self.subs.insert(id, canonical);
             }
+        }
+    }
+
+    fn alias_named_types(&mut self, ids: &[TypeId]) {
+        let resolved: Vec<_> = ids.iter().map(|&id| self.canonicalize(id)).collect();
+        let canonical = resolved
+            .iter()
+            .copied()
+            .filter(|id| !self.type_declarations.contains(id))
+            .min()
+            .or_else(|| resolved.iter().copied().min());
+        let Some(canonical) = canonical else {
+            return;
+        };
+        for id in resolved {
+            if id != canonical {
+                self.subs.insert(id, canonical);
+            }
+        }
+        for &id in ids {
+            if id != canonical {
+                self.subs.insert(id, canonical);
+            }
+        }
+    }
+
+    /// Definitions linked through `DW_AT_specification` may omit their name,
+    /// namespace, and declaration coordinates. Carry those descriptive fields
+    /// over while retaining the definition's complete layout.
+    fn inherit_type_identity(&mut self, definition: TypeId, declaration: TypeId) {
+        let Some(declaration) = self.types.get(&declaration).cloned() else {
+            return;
+        };
+        let Some(definition) = self.types.get_mut(&definition) else {
+            return;
+        };
+
+        match (definition, declaration) {
+            (RawType::Base(def), RawType::Base(decl)) => {
+                def.name = def.name.or(decl.name);
+                def.namespace = def.namespace.or(decl.namespace);
+            }
+            (RawType::Pointer(def), RawType::Pointer(decl)) => {
+                def.name = def.name.or(decl.name);
+            }
+            (RawType::Enum(def), RawType::Enum(decl)) => {
+                def.name = def.name.or(decl.name);
+                def.namespace = def.namespace.or(decl.namespace);
+                if def.source_loc.is_none() {
+                    def.source_loc = decl.source_loc;
+                }
+            }
+            (RawType::Struct(def), RawType::Struct(decl)) => {
+                def.name = def.name.or(decl.name);
+                def.namespace = def.namespace.or(decl.namespace);
+                if def.source_loc.is_none() {
+                    def.source_loc = decl.source_loc;
+                }
+            }
+            (RawType::Union(def), RawType::Union(decl)) => {
+                def.name = def.name.or(decl.name);
+                def.namespace = def.namespace.or(decl.namespace);
+                if def.source_loc.is_none() {
+                    def.source_loc = decl.source_loc;
+                }
+            }
+            (RawType::Array(_), RawType::Array(_)) => {}
+            _ => {}
         }
     }
 
@@ -550,14 +650,19 @@ mod tests {
         TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
     }
 
-    fn insert_named_struct(reader: &mut DwReader<'static>, id: TypeId, name: &'static str) {
-        let name = reader.strings.intern(name);
+    fn insert_struct(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        name: Option<&'static str>,
+        size: u64,
+    ) {
+        let name = name.map(|name| reader.strings.intern(name));
         reader.types.insert(
             id,
             RawType::Struct(RawStruct {
-                name: Some(name),
+                name,
                 namespace: None,
-                size: 1,
+                size,
                 members: Box::new([]),
                 template_params: Box::new([]),
                 source_loc: None,
@@ -585,8 +690,8 @@ mod tests {
         let outer_pointer = type_id(0x30);
         let duplicate_outer_pointer = type_id(0x40);
 
-        insert_named_struct(&mut reader, canonical, "Value");
-        insert_named_struct(&mut reader, duplicate, "Value");
+        insert_struct(&mut reader, canonical, Some("Value"), 1);
+        insert_struct(&mut reader, duplicate, Some("Value"), 1);
         insert_pointer(&mut reader, pointer, canonical);
         insert_pointer(&mut reader, duplicate_pointer, duplicate);
         insert_pointer(&mut reader, outer_pointer, pointer);
@@ -607,8 +712,8 @@ mod tests {
         let array = type_id(0x20);
         let duplicate_array = type_id(0x60);
 
-        insert_named_struct(&mut reader, canonical, "Value");
-        insert_named_struct(&mut reader, duplicate, "Value");
+        insert_struct(&mut reader, canonical, Some("Value"), 1);
+        insert_struct(&mut reader, duplicate, Some("Value"), 1);
         reader.types.insert(
             array,
             RawType::Array(RawArray {
@@ -627,5 +732,52 @@ mod tests {
         reader.finalize_types();
 
         assert_eq!(reader.canonicalize(duplicate_array), array);
+    }
+
+    #[test]
+    fn finalization_prefers_a_definition_to_an_earlier_declaration() {
+        let mut reader = DwReader::new();
+        let declaration = type_id(0x10);
+        let definition = type_id(0x50);
+
+        insert_struct(&mut reader, declaration, Some("Value"), 0);
+        insert_struct(&mut reader, definition, Some("Value"), 8);
+        reader.type_declarations.insert(declaration);
+
+        reader.finalize_types();
+
+        assert_eq!(reader.canonicalize(declaration), definition);
+        assert_eq!(reader.canonicalize(definition), definition);
+        let RawType::Struct(canonical) = reader.canonical_type(declaration).unwrap() else {
+            panic!("expected struct definition");
+        };
+        assert_eq!(canonical.size, 8);
+    }
+
+    #[test]
+    fn finalization_follows_type_specifications() {
+        let mut reader = DwReader::new();
+        let declaration = type_id(0x10);
+        let duplicate_declaration = type_id(0x20);
+        let definition = type_id(0x50);
+
+        insert_struct(&mut reader, declaration, Some("Value"), 0);
+        insert_struct(&mut reader, duplicate_declaration, Some("Value"), 0);
+        insert_struct(&mut reader, definition, None, 8);
+        reader.type_declarations.insert(declaration);
+        reader.type_declarations.insert(duplicate_declaration);
+        reader.type_specifications.insert(definition, declaration);
+
+        reader.finalize_types();
+
+        assert_eq!(reader.canonicalize(declaration), definition);
+        assert_eq!(reader.canonicalize(duplicate_declaration), definition);
+        assert_eq!(
+            reader
+                .canonical_type(definition)
+                .and_then(RawType::name)
+                .map(|name| reader.strings.get(name)),
+            Some("Value")
+        );
     }
 }
