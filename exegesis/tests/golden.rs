@@ -283,6 +283,19 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         "{program}: no transparent known-type formats were extracted"
     );
     assert!(
+        bundle.types.debug_formats.iter().any(|(id, format)| {
+            matches!(format, exegesis::bundle::DebugFormat::Transparent { .. })
+                && match &bundle.types.types[id.0 as usize] {
+                    TypeDef::Struct { name, .. } => bundle
+                        .strings
+                        .get(*name)
+                        .is_some_and(|name| name.starts_with("core::ptr::non_null::NonNull<")),
+                    _ => false,
+                }
+        }),
+        "{program}: no transparent NonNull format was extracted"
+    );
+    assert!(
         bundle.types.debug_formats.values().any(|format| matches!(
             format,
             exegesis::bundle::DebugFormat::Known(exegesis::bundle::KnownFormat::Atomic { .. })
