@@ -867,11 +867,18 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
 /// member indices.
 fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     unsafe_cell_debug_format(reader, id)
+        .or_else(|| loom_unsafe_cell_debug_format(reader, id))
+        .or_else(|| loom_atomic_debug_format(reader, id))
         .or_else(|| non_null_debug_format(reader, id))
         .or_else(|| atomic_debug_format(reader, id))
 }
 
 fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let (member, _) = unsafe_cell_layout(reader, id)?;
+    Some(DebugFormat::Transparent { member })
+}
+
+fn unsafe_cell_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
     let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
@@ -888,6 +895,65 @@ fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
         member.offset == 0
             && member.name.map(|name| reader.strings.get(name)) == Some("value")
             && reader.canonicalize(member.type_id) == target
+    });
+    let (index, _) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some((index as u32, target))
+}
+
+fn loom_unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
+    let name = st.name.map(|name| reader.strings.get(name))?;
+    if namespace != "tokio::loom::std::unsafe_cell"
+        || !name.starts_with("UnsafeCell<")
+        || !name.ends_with('>')
+    {
+        return None;
+    }
+
+    let [param] = st.template_params.as_ref() else { return None };
+    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
+        return None;
+    }
+    let target = reader.canonicalize(param.type_id);
+    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
+        member.offset == 0
+            && member.name.map(|name| reader.strings.get(name)) == Some("__0")
+            && unsafe_cell_layout(reader, member.type_id)
+                .is_some_and(|(_, inner_target)| inner_target == target)
+    });
+    let (index, _) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(DebugFormat::Transparent { member: index as u32 })
+}
+
+fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
+    let atomic_module = namespace.strip_prefix("tokio::loom::std::atomic_")?;
+    if atomic_module.is_empty() || atomic_module.contains("::") {
+        return None;
+    }
+    let name = st.name.map(|name| reader.strings.get(name))?;
+    if !name.starts_with("Atomic") {
+        return None;
+    }
+
+    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
+        if member.offset != 0
+            || member.name.map(|name| reader.strings.get(name)) != Some("inner")
+        {
+            return false;
+        }
+        let Some((_, atomic)) = unsafe_cell_layout(reader, member.type_id) else {
+            return false;
+        };
+        atomic_debug_format(reader, atomic).is_some()
     });
     let (index, _) = matches.next()?;
     if matches.next().is_some() {
