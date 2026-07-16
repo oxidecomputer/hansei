@@ -740,20 +740,24 @@ fn print_await_chain<'b, T: proc::Target>(
                     Some(bytes) => {
                         let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes)
                             .peel();
-                        let value = if v.ty.pointer_target().is_some() {
-                            match v.try_deref_ptr(ctx) {
-                                Ok(Some(pointee)) => format!(
-                                    "{:#x} -> {:#}",
-                                    pointee.addr,
-                                    pointee.as_ref().display_with_depth(value_depth)
-                                ),
-                                Ok(None) => {
+                        let value = if let Some(pointee_ty) = v.ty.pointer_target() {
+                            let addr = v.bytes.first_chunk::<8>().copied().map(u64::from_le_bytes);
+                            match addr.and_then(|addr| {
+                                ctx.proc
+                                    .read_bytes(addr, pointee_ty.size())
+                                    .ok()
+                                    .map(|bytes| (addr, bytes))
+                            }) {
+                                Some((addr, bytes)) => {
+                                    let pointee = reify::TypeInfoRef::new(pointee_ty, addr, &bytes);
+                                    format!(
+                                        "{addr:#x} -> {:#}",
+                                        pointee.display_with_depth(value_depth)
+                                    )
+                                }
+                                None => {
                                     format!("{} -> <unreadable>", v.display_with_depth(value_depth))
                                 }
-                                Err(e) => format!(
-                                    "{} -> <unreadable: {e}>",
-                                    v.display_with_depth(value_depth)
-                                ),
                             }
                         } else {
                             format!("{:#}", v.display_with_depth(value_depth))
