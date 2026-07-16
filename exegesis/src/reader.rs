@@ -1,9 +1,9 @@
 use crate::cgu::CodegenUnit;
 use crate::parallel_fold::OrderedParallelFold;
 use crate::raw_types::{
-    NamespaceTable, NsId, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember,
-    RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawUnion,
-    RawVariant, SourceLoc, VariantShape,
+    NamespaceTable, NsId, RawBase, RawEnum, RawEnumerator, RawFunc, RawGenericParameter, RawMember,
+    RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion, RawVariant,
+    SourceLoc, VariantShape,
 };
 use crate::string_table::{StrId, StringTable};
 use crate::{Error, FuncId, Result, Slice};
@@ -28,14 +28,6 @@ pub struct DwReader<'dw> {
     /// `DW_TAG_subroutine_type` DIEs. We retain only their identity so
     /// pointers can be classified as function pointers.
     subroutine_types: HashSet<TypeId>,
-    /// Name index for named types: (namespace, name) → canonical TypeId.
-    name_index: HashMap<(Option<NsId>, Option<StrId>), TypeId>,
-    /// Pointer dedup index: canonical target TypeId → canonical pointer TypeId.
-    pointer_index: HashMap<TypeId, TypeId>,
-    /// Array dedup index: canonical (element TypeId, count) → canonical
-    /// array TypeId. Arrays are anonymous, so like unnamed pointers they
-    /// dedup structurally rather than by name.
-    array_index: HashMap<(TypeId, u64), TypeId>,
     /// Substitution map: non-canonical TypeId → canonical TypeId.
     subs: HashMap<TypeId, TypeId>,
     /// All static variables, keyed by their VarId.
@@ -147,7 +139,8 @@ impl<'dw> DwReader<'dw> {
             fold = fold.max_in_flight(n.get());
         }
 
-        let collector = fold.run()?;
+        let mut collector = fold.run()?;
+        collector.finalize_types();
         Ok(collector)
     }
 
@@ -155,9 +148,6 @@ impl<'dw> DwReader<'dw> {
         Self {
             types: HashMap::new(),
             subroutine_types: HashSet::new(),
-            name_index: HashMap::new(),
-            pointer_index: HashMap::new(),
-            array_index: HashMap::new(),
             subs: HashMap::new(),
             variables: HashMap::new(),
             functions: HashMap::new(),
@@ -167,11 +157,10 @@ impl<'dw> DwReader<'dw> {
         }
     }
 
-    /// Ingest all types from a [`CodegenUnit`], deduplicating them into the
-    /// global type space. CGUs must be ingested in `.debug_info` order.
-    ///
-    /// Named types are deduplicated by `(namespace, name)`. Unnamed pointer
-    /// types are deduplicated by the canonical TypeId of their target.
+    /// Ingest all types from a [`CodegenUnit`] into the global type space.
+    /// CGUs must be ingested in `.debug_info` order. Deduplication is deferred
+    /// until every CGU has been collected so forward references cannot make
+    /// the result depend on ingestion order.
     fn ingest(&mut self, mut cgu: CodegenUnit<'dw>) {
         let ns_remap = self.remap_namespaces(&cgu.namespaces);
 
@@ -183,71 +172,90 @@ impl<'dw> DwReader<'dw> {
             remap_ns_in_place(&mut ty, &ns_remap);
             let ty = intern_type(&mut self.strings, ty);
 
-            match &ty {
-                RawType::Pointer(p) if p.name.is_none() => {
-                    // Unnamed pointers: dedup by canonical target type.
-                    let canonical_target = self.canonicalize(p.target_type_id);
-                    self.types.insert(type_id, ty);
-                    if let Some(&canonical_ptr) = self.pointer_index.get(&canonical_target) {
-                        self.subs.insert(type_id, canonical_ptr);
-                    } else {
-                        self.pointer_index.insert(canonical_target, type_id);
-                    }
-                }
-                RawType::Array(a) => {
-                    // Arrays are anonymous: dedup by canonical element and
-                    // count.
-                    let key = (self.canonicalize(a.elem_type_id), a.count);
-                    self.types.insert(type_id, ty);
-                    if let Some(&canonical_array) = self.array_index.get(&key) {
-                        self.subs.insert(type_id, canonical_array);
-                    } else {
-                        self.array_index.insert(key, type_id);
-                    }
-                }
-                _ => {
-                    // Named types: dedup by (namespace, name).
-                    let key = type_name_key(&ty);
-                    self.types.insert(type_id, ty);
-                    match self.name_index.entry(key) {
-                        std::collections::hash_map::Entry::Occupied(e) => {
-                            self.subs.insert(type_id, *e.get());
-                        }
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            e.insert(type_id);
-                        }
-                    }
-                }
-            }
+            self.types.insert(type_id, ty);
         }
 
         self.subroutine_types.extend(cgu.subroutine_types.drain());
 
         // Static variables are unique by address — no dedup needed.
-        // Remap namespace and canonicalize type references.
+        // Remap namespaces now; type references are canonicalized on access
+        // after the final alias map has been built.
         for (var_id, mut var) in cgu.variables.drain() {
             if let Some(id) = var.namespace {
                 var.namespace = Some(ns_remap[&id]);
             }
-            var.type_id = self.canonicalize(var.type_id);
             let var = intern_var(&mut self.strings, var);
             self.variables.insert(var_id, var);
         }
 
-        // Functions — remap namespaces, canonicalize type refs, intern strings.
+        // Functions — remap namespaces and intern strings. Type references
+        // are canonicalized on access after finalization.
         for (func_id, mut func) in cgu.funcs.drain() {
             if let Some(id) = func.namespace {
                 func.namespace = Some(ns_remap[&id]);
             }
-            func.return_type_id = func.return_type_id.map(|id| self.canonicalize(id));
-            for param in func.formal_parameters.iter_mut() {
-                param.type_id = param.type_id.map(|id| self.canonicalize(id));
-            }
-            for param in func.template_params.iter_mut() {
-                param.type_id = self.canonicalize(param.type_id);
-            }
             let func = intern_func(&mut self.strings, func);
             self.functions.insert(func_id, func);
+        }
+    }
+
+    /// Build the global alias map after every CGU has been collected.
+    ///
+    /// Named types retain the historical `(namespace, name)` identity rule.
+    /// Anonymous pointers and arrays are then deduplicated structurally. The
+    /// structural pass repeats because an outer pointer may only become equal
+    /// after its pointee was deduplicated in an earlier pass.
+    fn finalize_types(&mut self) {
+        self.subs.clear();
+
+        let mut named: HashMap<(Option<NsId>, Option<StrId>), Vec<TypeId>> = HashMap::new();
+        for (&id, ty) in &self.types {
+            if !matches!(ty, RawType::Pointer(p) if p.name.is_none())
+                && !matches!(ty, RawType::Array(_))
+            {
+                named.entry(type_name_key(ty)).or_default().push(id);
+            }
+        }
+        for ids in named.values() {
+            self.alias_to_lowest(ids);
+        }
+
+        loop {
+            let old_len = self.subs.len();
+            let mut pointers: HashMap<TypeId, Vec<TypeId>> = HashMap::new();
+            let mut arrays: HashMap<(TypeId, u64), Vec<TypeId>> = HashMap::new();
+
+            for (&id, ty) in &self.types {
+                match ty {
+                    RawType::Pointer(p) if p.name.is_none() => pointers
+                        .entry(self.canonicalize(p.target_type_id))
+                        .or_default()
+                        .push(id),
+                    RawType::Array(a) => arrays
+                        .entry((self.canonicalize(a.elem_type_id), a.count))
+                        .or_default()
+                        .push(id),
+                    _ => {}
+                }
+            }
+            for ids in pointers.values().chain(arrays.values()) {
+                self.alias_to_lowest(ids);
+            }
+
+            if self.subs.len() == old_len {
+                break;
+            }
+        }
+    }
+
+    fn alias_to_lowest(&mut self, ids: &[TypeId]) {
+        let Some(&canonical) = ids.iter().min() else {
+            return;
+        };
+        for &id in ids {
+            if id != canonical {
+                self.subs.insert(id, canonical);
+            }
         }
     }
 
@@ -495,10 +503,7 @@ fn intern_param<'dw>(
 }
 
 /// Convert a `RawFunc<&'dw str>` into a `RawFunc<StrId>` by interning all strings.
-fn intern_func<'dw>(
-    strings: &mut StringTable<'dw>,
-    func: RawFunc<&'dw str>,
-) -> RawFunc<StrId> {
+fn intern_func<'dw>(strings: &mut StringTable<'dw>, func: RawFunc<&'dw str>) -> RawFunc<StrId> {
     RawFunc {
         name: intern_opt(strings, func.name),
         namespace: func.namespace,
@@ -532,5 +537,95 @@ fn remap_ns_in_place(ty: &mut RawType<&str>, ns_remap: &HashMap<NsId, NsId>) {
         RawType::Struct(s) => remap(&mut s.namespace),
         RawType::Union(u) => remap(&mut u.namespace),
         RawType::Pointer(_) | RawType::Array(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::raw_types::RawArray;
+    use gimli::{DebugInfoOffset, UnitSectionOffset};
+
+    fn type_id(offset: usize) -> TypeId {
+        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    fn insert_named_struct(reader: &mut DwReader<'static>, id: TypeId, name: &'static str) {
+        let name = reader.strings.intern(name);
+        reader.types.insert(
+            id,
+            RawType::Struct(RawStruct {
+                name: Some(name),
+                namespace: None,
+                size: 1,
+                members: Box::new([]),
+                template_params: Box::new([]),
+                source_loc: None,
+            }),
+        );
+    }
+
+    fn insert_pointer(reader: &mut DwReader<'static>, id: TypeId, target: TypeId) {
+        reader.types.insert(
+            id,
+            RawType::Pointer(RawPointer {
+                name: None,
+                target_type_id: target,
+            }),
+        );
+    }
+
+    #[test]
+    fn finalization_resolves_forward_references_to_a_fixed_point() {
+        let mut reader = DwReader::new();
+        let canonical = type_id(0x10);
+        let duplicate = type_id(0x50);
+        let pointer = type_id(0x20);
+        let duplicate_pointer = type_id(0x60);
+        let outer_pointer = type_id(0x30);
+        let duplicate_outer_pointer = type_id(0x40);
+
+        insert_named_struct(&mut reader, canonical, "Value");
+        insert_named_struct(&mut reader, duplicate, "Value");
+        insert_pointer(&mut reader, pointer, canonical);
+        insert_pointer(&mut reader, duplicate_pointer, duplicate);
+        insert_pointer(&mut reader, outer_pointer, pointer);
+        insert_pointer(&mut reader, duplicate_outer_pointer, duplicate_pointer);
+
+        reader.finalize_types();
+
+        assert_eq!(reader.canonicalize(duplicate), canonical);
+        assert_eq!(reader.canonicalize(duplicate_pointer), pointer);
+        assert_eq!(reader.canonicalize(duplicate_outer_pointer), outer_pointer);
+    }
+
+    #[test]
+    fn finalization_deduplicates_arrays_after_their_elements() {
+        let mut reader = DwReader::new();
+        let canonical = type_id(0x10);
+        let duplicate = type_id(0x50);
+        let array = type_id(0x20);
+        let duplicate_array = type_id(0x60);
+
+        insert_named_struct(&mut reader, canonical, "Value");
+        insert_named_struct(&mut reader, duplicate, "Value");
+        reader.types.insert(
+            array,
+            RawType::Array(RawArray {
+                elem_type_id: canonical,
+                count: 4,
+            }),
+        );
+        reader.types.insert(
+            duplicate_array,
+            RawType::Array(RawArray {
+                elem_type_id: duplicate,
+                count: 4,
+            }),
+        );
+
+        reader.finalize_types();
+
+        assert_eq!(reader.canonicalize(duplicate_array), array);
     }
 }
