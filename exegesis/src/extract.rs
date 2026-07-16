@@ -867,11 +867,33 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
 /// member indices.
 fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     dyn_pointer_debug_format(reader, id)
+        .or_else(|| raw_waker_vtable_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
         .or_else(|| non_null_debug_format(reader, id))
         .or_else(|| atomic_debug_format(reader, id))
+}
+
+fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    if fq_name(reader, id).as_deref() != Some("core::task::wake::RawWakerVTable") {
+        return None;
+    }
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let member = |expected: &str| {
+        let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
+            member.name.map(|name| reader.strings.get(name)) == Some(expected)
+                && matches!(reader.canonical_type(member.type_id), Some(RawType::Pointer(_)))
+        });
+        let (index, _) = matches.next()?;
+        matches.next().is_none().then_some(index as u32)
+    };
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::RawWakerVTable {
+        clone: member("clone")?,
+        wake: member("wake")?,
+        wake_by_ref: member("wake_by_ref")?,
+        drop: member("drop")?,
+    }))
 }
 
 /// Recognize rustc's DWARF representation of a Rust trait-object wide

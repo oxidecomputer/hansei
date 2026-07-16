@@ -745,6 +745,24 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 proc,
             );
         }
+        if let DebugFormat::Known(KnownFormat::RawWakerVTable {
+            clone_offset,
+            wake_offset,
+            wake_by_ref_offset,
+            drop_offset,
+        }) = format
+        {
+            return write_raw_waker_vtable(
+                f,
+                info,
+                clone_offset,
+                wake_offset,
+                wake_by_ref_offset,
+                drop_offset,
+                depth,
+                proc,
+            );
+        }
 
         let (target, offset, child_proc, child_visited) = match format {
             DebugFormat::Transparent { target, offset } => (target, offset, proc, visited),
@@ -754,6 +772,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 (value, offset, None, None)
             }
             DebugFormat::Known(KnownFormat::DynPointer { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
         };
         let start = offset as usize;
         let Some(end) = start.checked_add(target.size() as usize) else {
@@ -1029,6 +1048,58 @@ struct VtableFunction {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn write_raw_waker_vtable<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    clone_offset: u64,
+    wake_offset: u64,
+    wake_by_ref_offset: u64,
+    drop_offset: u64,
+    depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+) -> fmt::Result {
+    let fields = [
+        ("clone", clone_offset),
+        ("wake", wake_offset),
+        ("wake_by_ref", wake_by_ref_offset),
+        ("drop", drop_offset),
+    ];
+    let pretty = f.alternate();
+    write!(f, "{} {{", info.ty.name())?;
+    for (index, (name, offset)) in fields.into_iter().enumerate() {
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        } else if index == 0 {
+            write!(f, " ")?;
+        } else {
+            write!(f, ", ")?;
+        }
+        write!(f, "{name}: ")?;
+        if let Some(address) = read_u64_at(info.bytes, offset) {
+            write!(f, "0x{address:x}")?;
+            if let Some(symbol) = resolve_function_symbol(proc, address) {
+                write!(f, " -> {symbol}")?;
+            } else if proc.is_some() && address != 0 {
+                write!(f, " -> <unknown symbol>")?;
+            }
+        } else {
+            write!(f, "<truncated>")?;
+        }
+        if pretty {
+            write!(f, ",")?;
+        }
+    }
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_dyn_pointer<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
@@ -1058,13 +1129,9 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
             if slot == size_slot || slot == align_slot || address == 0 {
                 continue;
             }
-            let Some(symbol) = proc.function_symbol(address) else {
+            let Some(display) = resolve_function_symbol(Some(proc), address) else {
                 continue;
             };
-            let stripped = exegesis::bundle::strip_llvm_suffix(&symbol);
-            let display = rustc_demangle::try_demangle(stripped)
-                .map(|symbol| format!("{symbol:#}"))
-                .unwrap_or_else(|_| stripped.to_owned());
             let concrete = concrete_type_from_symbol(&display);
             functions.push(VtableFunction { slot, display, concrete });
         }
@@ -1140,6 +1207,19 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
         write!(f, " ")?;
     }
     write!(f, "}}")
+}
+
+fn resolve_function_symbol(proc: Option<&dyn ReadFromProc>, address: u64) -> Option<String> {
+    if address == 0 {
+        return None;
+    }
+    let symbol = proc?.function_symbol(address)?;
+    let stripped = exegesis::bundle::strip_llvm_suffix(&symbol);
+    Some(
+        rustc_demangle::try_demangle(stripped)
+            .map(|symbol| format!("{symbol:#}"))
+            .unwrap_or_else(|_| stripped.to_owned()),
+    )
 }
 
 fn write_dyn_field_prefix(

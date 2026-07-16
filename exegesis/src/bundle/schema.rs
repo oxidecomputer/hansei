@@ -120,6 +120,14 @@ pub enum KnownFormat {
         size: u32,
         align: u32,
     },
+    /// Display the four function pointers in `core::task::RawWakerVTable`
+    /// as symbols rather than following them as data pointers.
+    RawWakerVTable {
+        clone: u32,
+        wake: u32,
+        wake_by_ref: u32,
+        drop: u32,
+    },
 }
 
 impl TypeTable {
