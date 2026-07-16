@@ -14,13 +14,14 @@ use gimli::{Dwarf, UnitRef};
 use regex::Regex;
 use tracing::debug;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZero;
 
 /// A global, deduplicated view of all types from the DWARF debug information.
 ///
-/// CGUs are ingested in `.debug_info` order via [`DwReader::ingest`]. This
-/// guarantees that the canonical [`TypeId`] for each deduplicated type is
-/// always the lowest DWARF offset.
+/// CGUs are ingested in `.debug_info` order via [`DwReader::ingest`], then
+/// reconciled after every type is available. Canonical IDs prefer complete
+/// definitions and otherwise use the lowest compatible DWARF offset.
 #[derive(Default, Debug)]
 pub struct DwReader<'dw> {
     /// All types from all CGUs, keyed by their original TypeId.
@@ -82,13 +83,11 @@ impl<'dw> DwReader<'dw> {
     /// information. It iterates over every compilation unit (CGU) in the
     /// `.debug_info` section, parses each one into a [`CodegenUnit`] on a
     /// worker thread, and folds the results into a single [`DwReader`]
-    /// **in `.debug_info` order**. That ordering guarantee is critical:
-    /// because types are deduplicated by `(namespace, name)`, the first
-    /// occurrence wins, and processing in section order ensures the
-    /// canonical [`TypeId`] for every deduplicated type is always the
-    /// lowest DWARF offset. Changing the ingestion order would silently
-    /// reassign canonical IDs and break any downstream consumers that
-    /// persist or compare them.
+    /// **in `.debug_info` order**. After collection, a final reconciliation
+    /// pass resolves declarations to definitions, partitions same-named types
+    /// by compatible layout, and deduplicates anonymous pointers and arrays.
+    /// Section order remains the deterministic tie-breaker between equally
+    /// complete definitions.
     ///
     /// # Arguments
     ///
@@ -210,10 +209,11 @@ impl<'dw> DwReader<'dw> {
 
     /// Build the global alias map after every CGU has been collected.
     ///
-    /// Named types retain the historical `(namespace, name)` identity rule.
-    /// Anonymous pointers and arrays are then deduplicated structurally. The
-    /// structural pass repeats because an outer pointer may only become equal
-    /// after its pointee was deduplicated in an earlier pass.
+    /// Named types are grouped by kind, namespace, and name, then partitioned
+    /// by compatible layout so name collisions are not silently collapsed.
+    /// Anonymous pointers and arrays are deduplicated structurally. That pass
+    /// repeats because an outer pointer may only become equal after its
+    /// pointee was deduplicated in an earlier pass.
     fn finalize_types(&mut self) {
         self.subs.clear();
 
@@ -240,16 +240,21 @@ impl<'dw> DwReader<'dw> {
             self.subs.insert(duplicate, canonical);
         }
 
-        let mut named: HashMap<(Option<NsId>, Option<StrId>), Vec<TypeId>> = HashMap::new();
+        let mut named: BTreeMap<(u8, Option<NsId>, StrId), Vec<TypeId>> = BTreeMap::new();
         for (&id, ty) in &self.types {
-            if !matches!(ty, RawType::Pointer(p) if p.name.is_none())
-                && !matches!(ty, RawType::Array(_))
-            {
-                named.entry(type_name_key(ty)).or_default().push(id);
+            if let Some(name) = ty.name() {
+                named
+                    .entry((raw_type_kind(ty), ty.namespace(), name))
+                    .or_default()
+                    .push(id);
             }
         }
+        let mut named_aliases = Vec::new();
         for ids in named.values() {
-            self.alias_named_types(ids);
+            named_aliases.extend(self.compatible_named_aliases(ids));
+        }
+        for (duplicate, canonical) in named_aliases {
+            self.subs.insert(duplicate, canonical);
         }
 
         loop {
@@ -291,26 +296,291 @@ impl<'dw> DwReader<'dw> {
         }
     }
 
-    fn alias_named_types(&mut self, ids: &[TypeId]) {
-        let resolved: Vec<_> = ids.iter().map(|&id| self.canonicalize(id)).collect();
-        let canonical = resolved
+    /// Partition one named-type group by its own layout and the identities of
+    /// referenced types. Complete, incompatible definitions remain separate.
+    /// An unlinked declaration is attached only when the name identifies one
+    /// compatible definition class; otherwise retaining it is safer than
+    /// guessing.
+    fn compatible_named_aliases(&self, ids: &[TypeId]) -> Vec<(TypeId, TypeId)> {
+        let resolved: BTreeSet<_> = ids.iter().map(|&id| self.canonicalize(id)).collect();
+        let mut definitions: Vec<_> = resolved
             .iter()
             .copied()
             .filter(|id| !self.type_declarations.contains(id))
-            .min()
-            .or_else(|| resolved.iter().copied().min());
-        let Some(canonical) = canonical else {
-            return;
-        };
-        for id in resolved {
-            if id != canonical {
-                self.subs.insert(id, canonical);
+            .collect();
+        definitions.sort_by(|left, right| {
+            self.layout_detail(*right)
+                .cmp(&self.layout_detail(*left))
+                .then_with(|| left.cmp(right))
+        });
+        let declarations: Vec<_> = resolved
+            .iter()
+            .copied()
+            .filter(|id| self.type_declarations.contains(id))
+            .collect();
+
+        let mut classes: Vec<Vec<TypeId>> = Vec::new();
+        for id in definitions {
+            if let Some(class) = classes
+                .iter_mut()
+                .find(|class| self.types_have_compatible_layout(class[0], id))
+            {
+                class.push(id);
+            } else {
+                classes.push(vec![id]);
             }
         }
-        for &id in ids {
-            if id != canonical {
-                self.subs.insert(id, canonical);
+
+        let mut aliases = Vec::new();
+        for class in &classes {
+            let canonical = class[0];
+            aliases.extend(
+                class
+                    .iter()
+                    .copied()
+                    .filter(|&id| id != canonical)
+                    .map(|id| (id, canonical)),
+            );
+        }
+
+        match classes.as_slice() {
+            [class] => {
+                let canonical = class[0];
+                aliases.extend(
+                    declarations
+                        .into_iter()
+                        .filter(|&id| id != canonical)
+                        .map(|id| (id, canonical)),
+                );
             }
+            [] => {
+                if let Some(&canonical) = declarations.first() {
+                    aliases.extend(
+                        declarations
+                            .iter()
+                            .copied()
+                            .filter(|&id| id != canonical)
+                            .map(|id| (id, canonical)),
+                    );
+                }
+            }
+            _ => {}
+        }
+
+        aliases
+    }
+
+    fn layout_detail(&self, id: TypeId) -> usize {
+        match self.types.get(&self.canonicalize(id)) {
+            Some(RawType::Base(_)) => 1,
+            Some(RawType::Pointer(_)) | Some(RawType::Array(_)) => 2,
+            Some(RawType::Struct(ty)) => ty.members.len() * 2 + ty.template_params.len() + 1,
+            Some(RawType::Union(ty)) => ty.members.len() * 2 + ty.template_params.len() + 1,
+            Some(RawType::Enum(ty)) => {
+                let variants = match &ty.shape {
+                    VariantShape::Zero => 0,
+                    VariantShape::One(_) => 1,
+                    VariantShape::Many { discr, variants } => {
+                        variants.len() * 2 + usize::from(discr.is_some())
+                    }
+                    VariantShape::CStyle { enumerators, .. } => enumerators.len(),
+                };
+                variants + ty.template_params.len() + 1
+            }
+            None => 0,
+        }
+    }
+
+    fn types_have_compatible_layout(&self, left: TypeId, right: TypeId) -> bool {
+        let left = self.canonicalize(left);
+        let right = self.canonicalize(right);
+        if left == right {
+            return true;
+        }
+
+        match (self.types.get(&left), self.types.get(&right)) {
+            (Some(RawType::Base(a)), Some(RawType::Base(b))) => {
+                a.encoding == b.encoding
+                    && a.size == b.size
+                    && compatible_alignment(a.alignment, b.alignment)
+            }
+            (Some(RawType::Pointer(a)), Some(RawType::Pointer(b))) => self
+                .type_references_have_same_identity(
+                    a.target_type_id,
+                    b.target_type_id,
+                    &mut HashSet::new(),
+                ),
+            (Some(RawType::Array(a)), Some(RawType::Array(b))) => {
+                a.count == b.count
+                    && self.type_references_have_same_identity(
+                        a.elem_type_id,
+                        b.elem_type_id,
+                        &mut HashSet::new(),
+                    )
+            }
+            (Some(RawType::Struct(a)), Some(RawType::Struct(b))) => {
+                a.size == b.size
+                    && self.members_have_compatible_layout(&a.members, &b.members)
+                    && self.params_have_compatible_layout(&a.template_params, &b.template_params)
+            }
+            (Some(RawType::Union(a)), Some(RawType::Union(b))) => {
+                a.size == b.size
+                    && self.members_have_compatible_layout(&a.members, &b.members)
+                    && self.params_have_compatible_layout(&a.template_params, &b.template_params)
+            }
+            (Some(RawType::Enum(a)), Some(RawType::Enum(b))) => {
+                a.size == b.size
+                    && compatible_alignment(a.alignment, b.alignment)
+                    && self.variant_shapes_have_compatible_layout(&a.shape, &b.shape)
+                    && self.params_have_compatible_layout(&a.template_params, &b.template_params)
+            }
+            _ => false,
+        }
+    }
+
+    /// Compare referenced types by semantic identity rather than requiring
+    /// every duplicate DIE below them to carry equally complete layout data.
+    /// Each named child is reconciled independently in its own collision
+    /// group; anonymous pointers and arrays retain their structural identity.
+    fn type_references_have_same_identity(
+        &self,
+        left: TypeId,
+        right: TypeId,
+        visiting: &mut HashSet<(TypeId, TypeId)>,
+    ) -> bool {
+        let left = self.canonicalize(left);
+        let right = self.canonicalize(right);
+        if left == right {
+            return true;
+        }
+        let pair = ordered_pair(left, right);
+        if !visiting.insert(pair) {
+            return true;
+        }
+
+        let result = match (self.types.get(&left), self.types.get(&right)) {
+            (Some(left), Some(right)) if left.name().is_some() && right.name().is_some() => {
+                raw_type_kind(left) == raw_type_kind(right)
+                    && left.namespace() == right.namespace()
+                    && left.name() == right.name()
+            }
+            (Some(RawType::Pointer(left)), Some(RawType::Pointer(right))) => self
+                .type_references_have_same_identity(
+                    left.target_type_id,
+                    right.target_type_id,
+                    visiting,
+                ),
+            (Some(RawType::Array(left)), Some(RawType::Array(right))) => {
+                left.count == right.count
+                    && self.type_references_have_same_identity(
+                        left.elem_type_id,
+                        right.elem_type_id,
+                        visiting,
+                    )
+            }
+            (None, None) => {
+                self.subroutine_types.contains(&left) && self.subroutine_types.contains(&right)
+            }
+            _ => false,
+        };
+        visiting.remove(&pair);
+        result
+    }
+
+    fn members_have_compatible_layout(
+        &self,
+        left: &[RawMember<StrId>],
+        right: &[RawMember<StrId>],
+    ) -> bool {
+        if left.is_empty() || right.is_empty() {
+            return true;
+        }
+        left.len() == right.len()
+            && left.iter().zip(right).all(|(left, right)| {
+                left.name == right.name
+                    && left.offset == right.offset
+                    && self.type_references_have_same_identity(
+                        left.type_id,
+                        right.type_id,
+                        &mut HashSet::new(),
+                    )
+            })
+    }
+
+    fn params_have_compatible_layout(
+        &self,
+        left: &[RawGenericParameter<StrId>],
+        right: &[RawGenericParameter<StrId>],
+    ) -> bool {
+        if left.is_empty() || right.is_empty() {
+            return true;
+        }
+        left.len() == right.len()
+            && left.iter().zip(right).all(|(left, right)| {
+                left.name == right.name
+                    && self.type_references_have_same_identity(
+                        left.type_id,
+                        right.type_id,
+                        &mut HashSet::new(),
+                    )
+            })
+    }
+
+    fn variant_shapes_have_compatible_layout(
+        &self,
+        left: &VariantShape<StrId>,
+        right: &VariantShape<StrId>,
+    ) -> bool {
+        match (left, right) {
+            (VariantShape::Zero, VariantShape::Zero) => true,
+            (VariantShape::One(left), VariantShape::One(right)) => self
+                .members_have_compatible_layout(
+                    std::slice::from_ref(&left.member),
+                    std::slice::from_ref(&right.member),
+                ),
+            (
+                VariantShape::Many {
+                    discr: left_discr,
+                    variants: left_variants,
+                },
+                VariantShape::Many {
+                    discr: right_discr,
+                    variants: right_variants,
+                },
+            ) => {
+                left_variants.is_empty()
+                    || right_variants.is_empty()
+                    || (optional_members_have_compatible_layout(
+                        self,
+                        left_discr.as_ref(),
+                        right_discr.as_ref(),
+                    ) && left_variants.len() == right_variants.len()
+                        && left_variants.iter().zip(right_variants).all(
+                            |((left_discr, left), (right_discr, right))| {
+                                left_discr == right_discr
+                                    && self.members_have_compatible_layout(
+                                        std::slice::from_ref(&left.member),
+                                        std::slice::from_ref(&right.member),
+                                    )
+                            },
+                        ))
+            }
+            (
+                VariantShape::CStyle {
+                    repr_type_id: left_repr,
+                    enumerators: left_enumerators,
+                },
+                VariantShape::CStyle {
+                    repr_type_id: right_repr,
+                    enumerators: right_enumerators,
+                },
+            ) => {
+                optional_type_ids_have_compatible_layout(self, *left_repr, *right_repr)
+                    && (left_enumerators.is_empty()
+                        || right_enumerators.is_empty()
+                        || left_enumerators == right_enumerators)
+            }
+            _ => false,
         }
     }
 
@@ -389,7 +659,7 @@ impl<'dw> DwReader<'dw> {
 
     /// The number of canonical (deduplicated) types.
     pub fn canonical_type_count(&self) -> usize {
-        self.types.len() - self.subs.len()
+        self.canonical_types().count()
     }
 
     /// Re-intern all namespaces from a CGU's local table into the global
@@ -407,16 +677,55 @@ impl<'dw> DwReader<'dw> {
     }
 }
 
-/// Extract the name index key from a type.
-fn type_name_key(ty: &RawType<StrId>) -> (Option<NsId>, Option<StrId>) {
+fn raw_type_kind(ty: &RawType<StrId>) -> u8 {
     match ty {
-        RawType::Base(b) => (b.namespace, b.name),
-        RawType::Enum(e) => (e.namespace, e.name),
-        RawType::Pointer(p) => (None, p.name),
-        RawType::Struct(s) => (s.namespace, s.name),
-        RawType::Union(u) => (u.namespace, u.name),
-        // Arrays never reach the named-dedup path (see `ingest`).
-        RawType::Array(_) => (None, None),
+        RawType::Base(_) => 0,
+        RawType::Pointer(_) => 1,
+        RawType::Enum(_) => 2,
+        RawType::Struct(_) => 3,
+        RawType::Union(_) => 4,
+        RawType::Array(_) => 5,
+    }
+}
+
+fn ordered_pair(left: TypeId, right: TypeId) -> (TypeId, TypeId) {
+    if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    }
+}
+
+fn compatible_alignment(left: Option<NonZero<u64>>, right: Option<NonZero<u64>>) -> bool {
+    left.is_none() || right.is_none() || left == right
+}
+
+fn optional_members_have_compatible_layout(
+    reader: &DwReader<'_>,
+    left: Option<&RawMember<StrId>>,
+    right: Option<&RawMember<StrId>>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => reader.members_have_compatible_layout(
+            std::slice::from_ref(left),
+            std::slice::from_ref(right),
+        ),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn optional_type_ids_have_compatible_layout(
+    reader: &DwReader<'_>,
+    left: Option<TypeId>,
+    right: Option<TypeId>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            reader.type_references_have_same_identity(left, right, &mut HashSet::new())
+        }
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -779,5 +1088,73 @@ mod tests {
                 .map(|name| reader.strings.get(name)),
             Some("Value")
         );
+    }
+
+    #[test]
+    fn finalization_unifies_matching_named_layouts() {
+        let mut reader = DwReader::new();
+        let canonical = type_id(0x10);
+        let duplicate = type_id(0x20);
+
+        insert_struct(&mut reader, canonical, Some("Value"), 8);
+        insert_struct(&mut reader, duplicate, Some("Value"), 8);
+
+        reader.finalize_types();
+
+        assert_eq!(reader.canonicalize(duplicate), canonical);
+    }
+
+    #[test]
+    fn finalization_preserves_incompatible_name_collisions() {
+        let mut reader = DwReader::new();
+        let declaration = type_id(0x10);
+        let small = type_id(0x20);
+        let large = type_id(0x30);
+        let duplicate_small = type_id(0x40);
+
+        insert_struct(&mut reader, declaration, Some("Value"), 0);
+        insert_struct(&mut reader, small, Some("Value"), 4);
+        insert_struct(&mut reader, large, Some("Value"), 8);
+        insert_struct(&mut reader, duplicate_small, Some("Value"), 4);
+        reader.type_declarations.insert(declaration);
+
+        reader.finalize_types();
+
+        assert_eq!(reader.canonicalize(duplicate_small), small);
+        assert_eq!(reader.canonicalize(small), small);
+        assert_eq!(reader.canonicalize(large), large);
+        assert_eq!(reader.canonicalize(declaration), declaration);
+    }
+
+    #[test]
+    fn finalization_does_not_merge_anonymous_or_different_kind_types() {
+        let mut reader = DwReader::new();
+        let anonymous_a = type_id(0x10);
+        let anonymous_b = type_id(0x20);
+        let named_struct = type_id(0x30);
+        let named_union = type_id(0x40);
+
+        insert_struct(&mut reader, anonymous_a, None, 8);
+        insert_struct(&mut reader, anonymous_b, None, 8);
+        insert_struct(&mut reader, named_struct, Some("Value"), 8);
+        let name = reader.strings.intern("Value");
+        reader.types.insert(
+            named_union,
+            RawType::Union(RawUnion {
+                name: Some(name),
+                namespace: None,
+                size: 8,
+                members: Box::new([]),
+                template_params: Box::new([]),
+                source_loc: None,
+            }),
+        );
+
+        reader.finalize_types();
+
+        assert_eq!(reader.canonicalize(anonymous_a), anonymous_a);
+        assert_eq!(reader.canonicalize(anonymous_b), anonymous_b);
+        assert_eq!(reader.canonicalize(named_struct), named_struct);
+        assert_eq!(reader.canonicalize(named_union), named_union);
     }
 }
