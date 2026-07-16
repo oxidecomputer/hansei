@@ -133,6 +133,13 @@ pub enum KnownFormat {
     },
     /// Display the octets of an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: u32 },
+    /// Display the initialized elements of an `alloc::vec::Vec<T, A>`.
+    Vec {
+        pointer: Vec<u32>,
+        length: Vec<u32>,
+        capacity: Vec<u32>,
+        element: BundleTypeId,
+    },
     /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
     /// its initialized key/value entries.
     ///

@@ -1083,6 +1083,88 @@ struct RawBTreeMapFormat {
     edge: Vec<u32>,
 }
 
+#[derive(Clone, Debug)]
+struct RawVecFormat {
+    pointer: Vec<u32>,
+    length: Vec<u32>,
+    capacity: Vec<u32>,
+    element: TypeId,
+}
+
+fn vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawVecFormat> {
+    let RawType::Struct(vec) = reader.canonical_type(id)? else { return None };
+    if fq_name(reader, id)?.split('<').next()? != "alloc::vec::Vec" {
+        return None;
+    }
+    let [element_param, alloc_param] = vec.template_params.as_ref() else { return None };
+    if element_param.name.map(|name| reader.strings.get(name)) != Some("T")
+        || alloc_param.name.map(|name| reader.strings.get(name)) != Some("A")
+    {
+        return None;
+    }
+    let element = reader.canonicalize(element_param.type_id);
+    let alloc = reader.canonicalize(alloc_param.type_id);
+
+    let (buf_index, buf_member) = unique_member(reader, &vec.members, "buf")?;
+    let (len_index, len_member) = unique_member(reader, &vec.members, "len")?;
+    if !is_unsigned_integer(reader, len_member.type_id, crate::bundle::POINTER_SIZE) {
+        return None;
+    }
+
+    let RawType::Struct(raw_vec) = reader.canonical_type(buf_member.type_id)? else {
+        return None;
+    };
+    if fq_name(reader, buf_member.type_id)?.split('<').next()? != "alloc::raw_vec::RawVec" {
+        return None;
+    }
+    let [raw_element, raw_alloc] = raw_vec.template_params.as_ref() else { return None };
+    if reader.canonicalize(raw_element.type_id) != element
+        || reader.canonicalize(raw_alloc.type_id) != alloc
+    {
+        return None;
+    }
+
+    let (inner_index, inner_member) = unique_member(reader, &raw_vec.members, "inner")?;
+    let RawType::Struct(inner) = reader.canonical_type(inner_member.type_id)? else {
+        return None;
+    };
+    if fq_name(reader, inner_member.type_id)?.split('<').next()?
+        != "alloc::raw_vec::RawVecInner"
+    {
+        return None;
+    }
+    let [inner_alloc] = inner.template_params.as_ref() else { return None };
+    if reader.canonicalize(inner_alloc.type_id) != alloc {
+        return None;
+    }
+
+    let mut pointer_paths = Vec::new();
+    find_pointer_paths_any_offset(
+        reader,
+        reader.canonicalize(inner_member.type_id),
+        &|target| is_unsigned_integer(reader, target, 1),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut pointer_paths,
+    );
+    let [(pointer_path, _)] = pointer_paths.as_slice() else { return None };
+
+    let (cap_index, cap_member) = unique_member(reader, &inner.members, "cap")?;
+    let (cap_value, _) = usize_no_high_bit_layout(reader, cap_member.type_id)?;
+
+    let prefix = [buf_index as u32, inner_index as u32];
+    Some(RawVecFormat {
+        pointer: prefix.iter().copied().chain(pointer_path.iter().copied()).collect(),
+        length: vec![len_index as u32],
+        capacity: prefix
+            .iter()
+            .copied()
+            .chain([cap_index as u32, cap_value])
+            .collect(),
+        element,
+    })
+}
+
 /// Recognize the private node layout of `BTreeMap<K, V, A>`. Unlike the
 /// simpler known formats, this retains a few referenced types until emission
 /// so they can be translated to bundle ids.
@@ -1330,6 +1412,29 @@ fn find_pointer_paths(
     seen: &mut Vec<TypeId>,
     found: &mut Vec<(Vec<u32>, TypeId)>,
 ) {
+    find_pointer_paths_inner(reader, current, matches, path, seen, found, true)
+}
+
+fn find_pointer_paths_any_offset(
+    reader: &DwReader<'_>,
+    current: TypeId,
+    matches: &impl Fn(TypeId) -> bool,
+    path: &mut Vec<u32>,
+    seen: &mut Vec<TypeId>,
+    found: &mut Vec<(Vec<u32>, TypeId)>,
+) {
+    find_pointer_paths_inner(reader, current, matches, path, seen, found, false)
+}
+
+fn find_pointer_paths_inner(
+    reader: &DwReader<'_>,
+    current: TypeId,
+    matches: &impl Fn(TypeId) -> bool,
+    path: &mut Vec<u32>,
+    seen: &mut Vec<TypeId>,
+    found: &mut Vec<(Vec<u32>, TypeId)>,
+    zero_offset_only: bool,
+) {
     let current = reader.canonicalize(current);
     if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
         return;
@@ -1347,9 +1452,21 @@ fn find_pointer_paths(
         _ => return,
     };
     seen.push(current);
-    for (index, member) in members.iter().enumerate().filter(|(_, member)| member.offset == 0) {
+    for (index, member) in members
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| !zero_offset_only || member.offset == 0)
+    {
         path.push(index as u32);
-        find_pointer_paths(reader, member.type_id, matches, path, seen, found);
+        find_pointer_paths_inner(
+            reader,
+            member.type_id,
+            matches,
+            path,
+            seen,
+            found,
+            zero_offset_only,
+        );
         path.pop();
     }
     seen.pop();
@@ -1638,6 +1755,11 @@ fn unique_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
 }
 
 fn usize_no_high_bit_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let (member, _) = usize_no_high_bit_layout(reader, id)?;
+    Some(DebugFormat::Transparent { member })
+}
+
+fn usize_no_high_bit_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
     if fq_name(reader, id).as_deref() != Some("core::num::niche_types::UsizeNoHighBit") {
         return None;
     }
@@ -1651,7 +1773,7 @@ fn usize_no_high_bit_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<D
     if matches.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent { member: index as u32 })
+    Some((index as u32, reader.canonicalize(st.members[index].type_id)))
 }
 
 fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
@@ -1991,7 +2113,15 @@ impl<'a> Emitter<'a> {
         while let Some((tid, bid)) = self.pending.pop_front() {
             let def = self.convert(tid);
             self.defs[bid.0 as usize] = def;
-            if let Some(format) = btree_map_debug_format(self.reader, tid) {
+            if let Some(format) = vec_debug_format(self.reader, tid) {
+                let format = crate::bundle::KnownFormat::Vec {
+                    pointer: format.pointer,
+                    length: format.length,
+                    capacity: format.capacity,
+                    element: self.reserve(format.element),
+                };
+                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(format) = btree_map_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::BTreeMap {
                     root: format.root,
                     length: format.length,

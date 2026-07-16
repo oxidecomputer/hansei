@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -440,6 +440,70 @@ impl Bundle {
                             "IP-address debug format for type {} does not contain 4 or 16 u8 octets",
                             id.0
                         ));
+                    }
+                }
+                crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::Vec {
+                        pointer,
+                        length,
+                        capacity,
+                        element,
+                    },
+                ) => {
+                    check_ty("Vec element", *element)?;
+                    if type_size(self, *element, &mut Vec::new()).is_none() {
+                        return corrupt(format!(
+                            "Vec debug format for type {} has an unsized element",
+                            id.0
+                        ));
+                    }
+                    let pointer = format_path_target(
+                        self,
+                        id,
+                        def,
+                        pointer,
+                        "Vec pointer debug format",
+                    )?;
+                    let Some(TypeDef::Pointer { target, .. }) = self.types.get(pointer) else {
+                        return corrupt(format!(
+                            "Vec debug format for type {} does not end its pointer path at a pointer",
+                            id.0
+                        ));
+                    };
+                    if !matches!(
+                        self.types.get(*target),
+                        Some(TypeDef::Base {
+                            size: 1,
+                            encoding: crate::raw_types::Encoding::Unsigned,
+                            ..
+                        })
+                    ) {
+                        return corrupt(format!(
+                            "Vec debug format for type {} does not use a byte allocation pointer",
+                            id.0
+                        ));
+                    }
+                    for (path, field) in [(length, "length"), (capacity, "capacity")] {
+                        let target = format_path_target(
+                            self,
+                            id,
+                            def,
+                            path,
+                            &format!("Vec {field} debug format"),
+                        )?;
+                        if !matches!(
+                            self.types.get(target),
+                            Some(TypeDef::Base {
+                                size: crate::bundle::POINTER_SIZE,
+                                encoding: crate::raw_types::Encoding::Unsigned,
+                                ..
+                            })
+                        ) {
+                            return corrupt(format!(
+                                "Vec debug format for type {} has a non-usize {field}",
+                                id.0
+                            ));
+                        }
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(

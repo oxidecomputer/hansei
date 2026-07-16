@@ -155,6 +155,15 @@ pub enum KnownFormat<T> {
     },
     /// Display an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: T, offset: u64 },
+    /// Display the initialized elements of a Vec.
+    Vec {
+        pointer_offset: u64,
+        length: T,
+        length_offset: u64,
+        capacity: T,
+        capacity_offset: u64,
+        element: T,
+    },
     /// Display a BTreeMap by walking its initialized nodes in key order.
     BTreeMap {
         root: T,
@@ -557,6 +566,25 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 }
                 Some(DebugFormat::Known(KnownFormat::IpAddress { octets, offset }))
             }
+            BundleFormat::Known(BundleKnownFormat::Vec {
+                pointer,
+                length,
+                capacity,
+                element,
+            }) => {
+                let (pointer, pointer_offset) = project(*self, pointer)?;
+                pointer.pointer_target()?;
+                let (length, length_offset) = project(*self, length)?;
+                let (capacity, capacity_offset) = project(*self, capacity)?;
+                Some(DebugFormat::Known(KnownFormat::Vec {
+                    pointer_offset,
+                    length,
+                    length_offset,
+                    capacity,
+                    capacity_offset,
+                    element: self.related_type(*element),
+                }))
+            }
             BundleFormat::Known(BundleKnownFormat::BTreeMap {
                 root,
                 length,
@@ -876,6 +904,8 @@ mod bundle_tests {
     const IPV4: BundleTypeId = BundleTypeId(36);
     const IPV6_OCTETS: BundleTypeId = BundleTypeId(37);
     const IPV6: BundleTypeId = BundleTypeId(38);
+    const U8_PTR: BundleTypeId = BundleTypeId(39);
+    const VEC: BundleTypeId = BundleTypeId(40);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -927,6 +957,8 @@ mod bundle_tests {
             s("core::net::ip_addr::Ipv6Addr"),
             s("octets"),
         );
+        let (vecn, ptrn, vec_lenn, capacityn) =
+            (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1085,6 +1117,16 @@ mod bundle_tests {
                 size: 16,
                 members: vec![m(octetsn, IPV6_OCTETS, 0)],
             },
+            TypeDef::Pointer { name: None, target: U8 },
+            TypeDef::Struct {
+                name: vecn,
+                size: 24,
+                members: vec![
+                    m(ptrn, U8_PTR, 0),
+                    m(vec_lenn, U64, 8),
+                    m(capacityn, U64, 16),
+                ],
+            },
         ];
 
         let b = Bundle {
@@ -1152,6 +1194,14 @@ mod bundle_tests {
                 ), (
                     IPV6,
                     BundleDebugFormat::Known(BundleKnownFormat::IpAddress { octets: 0 }),
+                ), (
+                    VEC,
+                    BundleDebugFormat::Known(BundleKnownFormat::Vec {
+                        pointer: vec![0],
+                        length: vec![1],
+                        capacity: vec![2],
+                        element: U32,
+                    }),
                 )]),
                 name_index: vec![(pointn, POINT)],
             },
@@ -1217,6 +1267,41 @@ mod bundle_tests {
         assert_eq!(
             format!("{}", TypeInfoRef::new(v.ty(IPV6).unwrap(), 0, &ipv6).display()),
             "2001:db8::1"
+        );
+    }
+
+    #[test]
+    fn test_vec_displays_initialized_elements() {
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x2000);
+                assert_eq!(len, 12);
+                Ok([5u32, 8, 13].into_iter().flat_map(u32::to_le_bytes).collect())
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x2000u64, 3, 4]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display_from_target(&Reader, 8)), "[5, 8, 13]");
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&Reader, 8)),
+            "[\n    5,\n    8,\n    13,\n]"
+        );
+
+        let invalid: Vec<u8> = [0x2000u64, 5, 4]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &invalid);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "<invalid Vec: length exceeds capacity>"
         );
     }
 
