@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -208,6 +208,99 @@ impl Bundle {
                             "atomic debug format for type {} has an empty member path", id.0));
                     }
                     check_format_path(self, id, def, value, "atomic debug format")?;
+                }
+                crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::DynPointer {
+                        pointer,
+                        vtable,
+                        drop_in_place,
+                        size,
+                        align,
+                    },
+                ) => {
+                    let aggregate_members = match def {
+                        TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
+                        _ => {
+                            return corrupt(format!(
+                                "dyn-pointer debug format for type {} is not an aggregate",
+                                id.0
+                            ));
+                        }
+                    };
+                    let data = aggregate_members.get(*pointer as usize).ok_or_else(|| {
+                        Error::Corrupt(format!(
+                            "dyn-pointer debug format for type {}: pointer member index {} out of range",
+                            id.0, pointer
+                        ))
+                    })?;
+                    let vtable_member = aggregate_members.get(*vtable as usize).ok_or_else(|| {
+                        Error::Corrupt(format!(
+                            "dyn-pointer debug format for type {}: vtable member index {} out of range",
+                            id.0, vtable
+                        ))
+                    })?;
+                    if pointer == vtable {
+                        return corrupt(format!(
+                            "dyn-pointer debug format for type {} reuses one member",
+                            id.0
+                        ));
+                    }
+                    let data_target = match self.types.get(data.ty) {
+                        Some(TypeDef::Pointer { target, .. }) => self.types.get(*target),
+                        _ => None,
+                    };
+                    let data_target_name = match data_target {
+                        Some(TypeDef::Struct { name, .. }) | Some(TypeDef::Opaque { name, .. }) => {
+                            self.strings.get(*name)
+                        }
+                        _ => None,
+                    };
+                    if !data_target_name
+                        .is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn "))
+                    {
+                        return corrupt(format!(
+                            "dyn-pointer debug format for type {}: data member does not target dyn",
+                            id.0
+                        ));
+                    }
+                    let array = match self.types.get(vtable_member.ty) {
+                        Some(TypeDef::Pointer { target, .. }) => self.types.get(*target),
+                        _ => None,
+                    };
+                    let Some(TypeDef::Array { elem, count }) = array else {
+                        return corrupt(format!(
+                            "dyn-pointer debug format for type {}: vtable member does not point to an array",
+                            id.0
+                        ));
+                    };
+                    let Some(TypeDef::Base { size: word_size, encoding, .. }) = self.types.get(*elem)
+                    else {
+                        return corrupt(format!(
+                            "dyn-pointer debug format for type {}: vtable element is not an integer",
+                            id.0
+                        ));
+                    };
+                    if *word_size != crate::bundle::POINTER_SIZE
+                        || !matches!(encoding, crate::raw_types::Encoding::Unsigned)
+                    {
+                        return corrupt(format!(
+                            "dyn-pointer debug format for type {}: vtable element is not usize-sized",
+                            id.0
+                        ));
+                    }
+                    let slots = [*drop_in_place, *size, *align];
+                    if slots.iter().any(|&slot| u64::from(slot) >= *count) {
+                        return corrupt(format!(
+                            "dyn-pointer debug format for type {} has a header slot outside its {count}-entry vtable",
+                            id.0
+                        ));
+                    }
+                    if slots[0] == slots[1] || slots[0] == slots[2] || slots[1] == slots[2] {
+                        return corrupt(format!(
+                            "dyn-pointer debug format for type {} reuses a header slot",
+                            id.0
+                        ));
+                    }
                 }
             }
         }

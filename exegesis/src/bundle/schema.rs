@@ -107,6 +107,19 @@ pub enum KnownFormat {
     /// Display an atomic's stored value. The path walks zero or more
     /// concrete struct/union members from the atomic to its value type.
     Atomic { value: Vec<u32> },
+    /// Display a Rust trait-object wide pointer and its vtable semantically.
+    ///
+    /// `pointer` and `vtable` index members of the containing aggregate. The
+    /// remaining indices address machine words in the vtable array itself;
+    /// recording them here keeps rustc's private slot ordering out of bundle
+    /// consumers.
+    DynPointer {
+        pointer: u32,
+        vtable: u32,
+        drop_in_place: u32,
+        size: u32,
+        align: u32,
+    },
 }
 
 impl TypeTable {

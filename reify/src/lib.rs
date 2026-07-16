@@ -721,6 +721,31 @@ fn write_display_value<'a, T: DebugType<'a>>(
     }
 
     if let Some(format) = ty.debug_format() {
+        if let DebugFormat::Known(KnownFormat::DynPointer {
+            pointer_offset,
+            vtable,
+            vtable_offset,
+            drop_in_place,
+            size,
+            align,
+        }) = format
+        {
+            return write_dyn_pointer(
+                f,
+                info,
+                Some(ty.name()),
+                pointer_offset,
+                vtable,
+                vtable_offset,
+                drop_in_place,
+                size,
+                align,
+                depth,
+                max_depth,
+                proc,
+            );
+        }
+
         let (target, offset, child_proc, child_visited) = match format {
             DebugFormat::Transparent { target, offset } => (target, offset, proc, visited),
             DebugFormat::Known(KnownFormat::Atomic { value, offset }) => {
@@ -728,6 +753,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 // address; it does not dereference it.
                 (value, offset, None, None)
             }
+            DebugFormat::Known(KnownFormat::DynPointer { .. }) => unreachable!(),
         };
         let start = offset as usize;
         let Some(end) = start.checked_add(target.size() as usize) else {
@@ -995,6 +1021,253 @@ fn write_display_value<'a, T: DebugType<'a>>(
     }
 }
 
+#[derive(Debug)]
+struct VtableFunction {
+    slot: u32,
+    display: String,
+    concrete: Option<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_dyn_pointer<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    name: Option<&str>,
+    pointer_offset: u64,
+    vtable: T,
+    vtable_offset: u64,
+    drop_in_place_slot: u32,
+    size_slot: u32,
+    align_slot: u32,
+    depth: usize,
+    max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+) -> fmt::Result {
+    let Some(pointer_address) = read_u64_at(info.bytes, pointer_offset) else {
+        return write!(f, "<truncated>");
+    };
+    let Some(vtable_address) = read_u64_at(info.bytes, vtable_offset) else {
+        return write!(f, "<truncated>");
+    };
+    let words = read_vtable_words(vtable, vtable_address, proc);
+
+    let mut functions = Vec::new();
+    if let (Some(proc), Some(words)) = (proc, words.as_deref()) {
+        for (slot, &address) in words.iter().enumerate() {
+            let slot = slot as u32;
+            if slot == size_slot || slot == align_slot || address == 0 {
+                continue;
+            }
+            let Some(symbol) = proc.function_symbol(address) else {
+                continue;
+            };
+            let stripped = exegesis::bundle::strip_llvm_suffix(&symbol);
+            let display = rustc_demangle::try_demangle(stripped)
+                .map(|symbol| format!("{symbol:#}"))
+                .unwrap_or_else(|_| stripped.to_owned());
+            let concrete = concrete_type_from_symbol(&display);
+            functions.push(VtableFunction { slot, display, concrete });
+        }
+    }
+
+    let concrete = infer_concrete_type(info.ty, words.as_deref(), size_slot, &functions);
+    let pretty = f.alternate();
+    if let Some(name) = name.filter(|name| !name.is_empty()) {
+        write!(f, "{name}")?;
+    }
+    write!(f, " {{")?;
+
+    write_dyn_field_prefix(f, pretty, depth)?;
+    write!(f, "pointer: 0x{pointer_address:x},")?;
+    write_dyn_field_prefix(f, pretty, depth)?;
+    write!(f, "concrete type: {},", concrete.as_deref().unwrap_or("<unknown>"))?;
+    write_dyn_field_prefix(f, pretty, depth)?;
+    write!(f, "vtable: ")?;
+
+    match words.as_deref() {
+        Some(words) if depth + 1 < max_depth => {
+            write!(f, "{{")?;
+            write_vtable_field_prefix(f, pretty, depth)?;
+            let drop_address = words.get(drop_in_place_slot as usize).copied().unwrap_or(0);
+            write!(f, "drop_in_place: 0x{drop_address:x}")?;
+            if let Some(function) = functions.iter().find(|function| function.slot == drop_in_place_slot)
+            {
+                write!(f, " -> {}", function.display)?;
+            }
+            write!(f, ",")?;
+
+            write_vtable_field_prefix(f, pretty, depth)?;
+            match words.get(size_slot as usize) {
+                Some(size) => write!(f, "size: {size},")?,
+                None => write!(f, "size: <unavailable>,")?,
+            }
+            write_vtable_field_prefix(f, pretty, depth)?;
+            match words.get(align_slot as usize) {
+                Some(align) => write!(f, "align: {align},")?,
+                None => write!(f, "align: <unavailable>,")?,
+            }
+
+            for (slot, &address) in words.iter().enumerate() {
+                let slot = slot as u32;
+                if slot == drop_in_place_slot || slot == size_slot || slot == align_slot {
+                    continue;
+                }
+                write_vtable_field_prefix(f, pretty, depth)?;
+                if let Some(function) = functions.iter().find(|function| function.slot == slot) {
+                    write!(f, "method[{slot}]: 0x{address:x} -> {},", function.display)?;
+                } else {
+                    write!(f, "entry[{slot}]: 0x{address:016x},")?;
+                }
+            }
+
+            if pretty {
+                writeln!(f)?;
+                write_indent(f, depth + 1)?;
+            } else {
+                write!(f, " ")?;
+            }
+            write!(f, "}},")?;
+        }
+        Some(_) => write!(f, "0x{vtable_address:x} -> ...,")?,
+        None if vtable_address == 0 => write!(f, "0x0,")?,
+        None => write!(f, "0x{vtable_address:x} -> <unreadable>,")?,
+    }
+
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+fn write_dyn_field_prefix(
+    f: &mut fmt::Formatter<'_>,
+    pretty: bool,
+    depth: usize,
+) -> fmt::Result {
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth + 1)
+    } else {
+        write!(f, " ")
+    }
+}
+
+fn write_vtable_field_prefix(
+    f: &mut fmt::Formatter<'_>,
+    pretty: bool,
+    depth: usize,
+) -> fmt::Result {
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth + 2)
+    } else {
+        write!(f, " ")
+    }
+}
+
+fn read_u64_at(bytes: &[u8], offset: u64) -> Option<u64> {
+    let start = usize::try_from(offset).ok()?;
+    let end = start.checked_add(8)?;
+    Some(u64::from_le_bytes(bytes.get(start..end)?.try_into().ok()?))
+}
+
+fn read_vtable_words<'a, T: DebugType<'a>>(
+    vtable: T,
+    address: u64,
+    proc: Option<&dyn ReadFromProc>,
+) -> Option<Vec<u64>> {
+    if address == 0 {
+        return None;
+    }
+    let (element, count) = vtable.pointer_target()?.array_info()?;
+    if element.size() != 8 {
+        return None;
+    }
+    let byte_len = count.checked_mul(8)?;
+    let bytes = proc?.read_bytes(address, byte_len).ok()?;
+    if bytes.len() != byte_len as usize {
+        return None;
+    }
+    Some(
+        bytes
+            .chunks_exact(8)
+            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+            .collect(),
+    )
+}
+
+fn infer_concrete_type<'a, T: DebugType<'a>>(
+    ty: T,
+    words: Option<&[u64]>,
+    size_slot: u32,
+    functions: &[VtableFunction],
+) -> Option<String> {
+    let mut concrete = functions.iter().filter_map(|function| function.concrete.as_deref());
+    let candidate = concrete.next()?.to_owned();
+    if concrete.any(|other| other != candidate) {
+        return None;
+    }
+    if let (Some(expected), Some(actual)) =
+        (ty.size_by_name(&candidate), words?.get(size_slot as usize).copied())
+        && expected != actual
+    {
+        return None;
+    }
+    Some(candidate)
+}
+
+fn concrete_type_from_symbol(symbol: &str) -> Option<String> {
+    for marker in ["core::ptr::drop_glue::<", "core::ptr::drop_in_place::<"] {
+        if let Some(rest) = symbol.strip_prefix(marker).and_then(|rest| rest.strip_suffix('>')) {
+            return Some(rest.to_owned());
+        }
+    }
+
+    let rest = symbol.strip_prefix('<')?;
+    let mut depth = 1usize;
+    for (index, ch) in rest.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 1 && rest[index..].starts_with(" as ") {
+            return Some(rest[..index].to_owned());
+        }
+        if depth == 0 {
+            break;
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod vtable_symbol_tests {
+    use super::concrete_type_from_symbol;
+
+    #[test]
+    fn concrete_type_from_drop_glue() {
+        assert_eq!(
+            concrete_type_from_symbol("core::ptr::drop_glue::<app::Thing<u64>>").as_deref(),
+            Some("app::Thing<u64>")
+        );
+    }
+
+    #[test]
+    fn concrete_type_from_trait_method_with_nested_generics() {
+        assert_eq!(
+            concrete_type_from_symbol(
+                "<app::Thing<alloc::vec::Vec<u8>> as app::Trait>::method"
+            )
+            .as_deref(),
+            Some("app::Thing<alloc::vec::Vec<u8>>")
+        );
+    }
+}
+
 fn write_struct_fields<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
@@ -1038,7 +1311,7 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
                 max_depth,
                 proc,
                 visited,
-                hex_integers: hex_integers || member.name() == "vtable",
+                hex_integers,
             };
             if pretty {
                 write!(f, "{:#}", child)?;
@@ -1112,6 +1385,31 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
         return Ok(());
     }
 
+    if let Some(DebugFormat::Known(KnownFormat::DynPointer {
+        pointer_offset,
+        vtable,
+        vtable_offset,
+        drop_in_place,
+        size,
+        align,
+    })) = variant_info.ty.debug_format()
+    {
+        return write_dyn_pointer(
+            f,
+            &variant_info,
+            None,
+            pointer_offset,
+            vtable,
+            vtable_offset,
+            drop_in_place,
+            size,
+            align,
+            depth,
+            max_depth,
+            proc,
+        );
+    }
+
     let members: Vec<_> = variant_info
         .ty
         .members()
@@ -1148,7 +1446,7 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
                 max_depth,
                 proc,
                 visited,
-                hex_integers: hex_integers || member.name() == "vtable",
+                hex_integers,
             };
             if pretty {
                 write!(f, "{:#}", child)?;
@@ -1489,11 +1787,23 @@ pub trait ReadFromProc {
     /// Read `len` bytes at address, returning an error if the address is
     /// unmapped.
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>>;
+
+    /// The mangled function symbol beginning exactly at `addr`, if one is
+    /// available from the target. Display-only readers can leave this
+    /// unresolved; vtable formatting then preserves the raw entry.
+    fn function_symbol(&self, _addr: u64) -> Option<String> {
+        None
+    }
 }
 
 impl<T: proc::Target> ReadFromProc for T {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
         proc::Target::read_bytes(self, addr, len)
             .map_err(|e| Error::invalid_addr(addr).with_source(e))
+    }
+
+    fn function_symbol(&self, addr: u64) -> Option<String> {
+        let symbol = proc::Target::lookup_symbol_by_addr(self, addr)?;
+        (symbol.st_value == addr && symbol.st_info & 0x0f == 2).then_some(symbol.name)
     }
 }

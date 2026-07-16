@@ -127,6 +127,21 @@ impl<'a> BundleType<'a> {
         self.id
     }
 
+    /// The unique size associated with a fully-qualified type name in this
+    /// bundle. Duplicate DIEs with the same layout are benign; conflicting
+    /// sizes make the lookup ambiguous.
+    pub fn size_by_name(&self, name: &str) -> Option<u64> {
+        let mut sizes = self
+            .bundle
+            .types
+            .name_index
+            .iter()
+            .filter(|&&(r, _)| self.bundle.strings.get(r) == Some(name))
+            .map(|&(_, id)| self.at(id).size());
+        let size = sizes.next()?;
+        sizes.all(|candidate| candidate == size).then_some(size)
+    }
+
     /// The underlying definition.
     ///
     /// Panics if the id is out of range, which cannot happen for bundles
