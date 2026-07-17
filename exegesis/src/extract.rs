@@ -1061,6 +1061,7 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
+        .or_else(|| loom_parking_lot_debug_format(reader, id))
         .or_else(|| unique_debug_format(reader, id))
         .or_else(|| non_null_debug_format(reader, id))
         .or_else(|| usize_no_high_bit_debug_format(reader, id))
@@ -1762,6 +1763,29 @@ fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
     });
     let (index, _) = matches.next()?;
     if matches.next().is_some() {
+        return None;
+    }
+    Some(DebugFormat::Transparent { member: index as u32 })
+}
+
+/// tokio's `loom::std::parking_lot` shims are newtypes that pair a
+/// `PhantomData` marker with the real parking_lot lock (`Mutex`, `RwLock`,
+/// `Condvar`, and their guards). Display them as the inner lock so the
+/// loom scaffolding does not obscure it.
+fn loom_parking_lot_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
+    if namespace != "tokio::loom::std::parking_lot" {
+        return None;
+    }
+    // A single non-marker member sitting at offset zero is the wrapped lock.
+    let mut real = st.members.iter().enumerate().filter(|(_, member)| {
+        member.offset == 0
+            && !fq_name(reader, reader.canonicalize(member.type_id))
+                .is_some_and(|name| name.starts_with("core::marker::PhantomData"))
+    });
+    let (index, _) = real.next()?;
+    if real.next().is_some() {
         return None;
     }
     Some(DebugFormat::Transparent { member: index as u32 })
@@ -2478,10 +2502,10 @@ impl<'a> Emitter<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        dyn_tail_offset, has_dyn_tail, match_static_symbol, scan_vtable_section, StaticRole,
-        VtableTypeHint,
+        dyn_tail_offset, has_dyn_tail, loom_parking_lot_debug_format, match_static_symbol,
+        scan_vtable_section, StaticRole, VtableTypeHint,
     };
-    use crate::raw_types::{RawMember, RawStruct, RawType};
+    use crate::raw_types::{NsId, RawMember, RawStruct, RawType};
     use crate::{DwReader, TypeId};
     use gimli::{DebugInfoOffset, UnitSectionOffset};
     use std::collections::{BTreeMap, BTreeSet};
@@ -2547,6 +2571,77 @@ mod tests {
         assert_eq!(dyn_tail_offset(&reader, inner_id, &mut Vec::new()), Some(16));
         assert_eq!(dyn_tail_offset(&reader, outer_id, &mut Vec::new()), Some(32));
         assert_eq!(dyn_tail_offset(&reader, plain_id, &mut Vec::new()), None);
+    }
+
+    fn ns_struct(
+        namespace: Option<NsId>,
+        name: crate::StrId,
+        size: u64,
+        members: Vec<RawMember<crate::StrId>>,
+    ) -> RawType<crate::StrId> {
+        RawStruct {
+            name: Some(name),
+            namespace,
+            size,
+            members: members.into_boxed_slice(),
+            template_params: Box::new([]),
+            source_loc: None,
+        }
+        .into()
+    }
+
+    #[test]
+    fn test_loom_parking_lot_mutex_is_transparent_over_inner_lock() {
+        use crate::bundle::DebugFormat;
+
+        let mut reader = DwReader::default();
+
+        // Namespaces: tokio::loom::std::parking_lot and core::marker.
+        let mut ns = None;
+        for seg in ["tokio", "loom", "std", "parking_lot"] {
+            let name = reader.strings.intern(seg);
+            ns = Some(reader.namespaces.insert(ns, name));
+        }
+        let parking_lot = ns.unwrap();
+        let core = {
+            let name = reader.strings.intern("core");
+            reader.namespaces.insert(None, name)
+        };
+        let marker = {
+            let name = reader.strings.intern("marker");
+            reader.namespaces.insert(Some(core), name)
+        };
+
+        let (m0, m1) = (reader.strings.intern("__0"), reader.strings.intern("__1"));
+        let phantom_name = reader.strings.intern("PhantomData<std::sync::Mutex<T>>");
+        let inner_name =
+            reader.strings.intern("lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, T>");
+        let mutex_name = reader.strings.intern("Mutex<T>");
+        let member = |name, type_id, offset| RawMember { name: Some(name), offset, type_id, source_loc: None };
+
+        let phantom_id = type_id(1);
+        let inner_id = type_id(2);
+        let mutex_id = type_id(3);
+        let phantom = ns_struct(Some(marker), phantom_name, 0, vec![]);
+        let inner = ns_struct(None, inner_name, 80, vec![]);
+        let mutex = ns_struct(
+            Some(parking_lot),
+            mutex_name,
+            80,
+            vec![member(m0, phantom_id, 0), member(m1, inner_id, 0)],
+        );
+        reader.types.insert(phantom_id, phantom);
+        reader.types.insert(inner_id, inner);
+        reader.types.insert(mutex_id, mutex);
+
+        // The PhantomData marker is skipped; the shim is transparent over the
+        // real lock at member index 1.
+        assert_eq!(
+            loom_parking_lot_debug_format(&reader, mutex_id),
+            Some(DebugFormat::Transparent { member: 1 })
+        );
+        // A bare struct outside the loom parking_lot namespace is untouched.
+        assert_eq!(loom_parking_lot_debug_format(&reader, inner_id), None);
     }
 
     #[test]
