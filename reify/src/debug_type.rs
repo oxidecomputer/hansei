@@ -174,20 +174,12 @@ pub enum KnownFormat<T> {
     /// Display a `tokio::sync::watch::state::AtomicState` decoded to its
     /// version and closed flag. `state_offset` locates the atomic `usize`.
     WatchState { state_offset: u64 },
-    /// Display a `tokio::sync::mpsc::block::Block<T>`, rendering only the
-    /// initialized slots of its inline `values` array. `ready_offset`/
-    /// `ready_size` locate the readiness bitmap; `values_member` is the field
-    /// rendered as the slot list, whose `count` elements of `stride` bytes
-    /// begin at `values_offset`; each live slot is displayed as `element`.
-    MpscBlock {
-        ready_offset: u64,
-        ready_size: u32,
-        values_member: u32,
-        values_offset: u64,
-        element: T,
-        stride: u32,
-        count: u32,
-    },
+    /// Display a `tokio::sync::mpsc::block::Block<T>` with its `values` member
+    /// elided to a written-slot count. `ready_offset`/`ready_size` locate the
+    /// readiness bitmap and `count` is the block capacity (to mask off the
+    /// released/closed flag bits); `values_member` is the field shown as the
+    /// count. Contents are not dereferenced — see the schema note.
+    MpscBlock { ready_offset: u64, ready_size: u32, values_member: u32, count: u32 },
     /// Display an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: T, offset: u64 },
     /// Display the initialized elements of a Vec.
@@ -617,18 +609,15 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let (_, state_offset) = project(*self, state)?;
                 Some(DebugFormat::Known(KnownFormat::WatchState { state_offset }))
             }
-            BundleFormat::Known(BundleKnownFormat::MpscBlock { ready_slots, values, element }) => {
+            BundleFormat::Known(BundleKnownFormat::MpscBlock { ready_slots, values }) => {
                 let (ready_ty, ready_offset) = project(*self, ready_slots)?;
-                let (array_ty, values_offset) = project(*self, values)?;
-                let (elem_ty, count) = array_ty.array_info()?;
+                let (array_ty, _) = project(*self, values)?;
+                let (_, count) = array_ty.array_info()?;
                 let values_member = *values.first()?;
                 Some(DebugFormat::Known(KnownFormat::MpscBlock {
                     ready_offset,
                     ready_size: ready_ty.size() as u32,
                     values_member,
-                    values_offset,
-                    element: self.related_type(*element),
-                    stride: elem_ty.size() as u32,
                     count: count as u32,
                 }))
             }
@@ -1409,7 +1398,6 @@ mod bundle_tests {
                     BundleDebugFormat::Known(BundleKnownFormat::MpscBlock {
                         ready_slots: vec![1, 0],
                         values: vec![0],
-                        element: U32,
                     }),
                 ), (
                     WATCH_STATE,
@@ -1973,32 +1961,29 @@ mod bundle_tests {
     }
 
     #[test]
-    fn test_mpsc_block_shows_only_ready_slots() {
+    fn test_mpsc_block_elides_values_to_written_count() {
         let b = test_bundle();
         let v = BundleView::new(&b);
         // 24-byte Block: [u32; 4] value slots @0, ready-bitmap usize @16.
-        let block = |slots: [u32; 4], ready: u64| {
-            let mut buf = Vec::new();
-            for s in slots {
-                buf.extend_from_slice(&s.to_le_bytes());
-            }
+        let block = |ready: u64| {
+            let mut buf = vec![0u8; 16];
             buf.extend_from_slice(&ready.to_le_bytes());
             buf
         };
-        // Bits 0 and 2 set: slots 0 and 2 are live.
-        let buf = block([10, 20, 30, 40], 0b101);
+        // Three bits set within the 4-slot capacity: three written slots.
+        let buf = block(0b1011);
         let value = TypeInfoRef::new(v.ty(BLOCK).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display()),
-            "tokio::sync::mpsc::block::Block<u32> { values: [10, 30], header: BlockHeader { ready_slots: 5 } }"
+            "tokio::sync::mpsc::block::Block<u32> { values: [3 slots], header: BlockHeader { ready_slots: 11 } }"
         );
 
-        // No bits set: empty slot list.
-        let buf = block([1, 2, 3, 4], 0);
+        // Bits outside the 4-slot capacity (released/closed flags) are ignored.
+        let buf = block(0b1_0000);
         let value = TypeInfoRef::new(v.ty(BLOCK).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display()),
-            "tokio::sync::mpsc::block::Block<u32> { values: [], header: BlockHeader { ready_slots: 0 } }"
+            "tokio::sync::mpsc::block::Block<u32> { values: [0 slots], header: BlockHeader { ready_slots: 16 } }"
         );
     }
 

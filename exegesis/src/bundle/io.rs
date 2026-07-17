@@ -518,7 +518,7 @@ impl Bundle {
                     check_usize_format(self, id, def, state, "WatchState state debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::MpscBlock { ready_slots, values, element },
+                    crate::bundle::schema::KnownFormat::MpscBlock { ready_slots, values },
                 ) => {
                     if ready_slots.is_empty() || values.is_empty() {
                         return corrupt(format!(
@@ -538,13 +538,6 @@ impl Bundle {
                     if !matches!(self.types.get(array), Some(TypeDef::Array { .. })) {
                         return corrupt(format!(
                             "MpscBlock debug format for type {} values path does not end at an array",
-                            id.0
-                        ));
-                    }
-                    check_ty("MpscBlock element", *element)?;
-                    if type_size(self, *element, &mut Vec::new()).is_none() {
-                        return corrupt(format!(
-                            "MpscBlock debug format for type {} has an unsized element",
                             id.0
                         ));
                     }

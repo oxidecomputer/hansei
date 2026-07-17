@@ -162,14 +162,17 @@ pub enum KnownFormat {
     /// member path to the atomic `usize`; reify interprets bit 0 as the closed
     /// flag (CLOSED_BIT) and the remaining bits as the version.
     WatchState { state: Vec<u32> },
-    /// Display a `tokio::sync::mpsc::block::Block<T>` showing only the
-    /// initialized slots of its inline `values` array. `ready_slots` is the
-    /// member path to the header's readiness bitmap (bit `i` set means slot
-    /// `i` holds a value); `values` is the member path to the
-    /// `[MaybeUninit<T>; N]` array (its first element is the index of the
-    /// `values` member, rendered specially). `element` is `T`, displayed in
-    /// place of each initialized slot's raw representation.
-    MpscBlock { ready_slots: Vec<u32>, values: Vec<u32>, element: BundleTypeId },
+    /// Display a `tokio::sync::mpsc::block::Block<T>` with its inline `values`
+    /// array elided to a count of written slots rather than raw `MaybeUninit`
+    /// bytes. `ready_slots` is the member path to the header's readiness
+    /// bitmap (bit `i` set means slot `i` was written); `values` is the member
+    /// path to the `[MaybeUninit<T>; N]` array, its first element the index of
+    /// the `values` member. The slot *contents* are not shown here: a block
+    /// cannot tell which written slots are still queued versus already
+    /// consumed (that needs the channel's read/write positions), so their
+    /// bytes may be stale. The live messages are shown by the channel-level
+    /// [`KnownFormat::MpscChan`] formatter instead.
+    MpscBlock { ready_slots: Vec<u32>, values: Vec<u32> },
     /// Display the octets of an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: u32 },
     /// Display the initialized elements of an `alloc::vec::Vec<T, A>`.

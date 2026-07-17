@@ -1061,6 +1061,7 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| notify_debug_format(reader, id))
         .or_else(|| semaphore_debug_format(reader, id))
         .or_else(|| watch_state_debug_format(reader, id))
+        .or_else(|| mpsc_block_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
@@ -1655,19 +1656,13 @@ fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugForm
     Some(DebugFormat::Known(crate::bundle::KnownFormat::Semaphore { permits }))
 }
 
-struct RawMpscBlockFormat {
-    ready_slots: Vec<u32>,
-    values: Vec<u32>,
-    element: TypeId,
-}
-
 fn watch_state_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let state =
         atomic_usize_field_path(reader, id, "tokio::sync::watch::state::AtomicState", "__0")?;
     Some(DebugFormat::Known(crate::bundle::KnownFormat::WatchState { state }))
 }
 
-fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscBlockFormat> {
+fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     if !fq_name(reader, id)
         .as_deref()
         .is_some_and(|name| name.starts_with("tokio::sync::mpsc::block::Block<"))
@@ -1709,14 +1704,7 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscB
     }
     let values = vec![values_index as u32, array_index as u32];
 
-    // `element` is the block's message type `T`.
-    let [param] = st.template_params.as_ref() else { return None };
-    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
-        return None;
-    }
-    let element = reader.canonicalize(param.type_id);
-
-    Some(RawMpscBlockFormat { ready_slots, values, element })
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::MpscBlock { ready_slots, values }))
 }
 
 /// Like [`find_zero_offset_paths`], but the target is any unsigned integer of
@@ -2457,13 +2445,6 @@ impl<'a> Emitter<'a> {
                     internal_data: format.internal_data,
                     internal_edges: format.internal_edges,
                     edge: format.edge,
-                };
-                self.debug_formats.insert(bid, DebugFormat::Known(format));
-            } else if let Some(format) = mpsc_block_debug_format(self.reader, tid) {
-                let format = crate::bundle::KnownFormat::MpscBlock {
-                    ready_slots: format.ready_slots,
-                    values: format.values,
-                    element: self.reserve(format.element),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = known_debug_format(self.reader, tid) {

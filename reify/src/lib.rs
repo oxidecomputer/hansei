@@ -1528,9 +1528,11 @@ fn write_vec<'a, T: DebugType<'a>>(
     write!(f, "]")
 }
 
-/// Render a `tokio::sync::mpsc::block::Block<T>`, showing its `values` member
-/// as only the initialized slots (per the readiness bitmap) rendered as `T`.
-/// Other members render normally.
+/// Render a `tokio::sync::mpsc::block::Block<T>` with its `values` member
+/// shown as a count of written slots rather than raw `MaybeUninit` bytes.
+/// Other members render normally. The contents are not dereferenced: a block
+/// cannot tell live slots from consumed ones (their bytes may be stale), so
+/// the actual messages are shown by the channel formatter instead.
 #[allow(clippy::too_many_arguments)]
 fn write_mpsc_block<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
@@ -1543,20 +1545,16 @@ fn write_mpsc_block<'a, T: DebugType<'a>>(
     visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
     hex_integers: bool,
 ) -> fmt::Result {
-    let KnownFormat::MpscBlock {
-        ready_offset,
-        ready_size,
-        values_member,
-        values_offset,
-        element,
-        stride,
-        count,
-    } = format
-    else {
+    let KnownFormat::MpscBlock { ready_offset, ready_size, values_member, count } = format else {
         unreachable!()
     };
 
     let ready = read_unsigned_at(info.bytes, ready_offset, ready_size as u64).unwrap_or(0);
+    // Only the low `count` bits are per-slot readiness; the rest are the
+    // released/closed flags.
+    let mask = if count >= 64 { u64::MAX } else { (1u64 << count) - 1 };
+    let written = (ready & mask).count_ones();
+    let slots = format!("[{written} slots]");
     let values_name = info.ty.members().nth(values_member as usize).map(|m| m.name());
 
     let pretty = f.alternate();
@@ -1575,10 +1573,7 @@ fn write_mpsc_block<'a, T: DebugType<'a>>(
         write!(f, " {}: ", member.name())?;
 
         if Some(member.name()) == values_name {
-            write_block_slots(
-                f, info, ready, values_offset, element, stride, count, depth + 1, max_depth,
-                proc, visited, hex_integers,
-            )?;
+            write!(f, "{slots}")?;
         } else {
             let start = member.offset() as usize;
             let end = start + member.ty().size() as usize;
@@ -1616,70 +1611,6 @@ fn write_mpsc_block<'a, T: DebugType<'a>>(
         write!(f, " ")?;
     }
     write!(f, "}}")
-}
-
-/// Render the initialized slots of a block's inline value array as a list of
-/// `element` values. `depth` is the indentation level of the field holding
-/// the list.
-#[allow(clippy::too_many_arguments)]
-fn write_block_slots<'a, T: DebugType<'a>>(
-    f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    ready: u64,
-    values_offset: u64,
-    element: T,
-    stride: u32,
-    count: u32,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
-) -> fmt::Result {
-    let pretty = f.alternate();
-    let element_size = element.size() as usize;
-    write!(f, "[")?;
-    let mut any = false;
-    for i in 0..count.min(64) {
-        if ready & (1u64 << i) == 0 {
-            continue;
-        }
-        let start = values_offset as usize + i as usize * stride as usize;
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, depth + 1)?;
-        } else if any {
-            write!(f, ", ")?;
-        }
-        any = true;
-        let Some(bytes) = info.bytes.get(start..start + element_size) else {
-            write!(f, "<truncated slot>")?;
-            continue;
-        };
-        let child = DisplayRecurse {
-            info: TypeInfoRef {
-                ty: element,
-                addr: info.addr + start as u64,
-                bytes,
-                _marker: std::marker::PhantomData,
-            },
-            depth: depth + 1,
-            max_depth,
-            proc,
-            visited,
-            hex_integers,
-        };
-        if pretty {
-            write!(f, "{child:#},")?;
-        } else {
-            write!(f, "{child}")?;
-        }
-    }
-    if pretty && any {
-        writeln!(f)?;
-        write_indent(f, depth)?;
-    }
-    write!(f, "]")
 }
 
 #[derive(Copy, Clone)]
