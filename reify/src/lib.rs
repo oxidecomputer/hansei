@@ -956,6 +956,13 @@ fn write_display_value<'a, T: DebugType<'a>>(
             if addr == 0 {
                 return write!(f, "null");
             }
+            // A pointer to a zero-sized type (e.g. `RawWaker`'s `*const ()`
+            // data pointer) has no meaningful pointee to follow — reading it
+            // would only ever print the type's name (`-> ()`). Show just the
+            // address.
+            if target.size() == 0 {
+                return write!(f, "0x{addr:x}");
+            }
             let (Some(proc), Some(visited)) = (proc, visited) else {
                 return write!(f, "0x{addr:x}");
             };
@@ -1715,7 +1722,12 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
     // sized header, so read the pointee at the tail offset, not the raw
     // pointer.
     let pointee_address = pointer_address.wrapping_add(tail_offset);
-    if let (Some(concrete_ty), Some(proc), Some(visited)) = (concrete_ty, proc, visited) {
+    // A zero-sized concrete type (e.g. slog's `()` list terminator) has no
+    // pointee worth following — the `concrete type:` line below already names
+    // it. Showing `-> ()` would only add noise.
+    if let (Some(concrete_ty), Some(proc), Some(visited)) =
+        (concrete_ty.filter(|ty| ty.size() > 0), proc, visited)
+    {
         let key = (pointee_address, concrete_ty.name());
         if !visited.borrow_mut().insert(key) {
             write!(f, " -> <cycle>")?;
