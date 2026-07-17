@@ -1062,6 +1062,7 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| semaphore_debug_format(reader, id))
         .or_else(|| watch_state_debug_format(reader, id))
         .or_else(|| mpsc_block_debug_format(reader, id))
+        .or_else(|| mpsc_rx_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
@@ -1705,6 +1706,60 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
     let values = vec![values_index as u32, array_index as u32];
 
     Some(DebugFormat::Known(crate::bundle::KnownFormat::MpscBlock { ready_slots, values }))
+}
+
+/// Recognize a `tokio::sync::mpsc::bounded::Receiver<T>` and record the paths
+/// needed to render it as its underlying channel. A receiver wraps an
+/// `Arc<Chan<T, Semaphore>>`; navigate to the raw pointer inside the `Arc`,
+/// then across the allocation's sized header to the `Chan`, and record the
+/// bounded capacity (`semaphore.bound`) and available permit word
+/// (`semaphore.semaphore.permits`) as paths rooted at that `Chan`.
+fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    if !fq_name(reader, id)
+        .as_deref()
+        .is_some_and(|name| name.starts_with("tokio::sync::mpsc::bounded::Receiver<"))
+    {
+        return None;
+    }
+    // Receiver → Rx → Arc → the `NonNull` raw pointer at `ptr.pointer`, which
+    // targets the `ArcInner<Chan>` allocation.
+    let (chan_pointer, ptr_ty) = field_path(reader, id, &["chan", "inner", "ptr", "pointer"])?;
+    let RawType::Pointer(ptr) = reader.canonical_type(ptr_ty)? else { return None };
+    let arcinner = reader.canonicalize(ptr.target_type_id);
+
+    // Skip the Arc's strong/weak header to the `data` field: the `Chan`.
+    let (chan, chan_ty) = field_path(reader, arcinner, &["data"])?;
+    if !fq_name(reader, chan_ty)
+        .as_deref()
+        .is_some_and(|name| name.starts_with("tokio::sync::mpsc::chan::Chan<"))
+    {
+        return None;
+    }
+
+    // Capacity is the bounded semaphore's `bound`, a plain `usize`.
+    let (bound, bound_ty) = field_path(reader, chan_ty, &["semaphore", "bound"])?;
+    if !is_unsigned_integer(reader, bound_ty, crate::bundle::POINTER_SIZE) {
+        return None;
+    }
+
+    // Available buffer slots live in the batch semaphore's atomic `permits`
+    // word. Reach the inner `batch_semaphore::Semaphore`, then walk to its
+    // permit `usize`, and root the path at the `Chan`.
+    let (sem_prefix, sem_ty) = field_path(reader, chan_ty, &["semaphore", "semaphore"])?;
+    let permits_tail = atomic_usize_field_path(
+        reader,
+        sem_ty,
+        "tokio::sync::batch_semaphore::Semaphore",
+        "permits",
+    )?;
+    let permits = sem_prefix.into_iter().chain(permits_tail).collect();
+
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::MpscRx {
+        chan_pointer,
+        chan,
+        bound,
+        permits,
+    }))
 }
 
 /// Walk a chain of named struct members, returning the member-index path and
