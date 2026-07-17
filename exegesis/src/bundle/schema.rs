@@ -139,6 +139,11 @@ pub enum KnownFormat {
         wake_by_ref: u32,
         drop: u32,
     },
+    /// Display a `parking_lot::raw_mutex::RawMutex` as its decoded lock state
+    /// rather than a raw atomic byte. `state` is the member path to the
+    /// single-byte atomic; reify interprets parking_lot's fixed bit encoding
+    /// (`LOCKED_BIT = 1`, `PARKED_BIT = 2`).
+    RawMutex { state: Vec<u32> },
     /// Display the octets of an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: u32 },
     /// Display the initialized elements of an `alloc::vec::Vec<T, A>`.
