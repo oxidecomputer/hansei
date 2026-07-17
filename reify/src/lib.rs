@@ -770,6 +770,9 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 proc,
             );
         }
+        if let DebugFormat::Known(KnownFormat::RawMutex { state_offset }) = format {
+            return write_raw_mutex(f, ty.name(), info.bytes, state_offset);
+        }
         if let DebugFormat::Known(KnownFormat::IpAddress { octets, offset }) = format {
             let Some(bytes) = byte_range(bytes, offset, octets.size()) else {
                 return write!(f, "<truncated>");
@@ -850,6 +853,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::FunctionPointer) => unreachable!(),
             DebugFormat::Known(KnownFormat::DynPointer { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::RawMutex { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::IpAddress { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Vec { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Str { .. }) => unreachable!(),
@@ -1142,6 +1146,31 @@ struct VtableFunction {
     slot: u32,
     display: String,
     concrete: Option<String>,
+}
+
+/// Render a parking_lot `RawMutex` as its decoded lock state, e.g.
+/// `parking_lot::raw_mutex::RawMutex (locked, parked)`. parking_lot uses a
+/// fixed bit layout for the state byte.
+fn write_raw_mutex(
+    f: &mut fmt::Formatter<'_>,
+    name: &str,
+    bytes: &[u8],
+    state_offset: u64,
+) -> fmt::Result {
+    const LOCKED_BIT: u8 = 0b01;
+    const PARKED_BIT: u8 = 0b10;
+
+    let Some(&state) = bytes.get(state_offset as usize) else {
+        return write!(f, "<truncated>");
+    };
+    write!(f, "{name} (")?;
+    match (state & LOCKED_BIT != 0, state & PARKED_BIT != 0) {
+        (false, false) => write!(f, "unlocked")?,
+        (true, false) => write!(f, "locked")?,
+        (false, true) => write!(f, "parked")?,
+        (true, true) => write!(f, "locked, parked")?,
+    }
+    write!(f, ")")
 }
 
 fn write_function_pointer(

@@ -466,6 +466,25 @@ impl Bundle {
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::RawMutex { state },
+                ) => {
+                    let target =
+                        format_path_target(self, id, def, state, "RawMutex state debug format")?;
+                    if !matches!(
+                        self.types.get(target),
+                        Some(TypeDef::Base {
+                            size: 1,
+                            encoding: crate::raw_types::Encoding::Unsigned,
+                            ..
+                        })
+                    ) {
+                        return corrupt(format!(
+                            "RawMutex debug format for type {} does not end at a u8 state byte",
+                            id.0
+                        ));
+                    }
+                }
+                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::IpAddress { octets },
                 ) => {
                     let target = format_path_target(

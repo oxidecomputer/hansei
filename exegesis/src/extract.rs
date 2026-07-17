@@ -1057,6 +1057,7 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| ip_address_debug_format(reader, id))
         .or_else(|| str_debug_format(reader, id))
         .or_else(|| string_debug_format(reader, id))
+        .or_else(|| parking_lot_raw_mutex_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
@@ -1559,6 +1560,29 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
         length: prefix.iter().copied().chain(layout.length).collect(),
         capacity: prefix.iter().copied().chain(layout.capacity).collect(),
     }))
+}
+
+fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    if fq_name(reader, id).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
+        return None;
+    }
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let (state_index, state_member) = unique_member(reader, &st.members, "state")?;
+    // The state is a single-byte atomic (`AtomicU8`). Reuse the atomic
+    // detector for the path to the stored byte, then anchor it at `state`.
+    let Some(DebugFormat::Known(crate::bundle::KnownFormat::Atomic { value })) =
+        atomic_debug_format(reader, state_member.type_id)
+    else {
+        return None;
+    };
+    let RawType::Struct(atomic) = reader.canonical_type(state_member.type_id)? else {
+        return None;
+    };
+    if atomic.size != 1 {
+        return None;
+    }
+    let state = std::iter::once(state_index as u32).chain(value).collect();
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::RawMutex { state }))
 }
 
 /// Recognize rustc's DWARF representation of a Rust trait-object wide

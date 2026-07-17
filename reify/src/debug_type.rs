@@ -159,6 +159,9 @@ pub enum KnownFormat<T> {
         wake_by_ref_offset: u64,
         drop_offset: u64,
     },
+    /// Display a parking_lot `RawMutex`'s decoded lock state. `state_offset`
+    /// locates the single state byte within the mutex.
+    RawMutex { state_offset: u64 },
     /// Display an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: T, offset: u64 },
     /// Display the initialized elements of a Vec.
@@ -570,6 +573,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     drop_offset,
                 }))
             }
+            BundleFormat::Known(BundleKnownFormat::RawMutex { state }) => {
+                let (_, state_offset) = project(*self, state)?;
+                Some(DebugFormat::Known(KnownFormat::RawMutex { state_offset }))
+            }
             BundleFormat::Known(BundleKnownFormat::IpAddress { octets }) => {
                 let (octets, offset) = project(*self, &[*octets])?;
                 let (octet, count) = octets.array_info()?;
@@ -957,6 +964,7 @@ mod bundle_tests {
     const VEC: BundleTypeId = BundleTypeId(40);
     const STR: BundleTypeId = BundleTypeId(41);
     const STRING: BundleTypeId = BundleTypeId(42);
+    const RAW_MUTEX: BundleTypeId = BundleTypeId(43);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1012,6 +1020,7 @@ mod bundle_tests {
             (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
         let (strn, stringn, data_ptrn, length2n) =
             (s("&str"), s("alloc::string::String"), s("data_ptr"), s("length"));
+        let (raw_mutexn, staten) = (s("parking_lot::raw_mutex::RawMutex"), s("state"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1194,6 +1203,11 @@ mod bundle_tests {
                     m(capacityn, U64, 16),
                 ],
             },
+            TypeDef::Struct {
+                name: raw_mutexn,
+                size: 1,
+                members: vec![m(staten, U8, 0)],
+            },
         ];
 
         let b = Bundle {
@@ -1283,6 +1297,9 @@ mod bundle_tests {
                         length: vec![1],
                         capacity: vec![2],
                     }),
+                ), (
+                    RAW_MUTEX,
+                    BundleDebugFormat::Known(BundleKnownFormat::RawMutex { state: vec![0] }),
                 )]),
                 name_index: vec![(pointn, POINT)],
             },
@@ -1770,6 +1787,22 @@ mod bundle_tests {
             format!("{}", value.display_from_target(&Reader, 8)),
             "Opt::Some(\"hi\\nthere\")"
         );
+    }
+
+    #[test]
+    fn test_raw_mutex_decodes_lock_state() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let cases = [
+            (0u8, "parking_lot::raw_mutex::RawMutex (unlocked)"),
+            (1, "parking_lot::raw_mutex::RawMutex (locked)"),
+            (2, "parking_lot::raw_mutex::RawMutex (parked)"),
+            (3, "parking_lot::raw_mutex::RawMutex (locked, parked)"),
+        ];
+        for (state, expected) in cases {
+            let value = TypeInfoRef::new(v.ty(RAW_MUTEX).unwrap(), 0, std::slice::from_ref(&state));
+            assert_eq!(format!("{}", value.display()), expected, "state={state}");
+        }
     }
 
     #[test]
