@@ -807,6 +807,16 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 hex_integers,
             );
         }
+        if let DebugFormat::Known(format @ KnownFormat::BoundedSemaphore { .. }) = format {
+            return write_bounded_semaphore(
+                f,
+                info,
+                ty.name(),
+                format,
+                depth,
+                proc,
+            );
+        }
         if let DebugFormat::Known(format @ KnownFormat::MpscBlock { .. }) = format {
             return write_mpsc_block(
                 f,
@@ -941,6 +951,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::WatchState { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Notify { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Semaphore { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::BoundedSemaphore { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::MpscBlock { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::IpAddress { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Vec { .. }) => unreachable!(),
@@ -1242,26 +1253,28 @@ struct VtableFunction {
 /// Render a parking_lot `RawMutex` as its decoded lock state, e.g.
 /// `parking_lot::raw_mutex::RawMutex (locked, parked)`. parking_lot uses a
 /// fixed bit layout for the state byte.
+/// Decode a parking_lot `RawMutex` state byte to its lock/park status.
+fn raw_mutex_state(state: u8) -> &'static str {
+    const LOCKED_BIT: u8 = 0b01;
+    const PARKED_BIT: u8 = 0b10;
+    match (state & LOCKED_BIT != 0, state & PARKED_BIT != 0) {
+        (false, false) => "unlocked",
+        (true, false) => "locked",
+        (false, true) => "parked",
+        (true, true) => "locked, parked",
+    }
+}
+
 fn write_raw_mutex(
     f: &mut fmt::Formatter<'_>,
     name: &str,
     bytes: &[u8],
     state_offset: u64,
 ) -> fmt::Result {
-    const LOCKED_BIT: u8 = 0b01;
-    const PARKED_BIT: u8 = 0b10;
-
     let Some(&state) = bytes.get(state_offset as usize) else {
         return write!(f, "<truncated>");
     };
-    write!(f, "{name} (")?;
-    match (state & LOCKED_BIT != 0, state & PARKED_BIT != 0) {
-        (false, false) => write!(f, "unlocked")?,
-        (true, false) => write!(f, "locked")?,
-        (false, true) => write!(f, "parked")?,
-        (true, true) => write!(f, "locked, parked")?,
-    }
-    write!(f, ")")
+    write!(f, "{name} ({})", raw_mutex_state(state))
 }
 
 /// Render a struct, replacing one member's value with `decoded` text rather
@@ -1327,6 +1340,169 @@ fn decode_semaphore_permits(bytes: &[u8], permits_offset: u64) -> String {
     } else {
         format!("{permits}")
     }
+}
+
+/// Render a `tokio::sync::mpsc::bounded::Semaphore` compactly as its waiter
+/// mutex state, closed flag, available permits, capacity, and the queue of
+/// waiters (each shown by the permits it is blocked on) — rather than dumping
+/// the raw nested `batch_semaphore::Semaphore` and intrusive linked list.
+fn write_bounded_semaphore<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    name: &str,
+    format: KnownFormat<T>,
+    depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+) -> fmt::Result {
+    let KnownFormat::BoundedSemaphore {
+        mutex_offset,
+        closed_offset,
+        permits_offset,
+        bound_offset,
+        head_offset,
+        waiter,
+        waiter_size,
+        waiter_state_offset,
+        waiter_next_offset,
+    } = format
+    else {
+        unreachable!()
+    };
+
+    let pretty = f.alternate();
+    let bytes = info.bytes;
+    // Start each field on its own indented line when pretty, else space-separated.
+    let field = |f: &mut fmt::Formatter<'_>| -> fmt::Result {
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)
+        } else {
+            write!(f, " ")
+        }
+    };
+
+    write!(f, "{name} {{")?;
+
+    field(f)?;
+    match bytes.get(mutex_offset as usize) {
+        Some(&state) => write!(f, "mutex: {},", raw_mutex_state(state))?,
+        None => write!(f, "mutex: <truncated>,")?,
+    }
+
+    field(f)?;
+    match bytes.get(closed_offset as usize) {
+        Some(&closed) => write!(f, "closed: {},", closed != 0)?,
+        None => write!(f, "closed: <truncated>,")?,
+    }
+
+    field(f)?;
+    // The batch semaphore's permit word: bit 0 is the closed flag (surfaced
+    // separately above), the rest the available count.
+    match read_u64_at(bytes, permits_offset) {
+        Some(raw) => write!(f, "permits: {},", raw >> 1)?,
+        None => write!(f, "permits: <truncated>,")?,
+    }
+
+    field(f)?;
+    match read_u64_at(bytes, bound_offset) {
+        Some(bound) => write!(f, "bound: {bound},")?,
+        None => write!(f, "bound: <truncated>,")?,
+    }
+
+    field(f)?;
+    write!(f, "queue: ")?;
+    write_semaphore_waiters(
+        f,
+        bytes,
+        head_offset,
+        waiter,
+        waiter_size,
+        waiter_state_offset,
+        waiter_next_offset,
+        depth + 1,
+        proc,
+    )?;
+    if pretty {
+        write!(f, ",")?;
+    }
+
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+/// Walk the intrusive linked list of semaphore waiters from the head word at
+/// `head_offset`, rendering each as `Waiter { permits_needed: N }`. Each node is
+/// read from the target and the list followed via each node's successor pointer,
+/// guarded against cycles and unbounded length.
+#[allow(clippy::too_many_arguments)]
+fn write_semaphore_waiters<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    bytes: &[u8],
+    head_offset: u64,
+    waiter: T,
+    waiter_size: u32,
+    state_offset: u64,
+    next_offset: u64,
+    depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+) -> fmt::Result {
+    let pretty = f.alternate();
+    let Some(head) = read_u64_at(bytes, head_offset) else {
+        return write!(f, "<truncated>");
+    };
+    // An empty queue is known from the head word alone; a populated one needs
+    // the target to read each node.
+    if head == 0 {
+        return write!(f, "[]");
+    }
+    let Some(proc) = proc else {
+        return write!(f, "<target unavailable>");
+    };
+    write!(f, "[")?;
+
+    let name = waiter.name();
+    let mut cur = head;
+    let mut any = false;
+    let mut seen = HashSet::new();
+    let mut guard = 4096u32;
+    while cur != 0 && guard > 0 {
+        guard -= 1;
+        if !seen.insert(cur) {
+            break;
+        }
+        let Ok(node) = proc.read_bytes(cur, waiter_size as u64) else {
+            write!(f, "{}<unreadable waiter>", if any { ", " } else { "" })?;
+            break;
+        };
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        } else if any {
+            write!(f, ", ")?;
+        }
+        any = true;
+        match read_u64_at(&node, state_offset) {
+            Some(permits) => write!(f, "{name} {{ permits_needed: {permits} }}")?,
+            None => write!(f, "{name} {{ <truncated> }}")?,
+        }
+        if pretty {
+            write!(f, ",")?;
+        }
+        match read_u64_at(&node, next_offset) {
+            Some(next) => cur = next,
+            None => break,
+        }
+    }
+    if pretty && any {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    }
+    write!(f, "]")
 }
 
 /// Render a `tokio::sync::watch::state::AtomicState` as its decoded version

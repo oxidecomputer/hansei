@@ -1762,6 +1762,119 @@ fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat
     }))
 }
 
+/// A `tokio::sync::mpsc::bounded::Semaphore` and the paths reify needs to render
+/// it compactly. See [`crate::bundle::KnownFormat::BoundedSemaphore`].
+struct RawBoundedSemaphoreFormat {
+    mutex: Vec<u32>,
+    closed: Vec<u32>,
+    permits: Vec<u32>,
+    bound: Vec<u32>,
+    head: Vec<u32>,
+    waiter: TypeId,
+    waiter_state: Vec<u32>,
+    waiter_next: Vec<u32>,
+}
+
+/// Recognize a `tokio::sync::mpsc::bounded::Semaphore` and record the paths to
+/// its mutex state, closed flag, permits, capacity, and intrusive waiter queue.
+fn bounded_semaphore_debug_format(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<RawBoundedSemaphoreFormat> {
+    if fq_name(reader, id).as_deref() != Some("tokio::sync::mpsc::bounded::Semaphore") {
+        return None;
+    }
+
+    // The capacity is the bounded semaphore's own `bound`, a plain `usize`.
+    let (bound, bound_ty) = field_path(reader, id, &["bound"])?;
+    if !is_unsigned_integer(reader, bound_ty, crate::bundle::POINTER_SIZE) {
+        return None;
+    }
+
+    // The available permits are the inner batch semaphore's atomic word.
+    let (sem_prefix, sem_ty) = field_path(reader, id, &["semaphore"])?;
+    let permits_tail = atomic_usize_field_path(
+        reader,
+        sem_ty,
+        "tokio::sync::batch_semaphore::Semaphore",
+        "permits",
+    )?;
+    let permits = sem_prefix.iter().copied().chain(permits_tail).collect();
+
+    // The waiter list lives behind the batch semaphore's `waiters` mutex. tokio
+    // wraps it in a loom shim over parking_lot's `lock_api::Mutex`; navigate the
+    // shim (`__1`) to the real mutex, whose `raw` is the parking_lot RawMutex and
+    // whose `data` (an `UnsafeCell`, member `value`) holds the `Waitlist`. Reach
+    // the RawMutex's single state byte through its atomic wrapper by walking to
+    // the zero-offset `u8`, which works whether the compiler emitted the atomic
+    // as the generic `Atomic<u8>` or the concrete `AtomicU8`.
+    let (raw_prefix, raw_ty) = field_path(reader, id, &["semaphore", "waiters", "__1", "raw"])?;
+    if fq_name(reader, raw_ty).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
+        return None;
+    }
+    let mut state_tails = Vec::new();
+    find_zero_offset_uint_paths(
+        reader,
+        raw_ty,
+        1,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut state_tails,
+    );
+    let [state_tail] = state_tails.as_slice() else { return None };
+    let mutex = raw_prefix.iter().copied().chain(state_tail.iter().copied()).collect();
+
+    let (closed, closed_ty) = field_path(
+        reader,
+        id,
+        &["semaphore", "waiters", "__1", "data", "value", "closed"],
+    )?;
+    if !matches!(reader.canonical_type(closed_ty), Some(RawType::Base(base)) if base.size == 1) {
+        return None;
+    }
+
+    let (head, _) = field_path(
+        reader,
+        id,
+        &["semaphore", "waiters", "__1", "data", "value", "queue", "head"],
+    )?;
+
+    // The queue is a `LinkedList<Waiter, Waiter>`; its node type is the `Waiter`.
+    let (_, queue_ty) = field_path(
+        reader,
+        id,
+        &["semaphore", "waiters", "__1", "data", "value", "queue"],
+    )?;
+    let RawType::Struct(list) = reader.canonical_type(queue_ty)? else { return None };
+    let param = list.template_params.last()?;
+    let waiter = reader.canonicalize(param.type_id);
+    if fq_name(reader, waiter).as_deref() != Some("tokio::sync::batch_semaphore::Waiter") {
+        return None;
+    }
+
+    // Rooted at the `Waiter`: its atomic `state` word (permits still needed) and
+    // its successor pointer (`pointers.inner.value.next`).
+    let waiter_state = atomic_usize_field_path(
+        reader,
+        waiter,
+        "tokio::sync::batch_semaphore::Waiter",
+        "state",
+    )?;
+    let (waiter_next, _) =
+        field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
+
+    Some(RawBoundedSemaphoreFormat {
+        mutex,
+        closed,
+        permits,
+        bound,
+        head,
+        waiter,
+        waiter_state,
+        waiter_next,
+    })
+}
+
 /// Walk a chain of named struct members, returning the member-index path and
 /// the type reached. Used to record navigation paths through transparent
 /// wrappers (CachePadded, UnsafeCell, NonNull) by name.
@@ -2641,6 +2754,18 @@ impl<'a> Emitter<'a> {
                     next: format.next,
                     values: format.values,
                     element: self.reserve(format.element),
+                };
+                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(format) = bounded_semaphore_debug_format(self.reader, tid) {
+                let format = crate::bundle::KnownFormat::BoundedSemaphore {
+                    mutex: format.mutex,
+                    closed: format.closed,
+                    permits: format.permits,
+                    bound: format.bound,
+                    head: format.head,
+                    waiter: self.reserve(format.waiter),
+                    waiter_state: format.waiter_state,
+                    waiter_next: format.waiter_next,
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = known_debug_format(self.reader, tid) {
