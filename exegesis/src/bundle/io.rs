@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 11;
+pub const FORMAT_VERSION: u32 = 12;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -661,6 +661,103 @@ impl Bundle {
                         permits,
                         "MpscRx permits debug format",
                     )?;
+                }
+                crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::BoundedSemaphore {
+                        mutex,
+                        closed,
+                        permits,
+                        bound,
+                        head,
+                        waiter,
+                        waiter_state,
+                        waiter_next,
+                    },
+                ) => {
+                    if [mutex, closed, permits, bound, head, waiter_state, waiter_next]
+                        .iter()
+                        .any(|p| p.is_empty())
+                    {
+                        return corrupt(format!(
+                            "BoundedSemaphore debug format for type {} has an empty path",
+                            id.0
+                        ));
+                    }
+                    // The waiter mutex's single state byte.
+                    let mutex_target = format_path_target(
+                        self,
+                        id,
+                        def,
+                        mutex,
+                        "BoundedSemaphore mutex debug format",
+                    )?;
+                    if !matches!(
+                        self.types.get(mutex_target),
+                        Some(TypeDef::Base {
+                            size: 1,
+                            encoding: crate::raw_types::Encoding::Unsigned,
+                            ..
+                        })
+                    ) {
+                        return corrupt(format!(
+                            "BoundedSemaphore debug format for type {} mutex does not end at a state byte",
+                            id.0
+                        ));
+                    }
+                    // The `Waitlist.closed` flag: a single byte.
+                    let closed_target = format_path_target(
+                        self,
+                        id,
+                        def,
+                        closed,
+                        "BoundedSemaphore closed debug format",
+                    )?;
+                    if !matches!(self.types.get(closed_target), Some(TypeDef::Base { size: 1, .. })) {
+                        return corrupt(format!(
+                            "BoundedSemaphore debug format for type {} closed does not end at a byte",
+                            id.0
+                        ));
+                    }
+                    check_usize_format(self, id, def, permits, "BoundedSemaphore permits debug format")?;
+                    check_usize_format(self, id, def, bound, "BoundedSemaphore bound debug format")?;
+                    // `head` reaches the queue's head word, an
+                    // `Option<NonNull<Waiter>>` niche-optimized to a pointer.
+                    let head_target =
+                        format_path_target(self, id, def, head, "BoundedSemaphore head debug format")?;
+                    if type_size(self, head_target, &mut Vec::new())
+                        != Some(crate::bundle::POINTER_SIZE)
+                    {
+                        return corrupt(format!(
+                            "BoundedSemaphore debug format for type {} head is not pointer-sized",
+                            id.0
+                        ));
+                    }
+                    // The `waiter_*` paths are rooted at the `Waiter` node type.
+                    check_ty("BoundedSemaphore waiter", *waiter)?;
+                    let waiter_def =
+                        self.types.get(*waiter).expect("member type validated before formats");
+                    check_usize_format(
+                        self,
+                        *waiter,
+                        waiter_def,
+                        waiter_state,
+                        "BoundedSemaphore waiter_state debug format",
+                    )?;
+                    let next_target = format_path_target(
+                        self,
+                        *waiter,
+                        waiter_def,
+                        waiter_next,
+                        "BoundedSemaphore waiter_next debug format",
+                    )?;
+                    if type_size(self, next_target, &mut Vec::new())
+                        != Some(crate::bundle::POINTER_SIZE)
+                    {
+                        return corrupt(format!(
+                            "BoundedSemaphore debug format for type {} waiter_next is not pointer-sized",
+                            id.0
+                        ));
+                    }
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::IpAddress { octets },

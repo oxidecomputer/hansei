@@ -212,6 +212,25 @@ pub enum KnownFormat<T> {
         bound_offset: u64,
         permits_offset: u64,
     },
+    /// Display a `tokio::sync::mpsc::bounded::Semaphore` compactly: its waiter
+    /// mutex state, closed flag, available permits, capacity, and waiter queue.
+    /// The `*_offset` fields locate each within the value; `permits_offset` is
+    /// the batch semaphore's permit word (bit 0 closed, the rest the count) and
+    /// `head_offset` the queue's head `Option<NonNull<Waiter>>` word. `waiter`
+    /// is the `Waiter` node type (`waiter_size` bytes); `waiter_state_offset`
+    /// and `waiter_next_offset` locate each node's permit-count state word and
+    /// successor pointer, which reify follows to list the queued waiters.
+    BoundedSemaphore {
+        mutex_offset: u64,
+        closed_offset: u64,
+        permits_offset: u64,
+        bound_offset: u64,
+        head_offset: u64,
+        waiter: T,
+        waiter_size: u32,
+        waiter_state_offset: u64,
+        waiter_next_offset: u64,
+    },
     /// Display an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: T, offset: u64 },
     /// Display the initialized elements of a Vec.
@@ -702,6 +721,36 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     permits_offset,
                 }))
             }
+            BundleFormat::Known(BundleKnownFormat::BoundedSemaphore {
+                mutex,
+                closed,
+                permits,
+                bound,
+                head,
+                waiter,
+                waiter_state,
+                waiter_next,
+            }) => {
+                let (_, mutex_offset) = project(*self, mutex)?;
+                let (_, closed_offset) = project(*self, closed)?;
+                let (_, permits_offset) = project(*self, permits)?;
+                let (_, bound_offset) = project(*self, bound)?;
+                let (_, head_offset) = project(*self, head)?;
+                let waiter_ty = self.related_type(*waiter);
+                let (_, waiter_state_offset) = project(waiter_ty, waiter_state)?;
+                let (_, waiter_next_offset) = project(waiter_ty, waiter_next)?;
+                Some(DebugFormat::Known(KnownFormat::BoundedSemaphore {
+                    mutex_offset,
+                    closed_offset,
+                    permits_offset,
+                    bound_offset,
+                    head_offset,
+                    waiter: waiter_ty,
+                    waiter_size: waiter_ty.size() as u32,
+                    waiter_state_offset,
+                    waiter_next_offset,
+                }))
+            }
             BundleFormat::Known(BundleKnownFormat::IpAddress { octets }) => {
                 let (octets, offset) = project(*self, &[*octets])?;
                 let (octet, count) = octets.array_info()?;
@@ -1105,6 +1154,13 @@ mod bundle_tests {
     const ARC_INNER: BundleTypeId = BundleTypeId(56);
     const ARC_INNER_PTR: BundleTypeId = BundleTypeId(57);
     const RECEIVER: BundleTypeId = BundleTypeId(58);
+    const BOUNDED_SEM: BundleTypeId = BundleTypeId(59);
+    const BSEM_INNER: BundleTypeId = BundleTypeId(60);
+    const BSEM_MUTEX: BundleTypeId = BundleTypeId(61);
+    const BSEM_WAITLIST: BundleTypeId = BundleTypeId(62);
+    const BSEM_LIST: BundleTypeId = BundleTypeId(63);
+    const WAITER: BundleTypeId = BundleTypeId(64);
+    const WAITER_PTR: BundleTypeId = BundleTypeId(65);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1186,6 +1242,13 @@ mod bundle_tests {
         );
         let (strongn, weakn, boundn, chanfieldn, semfieldn) =
             (s("strong"), s("weak"), s("bound"), s("chan"), s("semaphore"));
+        let (bsem_mutexn, bsem_waitlistn, bsem_listn, waitern) = (
+            s("lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::sync::batch_semaphore::Waitlist>"),
+            s("tokio::sync::batch_semaphore::Waitlist"),
+            s("tokio::util::linked_list::LinkedList<tokio::sync::batch_semaphore::Waiter, tokio::sync::batch_semaphore::Waiter>"),
+            s("tokio::sync::batch_semaphore::Waiter"),
+        );
+        let (rawn, closedn, queuen) = (s("raw"), s("closed"), s("queue"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1450,6 +1513,45 @@ mod bundle_tests {
                 size: 8,
                 members: vec![m(chanfieldn, ARC_INNER_PTR, 0)],
             },
+            // bounded::Semaphore { semaphore: batch Semaphore @0, bound @48 }.
+            TypeDef::Struct {
+                name: rx_semn,
+                size: 56,
+                members: vec![m(semfieldn, BSEM_INNER, 0), m(boundn, U64, 48)],
+            },
+            // batch_semaphore::Semaphore { waiters: Mutex @0, permits @40 }.
+            TypeDef::Struct {
+                name: semaphoren,
+                size: 48,
+                members: vec![m(waitersn, BSEM_MUTEX, 0), m(permitsn, U64, 40)],
+            },
+            // Mutex { raw: RawMutex @0, data: Waitlist @8 } (the loom/UnsafeCell
+            // wrappers the detector navigates are collapsed here — reify only
+            // needs the resolved offsets).
+            TypeDef::Struct {
+                name: bsem_mutexn,
+                size: 40,
+                members: vec![m(rawn, RAW_MUTEX, 0), m(datan, BSEM_WAITLIST, 8)],
+            },
+            // Waitlist { queue: LinkedList @0, closed: bool @24 }.
+            TypeDef::Struct {
+                name: bsem_waitlistn,
+                size: 32,
+                members: vec![m(queuen, BSEM_LIST, 0), m(closedn, BOOL, 24)],
+            },
+            // LinkedList { head: *Waiter @0, tail: *Waiter @8 }.
+            TypeDef::Struct {
+                name: bsem_listn,
+                size: 16,
+                members: vec![m(headn, WAITER_PTR, 0), m(tailn, WAITER_PTR, 8)],
+            },
+            // Waiter { state: usize @0 (permits needed), next: *Waiter @8 }.
+            TypeDef::Struct {
+                name: waitern,
+                size: 32,
+                members: vec![m(staten, U64, 0), m(nextn, WAITER_PTR, 8)],
+            },
+            TypeDef::Pointer { name: None, target: WAITER },
         ];
 
         let b = Bundle {
@@ -1589,6 +1691,18 @@ mod bundle_tests {
                         chan: vec![2],
                         bound: vec![3, 1],
                         permits: vec![3, 0],
+                    }),
+                ), (
+                    BOUNDED_SEM,
+                    BundleDebugFormat::Known(BundleKnownFormat::BoundedSemaphore {
+                        mutex: vec![0, 0, 0, 0],
+                        closed: vec![0, 0, 1, 1],
+                        permits: vec![0, 1],
+                        bound: vec![1],
+                        head: vec![0, 0, 1, 0, 0],
+                        waiter: WAITER,
+                        waiter_state: vec![0],
+                        waiter_next: vec![1],
                     }),
                 )]),
                 name_index: vec![(pointn, POINT)],
@@ -2267,6 +2381,87 @@ mod bundle_tests {
         let value = TypeInfoRef::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&Reader, 8));
         assert_eq!(shown, "tokio::sync::mpsc::bounded::Receiver<u32> { <null> }");
+    }
+
+    #[test]
+    fn test_bounded_semaphore_renders_compact_state_and_waiters() {
+        // Two waiters live at 0x3000 and 0x3020, blocked on 2 and 1 permits.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                // Waiter { state: usize @0, next: *Waiter @8 }.
+                let (state, next) = match addr {
+                    0x3000 => (2u64, 0x3020u64),
+                    0x3020 => (1u64, 0u64),
+                    other => panic!("unexpected read at {other:#x}"),
+                };
+                let mut b = Vec::new();
+                b.extend_from_slice(&state.to_le_bytes());
+                b.extend_from_slice(&next.to_le_bytes());
+                b.resize(32, 0);
+                b.truncate(len as usize);
+                Ok(b)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // Flat bounded::Semaphore buffer: mutex state @0, head @8, tail @16,
+        // closed @32, permits @40, bound @48.
+        let sem = |mutex: u8, head: u64, closed: u8, permits: u64, bound: u64| {
+            let mut buf = vec![0u8; 56];
+            buf[0] = mutex;
+            buf[8..16].copy_from_slice(&head.to_le_bytes());
+            buf[32] = closed;
+            buf[40..48].copy_from_slice(&permits.to_le_bytes());
+            buf[48..56].copy_from_slice(&bound.to_le_bytes());
+            buf
+        };
+
+        // Unlocked, open, 10 permits (stored << 1), capacity 16, two waiters.
+        let buf = sem(0, 0x3000, 0, 20, 16);
+        let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::mpsc::bounded::Semaphore { mutex: unlocked, closed: false, \
+             permits: 10, bound: 16, queue: [\
+             tokio::sync::batch_semaphore::Waiter { permits_needed: 2 }, \
+             tokio::sync::batch_semaphore::Waiter { permits_needed: 1 }] }"
+        );
+
+        // Locked, closed, no permits, empty queue (null head).
+        let buf = sem(0b01, 0, 1, 0, 16);
+        let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::mpsc::bounded::Semaphore { mutex: locked, closed: true, \
+             permits: 0, bound: 16, queue: [] }"
+        );
+
+        // Without a target the queue cannot be walked, but the inline fields
+        // (read from the value's own bytes) still render.
+        let buf = sem(0, 0x3000, 0, 20, 16);
+        let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        let shown = format!("{}", value.display());
+        assert!(shown.contains("permits: 10"), "{shown}");
+        assert!(shown.contains("queue: <target unavailable>"), "{shown}");
+
+        // Pretty mode puts each field and waiter on its own indented line.
+        let buf = sem(0, 0x3000, 0, 20, 16);
+        let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::mpsc::bounded::Semaphore {\n\
+             \x20   mutex: unlocked,\n\
+             \x20   closed: false,\n\
+             \x20   permits: 10,\n\
+             \x20   bound: 16,\n\
+             \x20   queue: [\n\
+             \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 2 },\n\
+             \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 1 },\n\
+             \x20   ],\n\
+             }"
+        );
     }
 
     #[test]
