@@ -144,13 +144,33 @@ pub enum KnownFormat {
     /// single-byte atomic; reify interprets parking_lot's fixed bit encoding
     /// (`LOCKED_BIT = 1`, `PARKED_BIT = 2`).
     RawMutex { state: Vec<u32> },
-    /// Display a `tokio::sync::notify::Notify` with its `state` field decoded.
-    /// `state` is the member path to the atomic `usize`; reify renders the
-    /// struct normally but interprets that field as tokio's notification
-    /// state (low two bits: idle/waiting/notified) plus the `notify_waiters`
-    /// generation counter in the upper bits. The path's first element is the
-    /// index of the `state` member within the struct.
-    Notify { state: Vec<u32> },
+    /// Display a `tokio::sync::notify::Notify` compactly as its notification
+    /// state, waiter-mutex lock state, and the queue of parked waiters —
+    /// instead of dumping the raw `waiters` mutex wrapping an intrusive
+    /// `LinkedList<Waiter>`. reify renders
+    /// `{ state, mutex, queue: [Waiter { notification }, …] }`.
+    ///
+    /// All paths but the `waiter_*` ones are rooted at the `Notify`: `state`
+    /// reaches the atomic `usize` state word (low two bits idle/waiting/notified,
+    /// upper bits the `notify_waiters()` generation counter); `mutex` reaches the
+    /// waiter mutex's single state byte (parking_lot's `LOCKED_BIT`/`PARKED_BIT`
+    /// encoding); and `head` reaches the waiter list's head word (an
+    /// `Option<NonNull<Waiter>>`, null when the queue is empty).
+    ///
+    /// The queue is an intrusive linked list of `Waiter` nodes. `waiter` is that
+    /// node type; `waiter_notification` is the path *rooted at `waiter`* to its
+    /// atomic `notification` word (0 none, 1 one/FIFO, 5 one/LIFO, 2 all) and
+    /// `waiter_next` is the path rooted at `waiter` to its successor pointer word
+    /// (`pointers.inner.value.next`). reify follows `head` and each `waiter_next`
+    /// to render the queued waiters.
+    Notify {
+        state: Vec<u32>,
+        mutex: Vec<u32>,
+        head: Vec<u32>,
+        waiter: BundleTypeId,
+        waiter_notification: Vec<u32>,
+        waiter_next: Vec<u32>,
+    },
     /// Display a `tokio::sync::batch_semaphore::Semaphore` with its `permits`
     /// field decoded. `permits` is the member path to the atomic `usize`;
     /// reify renders the struct normally but interprets that field as the
