@@ -616,6 +616,53 @@ impl Bundle {
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::MpscRx {
+                        chan_pointer,
+                        chan,
+                        bound,
+                        permits,
+                    },
+                ) => {
+                    if [chan_pointer, chan, bound, permits].iter().any(|p| p.is_empty()) {
+                        return corrupt(format!(
+                            "MpscRx debug format for type {} has an empty path",
+                            id.0
+                        ));
+                    }
+                    // `chan_pointer` reaches the raw pointer inside the Arc; it
+                    // targets the `ArcInner` allocation.
+                    let ptr = format_path_target(
+                        self,
+                        id,
+                        def,
+                        chan_pointer,
+                        "MpscRx chan_pointer debug format",
+                    )?;
+                    let Some(TypeDef::Pointer { target: arcinner, .. }) = self.types.get(ptr)
+                    else {
+                        return corrupt(format!(
+                            "MpscRx debug format for type {} chan_pointer does not end at a pointer",
+                            id.0
+                        ));
+                    };
+                    // `chan` is rooted at the allocation and reaches the `Chan`;
+                    // `bound` and `permits` are rooted at that `Chan`.
+                    let arcinner_def =
+                        self.types.get(*arcinner).expect("member type validated before formats");
+                    let chan_ty =
+                        format_path_target(self, *arcinner, arcinner_def, chan, "MpscRx chan debug format")?;
+                    let chan_def =
+                        self.types.get(chan_ty).expect("member type validated before formats");
+                    check_usize_format(self, chan_ty, chan_def, bound, "MpscRx bound debug format")?;
+                    check_usize_format(
+                        self,
+                        chan_ty,
+                        chan_def,
+                        permits,
+                        "MpscRx permits debug format",
+                    )?;
+                }
+                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::IpAddress { octets },
                 ) => {
                     let target = format_path_target(

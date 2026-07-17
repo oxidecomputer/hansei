@@ -191,6 +191,18 @@ pub enum KnownFormat {
     /// bytes may be stale. The live messages are shown by the channel-level
     /// [`KnownFormat::MpscChan`] formatter instead.
     MpscBlock { ready_slots: Vec<u32>, values: Vec<u32> },
+    /// Display a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
+    /// channel. A receiver holds an `Arc<Chan<T, Semaphore>>`; `chan_pointer`
+    /// is the member path from the receiver to the raw pointer inside that
+    /// `Arc` (ending at a pointer to the `ArcInner` allocation), and `chan` is
+    /// the path from the allocation to the `Chan` value, skipping the Arc's
+    /// strong/weak header. `bound` and `permits` are member paths *within the
+    /// Chan* to the bounded capacity (a plain `usize`) and the batch-semaphore
+    /// permit word (bit 0 closed, the rest the available buffer slots). reify
+    /// reads the `Chan` through the pointer and renders it with the capacity
+    /// and free-slot count prepended, delegating the queued-message walk to the
+    /// `Chan`'s own [`KnownFormat::MpscChan`] formatter.
+    MpscRx { chan_pointer: Vec<u32>, chan: Vec<u32>, bound: Vec<u32>, permits: Vec<u32> },
     /// Display the octets of an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: u32 },
     /// Display the initialized elements of an `alloc::vec::Vec<T, A>`.

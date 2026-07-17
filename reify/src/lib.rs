@@ -825,7 +825,31 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 f,
                 info,
                 ty.name(),
+                &[],
                 format,
+                depth,
+                max_depth,
+                proc,
+                visited,
+                hex_integers,
+            );
+        }
+        if let DebugFormat::Known(KnownFormat::MpscRx {
+            chan,
+            chan_pointer_offset,
+            chan_offset,
+            bound_offset,
+            permits_offset,
+        }) = format
+        {
+            return write_mpsc_rx(
+                f,
+                info,
+                chan,
+                chan_pointer_offset,
+                chan_offset,
+                bound_offset,
+                permits_offset,
                 depth,
                 max_depth,
                 proc,
@@ -924,6 +948,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::String { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::BTreeMap { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::MpscChan { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::MpscRx { .. }) => unreachable!(),
         };
         let start = offset as usize;
         let Some(end) = start.checked_add(target.size() as usize) else {
@@ -1631,11 +1656,14 @@ fn write_mpsc_block<'a, T: DebugType<'a>>(
 /// chain and shows the messages still in flight (absolute indices
 /// `[index, tail)`), each rendered as `element`. The remaining channel
 /// members render normally (their block pointers show the elided block view).
+/// `extra` are pre-decoded fields (e.g. a bounded receiver's `capacity` and
+/// `free`) written verbatim ahead of the synthetic `queued` list.
 #[allow(clippy::too_many_arguments)]
 fn write_mpsc_chan<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
+    extra: &[(&str, &str)],
     format: KnownFormat<T>,
     depth: usize,
     max_depth: usize,
@@ -1649,7 +1677,17 @@ fn write_mpsc_chan<'a, T: DebugType<'a>>(
     }
     write!(f, " {{")?;
 
-    // Synthetic `queued` field first.
+    // Any caller-supplied leading fields, each terminated by a comma so the
+    // synthetic `queued` field (and the real members) can follow uniformly.
+    for (key, value) in extra {
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        }
+        write!(f, " {key}: {value},")?;
+    }
+
+    // Synthetic `queued` field next.
     if pretty {
         writeln!(f)?;
         write_indent(f, depth + 1)?;
@@ -1703,6 +1741,80 @@ fn write_mpsc_chan<'a, T: DebugType<'a>>(
         write!(f, " ")?;
     }
     write!(f, "}}")
+}
+
+/// Render a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
+/// channel. The channel state lives behind the receiver's `Arc<Chan>`: read
+/// the pointer, step past the Arc allocation header to the `Chan`, and render
+/// it in place with the bounded `capacity` and available `free` slots
+/// prepended, so a receiver reads as the channel it drains.
+#[allow(clippy::too_many_arguments)]
+fn write_mpsc_rx<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    chan: T,
+    chan_pointer_offset: u64,
+    chan_offset: u64,
+    bound_offset: u64,
+    permits_offset: u64,
+    depth: usize,
+    max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
+) -> fmt::Result {
+    let name = info.ty.name();
+    let Some(pointer) = read_u64_at(info.bytes, chan_pointer_offset) else {
+        return write!(f, "{name} {{ <truncated> }}");
+    };
+    let (Some(proc), Some(visited)) = (proc, visited) else {
+        return write!(f, "{name} {{ <target unavailable> }}");
+    };
+    if pointer == 0 {
+        return write!(f, "{name} {{ <null> }}");
+    }
+    let chan_addr = pointer.wrapping_add(chan_offset);
+    let Ok(chan_bytes) = proc.read_bytes(chan_addr, chan.size()) else {
+        return write!(f, "{name} {{ <unreadable> }}");
+    };
+
+    let capacity = read_u64_at(&chan_bytes, bound_offset)
+        .map_or_else(|| "<truncated>".to_string(), |c| c.to_string());
+    let free = decode_semaphore_permits(&chan_bytes, permits_offset);
+
+    let chan_info = TypeInfoRef {
+        ty: chan,
+        addr: chan_addr,
+        bytes: &chan_bytes,
+        _marker: std::marker::PhantomData,
+    };
+    // The `Chan` carries the queued-message formatter; delegate to it, giving
+    // it the receiver's own name and the decoded capacity/free fields.
+    match chan.debug_format() {
+        Some(DebugFormat::Known(format @ KnownFormat::MpscChan { .. })) => write_mpsc_chan(
+            f,
+            &chan_info,
+            name,
+            &[("capacity", capacity.as_str()), ("free", free.as_str())],
+            format,
+            depth,
+            max_depth,
+            Some(proc),
+            Some(visited),
+            hex_integers,
+        ),
+        // The inner type is expected to be an mpsc `Chan`; if the format is
+        // missing, fall back to rendering it structurally.
+        _ => write_display_value(
+            f,
+            &chan_info,
+            depth,
+            max_depth,
+            Some(proc),
+            Some(visited),
+            hex_integers,
+        ),
+    }
 }
 
 /// Walk an mpsc channel's block chain and render the queued messages as a

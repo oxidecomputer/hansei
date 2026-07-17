@@ -198,6 +198,20 @@ pub enum KnownFormat<T> {
     /// released/closed flag bits); `values_member` is the field shown as the
     /// count. Contents are not dereferenced — see the schema note.
     MpscBlock { ready_offset: u64, ready_size: u32, values_member: u32, count: u32 },
+    /// Display a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
+    /// channel. `chan_pointer_offset` locates the receiver's `Arc` raw pointer;
+    /// `chan_offset` is added to the pointee address to skip the Arc's
+    /// strong/weak header and reach the `Chan`, which is rendered as `chan`
+    /// (carrying its own [`KnownFormat::MpscChan`]). `bound_offset` and
+    /// `permits_offset` locate the bounded capacity and available permit word
+    /// within that `Chan`, shown as `capacity` and `free`.
+    MpscRx {
+        chan: T,
+        chan_pointer_offset: u64,
+        chan_offset: u64,
+        bound_offset: u64,
+        permits_offset: u64,
+    },
     /// Display an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: T, offset: u64 },
     /// Display the initialized elements of a Vec.
@@ -669,6 +683,25 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     count: count as u32,
                 }))
             }
+            BundleFormat::Known(BundleKnownFormat::MpscRx {
+                chan_pointer,
+                chan,
+                bound,
+                permits,
+            }) => {
+                let (ptr_ty, chan_pointer_offset) = project(*self, chan_pointer)?;
+                let arcinner_ty = ptr_ty.pointer_target()?;
+                let (chan_ty, chan_offset) = project(arcinner_ty, chan)?;
+                let (_, bound_offset) = project(chan_ty, bound)?;
+                let (_, permits_offset) = project(chan_ty, permits)?;
+                Some(DebugFormat::Known(KnownFormat::MpscRx {
+                    chan: chan_ty,
+                    chan_pointer_offset,
+                    chan_offset,
+                    bound_offset,
+                    permits_offset,
+                }))
+            }
             BundleFormat::Known(BundleKnownFormat::IpAddress { octets }) => {
                 let (octets, offset) = project(*self, &[*octets])?;
                 let (octet, count) = octets.array_info()?;
@@ -1067,6 +1100,11 @@ mod bundle_tests {
     const CHAN_BLOCK: BundleTypeId = BundleTypeId(51);
     const CHAN_BLOCK_HEADER: BundleTypeId = BundleTypeId(52);
     const CHAN_BLOCK_PTR: BundleTypeId = BundleTypeId(53);
+    const RX_CHAN: BundleTypeId = BundleTypeId(54);
+    const RX_SEMAPHORE: BundleTypeId = BundleTypeId(55);
+    const ARC_INNER: BundleTypeId = BundleTypeId(56);
+    const ARC_INNER_PTR: BundleTypeId = BundleTypeId(57);
+    const RECEIVER: BundleTypeId = BundleTypeId(58);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1141,6 +1179,13 @@ mod bundle_tests {
         );
         let (tailn, headn, indexn, start_indexn) =
             (s("tail"), s("head"), s("index"), s("start_index"));
+        let (receivern, rx_semn, arc_innern) = (
+            s("tokio::sync::mpsc::bounded::Receiver<u32>"),
+            s("tokio::sync::mpsc::bounded::Semaphore"),
+            s("alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<u32>>"),
+        );
+        let (strongn, weakn, boundn, chanfieldn, semfieldn) =
+            (s("strong"), s("weak"), s("bound"), s("chan"), s("semaphore"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1373,6 +1418,38 @@ mod bundle_tests {
                 members: vec![m(start_indexn, U64, 0), m(nextn, CHAN_BLOCK_PTR, 8)],
             },
             TypeDef::Pointer { name: None, target: CHAN_BLOCK },
+            // RxChan: tail @0, index @8, head @16, semaphore @24 (like Chan
+            // but with the bounded semaphore appended).
+            TypeDef::Struct {
+                name: chann,
+                size: 40,
+                members: vec![
+                    m(tailn, U64, 0),
+                    m(indexn, U64, 8),
+                    m(headn, CHAN_BLOCK_PTR, 16),
+                    m(semfieldn, RX_SEMAPHORE, 24),
+                ],
+            },
+            // bounded::Semaphore { permits: usize @0, bound: usize @8 }.
+            TypeDef::Struct {
+                name: rx_semn,
+                size: 16,
+                members: vec![m(permitsn, U64, 0), m(boundn, U64, 8)],
+            },
+            // ArcInner { strong: usize @0, weak: usize @8, data: RxChan @16 }.
+            TypeDef::Struct {
+                name: arc_innern,
+                size: 56,
+                members: vec![m(strongn, U64, 0), m(weakn, U64, 8), m(datan, RX_CHAN, 16)],
+            },
+            TypeDef::Pointer { name: None, target: ARC_INNER },
+            // Receiver { chan: *ArcInner @0 } (Rx/Arc/NonNull collapsed to the
+            // single raw pointer the format actually navigates to).
+            TypeDef::Struct {
+                name: receivern,
+                size: 8,
+                members: vec![m(chanfieldn, ARC_INNER_PTR, 0)],
+            },
         ];
 
         let b = Bundle {
@@ -1490,6 +1567,28 @@ mod bundle_tests {
                         next: vec![1, 1],
                         values: vec![0],
                         element: U32,
+                    }),
+                ), (
+                    RX_CHAN,
+                    BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
+                        tail: vec![0],
+                        index: vec![1],
+                        head: vec![2],
+                        start_index: vec![1, 0],
+                        next: vec![1, 1],
+                        values: vec![0],
+                        element: U32,
+                    }),
+                ), (
+                    RECEIVER,
+                    BundleDebugFormat::Known(BundleKnownFormat::MpscRx {
+                        // Receiver → raw pointer @ member 0; ArcInner → `data`
+                        // @ member 2; capacity/permits within the RxChan's
+                        // semaphore (member 3): bound @1, permits @0.
+                        chan_pointer: vec![0],
+                        chan: vec![2],
+                        bound: vec![3, 1],
+                        permits: vec![3, 0],
                     }),
                 )]),
                 name_index: vec![(pointn, POINT)],
@@ -2116,6 +2215,58 @@ mod bundle_tests {
         let value = TypeInfoRef::new(v.ty(CHAN).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&Reader, 8));
         assert!(shown.contains("queued: []"), "{shown}");
+    }
+
+    #[test]
+    fn test_mpsc_rx_renders_channel_with_capacity_and_free() {
+        // The receiver's Arc raw pointer is 0x2000; the Chan sits 16 bytes in,
+        // past the ArcInner strong/weak header, at 0x2010. Its head block is at
+        // 0x1000.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                let mut b = Vec::new();
+                match addr {
+                    0x2010 => {
+                        // RxChan: tail @0, index @8, head @16, semaphore @24
+                        // (permits @24, bound @32).
+                        b.extend_from_slice(&3u64.to_le_bytes()); // tail
+                        b.extend_from_slice(&1u64.to_le_bytes()); // index
+                        b.extend_from_slice(&0x1000u64.to_le_bytes()); // head
+                        b.extend_from_slice(&6u64.to_le_bytes()); // permits -> free 3
+                        b.extend_from_slice(&16u64.to_le_bytes()); // bound -> capacity 16
+                    }
+                    0x1000 => {
+                        // ChanBlock: [u32; 4] values, start_index, next (null).
+                        for v in [10u32, 20, 30, 40] {
+                            b.extend_from_slice(&v.to_le_bytes());
+                        }
+                        b.extend_from_slice(&0u64.to_le_bytes()); // start_index
+                        b.extend_from_slice(&0u64.to_le_bytes()); // next
+                    }
+                    other => panic!("unexpected read at {other:#x}"),
+                }
+                b.truncate(len as usize);
+                Ok(b)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // Receiver holds the Arc raw pointer.
+        let bytes = 0x2000u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert!(shown.starts_with("tokio::sync::mpsc::bounded::Receiver<u32> {"), "{shown}");
+        assert!(shown.contains("capacity: 16"), "{shown}");
+        assert!(shown.contains("free: 3"), "{shown}");
+        assert!(shown.contains("queued: [20, 30]"), "{shown}");
+
+        // A null channel pointer is reported rather than dereferenced.
+        let bytes = 0u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert_eq!(shown, "tokio::sync::mpsc::bounded::Receiver<u32> { <null> }");
     }
 
     #[test]
