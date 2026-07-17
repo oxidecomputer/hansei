@@ -1070,6 +1070,26 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| nonzero_debug_format(reader, id))
         .or_else(|| nonzero_inner_debug_format(reader, id))
         .or_else(|| atomic_debug_format(reader, id))
+        // Least specific: a bare scalar newtype falls through to here only if
+        // no semantic formatter above claimed it.
+        .or_else(|| scalar_newtype_debug_format(reader, id))
+}
+
+/// A tuple newtype wrapping a single scalar (`Version(usize)`, `Epoch(u64)`,
+/// an id, …) is displayed as that inner value. The scalar must fill the whole
+/// struct (any other members are zero-sized), so this only ever collapses a
+/// genuine wrapper, never a struct that also carries data. Semantic wrappers
+/// (atomics, `NonZero`, …) are matched by earlier, more specific formatters.
+fn scalar_newtype_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let (index, member) = st.members.iter().enumerate().find(|(_, member)| {
+        member.offset == 0 && member.name.map(|name| reader.strings.get(name)) == Some("__0")
+    })?;
+    let RawType::Base(base) = reader.canonical_type(member.type_id)? else { return None };
+    if base.size == 0 || st.size != base.size {
+        return None;
+    }
+    Some(DebugFormat::Transparent { member: index as u32 })
 }
 
 #[derive(Clone, Debug)]
@@ -2703,8 +2723,8 @@ impl<'a> Emitter<'a> {
 mod tests {
     use super::{
         dyn_tail_offset, has_dyn_tail, loom_parking_lot_debug_format, match_static_symbol,
-        nonzero_debug_format, nonzero_inner_debug_format, scan_vtable_section, StaticRole,
-        VtableTypeHint,
+        nonzero_debug_format, nonzero_inner_debug_format, scalar_newtype_debug_format,
+        scan_vtable_section, StaticRole, VtableTypeHint,
     };
     use crate::raw_types::{NsId, RawMember, RawStruct, RawType};
     use crate::{DwReader, TypeId};
@@ -2895,6 +2915,47 @@ mod tests {
         // The public wrapper detector does not fire on the inner, nor vice versa.
         assert_eq!(nonzero_debug_format(&reader, inner_id), None);
         assert_eq!(nonzero_inner_debug_format(&reader, nonzero_id), None);
+    }
+
+    #[test]
+    fn test_scalar_newtype_is_transparent_over_its_value() {
+        use crate::bundle::DebugFormat;
+        use crate::raw_types::{Encoding, RawBase};
+
+        let mut reader = DwReader::default();
+        let u64n = reader.strings.intern("u64");
+        let u64_id = type_id(1);
+        reader.types.insert(
+            u64_id,
+            RawBase { name: Some(u64n), namespace: None, encoding: Encoding::Unsigned, size: 8, alignment: None }
+                .into(),
+        );
+        let (m0, m1) = (reader.strings.intern("__0"), reader.strings.intern("__1"));
+        let member = |name, type_id, offset| RawMember { name: Some(name), offset, type_id, source_loc: None };
+
+        // A tuple newtype over a scalar is transparent over its field.
+        let epochn = reader.strings.intern("Epoch");
+        let epoch_id = type_id(2);
+        reader.types.insert(epoch_id, ns_struct(None, epochn, 8, vec![member(m0, u64_id, 0)]));
+        assert_eq!(
+            scalar_newtype_debug_format(&reader, epoch_id),
+            Some(DebugFormat::Transparent { member: 0 })
+        );
+
+        // A pair is not a wrapper: the scalar does not fill the struct.
+        let pairn = reader.strings.intern("Pair");
+        let pair_id = type_id(3);
+        reader.types.insert(
+            pair_id,
+            ns_struct(None, pairn, 16, vec![member(m0, u64_id, 0), member(m1, u64_id, 8)]),
+        );
+        assert_eq!(scalar_newtype_debug_format(&reader, pair_id), None);
+
+        // Wrapping a non-scalar (a struct) is left alone.
+        let wrapn = reader.strings.intern("Wrap");
+        let wrap_id = type_id(4);
+        reader.types.insert(wrap_id, ns_struct(None, wrapn, 8, vec![member(m0, epoch_id, 0)]));
+        assert_eq!(scalar_newtype_debug_format(&reader, wrap_id), None);
     }
 
     #[test]
