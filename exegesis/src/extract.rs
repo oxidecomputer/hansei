@@ -1065,6 +1065,8 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| unique_debug_format(reader, id))
         .or_else(|| non_null_debug_format(reader, id))
         .or_else(|| usize_no_high_bit_debug_format(reader, id))
+        .or_else(|| nonzero_debug_format(reader, id))
+        .or_else(|| nonzero_inner_debug_format(reader, id))
         .or_else(|| atomic_debug_format(reader, id))
 }
 
@@ -1875,6 +1877,61 @@ fn usize_no_high_bit_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, T
     Some((index as u32, reader.canonicalize(st.members[index].type_id)))
 }
 
+fn is_integer(reader: &DwReader<'_>, id: TypeId) -> bool {
+    matches!(
+        reader.canonical_type(id),
+        Some(RawType::Base(base)) if matches!(base.encoding, Encoding::Signed | Encoding::Unsigned)
+    )
+}
+
+/// `core::num::nonzero::NonZero<T>` is a newtype over a niche-typed integer
+/// wrapper (`NonZero{U,I}<width>Inner`). Display it as the wrapped integer;
+/// paired with [`nonzero_inner_debug_format`] the two layers collapse to the
+/// value. Handles every width and signedness.
+fn nonzero_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
+    let name = st.name.map(|name| reader.strings.get(name))?;
+    if namespace != "core::num::nonzero" || !name.starts_with("NonZero<") || !name.ends_with('>') {
+        return None;
+    }
+    let member = single_zero_offset_field(reader, &st.members, |_| true)?;
+    Some(DebugFormat::Transparent { member })
+}
+
+/// The niche-typed inner of a `NonZero<T>`
+/// (`core::num::niche_types::NonZero{U,I}<width>Inner`), transparent over its
+/// integer field.
+fn nonzero_inner_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
+    let name = st.name.map(|name| reader.strings.get(name))?;
+    if namespace != "core::num::niche_types"
+        || !name.starts_with("NonZero")
+        || !name.ends_with("Inner")
+    {
+        return None;
+    }
+    let member = single_zero_offset_field(reader, &st.members, |ty| is_integer(reader, ty))?;
+    Some(DebugFormat::Transparent { member })
+}
+
+/// The index of the unique `__0` member at offset zero whose type satisfies
+/// `accept`, or `None` if there isn't exactly one.
+fn single_zero_offset_field(
+    reader: &DwReader<'_>,
+    members: &[crate::raw_types::RawMember<crate::StrId>],
+    accept: impl Fn(TypeId) -> bool,
+) -> Option<u32> {
+    let mut matches = members.iter().enumerate().filter(|(_, member)| {
+        member.offset == 0
+            && member.name.map(|name| reader.strings.get(name)) == Some("__0")
+            && accept(member.type_id)
+    });
+    let (index, _) = matches.next()?;
+    matches.next().is_none().then_some(index as u32)
+}
+
 fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
@@ -2503,7 +2560,8 @@ impl<'a> Emitter<'a> {
 mod tests {
     use super::{
         dyn_tail_offset, has_dyn_tail, loom_parking_lot_debug_format, match_static_symbol,
-        scan_vtable_section, StaticRole, VtableTypeHint,
+        nonzero_debug_format, nonzero_inner_debug_format, scan_vtable_section, StaticRole,
+        VtableTypeHint,
     };
     use crate::raw_types::{NsId, RawMember, RawStruct, RawType};
     use crate::{DwReader, TypeId};
@@ -2642,6 +2700,58 @@ mod tests {
         );
         // A bare struct outside the loom parking_lot namespace is untouched.
         assert_eq!(loom_parking_lot_debug_format(&reader, inner_id), None);
+    }
+
+    #[test]
+    fn test_nonzero_layers_are_transparent_over_the_integer() {
+        use crate::bundle::DebugFormat;
+        use crate::raw_types::{Encoding, RawBase};
+
+        let mut reader = DwReader::default();
+
+        let mut core_num = None;
+        for seg in ["core", "num"] {
+            let name = reader.strings.intern(seg);
+            core_num = Some(reader.namespaces.insert(core_num, name));
+        }
+        let nonzero_ns = {
+            let name = reader.strings.intern("nonzero");
+            reader.namespaces.insert(core_num, name)
+        };
+        let niche_ns = {
+            let name = reader.strings.intern("niche_types");
+            reader.namespaces.insert(core_num, name)
+        };
+
+        let m0 = reader.strings.intern("__0");
+        let member = |type_id| RawMember { name: Some(m0), offset: 0, type_id, source_loc: None };
+
+        // Exercise a signed width too, to confirm the match is not u64-only.
+        let int_id = type_id(1);
+        let inner_id = type_id(2);
+        let nonzero_id = type_id(3);
+        let int_name = reader.strings.intern("i32");
+        let inner_name = reader.strings.intern("NonZeroI32Inner");
+        let nonzero_name = reader.strings.intern("NonZero<i32>");
+        reader.types.insert(
+            int_id,
+            RawBase { name: Some(int_name), namespace: None, encoding: Encoding::Signed, size: 4, alignment: None }
+                .into(),
+        );
+        reader.types.insert(inner_id, ns_struct(Some(niche_ns), inner_name, 4, vec![member(int_id)]));
+        reader.types.insert(nonzero_id, ns_struct(Some(nonzero_ns), nonzero_name, 4, vec![member(inner_id)]));
+
+        assert_eq!(
+            nonzero_debug_format(&reader, nonzero_id),
+            Some(DebugFormat::Transparent { member: 0 })
+        );
+        assert_eq!(
+            nonzero_inner_debug_format(&reader, inner_id),
+            Some(DebugFormat::Transparent { member: 0 })
+        );
+        // The public wrapper detector does not fire on the inner, nor vice versa.
+        assert_eq!(nonzero_debug_format(&reader, inner_id), None);
+        assert_eq!(nonzero_inner_debug_format(&reader, nonzero_id), None);
     }
 
     #[test]
