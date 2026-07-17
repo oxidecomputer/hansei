@@ -485,6 +485,17 @@ impl Bundle {
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::Notify { state },
+                ) => {
+                    if state.is_empty() {
+                        return corrupt(format!(
+                            "Notify debug format for type {} has an empty state path",
+                            id.0
+                        ));
+                    }
+                    check_usize_format(self, id, def, state, "Notify state debug format")?;
+                }
+                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::IpAddress { octets },
                 ) => {
                     let target = format_path_target(

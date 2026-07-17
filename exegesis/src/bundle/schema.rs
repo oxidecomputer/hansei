@@ -144,6 +144,13 @@ pub enum KnownFormat {
     /// single-byte atomic; reify interprets parking_lot's fixed bit encoding
     /// (`LOCKED_BIT = 1`, `PARKED_BIT = 2`).
     RawMutex { state: Vec<u32> },
+    /// Display a `tokio::sync::notify::Notify` with its `state` field decoded.
+    /// `state` is the member path to the atomic `usize`; reify renders the
+    /// struct normally but interprets that field as tokio's notification
+    /// state (low two bits: idle/waiting/notified) plus the `notify_waiters`
+    /// generation counter in the upper bits. The path's first element is the
+    /// index of the `state` member within the struct.
+    Notify { state: Vec<u32> },
     /// Display the octets of an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: u32 },
     /// Display the initialized elements of an `alloc::vec::Vec<T, A>`.

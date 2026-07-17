@@ -773,6 +773,20 @@ fn write_display_value<'a, T: DebugType<'a>>(
         if let DebugFormat::Known(KnownFormat::RawMutex { state_offset }) = format {
             return write_raw_mutex(f, ty.name(), info.bytes, state_offset);
         }
+        if let DebugFormat::Known(KnownFormat::Notify { state_member, state_offset }) = format {
+            return write_notify(
+                f,
+                info,
+                ty.name(),
+                state_member,
+                state_offset,
+                depth,
+                max_depth,
+                proc,
+                visited,
+                hex_integers,
+            );
+        }
         if let DebugFormat::Known(KnownFormat::IpAddress { octets, offset }) = format {
             let Some(bytes) = byte_range(bytes, offset, octets.size()) else {
                 return write!(f, "<truncated>");
@@ -854,6 +868,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::DynPointer { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::RawMutex { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::Notify { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::IpAddress { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Vec { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Str { .. }) => unreachable!(),
@@ -1014,6 +1029,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 proc,
                 visited,
                 hex_integers,
+                None,
             )
         }
 
@@ -1171,6 +1187,57 @@ fn write_raw_mutex(
         (true, true) => write!(f, "locked, parked")?,
     }
     write!(f, ")")
+}
+
+/// Render a `tokio::sync::notify::Notify`, showing its `state` member as the
+/// decoded notification state instead of a raw atomic word.
+#[allow(clippy::too_many_arguments)]
+fn write_notify<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    name: &str,
+    state_member: u32,
+    state_offset: u64,
+    depth: usize,
+    max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
+) -> fmt::Result {
+    let decoded = decode_notify_state(info.bytes, state_offset);
+    let state_name = info.ty.members().nth(state_member as usize).map(|m| m.name());
+    let override_field = state_name.map(|field| (field, decoded.as_str()));
+    write_struct_fields(
+        f,
+        info,
+        name,
+        f.alternate(),
+        depth,
+        max_depth,
+        proc,
+        visited,
+        hex_integers,
+        override_field,
+    )
+}
+
+/// Decode tokio's `Notify` state word: the low two bits are the notification
+/// state and the rest counts `notify_waiters()` calls.
+fn decode_notify_state(bytes: &[u8], state_offset: u64) -> String {
+    let Some(raw) = read_u64_at(bytes, state_offset) else {
+        return "<truncated>".to_string();
+    };
+    let state = match raw & 0b11 {
+        0 => "idle",
+        1 => "waiting",
+        2 => "notified",
+        _ => "<invalid>",
+    };
+    match raw >> 2 {
+        0 => state.to_string(),
+        1 => format!("{state} (1 notify_waiters call)"),
+        calls => format!("{state} ({calls} notify_waiters calls)"),
+    }
 }
 
 fn write_function_pointer(
@@ -1951,6 +2018,10 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
     proc: Option<&dyn ReadFromProc>,
     visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
     hex_integers: bool,
+    // When set, the named member is rendered as the given text rather than
+    // recursing into its bytes — used to display a decoded field (e.g. a
+    // `Notify`'s state) in place of its raw representation.
+    override_field: Option<(&str, &str)>,
 ) -> fmt::Result {
     let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
 
@@ -1972,7 +2043,9 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
         }
         write!(f, " {}: ", member.name())?;
 
-        if let Some(mem_bytes) = info.bytes.get(start..end) {
+        if let Some((_, text)) = override_field.filter(|(field, _)| *field == member.name()) {
+            write!(f, "{text}")?;
+        } else if let Some(mem_bytes) = info.bytes.get(start..end) {
             let child = DisplayRecurse {
                 info: TypeInfoRef {
                     ty: mem_ty,

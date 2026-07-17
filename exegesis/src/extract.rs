@@ -1058,6 +1058,7 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| str_debug_format(reader, id))
         .or_else(|| string_debug_format(reader, id))
         .or_else(|| parking_lot_raw_mutex_debug_format(reader, id))
+        .or_else(|| notify_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
@@ -1586,6 +1587,62 @@ fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Opti
     }
     let state = std::iter::once(state_index as u32).chain(value).collect();
     Some(DebugFormat::Known(crate::bundle::KnownFormat::RawMutex { state }))
+}
+
+fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    if fq_name(reader, id).as_deref() != Some("tokio::sync::notify::Notify") {
+        return None;
+    }
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let (state_index, state_member) = unique_member(reader, &st.members, "state")?;
+    // `state` is an atomic `usize`. tokio uses its own loom shim internally,
+    // so the stored word sits behind loom/UnsafeCell/Atomic wrappers rather
+    // than a bare `core::sync::atomic::Atomic<usize>`. Walk the zero-offset
+    // chain to the unique `usize` and anchor the path at the `state` member.
+    let mut paths = Vec::new();
+    find_zero_offset_uint_paths(
+        reader,
+        reader.canonicalize(state_member.type_id),
+        crate::bundle::POINTER_SIZE,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut paths,
+    );
+    let [inner] = paths.as_slice() else { return None };
+    let state = std::iter::once(state_index as u32).chain(inner.iter().copied()).collect();
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::Notify { state }))
+}
+
+/// Like [`find_zero_offset_paths`], but the target is any unsigned integer of
+/// `size` bytes rather than a specific type id. Used to reach the word behind
+/// an atomic wrapper without knowing whether it is the core or loom shape.
+fn find_zero_offset_uint_paths(
+    reader: &DwReader<'_>,
+    current: TypeId,
+    size: u64,
+    path: &mut Vec<u32>,
+    seen: &mut Vec<TypeId>,
+    found: &mut Vec<Vec<u32>>,
+) {
+    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
+        return;
+    }
+    if is_unsigned_integer(reader, current, size) {
+        found.push(path.clone());
+        return;
+    }
+    seen.push(current);
+    let members = match reader.canonical_type(current) {
+        Some(RawType::Struct(st)) => st.members.as_ref(),
+        Some(RawType::Union(u)) => u.members.as_ref(),
+        _ => &[],
+    };
+    for (index, member) in members.iter().enumerate().filter(|(_, member)| member.offset == 0) {
+        path.push(index as u32);
+        find_zero_offset_uint_paths(reader, reader.canonicalize(member.type_id), size, path, seen, found);
+        path.pop();
+    }
+    seen.pop();
 }
 
 /// Recognize rustc's DWARF representation of a Rust trait-object wide
