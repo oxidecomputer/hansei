@@ -507,6 +507,17 @@ impl Bundle {
                     check_usize_format(self, id, def, permits, "Semaphore permits debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::WatchState { state },
+                ) => {
+                    if state.is_empty() {
+                        return corrupt(format!(
+                            "WatchState debug format for type {} has an empty state path",
+                            id.0
+                        ));
+                    }
+                    check_usize_format(self, id, def, state, "WatchState state debug format")?;
+                }
+                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::MpscBlock { ready_slots, values, element },
                 ) => {
                     if ready_slots.is_empty() || values.is_empty() {

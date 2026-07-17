@@ -171,6 +171,9 @@ pub enum KnownFormat<T> {
     /// `permits` field to the available count and closed flag. `permits_member`
     /// is that field's index and `permits_offset` locates the atomic `usize`.
     Semaphore { permits_member: u32, permits_offset: u64 },
+    /// Display a `tokio::sync::watch::state::AtomicState` decoded to its
+    /// version and closed flag. `state_offset` locates the atomic `usize`.
+    WatchState { state_offset: u64 },
     /// Display a `tokio::sync::mpsc::block::Block<T>`, rendering only the
     /// initialized slots of its inline `values` array. `ready_offset`/
     /// `ready_size` locate the readiness bitmap; `values_member` is the field
@@ -610,6 +613,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let permits_member = *permits.first()?;
                 Some(DebugFormat::Known(KnownFormat::Semaphore { permits_member, permits_offset }))
             }
+            BundleFormat::Known(BundleKnownFormat::WatchState { state }) => {
+                let (_, state_offset) = project(*self, state)?;
+                Some(DebugFormat::Known(KnownFormat::WatchState { state_offset }))
+            }
             BundleFormat::Known(BundleKnownFormat::MpscBlock { ready_slots, values, element }) => {
                 let (ready_ty, ready_offset) = project(*self, ready_slots)?;
                 let (array_ty, values_offset) = project(*self, values)?;
@@ -1018,6 +1025,7 @@ mod bundle_tests {
     const BLOCK: BundleTypeId = BundleTypeId(46);
     const BLOCK_VALUES: BundleTypeId = BundleTypeId(47);
     const BLOCK_HEADER: BundleTypeId = BundleTypeId(48);
+    const WATCH_STATE: BundleTypeId = BundleTypeId(49);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1084,6 +1092,7 @@ mod bundle_tests {
             s("header"),
         );
         let valuesfieldn = s("values");
+        let watch_staten = s("tokio::sync::watch::state::AtomicState");
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1292,6 +1301,11 @@ mod bundle_tests {
                 size: 8,
                 members: vec![m(ready_slotsn, U64, 0)],
             },
+            TypeDef::Struct {
+                name: watch_staten,
+                size: 8,
+                members: vec![m(tuple0n, U64, 0)],
+            },
         ];
 
         let b = Bundle {
@@ -1397,6 +1411,9 @@ mod bundle_tests {
                         values: vec![0],
                         element: U32,
                     }),
+                ), (
+                    WATCH_STATE,
+                    BundleDebugFormat::Known(BundleKnownFormat::WatchState { state: vec![0] }),
                 )]),
                 name_index: vec![(pointn, POINT)],
             },
@@ -1983,6 +2000,24 @@ mod bundle_tests {
             format!("{}", value.display()),
             "tokio::sync::mpsc::block::Block<u32> { values: [], header: BlockHeader { ready_slots: 0 } }"
         );
+    }
+
+    #[test]
+    fn test_watch_state_decodes_version_and_closed() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let cases = [
+            (0u64, "tokio::sync::watch::state::AtomicState (version 0)"),
+            (4, "tokio::sync::watch::state::AtomicState (version 4)"),
+            // Bit 0 is the closed flag; the version is the rest.
+            (1, "tokio::sync::watch::state::AtomicState (version 0, closed)"),
+            (5, "tokio::sync::watch::state::AtomicState (version 4, closed)"),
+        ];
+        for (state, expected) in cases {
+            let bytes = state.to_le_bytes();
+            let value = TypeInfoRef::new(v.ty(WATCH_STATE).unwrap(), 0, &bytes);
+            assert_eq!(format!("{}", value.display()), expected, "state={state}");
+        }
     }
 
     #[test]

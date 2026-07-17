@@ -773,6 +773,9 @@ fn write_display_value<'a, T: DebugType<'a>>(
         if let DebugFormat::Known(KnownFormat::RawMutex { state_offset }) = format {
             return write_raw_mutex(f, ty.name(), info.bytes, state_offset);
         }
+        if let DebugFormat::Known(KnownFormat::WatchState { state_offset }) = format {
+            return write_watch_state(f, ty.name(), info.bytes, state_offset);
+        }
         if let DebugFormat::Known(KnownFormat::Notify { state_member, state_offset }) = format {
             let decoded = decode_notify_state(info.bytes, state_offset);
             return write_struct_with_decoded_field(
@@ -898,6 +901,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::DynPointer { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::RawMutex { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::WatchState { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Notify { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Semaphore { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::MpscBlock { .. }) => unreachable!(),
@@ -1283,6 +1287,29 @@ fn decode_semaphore_permits(bytes: &[u8], permits_offset: u64) -> String {
         format!("{permits} (closed)")
     } else {
         format!("{permits}")
+    }
+}
+
+/// Render a `tokio::sync::watch::state::AtomicState` as its decoded version
+/// and closed flag, e.g. `…::AtomicState (version 4)` or
+/// `…::AtomicState (version 4, closed)`. tokio reserves bit 0 as the closed
+/// flag; the remaining bits are the version.
+fn write_watch_state(
+    f: &mut fmt::Formatter<'_>,
+    name: &str,
+    bytes: &[u8],
+    state_offset: u64,
+) -> fmt::Result {
+    const CLOSED_BIT: u64 = 1;
+
+    let Some(raw) = read_u64_at(bytes, state_offset) else {
+        return write!(f, "<truncated>");
+    };
+    let version = raw & !CLOSED_BIT;
+    if raw & CLOSED_BIT == CLOSED_BIT {
+        write!(f, "{name} (version {version}, closed)")
+    } else {
+        write!(f, "{name} (version {version})")
     }
 }
 

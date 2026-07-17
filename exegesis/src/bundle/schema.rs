@@ -157,6 +157,11 @@ pub enum KnownFormat {
     /// available permit count (`value >> 1`) plus a closed flag (bit 0). The
     /// path's first element is the index of the `permits` member.
     Semaphore { permits: Vec<u32> },
+    /// Display a `tokio::sync::watch::state::AtomicState` as its decoded
+    /// version and closed flag rather than a raw atomic word. `state` is the
+    /// member path to the atomic `usize`; reify interprets bit 0 as the closed
+    /// flag (CLOSED_BIT) and the remaining bits as the version.
+    WatchState { state: Vec<u32> },
     /// Display a `tokio::sync::mpsc::block::Block<T>` showing only the
     /// initialized slots of its inline `values` array. `ready_slots` is the
     /// member path to the header's readiness bitmap (bit `i` set means slot

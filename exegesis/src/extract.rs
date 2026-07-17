@@ -1060,6 +1060,7 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| parking_lot_raw_mutex_debug_format(reader, id))
         .or_else(|| notify_debug_format(reader, id))
         .or_else(|| semaphore_debug_format(reader, id))
+        .or_else(|| watch_state_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
@@ -1658,6 +1659,12 @@ struct RawMpscBlockFormat {
     ready_slots: Vec<u32>,
     values: Vec<u32>,
     element: TypeId,
+}
+
+fn watch_state_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let state =
+        atomic_usize_field_path(reader, id, "tokio::sync::watch::state::AtomicState", "__0")?;
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::WatchState { state }))
 }
 
 fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscBlockFormat> {
