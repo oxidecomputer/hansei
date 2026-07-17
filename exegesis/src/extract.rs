@@ -1568,16 +1568,17 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
 fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
 
-    let mut data_matches = st.members.iter().enumerate().filter(|(_, member)| {
+    let mut data_matches = st.members.iter().enumerate().filter_map(|(index, member)| {
         if member.name.map(|name| reader.strings.get(name)) != Some("pointer") {
-            return false;
+            return None;
         }
-        let Some(RawType::Pointer(pointer)) = reader.canonical_type(member.type_id) else {
-            return false;
+        let RawType::Pointer(pointer) = reader.canonical_type(member.type_id)? else {
+            return None;
         };
-        has_dyn_tail(reader, pointer.target_type_id, &mut Vec::new())
+        let tail_offset = dyn_tail_offset(reader, pointer.target_type_id, &mut Vec::new())?;
+        Some((index, tail_offset))
     });
-    let (pointer_index, _) = data_matches.next()?;
+    let (pointer_index, tail_offset) = data_matches.next()?;
     if data_matches.next().is_some() {
         return None;
     }
@@ -1613,35 +1614,44 @@ fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
         drop_in_place: 0,
         size: 1,
         align: 2,
+        tail_offset,
     }))
 }
 
-/// Whether `id` is a `dyn Trait` type or an unsized aggregate whose final
-/// field recursively contains that dyn tail, such as `ArcInner<dyn Trait>`.
-/// Rust wide pointers carry metadata for either shape.
-fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bool {
+/// The byte offset of the `dyn Trait` tail within `id`, if `id` is a
+/// `dyn Trait` type or an unsized aggregate whose final field recursively
+/// contains that dyn tail (such as `ArcInner<dyn Trait>`). Rust wide
+/// pointers carry metadata for either shape.
+///
+/// A bare `dyn Trait` has offset zero; a wrapper contributes the offset of
+/// its final member and recurses into it. Returns `None` when there is no
+/// dyn tail. Consumers add this to the data-pointer address to reach the
+/// erased value, skipping any sized header (e.g. an `Arc`'s refcounts).
+fn dyn_tail_offset(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> Option<u64> {
     let id = reader.canonicalize(id);
     if seen.len() >= 8 || seen.contains(&id) {
-        return false;
+        return None;
     }
-    let Some(raw) = reader.canonical_type(id) else {
-        return false;
-    };
+    let raw = reader.canonical_type(id)?;
     if fq_name(reader, id)
         .is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn "))
     {
-        return true;
+        return Some(0);
     }
     let RawType::Struct(st) = raw else {
-        return false;
+        return None;
     };
-    let Some(tail) = st.members.last() else {
-        return false;
-    };
+    let tail = st.members.last()?;
     seen.push(id);
-    let found = has_dyn_tail(reader, tail.type_id, seen);
+    let inner = dyn_tail_offset(reader, tail.type_id, seen);
     seen.pop();
-    found
+    Some(tail.offset.checked_add(inner?)?)
+}
+
+/// Whether `id` has a `dyn Trait` tail (see [`dyn_tail_offset`]).
+#[cfg(test)]
+fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bool {
+    dyn_tail_offset(reader, id, seen).is_some()
 }
 
 fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
@@ -2444,7 +2454,8 @@ impl<'a> Emitter<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        has_dyn_tail, match_static_symbol, scan_vtable_section, StaticRole, VtableTypeHint,
+        dyn_tail_offset, has_dyn_tail, match_static_symbol, scan_vtable_section, StaticRole,
+        VtableTypeHint,
     };
     use crate::raw_types::{RawMember, RawStruct, RawType};
     use crate::{DwReader, TypeId};
@@ -2504,6 +2515,14 @@ mod tests {
         assert!(has_dyn_tail(&reader, inner_id, &mut Vec::new()));
         assert!(has_dyn_tail(&reader, outer_id, &mut Vec::new()));
         assert!(!has_dyn_tail(&reader, plain_id, &mut Vec::new()));
+
+        // A bare `dyn` sits at offset zero; each wrapper adds its tail
+        // member's offset (16), so the erased value is reached by skipping
+        // the accumulated sized headers.
+        assert_eq!(dyn_tail_offset(&reader, dyn_id, &mut Vec::new()), Some(0));
+        assert_eq!(dyn_tail_offset(&reader, inner_id, &mut Vec::new()), Some(16));
+        assert_eq!(dyn_tail_offset(&reader, outer_id, &mut Vec::new()), Some(32));
+        assert_eq!(dyn_tail_offset(&reader, plain_id, &mut Vec::new()), None);
     }
 
     #[test]

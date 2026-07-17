@@ -137,6 +137,11 @@ pub enum KnownFormat<T> {
     /// the address as data.
     FunctionPointer,
     /// Display a Rust trait-object data pointer and vtable.
+    ///
+    /// `tail_offset` is added to the data-pointer address before reading the
+    /// concrete pointee: it is the offset of the `dyn Trait` tail within the
+    /// struct the pointer targets, so an `Arc`'s sized header (its strong and
+    /// weak counts) is skipped. Zero for a bare `dyn Trait` pointee.
     DynPointer {
         pointer_offset: u64,
         vtable: T,
@@ -144,6 +149,7 @@ pub enum KnownFormat<T> {
         drop_in_place: u32,
         size: u32,
         align: u32,
+        tail_offset: u64,
     },
     /// Display the fields of `core::task::RawWakerVTable` as function
     /// addresses and symbols.
@@ -533,6 +539,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 drop_in_place,
                 size,
                 align,
+                tail_offset,
             }) => {
                 let (_, pointer_offset) = project(*self, &[*pointer])?;
                 let (vtable, vtable_offset) = project(*self, &[*vtable])?;
@@ -543,6 +550,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     drop_in_place: *drop_in_place,
                     size: *size,
                     align: *align,
+                    tail_offset: *tail_offset,
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::RawWakerVTable {
@@ -1216,6 +1224,7 @@ mod bundle_tests {
                         drop_in_place: 0,
                         size: 1,
                         align: 2,
+                        tail_offset: 0,
                     }),
                 ), (
                     RAW_WAKER_VTABLE,
