@@ -2058,6 +2058,30 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
         );
     }
 
+    // A payload carrying a semantic display format (a `&str`/`String`, a
+    // `Vec`, an IP address, ...) should render as that value, not as its
+    // raw representation fields. `Cow<str>::Borrowed("x")` reads far better
+    // than `Borrowed { data_ptr: .., length: .. }`. Delegating to the value
+    // formatter keeps this general across every known format (trait objects
+    // are handled above, with their own layout).
+    if variant_info.ty.debug_format().is_some() {
+        let child = DisplayRecurse {
+            info: variant_info,
+            depth,
+            max_depth,
+            proc,
+            visited,
+            hex_integers,
+        };
+        write!(f, "(")?;
+        if pretty {
+            write!(f, "{child:#}")?;
+        } else {
+            write!(f, "{child}")?;
+        }
+        return write!(f, ")");
+    }
+
     let members: Vec<_> = variant_info
         .ty
         .members()

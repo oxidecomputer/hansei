@@ -1742,6 +1742,37 @@ mod bundle_tests {
     }
 
     #[test]
+    fn test_str_payload_in_enum_renders_as_value() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x3000);
+                assert_eq!(len, 8);
+                Ok(b"hi\nthere".to_vec())
+            }
+        }
+
+        // Point Opt::Some's payload at a `&str`; its `Str` display format
+        // must win over dumping the fat pointer's raw fields, matching how a
+        // `Cow<str>::Borrowed` key should read.
+        let mut b = test_bundle();
+        let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+            panic!("Opt is not an enum");
+        };
+        *size = 16;
+        shape.variants[1].payload.ty = STR;
+        b.validate().expect("modified enum bundle must validate");
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x3000u64, 8].into_iter().flat_map(u64::to_le_bytes).collect();
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "Opt::Some(\"hi\\nthere\")"
+        );
+    }
+
+    #[test]
     fn test_raw_waker_vtable_resolves_function_symbols() {
         struct Reader;
 
