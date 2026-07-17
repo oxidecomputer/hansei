@@ -162,11 +162,23 @@ pub enum KnownFormat<T> {
     /// Display a parking_lot `RawMutex`'s decoded lock state. `state_offset`
     /// locates the single state byte within the mutex.
     RawMutex { state_offset: u64 },
-    /// Display a `tokio::sync::notify::Notify`, decoding its `state` field.
-    /// `state_member` is the index of that field (rendered with the decoded
-    /// value) and `state_offset` locates the atomic `usize` within the
-    /// struct.
-    Notify { state_member: u32, state_offset: u64 },
+    /// Display a `tokio::sync::notify::Notify` compactly: its notification
+    /// state, waiter-mutex lock state, and the queue of parked waiters. The
+    /// `*_offset` fields locate each within the value; `state_offset` is the
+    /// notification state word (low two bits idle/waiting/notified) and
+    /// `head_offset` the queue's head `Option<NonNull<Waiter>>` word. `waiter`
+    /// is the `Waiter` node type (`waiter_size` bytes); `waiter_notification_offset`
+    /// and `waiter_next_offset` locate each node's notification word and
+    /// successor pointer, which reify follows to list the queued waiters.
+    Notify {
+        state_offset: u64,
+        mutex_offset: u64,
+        head_offset: u64,
+        waiter: T,
+        waiter_size: u32,
+        waiter_notification_offset: u64,
+        waiter_next_offset: u64,
+    },
     /// Display a `tokio::sync::batch_semaphore::Semaphore`, decoding its
     /// `permits` field to the available count and closed flag. `permits_member`
     /// is that field's index and `permits_offset` locates the atomic `usize`.
@@ -646,10 +658,29 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let (_, state_offset) = project(*self, state)?;
                 Some(DebugFormat::Known(KnownFormat::RawMutex { state_offset }))
             }
-            BundleFormat::Known(BundleKnownFormat::Notify { state }) => {
+            BundleFormat::Known(BundleKnownFormat::Notify {
+                state,
+                mutex,
+                head,
+                waiter,
+                waiter_notification,
+                waiter_next,
+            }) => {
                 let (_, state_offset) = project(*self, state)?;
-                let state_member = *state.first()?;
-                Some(DebugFormat::Known(KnownFormat::Notify { state_member, state_offset }))
+                let (_, mutex_offset) = project(*self, mutex)?;
+                let (_, head_offset) = project(*self, head)?;
+                let waiter_ty = self.related_type(*waiter);
+                let (_, waiter_notification_offset) = project(waiter_ty, waiter_notification)?;
+                let (_, waiter_next_offset) = project(waiter_ty, waiter_next)?;
+                Some(DebugFormat::Known(KnownFormat::Notify {
+                    state_offset,
+                    mutex_offset,
+                    head_offset,
+                    waiter: waiter_ty,
+                    waiter_size: waiter_ty.size() as u32,
+                    waiter_notification_offset,
+                    waiter_next_offset,
+                }))
             }
             BundleFormat::Known(BundleKnownFormat::Semaphore { permits }) => {
                 let (_, permits_offset) = project(*self, permits)?;
@@ -1161,6 +1192,10 @@ mod bundle_tests {
     const BSEM_LIST: BundleTypeId = BundleTypeId(63);
     const WAITER: BundleTypeId = BundleTypeId(64);
     const WAITER_PTR: BundleTypeId = BundleTypeId(65);
+    const NOTIFY_MUTEX: BundleTypeId = BundleTypeId(66);
+    const NOTIFY_LIST: BundleTypeId = BundleTypeId(67);
+    const NOTIFY_WAITER: BundleTypeId = BundleTypeId(68);
+    const NOTIFY_WAITER_PTR: BundleTypeId = BundleTypeId(69);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1249,6 +1284,12 @@ mod bundle_tests {
             s("tokio::sync::batch_semaphore::Waiter"),
         );
         let (rawn, closedn, queuen) = (s("raw"), s("closed"), s("queue"));
+        let (notify_mutexn, notify_listn, notify_waitern, notificationn) = (
+            s("lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::util::linked_list::LinkedList<tokio::sync::notify::Waiter, tokio::sync::notify::Waiter>>"),
+            s("tokio::util::linked_list::LinkedList<tokio::sync::notify::Waiter, tokio::sync::notify::Waiter>"),
+            s("tokio::sync::notify::Waiter"),
+            s("notification"),
+        );
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1436,10 +1477,13 @@ mod bundle_tests {
                 size: 1,
                 members: vec![m(staten, U8, 0)],
             },
+            // Notify { state: usize @0, waiters: Mutex<LinkedList<Waiter>> @8 }
+            // (the loom/UnsafeCell wrappers the detector navigates are collapsed
+            // here — reify only needs the resolved offsets).
             TypeDef::Struct {
                 name: notifyn,
-                size: 16,
-                members: vec![m(staten, U64, 0), m(waitersn, U32, 8)],
+                size: 32,
+                members: vec![m(staten, U64, 0), m(waitersn, NOTIFY_MUTEX, 8)],
             },
             TypeDef::Struct {
                 name: semaphoren,
@@ -1552,6 +1596,27 @@ mod bundle_tests {
                 members: vec![m(staten, U64, 0), m(nextn, WAITER_PTR, 8)],
             },
             TypeDef::Pointer { name: None, target: WAITER },
+            // Notify's waiter mutex: Mutex { raw: RawMutex @0, data: LinkedList
+            // @8 } (loom/UnsafeCell wrappers collapsed; unlike the batch
+            // semaphore there is no Waitlist — the mutex guards the list directly).
+            TypeDef::Struct {
+                name: notify_mutexn,
+                size: 24,
+                members: vec![m(rawn, RAW_MUTEX, 0), m(datan, NOTIFY_LIST, 8)],
+            },
+            // LinkedList { head: *Waiter @0, tail: *Waiter @8 }.
+            TypeDef::Struct {
+                name: notify_listn,
+                size: 16,
+                members: vec![m(headn, NOTIFY_WAITER_PTR, 0), m(tailn, NOTIFY_WAITER_PTR, 8)],
+            },
+            // Waiter { notification: usize @0, next: *Waiter @8 }.
+            TypeDef::Struct {
+                name: notify_waitern,
+                size: 32,
+                members: vec![m(notificationn, U64, 0), m(nextn, NOTIFY_WAITER_PTR, 8)],
+            },
+            TypeDef::Pointer { name: None, target: NOTIFY_WAITER },
         ];
 
         let b = Bundle {
@@ -1646,7 +1711,14 @@ mod bundle_tests {
                     BundleDebugFormat::Known(BundleKnownFormat::RawMutex { state: vec![0] }),
                 ), (
                     NOTIFY,
-                    BundleDebugFormat::Known(BundleKnownFormat::Notify { state: vec![0] }),
+                    BundleDebugFormat::Known(BundleKnownFormat::Notify {
+                        state: vec![0],
+                        mutex: vec![1, 0, 0],
+                        head: vec![1, 1, 0],
+                        waiter: NOTIFY_WAITER,
+                        waiter_notification: vec![0],
+                        waiter_next: vec![1],
+                    }),
                 ), (
                     SEMAPHORE,
                     BundleDebugFormat::Known(BundleKnownFormat::Semaphore { permits: vec![0] }),
@@ -2210,30 +2282,80 @@ mod bundle_tests {
     }
 
     #[test]
-    fn test_notify_decodes_state_field_in_place() {
+    fn test_notify_renders_compact_state_mutex_and_waiters() {
+        // Two waiters live at 0x3000 and 0x3020: the first still parked (no
+        // notification), the second handed a `notify_one` notification.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                // Waiter { notification: usize @0, next: *Waiter @8 }.
+                let (notification, next) = match addr {
+                    0x3000 => (0u64, 0x3020u64),
+                    0x3020 => (1u64, 0u64),
+                    other => panic!("unexpected read at {other:#x}"),
+                };
+                let mut b = Vec::new();
+                b.extend_from_slice(&notification.to_le_bytes());
+                b.extend_from_slice(&next.to_le_bytes());
+                b.resize(32, 0);
+                b.truncate(len as usize);
+                Ok(b)
+            }
+        }
+
         let b = test_bundle();
         let v = BundleView::new(&b);
-        // 16-byte Notify: state usize @0, waiters u32 @8.
-        let bytes = |state: u64, waiters: u32| {
-            let mut buf = Vec::new();
-            buf.extend_from_slice(&state.to_le_bytes());
-            buf.extend_from_slice(&waiters.to_le_bytes());
-            buf.extend_from_slice(&[0u8; 4]);
+        // Flat Notify buffer: state @0, mutex state byte @8, head @16, tail @24.
+        let notify = |state: u64, mutex: u8, head: u64| {
+            let mut buf = vec![0u8; 32];
+            buf[0..8].copy_from_slice(&state.to_le_bytes());
+            buf[8] = mutex;
+            buf[16..24].copy_from_slice(&head.to_le_bytes());
             buf
         };
-        let cases = [
-            (0u64, 7u32, "tokio::sync::notify::Notify { state: idle, waiters: 7 }"),
-            (1, 0, "tokio::sync::notify::Notify { state: waiting, waiters: 0 }"),
-            // 6 = 0b110: notified (state 2) with one notify_waiters call (6 >> 2).
-            (6, 42, "tokio::sync::notify::Notify { state: notified (1 notify_waiters call), waiters: 42 }"),
-            // 13 = 0b1101: waiting (state 1) with three calls (13 >> 2).
-            (13, 0, "tokio::sync::notify::Notify { state: waiting (3 notify_waiters calls), waiters: 0 }"),
-        ];
-        for (state, waiters, expected) in cases {
-            let buf = bytes(state, waiters);
-            let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
-            assert_eq!(format!("{}", value.display()), expected, "state={state}");
-        }
+
+        // Idle, unlocked, two parked waiters.
+        let buf = notify(0, 0, 0x3000);
+        let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::notify::Notify { state: idle, mutex: unlocked, queue: [\
+             tokio::sync::notify::Waiter { notification: none }, \
+             tokio::sync::notify::Waiter { notification: one }] }"
+        );
+
+        // Notified with two notify_waiters calls, locked mutex, empty queue.
+        // 0b1010 = notified (state 2) with two calls (10 >> 2).
+        let buf = notify(0b1010, 0b01, 0);
+        let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::notify::Notify { state: notified (2 notify_waiters calls), \
+             mutex: locked, queue: [] }"
+        );
+
+        // Without a target the queue cannot be walked, but state and mutex
+        // (read from the value's own bytes) still render.
+        let buf = notify(1, 0, 0x3000);
+        let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        let shown = format!("{}", value.display());
+        assert!(shown.contains("state: waiting"), "{shown}");
+        assert!(shown.contains("queue: <target unavailable>"), "{shown}");
+
+        // Pretty mode puts each field and waiter on its own indented line.
+        let buf = notify(0, 0, 0x3000);
+        let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::notify::Notify {\n\
+             \x20   state: idle,\n\
+             \x20   mutex: unlocked,\n\
+             \x20   queue: [\n\
+             \x20       tokio::sync::notify::Waiter { notification: none },\n\
+             \x20       tokio::sync::notify::Waiter { notification: one },\n\
+             \x20   ],\n\
+             }"
+        );
     }
 
     #[test]

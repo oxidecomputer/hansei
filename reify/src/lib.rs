@@ -776,20 +776,8 @@ fn write_display_value<'a, T: DebugType<'a>>(
         if let DebugFormat::Known(KnownFormat::WatchState { state_offset }) = format {
             return write_watch_state(f, ty.name(), info.bytes, state_offset);
         }
-        if let DebugFormat::Known(KnownFormat::Notify { state_member, state_offset }) = format {
-            let decoded = decode_notify_state(info.bytes, state_offset);
-            return write_struct_with_decoded_field(
-                f,
-                info,
-                ty.name(),
-                state_member,
-                &decoded,
-                depth,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
-            );
+        if let DebugFormat::Known(format @ KnownFormat::Notify { .. }) = format {
+            return write_notify(f, info, ty.name(), format, depth, proc);
         }
         if let DebugFormat::Known(KnownFormat::Semaphore { permits_member, permits_offset }) = format
         {
@@ -1503,6 +1491,164 @@ fn write_semaphore_waiters<'a, T: DebugType<'a>>(
         write_indent(f, depth)?;
     }
     write!(f, "]")
+}
+
+/// Render a `tokio::sync::notify::Notify` compactly as its decoded notification
+/// state, waiter-mutex lock state, and the queue of parked waiters (each shown
+/// by whether it has been handed a notification) — rather than dumping the raw
+/// `waiters` mutex wrapping an intrusive `LinkedList<Waiter>`.
+fn write_notify<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    name: &str,
+    format: KnownFormat<T>,
+    depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+) -> fmt::Result {
+    let KnownFormat::Notify {
+        state_offset,
+        mutex_offset,
+        head_offset,
+        waiter,
+        waiter_size,
+        waiter_notification_offset,
+        waiter_next_offset,
+    } = format
+    else {
+        unreachable!()
+    };
+
+    let pretty = f.alternate();
+    let bytes = info.bytes;
+    // Start each field on its own indented line when pretty, else space-separated.
+    let field = |f: &mut fmt::Formatter<'_>| -> fmt::Result {
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)
+        } else {
+            write!(f, " ")
+        }
+    };
+
+    write!(f, "{name} {{")?;
+
+    field(f)?;
+    write!(f, "state: {},", decode_notify_state(bytes, state_offset))?;
+
+    field(f)?;
+    match bytes.get(mutex_offset as usize) {
+        Some(&state) => write!(f, "mutex: {},", raw_mutex_state(state))?,
+        None => write!(f, "mutex: <truncated>,")?,
+    }
+
+    field(f)?;
+    write!(f, "queue: ")?;
+    write_notify_waiters(
+        f,
+        bytes,
+        head_offset,
+        waiter,
+        waiter_size,
+        waiter_notification_offset,
+        waiter_next_offset,
+        depth + 1,
+        proc,
+    )?;
+    if pretty {
+        write!(f, ",")?;
+    }
+
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+/// Walk the intrusive linked list of notify waiters from the head word at
+/// `head_offset`, rendering each as `Waiter { notification: <state> }`. Each
+/// node is read from the target and the list followed via each node's successor
+/// pointer, guarded against cycles and unbounded length.
+#[allow(clippy::too_many_arguments)]
+fn write_notify_waiters<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    bytes: &[u8],
+    head_offset: u64,
+    waiter: T,
+    waiter_size: u32,
+    notification_offset: u64,
+    next_offset: u64,
+    depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+) -> fmt::Result {
+    let pretty = f.alternate();
+    let Some(head) = read_u64_at(bytes, head_offset) else {
+        return write!(f, "<truncated>");
+    };
+    // An empty queue is known from the head word alone; a populated one needs
+    // the target to read each node.
+    if head == 0 {
+        return write!(f, "[]");
+    }
+    let Some(proc) = proc else {
+        return write!(f, "<target unavailable>");
+    };
+    write!(f, "[")?;
+
+    let name = waiter.name();
+    let mut cur = head;
+    let mut any = false;
+    let mut seen = HashSet::new();
+    let mut guard = 4096u32;
+    while cur != 0 && guard > 0 {
+        guard -= 1;
+        if !seen.insert(cur) {
+            break;
+        }
+        let Ok(node) = proc.read_bytes(cur, waiter_size as u64) else {
+            write!(f, "{}<unreadable waiter>", if any { ", " } else { "" })?;
+            break;
+        };
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        } else if any {
+            write!(f, ", ")?;
+        }
+        any = true;
+        match read_u64_at(&node, notification_offset) {
+            Some(word) => write!(f, "{name} {{ notification: {} }}", decode_notification(word))?,
+            None => write!(f, "{name} {{ <truncated> }}")?,
+        }
+        if pretty {
+            write!(f, ",")?;
+        }
+        match read_u64_at(&node, next_offset) {
+            Some(next) => cur = next,
+            None => break,
+        }
+    }
+    if pretty && any {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    }
+    write!(f, "]")
+}
+
+/// Decode a `tokio::sync::notify::AtomicNotification` word: whether a queued
+/// waiter has been handed a notification and, if so, which kind. tokio encodes
+/// 0 as none, 1 as `notify_one` (FIFO), 5 as `notify_one` (LIFO), and 2 as
+/// `notify_waiters` (all).
+fn decode_notification(word: u64) -> String {
+    match word {
+        0 => "none".to_string(),
+        1 => "one".to_string(),
+        5 => "one (lifo)".to_string(),
+        2 => "all".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// Render a `tokio::sync::watch::state::AtomicState` as its decoded version

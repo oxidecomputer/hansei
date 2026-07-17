@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 12;
+pub const FORMAT_VERSION: u32 = 13;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -485,15 +485,79 @@ impl Bundle {
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::Notify { state },
+                    crate::bundle::schema::KnownFormat::Notify {
+                        state,
+                        mutex,
+                        head,
+                        waiter,
+                        waiter_notification,
+                        waiter_next,
+                    },
                 ) => {
-                    if state.is_empty() {
+                    if [state, mutex, head, waiter_notification, waiter_next]
+                        .iter()
+                        .any(|p| p.is_empty())
+                    {
                         return corrupt(format!(
-                            "Notify debug format for type {} has an empty state path",
+                            "Notify debug format for type {} has an empty path",
                             id.0
                         ));
                     }
                     check_usize_format(self, id, def, state, "Notify state debug format")?;
+                    // The waiter mutex's single state byte.
+                    let mutex_target =
+                        format_path_target(self, id, def, mutex, "Notify mutex debug format")?;
+                    if !matches!(
+                        self.types.get(mutex_target),
+                        Some(TypeDef::Base {
+                            size: 1,
+                            encoding: crate::raw_types::Encoding::Unsigned,
+                            ..
+                        })
+                    ) {
+                        return corrupt(format!(
+                            "Notify debug format for type {} mutex does not end at a state byte",
+                            id.0
+                        ));
+                    }
+                    // `head` reaches the queue's head word, an
+                    // `Option<NonNull<Waiter>>` niche-optimized to a pointer.
+                    let head_target =
+                        format_path_target(self, id, def, head, "Notify head debug format")?;
+                    if type_size(self, head_target, &mut Vec::new())
+                        != Some(crate::bundle::POINTER_SIZE)
+                    {
+                        return corrupt(format!(
+                            "Notify debug format for type {} head is not pointer-sized",
+                            id.0
+                        ));
+                    }
+                    // The `waiter_*` paths are rooted at the `Waiter` node type.
+                    check_ty("Notify waiter", *waiter)?;
+                    let waiter_def =
+                        self.types.get(*waiter).expect("member type validated before formats");
+                    check_usize_format(
+                        self,
+                        *waiter,
+                        waiter_def,
+                        waiter_notification,
+                        "Notify waiter_notification debug format",
+                    )?;
+                    let next_target = format_path_target(
+                        self,
+                        *waiter,
+                        waiter_def,
+                        waiter_next,
+                        "Notify waiter_next debug format",
+                    )?;
+                    if type_size(self, next_target, &mut Vec::new())
+                        != Some(crate::bundle::POINTER_SIZE)
+                    {
+                        return corrupt(format!(
+                            "Notify debug format for type {} waiter_next is not pointer-sized",
+                            id.0
+                        ));
+                    }
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::Semaphore { permits },

@@ -1058,7 +1058,6 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| str_debug_format(reader, id))
         .or_else(|| string_debug_format(reader, id))
         .or_else(|| parking_lot_raw_mutex_debug_format(reader, id))
-        .or_else(|| notify_debug_format(reader, id))
         .or_else(|| semaphore_debug_format(reader, id))
         .or_else(|| watch_state_debug_format(reader, id))
         .or_else(|| mpsc_block_debug_format(reader, id))
@@ -1642,9 +1641,69 @@ fn atomic_usize_field_path(
     Some(std::iter::once(field_index as u32).chain(inner.iter().copied()).collect())
 }
 
-fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+/// A `tokio::sync::notify::Notify` and the paths reify needs to render it
+/// compactly. See [`crate::bundle::KnownFormat::Notify`].
+struct RawNotifyFormat {
+    state: Vec<u32>,
+    mutex: Vec<u32>,
+    head: Vec<u32>,
+    waiter: TypeId,
+    waiter_notification: Vec<u32>,
+    waiter_next: Vec<u32>,
+}
+
+/// Recognize a `tokio::sync::notify::Notify` and record the paths to its
+/// notification state word, waiter-mutex state byte, and intrusive waiter queue.
+fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawNotifyFormat> {
+    if fq_name(reader, id).as_deref() != Some("tokio::sync::notify::Notify") {
+        return None;
+    }
+
+    // The notification state word, an atomic `usize` behind tokio's loom shim.
     let state = atomic_usize_field_path(reader, id, "tokio::sync::notify::Notify", "state")?;
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::Notify { state }))
+
+    // The waiter list lives behind the `waiters` mutex. tokio wraps it in a loom
+    // shim over parking_lot's `lock_api::Mutex`; navigate the shim (`__1`) to the
+    // real mutex, whose `raw` is the parking_lot RawMutex and whose `data` (an
+    // `UnsafeCell`, member `value`) holds the `LinkedList` directly (there is no
+    // `Waitlist` wrapper as in the batch semaphore). Reach the RawMutex's single
+    // state byte through its atomic wrapper by walking to the zero-offset `u8`,
+    // which works whether the compiler emitted the atomic as the generic
+    // `Atomic<u8>` or the concrete `AtomicU8`.
+    let (raw_prefix, raw_ty) = field_path(reader, id, &["waiters", "__1", "raw"])?;
+    if fq_name(reader, raw_ty).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
+        return None;
+    }
+    let mut state_tails = Vec::new();
+    find_zero_offset_uint_paths(
+        reader,
+        raw_ty,
+        1,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut state_tails,
+    );
+    let [state_tail] = state_tails.as_slice() else { return None };
+    let mutex = raw_prefix.iter().copied().chain(state_tail.iter().copied()).collect();
+
+    let (head, _) = field_path(reader, id, &["waiters", "__1", "data", "value", "head"])?;
+
+    // The queue is a `LinkedList<Waiter, Waiter>`; its node type is the `Waiter`.
+    let (_, queue_ty) = field_path(reader, id, &["waiters", "__1", "data", "value"])?;
+    let RawType::Struct(list) = reader.canonical_type(queue_ty)? else { return None };
+    let param = list.template_params.last()?;
+    let waiter = reader.canonicalize(param.type_id);
+    if fq_name(reader, waiter).as_deref() != Some("tokio::sync::notify::Waiter") {
+        return None;
+    }
+
+    // Rooted at the `Waiter`: its atomic `notification` word (whether it has been
+    // handed a notification) and its successor pointer (`pointers.inner.value.next`).
+    let waiter_notification =
+        atomic_usize_field_path(reader, waiter, "tokio::sync::notify::Waiter", "notification")?;
+    let (waiter_next, _) = field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
+
+    Some(RawNotifyFormat { state, mutex, head, waiter, waiter_notification, waiter_next })
 }
 
 fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
@@ -2765,6 +2824,16 @@ impl<'a> Emitter<'a> {
                     head: format.head,
                     waiter: self.reserve(format.waiter),
                     waiter_state: format.waiter_state,
+                    waiter_next: format.waiter_next,
+                };
+                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(format) = notify_debug_format(self.reader, tid) {
+                let format = crate::bundle::KnownFormat::Notify {
+                    state: format.state,
+                    mutex: format.mutex,
+                    head: format.head,
+                    waiter: self.reserve(format.waiter),
+                    waiter_notification: format.waiter_notification,
                     waiter_next: format.waiter_next,
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
