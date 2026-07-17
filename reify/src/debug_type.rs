@@ -171,6 +171,20 @@ pub enum KnownFormat<T> {
     /// `permits` field to the available count and closed flag. `permits_member`
     /// is that field's index and `permits_offset` locates the atomic `usize`.
     Semaphore { permits_member: u32, permits_offset: u64 },
+    /// Display a `tokio::sync::mpsc::block::Block<T>`, rendering only the
+    /// initialized slots of its inline `values` array. `ready_offset`/
+    /// `ready_size` locate the readiness bitmap; `values_member` is the field
+    /// rendered as the slot list, whose `count` elements of `stride` bytes
+    /// begin at `values_offset`; each live slot is displayed as `element`.
+    MpscBlock {
+        ready_offset: u64,
+        ready_size: u32,
+        values_member: u32,
+        values_offset: u64,
+        element: T,
+        stride: u32,
+        count: u32,
+    },
     /// Display an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: T, offset: u64 },
     /// Display the initialized elements of a Vec.
@@ -596,6 +610,21 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let permits_member = *permits.first()?;
                 Some(DebugFormat::Known(KnownFormat::Semaphore { permits_member, permits_offset }))
             }
+            BundleFormat::Known(BundleKnownFormat::MpscBlock { ready_slots, values, element }) => {
+                let (ready_ty, ready_offset) = project(*self, ready_slots)?;
+                let (array_ty, values_offset) = project(*self, values)?;
+                let (elem_ty, count) = array_ty.array_info()?;
+                let values_member = *values.first()?;
+                Some(DebugFormat::Known(KnownFormat::MpscBlock {
+                    ready_offset,
+                    ready_size: ready_ty.size() as u32,
+                    values_member,
+                    values_offset,
+                    element: self.related_type(*element),
+                    stride: elem_ty.size() as u32,
+                    count: count as u32,
+                }))
+            }
             BundleFormat::Known(BundleKnownFormat::IpAddress { octets }) => {
                 let (octets, offset) = project(*self, &[*octets])?;
                 let (octet, count) = octets.array_info()?;
@@ -986,6 +1015,9 @@ mod bundle_tests {
     const RAW_MUTEX: BundleTypeId = BundleTypeId(43);
     const NOTIFY: BundleTypeId = BundleTypeId(44);
     const SEMAPHORE: BundleTypeId = BundleTypeId(45);
+    const BLOCK: BundleTypeId = BundleTypeId(46);
+    const BLOCK_VALUES: BundleTypeId = BundleTypeId(47);
+    const BLOCK_HEADER: BundleTypeId = BundleTypeId(48);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1045,6 +1077,13 @@ mod bundle_tests {
         let (notifyn, waitersn) = (s("tokio::sync::notify::Notify"), s("waiters"));
         let (semaphoren, permitsn) =
             (s("tokio::sync::batch_semaphore::Semaphore"), s("permits"));
+        let (blockn, block_headern, ready_slotsn, headerfieldn) = (
+            s("tokio::sync::mpsc::block::Block<u32>"),
+            s("BlockHeader"),
+            s("ready_slots"),
+            s("header"),
+        );
+        let valuesfieldn = s("values");
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1242,6 +1281,17 @@ mod bundle_tests {
                 size: 16,
                 members: vec![m(permitsn, U64, 0), m(waitersn, U32, 8)],
             },
+            TypeDef::Struct {
+                name: blockn,
+                size: 24,
+                members: vec![m(valuesfieldn, BLOCK_VALUES, 0), m(headerfieldn, BLOCK_HEADER, 16)],
+            },
+            TypeDef::Array { elem: U32, count: 4 },
+            TypeDef::Struct {
+                name: block_headern,
+                size: 8,
+                members: vec![m(ready_slotsn, U64, 0)],
+            },
         ];
 
         let b = Bundle {
@@ -1340,6 +1390,13 @@ mod bundle_tests {
                 ), (
                     SEMAPHORE,
                     BundleDebugFormat::Known(BundleKnownFormat::Semaphore { permits: vec![0] }),
+                ), (
+                    BLOCK,
+                    BundleDebugFormat::Known(BundleKnownFormat::MpscBlock {
+                        ready_slots: vec![1, 0],
+                        values: vec![0],
+                        element: U32,
+                    }),
                 )]),
                 name_index: vec![(pointn, POINT)],
             },
@@ -1896,6 +1953,36 @@ mod bundle_tests {
             let value = TypeInfoRef::new(v.ty(SEMAPHORE).unwrap(), 0, &buf);
             assert_eq!(format!("{}", value.display()), expected, "permits={permits}");
         }
+    }
+
+    #[test]
+    fn test_mpsc_block_shows_only_ready_slots() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // 24-byte Block: [u32; 4] value slots @0, ready-bitmap usize @16.
+        let block = |slots: [u32; 4], ready: u64| {
+            let mut buf = Vec::new();
+            for s in slots {
+                buf.extend_from_slice(&s.to_le_bytes());
+            }
+            buf.extend_from_slice(&ready.to_le_bytes());
+            buf
+        };
+        // Bits 0 and 2 set: slots 0 and 2 are live.
+        let buf = block([10, 20, 30, 40], 0b101);
+        let value = TypeInfoRef::new(v.ty(BLOCK).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display()),
+            "tokio::sync::mpsc::block::Block<u32> { values: [10, 30], header: BlockHeader { ready_slots: 5 } }"
+        );
+
+        // No bits set: empty slot list.
+        let buf = block([1, 2, 3, 4], 0);
+        let value = TypeInfoRef::new(v.ty(BLOCK).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display()),
+            "tokio::sync::mpsc::block::Block<u32> { values: [], header: BlockHeader { ready_slots: 0 } }"
+        );
     }
 
     #[test]

@@ -1634,6 +1634,64 @@ fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugForm
     Some(DebugFormat::Known(crate::bundle::KnownFormat::Semaphore { permits }))
 }
 
+struct RawMpscBlockFormat {
+    ready_slots: Vec<u32>,
+    values: Vec<u32>,
+    element: TypeId,
+}
+
+fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscBlockFormat> {
+    if !fq_name(reader, id)
+        .as_deref()
+        .is_some_and(|name| name.starts_with("tokio::sync::mpsc::block::Block<"))
+    {
+        return None;
+    }
+    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+
+    // The readiness bitmap lives in `header.ready_slots`, an atomic `usize`
+    // behind the usual loom/UnsafeCell/Atomic wrappers.
+    let (header_index, header_member) = unique_member(reader, &st.members, "header")?;
+    let RawType::Struct(header) = reader.canonical_type(header_member.type_id)? else {
+        return None;
+    };
+    let (ready_index, ready_member) = unique_member(reader, &header.members, "ready_slots")?;
+    let mut ready_tail = Vec::new();
+    find_zero_offset_uint_paths(
+        reader,
+        reader.canonicalize(ready_member.type_id),
+        crate::bundle::POINTER_SIZE,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut ready_tail,
+    );
+    let [ready_tail] = ready_tail.as_slice() else { return None };
+    let ready_slots = [header_index as u32, ready_index as u32]
+        .into_iter()
+        .chain(ready_tail.iter().copied())
+        .collect();
+
+    // The slots are the inline array behind `values.__0`.
+    let (values_index, values_member) = unique_member(reader, &st.members, "values")?;
+    let RawType::Struct(values) = reader.canonical_type(values_member.type_id)? else {
+        return None;
+    };
+    let (array_index, array_member) = unique_member(reader, &values.members, "__0")?;
+    if !matches!(reader.canonical_type(array_member.type_id), Some(RawType::Array(_))) {
+        return None;
+    }
+    let values = vec![values_index as u32, array_index as u32];
+
+    // `element` is the block's message type `T`.
+    let [param] = st.template_params.as_ref() else { return None };
+    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
+        return None;
+    }
+    let element = reader.canonicalize(param.type_id);
+
+    Some(RawMpscBlockFormat { ready_slots, values, element })
+}
+
 /// Like [`find_zero_offset_paths`], but the target is any unsigned integer of
 /// `size` bytes rather than a specific type id. Used to reach the word behind
 /// an atomic wrapper without knowing whether it is the core or loom shape.
@@ -2372,6 +2430,13 @@ impl<'a> Emitter<'a> {
                     internal_data: format.internal_data,
                     internal_edges: format.internal_edges,
                     edge: format.edge,
+                };
+                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(format) = mpsc_block_debug_format(self.reader, tid) {
+                let format = crate::bundle::KnownFormat::MpscBlock {
+                    ready_slots: format.ready_slots,
+                    values: format.values,
+                    element: self.reserve(format.element),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = known_debug_format(self.reader, tid) {
