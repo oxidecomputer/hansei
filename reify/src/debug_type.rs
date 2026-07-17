@@ -162,6 +162,11 @@ pub enum KnownFormat<T> {
     /// Display a parking_lot `RawMutex`'s decoded lock state. `state_offset`
     /// locates the single state byte within the mutex.
     RawMutex { state_offset: u64 },
+    /// Display a `tokio::sync::notify::Notify`, decoding its `state` field.
+    /// `state_member` is the index of that field (rendered with the decoded
+    /// value) and `state_offset` locates the atomic `usize` within the
+    /// struct.
+    Notify { state_member: u32, state_offset: u64 },
     /// Display an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: T, offset: u64 },
     /// Display the initialized elements of a Vec.
@@ -577,6 +582,11 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let (_, state_offset) = project(*self, state)?;
                 Some(DebugFormat::Known(KnownFormat::RawMutex { state_offset }))
             }
+            BundleFormat::Known(BundleKnownFormat::Notify { state }) => {
+                let (_, state_offset) = project(*self, state)?;
+                let state_member = *state.first()?;
+                Some(DebugFormat::Known(KnownFormat::Notify { state_member, state_offset }))
+            }
             BundleFormat::Known(BundleKnownFormat::IpAddress { octets }) => {
                 let (octets, offset) = project(*self, &[*octets])?;
                 let (octet, count) = octets.array_info()?;
@@ -965,6 +975,7 @@ mod bundle_tests {
     const STR: BundleTypeId = BundleTypeId(41);
     const STRING: BundleTypeId = BundleTypeId(42);
     const RAW_MUTEX: BundleTypeId = BundleTypeId(43);
+    const NOTIFY: BundleTypeId = BundleTypeId(44);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1021,6 +1032,7 @@ mod bundle_tests {
         let (strn, stringn, data_ptrn, length2n) =
             (s("&str"), s("alloc::string::String"), s("data_ptr"), s("length"));
         let (raw_mutexn, staten) = (s("parking_lot::raw_mutex::RawMutex"), s("state"));
+        let (notifyn, waitersn) = (s("tokio::sync::notify::Notify"), s("waiters"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1208,6 +1220,11 @@ mod bundle_tests {
                 size: 1,
                 members: vec![m(staten, U8, 0)],
             },
+            TypeDef::Struct {
+                name: notifyn,
+                size: 16,
+                members: vec![m(staten, U64, 0), m(waitersn, U32, 8)],
+            },
         ];
 
         let b = Bundle {
@@ -1300,6 +1317,9 @@ mod bundle_tests {
                 ), (
                     RAW_MUTEX,
                     BundleDebugFormat::Known(BundleKnownFormat::RawMutex { state: vec![0] }),
+                ), (
+                    NOTIFY,
+                    BundleDebugFormat::Known(BundleKnownFormat::Notify { state: vec![0] }),
                 )]),
                 name_index: vec![(pointn, POINT)],
             },
@@ -1801,6 +1821,33 @@ mod bundle_tests {
         ];
         for (state, expected) in cases {
             let value = TypeInfoRef::new(v.ty(RAW_MUTEX).unwrap(), 0, std::slice::from_ref(&state));
+            assert_eq!(format!("{}", value.display()), expected, "state={state}");
+        }
+    }
+
+    #[test]
+    fn test_notify_decodes_state_field_in_place() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // 16-byte Notify: state usize @0, waiters u32 @8.
+        let bytes = |state: u64, waiters: u32| {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&state.to_le_bytes());
+            buf.extend_from_slice(&waiters.to_le_bytes());
+            buf.extend_from_slice(&[0u8; 4]);
+            buf
+        };
+        let cases = [
+            (0u64, 7u32, "tokio::sync::notify::Notify { state: idle, waiters: 7 }"),
+            (1, 0, "tokio::sync::notify::Notify { state: waiting, waiters: 0 }"),
+            // 6 = 0b110: notified (state 2) with one notify_waiters call (6 >> 2).
+            (6, 42, "tokio::sync::notify::Notify { state: notified (1 notify_waiters call), waiters: 42 }"),
+            // 13 = 0b1101: waiting (state 1) with three calls (13 >> 2).
+            (13, 0, "tokio::sync::notify::Notify { state: waiting (3 notify_waiters calls), waiters: 0 }"),
+        ];
+        for (state, waiters, expected) in cases {
+            let buf = bytes(state, waiters);
+            let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
             assert_eq!(format!("{}", value.display()), expected, "state={state}");
         }
     }
