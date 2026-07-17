@@ -151,6 +151,12 @@ pub enum KnownFormat {
     /// generation counter in the upper bits. The path's first element is the
     /// index of the `state` member within the struct.
     Notify { state: Vec<u32> },
+    /// Display a `tokio::sync::batch_semaphore::Semaphore` with its `permits`
+    /// field decoded. `permits` is the member path to the atomic `usize`;
+    /// reify renders the struct normally but interprets that field as the
+    /// available permit count (`value >> 1`) plus a closed flag (bit 0). The
+    /// path's first element is the index of the `permits` member.
+    Semaphore { permits: Vec<u32> },
     /// Display the octets of an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: u32 },
     /// Display the initialized elements of an `alloc::vec::Vec<T, A>`.
