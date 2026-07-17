@@ -1707,6 +1707,136 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
     Some(DebugFormat::Known(crate::bundle::KnownFormat::MpscBlock { ready_slots, values }))
 }
 
+/// Walk a chain of named struct members, returning the member-index path and
+/// the type reached. Used to record navigation paths through transparent
+/// wrappers (CachePadded, UnsafeCell, NonNull) by name.
+fn field_path(
+    reader: &DwReader<'_>,
+    ty: TypeId,
+    names: &[&str],
+) -> Option<(Vec<u32>, TypeId)> {
+    let mut path = Vec::with_capacity(names.len());
+    let mut cur = reader.canonicalize(ty);
+    for name in names {
+        let members = match reader.canonical_type(cur)? {
+            RawType::Struct(st) => &st.members,
+            RawType::Union(u) => &u.members,
+            _ => return None,
+        };
+        let (index, member) = unique_member(reader, members, name)?;
+        path.push(index as u32);
+        cur = reader.canonicalize(member.type_id);
+    }
+    Some((path, cur))
+}
+
+/// Navigate named members to a field, then walk any atomic/cell wrappers to
+/// the `usize` it stores, returning the full member path.
+fn usize_field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<Vec<u32>> {
+    let (head, field_ty) = field_path(reader, ty, names)?;
+    let mut tails = Vec::new();
+    find_zero_offset_uint_paths(
+        reader,
+        field_ty,
+        crate::bundle::POINTER_SIZE,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut tails,
+    );
+    let [tail] = tails.as_slice() else { return None };
+    Some(head.into_iter().chain(tail.iter().copied()).collect())
+}
+
+struct RawMpscChanFormat {
+    tail: Vec<u32>,
+    index: Vec<u32>,
+    head: Vec<u32>,
+    start_index: Vec<u32>,
+    next: Vec<u32>,
+    values: Vec<u32>,
+    element: TypeId,
+}
+
+fn mpsc_chan_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscChanFormat> {
+    if !fq_name(reader, id)
+        .as_deref()
+        .is_some_and(|name| name.starts_with("tokio::sync::mpsc::chan::Chan<"))
+    {
+        return None;
+    }
+    // Sender write position and receiver read position, plus the receiver's
+    // head block pointer. The rx fields sit behind CachePadded/UnsafeCell
+    // wrappers; navigate them by name.
+    // `tail_position` is a (shared) atomic usize; `index` is a plain usize on
+    // the single-consumer receiver. Walk to the stored word either way.
+    let tail = usize_field_path(reader, id, &["tx", "value", "tail_position"])?;
+    let index =
+        usize_field_path(reader, id, &["rx_fields", "__0", "value", "list", "index"])?;
+    let (head, head_ty) =
+        field_path(reader, id, &["rx_fields", "__0", "value", "list", "head", "pointer"])?;
+    let RawType::Pointer(head_ptr) = reader.canonical_type(head_ty)? else { return None };
+    let block = reader.canonicalize(head_ptr.target_type_id);
+
+    // Paths rooted at the block type.
+    let (start_index, _) = field_path(reader, block, &["header", "start_index"])?;
+    // `next` is an `AtomicPtr`; walk the atomic wrappers to the raw pointer.
+    let (next_head, next_ty) = field_path(reader, block, &["header", "next"])?;
+    let mut next_tails = Vec::new();
+    find_zero_offset_pointer_paths(
+        reader,
+        next_ty,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut next_tails,
+    );
+    let [next_tail] = next_tails.as_slice() else { return None };
+    let next = next_head.iter().copied().chain(next_tail.iter().copied()).collect();
+    let (values, values_ty) = field_path(reader, block, &["values", "__0"])?;
+    if !matches!(reader.canonical_type(values_ty), Some(RawType::Array(_))) {
+        return None;
+    }
+
+    // `element` is the block's message type `T`.
+    let RawType::Struct(bst) = reader.canonical_type(block)? else { return None };
+    let [param] = bst.template_params.as_ref() else { return None };
+    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
+        return None;
+    }
+    let element = reader.canonicalize(param.type_id);
+
+    Some(RawMpscChanFormat { tail, index, head, start_index, next, values, element })
+}
+
+/// Like [`find_zero_offset_uint_paths`], but the target is any pointer. Used
+/// to reach the raw pointer behind an `AtomicPtr` wrapper.
+fn find_zero_offset_pointer_paths(
+    reader: &DwReader<'_>,
+    current: TypeId,
+    path: &mut Vec<u32>,
+    seen: &mut Vec<TypeId>,
+    found: &mut Vec<Vec<u32>>,
+) {
+    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
+        return;
+    }
+    if matches!(reader.canonical_type(current), Some(RawType::Pointer(_))) {
+        found.push(path.clone());
+        return;
+    }
+    seen.push(current);
+    let members = match reader.canonical_type(current) {
+        Some(RawType::Struct(st)) => st.members.as_ref(),
+        Some(RawType::Union(u)) => u.members.as_ref(),
+        _ => &[],
+    };
+    for (index, member) in members.iter().enumerate().filter(|(_, member)| member.offset == 0) {
+        path.push(index as u32);
+        find_zero_offset_pointer_paths(reader, reader.canonicalize(member.type_id), path, seen, found);
+        path.pop();
+    }
+    seen.pop();
+}
+
 /// Like [`find_zero_offset_paths`], but the target is any unsigned integer of
 /// `size` bytes rather than a specific type id. Used to reach the word behind
 /// an atomic wrapper without knowing whether it is the core or loom shape.
@@ -2445,6 +2575,17 @@ impl<'a> Emitter<'a> {
                     internal_data: format.internal_data,
                     internal_edges: format.internal_edges,
                     edge: format.edge,
+                };
+                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(format) = mpsc_chan_debug_format(self.reader, tid) {
+                let format = crate::bundle::KnownFormat::MpscChan {
+                    tail: format.tail,
+                    index: format.index,
+                    head: format.head,
+                    start_index: format.start_index,
+                    next: format.next,
+                    values: format.values,
+                    element: self.reserve(format.element),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = known_debug_format(self.reader, tid) {

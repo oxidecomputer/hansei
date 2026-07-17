@@ -820,6 +820,19 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 hex_integers,
             );
         }
+        if let DebugFormat::Known(format @ KnownFormat::MpscChan { .. }) = format {
+            return write_mpsc_chan(
+                f,
+                info,
+                ty.name(),
+                format,
+                depth,
+                max_depth,
+                proc,
+                visited,
+                hex_integers,
+            );
+        }
         if let DebugFormat::Known(KnownFormat::IpAddress { octets, offset }) = format {
             let Some(bytes) = byte_range(bytes, offset, octets.size()) else {
                 return write!(f, "<truncated>");
@@ -910,6 +923,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::Str { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::String { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::BTreeMap { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::MpscChan { .. }) => unreachable!(),
         };
         let start = offset as usize;
         let Some(end) = start.checked_add(target.size() as usize) else {
@@ -1611,6 +1625,187 @@ fn write_mpsc_block<'a, T: DebugType<'a>>(
         write!(f, " ")?;
     }
     write!(f, "}}")
+}
+
+/// Render an mpsc `Chan`, prepending a `queued` field that walks the block
+/// chain and shows the messages still in flight (absolute indices
+/// `[index, tail)`), each rendered as `element`. The remaining channel
+/// members render normally (their block pointers show the elided block view).
+#[allow(clippy::too_many_arguments)]
+fn write_mpsc_chan<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    name: &str,
+    format: KnownFormat<T>,
+    depth: usize,
+    max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
+) -> fmt::Result {
+    let pretty = f.alternate();
+    if !name.is_empty() {
+        write!(f, "{name}")?;
+    }
+    write!(f, " {{")?;
+
+    // Synthetic `queued` field first.
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth + 1)?;
+    }
+    write!(f, " queued: ")?;
+    write_chan_queue(f, info, &format, depth + 1, max_depth, proc, visited, hex_integers)?;
+    if pretty {
+        write!(f, ",")?;
+    }
+
+    // Then the real members.
+    let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
+    for member in &members {
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        } else {
+            write!(f, ",")?;
+        }
+        write!(f, " {}: ", member.name())?;
+        let start = member.offset() as usize;
+        let end = start + member.ty().size() as usize;
+        if let Some(bytes) = info.bytes.get(start..end) {
+            let child = DisplayRecurse {
+                info: TypeInfoRef {
+                    ty: member.ty(),
+                    addr: info.addr + member.offset(),
+                    bytes,
+                    _marker: std::marker::PhantomData,
+                },
+                depth: depth + 1,
+                max_depth,
+                proc,
+                visited,
+                hex_integers,
+            };
+            if pretty {
+                write!(f, "{child:#},")?;
+            } else {
+                write!(f, "{child}")?;
+            }
+        } else {
+            write!(f, "<truncated>")?;
+        }
+    }
+
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+/// Walk an mpsc channel's block chain and render the queued messages as a
+/// list. `depth` is the indentation level of the field holding the list.
+#[allow(clippy::too_many_arguments)]
+fn write_chan_queue<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    format: &KnownFormat<T>,
+    depth: usize,
+    max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
+) -> fmt::Result {
+    let &KnownFormat::MpscChan {
+        tail_offset,
+        index_offset,
+        head_offset,
+        block_size,
+        start_index_offset,
+        next_offset,
+        values_offset,
+        element,
+        stride,
+        count,
+    } = format
+    else {
+        unreachable!()
+    };
+
+    let (Some(tail), Some(index), Some(head)) = (
+        read_u64_at(info.bytes, tail_offset),
+        read_u64_at(info.bytes, index_offset),
+        read_u64_at(info.bytes, head_offset),
+    ) else {
+        return write!(f, "<truncated>");
+    };
+    let (Some(proc), Some(visited)) = (proc, visited) else {
+        return write!(f, "<target unavailable>");
+    };
+
+    let pretty = f.alternate();
+    let element_size = element.size() as usize;
+    write!(f, "[")?;
+    let mut any = false;
+    let mut cur = index;
+    let mut block_ptr = head;
+    // The queue spans at most (tail - index) messages; the loop advances `cur`
+    // for each and only re-reads a block when crossing into the next one.
+    let mut guard = tail.saturating_sub(index) + 64;
+    while cur < tail && block_ptr != 0 && guard > 0 {
+        guard -= 1;
+        let Ok(block) = proc.read_bytes(block_ptr, block_size as u64) else {
+            write!(f, "{}<unreadable block>", if any { ", " } else { "" })?;
+            break;
+        };
+        let Some(start) = read_u64_at(&block, start_index_offset) else { break };
+        if cur >= start + count as u64 {
+            // Advance to the successor block.
+            match read_u64_at(&block, next_offset) {
+                Some(next) => block_ptr = next,
+                None => break,
+            }
+            continue;
+        }
+        if cur < start {
+            break;
+        }
+        let slot = values_offset as usize + (cur - start) as usize * stride as usize;
+        let Some(bytes) = block.get(slot..slot + element_size) else { break };
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        } else if any {
+            write!(f, ", ")?;
+        }
+        any = true;
+        let child = DisplayRecurse {
+            info: TypeInfoRef {
+                ty: element,
+                addr: block_ptr + slot as u64,
+                bytes,
+                _marker: std::marker::PhantomData,
+            },
+            depth: depth + 1,
+            max_depth,
+            proc: Some(proc),
+            visited: Some(visited),
+            hex_integers,
+        };
+        if pretty {
+            write!(f, "{child:#},")?;
+        } else {
+            write!(f, "{child}")?;
+        }
+        cur += 1;
+    }
+    if pretty && any {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    }
+    write!(f, "]")
 }
 
 #[derive(Copy, Clone)]

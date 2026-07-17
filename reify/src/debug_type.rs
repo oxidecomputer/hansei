@@ -174,6 +174,24 @@ pub enum KnownFormat<T> {
     /// Display a `tokio::sync::watch::state::AtomicState` decoded to its
     /// version and closed flag. `state_offset` locates the atomic `usize`.
     WatchState { state_offset: u64 },
+    /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages
+    /// (indices `[index, tail)`) by walking its block chain from the head
+    /// block, rendering each queued slot as `element`. `*_offset` fields
+    /// within the channel locate the read/write positions and head pointer;
+    /// the block-relative offsets locate each block's start index, successor
+    /// pointer, and inline slot array (`stride` bytes each, `count` per block).
+    MpscChan {
+        tail_offset: u64,
+        index_offset: u64,
+        head_offset: u64,
+        block_size: u32,
+        start_index_offset: u64,
+        next_offset: u64,
+        values_offset: u64,
+        element: T,
+        stride: u32,
+        count: u32,
+    },
     /// Display a `tokio::sync::mpsc::block::Block<T>` with its `values` member
     /// elided to a written-slot count. `ready_offset`/`ready_size` locate the
     /// readiness bitmap and `count` is the block capacity (to mask off the
@@ -609,6 +627,36 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let (_, state_offset) = project(*self, state)?;
                 Some(DebugFormat::Known(KnownFormat::WatchState { state_offset }))
             }
+            BundleFormat::Known(BundleKnownFormat::MpscChan {
+                tail,
+                index,
+                head,
+                start_index,
+                next,
+                values,
+                element,
+            }) => {
+                let (_, tail_offset) = project(*self, tail)?;
+                let (_, index_offset) = project(*self, index)?;
+                let (head_ty, head_offset) = project(*self, head)?;
+                let block_ty = head_ty.pointer_target()?;
+                let (_, start_index_offset) = project(block_ty, start_index)?;
+                let (_, next_offset) = project(block_ty, next)?;
+                let (array_ty, values_offset) = project(block_ty, values)?;
+                let (elem_ty, count) = array_ty.array_info()?;
+                Some(DebugFormat::Known(KnownFormat::MpscChan {
+                    tail_offset,
+                    index_offset,
+                    head_offset,
+                    block_size: block_ty.size() as u32,
+                    start_index_offset,
+                    next_offset,
+                    values_offset,
+                    element: self.related_type(*element),
+                    stride: elem_ty.size() as u32,
+                    count: count as u32,
+                }))
+            }
             BundleFormat::Known(BundleKnownFormat::MpscBlock { ready_slots, values }) => {
                 let (ready_ty, ready_offset) = project(*self, ready_slots)?;
                 let (array_ty, _) = project(*self, values)?;
@@ -1015,6 +1063,10 @@ mod bundle_tests {
     const BLOCK_VALUES: BundleTypeId = BundleTypeId(47);
     const BLOCK_HEADER: BundleTypeId = BundleTypeId(48);
     const WATCH_STATE: BundleTypeId = BundleTypeId(49);
+    const CHAN: BundleTypeId = BundleTypeId(50);
+    const CHAN_BLOCK: BundleTypeId = BundleTypeId(51);
+    const CHAN_BLOCK_HEADER: BundleTypeId = BundleTypeId(52);
+    const CHAN_BLOCK_PTR: BundleTypeId = BundleTypeId(53);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1082,6 +1134,13 @@ mod bundle_tests {
         );
         let valuesfieldn = s("values");
         let watch_staten = s("tokio::sync::watch::state::AtomicState");
+        let (chann, chan_blockn, chan_block_headern) = (
+            s("tokio::sync::mpsc::chan::Chan<u32>"),
+            s("ChanBlock"),
+            s("ChanBlockHeader"),
+        );
+        let (tailn, headn, indexn, start_indexn) =
+            (s("tail"), s("head"), s("index"), s("start_index"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1295,6 +1354,25 @@ mod bundle_tests {
                 size: 8,
                 members: vec![m(tuple0n, U64, 0)],
             },
+            // Chan { tail: usize @0, index: usize @8, head: *ChanBlock @16 }
+            TypeDef::Struct {
+                name: chann,
+                size: 24,
+                members: vec![m(tailn, U64, 0), m(indexn, U64, 8), m(headn, CHAN_BLOCK_PTR, 16)],
+            },
+            // ChanBlock { values: [u32; 4] @0, header: ChanBlockHeader @16 }
+            TypeDef::Struct {
+                name: chan_blockn,
+                size: 32,
+                members: vec![m(valuesfieldn, BLOCK_VALUES, 0), m(headerfieldn, CHAN_BLOCK_HEADER, 16)],
+            },
+            // ChanBlockHeader { start_index: usize @0, next: *ChanBlock @8 }
+            TypeDef::Struct {
+                name: chan_block_headern,
+                size: 16,
+                members: vec![m(start_indexn, U64, 0), m(nextn, CHAN_BLOCK_PTR, 8)],
+            },
+            TypeDef::Pointer { name: None, target: CHAN_BLOCK },
         ];
 
         let b = Bundle {
@@ -1402,6 +1480,17 @@ mod bundle_tests {
                 ), (
                     WATCH_STATE,
                     BundleDebugFormat::Known(BundleKnownFormat::WatchState { state: vec![0] }),
+                ), (
+                    CHAN,
+                    BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
+                        tail: vec![0],
+                        index: vec![1],
+                        head: vec![2],
+                        start_index: vec![1, 0],
+                        next: vec![1, 1],
+                        values: vec![0],
+                        element: U32,
+                    }),
                 )]),
                 name_index: vec![(pointn, POINT)],
             },
@@ -1985,6 +2074,48 @@ mod bundle_tests {
             format!("{}", value.display()),
             "tokio::sync::mpsc::block::Block<u32> { values: [0 slots], header: BlockHeader { ready_slots: 16 } }"
         );
+    }
+
+    #[test]
+    fn test_mpsc_chan_shows_only_queued_messages() {
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x1000);
+                // ChanBlock: [u32; 4] values @0, start_index usize @16, next ptr @24.
+                let mut b = Vec::new();
+                for v in [10u32, 20, 30, 40] {
+                    b.extend_from_slice(&v.to_le_bytes());
+                }
+                b.extend_from_slice(&0u64.to_le_bytes()); // start_index
+                b.extend_from_slice(&0u64.to_le_bytes()); // next (null)
+                b.truncate(len as usize);
+                Ok(b)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // Chan: tail usize @0, index usize @8, head ptr @16.
+        let chan = |tail: u64, index: u64| {
+            let mut c = Vec::new();
+            c.extend_from_slice(&tail.to_le_bytes());
+            c.extend_from_slice(&index.to_le_bytes());
+            c.extend_from_slice(&0x1000u64.to_le_bytes());
+            c
+        };
+
+        // index=1, tail=3: slots 1 and 2 are still queued.
+        let bytes = chan(3, 1);
+        let value = TypeInfoRef::new(v.ty(CHAN).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert!(shown.contains("queued: [20, 30]"), "{shown}");
+
+        // Drained channel (index == tail): nothing queued, no stale slots shown.
+        let bytes = chan(3, 3);
+        let value = TypeInfoRef::new(v.ty(CHAN).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert!(shown.contains("queued: []"), "{shown}");
     }
 
     #[test]
