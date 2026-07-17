@@ -162,6 +162,24 @@ pub enum KnownFormat {
     /// member path to the atomic `usize`; reify interprets bit 0 as the closed
     /// flag (CLOSED_BIT) and the remaining bits as the version.
     WatchState { state: Vec<u32> },
+    /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages.
+    /// The receiver has read up to `index` and the sender has written up to
+    /// `tail` (both member paths to a `usize` within the channel); the
+    /// messages in `[index, tail)` are still queued. `head` is the path to the
+    /// receiver's head block pointer. The remaining paths are rooted at the
+    /// *block* type (reached through `head`): `start_index` gives a block's
+    /// first absolute slot index, `next` its successor block pointer, and
+    /// `values` its inline slot array. `element` is the message type `T`. reify
+    /// walks the block chain and renders each queued slot as `element`.
+    MpscChan {
+        tail: Vec<u32>,
+        index: Vec<u32>,
+        head: Vec<u32>,
+        start_index: Vec<u32>,
+        next: Vec<u32>,
+        values: Vec<u32>,
+        element: BundleTypeId,
+    },
     /// Display a `tokio::sync::mpsc::block::Block<T>` with its inline `values`
     /// array elided to a count of written slots rather than raw `MaybeUninit`
     /// bytes. `ready_slots` is the member path to the header's readiness

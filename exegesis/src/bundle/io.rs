@@ -518,6 +518,79 @@ impl Bundle {
                     check_usize_format(self, id, def, state, "WatchState state debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::MpscChan {
+                        tail,
+                        index,
+                        head,
+                        start_index,
+                        next,
+                        values,
+                        element,
+                    },
+                ) => {
+                    if [tail, index, head, start_index, next, values].iter().any(|p| p.is_empty()) {
+                        return corrupt(format!(
+                            "MpscChan debug format for type {} has an empty path",
+                            id.0
+                        ));
+                    }
+                    check_usize_format(self, id, def, tail, "MpscChan tail debug format")?;
+                    check_usize_format(self, id, def, index, "MpscChan index debug format")?;
+                    // `head` reaches a pointer to the block type; the remaining
+                    // paths are rooted there.
+                    let head_ptr =
+                        format_path_target(self, id, def, head, "MpscChan head debug format")?;
+                    let Some(TypeDef::Pointer { target: block, .. }) = self.types.get(head_ptr)
+                    else {
+                        return corrupt(format!(
+                            "MpscChan debug format for type {} head does not end at a pointer",
+                            id.0
+                        ));
+                    };
+                    let block_def =
+                        self.types.get(*block).expect("member type validated before formats");
+                    check_usize_format(
+                        self,
+                        *block,
+                        block_def,
+                        start_index,
+                        "MpscChan start_index debug format",
+                    )?;
+                    let next_ptr = format_path_target(
+                        self,
+                        *block,
+                        block_def,
+                        next,
+                        "MpscChan next debug format",
+                    )?;
+                    if !matches!(self.types.get(next_ptr), Some(TypeDef::Pointer { .. })) {
+                        return corrupt(format!(
+                            "MpscChan debug format for type {} next does not end at a pointer",
+                            id.0
+                        ));
+                    }
+                    let array = format_path_target(
+                        self,
+                        *block,
+                        block_def,
+                        values,
+                        "MpscChan values debug format",
+                    )?;
+                    if !matches!(self.types.get(array), Some(TypeDef::Array { .. })) {
+                        return corrupt(format!(
+                            "MpscChan debug format for type {} values path does not end at an array",
+                            id.0
+                        ));
+                    }
+                    check_ty("MpscChan element", *element)?;
+                    if type_size(self, *element, &mut Vec::new()).is_none() {
+                        return corrupt(format!(
+                            "MpscChan debug format for type {} has an unsized element",
+                            id.0
+                        ));
+                    }
+                }
+                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::MpscBlock { ready_slots, values },
                 ) => {
                     if ready_slots.is_empty() || values.is_empty() {
