@@ -966,6 +966,7 @@ mod view_tests {
                     drop_in_place: 0,
                     size: 1,
                     align: 2,
+                    tail_offset: 0,
                 }),
             )]),
             name_index: vec![],

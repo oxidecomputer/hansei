@@ -116,12 +116,20 @@ pub enum KnownFormat {
     /// remaining indices address machine words in the vtable array itself;
     /// recording them here keeps rustc's private slot ordering out of bundle
     /// consumers.
+    ///
+    /// `tail_offset` is the byte offset of the `dyn Trait` tail *within the
+    /// struct the data pointer targets*. It is zero for a bare `dyn Trait`
+    /// pointee, but nonzero when the pointee is an unsized wrapper such as
+    /// `ArcInner<dyn Trait>`, whose sized header (the strong/weak counts)
+    /// precedes the erased value. Consumers add it to the data-pointer
+    /// address before reading the concrete pointee.
     DynPointer {
         pointer: u32,
         vtable: u32,
         drop_in_place: u32,
         size: u32,
         align: u32,
+        tail_offset: u64,
     },
     /// Display the four function pointers in `core::task::RawWakerVTable`
     /// as symbols rather than following them as data pointers.

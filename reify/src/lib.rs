@@ -731,6 +731,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             drop_in_place,
             size,
             align,
+            tail_offset,
         }) = format
         {
             return write_dyn_pointer(
@@ -743,6 +744,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 drop_in_place,
                 size,
                 align,
+                tail_offset,
                 depth,
                 max_depth,
                 proc,
@@ -1667,6 +1669,7 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
     drop_in_place_slot: u32,
     size_slot: u32,
     align_slot: u32,
+    tail_offset: u64,
     depth: usize,
     max_depth: usize,
     proc: Option<&dyn ReadFromProc>,
@@ -1707,17 +1710,22 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
 
     write_dyn_field_prefix(f, pretty, depth)?;
     write!(f, "pointer: 0x{pointer_address:x}")?;
+    // The vtable resolves the erased *tail* type; when the pointer targets an
+    // unsized wrapper (e.g. `ArcInner<dyn Trait>`) the value lives past a
+    // sized header, so read the pointee at the tail offset, not the raw
+    // pointer.
+    let pointee_address = pointer_address.wrapping_add(tail_offset);
     if let (Some(concrete_ty), Some(proc), Some(visited)) = (concrete_ty, proc, visited) {
-        let key = (pointer_address, concrete_ty.name());
+        let key = (pointee_address, concrete_ty.name());
         if !visited.borrow_mut().insert(key) {
             write!(f, " -> <cycle>")?;
         } else {
-            match proc.read_bytes(pointer_address, concrete_ty.size()) {
+            match proc.read_bytes(pointee_address, concrete_ty.size()) {
                 Ok(pointee_bytes) => {
                     let pointee = DisplayRecurse {
                         info: TypeInfoRef {
                             ty: concrete_ty,
-                            addr: pointer_address,
+                            addr: pointee_address,
                             bytes: &pointee_bytes,
                             _marker: std::marker::PhantomData,
                         },
@@ -2016,6 +2024,7 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
         drop_in_place,
         size,
         align,
+        tail_offset,
     })) = variant_info.ty.debug_format()
     {
         return write_dyn_pointer(
@@ -2028,6 +2037,7 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
             drop_in_place,
             size,
             align,
+            tail_offset,
             depth,
             max_depth,
             proc,
