@@ -157,6 +157,14 @@ pub enum KnownFormat {
     /// available permit count (`value >> 1`) plus a closed flag (bit 0). The
     /// path's first element is the index of the `permits` member.
     Semaphore { permits: Vec<u32> },
+    /// Display a `tokio::sync::mpsc::block::Block<T>` showing only the
+    /// initialized slots of its inline `values` array. `ready_slots` is the
+    /// member path to the header's readiness bitmap (bit `i` set means slot
+    /// `i` holds a value); `values` is the member path to the
+    /// `[MaybeUninit<T>; N]` array (its first element is the index of the
+    /// `values` member, rendered specially). `element` is `T`, displayed in
+    /// place of each initialized slot's raw representation.
+    MpscBlock { ready_slots: Vec<u32>, values: Vec<u32>, element: BundleTypeId },
     /// Display the octets of an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: u32 },
     /// Display the initialized elements of an `alloc::vec::Vec<T, A>`.

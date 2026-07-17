@@ -507,6 +507,38 @@ impl Bundle {
                     check_usize_format(self, id, def, permits, "Semaphore permits debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::MpscBlock { ready_slots, values, element },
+                ) => {
+                    if ready_slots.is_empty() || values.is_empty() {
+                        return corrupt(format!(
+                            "MpscBlock debug format for type {} has an empty path",
+                            id.0
+                        ));
+                    }
+                    check_usize_format(
+                        self,
+                        id,
+                        def,
+                        ready_slots,
+                        "MpscBlock ready_slots debug format",
+                    )?;
+                    let array =
+                        format_path_target(self, id, def, values, "MpscBlock values debug format")?;
+                    if !matches!(self.types.get(array), Some(TypeDef::Array { .. })) {
+                        return corrupt(format!(
+                            "MpscBlock debug format for type {} values path does not end at an array",
+                            id.0
+                        ));
+                    }
+                    check_ty("MpscBlock element", *element)?;
+                    if type_size(self, *element, &mut Vec::new()).is_none() {
+                        return corrupt(format!(
+                            "MpscBlock debug format for type {} has an unsized element",
+                            id.0
+                        ));
+                    }
+                }
+                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::IpAddress { octets },
                 ) => {
                     let target = format_path_target(

@@ -804,6 +804,19 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 hex_integers,
             );
         }
+        if let DebugFormat::Known(format @ KnownFormat::MpscBlock { .. }) = format {
+            return write_mpsc_block(
+                f,
+                info,
+                ty.name(),
+                format,
+                depth,
+                max_depth,
+                proc,
+                visited,
+                hex_integers,
+            );
+        }
         if let DebugFormat::Known(KnownFormat::IpAddress { octets, offset }) = format {
             let Some(bytes) = byte_range(bytes, offset, octets.size()) else {
                 return write!(f, "<truncated>");
@@ -887,6 +900,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::RawMutex { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Notify { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Semaphore { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::MpscBlock { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::IpAddress { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Vec { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Str { .. }) => unreachable!(),
@@ -1481,6 +1495,160 @@ fn write_vec<'a, T: DebugType<'a>>(
         }
     }
     if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    }
+    write!(f, "]")
+}
+
+/// Render a `tokio::sync::mpsc::block::Block<T>`, showing its `values` member
+/// as only the initialized slots (per the readiness bitmap) rendered as `T`.
+/// Other members render normally.
+#[allow(clippy::too_many_arguments)]
+fn write_mpsc_block<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    name: &str,
+    format: KnownFormat<T>,
+    depth: usize,
+    max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
+) -> fmt::Result {
+    let KnownFormat::MpscBlock {
+        ready_offset,
+        ready_size,
+        values_member,
+        values_offset,
+        element,
+        stride,
+        count,
+    } = format
+    else {
+        unreachable!()
+    };
+
+    let ready = read_unsigned_at(info.bytes, ready_offset, ready_size as u64).unwrap_or(0);
+    let values_name = info.ty.members().nth(values_member as usize).map(|m| m.name());
+
+    let pretty = f.alternate();
+    let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
+    if !name.is_empty() {
+        write!(f, "{name}")?;
+    }
+    write!(f, " {{")?;
+    for (i, member) in members.iter().enumerate() {
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        } else if i > 0 {
+            write!(f, ",")?;
+        }
+        write!(f, " {}: ", member.name())?;
+
+        if Some(member.name()) == values_name {
+            write_block_slots(
+                f, info, ready, values_offset, element, stride, count, depth + 1, max_depth,
+                proc, visited, hex_integers,
+            )?;
+        } else {
+            let start = member.offset() as usize;
+            let end = start + member.ty().size() as usize;
+            if let Some(bytes) = info.bytes.get(start..end) {
+                let child = DisplayRecurse {
+                    info: TypeInfoRef {
+                        ty: member.ty(),
+                        addr: info.addr + member.offset(),
+                        bytes,
+                        _marker: std::marker::PhantomData,
+                    },
+                    depth: depth + 1,
+                    max_depth,
+                    proc,
+                    visited,
+                    hex_integers,
+                };
+                if pretty {
+                    write!(f, "{child:#}")?;
+                } else {
+                    write!(f, "{child}")?;
+                }
+            } else {
+                write!(f, "<truncated>")?;
+            }
+        }
+        if pretty {
+            write!(f, ",")?;
+        }
+    }
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+/// Render the initialized slots of a block's inline value array as a list of
+/// `element` values. `depth` is the indentation level of the field holding
+/// the list.
+#[allow(clippy::too_many_arguments)]
+fn write_block_slots<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeInfoRef<'_, 'a, T>,
+    ready: u64,
+    values_offset: u64,
+    element: T,
+    stride: u32,
+    count: u32,
+    depth: usize,
+    max_depth: usize,
+    proc: Option<&dyn ReadFromProc>,
+    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    hex_integers: bool,
+) -> fmt::Result {
+    let pretty = f.alternate();
+    let element_size = element.size() as usize;
+    write!(f, "[")?;
+    let mut any = false;
+    for i in 0..count.min(64) {
+        if ready & (1u64 << i) == 0 {
+            continue;
+        }
+        let start = values_offset as usize + i as usize * stride as usize;
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, depth + 1)?;
+        } else if any {
+            write!(f, ", ")?;
+        }
+        any = true;
+        let Some(bytes) = info.bytes.get(start..start + element_size) else {
+            write!(f, "<truncated slot>")?;
+            continue;
+        };
+        let child = DisplayRecurse {
+            info: TypeInfoRef {
+                ty: element,
+                addr: info.addr + start as u64,
+                bytes,
+                _marker: std::marker::PhantomData,
+            },
+            depth: depth + 1,
+            max_depth,
+            proc,
+            visited,
+            hex_integers,
+        };
+        if pretty {
+            write!(f, "{child:#},")?;
+        } else {
+            write!(f, "{child}")?;
+        }
+    }
+    if pretty && any {
         writeln!(f)?;
         write_indent(f, depth)?;
     }
