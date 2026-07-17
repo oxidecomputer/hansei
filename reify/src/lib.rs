@@ -774,12 +774,29 @@ fn write_display_value<'a, T: DebugType<'a>>(
             return write_raw_mutex(f, ty.name(), info.bytes, state_offset);
         }
         if let DebugFormat::Known(KnownFormat::Notify { state_member, state_offset }) = format {
-            return write_notify(
+            let decoded = decode_notify_state(info.bytes, state_offset);
+            return write_struct_with_decoded_field(
                 f,
                 info,
                 ty.name(),
                 state_member,
-                state_offset,
+                &decoded,
+                depth,
+                max_depth,
+                proc,
+                visited,
+                hex_integers,
+            );
+        }
+        if let DebugFormat::Known(KnownFormat::Semaphore { permits_member, permits_offset }) = format
+        {
+            let decoded = decode_semaphore_permits(info.bytes, permits_offset);
+            return write_struct_with_decoded_field(
+                f,
+                info,
+                ty.name(),
+                permits_member,
+                &decoded,
                 depth,
                 max_depth,
                 proc,
@@ -869,6 +886,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::RawMutex { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Notify { .. }) => unreachable!(),
+            DebugFormat::Known(KnownFormat::Semaphore { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::IpAddress { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Vec { .. }) => unreachable!(),
             DebugFormat::Known(KnownFormat::Str { .. }) => unreachable!(),
@@ -1189,24 +1207,24 @@ fn write_raw_mutex(
     write!(f, ")")
 }
 
-/// Render a `tokio::sync::notify::Notify`, showing its `state` member as the
-/// decoded notification state instead of a raw atomic word.
+/// Render a struct, replacing one member's value with `decoded` text rather
+/// than recursing into its bytes. Used by the atomic-state formatters
+/// (`Notify`, `Semaphore`) to show a decoded field in place.
 #[allow(clippy::too_many_arguments)]
-fn write_notify<'a, T: DebugType<'a>>(
+fn write_struct_with_decoded_field<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
-    state_member: u32,
-    state_offset: u64,
+    member: u32,
+    decoded: &str,
     depth: usize,
     max_depth: usize,
     proc: Option<&dyn ReadFromProc>,
     visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
     hex_integers: bool,
 ) -> fmt::Result {
-    let decoded = decode_notify_state(info.bytes, state_offset);
-    let state_name = info.ty.members().nth(state_member as usize).map(|m| m.name());
-    let override_field = state_name.map(|field| (field, decoded.as_str()));
+    let field = info.ty.members().nth(member as usize).map(|m| m.name());
+    let override_field = field.map(|field| (field, decoded));
     write_struct_fields(
         f,
         info,
@@ -1237,6 +1255,20 @@ fn decode_notify_state(bytes: &[u8], state_offset: u64) -> String {
         0 => state.to_string(),
         1 => format!("{state} (1 notify_waiters call)"),
         calls => format!("{state} ({calls} notify_waiters calls)"),
+    }
+}
+
+/// Decode tokio's batch-semaphore `permits` word: bit 0 is a closed flag and
+/// the remaining bits are the available permit count.
+fn decode_semaphore_permits(bytes: &[u8], permits_offset: u64) -> String {
+    let Some(raw) = read_u64_at(bytes, permits_offset) else {
+        return "<truncated>".to_string();
+    };
+    let permits = raw >> 1;
+    if raw & 1 == 1 {
+        format!("{permits} (closed)")
+    } else {
+        format!("{permits}")
     }
 }
 

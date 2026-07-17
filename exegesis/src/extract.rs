@@ -1059,6 +1059,7 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| string_debug_format(reader, id))
         .or_else(|| parking_lot_raw_mutex_debug_format(reader, id))
         .or_else(|| notify_debug_format(reader, id))
+        .or_else(|| semaphore_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
@@ -1589,28 +1590,48 @@ fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Opti
     Some(DebugFormat::Known(crate::bundle::KnownFormat::RawMutex { state }))
 }
 
-fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    if fq_name(reader, id).as_deref() != Some("tokio::sync::notify::Notify") {
+/// The member path from a struct named `type_name` to the atomic `usize`
+/// stored in its `field` member. tokio uses its own loom shim internally, so
+/// the word sits behind loom/UnsafeCell/Atomic wrappers rather than a bare
+/// `core::sync::atomic::Atomic<usize>`; walk the zero-offset chain to the
+/// unique `usize` and anchor the path at `field`.
+fn atomic_usize_field_path(
+    reader: &DwReader<'_>,
+    id: TypeId,
+    type_name: &str,
+    field: &str,
+) -> Option<Vec<u32>> {
+    if fq_name(reader, id).as_deref() != Some(type_name) {
         return None;
     }
     let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
-    let (state_index, state_member) = unique_member(reader, &st.members, "state")?;
-    // `state` is an atomic `usize`. tokio uses its own loom shim internally,
-    // so the stored word sits behind loom/UnsafeCell/Atomic wrappers rather
-    // than a bare `core::sync::atomic::Atomic<usize>`. Walk the zero-offset
-    // chain to the unique `usize` and anchor the path at the `state` member.
+    let (field_index, field_member) = unique_member(reader, &st.members, field)?;
     let mut paths = Vec::new();
     find_zero_offset_uint_paths(
         reader,
-        reader.canonicalize(state_member.type_id),
+        reader.canonicalize(field_member.type_id),
         crate::bundle::POINTER_SIZE,
         &mut Vec::new(),
         &mut Vec::new(),
         &mut paths,
     );
     let [inner] = paths.as_slice() else { return None };
-    let state = std::iter::once(state_index as u32).chain(inner.iter().copied()).collect();
+    Some(std::iter::once(field_index as u32).chain(inner.iter().copied()).collect())
+}
+
+fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let state = atomic_usize_field_path(reader, id, "tokio::sync::notify::Notify", "state")?;
     Some(DebugFormat::Known(crate::bundle::KnownFormat::Notify { state }))
+}
+
+fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+    let permits = atomic_usize_field_path(
+        reader,
+        id,
+        "tokio::sync::batch_semaphore::Semaphore",
+        "permits",
+    )?;
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::Semaphore { permits }))
 }
 
 /// Like [`find_zero_offset_paths`], but the target is any unsigned integer of

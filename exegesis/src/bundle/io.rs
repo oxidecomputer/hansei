@@ -496,6 +496,17 @@ impl Bundle {
                     check_usize_format(self, id, def, state, "Notify state debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
+                    crate::bundle::schema::KnownFormat::Semaphore { permits },
+                ) => {
+                    if permits.is_empty() {
+                        return corrupt(format!(
+                            "Semaphore debug format for type {} has an empty permits path",
+                            id.0
+                        ));
+                    }
+                    check_usize_format(self, id, def, permits, "Semaphore permits debug format")?;
+                }
+                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::IpAddress { octets },
                 ) => {
                     let target = format_path_target(

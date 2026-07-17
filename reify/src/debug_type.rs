@@ -167,6 +167,10 @@ pub enum KnownFormat<T> {
     /// value) and `state_offset` locates the atomic `usize` within the
     /// struct.
     Notify { state_member: u32, state_offset: u64 },
+    /// Display a `tokio::sync::batch_semaphore::Semaphore`, decoding its
+    /// `permits` field to the available count and closed flag. `permits_member`
+    /// is that field's index and `permits_offset` locates the atomic `usize`.
+    Semaphore { permits_member: u32, permits_offset: u64 },
     /// Display an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: T, offset: u64 },
     /// Display the initialized elements of a Vec.
@@ -587,6 +591,11 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let state_member = *state.first()?;
                 Some(DebugFormat::Known(KnownFormat::Notify { state_member, state_offset }))
             }
+            BundleFormat::Known(BundleKnownFormat::Semaphore { permits }) => {
+                let (_, permits_offset) = project(*self, permits)?;
+                let permits_member = *permits.first()?;
+                Some(DebugFormat::Known(KnownFormat::Semaphore { permits_member, permits_offset }))
+            }
             BundleFormat::Known(BundleKnownFormat::IpAddress { octets }) => {
                 let (octets, offset) = project(*self, &[*octets])?;
                 let (octet, count) = octets.array_info()?;
@@ -976,6 +985,7 @@ mod bundle_tests {
     const STRING: BundleTypeId = BundleTypeId(42);
     const RAW_MUTEX: BundleTypeId = BundleTypeId(43);
     const NOTIFY: BundleTypeId = BundleTypeId(44);
+    const SEMAPHORE: BundleTypeId = BundleTypeId(45);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1033,6 +1043,8 @@ mod bundle_tests {
             (s("&str"), s("alloc::string::String"), s("data_ptr"), s("length"));
         let (raw_mutexn, staten) = (s("parking_lot::raw_mutex::RawMutex"), s("state"));
         let (notifyn, waitersn) = (s("tokio::sync::notify::Notify"), s("waiters"));
+        let (semaphoren, permitsn) =
+            (s("tokio::sync::batch_semaphore::Semaphore"), s("permits"));
 
         let m = |name, ty, offset| MemberDef { name, ty, offset };
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
@@ -1225,6 +1237,11 @@ mod bundle_tests {
                 size: 16,
                 members: vec![m(staten, U64, 0), m(waitersn, U32, 8)],
             },
+            TypeDef::Struct {
+                name: semaphoren,
+                size: 16,
+                members: vec![m(permitsn, U64, 0), m(waitersn, U32, 8)],
+            },
         ];
 
         let b = Bundle {
@@ -1320,6 +1337,9 @@ mod bundle_tests {
                 ), (
                     NOTIFY,
                     BundleDebugFormat::Known(BundleKnownFormat::Notify { state: vec![0] }),
+                ), (
+                    SEMAPHORE,
+                    BundleDebugFormat::Known(BundleKnownFormat::Semaphore { permits: vec![0] }),
                 )]),
                 name_index: vec![(pointn, POINT)],
             },
@@ -1849,6 +1869,32 @@ mod bundle_tests {
             let buf = bytes(state, waiters);
             let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
             assert_eq!(format!("{}", value.display()), expected, "state={state}");
+        }
+    }
+
+    #[test]
+    fn test_semaphore_decodes_permits_field_in_place() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // 16-byte Semaphore: permits usize @0, waiters u32 @8.
+        let bytes = |permits: u64, waiters: u32| {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&permits.to_le_bytes());
+            buf.extend_from_slice(&waiters.to_le_bytes());
+            buf.extend_from_slice(&[0u8; 4]);
+            buf
+        };
+        let cases = [
+            // permits are stored shifted left by one; bit 0 is the closed flag.
+            (64u64, 3u32, "tokio::sync::batch_semaphore::Semaphore { permits: 32, waiters: 3 }"),
+            (0, 0, "tokio::sync::batch_semaphore::Semaphore { permits: 0, waiters: 0 }"),
+            // 65 = (32 << 1) | 1: 32 permits, closed.
+            (65, 9, "tokio::sync::batch_semaphore::Semaphore { permits: 32 (closed), waiters: 9 }"),
+        ];
+        for (permits, waiters, expected) in cases {
+            let buf = bytes(permits, waiters);
+            let value = TypeInfoRef::new(v.ty(SEMAPHORE).unwrap(), 0, &buf);
+            assert_eq!(format!("{}", value.display()), expected, "permits={permits}");
         }
     }
 
