@@ -719,6 +719,88 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              edge=value.value.__0.pointer@+0 }",
         );
     }
+    if program == "channels" {
+        // The tokio-sync formatters have no fixture elsewhere, and are the
+        // most intricate detectors (multi-path, cross-pointer, waiter queues).
+        // Assert their fully-resolved paths so a wrong-member navigation trips
+        // the test; each named type resolves identically on macOS and illumos.
+        assert_format(
+            program,
+            bundle,
+            "tokio::sync::notify::Notify",
+            "tokio::sync::notify::Notify :: Notify \
+             { state=state.inner.value.v.value.__0@+0, \
+             mutex=waiters.__1.raw.state.v.value.__0@+8, \
+             head=waiters.__1.data.value.head@+16, waiter=tokio::sync::notify::Waiter, \
+             waiter_notification=notification.__0.inner.value.v.value.__0@+32, \
+             waiter_next=pointers.inner.value.next@+8 }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "tokio::sync::batch_semaphore::Semaphore",
+            "tokio::sync::batch_semaphore::Semaphore :: Semaphore \
+             { permits=permits.inner.value.v.value.__0@+32 }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "tokio::sync::watch::state::AtomicState",
+            "tokio::sync::watch::state::AtomicState :: WatchState \
+             { state=__0.inner.value.v.value.__0@+0 }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "tokio::sync::mpsc::chan::Chan<u32, tokio::sync::mpsc::bounded::Semaphore>",
+            "tokio::sync::mpsc::chan::Chan<u32, tokio::sync::mpsc::bounded::Semaphore> :: MpscChan \
+             { tail=tx.value.tail_position.inner.value.v.value.__0@+8, \
+             index=rx_fields.__0.value.list.index@+304, \
+             head=rx_fields.__0.value.list.head.pointer@+288, \
+             block=tokio::sync::mpsc::block::Block<u32>, \
+             start_index=header.start_index@+128, next=header.next.v.value.__0@+136, \
+             values=values.__0@+0, element=u32 }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "tokio::sync::mpsc::block::Block<u32>",
+            "tokio::sync::mpsc::block::Block<u32> :: MpscBlock \
+             { ready_slots=header.ready_slots.inner.value.v.value.__0@+144, \
+             values=values.__0@+0 }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "tokio::sync::mpsc::bounded::Receiver<u32>",
+            "tokio::sync::mpsc::bounded::Receiver<u32> :: MpscRx \
+             { chan_pointer=chan.inner.ptr.pointer@+0, \
+             arcinner=alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<u32, \
+             tokio::sync::mpsc::bounded::Semaphore>>, chan=data@+128, \
+             chan_ty=tokio::sync::mpsc::chan::Chan<u32, tokio::sync::mpsc::bounded::Semaphore>, \
+             bound=semaphore.bound@+360, \
+             permits=semaphore.semaphore.permits.inner.value.v.value.__0@+352 }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "tokio::sync::mpsc::bounded::Semaphore",
+            "tokio::sync::mpsc::bounded::Semaphore :: BoundedSemaphore \
+             { mutex=semaphore.waiters.__1.raw.state.v.value.__0@+0, \
+             closed=semaphore.waiters.__1.data.value.closed@+24, \
+             permits=semaphore.permits.inner.value.v.value.__0@+32, bound=bound@+40, \
+             head=semaphore.waiters.__1.data.value.queue.head@+8, \
+             waiter=tokio::sync::batch_semaphore::Waiter, \
+             waiter_state=state.inner.value.v.value.__0@+32, \
+             waiter_next=pointers.inner.value.next@+24 }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "parking_lot::raw_mutex::RawMutex",
+            "parking_lot::raw_mutex::RawMutex :: RawMutex { state=state.v.value.__0@+0 }",
+        );
+    }
 }
 
 fn run_golden(program: &str) {
@@ -791,4 +873,9 @@ fn test_golden_select_combinator() {
 #[test]
 fn test_golden_futurelock() {
     run_golden("futurelock");
+}
+
+#[test]
+fn test_golden_channels() {
+    run_golden("channels");
 }
