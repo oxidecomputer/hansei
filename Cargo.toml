@@ -7,7 +7,6 @@ members = [
     "hansei",
     "hansei-types",
     "libproc-sys",
-    "print-ctf",
     "proc",
     "reify",
     "spelunkio",
