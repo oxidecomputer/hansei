@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     "durin",
-    "dwarf2ctf",
     "exegesis",
     "hansei",
     "hansei-types",
@@ -17,7 +16,6 @@ members = [
 [workspace.dependencies]
 anyhow = "1.0"
 camino = "1.2"
-assert_cmd = "2.0"
 bindgen = { version = "0.72", default-features = false }
 clap = { version = "4.5.51", features = ["derive"] }
 console = "0.16"
@@ -38,7 +36,6 @@ mimalloc = { version = "*", features = ["v3"] }
 object = "0.38"
 petgraph = "0.7"
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
-predicates = "3.1"
 proc = { path = "proc", version = "0.1.0" }
 rangemap = "1.7.0"
 reedline = "0.38"
