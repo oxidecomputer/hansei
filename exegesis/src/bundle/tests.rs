@@ -365,7 +365,83 @@ fn test_validate_rejects_bad_debug_format_path() {
     let mut b = tiny_bundle();
     b.types.debug_formats.insert(
         BundleTypeId(0),
-        DebugFormat::Transparent { member: 0 },
+        DebugFormat::Transparent { member: Selector::member(0) },
+    );
+    assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
+}
+
+/// A selector may cross a pointer with a `Deref` step; the validator resolves
+/// through it to the pointee. (Phase A emits no such selector yet, but the
+/// validator handles them — this guards that path.)
+#[test]
+fn test_validate_accepts_selector_through_deref() {
+    let mut strings = StringInterner::new();
+    let u64n = strings.intern("u64");
+    let innern = strings.intern("Inner");
+    let outern = strings.intern("Outer");
+    let vn = strings.intern("v");
+    let pn = strings.intern("p");
+    let ty = BundleTypeId(0);
+    let mut b = Bundle {
+        meta: Meta { format_version: FORMAT_VERSION, ..Default::default() },
+        strings: strings.finish(),
+        types: TypeTable {
+            types: vec![
+                // 0: u64
+                TypeDef::Base { name: u64n, size: 8, encoding: Encoding::Unsigned },
+                // 1: *Inner
+                TypeDef::Pointer { name: None, target: BundleTypeId(2) },
+                // 2: Inner { v: u64 @0 }
+                TypeDef::Struct {
+                    name: innern,
+                    size: 8,
+                    members: vec![MemberDef { name: vn, ty: BundleTypeId(0), offset: 0 }],
+                },
+                // 3: Outer { p: *Inner @0 }
+                TypeDef::Struct {
+                    name: outern,
+                    size: 8,
+                    members: vec![MemberDef { name: pn, ty: BundleTypeId(1), offset: 0 }],
+                },
+            ],
+            // Outer, rendered as its pointee's `v` field: p → deref → v.
+            debug_formats: BTreeMap::from([(
+                BundleTypeId(3),
+                DebugFormat::Transparent {
+                    member: Selector(vec![Step::Member(0), Step::Deref, Step::Member(0)]),
+                },
+            )]),
+            name_index: vec![],
+        },
+        tasks: TaskTable::default(),
+        dyn_futures: DynFutureTable::default(),
+        statics: StaticsTable::default(),
+        infra: InfraTypes {
+            header: ty,
+            vtable: ty,
+            trailer: ty,
+            context: ty,
+            scheduler_handle: ty,
+            mt_handle: ty,
+            location: ty,
+            raw_waker_vtable: ty,
+        },
+        provenance: ProvenanceTable::default(),
+    };
+    assert!(b.validate().is_ok());
+    // Round-trips: validation runs on save and load too.
+    b.types.name_index.clear();
+    assert!(Bundle::read_from(encode(&b).as_slice()).is_ok());
+}
+
+/// Dereferencing a non-pointer in a selector is rejected.
+#[test]
+fn test_validate_rejects_deref_of_non_pointer() {
+    let mut b = tiny_bundle();
+    // Type 0 is a `u64`; a leading `Deref` cannot apply to it.
+    b.types.debug_formats.insert(
+        BundleTypeId(0),
+        DebugFormat::Transparent { member: Selector(vec![Step::Deref]) },
     );
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
 }

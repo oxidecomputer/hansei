@@ -14,7 +14,9 @@
 //! serves macOS and illumos. Regenerate with `EXEGESIS_BLESS=1 cargo test
 //! -p exegesis --test golden`.
 
-use exegesis::bundle::{Bundle, BundleTypeId, DebugFormat, KnownFormat, StaticRole, TypeDef};
+use exegesis::bundle::{
+    Bundle, BundleTypeId, DebugFormat, KnownFormat, Selector, StaticRole, Step, TypeDef,
+};
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
 
 use std::fmt::Write as _;
@@ -109,37 +111,58 @@ fn fq_name(bundle: &Bundle, id: BundleTypeId) -> String {
 /// the portable, layout-sensitive rendering of a debug-format path: a wrong
 /// member (the failure mode this coverage targets) changes the name or the
 /// offset even when the path still validates.
-fn walk(bundle: &Bundle, root: BundleTypeId, path: &[u32]) -> (String, u64, BundleTypeId) {
+fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, BundleTypeId) {
     let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>").to_owned();
     let mut names = Vec::new();
     let mut offset = 0u64;
     let mut cur = root;
-    for &mi in path {
-        let members = match &bundle.types.types[cur.0 as usize] {
-            TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
-            _ => {
-                names.push("<non-aggregate>".to_owned());
-                return (names.join("."), offset, cur);
+    for step in sel.steps() {
+        match step {
+            Step::Member(mi) => {
+                let members = match &bundle.types.types[cur.0 as usize] {
+                    TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
+                    _ => {
+                        names.push("<non-aggregate>".to_owned());
+                        return (names.join("."), offset, cur);
+                    }
+                };
+                match members.get(*mi as usize) {
+                    Some(m) => {
+                        names.push(s(m.name));
+                        offset += m.offset;
+                        cur = m.ty;
+                    }
+                    None => {
+                        names.push(format!("<oob:{mi}>"));
+                        return (names.join("."), offset, cur);
+                    }
+                }
             }
-        };
-        match members.get(mi as usize) {
-            Some(m) => {
-                names.push(s(m.name));
-                offset += m.offset;
-                cur = m.ty;
-            }
-            None => {
-                names.push(format!("<oob:{mi}>"));
-                return (names.join("."), offset, cur);
-            }
+            Step::Deref => match &bundle.types.types[cur.0 as usize] {
+                TypeDef::Pointer { target, .. } => {
+                    names.push("*".to_owned());
+                    offset = 0;
+                    cur = *target;
+                }
+                _ => {
+                    names.push("<non-pointer-deref>".to_owned());
+                    return (names.join("."), offset, cur);
+                }
+            },
         }
     }
     (names.join("."), offset, cur)
 }
 
+/// A single-member selector, for the structural member-index fields the
+/// bespoke formatters still carry as bare `u32`.
+fn m(index: u32) -> Selector {
+    Selector::member(index)
+}
+
 /// Render one path as `chain@+offset` (rooted at `root`).
-fn field(bundle: &Bundle, root: BundleTypeId, path: &[u32]) -> String {
-    let (chain, offset, _) = walk(bundle, root, path);
+fn field(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> String {
+    let (chain, offset, _) = walk(bundle, root, sel);
     let chain = if chain.is_empty() { "<self>".to_owned() } else { chain };
     format!("{chain}@+{offset}")
 }
@@ -186,7 +209,7 @@ fn array_elem(bundle: &Bundle, id: BundleTypeId) -> Option<BundleTypeId> {
 /// build instantiates differs by platform, but a specific named type's layout
 /// does not.
 fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -> Option<String> {
-    let f = |root, path: &[u32]| field(bundle, root, path);
+    let f = |root, sel: &Selector| field(bundle, root, sel);
     let known = match fmt {
         DebugFormat::Transparent { .. } => return None,
         DebugFormat::Known(k) => k,
@@ -203,15 +226,15 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             tail_offset,
         } => format!(
             "DynPointer {{ pointer={}, vtable={}, slots=[drop_in_place:{drop_in_place}, size:{size}, align:{align}], tail_offset={tail_offset} }}",
-            f(id, &[*pointer]),
-            f(id, &[*vtable]),
+            f(id, &m(*pointer)),
+            f(id, &m(*vtable)),
         ),
         KnownFormat::RawWakerVTable { clone, wake, wake_by_ref, drop } => format!(
             "RawWakerVTable {{ clone={}, wake={}, wake_by_ref={}, drop={} }}",
-            f(id, &[*clone]),
-            f(id, &[*wake]),
-            f(id, &[*wake_by_ref]),
-            f(id, &[*drop]),
+            f(id, &m(*clone)),
+            f(id, &m(*wake)),
+            f(id, &m(*wake_by_ref)),
+            f(id, &m(*drop)),
         ),
         KnownFormat::RawMutex { state } => format!("RawMutex {{ state={} }}", f(id, state)),
         KnownFormat::Notify { state, mutex, head, waiter, waiter_notification, waiter_next } => {
@@ -284,7 +307,7 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(*waiter, waiter_next),
         ),
         KnownFormat::IpAddress { octets } => {
-            format!("IpAddress {{ octets={} }}", f(id, &[*octets]))
+            format!("IpAddress {{ octets={} }}", f(id, octets))
         }
         KnownFormat::Vec { pointer, length, capacity, element } => format!(
             "Vec {{ pointer={}, length={}, capacity={}, element={} }}",
@@ -295,8 +318,8 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
         ),
         KnownFormat::Str { pointer, length } => format!(
             "Str {{ pointer={}, length={} }}",
-            f(id, &[*pointer]),
-            f(id, &[*length]),
+            f(id, pointer),
+            f(id, length),
         ),
         KnownFormat::String { pointer, length, capacity } => format!(
             "String {{ pointer={}, length={}, capacity={} }}",
@@ -325,29 +348,29 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             // `Some` payload and lands on the node-ref struct, against which
             // `height` and `node` resolve. `edge` is rooted at one element of
             // the internal node's edge array.
-            let (_, _, root_ty) = walk(bundle, id, &[*root]);
+            let (_, _, root_ty) = walk(bundle, id, &m(*root));
             let some = some_payload(bundle, root_ty).unwrap_or(id);
             let (_, _, node_ref) = walk(bundle, some, root_node);
-            let (_, _, edges_ty) = walk(bundle, *internal, &[*internal_edges]);
+            let (_, _, edges_ty) = walk(bundle, *internal, &m(*internal_edges));
             let edge_elem = array_elem(bundle, edges_ty).unwrap_or(*internal);
             format!(
                 "BTreeMap {{ root={}, length={}, root_node={}, height={}, node={}, \
                  key={}, value={}, leaf={}, leaf_len={}, leaf_keys={}, leaf_values={}, \
                  internal={}, internal_data={}, internal_edges={}, edge={} }}",
-                f(id, &[*root]),
-                f(id, &[*length]),
+                f(id, &m(*root)),
+                f(id, &m(*length)),
                 f(some, root_node),
-                f(node_ref, &[*height]),
+                f(node_ref, &m(*height)),
                 f(node_ref, node),
                 fq_name(bundle, *key),
                 fq_name(bundle, *value),
                 fq_name(bundle, *leaf),
-                f(*leaf, &[*leaf_len]),
-                f(*leaf, &[*leaf_keys]),
-                f(*leaf, &[*leaf_values]),
+                f(*leaf, &m(*leaf_len)),
+                f(*leaf, &m(*leaf_keys)),
+                f(*leaf, &m(*leaf_values)),
                 fq_name(bundle, *internal),
-                f(*internal, &[*internal_data]),
-                f(*internal, &[*internal_edges]),
+                f(*internal, &m(*internal_data)),
+                f(*internal, &m(*internal_edges)),
                 f(edge_elem, edge),
             )
         }

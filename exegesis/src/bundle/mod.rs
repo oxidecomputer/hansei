@@ -12,8 +12,9 @@ pub use io::{Error, FORMAT_VERSION, MAGIC, Result};
 pub use schema::{
     BinaryIdent, Bundle, BundleTypeId, DebugFormat, DiscrDef, DiscrValue, DiscrValues,
     DynFutureTable, FutureKind, InfraTypes, KnownFormat, MemberDef, Meta, Provenance,
-    ProvenanceTable, SourceLoc, StaticDef, StaticRole, StaticsTable, SymbolLookup, TaskEntryId,
-    TaskFutureEntry, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape, strip_llvm_suffix,
+    ProvenanceTable, Selector, SourceLoc, StaticDef, StaticRole, StaticsTable, Step, SymbolLookup,
+    TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
+    strip_llvm_suffix,
 };
 pub use strings::{StrRef, StringInterner, StringTable};
 pub use view::{

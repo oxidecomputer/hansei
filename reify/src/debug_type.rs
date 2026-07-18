@@ -442,25 +442,49 @@ impl<'a> DebugType<'a> for BundleType<'a> {
     }
 
     fn debug_format(&self) -> Option<DebugFormat<Self>> {
-        use exegesis::bundle::{DebugFormat as BundleFormat, KnownFormat as BundleKnownFormat};
+        use exegesis::bundle::{
+            DebugFormat as BundleFormat, KnownFormat as BundleKnownFormat, Selector, Step,
+        };
 
-        fn project<'a>(mut ty: BundleType<'a>, path: &[u32]) -> Option<(BundleType<'a>, u64)> {
+        /// Resolve a selector against `root` to `(landed type, byte offset)`.
+        ///
+        /// `Member` steps accumulate member offsets. A `Deref` step needs a
+        /// runtime pointer read the flat resolved form can't represent, so it
+        /// bails to structural display; the node resolver (a later phase)
+        /// handles cross-pointer selectors. No detector emits a `Deref` today.
+        fn resolve_selector<'a>(
+            root: BundleType<'a>,
+            sel: &Selector,
+        ) -> Option<(BundleType<'a>, u64)> {
+            let mut ty = root;
             let mut offset = 0u64;
-            for &index in path {
-                let member = ty.members().nth(index as usize)?;
-                offset = offset.checked_add(member.offset())?;
-                ty = member.ty();
+            for step in sel.steps() {
+                match step {
+                    Step::Member(index) => {
+                        let member = ty.members().nth(*index as usize)?;
+                        offset = offset.checked_add(member.offset())?;
+                        ty = member.ty();
+                    }
+                    Step::Deref => return None,
+                }
             }
             Some((ty, offset))
         }
 
+        /// Resolve a single member index against `ty`. Used for the structural
+        /// member-index fields the bespoke formatters still carry as `u32`.
+        fn member_at(ty: BundleType<'_>, index: u32) -> Option<(BundleType<'_>, u64)> {
+            let member = ty.members().nth(index as usize)?;
+            Some((member.ty(), member.offset()))
+        }
+
         match BundleType::debug_format(self)? {
             BundleFormat::Transparent { member } => {
-                let (target, offset) = project(*self, &[*member])?;
+                let (target, offset) = resolve_selector(*self, member)?;
                 Some(DebugFormat::Transparent { target, offset })
             }
             BundleFormat::Known(BundleKnownFormat::Atomic { value }) => {
-                let (value, offset) = project(*self, value)?;
+                let (value, offset) = resolve_selector(*self, value)?;
                 Some(DebugFormat::Known(KnownFormat::Atomic { value, offset }))
             }
             BundleFormat::Known(BundleKnownFormat::FunctionPointer) => {
@@ -474,8 +498,8 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 align,
                 tail_offset,
             }) => {
-                let (_, pointer_offset) = project(*self, &[*pointer])?;
-                let (vtable, vtable_offset) = project(*self, &[*vtable])?;
+                let (_, pointer_offset) = member_at(*self, *pointer)?;
+                let (vtable, vtable_offset) = member_at(*self, *vtable)?;
                 Some(DebugFormat::Known(KnownFormat::DynPointer {
                     pointer_offset,
                     vtable,
@@ -492,10 +516,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 wake_by_ref,
                 drop,
             }) => {
-                let (_, clone_offset) = project(*self, &[*clone])?;
-                let (_, wake_offset) = project(*self, &[*wake])?;
-                let (_, wake_by_ref_offset) = project(*self, &[*wake_by_ref])?;
-                let (_, drop_offset) = project(*self, &[*drop])?;
+                let (_, clone_offset) = member_at(*self, *clone)?;
+                let (_, wake_offset) = member_at(*self, *wake)?;
+                let (_, wake_by_ref_offset) = member_at(*self, *wake_by_ref)?;
+                let (_, drop_offset) = member_at(*self, *drop)?;
                 Some(DebugFormat::Known(KnownFormat::RawWakerVTable {
                     clone_offset,
                     wake_offset,
@@ -504,7 +528,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::RawMutex { state }) => {
-                let (_, state_offset) = project(*self, state)?;
+                let (_, state_offset) = resolve_selector(*self, state)?;
                 Some(DebugFormat::Known(KnownFormat::RawMutex { state_offset }))
             }
             BundleFormat::Known(BundleKnownFormat::Notify {
@@ -515,12 +539,12 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 waiter_notification,
                 waiter_next,
             }) => {
-                let (_, state_offset) = project(*self, state)?;
-                let (_, mutex_offset) = project(*self, mutex)?;
-                let (_, head_offset) = project(*self, head)?;
+                let (_, state_offset) = resolve_selector(*self, state)?;
+                let (_, mutex_offset) = resolve_selector(*self, mutex)?;
+                let (_, head_offset) = resolve_selector(*self, head)?;
                 let waiter_ty = self.related_type(*waiter);
-                let (_, waiter_notification_offset) = project(waiter_ty, waiter_notification)?;
-                let (_, waiter_next_offset) = project(waiter_ty, waiter_next)?;
+                let (_, waiter_notification_offset) = resolve_selector(waiter_ty, waiter_notification)?;
+                let (_, waiter_next_offset) = resolve_selector(waiter_ty, waiter_next)?;
                 Some(DebugFormat::Known(KnownFormat::Notify {
                     state_offset,
                     mutex_offset,
@@ -532,12 +556,12 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::Semaphore { permits }) => {
-                let (_, permits_offset) = project(*self, permits)?;
-                let permits_member = *permits.first()?;
+                let (_, permits_offset) = resolve_selector(*self, permits)?;
+                let permits_member = permits.first_member()?;
                 Some(DebugFormat::Known(KnownFormat::Semaphore { permits_member, permits_offset }))
             }
             BundleFormat::Known(BundleKnownFormat::WatchState { state }) => {
-                let (_, state_offset) = project(*self, state)?;
+                let (_, state_offset) = resolve_selector(*self, state)?;
                 Some(DebugFormat::Known(KnownFormat::WatchState { state_offset }))
             }
             BundleFormat::Known(BundleKnownFormat::MpscChan {
@@ -549,13 +573,13 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 values,
                 element,
             }) => {
-                let (_, tail_offset) = project(*self, tail)?;
-                let (_, index_offset) = project(*self, index)?;
-                let (head_ty, head_offset) = project(*self, head)?;
+                let (_, tail_offset) = resolve_selector(*self, tail)?;
+                let (_, index_offset) = resolve_selector(*self, index)?;
+                let (head_ty, head_offset) = resolve_selector(*self, head)?;
                 let block_ty = head_ty.pointer_target()?;
-                let (_, start_index_offset) = project(block_ty, start_index)?;
-                let (_, next_offset) = project(block_ty, next)?;
-                let (array_ty, values_offset) = project(block_ty, values)?;
+                let (_, start_index_offset) = resolve_selector(block_ty, start_index)?;
+                let (_, next_offset) = resolve_selector(block_ty, next)?;
+                let (array_ty, values_offset) = resolve_selector(block_ty, values)?;
                 let (elem_ty, count) = array_ty.array_info()?;
                 Some(DebugFormat::Known(KnownFormat::MpscChan {
                     tail_offset,
@@ -571,10 +595,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::MpscBlock { ready_slots, values }) => {
-                let (ready_ty, ready_offset) = project(*self, ready_slots)?;
-                let (array_ty, _) = project(*self, values)?;
+                let (ready_ty, ready_offset) = resolve_selector(*self, ready_slots)?;
+                let (array_ty, _) = resolve_selector(*self, values)?;
                 let (_, count) = array_ty.array_info()?;
-                let values_member = *values.first()?;
+                let values_member = values.first_member()?;
                 Some(DebugFormat::Known(KnownFormat::MpscBlock {
                     ready_offset,
                     ready_size: ready_ty.size() as u32,
@@ -588,11 +612,11 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 bound,
                 permits,
             }) => {
-                let (ptr_ty, chan_pointer_offset) = project(*self, chan_pointer)?;
+                let (ptr_ty, chan_pointer_offset) = resolve_selector(*self, chan_pointer)?;
                 let arcinner_ty = ptr_ty.pointer_target()?;
-                let (chan_ty, chan_offset) = project(arcinner_ty, chan)?;
-                let (_, bound_offset) = project(chan_ty, bound)?;
-                let (_, permits_offset) = project(chan_ty, permits)?;
+                let (chan_ty, chan_offset) = resolve_selector(arcinner_ty, chan)?;
+                let (_, bound_offset) = resolve_selector(chan_ty, bound)?;
+                let (_, permits_offset) = resolve_selector(chan_ty, permits)?;
                 Some(DebugFormat::Known(KnownFormat::MpscRx {
                     chan: chan_ty,
                     chan_pointer_offset,
@@ -611,14 +635,14 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 waiter_state,
                 waiter_next,
             }) => {
-                let (_, mutex_offset) = project(*self, mutex)?;
-                let (_, closed_offset) = project(*self, closed)?;
-                let (_, permits_offset) = project(*self, permits)?;
-                let (_, bound_offset) = project(*self, bound)?;
-                let (_, head_offset) = project(*self, head)?;
+                let (_, mutex_offset) = resolve_selector(*self, mutex)?;
+                let (_, closed_offset) = resolve_selector(*self, closed)?;
+                let (_, permits_offset) = resolve_selector(*self, permits)?;
+                let (_, bound_offset) = resolve_selector(*self, bound)?;
+                let (_, head_offset) = resolve_selector(*self, head)?;
                 let waiter_ty = self.related_type(*waiter);
-                let (_, waiter_state_offset) = project(waiter_ty, waiter_state)?;
-                let (_, waiter_next_offset) = project(waiter_ty, waiter_next)?;
+                let (_, waiter_state_offset) = resolve_selector(waiter_ty, waiter_state)?;
+                let (_, waiter_next_offset) = resolve_selector(waiter_ty, waiter_next)?;
                 Some(DebugFormat::Known(KnownFormat::BoundedSemaphore {
                     mutex_offset,
                     closed_offset,
@@ -632,7 +656,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::IpAddress { octets }) => {
-                let (octets, offset) = project(*self, &[*octets])?;
+                let (octets, offset) = resolve_selector(*self, octets)?;
                 let (octet, count) = octets.array_info()?;
                 if !matches!(count, 4 | 16)
                     || !matches!(
@@ -655,10 +679,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 capacity,
                 element,
             }) => {
-                let (pointer, pointer_offset) = project(*self, pointer)?;
+                let (pointer, pointer_offset) = resolve_selector(*self, pointer)?;
                 pointer.pointer_target()?;
-                let (length, length_offset) = project(*self, length)?;
-                let (capacity, capacity_offset) = project(*self, capacity)?;
+                let (length, length_offset) = resolve_selector(*self, length)?;
+                let (capacity, capacity_offset) = resolve_selector(*self, capacity)?;
                 Some(DebugFormat::Known(KnownFormat::Vec {
                     pointer_offset,
                     length,
@@ -669,9 +693,9 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::Str { pointer, length }) => {
-                let (pointer, pointer_offset) = project(*self, &[*pointer])?;
+                let (pointer, pointer_offset) = resolve_selector(*self, pointer)?;
                 pointer.pointer_target()?;
-                let (length, length_offset) = project(*self, &[*length])?;
+                let (length, length_offset) = resolve_selector(*self, length)?;
                 Some(DebugFormat::Known(KnownFormat::Str {
                     pointer_offset,
                     length,
@@ -683,10 +707,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 length,
                 capacity,
             }) => {
-                let (pointer, pointer_offset) = project(*self, pointer)?;
+                let (pointer, pointer_offset) = resolve_selector(*self, pointer)?;
                 pointer.pointer_target()?;
-                let (length, length_offset) = project(*self, length)?;
-                let (capacity, capacity_offset) = project(*self, capacity)?;
+                let (length, length_offset) = resolve_selector(*self, length)?;
+                let (capacity, capacity_offset) = resolve_selector(*self, capacity)?;
                 Some(DebugFormat::Known(KnownFormat::String {
                     pointer_offset,
                     length,
@@ -712,36 +736,36 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 internal_edges,
                 edge: edge_path,
             }) => {
-                let (root, root_offset) = project(*self, &[*root])?;
+                let (root, root_offset) = member_at(*self, *root)?;
                 let (some, some_offset) = root.variant("Some")?;
-                let (root_node, root_node_offset) = project(some, root_node)?;
-                let (length, length_offset) = project(*self, &[*length])?;
-                let (height, height_offset) = project(root_node, &[*height])?;
-                let (node, node_offset) = project(root_node, node)?;
+                let (root_node, root_node_offset) = resolve_selector(some, root_node)?;
+                let (length, length_offset) = member_at(*self, *length)?;
+                let (height, height_offset) = member_at(root_node, *height)?;
+                let (node, node_offset) = resolve_selector(root_node, node)?;
                 node.pointer_target()?;
 
                 let key = self.related_type(*key);
                 let value = self.related_type(*value);
                 let leaf = self.related_type(*leaf);
-                let (leaf_len, leaf_len_offset) = project(leaf, &[*leaf_len])?;
-                let (keys, keys_offset) = project(leaf, &[*leaf_keys])?;
+                let (leaf_len, leaf_len_offset) = member_at(leaf, *leaf_len)?;
+                let (keys, keys_offset) = member_at(leaf, *leaf_keys)?;
                 let (key_slot, key_slots) = keys.array_info()?;
                 if key_slot.size() != key.size() {
                     return None;
                 }
-                let (values, values_offset) = project(leaf, &[*leaf_values])?;
+                let (values, values_offset) = member_at(leaf, *leaf_values)?;
                 let (value_slot, value_slots) = values.array_info()?;
                 if value_slot.size() != value.size() || value_slots != key_slots {
                     return None;
                 }
 
                 let internal = self.related_type(*internal);
-                let (edges, edges_offset) = project(internal, &[*internal_edges])?;
+                let (edges, edges_offset) = member_at(internal, *internal_edges)?;
                 let (edge, edge_slots) = edges.array_info()?;
                 if edge_slots != key_slots + 1 {
                     return None;
                 }
-                let (edge_pointer, edge_pointer_offset) = project(edge, edge_path)?;
+                let (edge_pointer, edge_pointer_offset) = resolve_selector(edge, edge_path)?;
                 edge_pointer.pointer_target()?;
 
                 Some(DebugFormat::Known(KnownFormat::BTreeMap {
@@ -824,9 +848,15 @@ mod bundle_tests {
     use exegesis::bundle::{
         Bundle, BundleTypeId, BundleView, DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue,
         DiscrValues, DynFutureTable, FORMAT_VERSION, InfraTypes, KnownFormat as BundleKnownFormat,
-        MemberDef, Meta, ProvenanceTable, StaticsTable, StringInterner, TaskTable, TypeDef,
-        TypeTable, VariantDef, VariantShape,
+        MemberDef, Meta, ProvenanceTable, Selector, StaticsTable, StringInterner, TaskTable,
+        TypeDef, TypeTable, VariantDef, VariantShape,
     };
+
+    /// Build a member-only [`Selector`] from member indices — the shape every
+    /// selector in these synthetic bundles has (Phase A emits no `Deref`).
+    fn sel(members: &[u32]) -> Selector {
+        Selector::from(members.to_vec())
+    }
 
     const U32: BundleTypeId = BundleTypeId(0);
     const U64: BundleTypeId = BundleTypeId(1);
@@ -1328,19 +1358,19 @@ mod bundle_tests {
                 types,
                 debug_formats: std::collections::BTreeMap::from([(
                     WRAP,
-                    BundleDebugFormat::Transparent { member: 0 },
+                    BundleDebugFormat::Transparent { member: sel(&[0]) },
                 ), (
                     ATOMIC,
-                    BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: vec![0, 0] }),
+                    BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: sel(&[0, 0]) }),
                 ), (
                     ATOMIC_PTR,
-                    BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: vec![0] }),
+                    BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: sel(&[0]) }),
                 ), (
                     LOOM_ATOMIC,
-                    BundleDebugFormat::Transparent { member: 0 },
+                    BundleDebugFormat::Transparent { member: sel(&[0]) },
                 ), (
                     LOOM_CELL,
-                    BundleDebugFormat::Transparent { member: 0 },
+                    BundleDebugFormat::Transparent { member: sel(&[0]) },
                 ), (
                     FAT_PTR,
                     BundleDebugFormat::Known(BundleKnownFormat::DynPointer {
@@ -1367,9 +1397,9 @@ mod bundle_tests {
                     BundleDebugFormat::Known(BundleKnownFormat::BTreeMap {
                         root: 0,
                         length: 1,
-                        root_node: vec![],
+                        root_node: sel(&[]),
                         height: 1,
-                        node: vec![0],
+                        node: sel(&[0]),
                         key: U32,
                         value: U32,
                         leaf: BTREE_LEAF,
@@ -1379,80 +1409,80 @@ mod bundle_tests {
                         internal: BTREE_INTERNAL,
                         internal_data: 0,
                         internal_edges: 1,
-                        edge: vec![],
+                        edge: sel(&[]),
                     }),
                 ), (
                     IPV4,
-                    BundleDebugFormat::Known(BundleKnownFormat::IpAddress { octets: 0 }),
+                    BundleDebugFormat::Known(BundleKnownFormat::IpAddress { octets: sel(&[0]) }),
                 ), (
                     IPV6,
-                    BundleDebugFormat::Known(BundleKnownFormat::IpAddress { octets: 0 }),
+                    BundleDebugFormat::Known(BundleKnownFormat::IpAddress { octets: sel(&[0]) }),
                 ), (
                     VEC,
                     BundleDebugFormat::Known(BundleKnownFormat::Vec {
-                        pointer: vec![0],
-                        length: vec![1],
-                        capacity: vec![2],
+                        pointer: sel(&[0]),
+                        length: sel(&[1]),
+                        capacity: sel(&[2]),
                         element: U32,
                     }),
                 ), (
                     STR,
                     BundleDebugFormat::Known(BundleKnownFormat::Str {
-                        pointer: 0,
-                        length: 1,
+                        pointer: sel(&[0]),
+                        length: sel(&[1]),
                     }),
                 ), (
                     STRING,
                     BundleDebugFormat::Known(BundleKnownFormat::String {
-                        pointer: vec![0],
-                        length: vec![1],
-                        capacity: vec![2],
+                        pointer: sel(&[0]),
+                        length: sel(&[1]),
+                        capacity: sel(&[2]),
                     }),
                 ), (
                     RAW_MUTEX,
-                    BundleDebugFormat::Known(BundleKnownFormat::RawMutex { state: vec![0] }),
+                    BundleDebugFormat::Known(BundleKnownFormat::RawMutex { state: sel(&[0]) }),
                 ), (
                     NOTIFY,
                     BundleDebugFormat::Known(BundleKnownFormat::Notify {
-                        state: vec![0],
-                        mutex: vec![1, 0, 0],
-                        head: vec![1, 1, 0],
+                        state: sel(&[0]),
+                        mutex: sel(&[1, 0, 0]),
+                        head: sel(&[1, 1, 0]),
                         waiter: NOTIFY_WAITER,
-                        waiter_notification: vec![0],
-                        waiter_next: vec![1],
+                        waiter_notification: sel(&[0]),
+                        waiter_next: sel(&[1]),
                     }),
                 ), (
                     SEMAPHORE,
-                    BundleDebugFormat::Known(BundleKnownFormat::Semaphore { permits: vec![0] }),
+                    BundleDebugFormat::Known(BundleKnownFormat::Semaphore { permits: sel(&[0]) }),
                 ), (
                     BLOCK,
                     BundleDebugFormat::Known(BundleKnownFormat::MpscBlock {
-                        ready_slots: vec![1, 0],
-                        values: vec![0],
+                        ready_slots: sel(&[1, 0]),
+                        values: sel(&[0]),
                     }),
                 ), (
                     WATCH_STATE,
-                    BundleDebugFormat::Known(BundleKnownFormat::WatchState { state: vec![0] }),
+                    BundleDebugFormat::Known(BundleKnownFormat::WatchState { state: sel(&[0]) }),
                 ), (
                     CHAN,
                     BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
-                        tail: vec![0],
-                        index: vec![1],
-                        head: vec![2],
-                        start_index: vec![1, 0],
-                        next: vec![1, 1],
-                        values: vec![0],
+                        tail: sel(&[0]),
+                        index: sel(&[1]),
+                        head: sel(&[2]),
+                        start_index: sel(&[1, 0]),
+                        next: sel(&[1, 1]),
+                        values: sel(&[0]),
                         element: U32,
                     }),
                 ), (
                     RX_CHAN,
                     BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
-                        tail: vec![0],
-                        index: vec![1],
-                        head: vec![2],
-                        start_index: vec![1, 0],
-                        next: vec![1, 1],
-                        values: vec![0],
+                        tail: sel(&[0]),
+                        index: sel(&[1]),
+                        head: sel(&[2]),
+                        start_index: sel(&[1, 0]),
+                        next: sel(&[1, 1]),
+                        values: sel(&[0]),
                         element: U32,
                     }),
                 ), (
@@ -1461,22 +1491,22 @@ mod bundle_tests {
                         // Receiver → raw pointer @ member 0; ArcInner → `data`
                         // @ member 2; capacity/permits within the RxChan's
                         // semaphore (member 3): bound @1, permits @0.
-                        chan_pointer: vec![0],
-                        chan: vec![2],
-                        bound: vec![3, 1],
-                        permits: vec![3, 0],
+                        chan_pointer: sel(&[0]),
+                        chan: sel(&[2]),
+                        bound: sel(&[3, 1]),
+                        permits: sel(&[3, 0]),
                     }),
                 ), (
                     BOUNDED_SEM,
                     BundleDebugFormat::Known(BundleKnownFormat::BoundedSemaphore {
-                        mutex: vec![0, 0, 0, 0],
-                        closed: vec![0, 0, 1, 1],
-                        permits: vec![0, 1],
-                        bound: vec![1],
-                        head: vec![0, 0, 1, 0, 0],
+                        mutex: sel(&[0, 0, 0, 0]),
+                        closed: sel(&[0, 0, 1, 1]),
+                        permits: sel(&[0, 1]),
+                        bound: sel(&[1]),
+                        head: sel(&[0, 0, 1, 0, 0]),
                         waiter: WAITER,
-                        waiter_state: vec![0],
-                        waiter_next: vec![1],
+                        waiter_state: sel(&[0]),
+                        waiter_next: sel(&[1]),
                     }),
                 )]),
                 name_index: vec![(pointn, POINT)],
