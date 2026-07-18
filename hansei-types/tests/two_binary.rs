@@ -220,9 +220,9 @@ fn test_simple_await_offline() {
 fingerprint 15/15
 workers 3
 task 3 idle simple_await::work::{async_fn_env#0}
-  spawned test-programs/src/bin/simple-await.rs:32:21
-  defined simple-await.rs:14
-  await simple_await::work::{async_fn_env#0} Suspend1 @ simple-await.rs:18 locals [count, first, ready, park]
+  spawned test-programs/src/bin/simple-await.rs:55:21
+  defined simple-await.rs:16
+  await simple_await::work::{async_fn_env#0} Suspend1 @ simple-await.rs:26 locals [count, labels, values, ipv4, ipv6, borrowed, owned, first, ready, park]
   await tokio::sync::oneshot::Receiver<u32>
   end leaf
 "#,
