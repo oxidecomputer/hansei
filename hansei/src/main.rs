@@ -1,21 +1,14 @@
-use crate::tokio::{
-    Context, Lifecycle, MinTokioState, bundle, find_thd_context, graph, parse_runtime,
-};
+use crate::tokio::{Lifecycle, bundle, find_thd_context, graph};
 
 use anyhow::{Context as _, Result};
-use clap::{ArgAction, Args, Parser, Subcommand};
-use console::{StyledObject, Term};
-use durin::read::CtfReader;
+use clap::{Args, Parser, Subcommand};
 use exegesis::bundle::{Bundle, BundleView};
 use proc::Proc;
 use proc::snapshot::Recorder;
 
 use std::collections::HashMap;
-use std::fmt::Display;
-use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 pub mod tokio;
 
@@ -30,9 +23,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    #[command(visible_alias = "dump")]
-    SchedulerDump(Dump),
-    Poll(Poll),
     #[command(visible_alias = "trace")]
     TaskTrace(TaskTrace),
     Tasks(Tasks),
@@ -123,35 +113,21 @@ struct Tasks {
     destructive: bool,
 }
 
-/// Print a task's await chain. With `--bundle`, tasks are selected by id
-/// (see `hansei tasks`) and the future type is resolved automatically via
-/// the symbol join; with `--ctf`, the task address and concrete future
-/// type must be supplied by hand.
+/// Print a task's await chain. Tasks are selected by id (see `hansei
+/// tasks`) and the future type is resolved automatically via the symbol
+/// join.
 #[derive(Args)]
-#[command(group = clap::ArgGroup::new("debug_info").required(true).args(["ctf", "bundle"]))]
 struct TaskTrace {
     #[command(flatten)]
     source: Source,
 
-    /// The id of the task to trace, from `hansei tasks` (bundle mode).
-    #[clap(long, requires = "bundle")]
-    task_id: Option<u64>,
-
-    /// The address of the task in hexadecimal, e.g., 0x1234 (CTF mode).
-    #[clap(long, short, requires = "ctf")]
-    addr: Option<String>,
-
-    /// The type of the task (CTF mode).
-    #[clap(long = "type", short, requires = "ctf")]
-    ty: Option<String>,
-
-    /// The CTF file to read.
-    #[clap(long, short)]
-    ctf: Option<PathBuf>,
+    /// The id of the task to trace, from `hansei tasks`.
+    #[clap(long)]
+    task_id: u64,
 
     /// The debug bundle to read (produced by `exegesis extract`).
     #[clap(long, short)]
-    bundle: Option<PathBuf>,
+    bundle: PathBuf,
 
     /// Proceed even if the bundle's symbols don't all resolve in the target.
     #[arg(long)]
@@ -174,54 +150,6 @@ struct TaskTrace {
     /// Maximum depth to recurse when formatting variable values.
     #[arg(long, default_value_t = 2, requires = "verbose")]
     value_depth: usize,
-}
-
-#[derive(Args)]
-struct Poll {
-    /// The pid of the process to inspect.
-    #[arg(long)]
-    pid: u32,
-
-    /// The CTF file to read.
-    #[clap(long, short)]
-    ctf: PathBuf,
-
-    /// How frequently tokio state should be polled, in milliseconds.
-    #[arg(long, short)]
-    freq: Option<u64>,
-}
-
-#[derive(Args)]
-struct Dump {
-    #[command(flatten)]
-    source: Source,
-
-    /// The CTF file to read.
-    #[clap(long, short)]
-    ctf: PathBuf,
-
-    /// Include thread backtraces.
-    #[arg(long, default_value_t = true, action = ArgAction::SetTrue, overrides_with="no_backtrace")]
-    backtrace: bool,
-
-    /// Don't include thread backtraces.
-    #[arg(long, action = ArgAction::SetTrue, overrides_with="backtrace")]
-    no_backtrace: bool,
-
-    /// Dumping a live process is potentially destructive.
-    /// Required if --pid is passed.
-    #[arg(long, short = 'w')]
-    destructive: bool,
-}
-
-impl Dump {
-    fn capture_backtraces(&self) -> bool {
-        if self.no_backtrace {
-            false
-        } else {
-            self.backtrace
-        }
-    }
 }
 
 #[derive(Args)]
@@ -260,8 +188,6 @@ fn main() {
     let args = Cli::parse();
 
     let res = match args.action {
-        Action::Poll(poll) => exec_poll(poll, Term::stdout()),
-        Action::SchedulerDump(dump) => exec_dump(dump, &mut io::stdout().lock()),
         Action::TaskTrace(dump) => exec_trace(dump, &mut io::stdout().lock()),
         Action::Tasks(tasks) => exec_tasks(tasks, &mut io::stdout().lock()),
         Action::Graph(graph) => exec_graph(graph, &mut io::stdout().lock()),
@@ -279,284 +205,9 @@ fn main() {
     }
 }
 
-fn exec_dump(args: Dump, out: &mut dyn io::Write) -> Result<()> {
-    let proc = args.source.open_proc(args.destructive)?;
-    let main_lwp = proc.lwp_handle(1)?;
-
-    let ctf_bytes =
-        fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
-    let ctf = CtfReader::load(&ctf_bytes).context("failed to load CTF")?;
-    let view = ctf.view();
-
-    let mut symbols = HashMap::new();
-    let runtime = parse_runtime(
-        view,
-        &proc,
-        &main_lwp,
-        &mut symbols,
-        args.capture_backtraces(),
-    )
-    .context("failed to parse tokio state")?;
-
-    let run_dur =
-        Instant::from(runtime.now) - Instant::from(runtime.scheduler.driver.time.time_source);
-
-    writeln!(out, "Now: {:?}, Running for {:?}", runtime.now, run_dur)?;
-    for active in runtime.active_workers() {
-        writeln!(out, "{:#?}", active.thd_ctx)?;
-        if let Some(bt) = &active.backtrace {
-            for frame in bt.stack_trace(32) {
-                writeln!(out, "{frame}")?;
-            }
-        }
-        writeln!(out, "")?;
-    }
-    writeln!(out, "{:#?}", runtime.scheduler)?;
-
-    Ok(())
-}
-
-fn exec_poll(args: Poll, term: Term) -> Result<()> {
-    const DEFAULT_FREQ: Duration = Duration::from_millis(200);
-
-    let proc = Proc::grab_pid_no_stop(args.pid).with_context(|| "failed to open pid {pid}")?;
-
-    let ctf_bytes =
-        fs::read(&args.ctf).with_context(|| format!("failed to read {}", args.ctf.display()))?;
-    let ctf = CtfReader::load(&ctf_bytes).context("failed to load CTF")?;
-    let view = ctf.view();
-
-    let symbols = HashMap::new();
-
-    let freq = args
-        .freq
-        .map(|f| Duration::from_millis(f))
-        .unwrap_or(DEFAULT_FREQ);
-
-    let main_lwp = proc.lwp_handle(1)?;
-
-    // Process mappings may change at any time, so for arbitrary addresses
-    // reusing an old copy in the Context is invalid. However, the scheduler
-    // addresses we're looking at here remain stable, so as long as they are
-    // valid now we can assume they will remain valid for the remainder of the
-    // process's lifetime.
-    let ctx = Context::new(&proc, &main_lwp, view, &symbols).context("failed to create Context")?;
-
-    let start_pause = Instant::now();
-    // We need to read the worker's thread-local contexts.
-    // We must stop the process in order to access register state, which we use
-    // to locate the address of the LWP's thread-local storage.
-    proc.stop(0).context("failed to stop process")?;
-
-    let lwps = proc.lwps().context("failed to read lwps")?;
-
-    proc.run().context("failed to set process to run")?;
-    let end_pause = Instant::now();
-    term.write_line(&format!(
-        "Paused process to read LWP registers for {:?}\n",
-        end_pause - start_pause
-    ))?;
-
-    // We assume that the address of the scheduler handle will remain constant
-    // over time. It's not `Pin`, but it is an `Arc` and I don't think the
-    // underlying heap pointer will be moved.
-    let mut sched_info = MinTokioState::find_type_info(&ctx, &lwps)?;
-
-    let mut last = ChangeTimes::default();
-
-    loop {
-        let start = Instant::now();
-
-        // Re-read scheduler bytes from process memory.
-        sched_info
-            .refresh(&ctx)
-            .context("failed to re-read scheduler")?;
-
-        // We will get torn reads doing this without pausing the process,
-        // particularly when reading the remotes to find the io driver. Each of
-        // those is a separate allocation we need to `Pread`. Given that we're
-        // mostly interested in whether the driver is stuck, getting an
-        // inconsistent value on the io driver is a sacrifice worth making.
-        let runtime =
-            MinTokioState::parse(&ctx, &sched_info).context("failed to parse tokio state")?;
-        let now = Instant::now();
-
-        // Update timestamps for any values that changed since the last
-        // iteration.
-        if let Some(ref prev) = last.runtime {
-            if runtime.active.len() != prev.active.len() {
-                last.active_workers = Some(now);
-            }
-            if runtime.worker_ct != prev.worker_ct {
-                last.total_workers = Some(now);
-            }
-            if runtime.task_ct != prev.task_ct {
-                last.tasks = Some(now);
-            }
-            if runtime.io_driver != prev.io_driver {
-                last.io_driver = Some(now);
-            }
-        }
-
-        let active = maybe_style(runtime.active.len(), now, last.active_workers);
-        let total = maybe_style(runtime.worker_ct, now, last.total_workers);
-        let tasks = maybe_style(runtime.task_ct, now, last.tasks);
-        let io_driver = runtime
-            .io_driver
-            .map(|i| maybe_style(i, now, last.io_driver).to_string())
-            .unwrap_or_default();
-
-        if last.runtime.is_some() {
-            term.clear_last_lines(5)?;
-        }
-        term.write_line(&format!("Active Workers:    {active}"))?;
-        term.write_line(&format!("Worker Count:      {total}"))?;
-        term.write_line(&format!("Task Count:        {tasks}"))?;
-        term.write_line(&format!("I/O Driver Worker: {io_driver}"))?;
-        term.write_line(&format!("Scan duration:     {:?}", now - start))?;
-
-        last.runtime = Some(runtime);
-
-        std::thread::sleep(freq);
-    }
-}
-
-#[derive(Default, Debug)]
-struct ChangeTimes {
-    runtime: Option<MinTokioState>,
-    active_workers: Option<Instant>,
-    total_workers: Option<Instant>,
-    tasks: Option<Instant>,
-    io_driver: Option<Instant>,
-}
-
-/// Highlight `value` in green+bold if it changed within the last 2 seconds.
-fn maybe_style<T: Display>(
-    value: T,
-    now: Instant,
-    last_changed: Option<Instant>,
-) -> StyledObject<T> {
-    const HIGHLIGHT_DUR: Duration = Duration::from_secs(2);
-
-    match last_changed {
-        Some(last) if now - last < HIGHLIGHT_DUR => console::style(value).green().bold(),
-        _ => console::style(value),
-    }
-}
-
-struct TraceContext<'a> {
-    pub proc: &'a Proc,
-    pub ctf: durin::read::CtfView<'a>,
-    pub mappings: proc::Mappings,
-}
-
-impl reify::ParseCtx for TraceContext<'_> {
-    type Target = Proc;
-
-    fn proc(&self) -> &Proc {
-        self.proc
-    }
-
-    fn mappings(&self) -> &proc::Mappings {
-        &self.mappings
-    }
-}
-
 fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
-    if args.bundle.is_some() {
-        exec_trace_bundle(args, out)
-    } else {
-        exec_trace_ctf(args, out)
-    }
-}
-
-fn exec_trace_ctf(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
-    let (Some(addr), Some(ty), Some(ctf_path)) = (&args.addr, &args.ty, &args.ctf) else {
-        anyhow::bail!("CTF tracing requires --addr and --type");
-    };
-    let addr_str = addr.strip_prefix("0x").unwrap_or(addr.as_str());
-    let addr =
-        u64::from_str_radix(addr_str, 16).context("failed to parse address as hexadecimal")?;
-
-    let proc = args.source.open_proc(args.destructive)?;
-
-    let ctf_bytes =
-        fs::read(ctf_path).with_context(|| format!("failed to read {}", ctf_path.display()))?;
-    let ctf = CtfReader::load(&ctf_bytes).context("failed to load CTF")?;
-    let view = ctf.view();
-
-    let ctx = TraceContext {
-        proc: &proc,
-        ctf: view,
-        mappings: proc.mappings()?,
-    };
-    let Some(task_ty) = ctx.ctf.find(ty, durin::TypeKind::Struct) else {
-        anyhow::bail!("failed to find task CTF type");
-    };
-
-    let info = reify::TypeInfo::from_addr(&ctx, task_ty, addr)
-        .with_context(|| format!("failed to parse {addr:#x} as {ty}"))?;
-
-    let Ok(stage) = info.member("core").and_then(|c| c.member("stage")) else {
-        anyhow::bail!("failed to find the future");
-    };
-
-    let (state, active) = stage.active_variant()?;
-    if state != "Running" {
-        anyhow::bail!("task is in {state} state, no trace available");
-    }
-
-    let task_id: u64 = info.member("core")?.member("task_id")?.parse(&ctx)?;
-
-    writeln!(out, "Task {task_id}:")?;
-    writeln!(out, "{}", stage.ty.name())?;
-    let mut active = active.to_owned();
-    let mut stages = Vec::new();
-
-    while let Ok((await_point, var)) = active.as_ref().active_variant() {
-        let next = if let Some(aw) = var.try_member("__awaitee")? {
-            aw.to_owned()
-        } else {
-            var.to_owned()
-        };
-        stages.push((await_point.to_owned(), var.to_owned()));
-        active = next;
-    }
-
-    let active_stage = stages.len().checked_sub(1);
-    for (i, (await_point, var)) in stages.iter().enumerate() {
-        let var = var.as_ref();
-        writeln!(out, "    suspended at await point {}", await_point)?;
-
-        // TODO: this is hilariously overbroad.
-        if let Some(lock) = var.try_member("lock")? {
-            let addr: u64 = lock.parse(&ctx)?;
-            writeln!(out, "    blocked on mutex at {addr:#x}")?;
-        }
-
-        if args.verbose && Some(i) == active_stage && !var.is_enum() {
-            writeln!(out, "    Arguments:")?;
-            for m in var.ty.members().filter(|m| m.name() != "__awaitee") {
-                let mm = var.member(m.name())?;
-                let value = format!("{:#}", mm.display_with_depth(args.value_depth));
-                print_variable(out, "      ", m.name(), &value)?;
-            }
-        }
-
-        writeln!(out, "waiting on: {}", var.ty.name())?;
-    }
-
-    Ok(())
-}
-
-fn exec_trace_bundle(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
-    let Some(task_id) = args.task_id else {
-        anyhow::bail!("bundle tracing requires --task-id (list tasks with `hansei tasks`)");
-    };
-    let bundle_path = args
-        .bundle
-        .as_ref()
-        .expect("clap group guarantees --bundle");
+    let task_id = args.task_id;
+    let bundle_path = &args.bundle;
 
     let proc = args.source.open_proc(args.destructive)?;
     let bundle = Bundle::load(bundle_path)
