@@ -16,6 +16,9 @@ async fn ready_value() -> u32 {
 async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
     let count: u32 = 3;
     let labels = BTreeMap::from([(1u64, 10u32), (2, 20), (3, 30)]);
+    // A real `Vec` (not an array) so the fixture exercises the Vec formatter;
+    // the golden test asserts its resolved member path.
+    #[allow(clippy::useless_vec)]
     let values = vec![5u32, 8, 13];
     let ipv4 = Ipv4Addr::new(192, 0, 2, 1);
     let ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);

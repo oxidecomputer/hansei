@@ -101,9 +101,9 @@ impl Proc {
 
     pub fn open_core(core_path: &Path) -> Result<Self> {
         let c_core_path =
-            CString::new(core_path.as_os_str().as_bytes()).map_err(|e| Error::bad_path(e))?;
+            CString::new(core_path.as_os_str().as_bytes()).map_err(Error::bad_path)?;
         let mut perr: c_int = 0;
-        let flags = 0 | PGRAB_RDONLY as c_int;
+        let flags = PGRAB_RDONLY as c_int;
 
         let handle = unsafe { Pgrab_core(c_core_path.as_ptr(), ptr::null(), flags, &mut perr) };
         let Some(handle) = NonNull::new(handle) else {
@@ -174,7 +174,7 @@ impl Proc {
         };
 
         if !ret.is_null() {
-            let c_path = CStr::from_bytes_until_nul(&buf).map_err(|e| Error::no_nul(e))?;
+            let c_path = CStr::from_bytes_until_nul(&buf).map_err(Error::no_nul)?;
             let os_path = OsStr::from_bytes(c_path.to_bytes());
             let path = Path::new(os_path);
             Ok(path.to_owned())
@@ -419,10 +419,7 @@ impl Proc {
     pub fn addr_to_map(&self, address: u64) -> Option<LoadedObject> {
         let prmap_ptr = unsafe { Paddr_to_map(self.handle.as_ptr(), address as usize) };
 
-        let prmap = match unsafe { prmap_ptr.as_ref() } {
-            Some(prmap) => prmap,
-            None => return None,
-        };
+        let prmap = unsafe { prmap_ptr.as_ref() }?;
 
         Some(LoadedObject {
             vaddr: prmap.pr_vaddr as u64,

@@ -38,7 +38,7 @@ impl WorkerCore {
             .and_then(|v| v.bool_value())
             .context("failed to load lifo_enabled")?;
 
-        let lifo_slot = load_option(core, "lifo_slot", |s| load_task_addr_from_notified(s))
+        let lifo_slot = load_option(core, "lifo_slot", load_task_addr_from_notified)
             .context("failed to load lifo_slot")?;
 
         let run_queue_struct = core
@@ -592,7 +592,7 @@ impl RawInstant {
         let tv_sec = timespec
             .unique_member_named("tv_sec")
             .and_then(|v| v.i64_value())
-            .and_then(|v| Some(v as u64))
+            .map(|v| v as u64)
             .context("failed to load tv_sec")?;
 
         let tv_nsec = timespec
@@ -1171,19 +1171,17 @@ impl IoSynced {
             .and_then(|s| s.unique_member_named("head"))
             .and_then(|v| v.as_enum());
 
-        if let Some(head_enum) = head_ptr {
-            if head_enum.disc == "Some" {
-                if let Some(ptr) = head_enum
-                    .value
-                    .newtype_value()
-                    .and_then(|v| v.as_struct())
-                    .and_then(|s| s.unique_member_named("pointer"))
-                    .and_then(|v| v.as_pointer())
-                {
-                    load_scheduled_io_list(dbg, ptr, &mut registrations)
-                        .context("failed to load registrations list")?;
-                }
-            }
+        if let Some(head_enum) = head_ptr
+            && head_enum.disc == "Some"
+            && let Some(ptr) = head_enum
+                .value
+                .newtype_value()
+                .and_then(|v| v.as_struct())
+                .and_then(|s| s.unique_member_named("pointer"))
+                .and_then(|v| v.as_pointer())
+        {
+            load_scheduled_io_list(dbg, ptr, &mut registrations)
+                .context("failed to load registrations list")?;
         }
 
         Ok(Self {
@@ -1296,7 +1294,7 @@ impl Clock {
             .context("failed to load base")?;
         let base = RawInstant::load_from_struct(base_struct).context("failed to load base")?;
 
-        let unfrozen = load_option(s, "unfrozen", |inner| RawInstant::load_from_struct(inner))
+        let unfrozen = load_option(s, "unfrozen", RawInstant::load_from_struct)
             .context("failed to load unfrozen")?;
 
         let enable_pausing = s
@@ -1347,19 +1345,17 @@ impl Wheel {
             .and_then(|s| s.unique_member_named("head"))
             .and_then(|v| v.as_enum());
 
-        if let Some(head_enum) = pending_head {
-            if head_enum.disc == "Some" {
-                if let Some(ptr) = head_enum
-                    .value
-                    .newtype_value()
-                    .and_then(|v| v.as_struct())
-                    .and_then(|s| s.unique_member_named("pointer"))
-                    .and_then(|v| v.as_pointer())
-                {
-                    load_timer_list(dbg, ptr, elapsed, &mut pending)
-                        .context("failed to load pending timers")?;
-                }
-            }
+        if let Some(head_enum) = pending_head
+            && head_enum.disc == "Some"
+            && let Some(ptr) = head_enum
+                .value
+                .newtype_value()
+                .and_then(|v| v.as_struct())
+                .and_then(|s| s.unique_member_named("pointer"))
+                .and_then(|v| v.as_pointer())
+        {
+            load_timer_list(dbg, ptr, elapsed, &mut pending)
+                .context("failed to load pending timers")?;
         }
 
         Ok(Self {
@@ -1639,12 +1635,10 @@ impl TaskHeader {
                 .db
                 .subprograms()
                 .find(|(_, subp)| subp.pc_range.as_ref().is_some_and(|r| r.contains(&fn_addr)))
+                && let Some(name) = &subp.name
+                && name.contains('<')
             {
-                if let Some(name) = &subp.name {
-                    if name.contains('<') {
-                        return Ok(extract_future_type(name));
-                    }
-                }
+                return Ok(extract_future_type(name));
             }
         }
 
@@ -1720,19 +1714,17 @@ pub fn task_await_trace(dbg: &Dbg, task_addr: TaskAddr) -> Result<String> {
             .db
             .subprograms()
             .find(|(_, subp)| subp.pc_range.as_ref().is_some_and(|r| r.contains(&fn_addr)))
+            && let Some(name) = &subp.name
+            && name.contains('<')
         {
-            if let Some(name) = &subp.name {
-                if name.contains('<') {
-                    future_type = Some(extract_future_type(name));
-                    // Extract full params "T, S" from the function name
-                    if let Some(open) = name.find('<') {
-                        if let Some(close) = name.rfind('>') {
-                            full_params = Some(name[open + 1..close].to_string());
-                        }
-                    }
-                    break;
-                }
+            future_type = Some(extract_future_type(name));
+            // Extract full params "T, S" from the function name
+            if let Some(open) = name.find('<')
+                && let Some(close) = name.rfind('>')
+            {
+                full_params = Some(name[open + 1..close].to_string());
             }
+            break;
         }
     }
 
@@ -1875,12 +1867,11 @@ fn walk_async_state_machine(dbg: &Dbg, v: &Value, type_hint: &str, output: &mut 
 /// to finding a subprogram whose name matches (for async fns).
 fn lookup_type_location(dbg: &Dbg, type_name: &str) -> String {
     // Try struct type first
-    if let Some((_, ty)) = dbg.db.types_by_name(type_name).next() {
-        if let debugdb::model::Type::Struct(s) = ty {
-            if let (Some(file), Some(line)) = (&s.decl_coord.file, s.decl_coord.line) {
-                return format!("  at {file}:{line}");
-            }
-        }
+    if let Some((_, ty)) = dbg.db.types_by_name(type_name).next()
+        && let debugdb::model::Type::Struct(s) = ty
+        && let (Some(file), Some(line)) = (&s.decl_coord.file, s.decl_coord.line)
+    {
+        return format!("  at {file}:{line}");
     }
 
     // Try to find a subprogram matching the base function name.
@@ -1897,10 +1888,10 @@ fn lookup_type_location(dbg: &Dbg, type_name: &str) -> String {
 
     for (_, subp) in dbg.db.subprograms() {
         let Some(name) = &subp.name else { continue };
-        if name == base_name || name == type_name || name.starts_with(base_name) {
-            if let (Some(file), Some(line)) = (&subp.decl_coord.file, subp.decl_coord.line) {
-                return format!("  at {file}:{line}");
-            }
+        if (name == base_name || name == type_name || name.starts_with(base_name))
+            && let (Some(file), Some(line)) = (&subp.decl_coord.file, subp.decl_coord.line)
+        {
+            return format!("  at {file}:{line}");
         }
     }
 
@@ -2319,18 +2310,16 @@ impl Waiters {
             .and_then(|s| s.unique_member_named("head"))
             .and_then(|v| v.as_enum());
 
-        if let Some(head_enum) = head_enum {
-            if head_enum.disc == "Some" {
-                if let Some(ptr) = head_enum
-                    .value
-                    .newtype_value()
-                    .and_then(|v| v.as_struct())
-                    .and_then(|s| s.unique_member_named("pointer"))
-                    .and_then(|v| v.as_pointer())
-                {
-                    load_waiter_list(dbg, ptr, &mut list).context("failed to load waiter list")?;
-                }
-            }
+        if let Some(head_enum) = head_enum
+            && head_enum.disc == "Some"
+            && let Some(ptr) = head_enum
+                .value
+                .newtype_value()
+                .and_then(|v| v.as_struct())
+                .and_then(|s| s.unique_member_named("pointer"))
+                .and_then(|v| v.as_pointer())
+        {
+            load_waiter_list(dbg, ptr, &mut list).context("failed to load waiter list")?;
         }
 
         let reader = load_option_waker(dbg, s, "reader").context("failed to load reader waker")?;

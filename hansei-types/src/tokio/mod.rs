@@ -88,7 +88,7 @@ pub struct Budget(pub Option<u8>);
 
 impl Budget {
     pub fn has_remaining(&self) -> bool {
-        self.0.map_or(true, |b| b > 0)
+        self.0.is_none_or(|b| b > 0)
     }
 
     pub fn is_unconstrained(&self) -> bool {
@@ -1113,7 +1113,7 @@ impl Level {
         // Compute the start date of the current level by masking the low bits
         // of `now` (`level_range` is a power of 2).
         let level_start = now & !(level_range - 1);
-        let mut deadline = level_start + slot as u64 * slot_range;
+        let mut deadline = level_start + slot * slot_range;
 
         if deadline <= now {
             deadline += level_range;
@@ -1141,7 +1141,7 @@ impl Level {
     }
 
     fn slot_range(&self) -> u64 {
-        Self::LEVEL_MULT.pow(self.level as u32) as u64
+        Self::LEVEL_MULT.pow(self.level as u32)
     }
 
     fn level_range(&self) -> u64 {
@@ -1281,17 +1281,17 @@ mod tests {
             // INITIAL_STATE: freshly spawned, queued for its first poll.
             (0xCC, Lifecycle::Queued),
             (2 * REF_ONE, Lifecycle::Idle),
-            (2 * REF_ONE | JOIN_INTEREST | JOIN_WAKER, Lifecycle::Idle),
-            (2 * REF_ONE | NOTIFIED, Lifecycle::Queued),
-            (2 * REF_ONE | RUNNING, Lifecycle::Running),
+            ((2 * REF_ONE) | JOIN_INTEREST | JOIN_WAKER, Lifecycle::Idle),
+            ((2 * REF_ONE) | NOTIFIED, Lifecycle::Queued),
+            ((2 * REF_ONE) | RUNNING, Lifecycle::Running),
             // Woken again while mid-poll: still running.
-            (2 * REF_ONE | RUNNING | NOTIFIED, Lifecycle::Running),
+            ((2 * REF_ONE) | RUNNING | NOTIFIED, Lifecycle::Running),
             (REF_ONE | COMPLETE, Lifecycle::Complete),
             // The final poll sets COMPLETE while RUNNING is still set.
             (REF_ONE | COMPLETE | RUNNING, Lifecycle::Complete),
             (REF_ONE | COMPLETE | CANCELLED, Lifecycle::Complete),
             // Cancelled but not yet complete: still waiting to be polled.
-            (2 * REF_ONE | NOTIFIED | CANCELLED, Lifecycle::Queued),
+            ((2 * REF_ONE) | NOTIFIED | CANCELLED, Lifecycle::Queued),
         ];
         for &(bits, expected) in cases {
             let state = TaskState(bits);
@@ -1310,7 +1310,7 @@ mod tests {
         assert!(!initial.is_cancelled());
         assert!(!initial.is_join_waker_set());
 
-        let state = TaskState(5 * REF_ONE | RUNNING | JOIN_WAKER | CANCELLED);
+        let state = TaskState((5 * REF_ONE) | RUNNING | JOIN_WAKER | CANCELLED);
         assert_eq!(state.ref_count(), 5);
         assert!(state.is_running());
         assert!(state.is_join_waker_set());

@@ -34,6 +34,8 @@ async fn start_background_task(lock: Arc<Mutex<()>>) {
     // Use a channel to coordinate with the task so that it can tell us when
     // its taken the lock.
     let (tx, rx) = tokio::sync::oneshot::channel();
+    // Detached on purpose: the task runs to completion without being awaited.
+    #[allow(clippy::let_underscore_future)]
     let _ = tokio::spawn(async move {
         println!("background task: start");
         let _guard = lock.lock().await;

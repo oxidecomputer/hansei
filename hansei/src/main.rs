@@ -523,68 +523,6 @@ fn print_variable(out: &mut dyn io::Write, indent: &str, name: &str, value: &str
     Ok(())
 }
 
-#[cfg(test)]
-mod variable_format_tests {
-    use super::{async_kind, print_variable, state_label_width};
-
-    #[test]
-    fn scalar_stays_on_the_name_line() {
-        let mut out = Vec::new();
-        print_variable(&mut out, "  ", "count", "42").unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), "  count: 42\n");
-    }
-
-    #[test]
-    fn aggregate_is_indented_below_the_name() {
-        let mut out = Vec::new();
-        print_variable(&mut out, "  ", "point", "Point {\n    x: 1,\n    y: 2,\n}").unwrap();
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "  point:\n    Point {\n        x: 1,\n        y: 2,\n    }\n"
-        );
-    }
-
-    #[test]
-    fn classifies_rustc_async_environment_names() {
-        assert_eq!(
-            async_kind("crate::work::{async_fn_env#0}<T>", Some("Suspend0")),
-            "async fn"
-        );
-        assert_eq!(
-            async_kind("crate::work::{async_block_env#2}", Some("Suspend0")),
-            "async block"
-        );
-        assert_eq!(
-            async_kind("crate::work::{async_closure_env#1}", Some("Suspend0")),
-            "async closure"
-        );
-        assert_eq!(async_kind("crate::unknown", Some("Suspend3")), "async");
-        assert_eq!(async_kind("crate::MaybeDone", Some("Done")), "future");
-    }
-
-    #[test]
-    fn classifies_the_outer_future_not_its_type_arguments() {
-        assert_eq!(
-            async_kind("core::future::PollFn<crate::work::{async_fn_env#0}>", None),
-            "future"
-        );
-        assert_eq!(
-            async_kind(
-                "crate::Wrapper<T>::work::{async_fn_env#0}<U>",
-                Some("Suspend0")
-            ),
-            "async fn"
-        );
-    }
-
-    #[test]
-    fn state_alignment_accounts_for_frame_number_width() {
-        assert_eq!(state_label_width(0), 13);
-        assert_eq!(state_label_width(1), 16);
-        assert_eq!(state_label_width(10), 17);
-    }
-}
-
 /// Attach-time bundle validation (§5.1), shared by all bundle-mode
 /// subcommands: a bundle from a different commit/toolchain must never
 /// silently misinterpret memory. `force` downgrades refusal to a warning.
@@ -972,4 +910,66 @@ fn print_futurelock(fl: &graph::Futurelock, out: &mut dyn io::Write) -> Result<(
         writeln!(out, "  blocked behind it: {blocked}")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod variable_format_tests {
+    use super::{async_kind, print_variable, state_label_width};
+
+    #[test]
+    fn scalar_stays_on_the_name_line() {
+        let mut out = Vec::new();
+        print_variable(&mut out, "  ", "count", "42").unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "  count: 42\n");
+    }
+
+    #[test]
+    fn aggregate_is_indented_below_the_name() {
+        let mut out = Vec::new();
+        print_variable(&mut out, "  ", "point", "Point {\n    x: 1,\n    y: 2,\n}").unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "  point:\n    Point {\n        x: 1,\n        y: 2,\n    }\n"
+        );
+    }
+
+    #[test]
+    fn classifies_rustc_async_environment_names() {
+        assert_eq!(
+            async_kind("crate::work::{async_fn_env#0}<T>", Some("Suspend0")),
+            "async fn"
+        );
+        assert_eq!(
+            async_kind("crate::work::{async_block_env#2}", Some("Suspend0")),
+            "async block"
+        );
+        assert_eq!(
+            async_kind("crate::work::{async_closure_env#1}", Some("Suspend0")),
+            "async closure"
+        );
+        assert_eq!(async_kind("crate::unknown", Some("Suspend3")), "async");
+        assert_eq!(async_kind("crate::MaybeDone", Some("Done")), "future");
+    }
+
+    #[test]
+    fn classifies_the_outer_future_not_its_type_arguments() {
+        assert_eq!(
+            async_kind("core::future::PollFn<crate::work::{async_fn_env#0}>", None),
+            "future"
+        );
+        assert_eq!(
+            async_kind(
+                "crate::Wrapper<T>::work::{async_fn_env#0}<U>",
+                Some("Suspend0")
+            ),
+            "async fn"
+        );
+    }
+
+    #[test]
+    fn state_alignment_accounts_for_frame_number_width() {
+        assert_eq!(state_label_width(0), 13);
+        assert_eq!(state_label_width(1), 16);
+        assert_eq!(state_label_width(10), 17);
+    }
 }

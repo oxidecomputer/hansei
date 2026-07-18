@@ -87,7 +87,7 @@ pub fn dispatch(runtime: &TokioRuntime, dbg: &Dbg, line: &str) -> Result<bool> {
         }
         Command::Type { name } => match dbg.db.types_by_name(&name).next() {
             Some((_, ty)) => {
-                swriteln!(s, "{}", TypeWithDb(&ty, &dbg.db));
+                swriteln!(s, "{}", TypeWithDb(ty, &dbg.db));
             }
             None => swriteln!(s, "not found"),
         },
