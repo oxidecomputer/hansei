@@ -1496,7 +1496,6 @@ dependencies = [
  "exegesis",
  "proc",
  "rustc-demangle",
- "tempfile",
  "thiserror 2.0.18",
 ]
 

@@ -9,6 +9,3 @@ exegesis = { workspace = true }
 proc = { workspace = true }
 rustc-demangle = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
