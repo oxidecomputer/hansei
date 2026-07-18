@@ -4,7 +4,6 @@ members = [
     "durin",
     "dwarf2ctf",
     "exegesis",
-    "findargs",
     "hansei",
     "hansei-types",
     "libproc-sys",
