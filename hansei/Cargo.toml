@@ -16,8 +16,6 @@ tempfile = { workspace = true }
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
-console = { workspace = true }
-durin = { workspace = true }
 exegesis = { workspace = true }
 hansei-types = { workspace = true }
 humantime = { workspace = true }
@@ -26,4 +24,3 @@ regex = { workspace = true }
 reify = { workspace = true }
 rustc-demangle = { workspace = true }
 semver = { workspace = true }
-unwind = { workspace = true }
