@@ -1,10 +1,9 @@
 //! Read-only structural view over a loaded [`Bundle`].
 //!
-//! [`BundleType`] is the bundle-backed analogue of `durin::read::CtfType`:
-//! a `Copy` handle borrowing from the loaded bundle. The `reify::DebugType`
-//! implementation lives in `reify` (mirroring the reify→durin dependency
-//! for CTF); everything here is backend-side structure plus the variant
-//! decoding that makes `active_variant` a direct decode with no heuristics.
+//! [`BundleType`] is a `Copy` handle borrowing from the loaded bundle; the
+//! `reify::DebugType` implementation over it lives in `reify`. Everything
+//! here is backend-side structure plus the variant decoding that makes
+//! `active_variant` a direct decode with no heuristics.
 
 use crate::bundle::schema::{
     Bundle, BundleTypeId, MemberDef, Provenance, TaskEntryId, TaskFutureEntry, TypeDef, VariantDef,
@@ -107,7 +106,7 @@ impl fmt::Debug for BundleView<'_> {
     }
 }
 
-/// A type in a loaded bundle: the bundle-backed analogue of `CtfType`.
+/// A type in a loaded bundle: a `Copy` handle borrowing from it.
 #[derive(Copy, Clone)]
 pub struct BundleType<'a> {
     bundle: &'a Bundle,
@@ -310,8 +309,7 @@ impl<'a> BundleType<'a> {
         name: &str,
     ) -> Option<Result<Option<(BundleType<'a>, u64)>, VariantError>> {
         let shape = self.variant_shape()?;
-        // An unknown variant name is an error, not "inactive" — matching
-        // the CTF backend's behavior.
+        // An unknown variant name is a caller error, not "inactive".
         if !shape.variants.iter().any(|v| self.str(v.name) == name) {
             return Some(Err(VariantError::NoSuchVariant));
         }

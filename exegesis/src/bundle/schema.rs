@@ -357,8 +357,7 @@ pub struct MemberDef {
     pub offset: u64,
 }
 
-/// The variant structure of a Rust enum, mirroring DWARF variant parts
-/// (not CTF's synthetic `__discr`/`__variants` encoding).
+/// The variant structure of a Rust enum, mirroring DWARF variant parts.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct VariantShape {
     /// `None` for single-variant / univariant enums with no discriminant.
@@ -557,8 +556,8 @@ pub struct StaticsTable {
 
 /// Type-table ids for the non-generic tokio infrastructure types (§5.4).
 ///
-/// These replace `dwarf2ctf -t` hand-feeding; extraction fails loudly if any
-/// is missing from the debug binary's DWARF.
+/// Extraction resolves these from the debug binary's DWARF and fails
+/// loudly if any is missing.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct InfraTypes {
     /// `tokio::runtime::task::core::Header`.
