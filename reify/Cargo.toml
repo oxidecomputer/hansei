@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-durin = { workspace = true }
 exegesis = { workspace = true }
 proc = { workspace = true }
 rustc-demangle = { workspace = true }
