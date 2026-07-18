@@ -23,7 +23,7 @@
 use crate::bundle::{
     BinaryIdent, Bundle, BundleTypeId, DebugFormat, DiscrDef, DiscrValue, DiscrValues,
     DynFutureTable, FutureKind, InfraTypes, MemberDef, Meta, Provenance, ProvenanceTable,
-    SourceLoc, StaticDef, StaticRole, StaticsTable, StrRef, StringInterner, TaskEntryId,
+    Selector, SourceLoc, StaticDef, StaticRole, StaticsTable, StrRef, StringInterner, TaskEntryId,
     TaskFutureEntry, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
 };
 use crate::raw_types::{NsId, RawType, VariantShape as RawVariantShape};
@@ -1091,7 +1091,7 @@ fn scalar_newtype_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Debu
     if base.size == 0 || st.size != base.size {
         return None;
     }
-    Some(DebugFormat::Transparent { member: index as u32 })
+    Some(DebugFormat::Transparent { member: Selector::member(index as u32) })
 }
 
 #[derive(Clone, Debug)]
@@ -1546,7 +1546,7 @@ fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
         return None;
     }
     Some(DebugFormat::Known(crate::bundle::KnownFormat::IpAddress {
-        octets: index as u32,
+        octets: Selector::member(index as u32),
     }))
 }
 
@@ -1566,8 +1566,8 @@ fn str_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
         return None;
     }
     Some(DebugFormat::Known(crate::bundle::KnownFormat::Str {
-        pointer: pointer as u32,
-        length: length as u32,
+        pointer: Selector::member(pointer as u32),
+        length: Selector::member(length as u32),
     }))
 }
 
@@ -1583,9 +1583,9 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     }
     let prefix = [vec_index as u32];
     Some(DebugFormat::Known(crate::bundle::KnownFormat::String {
-        pointer: prefix.iter().copied().chain(layout.pointer).collect(),
-        length: prefix.iter().copied().chain(layout.length).collect(),
-        capacity: prefix.iter().copied().chain(layout.capacity).collect(),
+        pointer: prefix.iter().copied().chain(layout.pointer).collect::<Vec<u32>>().into(),
+        length: prefix.iter().copied().chain(layout.length).collect::<Vec<u32>>().into(),
+        capacity: prefix.iter().copied().chain(layout.capacity).collect::<Vec<u32>>().into(),
     }))
 }
 
@@ -1608,7 +1608,7 @@ fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Opti
     if atomic.size != 1 {
         return None;
     }
-    let state = std::iter::once(state_index as u32).chain(value).collect();
+    let state = value.under_member(state_index as u32);
     Some(DebugFormat::Known(crate::bundle::KnownFormat::RawMutex { state }))
 }
 
@@ -1713,13 +1713,13 @@ fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugForm
         "tokio::sync::batch_semaphore::Semaphore",
         "permits",
     )?;
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::Semaphore { permits }))
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::Semaphore { permits: permits.into() }))
 }
 
 fn watch_state_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let state =
         atomic_usize_field_path(reader, id, "tokio::sync::watch::state::AtomicState", "__0")?;
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::WatchState { state }))
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::WatchState { state: state.into() }))
 }
 
 fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
@@ -1751,7 +1751,7 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
     let ready_slots = [header_index as u32, ready_index as u32]
         .into_iter()
         .chain(ready_tail.iter().copied())
-        .collect();
+        .collect::<Vec<u32>>();
 
     // The slots are the inline array behind `values.__0`.
     let (values_index, values_member) = unique_member(reader, &st.members, "values")?;
@@ -1764,7 +1764,10 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
     }
     let values = vec![values_index as u32, array_index as u32];
 
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::MpscBlock { ready_slots, values }))
+    Some(DebugFormat::Known(crate::bundle::KnownFormat::MpscBlock {
+        ready_slots: ready_slots.into(),
+        values: values.into(),
+    }))
 }
 
 /// Recognize a `tokio::sync::mpsc::bounded::Receiver<T>` and record the paths
@@ -1811,13 +1814,13 @@ fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat
         "tokio::sync::batch_semaphore::Semaphore",
         "permits",
     )?;
-    let permits = sem_prefix.into_iter().chain(permits_tail).collect();
+    let permits = sem_prefix.into_iter().chain(permits_tail).collect::<Vec<u32>>();
 
     Some(DebugFormat::Known(crate::bundle::KnownFormat::MpscRx {
-        chan_pointer,
-        chan,
-        bound,
-        permits,
+        chan_pointer: chan_pointer.into(),
+        chan: chan.into(),
+        bound: bound.into(),
+        permits: permits.into(),
     }))
 }
 
@@ -2191,7 +2194,7 @@ fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bo
 
 fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let (member, _) = unsafe_cell_layout(reader, id)?;
-    Some(DebugFormat::Transparent { member })
+    Some(DebugFormat::Transparent { member: Selector::member(member) })
 }
 
 fn unsafe_cell_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
@@ -2245,7 +2248,7 @@ fn loom_unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
     if matches.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent { member: index as u32 })
+    Some(DebugFormat::Transparent { member: Selector::member(index as u32) })
 }
 
 fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
@@ -2275,7 +2278,7 @@ fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
     if matches.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent { member: index as u32 })
+    Some(DebugFormat::Transparent { member: Selector::member(index as u32) })
 }
 
 /// tokio's `loom::std::parking_lot` shims are newtypes that pair a
@@ -2298,12 +2301,12 @@ fn loom_parking_lot_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
     if real.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent { member: index as u32 })
+    Some(DebugFormat::Transparent { member: Selector::member(index as u32) })
 }
 
 fn non_null_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let (member, _) = non_null_layout(reader, id)?;
-    Some(DebugFormat::Transparent { member })
+    Some(DebugFormat::Transparent { member: Selector::member(member) })
 }
 
 fn non_null_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
@@ -2360,12 +2363,12 @@ fn unique_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     if matches.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent { member: index as u32 })
+    Some(DebugFormat::Transparent { member: Selector::member(index as u32) })
 }
 
 fn usize_no_high_bit_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let (member, _) = usize_no_high_bit_layout(reader, id)?;
-    Some(DebugFormat::Transparent { member })
+    Some(DebugFormat::Transparent { member: Selector::member(member) })
 }
 
 fn usize_no_high_bit_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
@@ -2404,7 +2407,7 @@ fn nonzero_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat
         return None;
     }
     let member = single_zero_offset_field(reader, &st.members, |_| true)?;
-    Some(DebugFormat::Transparent { member })
+    Some(DebugFormat::Transparent { member: Selector::member(member) })
 }
 
 /// The niche-typed inner of a `NonZero<T>`
@@ -2421,7 +2424,7 @@ fn nonzero_inner_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Debug
         return None;
     }
     let member = single_zero_offset_field(reader, &st.members, |ty| is_integer(reader, ty))?;
-    Some(DebugFormat::Transparent { member })
+    Some(DebugFormat::Transparent { member: Selector::member(member) })
 }
 
 /// The index of the unique `__0` member at offset zero whose type satisfies
@@ -2464,7 +2467,7 @@ fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     );
     let [value] = paths.as_slice() else { return None };
     Some(DebugFormat::Known(crate::bundle::KnownFormat::Atomic {
-        value: value.clone(),
+        value: value.clone().into(),
     }))
 }
 
@@ -2779,9 +2782,9 @@ impl<'a> Emitter<'a> {
             self.defs[bid.0 as usize] = def;
             if let Some(format) = vec_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::Vec {
-                    pointer: format.pointer,
-                    length: format.length,
-                    capacity: format.capacity,
+                    pointer: format.pointer.into(),
+                    length: format.length.into(),
+                    capacity: format.capacity.into(),
                     element: self.reserve(format.element),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
@@ -2789,9 +2792,9 @@ impl<'a> Emitter<'a> {
                 let format = crate::bundle::KnownFormat::BTreeMap {
                     root: format.root,
                     length: format.length,
-                    root_node: format.root_node,
+                    root_node: format.root_node.into(),
                     height: format.height,
-                    node: format.node,
+                    node: format.node.into(),
                     key: self.reserve(format.key),
                     value: self.reserve(format.value),
                     leaf: self.reserve(format.leaf),
@@ -2801,40 +2804,40 @@ impl<'a> Emitter<'a> {
                     internal: self.reserve(format.internal),
                     internal_data: format.internal_data,
                     internal_edges: format.internal_edges,
-                    edge: format.edge,
+                    edge: format.edge.into(),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = mpsc_chan_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::MpscChan {
-                    tail: format.tail,
-                    index: format.index,
-                    head: format.head,
-                    start_index: format.start_index,
-                    next: format.next,
-                    values: format.values,
+                    tail: format.tail.into(),
+                    index: format.index.into(),
+                    head: format.head.into(),
+                    start_index: format.start_index.into(),
+                    next: format.next.into(),
+                    values: format.values.into(),
                     element: self.reserve(format.element),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = bounded_semaphore_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::BoundedSemaphore {
-                    mutex: format.mutex,
-                    closed: format.closed,
-                    permits: format.permits,
-                    bound: format.bound,
-                    head: format.head,
+                    mutex: format.mutex.into(),
+                    closed: format.closed.into(),
+                    permits: format.permits.into(),
+                    bound: format.bound.into(),
+                    head: format.head.into(),
                     waiter: self.reserve(format.waiter),
-                    waiter_state: format.waiter_state,
-                    waiter_next: format.waiter_next,
+                    waiter_state: format.waiter_state.into(),
+                    waiter_next: format.waiter_next.into(),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = notify_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::Notify {
-                    state: format.state,
-                    mutex: format.mutex,
-                    head: format.head,
+                    state: format.state.into(),
+                    mutex: format.mutex.into(),
+                    head: format.head.into(),
                     waiter: self.reserve(format.waiter),
-                    waiter_notification: format.waiter_notification,
-                    waiter_next: format.waiter_next,
+                    waiter_notification: format.waiter_notification.into(),
+                    waiter_next: format.waiter_next.into(),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = known_debug_format(self.reader, tid) {
@@ -3191,7 +3194,7 @@ mod tests {
 
     #[test]
     fn test_loom_parking_lot_mutex_is_transparent_over_inner_lock() {
-        use crate::bundle::DebugFormat;
+        use crate::bundle::{DebugFormat, Selector};
 
         let mut reader = DwReader::default();
 
@@ -3237,7 +3240,7 @@ mod tests {
         // real lock at member index 1.
         assert_eq!(
             loom_parking_lot_debug_format(&reader, mutex_id),
-            Some(DebugFormat::Transparent { member: 1 })
+            Some(DebugFormat::Transparent { member: Selector::member(1) })
         );
         // A bare struct outside the loom parking_lot namespace is untouched.
         assert_eq!(loom_parking_lot_debug_format(&reader, inner_id), None);
@@ -3245,7 +3248,7 @@ mod tests {
 
     #[test]
     fn test_nonzero_layers_are_transparent_over_the_integer() {
-        use crate::bundle::DebugFormat;
+        use crate::bundle::{DebugFormat, Selector};
         use crate::raw_types::{Encoding, RawBase};
 
         let mut reader = DwReader::default();
@@ -3284,11 +3287,11 @@ mod tests {
 
         assert_eq!(
             nonzero_debug_format(&reader, nonzero_id),
-            Some(DebugFormat::Transparent { member: 0 })
+            Some(DebugFormat::Transparent { member: Selector::member(0) })
         );
         assert_eq!(
             nonzero_inner_debug_format(&reader, inner_id),
-            Some(DebugFormat::Transparent { member: 0 })
+            Some(DebugFormat::Transparent { member: Selector::member(0) })
         );
         // The public wrapper detector does not fire on the inner, nor vice versa.
         assert_eq!(nonzero_debug_format(&reader, inner_id), None);
@@ -3297,7 +3300,7 @@ mod tests {
 
     #[test]
     fn test_scalar_newtype_is_transparent_over_its_value() {
-        use crate::bundle::DebugFormat;
+        use crate::bundle::{DebugFormat, Selector};
         use crate::raw_types::{Encoding, RawBase};
 
         let mut reader = DwReader::default();
@@ -3317,7 +3320,7 @@ mod tests {
         reader.types.insert(epoch_id, ns_struct(None, epochn, 8, vec![member(m0, u64_id, 0)]));
         assert_eq!(
             scalar_newtype_debug_format(&reader, epoch_id),
-            Some(DebugFormat::Transparent { member: 0 })
+            Some(DebugFormat::Transparent { member: Selector::member(0) })
         );
 
         // A pair is not a wrapper: the scalar does not fill the struct.

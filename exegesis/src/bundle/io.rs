@@ -9,7 +9,7 @@
 //! tool version that wrote it (`format_version` bumps freely).
 
 use crate::bundle::schema::{
-    Bundle, BundleTypeId, StaticsTable, TypeDef, strip_llvm_suffix,
+    Bundle, BundleTypeId, Selector, StaticsTable, Step, TypeDef, strip_llvm_suffix,
 };
 use crate::bundle::strings::StrRef;
 use crate::symbols::normalized_value_index;
@@ -23,7 +23,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 13;
+pub const FORMAT_VERSION: u32 = 14;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -44,97 +44,140 @@ pub enum Error {
     Corrupt(String),
 }
 
-fn check_format_path<'a>(
-    bundle: &'a Bundle,
-    root: BundleTypeId,
-    def: &'a TypeDef,
-    path: &[u32],
-    what: &str,
-) -> Result<()> {
-    format_path_target(bundle, root, def, path, what).map(|_| ())
+/// What a resolved [`Selector`] is expected to land on. Each variant folds a
+/// former open-coded post-walk check (`check_usize_format`,
+/// `check_byte_pointer_format`, the inline state-byte / pointer-sized checks)
+/// into one place.
+enum Shape {
+    /// A `usize`-sized unsigned base type: an atomic word, a length, a
+    /// capacity, a permit count.
+    Usize,
+    /// A single unsigned byte: a parking_lot mutex state byte.
+    StateByte,
+    /// A single byte of any encoding: a boolean flag.
+    Byte,
+    /// A pointer to `u8`: a string/vec data pointer.
+    BytePointer,
+    /// Any type occupying exactly one pointer word: a niche-optimized
+    /// `Option<NonNull<_>>` list head/next.
+    PointerSized,
+    /// Any pointer type.
+    Pointer,
+    /// Any array type.
+    Array,
+    /// No constraint on the landed type.
+    Any,
 }
 
-fn format_path_target<'a>(
-    bundle: &'a Bundle,
+/// Walk a [`Selector`] from `root`, returning the type it lands on.
+///
+/// [`Step::Member`] descends a struct/union member; [`Step::Deref`] follows a
+/// pointer to its pointee. A cycle guard rejects a member run that revisits a
+/// type (a nonsensical path); it resets across a `Deref`, since a legitimate
+/// cross-pointer reach may re-enter a type (e.g. a linked-list node pointing
+/// at its own type).
+fn selector_target(
+    bundle: &Bundle,
     root: BundleTypeId,
-    mut def: &'a TypeDef,
-    path: &[u32],
+    sel: &Selector,
     what: &str,
 ) -> Result<BundleTypeId> {
-    let mut seen = vec![root];
     let mut current = root;
-    for (step, &member_index) in path.iter().enumerate() {
-        let members = match def {
-            TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
-            _ => return Err(Error::Corrupt(format!(
-                "{what} for type {}: step {step} traverses a non-aggregate type", root.0))),
-        };
-        let member = members.get(member_index as usize).ok_or_else(|| Error::Corrupt(format!(
-            "{what} for type {}: member index {member_index} out of range at step {step}",
-            root.0)))?;
-        if seen.contains(&member.ty) {
-            return Err(Error::Corrupt(format!(
-                "{what} for type {} contains a type cycle at step {step}", root.0)));
+    let mut def = bundle.types.get(root).expect("root type validated before formats");
+    let mut seen = vec![root];
+    for (step, item) in sel.steps().iter().enumerate() {
+        match item {
+            Step::Member(member_index) => {
+                let members = match def {
+                    TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
+                    _ => return Err(Error::Corrupt(format!(
+                        "{what} for type {}: step {step} traverses a non-aggregate type", root.0))),
+                };
+                let member = members.get(*member_index as usize).ok_or_else(|| {
+                    Error::Corrupt(format!(
+                        "{what} for type {}: member index {member_index} out of range at step {step}",
+                        root.0))
+                })?;
+                if seen.contains(&member.ty) {
+                    return Err(Error::Corrupt(format!(
+                        "{what} for type {} contains a type cycle at step {step}", root.0)));
+                }
+                seen.push(member.ty);
+                current = member.ty;
+                def = bundle.types.get(member.ty).expect("member type validated before formats");
+            }
+            Step::Deref => {
+                let TypeDef::Pointer { target, .. } = def else {
+                    return Err(Error::Corrupt(format!(
+                        "{what} for type {}: step {step} dereferences a non-pointer type", root.0)));
+                };
+                current = *target;
+                def = bundle.types.get(*target).expect("pointer target validated before formats");
+                seen = vec![current];
+            }
         }
-        seen.push(member.ty);
-        current = member.ty;
-        def = bundle.types.get(member.ty).expect("member type validated before formats");
     }
     Ok(current)
 }
 
-fn check_byte_pointer_format(
+/// Resolve `sel` against `root` and check the landed type matches `expect`,
+/// returning it. Rejects an empty selector: every formatter selector must
+/// navigate at least one step away from the formatted value.
+fn check_selector(
     bundle: &Bundle,
     root: BundleTypeId,
-    def: &TypeDef,
-    path: &[u32],
+    sel: &Selector,
+    expect: Shape,
     what: &str,
-) -> Result<()> {
-    let pointer = format_path_target(bundle, root, def, path, what)?;
-    let Some(TypeDef::Pointer { target, .. }) = bundle.types.get(pointer) else {
-        return Err(Error::Corrupt(format!(
-            "{what} for type {} does not end at a pointer",
-            root.0
-        )));
+) -> Result<BundleTypeId> {
+    if sel.is_empty() {
+        return Err(Error::Corrupt(format!("{what} for type {} has an empty selector", root.0)));
+    }
+    let target = selector_target(bundle, root, sel, what)?;
+    let landed = bundle.types.get(target);
+    let ok = match expect {
+        Shape::Usize => matches!(
+            landed,
+            Some(TypeDef::Base {
+                size: crate::bundle::POINTER_SIZE,
+                encoding: crate::raw_types::Encoding::Unsigned,
+                ..
+            })
+        ),
+        Shape::StateByte => matches!(
+            landed,
+            Some(TypeDef::Base {
+                size: 1,
+                encoding: crate::raw_types::Encoding::Unsigned,
+                ..
+            })
+        ),
+        Shape::Byte => matches!(landed, Some(TypeDef::Base { size: 1, .. })),
+        Shape::BytePointer => matches!(
+            landed,
+            Some(TypeDef::Pointer { target, .. }) if matches!(
+                bundle.types.get(*target),
+                Some(TypeDef::Base {
+                    size: 1,
+                    encoding: crate::raw_types::Encoding::Unsigned,
+                    ..
+                })
+            )
+        ),
+        Shape::PointerSized => {
+            type_size(bundle, target, &mut Vec::new()) == Some(crate::bundle::POINTER_SIZE)
+        }
+        Shape::Pointer => matches!(landed, Some(TypeDef::Pointer { .. })),
+        Shape::Array => matches!(landed, Some(TypeDef::Array { .. })),
+        Shape::Any => true,
     };
-    if !matches!(
-        bundle.types.get(*target),
-        Some(TypeDef::Base {
-            size: 1,
-            encoding: crate::raw_types::Encoding::Unsigned,
-            ..
-        })
-    ) {
+    if !ok {
         return Err(Error::Corrupt(format!(
-            "{what} for type {} does not target u8",
+            "{what} for type {} lands on a type incompatible with the expected shape",
             root.0
         )));
     }
-    Ok(())
-}
-
-fn check_usize_format(
-    bundle: &Bundle,
-    root: BundleTypeId,
-    def: &TypeDef,
-    path: &[u32],
-    what: &str,
-) -> Result<()> {
-    let target = format_path_target(bundle, root, def, path, what)?;
-    if !matches!(
-        bundle.types.get(target),
-        Some(TypeDef::Base {
-            size: crate::bundle::POINTER_SIZE,
-            encoding: crate::raw_types::Encoding::Unsigned,
-            ..
-        })
-    ) {
-        return Err(Error::Corrupt(format!(
-            "{what} for type {} does not end at usize",
-            root.0
-        )));
-    }
-    Ok(())
+    Ok(target)
 }
 
 fn type_size(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> Option<u64> {
@@ -313,16 +356,12 @@ impl Bundle {
             let def = self.types.get(id).expect("checked above");
             match format {
                 crate::bundle::schema::DebugFormat::Transparent { member } => {
-                    check_format_path(self, id, def, &[*member], "transparent debug format")?;
+                    check_selector(self, id, member, Shape::Any, "transparent debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::Atomic { value },
                 ) => {
-                    if value.is_empty() {
-                        return corrupt(format!(
-                            "atomic debug format for type {} has an empty member path", id.0));
-                    }
-                    check_format_path(self, id, def, value, "atomic debug format")?;
+                    check_selector(self, id, value, Shape::Any, "atomic debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::FunctionPointer,
@@ -468,21 +507,7 @@ impl Bundle {
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::RawMutex { state },
                 ) => {
-                    let target =
-                        format_path_target(self, id, def, state, "RawMutex state debug format")?;
-                    if !matches!(
-                        self.types.get(target),
-                        Some(TypeDef::Base {
-                            size: 1,
-                            encoding: crate::raw_types::Encoding::Unsigned,
-                            ..
-                        })
-                    ) {
-                        return corrupt(format!(
-                            "RawMutex debug format for type {} does not end at a u8 state byte",
-                            id.0
-                        ));
-                    }
+                    check_selector(self, id, state, Shape::StateByte, "RawMutex state debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::Notify {
@@ -494,92 +519,38 @@ impl Bundle {
                         waiter_next,
                     },
                 ) => {
-                    if [state, mutex, head, waiter_notification, waiter_next]
-                        .iter()
-                        .any(|p| p.is_empty())
-                    {
-                        return corrupt(format!(
-                            "Notify debug format for type {} has an empty path",
-                            id.0
-                        ));
-                    }
-                    check_usize_format(self, id, def, state, "Notify state debug format")?;
+                    check_selector(self, id, state, Shape::Usize, "Notify state debug format")?;
                     // The waiter mutex's single state byte.
-                    let mutex_target =
-                        format_path_target(self, id, def, mutex, "Notify mutex debug format")?;
-                    if !matches!(
-                        self.types.get(mutex_target),
-                        Some(TypeDef::Base {
-                            size: 1,
-                            encoding: crate::raw_types::Encoding::Unsigned,
-                            ..
-                        })
-                    ) {
-                        return corrupt(format!(
-                            "Notify debug format for type {} mutex does not end at a state byte",
-                            id.0
-                        ));
-                    }
+                    check_selector(self, id, mutex, Shape::StateByte, "Notify mutex debug format")?;
                     // `head` reaches the queue's head word, an
                     // `Option<NonNull<Waiter>>` niche-optimized to a pointer.
-                    let head_target =
-                        format_path_target(self, id, def, head, "Notify head debug format")?;
-                    if type_size(self, head_target, &mut Vec::new())
-                        != Some(crate::bundle::POINTER_SIZE)
-                    {
-                        return corrupt(format!(
-                            "Notify debug format for type {} head is not pointer-sized",
-                            id.0
-                        ));
-                    }
-                    // The `waiter_*` paths are rooted at the `Waiter` node type.
+                    check_selector(self, id, head, Shape::PointerSized, "Notify head debug format")?;
+                    // The `waiter_*` selectors are rooted at the `Waiter` node type.
                     check_ty("Notify waiter", *waiter)?;
-                    let waiter_def =
-                        self.types.get(*waiter).expect("member type validated before formats");
-                    check_usize_format(
+                    check_selector(
                         self,
                         *waiter,
-                        waiter_def,
                         waiter_notification,
+                        Shape::Usize,
                         "Notify waiter_notification debug format",
                     )?;
-                    let next_target = format_path_target(
+                    check_selector(
                         self,
                         *waiter,
-                        waiter_def,
                         waiter_next,
+                        Shape::PointerSized,
                         "Notify waiter_next debug format",
                     )?;
-                    if type_size(self, next_target, &mut Vec::new())
-                        != Some(crate::bundle::POINTER_SIZE)
-                    {
-                        return corrupt(format!(
-                            "Notify debug format for type {} waiter_next is not pointer-sized",
-                            id.0
-                        ));
-                    }
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::Semaphore { permits },
                 ) => {
-                    if permits.is_empty() {
-                        return corrupt(format!(
-                            "Semaphore debug format for type {} has an empty permits path",
-                            id.0
-                        ));
-                    }
-                    check_usize_format(self, id, def, permits, "Semaphore permits debug format")?;
+                    check_selector(self, id, permits, Shape::Usize, "Semaphore permits debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::WatchState { state },
                 ) => {
-                    if state.is_empty() {
-                        return corrupt(format!(
-                            "WatchState debug format for type {} has an empty state path",
-                            id.0
-                        ));
-                    }
-                    check_usize_format(self, id, def, state, "WatchState state debug format")?;
+                    check_selector(self, id, state, Shape::Usize, "WatchState state debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::MpscChan {
@@ -592,60 +563,26 @@ impl Bundle {
                         element,
                     },
                 ) => {
-                    if [tail, index, head, start_index, next, values].iter().any(|p| p.is_empty()) {
-                        return corrupt(format!(
-                            "MpscChan debug format for type {} has an empty path",
-                            id.0
-                        ));
-                    }
-                    check_usize_format(self, id, def, tail, "MpscChan tail debug format")?;
-                    check_usize_format(self, id, def, index, "MpscChan index debug format")?;
+                    check_selector(self, id, tail, Shape::Usize, "MpscChan tail debug format")?;
+                    check_selector(self, id, index, Shape::Usize, "MpscChan index debug format")?;
                     // `head` reaches a pointer to the block type; the remaining
-                    // paths are rooted there.
+                    // selectors are rooted there.
                     let head_ptr =
-                        format_path_target(self, id, def, head, "MpscChan head debug format")?;
+                        check_selector(self, id, head, Shape::Pointer, "MpscChan head debug format")?;
                     let Some(TypeDef::Pointer { target: block, .. }) = self.types.get(head_ptr)
                     else {
-                        return corrupt(format!(
-                            "MpscChan debug format for type {} head does not end at a pointer",
-                            id.0
-                        ));
+                        unreachable!("check_selector verified a pointer");
                     };
-                    let block_def =
-                        self.types.get(*block).expect("member type validated before formats");
-                    check_usize_format(
+                    let block = *block;
+                    check_selector(
                         self,
-                        *block,
-                        block_def,
+                        block,
                         start_index,
+                        Shape::Usize,
                         "MpscChan start_index debug format",
                     )?;
-                    let next_ptr = format_path_target(
-                        self,
-                        *block,
-                        block_def,
-                        next,
-                        "MpscChan next debug format",
-                    )?;
-                    if !matches!(self.types.get(next_ptr), Some(TypeDef::Pointer { .. })) {
-                        return corrupt(format!(
-                            "MpscChan debug format for type {} next does not end at a pointer",
-                            id.0
-                        ));
-                    }
-                    let array = format_path_target(
-                        self,
-                        *block,
-                        block_def,
-                        values,
-                        "MpscChan values debug format",
-                    )?;
-                    if !matches!(self.types.get(array), Some(TypeDef::Array { .. })) {
-                        return corrupt(format!(
-                            "MpscChan debug format for type {} values path does not end at an array",
-                            id.0
-                        ));
-                    }
+                    check_selector(self, block, next, Shape::Pointer, "MpscChan next debug format")?;
+                    check_selector(self, block, values, Shape::Array, "MpscChan values debug format")?;
                     check_ty("MpscChan element", *element)?;
                     if type_size(self, *element, &mut Vec::new()).is_none() {
                         return corrupt(format!(
@@ -657,27 +594,14 @@ impl Bundle {
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::MpscBlock { ready_slots, values },
                 ) => {
-                    if ready_slots.is_empty() || values.is_empty() {
-                        return corrupt(format!(
-                            "MpscBlock debug format for type {} has an empty path",
-                            id.0
-                        ));
-                    }
-                    check_usize_format(
+                    check_selector(
                         self,
                         id,
-                        def,
                         ready_slots,
+                        Shape::Usize,
                         "MpscBlock ready_slots debug format",
                     )?;
-                    let array =
-                        format_path_target(self, id, def, values, "MpscBlock values debug format")?;
-                    if !matches!(self.types.get(array), Some(TypeDef::Array { .. })) {
-                        return corrupt(format!(
-                            "MpscBlock debug format for type {} values path does not end at an array",
-                            id.0
-                        ));
-                    }
+                    check_selector(self, id, values, Shape::Array, "MpscBlock values debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::MpscRx {
@@ -687,42 +611,29 @@ impl Bundle {
                         permits,
                     },
                 ) => {
-                    if [chan_pointer, chan, bound, permits].iter().any(|p| p.is_empty()) {
-                        return corrupt(format!(
-                            "MpscRx debug format for type {} has an empty path",
-                            id.0
-                        ));
-                    }
                     // `chan_pointer` reaches the raw pointer inside the Arc; it
                     // targets the `ArcInner` allocation.
-                    let ptr = format_path_target(
+                    let ptr = check_selector(
                         self,
                         id,
-                        def,
                         chan_pointer,
+                        Shape::Pointer,
                         "MpscRx chan_pointer debug format",
                     )?;
                     let Some(TypeDef::Pointer { target: arcinner, .. }) = self.types.get(ptr)
                     else {
-                        return corrupt(format!(
-                            "MpscRx debug format for type {} chan_pointer does not end at a pointer",
-                            id.0
-                        ));
+                        unreachable!("check_selector verified a pointer");
                     };
                     // `chan` is rooted at the allocation and reaches the `Chan`;
                     // `bound` and `permits` are rooted at that `Chan`.
-                    let arcinner_def =
-                        self.types.get(*arcinner).expect("member type validated before formats");
                     let chan_ty =
-                        format_path_target(self, *arcinner, arcinner_def, chan, "MpscRx chan debug format")?;
-                    let chan_def =
-                        self.types.get(chan_ty).expect("member type validated before formats");
-                    check_usize_format(self, chan_ty, chan_def, bound, "MpscRx bound debug format")?;
-                    check_usize_format(
+                        check_selector(self, *arcinner, chan, Shape::Any, "MpscRx chan debug format")?;
+                    check_selector(self, chan_ty, bound, Shape::Usize, "MpscRx bound debug format")?;
+                    check_selector(
                         self,
                         chan_ty,
-                        chan_def,
                         permits,
+                        Shape::Usize,
                         "MpscRx permits debug format",
                     )?;
                 }
@@ -738,101 +649,37 @@ impl Bundle {
                         waiter_next,
                     },
                 ) => {
-                    if [mutex, closed, permits, bound, head, waiter_state, waiter_next]
-                        .iter()
-                        .any(|p| p.is_empty())
-                    {
-                        return corrupt(format!(
-                            "BoundedSemaphore debug format for type {} has an empty path",
-                            id.0
-                        ));
-                    }
                     // The waiter mutex's single state byte.
-                    let mutex_target = format_path_target(
-                        self,
-                        id,
-                        def,
-                        mutex,
-                        "BoundedSemaphore mutex debug format",
-                    )?;
-                    if !matches!(
-                        self.types.get(mutex_target),
-                        Some(TypeDef::Base {
-                            size: 1,
-                            encoding: crate::raw_types::Encoding::Unsigned,
-                            ..
-                        })
-                    ) {
-                        return corrupt(format!(
-                            "BoundedSemaphore debug format for type {} mutex does not end at a state byte",
-                            id.0
-                        ));
-                    }
+                    check_selector(self, id, mutex, Shape::StateByte, "BoundedSemaphore mutex debug format")?;
                     // The `Waitlist.closed` flag: a single byte.
-                    let closed_target = format_path_target(
-                        self,
-                        id,
-                        def,
-                        closed,
-                        "BoundedSemaphore closed debug format",
-                    )?;
-                    if !matches!(self.types.get(closed_target), Some(TypeDef::Base { size: 1, .. })) {
-                        return corrupt(format!(
-                            "BoundedSemaphore debug format for type {} closed does not end at a byte",
-                            id.0
-                        ));
-                    }
-                    check_usize_format(self, id, def, permits, "BoundedSemaphore permits debug format")?;
-                    check_usize_format(self, id, def, bound, "BoundedSemaphore bound debug format")?;
+                    check_selector(self, id, closed, Shape::Byte, "BoundedSemaphore closed debug format")?;
+                    check_selector(self, id, permits, Shape::Usize, "BoundedSemaphore permits debug format")?;
+                    check_selector(self, id, bound, Shape::Usize, "BoundedSemaphore bound debug format")?;
                     // `head` reaches the queue's head word, an
                     // `Option<NonNull<Waiter>>` niche-optimized to a pointer.
-                    let head_target =
-                        format_path_target(self, id, def, head, "BoundedSemaphore head debug format")?;
-                    if type_size(self, head_target, &mut Vec::new())
-                        != Some(crate::bundle::POINTER_SIZE)
-                    {
-                        return corrupt(format!(
-                            "BoundedSemaphore debug format for type {} head is not pointer-sized",
-                            id.0
-                        ));
-                    }
-                    // The `waiter_*` paths are rooted at the `Waiter` node type.
+                    check_selector(self, id, head, Shape::PointerSized, "BoundedSemaphore head debug format")?;
+                    // The `waiter_*` selectors are rooted at the `Waiter` node type.
                     check_ty("BoundedSemaphore waiter", *waiter)?;
-                    let waiter_def =
-                        self.types.get(*waiter).expect("member type validated before formats");
-                    check_usize_format(
+                    check_selector(
                         self,
                         *waiter,
-                        waiter_def,
                         waiter_state,
+                        Shape::Usize,
                         "BoundedSemaphore waiter_state debug format",
                     )?;
-                    let next_target = format_path_target(
+                    check_selector(
                         self,
                         *waiter,
-                        waiter_def,
                         waiter_next,
+                        Shape::PointerSized,
                         "BoundedSemaphore waiter_next debug format",
                     )?;
-                    if type_size(self, next_target, &mut Vec::new())
-                        != Some(crate::bundle::POINTER_SIZE)
-                    {
-                        return corrupt(format!(
-                            "BoundedSemaphore debug format for type {} waiter_next is not pointer-sized",
-                            id.0
-                        ));
-                    }
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::IpAddress { octets },
                 ) => {
-                    let target = format_path_target(
-                        self,
-                        id,
-                        def,
-                        &[*octets],
-                        "IP-address debug format",
-                    )?;
+                    let target =
+                        check_selector(self, id, octets, Shape::Array, "IP-address debug format")?;
                     let Some(TypeDef::Array { elem, count }) = self.types.get(target) else {
                         return corrupt(format!(
                             "IP-address debug format for type {} does not target an array",
@@ -870,40 +717,16 @@ impl Bundle {
                             id.0
                         ));
                     }
-                    check_byte_pointer_format(
-                        self,
-                        id,
-                        def,
-                        pointer,
-                        "Vec pointer debug format",
-                    )?;
+                    check_selector(self, id, pointer, Shape::BytePointer, "Vec pointer debug format")?;
                     for (path, field) in [(length, "length"), (capacity, "capacity")] {
-                        check_usize_format(
-                            self,
-                            id,
-                            def,
-                            path,
-                            &format!("Vec {field} debug format"),
-                        )?;
+                        check_selector(self, id, path, Shape::Usize, &format!("Vec {field} debug format"))?;
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::Str { pointer, length },
                 ) => {
-                    check_byte_pointer_format(
-                        self,
-                        id,
-                        def,
-                        &[*pointer],
-                        "str pointer debug format",
-                    )?;
-                    check_usize_format(
-                        self,
-                        id,
-                        def,
-                        &[*length],
-                        "str length debug format",
-                    )?;
+                    check_selector(self, id, pointer, Shape::BytePointer, "str pointer debug format")?;
+                    check_selector(self, id, length, Shape::Usize, "str length debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::String {
@@ -912,27 +735,9 @@ impl Bundle {
                         capacity,
                     },
                 ) => {
-                    check_byte_pointer_format(
-                        self,
-                        id,
-                        def,
-                        pointer,
-                        "String pointer debug format",
-                    )?;
-                    check_usize_format(
-                        self,
-                        id,
-                        def,
-                        length,
-                        "String length debug format",
-                    )?;
-                    check_usize_format(
-                        self,
-                        id,
-                        def,
-                        capacity,
-                        "String capacity debug format",
-                    )?;
+                    check_selector(self, id, pointer, Shape::BytePointer, "String pointer debug format")?;
+                    check_selector(self, id, length, Shape::Usize, "String length debug format")?;
+                    check_selector(self, id, capacity, Shape::Usize, "String capacity debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::BTreeMap {
@@ -996,14 +801,8 @@ impl Bundle {
                             "BTreeMap debug format for type {} root has no Some variant",
                             id.0
                         )))?;
-                    let some_def = self.types.get(some.payload.ty).expect("variant type validated");
-                    let node_ref = format_path_target(
-                        self,
-                        some.payload.ty,
-                        some_def,
-                        root_node,
-                        "BTreeMap root-node path",
-                    )?;
+                    let node_ref =
+                        selector_target(self, some.payload.ty, root_node, "BTreeMap root-node path")?;
                     let node_ref_def = self.types.get(node_ref).expect("path type validated");
                     let TypeDef::Struct { members: node_members, .. } = node_ref_def else {
                         return corrupt(format!(
@@ -1017,13 +816,8 @@ impl Bundle {
                             id.0
                         ))
                     })?;
-                    let node_pointer = format_path_target(
-                        self,
-                        node_ref,
-                        node_ref_def,
-                        node,
-                        "BTreeMap node-pointer path",
-                    )?;
+                    let node_pointer =
+                        selector_target(self, node_ref, node, "BTreeMap node-pointer path")?;
                     if !matches!(self.types.get(node_pointer), Some(TypeDef::Pointer { target, .. }) if target == leaf)
                     {
                         return corrupt(format!(
@@ -1142,14 +936,8 @@ impl Bundle {
                             id.0
                         ));
                     }
-                    let edge_def = self.types.get(*edge_elem).expect("array elem validated");
-                    let edge_pointer = format_path_target(
-                        self,
-                        *edge_elem,
-                        edge_def,
-                        edge,
-                        "BTreeMap edge-pointer path",
-                    )?;
+                    let edge_pointer =
+                        selector_target(self, *edge_elem, edge, "BTreeMap edge-pointer path")?;
                     if !matches!(self.types.get(edge_pointer), Some(TypeDef::Pointer { target, .. }) if target == leaf)
                     {
                         return corrupt(format!(

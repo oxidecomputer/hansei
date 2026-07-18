@@ -87,16 +87,84 @@ pub struct TypeTable {
     pub name_index: Vec<(StrRef, BundleTypeId)>,
 }
 
+/// One step in a [`Selector`]: descend into an aggregate member, or follow a
+/// pointer to the value it points at.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Step {
+    /// Index into the current struct/union's member list; adds that member's
+    /// byte offset and continues in its type.
+    Member(u32),
+    /// Follow the current pointer to its pointee, restarting the byte offset
+    /// within the target type.
+    Deref,
+}
+
+/// A path from a root type to a nested datum.
+///
+/// [`Step::Member`] steps descend through struct/union members, accumulating
+/// byte offsets; a [`Step::Deref`] step crosses a pointer, restarting the
+/// offset inside the pointee. A `Selector` unifies what used to be recorded
+/// inconsistently as either a bare `u32` member index or a `Vec<u32>` member
+/// path, and subsumes the per-formatter "resolve a pointer, then continue
+/// against its target" special cases: a cross-pointer reach is just a
+/// selector containing a `Deref`.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct Selector(pub Vec<Step>);
+
+impl Selector {
+    /// A selector that descends a single member of the root aggregate.
+    pub fn member(index: u32) -> Self {
+        Selector(vec![Step::Member(index)])
+    }
+
+    /// Prepend a leading [`Step::Member`]: the result descends `index` of a
+    /// new root, then continues with this selector's steps. Used by detectors
+    /// that anchor an inner path (e.g. an atomic's word) at an outer field.
+    pub fn under_member(self, index: u32) -> Self {
+        let mut steps = Vec::with_capacity(self.0.len() + 1);
+        steps.push(Step::Member(index));
+        steps.extend(self.0);
+        Selector(steps)
+    }
+
+    /// Whether this selector has no steps (addresses the root itself).
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The selector's steps.
+    pub fn steps(&self) -> &[Step] {
+        &self.0
+    }
+
+    /// The index of the first step when it is a [`Step::Member`], i.e. the
+    /// top-level member this selector descends into. Used where a formatter
+    /// also needs that member index (e.g. rendering a struct field in place).
+    pub fn first_member(&self) -> Option<u32> {
+        match self.0.first() {
+            Some(Step::Member(index)) => Some(*index),
+            _ => None,
+        }
+    }
+}
+
+/// Build a member-only selector from a legacy member-index path.
+impl From<Vec<u32>> for Selector {
+    fn from(path: Vec<u32>) -> Self {
+        Selector(path.into_iter().map(Step::Member).collect())
+    }
+}
+
 /// Declarative instructions for displaying a known type.
 ///
-/// Member references are indices into the concrete [`TypeDef`]'s member
-/// list. Exegesis resolves and validates them while it still has the source
-/// DWARF's structured generic parameter information; consumers never match
-/// type names or private field names.
+/// Addressing is expressed with [`Selector`]s resolved against the concrete
+/// [`TypeDef`]. Exegesis resolves and validates them while it still has the
+/// source DWARF's structured generic parameter information; consumers never
+/// match type names or private field names.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum DebugFormat {
     /// Display one member as though it were the containing value.
-    Transparent { member: u32 },
+    Transparent { member: Selector },
     /// Apply semantics for a known family of types.
     Known(KnownFormat),
 }
@@ -104,9 +172,9 @@ pub enum DebugFormat {
 /// Closed set of semantic formatters understood by reify.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum KnownFormat {
-    /// Display an atomic's stored value. The path walks zero or more
+    /// Display an atomic's stored value. The selector walks zero or more
     /// concrete struct/union members from the atomic to its value type.
-    Atomic { value: Vec<u32> },
+    Atomic { value: Selector },
     /// Display a pointer value as a function address and symbol. Function
     /// pointers must never be followed as data pointers.
     FunctionPointer,
@@ -143,7 +211,7 @@ pub enum KnownFormat {
     /// rather than a raw atomic byte. `state` is the member path to the
     /// single-byte atomic; reify interprets parking_lot's fixed bit encoding
     /// (`LOCKED_BIT = 1`, `PARKED_BIT = 2`).
-    RawMutex { state: Vec<u32> },
+    RawMutex { state: Selector },
     /// Display a `tokio::sync::notify::Notify` compactly as its notification
     /// state, waiter-mutex lock state, and the queue of parked waiters —
     /// instead of dumping the raw `waiters` mutex wrapping an intrusive
@@ -164,24 +232,24 @@ pub enum KnownFormat {
     /// (`pointers.inner.value.next`). reify follows `head` and each `waiter_next`
     /// to render the queued waiters.
     Notify {
-        state: Vec<u32>,
-        mutex: Vec<u32>,
-        head: Vec<u32>,
+        state: Selector,
+        mutex: Selector,
+        head: Selector,
         waiter: BundleTypeId,
-        waiter_notification: Vec<u32>,
-        waiter_next: Vec<u32>,
+        waiter_notification: Selector,
+        waiter_next: Selector,
     },
     /// Display a `tokio::sync::batch_semaphore::Semaphore` with its `permits`
     /// field decoded. `permits` is the member path to the atomic `usize`;
     /// reify renders the struct normally but interprets that field as the
     /// available permit count (`value >> 1`) plus a closed flag (bit 0). The
     /// path's first element is the index of the `permits` member.
-    Semaphore { permits: Vec<u32> },
+    Semaphore { permits: Selector },
     /// Display a `tokio::sync::watch::state::AtomicState` as its decoded
     /// version and closed flag rather than a raw atomic word. `state` is the
     /// member path to the atomic `usize`; reify interprets bit 0 as the closed
     /// flag (CLOSED_BIT) and the remaining bits as the version.
-    WatchState { state: Vec<u32> },
+    WatchState { state: Selector },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages.
     /// The receiver has read up to `index` and the sender has written up to
     /// `tail` (both member paths to a `usize` within the channel); the
@@ -192,12 +260,12 @@ pub enum KnownFormat {
     /// `values` its inline slot array. `element` is the message type `T`. reify
     /// walks the block chain and renders each queued slot as `element`.
     MpscChan {
-        tail: Vec<u32>,
-        index: Vec<u32>,
-        head: Vec<u32>,
-        start_index: Vec<u32>,
-        next: Vec<u32>,
-        values: Vec<u32>,
+        tail: Selector,
+        index: Selector,
+        head: Selector,
+        start_index: Selector,
+        next: Selector,
+        values: Selector,
         element: BundleTypeId,
     },
     /// Display a `tokio::sync::mpsc::block::Block<T>` with its inline `values`
@@ -210,7 +278,7 @@ pub enum KnownFormat {
     /// consumed (that needs the channel's read/write positions), so their
     /// bytes may be stale. The live messages are shown by the channel-level
     /// [`KnownFormat::MpscChan`] formatter instead.
-    MpscBlock { ready_slots: Vec<u32>, values: Vec<u32> },
+    MpscBlock { ready_slots: Selector, values: Selector },
     /// Display a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
     /// channel. A receiver holds an `Arc<Chan<T, Semaphore>>`; `chan_pointer`
     /// is the member path from the receiver to the raw pointer inside that
@@ -222,7 +290,7 @@ pub enum KnownFormat {
     /// reads the `Chan` through the pointer and renders it with the capacity
     /// and free-slot count prepended, delegating the queued-message walk to the
     /// `Chan`'s own [`KnownFormat::MpscChan`] formatter.
-    MpscRx { chan_pointer: Vec<u32>, chan: Vec<u32>, bound: Vec<u32>, permits: Vec<u32> },
+    MpscRx { chan_pointer: Selector, chan: Selector, bound: Selector, permits: Selector },
     /// Display a `tokio::sync::mpsc::bounded::Semaphore` (a bounded channel's
     /// permit semaphore) compactly instead of as the raw nested
     /// `batch_semaphore::Semaphore`. reify renders
@@ -243,31 +311,31 @@ pub enum KnownFormat {
     /// (`pointers.inner.value.next`). reify follows `head` and each `waiter_next`
     /// to render the queued waiters.
     BoundedSemaphore {
-        mutex: Vec<u32>,
-        closed: Vec<u32>,
-        permits: Vec<u32>,
-        bound: Vec<u32>,
-        head: Vec<u32>,
+        mutex: Selector,
+        closed: Selector,
+        permits: Selector,
+        bound: Selector,
+        head: Selector,
         waiter: BundleTypeId,
-        waiter_state: Vec<u32>,
-        waiter_next: Vec<u32>,
+        waiter_state: Selector,
+        waiter_next: Selector,
     },
     /// Display the octets of an IPv4 or IPv6 address in standard notation.
-    IpAddress { octets: u32 },
+    IpAddress { octets: Selector },
     /// Display the initialized elements of an `alloc::vec::Vec<T, A>`.
     Vec {
-        pointer: Vec<u32>,
-        length: Vec<u32>,
-        capacity: Vec<u32>,
+        pointer: Selector,
+        length: Selector,
+        capacity: Selector,
         element: BundleTypeId,
     },
     /// Display a `&str` as quoted, escaped UTF-8.
-    Str { pointer: u32, length: u32 },
+    Str { pointer: Selector, length: Selector },
     /// Display an `alloc::string::String` as quoted, escaped UTF-8.
     String {
-        pointer: Vec<u32>,
-        length: Vec<u32>,
-        capacity: Vec<u32>,
+        pointer: Selector,
+        length: Selector,
+        capacity: Selector,
     },
     /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
     /// its initialized key/value entries.
@@ -278,9 +346,9 @@ pub enum KnownFormat {
     BTreeMap {
         root: u32,
         length: u32,
-        root_node: Vec<u32>,
+        root_node: Selector,
         height: u32,
-        node: Vec<u32>,
+        node: Selector,
         key: BundleTypeId,
         value: BundleTypeId,
         leaf: BundleTypeId,
@@ -290,7 +358,7 @@ pub enum KnownFormat {
         internal: BundleTypeId,
         internal_data: u32,
         internal_edges: u32,
-        edge: Vec<u32>,
+        edge: Selector,
     },
 }
 
