@@ -199,7 +199,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfo<'a, T> {
 
     pub fn parse<V, Ctx>(&self, ctx: &Ctx) -> Result<V>
     where
-        V: ParseWithCtf<'a, T, Ctx>,
+        V: ParseWithDbgInfo<'a, T, Ctx>,
         Ctx: ParseCtx,
     {
         self.as_ref().parse(ctx)
@@ -436,8 +436,8 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
         Ok(info)
     }
 
-    pub fn parse<V: ParseWithCtf<'a, T, Ctx>, Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<V> {
-        V::parse_with_ctf(ctx, self).map_err(|e| Error::parse_type(self.ty.name()).with_source(e))
+    pub fn parse<V: ParseWithDbgInfo<'a, T, Ctx>, Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<V> {
+        V::parse_with_dbg(ctx, self).map_err(|e| Error::parse_type(self.ty.name()).with_source(e))
     }
 
     pub fn to_owned(&self) -> TypeInfo<'a, T> {
@@ -3051,7 +3051,7 @@ fn write_hex_bytes(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
 }
 
 // ---------------------------------------------------------------------------
-// ParseCtx & ParseWithCtf
+// ParseCtx & ParseWithDbgInfo
 // ---------------------------------------------------------------------------
 
 pub trait ParseCtx {
@@ -3064,16 +3064,16 @@ pub trait ParseCtx {
 }
 
 /// Parse a byte slice as a type using debug type information.
-pub trait ParseWithCtf<'a, Ty: DebugType<'a>, Ctx>: Sized
+pub trait ParseWithDbgInfo<'a, Ty: DebugType<'a>, Ctx>: Sized
 where
     Ctx: ParseCtx,
 {
     /// Attempt to read `Self` from the debug type information.
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self>;
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self>;
 }
 
-impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for u8 {
-    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for u8 {
+    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -3084,8 +3084,8 @@ impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for u8 {
     }
 }
 
-impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for i8 {
-    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for i8 {
+    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -3096,8 +3096,8 @@ impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for i8 {
     }
 }
 
-impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for bool {
-    fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for bool {
+    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -3110,8 +3110,8 @@ impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for bool {
 
 macro_rules! num_impl {
     ($num_ty:ty) => {
-        impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for $num_ty {
-            fn parse_with_ctf(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+        impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for $num_ty {
+            fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
                 if info.bytes.len() != size_of::<Self>() {
                     return Err(Error::unexpected_len(
                         info.bytes.len() as u32,
@@ -3132,15 +3132,15 @@ num_impl!(i64);
 num_impl!(f32);
 num_impl!(f64);
 
-impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithCtf<'a, Ty, Ctx> for Option<V>
+impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithDbgInfo<'a, Ty, Ctx> for Option<V>
 where
-    V: ParseWithCtf<'a, Ty, Ctx>,
+    V: ParseWithDbgInfo<'a, Ty, Ctx>,
     Ctx: ParseCtx,
 {
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         let var = info.active_variant()?;
         let value = match var {
-            ("Some", var_info) => V::parse_with_ctf(ctx, &var_info)?,
+            ("Some", var_info) => V::parse_with_dbg(ctx, &var_info)?,
             ("None", _) => return Ok(None),
             (s, _) => {
                 return Err(Error::no_enumerator(
@@ -3154,12 +3154,12 @@ where
     }
 }
 
-impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithCtf<'a, Ty, Ctx> for Vec<V>
+impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithDbgInfo<'a, Ty, Ctx> for Vec<V>
 where
-    V: ParseWithCtf<'a, Ty, Ctx>,
+    V: ParseWithDbgInfo<'a, Ty, Ctx>,
     Ctx: ParseCtx,
 {
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         let proc = ctx.proc();
 
         let len: u64 = info.member("len")?.parse(ctx)?;
@@ -3185,7 +3185,7 @@ where
                 bytes: chunk,
                 _marker: std::marker::PhantomData,
             };
-            let item = V::parse_with_ctf(ctx, &item_info)?;
+            let item = V::parse_with_dbg(ctx, &item_info)?;
             out.push(item);
         }
 
@@ -3193,12 +3193,12 @@ where
     }
 }
 
-impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithCtf<'a, Ty, Ctx> for Box<[V]>
+impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithDbgInfo<'a, Ty, Ctx> for Box<[V]>
 where
-    V: ParseWithCtf<'a, Ty, Ctx>,
+    V: ParseWithDbgInfo<'a, Ty, Ctx>,
     Ctx: ParseCtx,
 {
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         let proc = ctx.proc();
 
         let len: u64 = info.member("length")?.parse(ctx)?;
@@ -3224,7 +3224,7 @@ where
                 bytes: chunk,
                 _marker: std::marker::PhantomData,
             };
-            let item = V::parse_with_ctf(ctx, &item_info)?;
+            let item = V::parse_with_dbg(ctx, &item_info)?;
             out.push(item);
         }
 
@@ -3232,12 +3232,12 @@ where
     }
 }
 
-impl<'a, Ty: DebugType<'a>, V, Ctx, const N: usize> ParseWithCtf<'a, Ty, Ctx> for [V; N]
+impl<'a, Ty: DebugType<'a>, V, Ctx, const N: usize> ParseWithDbgInfo<'a, Ty, Ctx> for [V; N]
 where
-    V: ParseWithCtf<'a, Ty, Ctx>,
+    V: ParseWithDbgInfo<'a, Ty, Ctx>,
     Ctx: ParseCtx,
 {
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -3262,7 +3262,7 @@ where
                 bytes: slice,
                 _marker: std::marker::PhantomData,
             };
-            let item = V::parse_with_ctf(ctx, &slice_info)?;
+            let item = V::parse_with_dbg(ctx, &slice_info)?;
             items.push(item);
         }
         let Ok(arr) = items.try_into() else {
@@ -3272,8 +3272,8 @@ where
     }
 }
 
-impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithCtf<'a, Ty, Ctx> for String {
-    fn parse_with_ctf(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for String {
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
         let proc = ctx.proc();
 
         let len: u64 = info.member("length")?.parse(ctx)?;
