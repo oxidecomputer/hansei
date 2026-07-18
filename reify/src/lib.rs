@@ -1826,9 +1826,8 @@ fn write_vec<'a, T: DebugType<'a>>(
         return write!(f, "<truncated Vec pointer>");
     };
 
-    let allocation;
-    if element_size == 0 {
-        allocation = Vec::new();
+    let allocation = if element_size == 0 {
+        Vec::new()
     } else {
         if pointer == 0 {
             return write!(f, "<invalid Vec: null allocation pointer>");
@@ -1842,8 +1841,8 @@ fn write_vec<'a, T: DebugType<'a>>(
         let Ok(bytes) = proc.read_bytes(pointer, byte_len) else {
             return write!(f, "<unreadable Vec allocation>");
         };
-        allocation = bytes;
-    }
+        bytes
+    };
 
     let pretty = f.alternate();
     write!(f, "[")?;
@@ -2795,6 +2794,7 @@ fn infer_concrete_type<'a, T: DebugType<'a>>(
     Some(candidate)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_struct_fields<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
@@ -2869,6 +2869,7 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
     write!(f, "}}")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_rust_enum<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,

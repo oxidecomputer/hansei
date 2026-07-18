@@ -481,7 +481,7 @@ impl Mappings {
     }
 
     pub fn as_slice(&self) -> &[LoadedObjectWithPath] {
-        &self.inner.as_slice()
+        self.inner.as_slice()
     }
 }
 
@@ -636,7 +636,7 @@ impl Ord for LoadedObjectWithPath {
 
 impl PartialOrd for LoadedObjectWithPath {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(&other))
+        Some(self.cmp(other))
     }
 }
 
@@ -662,7 +662,7 @@ impl Ord for LoadedObject {
 
 impl PartialOrd for LoadedObject {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(&other))
+        Some(self.cmp(other))
     }
 }
 

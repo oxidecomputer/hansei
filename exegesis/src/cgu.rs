@@ -24,6 +24,7 @@ pub struct CodegenUnit<'dw> {
     /// The `DW_AT_producer` string (compiler identification), if present.
     pub producer: Option<&'dw str>,
     /// Starting offset of this unit in the debug info section.
+    #[allow(dead_code)]
     pub offset: UnitSectionOffset,
     /// Current namespace context.
     pub(crate) ns: Option<NsId>,
@@ -1024,6 +1025,10 @@ fn process_sub_parameter<'dw>(
     })
 }
 
+// Retained for when inlined-subroutine collection is re-enabled in the
+// function walker (see the commented-out call site above); it is currently
+// only reachable via its own recursion, which clippy flags as unused.
+#[allow(dead_code)]
 fn process_inlined_subroutine<'dw>(
     unit: &UnitRef<Slice<'dw>>,
     cursor: &mut EntriesCursor<Slice<'dw>>,

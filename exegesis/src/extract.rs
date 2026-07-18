@@ -2180,7 +2180,7 @@ fn dyn_tail_offset(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) ->
     seen.push(id);
     let inner = dyn_tail_offset(reader, tail.type_id, seen);
     seen.pop();
-    Some(tail.offset.checked_add(inner?)?)
+    tail.offset.checked_add(inner?)
 }
 
 /// Whether `id` has a `dyn Trait` tail (see [`dyn_tail_offset`]).

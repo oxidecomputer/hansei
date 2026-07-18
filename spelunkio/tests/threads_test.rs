@@ -30,7 +30,7 @@ fn test_tasks_command() -> Result<()> {
     );
 
     // Resolve the concrete type of each task
-    for (addr, _header) in &runtime.scheduler.shared.owned.tasks {
+    for addr in runtime.scheduler.shared.owned.tasks.keys() {
         let concrete_type =
             hansei_types::tokio::dwarf::resolve_task_type(&dbg, *addr)?;
         // The futurelock program should have tasks with "futurelock" in the type

@@ -63,13 +63,13 @@ pub struct Frame {
 }
 
 pub fn load_frames(core: &Proc) -> Result<BTreeMap<u32, Backtrace>> {
-    let addrs = AddrRanges::parse(&core).context("could not parse address mappings")?;
+    let addrs = AddrRanges::parse(core).context("could not parse address mappings")?;
 
-    let exec_bytes = load_object(&addrs.exec_text, &core).context("failed to load executable")?;
+    let exec_bytes = load_object(&addrs.exec_text, core).context("failed to load executable")?;
     let exec = ObjectInfo::parse(&exec_bytes, addrs.exec_text.start)
         .context("could not parse object info for executable")?;
 
-    let libc_bytes = load_object(&addrs.libc_text, &core).context("failed to load libc")?;
+    let libc_bytes = load_object(&addrs.libc_text, core).context("failed to load libc")?;
     let libc = ObjectInfo::parse(&libc_bytes, addrs.libc_text.start)
         .context("could not parse object info for libc")?;
 
@@ -81,7 +81,7 @@ pub fn load_frames(core: &Proc) -> Result<BTreeMap<u32, Backtrace>> {
             .context("failed to get thread registers")?;
 
         let unwinder = Unwinder {
-            core: &core,
+            core,
             exec: &exec,
             libc: &libc,
         };
@@ -248,14 +248,14 @@ impl<'a> Unwinder<'a> {
         let mut modified_regs = Vec::new();
         let mut prev_regs = Regs::default();
         for reg in REGS {
-            if let Some(value) = self.restore_register(reg, regs, cfa, &row)? {
+            if let Some(value) = self.restore_register(reg, regs, cfa, row)? {
                 prev_regs[reg] = value;
                 modified_regs.push(reg);
             }
         }
 
         let prev_pc = self
-            .restore_register(RIP, regs, cfa, &row)?
+            .restore_register(RIP, regs, cfa, row)?
             .ok_or_else(|| anyhow::anyhow!("Cannot find return address"))?;
 
         prev_regs.rsp = cfa;
@@ -380,7 +380,7 @@ impl<'a> Unwinder<'a> {
                 // The result of a CFA expression is the address of the CFA.
                 let final_results = eval.result();
 
-                match final_results.get(0) {
+                match final_results.first() {
                     Some(gimli::Piece {
                         location: gimli::Location::Address { address },
                         ..
@@ -426,7 +426,7 @@ struct ObjectInfo<'a> {
 
 impl<'a> ObjectInfo<'a> {
     pub fn parse(bytes: &'a [u8], map_addr: u64) -> Result<Self> {
-        let elf = Elf::parse_with_opts(&bytes, &goblin::options::ParseOptions::permissive())
+        let elf = Elf::parse_with_opts(bytes, &goblin::options::ParseOptions::permissive())
             .context("failed to parse data as ELF")?;
 
         if elf.header.e_ident[EI_CLASS] != ELFCLASS64 {
