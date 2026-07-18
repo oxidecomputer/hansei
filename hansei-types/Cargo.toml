@@ -14,12 +14,11 @@ humantime.workspace = true
 proc.workspace = true
 reify.workspace = true
 
-# The CTF and debugdb-based DWARF paths read live targets through
-# libproc; only the bundle path compiles everywhere.
+# The debugdb-based DWARF path reads live targets through libproc; only
+# the bundle path compiles everywhere.
 [target.'cfg(target_os = "illumos")'.dependencies]
 camino.workspace = true
 debugdb.workspace = true
-durin.workspace = true
 memmap2.workspace = true
 # Pinned to match debugdb's object version; the workspace is on a newer one.
 object = "0.33"
