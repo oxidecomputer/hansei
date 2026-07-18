@@ -2,13 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Tokio specific types that are loadable from CTF and/or DWARF debug info
+//! Tokio specific types that are loadable from an exegesis bundle or,
+//! on illumos, from DWARF debug info.
 
 pub mod bundle;
-// The CTF and debugdb-based DWARF paths read live targets through
-// libproc; only the bundle path compiles everywhere.
-#[cfg(target_os = "illumos")]
-pub mod ctf;
+// The debugdb-based DWARF path reads live targets through libproc; only
+// the bundle path compiles everywhere.
 #[cfg(target_os = "illumos")]
 pub mod dwarf;
 pub mod graph;
