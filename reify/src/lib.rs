@@ -596,7 +596,7 @@ impl<'a, T: DebugType<'a>> fmt::Debug for TypeInfoRef<'_, 'a, T> {
 
 impl<'a, T: DebugType<'a>> fmt::Display for TypeInfoRef<'_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, self, 0, 16, None, None, false)
+        write_display_value(f, self, RenderCtx::plain(0, 16))
     }
 }
 
@@ -614,7 +614,7 @@ pub struct DisplayValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>> {
 
 impl<'a, T: DebugType<'a>> fmt::Display for DisplayValue<'_, '_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, self.info, self.depth, self.max_depth, None, None, false)
+        write_display_value(f, self.info, RenderCtx::plain(self.depth, self.max_depth))
     }
 }
 
@@ -627,15 +627,14 @@ pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromP
 
 impl<'a, T: DebugType<'a>, P: ReadFromProc> fmt::Display for DisplayTargetValue<'_, '_, 'a, T, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(
-            f,
-            self.info,
-            0,
-            self.max_depth,
-            Some(self.proc),
-            Some(&self.visited),
-            false,
-        )
+        let ctx = RenderCtx {
+            depth: 0,
+            max_depth: self.max_depth,
+            proc: Some(self.proc),
+            visited: Some(&self.visited),
+            hex_integers: false,
+        };
+        write_display_value(f, self.info, ctx)
     }
 }
 
@@ -672,9 +671,13 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
     }
 }
 
-/// Wrapper that carries depth state for recursive formatting.
-struct DisplayRecurse<'buf, 'a: 'buf, T: DebugType<'a>> {
-    info: TypeInfoRef<'buf, 'a, T>,
+/// The context threaded through the recursive `write_*` renderers: recursion
+/// depth bookkeeping, the optional target reader and cycle-guard used to
+/// follow pointers into the process, and whether integers render in hex.
+/// Bundling these keeps the renderer signatures small (they otherwise take the
+/// same five trailing arguments everywhere).
+#[derive(Copy, Clone)]
+struct RenderCtx<'buf, 'a> {
     depth: usize,
     max_depth: usize,
     proc: Option<&'buf dyn ReadFromProc>,
@@ -682,28 +685,52 @@ struct DisplayRecurse<'buf, 'a: 'buf, T: DebugType<'a>> {
     hex_integers: bool,
 }
 
+impl<'buf, 'a> RenderCtx<'buf, 'a> {
+    /// A context with no target to read from (structural rendering only).
+    fn plain(depth: usize, max_depth: usize) -> Self {
+        Self {
+            depth,
+            max_depth,
+            proc: None,
+            visited: None,
+            hex_integers: false,
+        }
+    }
+
+    /// The context for a value nested one level deeper.
+    fn deeper(self) -> Self {
+        Self {
+            depth: self.depth + 1,
+            ..self
+        }
+    }
+
+    /// The same context with the hex-integer flag overridden — array and `Vec`
+    /// elements choose their own rendering independent of the parent.
+    fn with_hex(self, hex_integers: bool) -> Self {
+        Self {
+            hex_integers,
+            ..self
+        }
+    }
+}
+
+/// Wrapper that carries [`RenderCtx`] for recursive formatting.
+struct DisplayRecurse<'buf, 'a: 'buf, T: DebugType<'a>> {
+    info: TypeInfoRef<'buf, 'a, T>,
+    ctx: RenderCtx<'buf, 'a>,
+}
+
 impl<'a, T: DebugType<'a>> fmt::Display for DisplayRecurse<'_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(
-            f,
-            &self.info,
-            self.depth,
-            self.max_depth,
-            self.proc,
-            self.visited,
-            self.hex_integers,
-        )
+        write_display_value(f, &self.info, self.ctx)
     }
 }
 
 fn write_display_value<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let ty = info.ty;
     let bytes = info.bytes;
@@ -712,7 +739,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
         return write!(f, "{}", ty.name());
     }
 
-    if depth >= max_depth {
+    if ctx.depth >= ctx.max_depth {
         return write!(f, "...");
     }
 
@@ -722,35 +749,10 @@ fn write_display_value<'a, T: DebugType<'a>>(
 
     if let Some(format) = ty.debug_format() {
         if let DebugFormat::Known(KnownFormat::FunctionPointer) = format {
-            return write_function_pointer(f, info.bytes, proc);
+            return write_function_pointer(f, info.bytes, ctx.proc);
         }
-        if let DebugFormat::Known(KnownFormat::DynPointer {
-            pointer_offset,
-            vtable,
-            vtable_offset,
-            drop_in_place,
-            size,
-            align,
-            tail_offset,
-        }) = format
-        {
-            return write_dyn_pointer(
-                f,
-                info,
-                Some(ty.name()),
-                pointer_offset,
-                vtable,
-                vtable_offset,
-                drop_in_place,
-                size,
-                align,
-                tail_offset,
-                depth,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
-            );
+        if let DebugFormat::Known(format @ KnownFormat::DynPointer { .. }) = format {
+            return write_dyn_pointer(f, info, Some(ty.name()), format, ctx);
         }
         if let DebugFormat::Known(KnownFormat::RawWakerVTable {
             clone_offset,
@@ -766,8 +768,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 wake_offset,
                 wake_by_ref_offset,
                 drop_offset,
-                depth,
-                proc,
+                ctx,
             );
         }
         if let DebugFormat::Known(KnownFormat::RawMutex { state_offset }) = format {
@@ -777,7 +778,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             return write_watch_state(f, ty.name(), info.bytes, state_offset);
         }
         if let DebugFormat::Known(format @ KnownFormat::Notify { .. }) = format {
-            return write_notify(f, info, ty.name(), format, depth, proc);
+            return write_notify(f, info, ty.name(), format, ctx);
         }
         if let DebugFormat::Known(KnownFormat::Semaphore { permits_member, permits_offset }) = format
         {
@@ -788,72 +789,20 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 ty.name(),
                 permits_member,
                 &decoded,
-                depth,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
+                ctx,
             );
         }
         if let DebugFormat::Known(format @ KnownFormat::BoundedSemaphore { .. }) = format {
-            return write_bounded_semaphore(
-                f,
-                info,
-                ty.name(),
-                format,
-                depth,
-                proc,
-            );
+            return write_bounded_semaphore(f, info, ty.name(), format, ctx);
         }
         if let DebugFormat::Known(format @ KnownFormat::MpscBlock { .. }) = format {
-            return write_mpsc_block(
-                f,
-                info,
-                ty.name(),
-                format,
-                depth,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
-            );
+            return write_mpsc_block(f, info, ty.name(), format, ctx);
         }
         if let DebugFormat::Known(format @ KnownFormat::MpscChan { .. }) = format {
-            return write_mpsc_chan(
-                f,
-                info,
-                ty.name(),
-                &[],
-                format,
-                depth,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
-            );
+            return write_mpsc_chan(f, info, ty.name(), &[], format, ctx);
         }
-        if let DebugFormat::Known(KnownFormat::MpscRx {
-            chan,
-            chan_pointer_offset,
-            chan_offset,
-            bound_offset,
-            permits_offset,
-        }) = format
-        {
-            return write_mpsc_rx(
-                f,
-                info,
-                chan,
-                chan_pointer_offset,
-                chan_offset,
-                bound_offset,
-                permits_offset,
-                depth,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
-            );
+        if let DebugFormat::Known(format @ KnownFormat::MpscRx { .. }) = format {
+            return write_mpsc_rx(f, info, format, ctx);
         }
         if let DebugFormat::Known(KnownFormat::IpAddress { octets, offset }) = format {
             let Some(bytes) = byte_range(bytes, offset, octets.size()) else {
@@ -868,15 +817,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             };
         }
         if let DebugFormat::Known(format @ KnownFormat::Vec { .. }) = format {
-            return write_vec(
-                f,
-                info,
-                format,
-                depth,
-                max_depth,
-                proc,
-                visited,
-            );
+            return write_vec(f, info, format, ctx);
         }
         if let DebugFormat::Known(KnownFormat::Str {
             pointer_offset,
@@ -891,7 +832,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 length,
                 length_offset,
                 None,
-                proc,
+                ctx.proc,
             );
         }
         if let DebugFormat::Known(KnownFormat::String {
@@ -909,24 +850,15 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 length,
                 length_offset,
                 Some((capacity, capacity_offset)),
-                proc,
+                ctx.proc,
             );
         }
         if let DebugFormat::Known(format @ KnownFormat::BTreeMap { .. }) = format {
-            return write_btree_map(
-                f,
-                info,
-                format,
-                depth,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
-            );
+            return write_btree_map(f, info, format, ctx);
         }
 
         let (target, offset, child_proc, child_visited) = match format {
-            DebugFormat::Transparent { target, offset } => (target, offset, proc, visited),
+            DebugFormat::Transparent { target, offset } => (target, offset, ctx.proc, ctx.visited),
             DebugFormat::Known(KnownFormat::Atomic { value, offset }) => {
                 // AtomicPtr's Debug implementation reports the stored
                 // address; it does not dereference it.
@@ -964,12 +896,12 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 _marker: std::marker::PhantomData,
             },
             // Eliding a representation detail does not consume the user's
-            // value-depth budget.
-            depth,
-            max_depth,
-            proc: child_proc,
-            visited: child_visited,
-            hex_integers,
+            // value-depth budget, so `depth` is unchanged.
+            ctx: RenderCtx {
+                proc: child_proc,
+                visited: child_visited,
+                ..ctx
+            },
         };
         return if f.alternate() { write!(f, "{child:#}") } else { write!(f, "{child}") };
     }
@@ -994,7 +926,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 };
             }
 
-            if hex_integers {
+            if ctx.hex_integers {
                 return match size {
                     1 => write!(f, "0x{:02x}", bytes[0]),
                     2 => write!(
@@ -1056,7 +988,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             if target.size() == 0 {
                 return write!(f, "0x{addr:x}");
             }
-            let (Some(proc), Some(visited)) = (proc, visited) else {
+            let (Some(proc), Some(visited)) = (ctx.proc, ctx.visited) else {
                 return write!(f, "0x{addr:x}");
             };
             let key = (addr, target.name());
@@ -1072,11 +1004,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                             bytes: &pointee_bytes,
                             _marker: std::marker::PhantomData,
                         },
-                        depth: depth + 1,
-                        max_depth,
-                        proc: Some(proc),
-                        visited: Some(visited),
-                        hex_integers,
+                        ctx: ctx.deeper(),
                     };
                     if f.alternate() {
                         write!(f, "0x{addr:x} -> {pointee:#}")
@@ -1093,18 +1021,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
         TypeClass::Struct => {
             let name = ty.name();
             let pretty = f.alternate();
-            write_struct_fields(
-                f,
-                info,
-                name,
-                pretty,
-                depth,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
-                None,
-            )
+            write_struct_fields(f, info, name, pretty, ctx, None)
         }
 
         TypeClass::Union => {
@@ -1120,17 +1037,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
         TypeClass::RustEnum => {
             let name = ty.name();
             let pretty = f.alternate();
-            write_rust_enum(
-                f,
-                info,
-                name,
-                pretty,
-                depth,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
-            )
+            write_rust_enum(f, info, name, pretty, ctx)
         }
 
         TypeClass::CEnum => {
@@ -1162,7 +1069,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 if let Some(elem_bytes) = bytes.get(start..end) {
                     if pretty {
                         writeln!(f)?;
-                        write_indent(f, depth + 1)?;
+                        write_indent(f, ctx.depth + 1)?;
                     } else if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -1174,11 +1081,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                             bytes: elem_bytes,
                             _marker: std::marker::PhantomData,
                         },
-                        depth: depth + 1,
-                        max_depth,
-                        proc,
-                        visited,
-                        hex_integers: hex_elements,
+                        ctx: ctx.deeper().with_hex(hex_elements),
                     };
                     if pretty {
                         write!(f, "{:#},", child)?;
@@ -1195,7 +1098,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
             }
             if pretty && count > 0 {
                 writeln!(f)?;
-                write_indent(f, depth)?;
+                write_indent(f, ctx.depth)?;
             }
             write!(f, "]")
         }
@@ -1208,11 +1111,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                     bytes,
                     _marker: std::marker::PhantomData,
                 },
-                depth: depth + 1,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
+                ctx: ctx.deeper(),
             };
             if f.alternate() {
                 write!(f, "{:#}", child)
@@ -1268,33 +1167,17 @@ fn write_raw_mutex(
 /// Render a struct, replacing one member's value with `decoded` text rather
 /// than recursing into its bytes. Used by the atomic-state formatters
 /// (`Notify`, `Semaphore`) to show a decoded field in place.
-#[allow(clippy::too_many_arguments)]
 fn write_struct_with_decoded_field<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     member: u32,
     decoded: &str,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let field = info.ty.members().nth(member as usize).map(|m| m.name());
     let override_field = field.map(|field| (field, decoded));
-    write_struct_fields(
-        f,
-        info,
-        name,
-        f.alternate(),
-        depth,
-        max_depth,
-        proc,
-        visited,
-        hex_integers,
-        override_field,
-    )
+    write_struct_fields(f, info, name, f.alternate(), ctx, override_field)
 }
 
 /// Decode tokio's `Notify` state word: the low two bits are the notification
@@ -1339,8 +1222,7 @@ fn write_bounded_semaphore<'a, T: DebugType<'a>>(
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     format: KnownFormat<T>,
-    depth: usize,
-    proc: Option<&dyn ReadFromProc>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let KnownFormat::BoundedSemaphore {
         mutex_offset,
@@ -1363,7 +1245,7 @@ fn write_bounded_semaphore<'a, T: DebugType<'a>>(
     let field = |f: &mut fmt::Formatter<'_>| -> fmt::Result {
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)
+            write_indent(f, ctx.depth + 1)
         } else {
             write!(f, " ")
         }
@@ -1399,46 +1281,57 @@ fn write_bounded_semaphore<'a, T: DebugType<'a>>(
 
     field(f)?;
     write!(f, "queue: ")?;
-    write_semaphore_waiters(
-        f,
-        bytes,
+    let waiters = WaiterList {
         head_offset,
         waiter,
         waiter_size,
-        waiter_state_offset,
-        waiter_next_offset,
-        depth + 1,
-        proc,
-    )?;
+        word_offset: waiter_state_offset,
+        next_offset: waiter_next_offset,
+    };
+    write_semaphore_waiters(f, bytes, waiters, ctx.deeper())?;
     if pretty {
         write!(f, ",")?;
     }
 
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }
     write!(f, "}}")
 }
 
-/// Walk the intrusive linked list of semaphore waiters from the head word at
-/// `head_offset`, rendering each as `Waiter { permits_needed: N }`. Each node is
-/// read from the target and the list followed via each node's successor pointer,
-/// guarded against cycles and unbounded length.
-#[allow(clippy::too_many_arguments)]
-fn write_semaphore_waiters<'a, T: DebugType<'a>>(
-    f: &mut fmt::Formatter<'_>,
-    bytes: &[u8],
+/// The layout of an intrusive waiter linked list, as walked by
+/// [`write_semaphore_waiters`] and [`write_notify_waiters`]: the head word, the
+/// node type and size, the per-node payload word (permits or notification), and
+/// the successor pointer.
+#[derive(Copy, Clone)]
+struct WaiterList<T> {
     head_offset: u64,
     waiter: T,
     waiter_size: u32,
-    state_offset: u64,
+    word_offset: u64,
     next_offset: u64,
-    depth: usize,
-    proc: Option<&dyn ReadFromProc>,
+}
+
+/// Walk the intrusive linked list of semaphore waiters from the head word at
+/// `list.head_offset`, rendering each as `Waiter { permits_needed: N }`. Each
+/// node is read from the target and the list followed via each node's successor
+/// pointer, guarded against cycles and unbounded length.
+fn write_semaphore_waiters<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    bytes: &[u8],
+    list: WaiterList<T>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
+    let WaiterList {
+        head_offset,
+        waiter,
+        waiter_size,
+        word_offset: state_offset,
+        next_offset,
+    } = list;
     let pretty = f.alternate();
     let Some(head) = read_u64_at(bytes, head_offset) else {
         return write!(f, "<truncated>");
@@ -1448,7 +1341,7 @@ fn write_semaphore_waiters<'a, T: DebugType<'a>>(
     if head == 0 {
         return write!(f, "[]");
     }
-    let Some(proc) = proc else {
+    let Some(proc) = ctx.proc else {
         return write!(f, "<target unavailable>");
     };
     write!(f, "[")?;
@@ -1469,7 +1362,7 @@ fn write_semaphore_waiters<'a, T: DebugType<'a>>(
         };
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)?;
+            write_indent(f, ctx.depth + 1)?;
         } else if any {
             write!(f, ", ")?;
         }
@@ -1488,7 +1381,7 @@ fn write_semaphore_waiters<'a, T: DebugType<'a>>(
     }
     if pretty && any {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     }
     write!(f, "]")
 }
@@ -1502,8 +1395,7 @@ fn write_notify<'a, T: DebugType<'a>>(
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     format: KnownFormat<T>,
-    depth: usize,
-    proc: Option<&dyn ReadFromProc>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let KnownFormat::Notify {
         state_offset,
@@ -1524,7 +1416,7 @@ fn write_notify<'a, T: DebugType<'a>>(
     let field = |f: &mut fmt::Formatter<'_>| -> fmt::Result {
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)
+            write_indent(f, ctx.depth + 1)
         } else {
             write!(f, " ")
         }
@@ -1543,24 +1435,21 @@ fn write_notify<'a, T: DebugType<'a>>(
 
     field(f)?;
     write!(f, "queue: ")?;
-    write_notify_waiters(
-        f,
-        bytes,
+    let waiters = WaiterList {
         head_offset,
         waiter,
         waiter_size,
-        waiter_notification_offset,
-        waiter_next_offset,
-        depth + 1,
-        proc,
-    )?;
+        word_offset: waiter_notification_offset,
+        next_offset: waiter_next_offset,
+    };
+    write_notify_waiters(f, bytes, waiters, ctx.deeper())?;
     if pretty {
         write!(f, ",")?;
     }
 
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }
@@ -1568,21 +1457,22 @@ fn write_notify<'a, T: DebugType<'a>>(
 }
 
 /// Walk the intrusive linked list of notify waiters from the head word at
-/// `head_offset`, rendering each as `Waiter { notification: <state> }`. Each
-/// node is read from the target and the list followed via each node's successor
-/// pointer, guarded against cycles and unbounded length.
-#[allow(clippy::too_many_arguments)]
+/// `list.head_offset`, rendering each as `Waiter { notification: <state> }`.
+/// Each node is read from the target and the list followed via each node's
+/// successor pointer, guarded against cycles and unbounded length.
 fn write_notify_waiters<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
-    head_offset: u64,
-    waiter: T,
-    waiter_size: u32,
-    notification_offset: u64,
-    next_offset: u64,
-    depth: usize,
-    proc: Option<&dyn ReadFromProc>,
+    list: WaiterList<T>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
+    let WaiterList {
+        head_offset,
+        waiter,
+        waiter_size,
+        word_offset: notification_offset,
+        next_offset,
+    } = list;
     let pretty = f.alternate();
     let Some(head) = read_u64_at(bytes, head_offset) else {
         return write!(f, "<truncated>");
@@ -1592,7 +1482,7 @@ fn write_notify_waiters<'a, T: DebugType<'a>>(
     if head == 0 {
         return write!(f, "[]");
     }
-    let Some(proc) = proc else {
+    let Some(proc) = ctx.proc else {
         return write!(f, "<target unavailable>");
     };
     write!(f, "[")?;
@@ -1613,7 +1503,7 @@ fn write_notify_waiters<'a, T: DebugType<'a>>(
         };
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)?;
+            write_indent(f, ctx.depth + 1)?;
         } else if any {
             write!(f, ", ")?;
         }
@@ -1632,7 +1522,7 @@ fn write_notify_waiters<'a, T: DebugType<'a>>(
     }
     if pretty && any {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     }
     write!(f, "]")
 }
@@ -1694,7 +1584,6 @@ fn write_function_pointer(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn write_raw_waker_vtable<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
@@ -1702,8 +1591,7 @@ fn write_raw_waker_vtable<'a, T: DebugType<'a>>(
     wake_offset: u64,
     wake_by_ref_offset: u64,
     drop_offset: u64,
-    depth: usize,
-    proc: Option<&dyn ReadFromProc>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let fields = [
         ("clone", clone_offset),
@@ -1716,7 +1604,7 @@ fn write_raw_waker_vtable<'a, T: DebugType<'a>>(
     for (index, (name, offset)) in fields.into_iter().enumerate() {
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)?;
+            write_indent(f, ctx.depth + 1)?;
         } else if index == 0 {
             write!(f, " ")?;
         } else {
@@ -1725,9 +1613,9 @@ fn write_raw_waker_vtable<'a, T: DebugType<'a>>(
         write!(f, "{name}: ")?;
         if let Some(address) = read_u64_at(info.bytes, offset) {
             write!(f, "0x{address:x}")?;
-            if let Some(symbol) = resolve_function_symbol(proc, address) {
+            if let Some(symbol) = resolve_function_symbol(ctx.proc, address) {
                 write!(f, " -> {symbol}")?;
-            } else if proc.is_some() && address != 0 {
+            } else if ctx.proc.is_some() && address != 0 {
                 write!(f, " -> <unknown symbol>")?;
             }
         } else {
@@ -1739,7 +1627,7 @@ fn write_raw_waker_vtable<'a, T: DebugType<'a>>(
     }
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }
@@ -1787,15 +1675,11 @@ fn write_utf8_string<'a, T: DebugType<'a>>(
     write!(f, "{text:?}")
 }
 
-#[allow(clippy::too_many_arguments)]
 fn write_vec<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     format: KnownFormat<T>,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let KnownFormat::Vec {
         pointer_offset,
@@ -1835,7 +1719,7 @@ fn write_vec<'a, T: DebugType<'a>>(
         let Some(byte_len) = len.checked_mul(element_size) else {
             return write!(f, "<invalid Vec: allocation size overflow>");
         };
-        let Some(proc) = proc else {
+        let Some(proc) = ctx.proc else {
             return write!(f, "<target unavailable>");
         };
         let Ok(bytes) = proc.read_bytes(pointer, byte_len) else {
@@ -1844,12 +1728,14 @@ fn write_vec<'a, T: DebugType<'a>>(
         bytes
     };
 
+    // Vec elements pick their own integer rendering (never hex).
+    let element_ctx = ctx.deeper().with_hex(false);
     let pretty = f.alternate();
     write!(f, "[")?;
     for index in 0..len {
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)?;
+            write_indent(f, ctx.depth + 1)?;
         } else if index != 0 {
             write!(f, ", ")?;
         }
@@ -1869,11 +1755,7 @@ fn write_vec<'a, T: DebugType<'a>>(
                 bytes,
                 _marker: std::marker::PhantomData,
             },
-            depth: depth + 1,
-            max_depth,
-            proc,
-            visited,
-            hex_integers: false,
+            ctx: element_ctx,
         };
         if pretty {
             write!(f, "{child:#},")?;
@@ -1883,7 +1765,7 @@ fn write_vec<'a, T: DebugType<'a>>(
     }
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     }
     write!(f, "]")
 }
@@ -1893,17 +1775,12 @@ fn write_vec<'a, T: DebugType<'a>>(
 /// Other members render normally. The contents are not dereferenced: a block
 /// cannot tell live slots from consumed ones (their bytes may be stale), so
 /// the actual messages are shown by the channel formatter instead.
-#[allow(clippy::too_many_arguments)]
 fn write_mpsc_block<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     format: KnownFormat<T>,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let KnownFormat::MpscBlock { ready_offset, ready_size, values_member, count } = format else {
         unreachable!()
@@ -1926,7 +1803,7 @@ fn write_mpsc_block<'a, T: DebugType<'a>>(
     for (i, member) in members.iter().enumerate() {
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)?;
+            write_indent(f, ctx.depth + 1)?;
         } else if i > 0 {
             write!(f, ",")?;
         }
@@ -1945,11 +1822,7 @@ fn write_mpsc_block<'a, T: DebugType<'a>>(
                         bytes,
                         _marker: std::marker::PhantomData,
                     },
-                    depth: depth + 1,
-                    max_depth,
-                    proc,
-                    visited,
-                    hex_integers,
+                    ctx: ctx.deeper(),
                 };
                 if pretty {
                     write!(f, "{child:#}")?;
@@ -1966,7 +1839,7 @@ fn write_mpsc_block<'a, T: DebugType<'a>>(
     }
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }
@@ -1979,18 +1852,13 @@ fn write_mpsc_block<'a, T: DebugType<'a>>(
 /// members render normally (their block pointers show the elided block view).
 /// `extra` are pre-decoded fields (e.g. a bounded receiver's `capacity` and
 /// `free`) written verbatim ahead of the synthetic `queued` list.
-#[allow(clippy::too_many_arguments)]
 fn write_mpsc_chan<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     extra: &[(&str, &str)],
     format: KnownFormat<T>,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let pretty = f.alternate();
     if !name.is_empty() {
@@ -2003,7 +1871,7 @@ fn write_mpsc_chan<'a, T: DebugType<'a>>(
     for (key, value) in extra {
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)?;
+            write_indent(f, ctx.depth + 1)?;
         }
         write!(f, " {key}: {value},")?;
     }
@@ -2011,10 +1879,10 @@ fn write_mpsc_chan<'a, T: DebugType<'a>>(
     // Synthetic `queued` field next.
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth + 1)?;
+        write_indent(f, ctx.depth + 1)?;
     }
     write!(f, " queued: ")?;
-    write_chan_queue(f, info, &format, depth + 1, max_depth, proc, visited, hex_integers)?;
+    write_chan_queue(f, info, &format, ctx.deeper())?;
     if pretty {
         write!(f, ",")?;
     }
@@ -2024,7 +1892,7 @@ fn write_mpsc_chan<'a, T: DebugType<'a>>(
     for member in &members {
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)?;
+            write_indent(f, ctx.depth + 1)?;
         } else {
             write!(f, ",")?;
         }
@@ -2039,11 +1907,7 @@ fn write_mpsc_chan<'a, T: DebugType<'a>>(
                     bytes,
                     _marker: std::marker::PhantomData,
                 },
-                depth: depth + 1,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
+                ctx: ctx.deeper(),
             };
             if pretty {
                 write!(f, "{child:#},")?;
@@ -2057,7 +1921,7 @@ fn write_mpsc_chan<'a, T: DebugType<'a>>(
 
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }
@@ -2069,26 +1933,30 @@ fn write_mpsc_chan<'a, T: DebugType<'a>>(
 /// the pointer, step past the Arc allocation header to the `Chan`, and render
 /// it in place with the bounded `capacity` and available `free` slots
 /// prepended, so a receiver reads as the channel it drains.
-#[allow(clippy::too_many_arguments)]
 fn write_mpsc_rx<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
-    chan: T,
-    chan_pointer_offset: u64,
-    chan_offset: u64,
-    bound_offset: u64,
-    permits_offset: u64,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
+    format: KnownFormat<T>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
+    let KnownFormat::MpscRx {
+        chan,
+        chan_pointer_offset,
+        chan_offset,
+        bound_offset,
+        permits_offset,
+    } = format
+    else {
+        unreachable!()
+    };
+
     let name = info.ty.name();
     let Some(pointer) = read_u64_at(info.bytes, chan_pointer_offset) else {
         return write!(f, "{name} {{ <truncated> }}");
     };
-    let (Some(proc), Some(visited)) = (proc, visited) else {
+    // Both accessors must be present to read the channel behind the Arc; the
+    // reused `ctx` still carries them.
+    let (Some(proc), Some(_visited)) = (ctx.proc, ctx.visited) else {
         return write!(f, "{name} {{ <target unavailable> }}");
     };
     if pointer == 0 {
@@ -2110,7 +1978,8 @@ fn write_mpsc_rx<'a, T: DebugType<'a>>(
         _marker: std::marker::PhantomData,
     };
     // The `Chan` carries the queued-message formatter; delegate to it, giving
-    // it the receiver's own name and the decoded capacity/free fields.
+    // it the receiver's own name and the decoded capacity/free fields. `proc`
+    // and `visited` are known-present here, so reuse the same context.
     match chan.debug_format() {
         Some(DebugFormat::Known(format @ KnownFormat::MpscChan { .. })) => write_mpsc_chan(
             f,
@@ -2118,38 +1987,21 @@ fn write_mpsc_rx<'a, T: DebugType<'a>>(
             name,
             &[("capacity", capacity.as_str()), ("free", free.as_str())],
             format,
-            depth,
-            max_depth,
-            Some(proc),
-            Some(visited),
-            hex_integers,
+            ctx,
         ),
         // The inner type is expected to be an mpsc `Chan`; if the format is
         // missing, fall back to rendering it structurally.
-        _ => write_display_value(
-            f,
-            &chan_info,
-            depth,
-            max_depth,
-            Some(proc),
-            Some(visited),
-            hex_integers,
-        ),
+        _ => write_display_value(f, &chan_info, ctx),
     }
 }
 
 /// Walk an mpsc channel's block chain and render the queued messages as a
-/// list. `depth` is the indentation level of the field holding the list.
-#[allow(clippy::too_many_arguments)]
+/// list. `ctx.depth` is the indentation level of the field holding the list.
 fn write_chan_queue<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     format: &KnownFormat<T>,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let &KnownFormat::MpscChan {
         tail_offset,
@@ -2174,11 +2026,16 @@ fn write_chan_queue<'a, T: DebugType<'a>>(
     ) else {
         return write!(f, "<truncated>");
     };
-    let (Some(proc), Some(visited)) = (proc, visited) else {
+    let (Some(proc), Some(visited)) = (ctx.proc, ctx.visited) else {
         return write!(f, "<target unavailable>");
     };
 
     let pretty = f.alternate();
+    let element_ctx = RenderCtx {
+        proc: Some(proc),
+        visited: Some(visited),
+        ..ctx.deeper()
+    };
     let element_size = element.size() as usize;
     write!(f, "[")?;
     let mut any = false;
@@ -2209,7 +2066,7 @@ fn write_chan_queue<'a, T: DebugType<'a>>(
         let Some(bytes) = block.get(slot..slot + element_size) else { break };
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)?;
+            write_indent(f, ctx.depth + 1)?;
         } else if any {
             write!(f, ", ")?;
         }
@@ -2221,11 +2078,7 @@ fn write_chan_queue<'a, T: DebugType<'a>>(
                 bytes,
                 _marker: std::marker::PhantomData,
             },
-            depth: depth + 1,
-            max_depth,
-            proc: Some(proc),
-            visited: Some(visited),
-            hex_integers,
+            ctx: element_ctx,
         };
         if pretty {
             write!(f, "{child:#},")?;
@@ -2236,7 +2089,7 @@ fn write_chan_queue<'a, T: DebugType<'a>>(
     }
     if pretty && any {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     }
     write!(f, "]")
 }
@@ -2268,16 +2121,11 @@ impl From<fmt::Error> for BTreeWalkError {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn write_btree_map<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     format: KnownFormat<T>,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let KnownFormat::BTreeMap {
         root,
@@ -2339,7 +2187,7 @@ fn write_btree_map<'a, T: DebugType<'a>>(
     let Some(root_address) = read_u64_at(root_node_bytes, node_offset) else {
         return write!(f, " <truncated node pointer> }}");
     };
-    let Some(proc) = proc else {
+    let Some(proc) = ctx.proc else {
         return write!(f, " <target unavailable> }}");
     };
 
@@ -2357,6 +2205,9 @@ fn write_btree_map<'a, T: DebugType<'a>>(
         edge,
         edge_pointer_offset,
     };
+    // Keys and values are read from the target at one deeper level; `proc` is
+    // known-present here so the same context applies.
+    let entry_ctx = ctx.deeper();
     let mut remaining = map_length;
     let mut node_addresses = HashSet::new();
     let mut entries = 0usize;
@@ -2368,7 +2219,7 @@ fn write_btree_map<'a, T: DebugType<'a>>(
         &mut remaining,
         &mut node_addresses,
         &mut |key_addr, key_bytes, value_addr, value_bytes| {
-            write_btree_entry_prefix(f, pretty, depth, entries)?;
+            write_btree_entry_prefix(f, pretty, ctx.depth, entries)?;
             entries += 1;
             let key = DisplayRecurse {
                 info: TypeInfoRef {
@@ -2377,11 +2228,7 @@ fn write_btree_map<'a, T: DebugType<'a>>(
                     bytes: key_bytes,
                     _marker: std::marker::PhantomData,
                 },
-                depth: depth + 1,
-                max_depth,
-                proc: Some(proc),
-                visited,
-                hex_integers,
+                ctx: entry_ctx,
             };
             let value = DisplayRecurse {
                 info: TypeInfoRef {
@@ -2390,11 +2237,7 @@ fn write_btree_map<'a, T: DebugType<'a>>(
                     bytes: value_bytes,
                     _marker: std::marker::PhantomData,
                 },
-                depth: depth + 1,
-                max_depth,
-                proc: Some(proc),
-                visited,
-                hex_integers,
+                ctx: entry_ctx,
             };
             if pretty {
                 write!(f, "{key:#}: {value:#},")?;
@@ -2408,11 +2251,11 @@ fn write_btree_map<'a, T: DebugType<'a>>(
     match walk {
         Ok(()) if remaining == 0 => {}
         Ok(()) => {
-            write_btree_entry_prefix(f, pretty, depth, entries)?;
+            write_btree_entry_prefix(f, pretty, ctx.depth, entries)?;
             write!(f, "<invalid: tree contains fewer entries than length>")?;
         }
         Err(BTreeWalkError::Invalid(reason)) => {
-            write_btree_entry_prefix(f, pretty, depth, entries)?;
+            write_btree_entry_prefix(f, pretty, ctx.depth, entries)?;
             write!(f, "<invalid: {reason}>")?;
         }
         Err(BTreeWalkError::Format) => return Err(fmt::Error),
@@ -2420,7 +2263,7 @@ fn write_btree_map<'a, T: DebugType<'a>>(
 
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }
@@ -2443,7 +2286,6 @@ fn write_btree_entry_prefix(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn walk_btree_node<'a, T: DebugType<'a>>(
     proc: &dyn ReadFromProc,
     layout: BTreeNodeLayout<T>,
@@ -2547,34 +2389,36 @@ fn read_unsigned_at(bytes: &[u8], offset: u64, size: u64) -> Option<u64> {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn write_dyn_pointer<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     name: Option<&str>,
-    pointer_offset: u64,
-    vtable: T,
-    vtable_offset: u64,
-    drop_in_place_slot: u32,
-    size_slot: u32,
-    align_slot: u32,
-    tail_offset: u64,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
+    format: KnownFormat<T>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
+    let KnownFormat::DynPointer {
+        pointer_offset,
+        vtable,
+        vtable_offset,
+        drop_in_place: drop_in_place_slot,
+        size: size_slot,
+        align: align_slot,
+        tail_offset,
+    } = format
+    else {
+        unreachable!()
+    };
+
     let Some(pointer_address) = read_u64_at(info.bytes, pointer_offset) else {
         return write!(f, "<truncated>");
     };
     let Some(vtable_address) = read_u64_at(info.bytes, vtable_offset) else {
         return write!(f, "<truncated>");
     };
-    let words = read_vtable_words(vtable, vtable_address, proc);
+    let words = read_vtable_words(vtable, vtable_address, ctx.proc);
 
     let mut functions = Vec::new();
-    if let (Some(proc), Some(words)) = (proc, words.as_deref()) {
+    if let (Some(proc), Some(words)) = (ctx.proc, words.as_deref()) {
         for (slot, &address) in words.iter().enumerate() {
             let slot = slot as u32;
             if slot == size_slot || slot == align_slot || address == 0 {
@@ -2597,7 +2441,7 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
     }
     write!(f, " {{")?;
 
-    write_dyn_field_prefix(f, pretty, depth)?;
+    write_dyn_field_prefix(f, pretty, ctx.depth)?;
     write!(f, "pointer: 0x{pointer_address:x}")?;
     // The vtable resolves the erased *tail* type; when the pointer targets an
     // unsized wrapper (e.g. `ArcInner<dyn Trait>`) the value lives past a
@@ -2608,7 +2452,7 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
     // pointee worth following — the `concrete type:` line below already names
     // it. Showing `-> ()` would only add noise.
     if let (Some(concrete_ty), Some(proc), Some(visited)) =
-        (concrete_ty.filter(|ty| ty.size() > 0), proc, visited)
+        (concrete_ty.filter(|ty| ty.size() > 0), ctx.proc, ctx.visited)
     {
         let key = (pointee_address, concrete_ty.name());
         if !visited.borrow_mut().insert(key) {
@@ -2623,11 +2467,7 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
                             bytes: &pointee_bytes,
                             _marker: std::marker::PhantomData,
                         },
-                        depth: depth + 1,
-                        max_depth,
-                        proc: Some(proc),
-                        visited: Some(visited),
-                        hex_integers,
+                        ctx: ctx.deeper(),
                     };
                     if pretty {
                         write!(f, " -> {pointee:#}")?;
@@ -2641,15 +2481,15 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
         }
     }
     write!(f, ",")?;
-    write_dyn_field_prefix(f, pretty, depth)?;
+    write_dyn_field_prefix(f, pretty, ctx.depth)?;
     write!(f, "concrete type: {},", concrete.as_deref().unwrap_or("<unknown>"))?;
-    write_dyn_field_prefix(f, pretty, depth)?;
+    write_dyn_field_prefix(f, pretty, ctx.depth)?;
     write!(f, "vtable: ")?;
 
     match words.as_deref() {
-        Some(words) if depth + 1 < max_depth => {
+        Some(words) if ctx.depth + 1 < ctx.max_depth => {
             write!(f, "{{")?;
-            write_vtable_field_prefix(f, pretty, depth)?;
+            write_vtable_field_prefix(f, pretty, ctx.depth)?;
             let drop_address = words.get(drop_in_place_slot as usize).copied().unwrap_or(0);
             write!(f, "drop_in_place: 0x{drop_address:x}")?;
             if let Some(function) = functions.iter().find(|function| function.slot == drop_in_place_slot)
@@ -2658,12 +2498,12 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
             }
             write!(f, ",")?;
 
-            write_vtable_field_prefix(f, pretty, depth)?;
+            write_vtable_field_prefix(f, pretty, ctx.depth)?;
             match words.get(size_slot as usize) {
                 Some(size) => write!(f, "size: {size},")?,
                 None => write!(f, "size: <unavailable>,")?,
             }
-            write_vtable_field_prefix(f, pretty, depth)?;
+            write_vtable_field_prefix(f, pretty, ctx.depth)?;
             match words.get(align_slot as usize) {
                 Some(align) => write!(f, "align: {align},")?,
                 None => write!(f, "align: <unavailable>,")?,
@@ -2674,7 +2514,7 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
                 if slot == drop_in_place_slot || slot == size_slot || slot == align_slot {
                     continue;
                 }
-                write_vtable_field_prefix(f, pretty, depth)?;
+                write_vtable_field_prefix(f, pretty, ctx.depth)?;
                 if let Some(function) = functions.iter().find(|function| function.slot == slot) {
                     write!(f, "method[{slot}]: 0x{address:x} -> {},", function.display)?;
                 } else {
@@ -2684,7 +2524,7 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
 
             if pretty {
                 writeln!(f)?;
-                write_indent(f, depth + 1)?;
+                write_indent(f, ctx.depth + 1)?;
             } else {
                 write!(f, " ")?;
             }
@@ -2697,7 +2537,7 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
 
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }
@@ -2794,17 +2634,12 @@ fn infer_concrete_type<'a, T: DebugType<'a>>(
     Some(candidate)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn write_struct_fields<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     pretty: bool,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
+    ctx: RenderCtx<'_, 'a>,
     // When set, the named member is rendered as the given text rather than
     // recursing into its bytes — used to display a decoded field (e.g. a
     // `Notify`'s state) in place of its raw representation.
@@ -2824,7 +2659,7 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
 
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)?;
+            write_indent(f, ctx.depth + 1)?;
         } else if i > 0 {
             write!(f, ",")?;
         }
@@ -2840,11 +2675,7 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
                     bytes: mem_bytes,
                     _marker: std::marker::PhantomData,
                 },
-                depth: depth + 1,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
+                ctx: ctx.deeper(),
             };
             if pretty {
                 write!(f, "{:#}", child)?;
@@ -2862,24 +2693,19 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
 
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }
     write!(f, "}}")
 }
 
-#[allow(clippy::too_many_arguments)]
 fn write_rust_enum<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     pretty: bool,
-    depth: usize,
-    max_depth: usize,
-    proc: Option<&dyn ReadFromProc>,
-    visited: Option<&RefCell<HashSet<(u64, &'a str)>>>,
-    hex_integers: bool,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let Ok((variant_name, var_ty, offset)) = info
         .ty
@@ -2919,33 +2745,10 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
         return Ok(());
     }
 
-    if let Some(DebugFormat::Known(KnownFormat::DynPointer {
-        pointer_offset,
-        vtable,
-        vtable_offset,
-        drop_in_place,
-        size,
-        align,
-        tail_offset,
-    })) = variant_info.ty.debug_format()
+    if let Some(DebugFormat::Known(format @ KnownFormat::DynPointer { .. })) =
+        variant_info.ty.debug_format()
     {
-        return write_dyn_pointer(
-            f,
-            &variant_info,
-            None,
-            pointer_offset,
-            vtable,
-            vtable_offset,
-            drop_in_place,
-            size,
-            align,
-            tail_offset,
-            depth,
-            max_depth,
-            proc,
-            visited,
-            hex_integers,
-        );
+        return write_dyn_pointer(f, &variant_info, None, format, ctx);
     }
 
     // A payload carrying a semantic display format (a `&str`/`String`, a
@@ -2955,13 +2758,11 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
     // formatter keeps this general across every known format (trait objects
     // are handled above, with their own layout).
     if variant_info.ty.debug_format().is_some() {
+        // Peeling into the payload's own formatter is a representation detail,
+        // so it stays at the same depth.
         let child = DisplayRecurse {
             info: variant_info,
-            depth,
-            max_depth,
-            proc,
-            visited,
-            hex_integers,
+            ctx,
         };
         write!(f, "(")?;
         if pretty {
@@ -2990,7 +2791,7 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
 
         if pretty {
             writeln!(f)?;
-            write_indent(f, depth + 1)?;
+            write_indent(f, ctx.depth + 1)?;
         } else if i > 0 {
             write!(f, ",")?;
         }
@@ -3004,11 +2805,7 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
                     bytes: mem_bytes,
                     _marker: std::marker::PhantomData,
                 },
-                depth: depth + 1,
-                max_depth,
-                proc,
-                visited,
-                hex_integers,
+                ctx: ctx.deeper(),
             };
             if pretty {
                 write!(f, "{:#}", child)?;
@@ -3026,7 +2823,7 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
 
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }
