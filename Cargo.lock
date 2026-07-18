@@ -446,20 +446,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "disentangler"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "fallible-iterator 0.3.0",
- "gimli 0.32.3",
- "goblin 0.10.5",
- "memmap2",
- "proc",
- "rangemap",
-]
-
-[[package]]
 name = "dof"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
