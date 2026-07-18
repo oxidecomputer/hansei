@@ -998,6 +998,45 @@ fn discover_workers(
     Ok(workers)
 }
 
+/// Render every running frame's source-level locals through reify,
+/// discarding the output. The renderer follows the pointers inside
+/// formatted values (mpsc channels, `Notify`, `Semaphore`, `watch`, …)
+/// that the task/await analysis never touches; driving it through the
+/// recording target is what puts those pages into the snapshot, so the
+/// offline render tests replay the same reads. The depth is generous so
+/// the recorded reads are a superset of any the tests perform.
+///
+/// Each local is rendered twice: peeled (how `task-trace` displays it)
+/// and unpeeled (which dispatches the local's own top-level formatter —
+/// e.g. `bounded::Receiver`'s compact `MpscRx` form, which peeling would
+/// strip away). The two read slightly different page sets, so warming
+/// both keeps the snapshot faithful to either rendering path.
+fn warm_frame_values<T: proc::Target>(
+    ctx: &bundle::Context<'_, T>,
+    chain: &bundle::AwaitChain<'_>,
+) {
+    const WARM_DEPTH: usize = 200;
+    for frame in &chain.frames {
+        let payload = match &frame.state {
+            Some(state) => state.payload.as_ref(),
+            None => frame.future.as_ref(),
+        };
+        for m in payload.ty.members() {
+            if m.ty().size() == 0 {
+                continue;
+            }
+            let start = m.offset() as usize;
+            let end = start + m.ty().size() as usize;
+            let Some(bytes) = payload.bytes.get(start..end) else {
+                continue;
+            };
+            let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes);
+            let _ = format!("{:#}", v.display_from_target(ctx.proc, WARM_DEPTH));
+            let _ = format!("{:#}", v.peel().display_from_target(ctx.proc, WARM_DEPTH));
+        }
+    }
+}
+
 /// Drive the full bundle-backed analysis with a recording Target in
 /// place, then persist what it read (plan §11.3). Every task's stage
 /// and await chain is walked so the snapshot can answer the offline
@@ -1049,6 +1088,10 @@ fn exec_snapshot(args: SnapshotCmd, out: &mut dyn io::Write) -> Result<()> {
                         task.addr
                     )?;
                 }
+                // Drive reify's value renderer over the frame locals too,
+                // so the pages behind formatted values are recorded for
+                // the offline render tests.
+                warm_frame_values(&ctx, &chain);
                 chains += 1;
             }
             Ok(_) => {}
