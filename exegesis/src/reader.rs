@@ -14,8 +14,24 @@ use gimli::{Dwarf, UnitRef};
 use regex::Regex;
 use tracing::debug;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::num::NonZero;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Below this many named-type groups, the parallel layout partitioning in
+/// [`DwReader::named_aliases`] is not worth spawning threads for; run it inline.
+const PARALLEL_ALIAS_GROUP_THRESHOLD: usize = 256;
+
+/// Number of named-type groups a worker claims from the shared cursor at a
+/// time, amortizing the atomic fetch over the many trivial (size-one) groups.
+const ALIAS_BATCH: usize = 32;
+
+/// The thread count used when the caller leaves [`ReadArgs::cgu_parallelism`]
+/// unset. Mirrors [`OrderedParallelFold`]'s own default so parsing and
+/// finalization agree.
+fn default_parallelism() -> usize {
+    std::thread::available_parallelism().map_or(1, NonZero::get)
+}
 
 /// A global, deduplicated view of all types from the DWARF debug information.
 ///
@@ -62,8 +78,8 @@ pub struct Targets {
 pub struct ReadArgs {
     /// The namespaces and types to collect.
     pub targets: Option<Targets>,
-    /// Number of worker threads for parsing CGUs in parallel.
-    /// Defaults to [`thread::available_parallelism`].
+    /// Number of worker threads for parsing CGUs in parallel; also bounds the
+    /// parallel type finalization. Defaults to [`thread::available_parallelism`].
     pub cgu_parallelism: Option<NonZero<usize>>,
     /// Maximum number of CGUs that may be in-flight (parsed but not yet
     /// ingested by the collector). Defaults to `2 * cgu_parallelism`.
@@ -99,7 +115,8 @@ impl<'dw> DwReader<'dw> {
     /// * `args` — Controls parallelism and filtering:
     ///
     ///   - [`ReadArgs::cgu_parallelism`]: The number of worker threads that
-    ///     parse CGUs concurrently. Defaults to
+    ///     parse CGUs concurrently, and the fan-out of the parallel type
+    ///     finalization that follows. Defaults to
     ///     [`std::thread::available_parallelism`]. Higher values speed up
     ///     parsing on machines with many cores, but each worker holds a
     ///     fully-parsed [`CodegenUnit`] in memory until it is ingested by
@@ -141,9 +158,13 @@ impl<'dw> DwReader<'dw> {
             },
         );
 
-        if let Some(n) = args.cgu_parallelism {
-            fold = fold.parallelism(n.get());
-        }
+        // Resolve the parallelism knob to a concrete thread count so both the
+        // parallel fold and the parallel finalization honour it (finalization
+        // has no source to pull from, so it can't recover the default itself).
+        let parallelism = args
+            .cgu_parallelism
+            .map_or_else(default_parallelism, NonZero::get);
+        fold = fold.parallelism(parallelism);
         if let Some(n) = args.cgus_in_flight {
             fold = fold.max_in_flight(n.get());
         }
@@ -152,7 +173,7 @@ impl<'dw> DwReader<'dw> {
         // Workers have released their borrows now that the fold is done; take
         // ownership of the interned strings.
         collector.strings = interner.freeze();
-        collector.finalize_types();
+        collector.finalize_types(parallelism);
         Ok(collector)
     }
 
@@ -230,7 +251,7 @@ impl<'dw> DwReader<'dw> {
     /// Anonymous pointers and arrays are deduplicated structurally. That pass
     /// repeats because an outer pointer may only become equal after its
     /// pointee was deduplicated in an earlier pass.
-    fn finalize_types(&mut self) {
+    fn finalize_types(&mut self, parallelism: usize) {
         self.subs.clear();
 
         let specifications: Vec<_> = self
@@ -256,7 +277,11 @@ impl<'dw> DwReader<'dw> {
             self.subs.insert(duplicate, canonical);
         }
 
-        let mut named: BTreeMap<(u8, Option<NsId>, StrId), Vec<TypeId>> = BTreeMap::new();
+        // Grouping key order does not matter: each type id lands in exactly one
+        // group, and every group's canonical is chosen independently (by layout
+        // detail then lowest id), so a hash map is both correct and faster than
+        // the ordered map here.
+        let mut named: HashMap<(u8, Option<NsId>, StrId), Vec<TypeId>> = HashMap::new();
         for (&id, ty) in &self.types {
             if let Some(name) = ty.name() {
                 named
@@ -265,11 +290,8 @@ impl<'dw> DwReader<'dw> {
                     .push(id);
             }
         }
-        let mut named_aliases = Vec::new();
-        for ids in named.values() {
-            named_aliases.extend(self.compatible_named_aliases(ids));
-        }
-        for (duplicate, canonical) in named_aliases {
+        let groups: Vec<&[TypeId]> = named.values().map(Vec::as_slice).collect();
+        for (duplicate, canonical) in self.named_aliases(&groups, parallelism) {
             self.subs.insert(duplicate, canonical);
         }
 
@@ -299,6 +321,57 @@ impl<'dw> DwReader<'dw> {
                 break;
             }
         }
+    }
+
+    /// Partition every named-type group into layout-compatible classes and
+    /// collect the resulting `(duplicate, canonical)` aliases.
+    ///
+    /// The groups are independent and [`Self::compatible_named_aliases`] only
+    /// reads `self` (the `subs` map is not mutated until every group has been
+    /// processed), so the work is spread across a thread pool. Each type id
+    /// belongs to exactly one group, so a `duplicate` is produced by exactly
+    /// one group and the merged result does not depend on the order in which
+    /// chunks finish. This is the dominant cost of finalization on large
+    /// binaries, and the layout comparisons are CPU-bound and allocation-light,
+    /// so it scales well.
+    fn named_aliases(&self, groups: &[&[TypeId]], threads: usize) -> Vec<(TypeId, TypeId)> {
+        if threads <= 1 || groups.len() < PARALLEL_ALIAS_GROUP_THRESHOLD {
+            return groups
+                .iter()
+                .flat_map(|ids| self.compatible_named_aliases(ids))
+                .collect();
+        }
+
+        // Workers claim small batches of groups from a shared cursor. Group
+        // sizes vary by orders of magnitude (a handful of ubiquitous types
+        // dominate), so static chunking would leave one thread with the tail;
+        // claiming on demand keeps every core busy to the end.
+        let cursor = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    let cursor = &cursor;
+                    scope.spawn(move || {
+                        let mut aliases = Vec::new();
+                        loop {
+                            let start = cursor.fetch_add(ALIAS_BATCH, Ordering::Relaxed);
+                            if start >= groups.len() {
+                                break;
+                            }
+                            let end = (start + ALIAS_BATCH).min(groups.len());
+                            for &ids in &groups[start..end] {
+                                aliases.extend(self.compatible_named_aliases(ids));
+                            }
+                        }
+                        aliases
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap())
+                .collect()
+        })
     }
 
     fn alias_to_lowest(&mut self, ids: &[TypeId]) {
@@ -1103,7 +1176,7 @@ mod tests {
         insert_pointer(&mut reader, outer_pointer, pointer);
         insert_pointer(&mut reader, duplicate_outer_pointer, duplicate_pointer);
 
-        reader.finalize_types();
+        reader.finalize_types(1);
 
         assert_eq!(reader.canonicalize(duplicate), canonical);
         assert_eq!(reader.canonicalize(duplicate_pointer), pointer);
@@ -1135,7 +1208,7 @@ mod tests {
             }),
         );
 
-        reader.finalize_types();
+        reader.finalize_types(1);
 
         assert_eq!(reader.canonicalize(duplicate_array), array);
     }
@@ -1150,7 +1223,7 @@ mod tests {
         insert_struct(&mut reader, definition, Some("Value"), 8);
         reader.type_declarations.insert(declaration);
 
-        reader.finalize_types();
+        reader.finalize_types(1);
 
         assert_eq!(reader.canonicalize(declaration), definition);
         assert_eq!(reader.canonicalize(definition), definition);
@@ -1174,7 +1247,7 @@ mod tests {
         reader.type_declarations.insert(duplicate_declaration);
         reader.type_specifications.insert(definition, declaration);
 
-        reader.finalize_types();
+        reader.finalize_types(1);
 
         assert_eq!(reader.canonicalize(declaration), definition);
         assert_eq!(reader.canonicalize(duplicate_declaration), definition);
@@ -1196,7 +1269,7 @@ mod tests {
         insert_struct(&mut reader, canonical, Some("Value"), 8);
         insert_struct(&mut reader, duplicate, Some("Value"), 8);
 
-        reader.finalize_types();
+        reader.finalize_types(1);
 
         assert_eq!(reader.canonicalize(duplicate), canonical);
     }
@@ -1215,7 +1288,7 @@ mod tests {
         insert_struct(&mut reader, duplicate_small, Some("Value"), 4);
         reader.type_declarations.insert(declaration);
 
-        reader.finalize_types();
+        reader.finalize_types(1);
 
         assert_eq!(reader.canonicalize(duplicate_small), small);
         assert_eq!(reader.canonicalize(small), small);
@@ -1247,7 +1320,7 @@ mod tests {
             }),
         );
 
-        reader.finalize_types();
+        reader.finalize_types(1);
 
         assert_eq!(reader.canonicalize(anonymous_a), anonymous_a);
         assert_eq!(reader.canonicalize(anonymous_b), anonymous_b);
