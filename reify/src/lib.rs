@@ -1207,7 +1207,7 @@ fn decoded_byte(bytes: &[u8], offset: u64, decode: &ScalarDecode) -> String {
 }
 
 /// Render a parking_lot `RawMutex` as its decoded lock state, e.g.
-/// `parking_lot::raw_mutex::RawMutex: locked=locked, parked=unparked`.
+/// `parking_lot::raw_mutex::RawMutex: locked=true, parked=false`.
 fn write_raw_mutex(
     f: &mut fmt::Formatter<'_>,
     name: &str,
@@ -1401,7 +1401,7 @@ fn write_notify_waiters<'a, T: DebugType<'a>>(
 }
 
 /// Render a `tokio::sync::watch::state::AtomicState` as its decoded closed flag
-/// and version, e.g. `…::AtomicState: closed=open, version=4`.
+/// and version, e.g. `…::AtomicState: closed=false, version=4`.
 fn write_watch_state(
     f: &mut fmt::Formatter<'_>,
     name: &str,

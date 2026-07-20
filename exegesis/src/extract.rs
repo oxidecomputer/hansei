@@ -3229,6 +3229,11 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Build a single-bit boolean [`BitField`] rendered as `false`/`true`.
+    fn bool_field(&mut self, name: &str, shift: u8) -> BitField {
+        self.enum_field(name, shift, 1, &[(0, "false"), (1, "true")])
+    }
+
     /// Build an unsigned-integer [`BitField`] covering all bits at and above
     /// `shift` (`width: None`).
     fn uint_tail_field(&mut self, name: &str, shift: u8) -> BitField {
@@ -3243,8 +3248,8 @@ impl<'a> Emitter<'a> {
 
     /// parking_lot mutex state byte: bit 0 locked, bit 1 parked.
     fn mutex_byte_decode(&mut self) -> ScalarDecode {
-        let locked = self.enum_field("locked", 0, 1, &[(0, "unlocked"), (1, "locked")]);
-        let parked = self.enum_field("parked", 1, 1, &[(0, "unparked"), (1, "parked")]);
+        let locked = self.bool_field("locked", 0);
+        let parked = self.bool_field("parked", 1);
         ScalarDecode::Bits(vec![locked, parked])
     }
 
@@ -3272,7 +3277,7 @@ impl<'a> Emitter<'a> {
     /// tokio batch-semaphore permit word: bit 0 closed, the rest the available
     /// permit count.
     fn semaphore_permits_decode(&mut self) -> ScalarDecode {
-        let closed = self.enum_field("closed", 0, 1, &[(0, "open"), (1, "closed")]);
+        let closed = self.bool_field("closed", 0);
         let permits = self.uint_tail_field("permits", 1);
         ScalarDecode::Bits(vec![closed, permits])
     }
@@ -3280,20 +3285,12 @@ impl<'a> Emitter<'a> {
     /// A boolean byte rendered bare as `false`/`true` (an empty field name, so
     /// no `name=` prefix) — for a bool shown under a record label of its own.
     fn bool_decode(&mut self) -> ScalarDecode {
-        let name = self.interner.intern("");
-        let no = self.interner.intern("false");
-        let yes = self.interner.intern("true");
-        ScalarDecode::Bits(vec![BitField {
-            name,
-            shift: 0,
-            width: None,
-            render: FieldRender::Enum(vec![(0, no), (1, yes)]),
-        }])
+        ScalarDecode::Bits(vec![self.bool_field("", 0)])
     }
 
     /// tokio watch `AtomicState`: bit 0 closed, the rest the version counter.
     fn watch_state_decode(&mut self) -> ScalarDecode {
-        let closed = self.enum_field("closed", 0, 1, &[(0, "open"), (1, "closed")]);
+        let closed = self.bool_field("closed", 0);
         let version = self.uint_tail_field("version", 1);
         ScalarDecode::Bits(vec![closed, version])
     }
