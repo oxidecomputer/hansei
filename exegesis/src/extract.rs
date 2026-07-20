@@ -514,6 +514,229 @@ pub fn extract_from_view(
     extract_from_view_with_vtable_types(view, symbols, ident, opts, &[])
 }
 
+/// Below this many subprograms, sweeping them by hand beats spawning threads.
+const SWEEP_PARALLEL_THRESHOLD: usize = 4096;
+
+/// Contributions gathered by phase 1's subprogram sweep (§7.1). Accumulated per
+/// worker and merged so the sweep — dominated by demangling every `poll*`
+/// symbol — can run in parallel.
+#[derive(Default)]
+struct Sweep {
+    /// (T, S) → accumulating seed.
+    seeds: BTreeMap<(TypeId, TypeId), TaskSeed>,
+    /// Canonical T → mangled `<T as Future>::poll` symbols.
+    fut_polls: BTreeMap<TypeId, BTreeSet<String>>,
+    /// Canonical T → mangled `drop_glue::<T>` symbols.
+    drop_glues: BTreeMap<TypeId, BTreeSet<String>>,
+    /// `drop_glue<T>` display name's inner text → symbols, for glue DIEs
+    /// without a template-parameter reference.
+    glue_by_name: BTreeMap<String, BTreeSet<String>>,
+    /// Coroutine env → its resume fn's declaration coordinates.
+    resume_locs: BTreeMap<TypeId, OwnedLoc>,
+    vtable_missing_linkage: usize,
+    dyn_decl_only_self: usize,
+    dyn_unresolved_self: usize,
+}
+
+impl Sweep {
+    /// Fold another worker's contributions in. Called in chunk (i.e. source)
+    /// order, so the "first wins" fields resolve exactly as a serial sweep.
+    fn merge(&mut self, other: Sweep) {
+        for (key, seed) in other.seeds {
+            let dst = self.seeds.entry(key).or_default();
+            dst.symbols.extend(seed.symbols);
+            dst.poll_symbols.extend(seed.poll_symbols);
+            if dst.dealloc_param.is_none() {
+                dst.dealloc_param = seed.dealloc_param;
+            }
+            if dst.poll_func_loc.is_none() {
+                dst.poll_func_loc = seed.poll_func_loc;
+            }
+        }
+        for (t, syms) in other.fut_polls {
+            self.fut_polls.entry(t).or_default().extend(syms);
+        }
+        for (t, syms) in other.drop_glues {
+            self.drop_glues.entry(t).or_default().extend(syms);
+        }
+        for (name, syms) in other.glue_by_name {
+            self.glue_by_name.entry(name).or_default().extend(syms);
+        }
+        for (t, loc) in other.resume_locs {
+            self.resume_locs.entry(t).or_insert(loc);
+        }
+        self.vtable_missing_linkage += other.vtable_missing_linkage;
+        self.dyn_decl_only_self += other.dyn_decl_only_self;
+        self.dyn_unresolved_self += other.dyn_unresolved_self;
+    }
+}
+
+/// Sweep every subprogram into task seeds, dyn-future poll symbols, drop glue,
+/// and coroutine resume locations (§7.1). The per-function classification is
+/// read-only over the reader and independent, so it is fanned out across a
+/// thread pool and the per-worker [`Sweep`]s merged in source order.
+fn sweep_functions(view: &DwView<'_>, raw_ns: Option<NsId>, glue_ns: Option<NsId>) -> Sweep {
+    let reader = view.collector();
+    let funcs: Vec<Func> = view.functions().map(|(_, f)| f).collect();
+
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    if threads <= 1 || funcs.len() < SWEEP_PARALLEL_THRESHOLD {
+        let mut out = Sweep::default();
+        for func in &funcs {
+            sweep_function(reader, raw_ns, glue_ns, func, &mut out);
+        }
+        return out;
+    }
+
+    let chunk = funcs.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = funcs
+            .chunks(chunk)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut out = Sweep::default();
+                    for func in chunk {
+                        sweep_function(reader, raw_ns, glue_ns, func, &mut out);
+                    }
+                    out
+                })
+            })
+            .collect();
+        let mut merged = Sweep::default();
+        for handle in handles {
+            merged.merge(handle.join().expect("function-sweep thread panicked"));
+        }
+        merged
+    })
+}
+
+/// Classify one subprogram into `out`: a task vtable fn, drop glue, a coroutine
+/// resume fn, or a `Future::poll` impl.
+fn sweep_function(
+    reader: &DwReader<'_>,
+    raw_ns: Option<NsId>,
+    glue_ns: Option<NsId>,
+    func: &Func<'_>,
+    out: &mut Sweep,
+) {
+    let Some(name) = func.name() else { return };
+
+    if func.namespace_id() == raw_ns && raw_ns.is_some() {
+        let Some(vtable_fn) = VTABLE_FNS
+            .iter()
+            .find(|v| name.strip_prefix(*v).is_some_and(|r| r.starts_with('<')))
+        else {
+            return;
+        };
+        let Some(linkage) = func.linkage_name() else {
+            out.vtable_missing_linkage += 1;
+            return;
+        };
+        let mut t = None;
+        let mut s = None;
+        for p in func.template_params() {
+            match p.name() {
+                Some("T") => t = Some(reader.canonicalize(p.type_id())),
+                Some("S") => s = Some(reader.canonicalize(p.type_id())),
+                _ => {}
+            }
+        }
+        let (Some(t), Some(s)) = (t, s) else {
+            debug!("vtable fn without T/S template params: {name}");
+            return;
+        };
+        let seed = out.seeds.entry((t, s)).or_default();
+        seed.symbols.insert(strip(linkage).to_owned());
+        if *vtable_fn == "poll" {
+            seed.poll_symbols.insert(strip(linkage).to_owned());
+            if seed.poll_func_loc.is_none() {
+                seed.poll_func_loc = func.source_loc().map(|l| owned_loc(&l));
+            }
+        }
+        if *vtable_fn == "dealloc" && seed.dealloc_param.is_none() {
+            seed.dealloc_param = func.params().next().and_then(|p| p.raw().type_id);
+        }
+    } else if func.namespace_id() == glue_ns && glue_ns.is_some() && name.starts_with("drop_glue<") {
+        let Some(linkage) = func.linkage_name() else {
+            return;
+        };
+        let params: Vec<_> = func.template_params().collect();
+        if let [p] = params.as_slice() {
+            out.drop_glues
+                .entry(reader.canonicalize(p.type_id()))
+                .or_default()
+                .insert(strip(linkage).to_owned());
+        } else if let Some(inner) = name
+            .strip_prefix("drop_glue<")
+            .and_then(|r| r.strip_suffix('>'))
+        {
+            out.glue_by_name
+                .entry(inner.to_owned())
+                .or_default()
+                .insert(strip(linkage).to_owned());
+        }
+    } else if name.starts_with("{async_fn#")
+        || name.starts_with("{async_block#")
+        || name.starts_with("{closure#")
+    {
+        // Coroutine resume functions are the compiler-generated
+        // `<env as Future>::poll` bodies — the symbols `dyn Future` vtables
+        // actually point at for async fn/block awaitees. Recognized by shape:
+        // `fn(Pin<&mut T>) -> Poll<…>` with a coroutine-env self type.
+        let Some(linkage) = func.linkage_name() else {
+            return;
+        };
+        let poll_shaped = func
+            .return_type()
+            .and_then(|t| t.name())
+            .is_some_and(|n| n.starts_with("Poll<"));
+        if !poll_shaped {
+            return;
+        }
+        match future_poll_self_type(reader, func) {
+            Ok(t) if is_coroutine_env(reader, t) => {
+                out.fut_polls
+                    .entry(t)
+                    .or_default()
+                    .insert(strip(linkage).to_owned());
+                if let Some(loc) = func.source_loc() {
+                    out.resume_locs.entry(t).or_insert_with(|| owned_loc(&loc));
+                }
+            }
+            _ => {}
+        }
+    } else if let Some(linkage) = func.linkage_name() {
+        // `<T as Future>::poll` impls live in `{impl#N}` namespaces; the trait
+        // path is only visible in the mangled name.
+        if !name.starts_with("poll") {
+            return;
+        }
+        let demangled = format!("{:#}", rustc_demangle::demangle(linkage));
+        if !demangled.ends_with(FUTURE_POLL_SUFFIX) {
+            return;
+        }
+        match future_poll_self_type(reader, func) {
+            Ok(t) => {
+                out.fut_polls
+                    .entry(t)
+                    .or_default()
+                    .insert(strip(linkage).to_owned());
+            }
+            Err(SelfRecovery::DeclOnly) => {
+                // Fully-inlined blanket impls (`Pin<P>`, `&mut F`) whose self
+                // type DIE is a bare declaration. Those types never back a
+                // `dyn Future` vtable, so nothing is lost.
+                debug!("declaration-only Future::poll self type: {demangled}");
+                out.dyn_decl_only_self += 1;
+            }
+            Err(SelfRecovery::Unresolved) => {
+                debug!("cannot recover T from Future::poll self param: {demangled}");
+                out.dyn_unresolved_self += 1;
+            }
+        }
+    }
+}
+
 fn extract_from_view_with_vtable_types(
     view: &DwView<'_>,
     symbols: &[&str],
@@ -531,146 +754,19 @@ fn extract_from_view_with_vtable_types(
     let glue_ns = view.find_ns(DROP_GLUE_NS).map(|n| n.id());
 
     // --- Phase 1: one sweep over all subprograms (§7.1). ---
-
-    // (T, S) → accumulating seed.
-    let mut seeds: BTreeMap<(TypeId, TypeId), TaskSeed> = BTreeMap::new();
-    // Canonical T → mangled `<T as Future>::poll` symbols.
-    let mut fut_polls: BTreeMap<TypeId, BTreeSet<String>> = BTreeMap::new();
-    // Canonical T → mangled `drop_glue::<T>` symbols.
-    let mut drop_glues: BTreeMap<TypeId, BTreeSet<String>> = BTreeMap::new();
-    // `drop_glue<T>` display name's inner text → symbols, for glue DIEs
-    // without a template-parameter reference (release builds omit it on
-    // out-of-line definitions).
-    let mut glue_by_name: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    // Coroutine env → its resume fn's declaration coordinates. The resume
-    // fn carries the async fn/block's own decl coords, which the env type
-    // DIE lacks (§5.5) and which survive even when the constructing
-    // wrapper fn was MIR-inlined out of the debug info entirely.
-    let mut resume_locs: BTreeMap<TypeId, OwnedLoc> = BTreeMap::new();
-
-    for (_, func) in view.functions() {
-        let Some(name) = func.name() else { continue };
-
-        if func.namespace_id() == raw_ns && raw_ns.is_some() {
-            let Some(vtable_fn) = VTABLE_FNS
-                .iter()
-                .find(|v| name.strip_prefix(*v).is_some_and(|r| r.starts_with('<')))
-            else {
-                continue;
-            };
-            let Some(linkage) = func.linkage_name() else {
-                stats.vtable_missing_linkage += 1;
-                continue;
-            };
-            let mut t = None;
-            let mut s = None;
-            for p in func.template_params() {
-                match p.name() {
-                    Some("T") => t = Some(reader.canonicalize(p.type_id())),
-                    Some("S") => s = Some(reader.canonicalize(p.type_id())),
-                    _ => {}
-                }
-            }
-            let (Some(t), Some(s)) = (t, s) else {
-                debug!("vtable fn without T/S template params: {name}");
-                continue;
-            };
-            let seed = seeds.entry((t, s)).or_default();
-            seed.symbols.insert(strip(linkage).to_owned());
-            if *vtable_fn == "poll" {
-                seed.poll_symbols.insert(strip(linkage).to_owned());
-                if seed.poll_func_loc.is_none() {
-                    seed.poll_func_loc = func.source_loc().map(|l| owned_loc(&l));
-                }
-            }
-            if *vtable_fn == "dealloc" && seed.dealloc_param.is_none() {
-                seed.dealloc_param = func.params().next().and_then(|p| p.raw().type_id);
-            }
-        } else if func.namespace_id() == glue_ns
-            && glue_ns.is_some()
-            && name.starts_with("drop_glue<")
-        {
-            let Some(linkage) = func.linkage_name() else {
-                continue;
-            };
-            let params: Vec<_> = func.template_params().collect();
-            if let [p] = params.as_slice() {
-                drop_glues
-                    .entry(reader.canonicalize(p.type_id()))
-                    .or_default()
-                    .insert(strip(linkage).to_owned());
-            } else if let Some(inner) = name
-                .strip_prefix("drop_glue<")
-                .and_then(|r| r.strip_suffix('>'))
-            {
-                glue_by_name
-                    .entry(inner.to_owned())
-                    .or_default()
-                    .insert(strip(linkage).to_owned());
-            }
-        } else if name.starts_with("{async_fn#")
-            || name.starts_with("{async_block#")
-            || name.starts_with("{closure#")
-        {
-            // Coroutine resume functions are the compiler-generated
-            // `<env as Future>::poll` bodies — the symbols `dyn Future`
-            // vtables actually point at for async fn/block awaitees.
-            // Recognized by shape: `fn(Pin<&mut T>) -> Poll<…>` with a
-            // coroutine-env self type.
-            let Some(linkage) = func.linkage_name() else {
-                continue;
-            };
-            let poll_shaped = func
-                .return_type()
-                .and_then(|t| t.name())
-                .is_some_and(|n| n.starts_with("Poll<"));
-            if !poll_shaped {
-                continue;
-            }
-            match future_poll_self_type(reader, &func) {
-                Ok(t) if is_coroutine_env(reader, t) => {
-                    fut_polls
-                        .entry(t)
-                        .or_default()
-                        .insert(strip(linkage).to_owned());
-                    if let Some(loc) = func.source_loc() {
-                        resume_locs.entry(t).or_insert_with(|| owned_loc(&loc));
-                    }
-                }
-                _ => {}
-            }
-        } else if let Some(linkage) = func.linkage_name() {
-            // `<T as Future>::poll` impls live in `{impl#N}` namespaces;
-            // the trait path is only visible in the mangled name.
-            if !name.starts_with("poll") {
-                continue;
-            }
-            let demangled = format!("{:#}", rustc_demangle::demangle(linkage));
-            if !demangled.ends_with(FUTURE_POLL_SUFFIX) {
-                continue;
-            }
-            match future_poll_self_type(reader, &func) {
-                Ok(t) => {
-                    fut_polls
-                        .entry(t)
-                        .or_default()
-                        .insert(strip(linkage).to_owned());
-                }
-                Err(SelfRecovery::DeclOnly) => {
-                    // Fully-inlined blanket impls (`Pin<P>`, `&mut F`)
-                    // whose self type DIE is a bare declaration. Those
-                    // types never back a `dyn Future` vtable, so nothing
-                    // is lost.
-                    debug!("declaration-only Future::poll self type: {demangled}");
-                    stats.dyn_decl_only_self += 1;
-                }
-                Err(SelfRecovery::Unresolved) => {
-                    debug!("cannot recover T from Future::poll self param: {demangled}");
-                    stats.dyn_unresolved_self += 1;
-                }
-            }
-        }
-    }
+    let Sweep {
+        seeds,
+        fut_polls,
+        drop_glues,
+        glue_by_name,
+        resume_locs,
+        vtable_missing_linkage,
+        dyn_decl_only_self,
+        dyn_unresolved_self,
+    } = sweep_functions(view, raw_ns, glue_ns);
+    stats.vtable_missing_linkage += vtable_missing_linkage;
+    stats.dyn_decl_only_self += dyn_decl_only_self;
+    stats.dyn_unresolved_self += dyn_unresolved_self;
 
     if seeds.is_empty() && !opts.allow_missing_infra {
         return Err(Error::NoTaskFutures);
