@@ -218,6 +218,75 @@ pub enum DebugFormat {
     Transparent { member: Selector },
     /// Apply semantics for a known family of types.
     Known(KnownFormat),
+    /// Render the type by interpreting a composable [`DisplayNode`] program.
+    ///
+    /// This is the target representation of the Formatter IR: instead of one
+    /// bespoke [`KnownFormat`] variant per type, a detector emits a tree of a
+    /// few shared combinators that reify walks with one generic evaluator. It
+    /// is introduced alongside `Known` and formatters migrate onto it one at a
+    /// time, so during the transition a bundle may carry either spelling.
+    Node(DisplayNode),
+}
+
+/// A composable display program for a known type: a recursive tree of nodes
+/// that reify interprets with a single generic evaluator, in place of a
+/// per-type `write_*` renderer.
+///
+/// Addressing is by [`Selector`] (resolved against the concrete [`TypeDef`] at
+/// extraction time); related node types are [`BundleTypeId`]s. reify holds a
+/// parallel *resolved* form of this tree carrying byte offsets rather than
+/// selectors; the two share this shape.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum DisplayNode {
+    /// Decode a single machine word and print it in place of the value.
+    ///
+    /// `at` reaches the word (a `usize`, an atomic's inner integer, a state
+    /// byte, …); the word's byte width is the size of the type `at` lands on.
+    /// `decode` interprets its bits (see [`ScalarDecode`]).
+    Scalar { at: Selector, decode: ScalarDecode },
+    /// Render a curated record of named fields, in order, as
+    /// `<type> { field, field, … }`.
+    ///
+    /// Unlike ordinary structural display this shows *only* the listed
+    /// [`Field`]s — the point of a formatter is to hide internal detail — so a
+    /// field is included only if it appears here. A field's value is either a
+    /// real member rendered structurally, or a nested node; see [`Field`]. The
+    /// record is titled with the name of the type the node is rendered against
+    /// (the formatted type at top level, or a list element's `node_ty`).
+    Struct { fields: Vec<Field> },
+    /// Walk an intrusive singly-linked list and render its nodes as
+    /// `[elem, elem, …]`.
+    ///
+    /// `head` (rooted at the containing type) reaches the head word — a
+    /// niche-optimized `Option<NonNull<Node>>`, so a zero word is an empty
+    /// list. Each element is a `node_ty` value read from the target at the
+    /// current node address and rendered via `node`; `next` (rooted at
+    /// `node_ty`) reaches that element's successor word. reify guards the walk
+    /// against cycles and runaway length.
+    List {
+        head: Selector,
+        next: Selector,
+        node: Box<DisplayNode>,
+        node_ty: BundleTypeId,
+    },
+}
+
+/// One field of a [`DisplayNode::Struct`] record.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum Field {
+    /// Include real member `index` of the rendered type, labeled with its
+    /// DWARF name and rendered with reify's ordinary structural display. This
+    /// is the one field kind that recurses into a member's own type.
+    Member(u32),
+    /// A synthesized field: an explicit `label` whose value is computed by
+    /// `node`. The node's selectors are rooted at the rendered type (the same
+    /// root as the enclosing `Struct`).
+    Named { label: StrRef, node: DisplayNode },
+    /// Real member `index`'s DWARF name, but with its value replaced by
+    /// `node` (rooted at the rendered type). Reuses the member's name so the
+    /// label need not be duplicated as a string; used to decode one field of a
+    /// struct in place while keeping its name.
+    Override { index: u32, node: DisplayNode },
 }
 
 /// Closed set of semantic formatters understood by reify.

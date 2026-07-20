@@ -9,8 +9,8 @@
 //! tool version that wrote it (`format_version` bumps freely).
 
 use crate::bundle::schema::{
-    Bundle, BundleTypeId, FieldRender, ScalarDecode, Selector, StaticsTable, Step, TypeDef,
-    strip_llvm_suffix,
+    Bundle, BundleTypeId, DisplayNode, Field, FieldRender, ScalarDecode, Selector, StaticsTable,
+    Step, TypeDef, strip_llvm_suffix,
 };
 use crate::bundle::strings::StrRef;
 use crate::symbols::normalized_value_index;
@@ -241,6 +241,75 @@ fn check_scalar_decode(
                     ));
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// Recursively validate a [`DisplayNode`] tree rooted at type `scope` (the type
+/// the node is rendered against): every [`Selector`] resolves to a compatible
+/// shape, every referenced member index and type id is in range, and every
+/// [`ScalarDecode`] table is well-formed for its word width. A malformed
+/// detector tree becomes a save/load-time error rather than garbage at render.
+fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &str) -> Result<()> {
+    let corrupt = |msg: String| Err(Error::Corrupt(format!("{what}: {msg}")));
+    match node {
+        DisplayNode::Scalar { at, decode } => {
+            let landed = check_selector(bundle, scope, at, Shape::Any, what)?;
+            let size = type_size(bundle, landed, &mut Vec::new())
+                .ok_or_else(|| Error::Corrupt(format!("{what}: scalar lands on an unsized type")))?;
+            if size == 0 || size > 8 {
+                return corrupt(format!("scalar word size {size} is not in 1..=8 bytes"));
+            }
+            check_scalar_decode(bundle, decode, (size * 8) as u8, what)?;
+        }
+        DisplayNode::Struct { fields } => {
+            let members = match bundle.types.get(scope) {
+                Some(TypeDef::Struct { members, .. } | TypeDef::Union { members, .. }) => {
+                    Some(members)
+                }
+                _ => None,
+            };
+            let member_in_range = |index: u32, kind: &str| {
+                let members = members.ok_or_else(|| {
+                    Error::Corrupt(format!(
+                        "{what}: {kind} field on non-aggregate type {}",
+                        scope.0
+                    ))
+                })?;
+                if members.get(index as usize).is_none() {
+                    return Err(Error::Corrupt(format!(
+                        "{what}: {kind} member index {index} out of range"
+                    )));
+                }
+                Ok(())
+            };
+            for (i, field) in fields.iter().enumerate() {
+                match field {
+                    Field::Member(index) => member_in_range(*index, "Member")?,
+                    Field::Named { label, node } => {
+                        if bundle.strings.get(*label).is_none() {
+                            return corrupt(format!(
+                                "field {i} label string ref {} out of range",
+                                label.0
+                            ));
+                        }
+                        check_node(bundle, scope, node, what)?;
+                    }
+                    Field::Override { index, node } => {
+                        member_in_range(*index, "Override")?;
+                        check_node(bundle, scope, node, what)?;
+                    }
+                }
+            }
+        }
+        DisplayNode::List { head, next, node, node_ty } => {
+            check_selector(bundle, scope, head, Shape::PointerSized, what)?;
+            if bundle.types.get(*node_ty).is_none() {
+                return corrupt(format!("list node type id {} out of range", node_ty.0));
+            }
+            check_selector(bundle, *node_ty, next, Shape::PointerSized, what)?;
+            check_node(bundle, *node_ty, node, what)?;
         }
     }
     Ok(())
@@ -1036,6 +1105,9 @@ impl Bundle {
                             id.0
                         ));
                     }
+                }
+                crate::bundle::schema::DebugFormat::Node(node) => {
+                    check_node(self, id, node, "node debug format")?;
                 }
             }
         }
