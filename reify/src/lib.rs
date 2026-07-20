@@ -778,12 +778,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
                     ctx,
                 );
             }
-            DebugFormat::Known(KnownFormat::RawMutex {
-                state_offset,
-                state_decode,
-            }) => {
-                return write_raw_mutex(f, ty.name(), info.bytes, state_offset, &state_decode);
-            }
             DebugFormat::Known(KnownFormat::WatchState {
                 state_offset,
                 state_decode,
@@ -865,6 +859,13 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 return write_btree_map(f, info, kf, ctx);
             }
             DebugFormat::Node(node) => {
+                // A top-level `Scalar` formatter (e.g. a parking_lot `RawMutex`)
+                // has no enclosing field label to give it context, so it is
+                // prefixed with the type name — `<name>: <decoded>`.
+                // `Struct`/`List` nodes name themselves as they render.
+                if let DisplayNode::Scalar { .. } = node {
+                    write!(f, "{}: ", ty.name())?;
+                }
                 return eval_node(f, &node, &ty, info.bytes, info.addr, ctx, f.alternate());
             }
             DebugFormat::Transparent { target, offset } => (target, offset, ctx.proc, ctx.visited),
@@ -1192,27 +1193,6 @@ fn decoded_usize(bytes: &[u8], offset: u64, decode: &ScalarDecode) -> String {
         Some(word) => apply(decode, word),
         None => "<truncated>".to_string(),
     }
-}
-
-/// Read the single byte at `offset` and decode it, or `<truncated>` if the
-/// bytes are short.
-fn decoded_byte(bytes: &[u8], offset: u64, decode: &ScalarDecode) -> String {
-    match bytes.get(offset as usize) {
-        Some(&byte) => apply(decode, u64::from(byte)),
-        None => "<truncated>".to_string(),
-    }
-}
-
-/// Render a parking_lot `RawMutex` as its decoded lock state, e.g.
-/// `parking_lot::raw_mutex::RawMutex: locked=true, parked=false`.
-fn write_raw_mutex(
-    f: &mut fmt::Formatter<'_>,
-    name: &str,
-    bytes: &[u8],
-    state_offset: u64,
-    decode: &ScalarDecode,
-) -> fmt::Result {
-    write!(f, "{name}: {}", decoded_byte(bytes, state_offset, decode))
 }
 
 /// Render a struct, replacing one member's value with `decoded` text rather

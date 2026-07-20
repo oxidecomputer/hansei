@@ -327,14 +327,6 @@ pub enum KnownFormat {
         wake_by_ref: u32,
         drop: u32,
     },
-    /// Display a `parking_lot::raw_mutex::RawMutex` as its decoded lock state
-    /// rather than a raw atomic byte. `state` is the member path to the
-    /// single-byte atomic; `state_decode` carries parking_lot's fixed bit
-    /// encoding (`LOCKED_BIT = 1`, `PARKED_BIT = 2`).
-    RawMutex {
-        state: Selector,
-        state_decode: ScalarDecode,
-    },
     /// Display a `tokio::sync::batch_semaphore::Semaphore` with its `permits`
     /// field decoded. `permits` is the member path to the atomic `usize`;
     /// reify renders the struct normally but interprets that field as the
