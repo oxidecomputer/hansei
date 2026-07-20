@@ -422,7 +422,30 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
         .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
     let dwarf = dwarf_sections.borrow(borrow_section);
 
-    let reader = DwReader::read_types(&dwarf, Default::default())?;
+    // Gathering the symbol tables and the vtable-type hints depends only on
+    // `obj`, not on the DWARF, so run it on a helper thread that overlaps the
+    // (parallel) parse. Serially it is ~0.4s of scanning `.symtab`/`.dynsym`
+    // after the read has already finished; overlapped, it is free.
+    let (reader, symbols, vtable_types) = std::thread::scope(|scope| {
+        let aux = scope.spawn(|| {
+            // Named statics can be absent from `.debug_info` yet present in the
+            // symbol table (§5.4): illumos release builds emit no
+            // `DW_TAG_variable` DIE for tokio/std dependency statics such as
+            // `WAKER_VTABLE`, but keep the symbol in `.symtab`/`.dynsym`. Gather
+            // both tables so `find_statics` can fall back to a mangled-name match.
+            let symbols: Vec<&str> = obj
+                .symbols()
+                .chain(obj.dynamic_symbols())
+                .filter_map(|s| s.name().ok())
+                .collect();
+            let vtable_types = discover_vtable_types(&obj);
+            (symbols, vtable_types)
+        });
+        let reader = DwReader::read_types(&dwarf, Default::default())?;
+        let (symbols, vtable_types) = aux.join().expect("symbol-gathering thread panicked");
+        Ok::<_, Error>((reader, symbols, vtable_types))
+    })?;
+
     let view = reader.view();
 
     let ident = BinaryIdent {
@@ -436,19 +459,6 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
             .expect("BLAKE3 hashing thread panicked")
             .into(),
     };
-
-    // Named statics can be absent from `.debug_info` yet present in the
-    // symbol table (§5.4): illumos release builds emit no `DW_TAG_variable`
-    // DIE for tokio/std dependency statics such as `WAKER_VTABLE`, but keep
-    // the symbol in `.symtab`/`.dynsym`. Gather both symbol tables so
-    // `find_statics` can fall back to a mangled-name match.
-    let symbols: Vec<&str> = obj
-        .symbols()
-        .chain(obj.dynamic_symbols())
-        .filter_map(|s| s.name().ok())
-        .collect();
-
-    let vtable_types = discover_vtable_types(&obj);
 
     extract_from_view_with_vtable_types(&view, &symbols, ident, opts, &vtable_types)
 }
