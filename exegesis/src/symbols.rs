@@ -68,7 +68,10 @@ pub fn normalized_symbol_index<'a>(
 /// `<T as Trait>::method`. The returned slice borrows the demangled symbol.
 pub fn concrete_type_from_vtable_symbol(symbol: &str) -> Option<&str> {
     for marker in ["core::ptr::drop_glue::<", "core::ptr::drop_in_place::<"] {
-        if let Some(rest) = symbol.strip_prefix(marker).and_then(|rest| rest.strip_suffix('>')) {
+        if let Some(rest) = symbol
+            .strip_prefix(marker)
+            .and_then(|rest| rest.strip_suffix('>'))
+        {
             return Some(rest);
         }
     }
@@ -145,20 +148,20 @@ mod tests {
 
     #[test]
     fn value_index_collapses_codegen_aliases() {
-        let symbols = BTreeMap::from([
-            (DEBUG.to_owned(), 7),
-            (NODEBUG.to_owned(), 7),
-        ]);
-        assert_eq!(normalized_value_index(&symbols).values().next(), Some(&vec![7]));
+        let symbols = BTreeMap::from([(DEBUG.to_owned(), 7), (NODEBUG.to_owned(), 7)]);
+        assert_eq!(
+            normalized_value_index(&symbols).values().next(),
+            Some(&vec![7])
+        );
     }
 
     #[test]
     fn value_index_preserves_semantic_ambiguity() {
-        let symbols = BTreeMap::from([
-            (DEBUG.to_owned(), 7),
-            (NODEBUG.to_owned(), 9),
-        ]);
-        assert_eq!(normalized_value_index(&symbols).values().next(), Some(&vec![7, 9]));
+        let symbols = BTreeMap::from([(DEBUG.to_owned(), 7), (NODEBUG.to_owned(), 9)]);
+        assert_eq!(
+            normalized_value_index(&symbols).values().next(),
+            Some(&vec![7, 9])
+        );
     }
 
     #[test]

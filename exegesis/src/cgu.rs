@@ -1,7 +1,7 @@
 use crate::raw_types::{
     CommonAttrs, Encoding, NamespaceTable, NsId, RawArray, RawBase, RawEnum, RawEnumerator,
-    RawGenericParameter, RawInlinedSubroutine, RawMember, RawPointer, RawStaticVariable, RawStruct,
-    RawSubParameter, RawFunc, RawType, RawUnion, RawVariant, SourceLoc, VariantShape,
+    RawFunc, RawGenericParameter, RawInlinedSubroutine, RawMember, RawPointer, RawStaticVariable,
+    RawStruct, RawSubParameter, RawType, RawUnion, RawVariant, SourceLoc, VariantShape,
 };
 use crate::{Error, FuncId, Result, Slice, TypeId, VarId};
 
@@ -328,8 +328,7 @@ impl<'dw> CodegenUnit<'dw> {
                                 members.push(m);
                             }
                             gimli::DW_TAG_template_type_parameter => {
-                                template_params
-                                    .extend(process_generic_parameter(unit, cursor)?);
+                                template_params.extend(process_generic_parameter(unit, cursor)?);
                             }
                             _ => {
                                 this.parse_nested_types(unit, cursor)?;
@@ -405,8 +404,7 @@ impl<'dw> CodegenUnit<'dw> {
                                 members.push(m);
                             }
                             gimli::DW_TAG_template_type_parameter => {
-                                template_params
-                                    .extend(process_generic_parameter(unit, cursor)?);
+                                template_params.extend(process_generic_parameter(unit, cursor)?);
                             }
                             _ => {
                                 this.parse_nested_types(unit, cursor)?;
@@ -746,7 +744,11 @@ impl<'dw> CodegenUnit<'dw> {
 
 /// Box a [`SourceLoc`] for storage, or `None` if it carries no information.
 fn boxed_source_loc<S>(loc: SourceLoc<S>) -> Option<Box<SourceLoc<S>>> {
-    if loc.is_empty() { None } else { Some(Box::new(loc)) }
+    if loc.is_empty() {
+        None
+    } else {
+        Some(Box::new(loc))
+    }
 }
 
 fn process_member<'dw>(

@@ -6,8 +6,8 @@
 //! `active_variant` a direct decode with no heuristics.
 
 use crate::bundle::schema::{
-    Bundle, BundleTypeId, MemberDef, Provenance, TaskEntryId, TaskFutureEntry, TypeDef, VariantDef,
-    SymbolLookup, VariantShape,
+    Bundle, BundleTypeId, MemberDef, Provenance, SymbolLookup, TaskEntryId, TaskFutureEntry,
+    TypeDef, VariantDef, VariantShape,
 };
 use crate::raw_types::Encoding;
 
@@ -64,7 +64,9 @@ impl<'a> BundleView<'a> {
         &self,
         symbol: &str,
     ) -> Option<(TaskEntryId, &'a TaskFutureEntry)> {
-        let SymbolLookup::Unique(id) = self.bundle.tasks.lookup_id(symbol) else { return None };
+        let SymbolLookup::Unique(id) = self.bundle.tasks.lookup_id(symbol) else {
+            return None;
+        };
         let entry = self.bundle.tasks.entries.get(id.0 as usize)?;
         Some((id, entry))
     }
@@ -130,20 +132,17 @@ impl<'a> BundleType<'a> {
     /// bundle. Duplicate DIEs with the same layout are benign; conflicting
     /// sizes make the lookup ambiguous.
     pub fn size_by_name(&self, name: &str) -> Option<u64> {
-        let mut sizes = self
-            .bundle
-            .types
-            .name_index
-            .iter()
-            .filter(|&&(r, _)| {
-                self.bundle
-                    .strings
-                    .get(r)
-                    .is_some_and(|candidate| {
+        let mut sizes =
+            self.bundle
+                .types
+                .name_index
+                .iter()
+                .filter(|&&(r, _)| {
+                    self.bundle.strings.get(r).is_some_and(|candidate| {
                         crate::symbols::rust_type_names_equal(candidate, name)
                     })
-            })
-            .map(|&(_, id)| self.at(id).size());
+                })
+                .map(|&(_, id)| self.at(id).size());
         let size = sizes.next()?;
         sizes.all(|candidate| candidate == size).then_some(size)
     }
@@ -151,20 +150,17 @@ impl<'a> BundleType<'a> {
     /// The unique type associated with a fully-qualified name in this
     /// bundle. Conflicting same-named layouts make the lookup ambiguous.
     pub fn type_by_name(&self, name: &str) -> Option<BundleType<'a>> {
-        let mut ids = self
-            .bundle
-            .types
-            .name_index
-            .iter()
-            .filter(|&&(r, _)| {
-                self.bundle
-                    .strings
-                    .get(r)
-                    .is_some_and(|candidate| {
+        let mut ids =
+            self.bundle
+                .types
+                .name_index
+                .iter()
+                .filter(|&&(r, _)| {
+                    self.bundle.strings.get(r).is_some_and(|candidate| {
                         crate::symbols::rust_type_names_equal(candidate, name)
                     })
-            })
-            .map(|&(_, id)| id);
+                })
+                .map(|&(_, id)| id);
         let id = ids.next()?;
         ids.all(|candidate| candidate == id).then(|| self.at(id))
     }
@@ -195,7 +191,10 @@ impl<'a> BundleType<'a> {
     /// without examining a value of the enum.
     pub fn variant(&self, name: &str) -> Option<(BundleType<'a>, u64)> {
         let shape = self.variant_shape()?;
-        let variant = shape.variants.iter().find(|variant| self.str(variant.name) == name)?;
+        let variant = shape
+            .variants
+            .iter()
+            .find(|variant| self.str(variant.name) == name)?;
         Some((self.at(variant.payload.ty), variant.payload.offset))
     }
 

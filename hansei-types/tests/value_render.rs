@@ -103,7 +103,11 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
     let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
     let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
-    assert!(list.errors.is_empty(), "task walk errors: {:?}", list.errors);
+    assert!(
+        list.errors.is_empty(),
+        "task walk errors: {:?}",
+        list.errors
+    );
 
     // (header, task id, local, depth) — one entry per formatter exercised.
     let cases = [

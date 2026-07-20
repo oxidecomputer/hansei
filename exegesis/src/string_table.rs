@@ -41,7 +41,10 @@ fn encode(shard: usize, local: u32) -> StrId {
 #[inline]
 fn decode(id: StrId) -> (usize, usize) {
     let raw = id.0.get() - 1;
-    ((raw & (SHARDS as u32 - 1)) as usize, (raw >> SHARD_BITS) as usize)
+    (
+        (raw & (SHARDS as u32 - 1)) as usize,
+        (raw >> SHARD_BITS) as usize,
+    )
 }
 
 /// Which shard a string lives in. A fixed seed makes this the same mapping on
@@ -61,7 +64,11 @@ struct Shard<'dw> {
 /// Intern `s` (known to belong to shard `k`) into an exclusively-held shard.
 #[inline]
 fn shard_intern<'dw>(shard: &mut Shard<'dw>, k: usize, s: &'dw str) -> StrId {
-    let Shard { index, entries, dups } = shard;
+    let Shard {
+        index,
+        entries,
+        dups,
+    } = shard;
     match index.entry(s) {
         Entry::Occupied(e) => {
             *dups += 1;
@@ -284,7 +291,9 @@ mod tests {
     /// Interning the same strings concurrently yields one id per string.
     #[test]
     fn test_concurrent_interning_dedups() {
-        let owned: Vec<String> = (0..2_000).map(|i| format!("core::ty<{}>", i % 500)).collect();
+        let owned: Vec<String> = (0..2_000)
+            .map(|i| format!("core::ty<{}>", i % 500))
+            .collect();
         let t = ShardedInterner::new();
         std::thread::scope(|scope| {
             for _ in 0..8 {

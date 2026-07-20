@@ -164,7 +164,11 @@ fn m(index: u32) -> Selector {
 /// Render one path as `chain@+offset` (rooted at `root`).
 fn field(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> String {
     let (chain, offset, _) = walk(bundle, root, sel);
-    let chain = if chain.is_empty() { "<self>".to_owned() } else { chain };
+    let chain = if chain.is_empty() {
+        "<self>".to_owned()
+    } else {
+        chain
+    };
     format!("{chain}@+{offset}")
 }
 
@@ -214,7 +218,11 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
     let known = match fmt {
         DebugFormat::Transparent { .. } => return None,
         DebugFormat::Node(node) => {
-            return Some(format!("{} :: Node {}", fq_name(bundle, id), describe_node(bundle, id, node)));
+            return Some(format!(
+                "{} :: Node {}",
+                fq_name(bundle, id),
+                describe_node(bundle, id, node)
+            ));
         }
         DebugFormat::Known(k) => k,
     };
@@ -233,7 +241,12 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, &m(*pointer)),
             f(id, &m(*vtable)),
         ),
-        KnownFormat::RawWakerVTable { clone, wake, wake_by_ref, drop } => format!(
+        KnownFormat::RawWakerVTable {
+            clone,
+            wake,
+            wake_by_ref,
+            drop,
+        } => format!(
             "RawWakerVTable {{ clone={}, wake={}, wake_by_ref={}, drop={} }}",
             f(id, &m(*clone)),
             f(id, &m(*wake)),
@@ -241,7 +254,15 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, &m(*drop)),
         ),
         KnownFormat::RawMutex { state, .. } => format!("RawMutex {{ state={} }}", f(id, state)),
-        KnownFormat::Notify { state, mutex, head, waiter, waiter_notification, waiter_next, .. } => {
+        KnownFormat::Notify {
+            state,
+            mutex,
+            head,
+            waiter,
+            waiter_notification,
+            waiter_next,
+            ..
+        } => {
             format!(
                 "Notify {{ state={}, mutex={}, head={}, waiter={}, waiter_notification={}, waiter_next={} }}",
                 f(id, state),
@@ -256,7 +277,15 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             format!("Semaphore {{ permits={} }}", f(id, permits))
         }
         KnownFormat::WatchState { state, .. } => format!("WatchState {{ state={} }}", f(id, state)),
-        KnownFormat::MpscChan { tail, index, head, start_index, next, values, element } => {
+        KnownFormat::MpscChan {
+            tail,
+            index,
+            head,
+            start_index,
+            next,
+            values,
+            element,
+        } => {
             let (_, _, head_land) = walk(bundle, id, head);
             let block = ptr_target(bundle, head_land).unwrap_or(id);
             format!(
@@ -271,12 +300,21 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
                 fq_name(bundle, *element),
             )
         }
-        KnownFormat::MpscBlock { ready_slots, values } => format!(
+        KnownFormat::MpscBlock {
+            ready_slots,
+            values,
+        } => format!(
             "MpscBlock {{ ready_slots={}, values={} }}",
             f(id, ready_slots),
             f(id, values),
         ),
-        KnownFormat::MpscRx { chan_pointer, chan, bound, permits, .. } => {
+        KnownFormat::MpscRx {
+            chan_pointer,
+            chan,
+            bound,
+            permits,
+            ..
+        } => {
             let (_, _, ptr_land) = walk(bundle, id, chan_pointer);
             let arcinner = ptr_target(bundle, ptr_land).unwrap_or(id);
             let (_, _, chan_ty) = walk(bundle, arcinner, chan);
@@ -293,7 +331,12 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
         KnownFormat::IpAddress { octets } => {
             format!("IpAddress {{ octets={} }}", f(id, octets))
         }
-        KnownFormat::Vec { pointer, length, capacity, element } => format!(
+        KnownFormat::Vec {
+            pointer,
+            length,
+            capacity,
+            element,
+        } => format!(
             "Vec {{ pointer={}, length={}, capacity={}, element={} }}",
             f(id, pointer),
             f(id, length),
@@ -305,7 +348,11 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, pointer),
             f(id, length),
         ),
-        KnownFormat::String { pointer, length, capacity } => format!(
+        KnownFormat::String {
+            pointer,
+            length,
+            capacity,
+        } => format!(
             "String {{ pointer={}, length={}, capacity={} }}",
             f(id, pointer),
             f(id, length),
@@ -370,11 +417,18 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
     match node {
         DisplayNode::Scalar { at, .. } => field(bundle, root, at),
         DisplayNode::Struct { fields } => {
-            let parts: Vec<String> =
-                fields.iter().map(|fld| describe_field(bundle, root, fld)).collect();
+            let parts: Vec<String> = fields
+                .iter()
+                .map(|fld| describe_field(bundle, root, fld))
+                .collect();
             format!("Struct {{ {} }}", parts.join(", "))
         }
-        DisplayNode::List { head, next, node, node_ty } => format!(
+        DisplayNode::List {
+            head,
+            next,
+            node,
+            node_ty,
+        } => format!(
             "List {{ head={}, node_ty={}, next={}, {} }}",
             field(bundle, root, head),
             fq_name(bundle, *node_ty),
@@ -395,10 +449,18 @@ fn describe_field(bundle: &Bundle, root: BundleTypeId, fld: &Field) -> String {
     match fld {
         Field::Member(index) => format!("{}: <structural>", member_name(*index)),
         Field::Named { label, node } => {
-            format!("{}: {}", bundle.strings.get(*label).unwrap_or("?"), describe_node(bundle, root, node))
+            format!(
+                "{}: {}",
+                bundle.strings.get(*label).unwrap_or("?"),
+                describe_node(bundle, root, node)
+            )
         }
         Field::Override { index, node } => {
-            format!("{}: {}", member_name(*index), describe_node(bundle, root, node))
+            format!(
+                "{}: {}",
+                member_name(*index),
+                describe_node(bundle, root, node)
+            )
         }
     }
 }
@@ -432,9 +494,7 @@ fn assert_format(program: &str, bundle: &Bundle, type_name: &str, expected: &str
             rendered, expected,
             "{program}: debug format for {type_name} resolved to an unexpected path"
         ),
-        None => panic!(
-            "{program}: no `Known` debug format was extracted for {type_name}"
-        ),
+        None => panic!("{program}: no `Known` debug format was extracted for {type_name}"),
     }
 }
 
@@ -493,9 +553,7 @@ fn summarize(program: &str, crate_str: &str, bundle: &Bundle) -> String {
         let p = &bundle.provenance.entries[i];
         writeln!(out, "  kind: {:?}", p.kind).unwrap();
         match &p.decl {
-            Some(loc) => {
-                writeln!(out, "  decl: {}:{}", basename(s(loc.file)), loc.line).unwrap()
-            }
+            Some(loc) => writeln!(out, "  decl: {}:{}", basename(s(loc.file)), loc.line).unwrap(),
             None => writeln!(out, "  decl: <none>").unwrap(),
         }
         writeln!(out, "  entries: {entries_for_future}").unwrap();
@@ -572,7 +630,11 @@ fn summarize(program: &str, crate_str: &str, bundle: &Bundle) -> String {
         ("raw_waker_vtable", infra.raw_waker_vtable),
     ] {
         let name = type_name(id);
-        let ok = if name.starts_with("<missing") { "MISSING" } else { "ok" };
+        let ok = if name.starts_with("<missing") {
+            "MISSING"
+        } else {
+            "ok"
+        };
         writeln!(out, "{what}: {ok}").unwrap();
     }
 
@@ -581,7 +643,11 @@ fn summarize(program: &str, crate_str: &str, bundle: &Bundle) -> String {
         (StaticRole::TlsContextKey, "tls-context-key"),
         (StaticRole::TaskWakerVtable, "task-waker-vtable"),
     ] {
-        let ok = if bundle.statics.entries.contains_key(&role) { "ok" } else { "MISSING" };
+        let ok = if bundle.statics.entries.contains_key(&role) {
+            "ok"
+        } else {
+            "MISSING"
+        };
         writeln!(out, "{label}: {ok}").unwrap();
     }
 
@@ -601,7 +667,11 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         stats.dyn_unresolved_self, 0,
         "{program}: Future::poll impls with unresolvable self"
     );
-    assert!(stats.infra_missing.is_empty(), "{program}: {:?}", stats.infra_missing);
+    assert!(
+        stats.infra_missing.is_empty(),
+        "{program}: {:?}",
+        stats.infra_missing
+    );
     assert!(
         stats.statics_missing.is_empty(),
         "{program}: {:?}",
@@ -623,7 +693,10 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     );
     // Fingerprint symbols are poll instantiations, stored unsuffixed.
     for sym in &bundle.meta.symbol_fingerprint {
-        assert!(sym.starts_with("_R"), "{program}: non-v0 fingerprint {sym:?}");
+        assert!(
+            sym.starts_with("_R"),
+            "{program}: non-v0 fingerprint {sym:?}"
+        );
     }
     assert!(
         bundle
@@ -674,18 +747,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert!(
         bundle.types.debug_formats.values().any(|format| matches!(
             format,
-            exegesis::bundle::DebugFormat::Known(
-                exegesis::bundle::KnownFormat::FunctionPointer
-            )
+            exegesis::bundle::DebugFormat::Known(exegesis::bundle::KnownFormat::FunctionPointer)
         )),
         "{program}: no function-pointer known-type formats were extracted"
     );
     assert!(
         bundle.types.debug_formats.values().any(|format| matches!(
             format,
-            exegesis::bundle::DebugFormat::Known(
-                exegesis::bundle::KnownFormat::DynPointer { .. }
-            )
+            exegesis::bundle::DebugFormat::Known(exegesis::bundle::KnownFormat::DynPointer { .. })
         )),
         "{program}: no dyn-pointer known-type formats were extracted"
     );
@@ -866,9 +935,14 @@ fn run_golden(program: &str) {
     // The bundle must survive its own validation and a save/load round
     // trip (save validates; load re-validates).
     let tmp = tempfile::NamedTempFile::new().unwrap();
-    bundle.save(tmp.path()).expect("bundle failed validation on save");
+    bundle
+        .save(tmp.path())
+        .expect("bundle failed validation on save");
     let reloaded = Bundle::load(tmp.path()).expect("bundle failed to reload");
-    assert_eq!(reloaded, bundle, "{program}: save/load round trip changed the bundle");
+    assert_eq!(
+        reloaded, bundle,
+        "{program}: save/load round trip changed the bundle"
+    );
 
     assert_clean(program, &bundle, &stats);
 
@@ -891,7 +965,8 @@ fn run_golden(program: &str) {
         )
     });
     assert_eq!(
-        summary, expected,
+        summary,
+        expected,
         "{program}: extraction summary diverged from {} \
          (EXEGESIS_BLESS=1 to re-bless)\n--- actual ---\n{summary}",
         golden_path.display()

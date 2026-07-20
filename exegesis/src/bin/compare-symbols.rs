@@ -49,8 +49,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .keys()
         .filter(|key| right_index.contains_key(*key))
         .count();
-    let left_collisions = left_index.values().filter(|values| values.len() > 1).count();
-    let right_collisions = right_index.values().filter(|values| values.len() > 1).count();
+    let left_collisions = left_index
+        .values()
+        .filter(|values| values.len() > 1)
+        .count();
+    let right_collisions = right_index
+        .values()
+        .filter(|values| values.len() > 1)
+        .count();
     let ambiguous_matches = left_index
         .iter()
         .filter(|(key, left)| {
@@ -60,8 +66,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .count();
 
-    println!("left:               {} v0 symbols, {} normalized keys", left_raw.len(), left_index.len());
-    println!("right:              {} v0 symbols, {} normalized keys", right_raw.len(), right_index.len());
+    println!(
+        "left:               {} v0 symbols, {} normalized keys",
+        left_raw.len(),
+        left_index.len()
+    );
+    println!(
+        "right:              {} v0 symbols, {} normalized keys",
+        right_raw.len(),
+        right_index.len()
+    );
     println!("exact raw matches:  {exact}");
     println!("normalized matches: {normalized}");
     println!("left collisions:    {left_collisions}");

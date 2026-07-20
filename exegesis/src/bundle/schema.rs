@@ -331,7 +331,10 @@ pub enum KnownFormat {
     /// rather than a raw atomic byte. `state` is the member path to the
     /// single-byte atomic; `state_decode` carries parking_lot's fixed bit
     /// encoding (`LOCKED_BIT = 1`, `PARKED_BIT = 2`).
-    RawMutex { state: Selector, state_decode: ScalarDecode },
+    RawMutex {
+        state: Selector,
+        state_decode: ScalarDecode,
+    },
     /// Display a `tokio::sync::notify::Notify` compactly as its notification
     /// state, waiter-mutex lock state, and the queue of parked waiters —
     /// instead of dumping the raw `waiters` mutex wrapping an intrusive
@@ -372,12 +375,18 @@ pub enum KnownFormat {
     /// available permit count (`value >> 1`) plus a closed flag (bit 0). The
     /// path's first element is the index of the `permits` member.
     /// `permits_decode` carries that bit layout.
-    Semaphore { permits: Selector, permits_decode: ScalarDecode },
+    Semaphore {
+        permits: Selector,
+        permits_decode: ScalarDecode,
+    },
     /// Display a `tokio::sync::watch::state::AtomicState` as its decoded
     /// version and closed flag rather than a raw atomic word. `state` is the
     /// member path to the atomic `usize`; `state_decode` records that bit 0 is
     /// the closed flag (CLOSED_BIT) and the remaining bits are the version.
-    WatchState { state: Selector, state_decode: ScalarDecode },
+    WatchState {
+        state: Selector,
+        state_decode: ScalarDecode,
+    },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages.
     /// The receiver has read up to `index` and the sender has written up to
     /// `tail` (both member paths to a `usize` within the channel); the
@@ -406,7 +415,10 @@ pub enum KnownFormat {
     /// consumed (that needs the channel's read/write positions), so their
     /// bytes may be stale. The live messages are shown by the channel-level
     /// [`KnownFormat::MpscChan`] formatter instead.
-    MpscBlock { ready_slots: Selector, values: Selector },
+    MpscBlock {
+        ready_slots: Selector,
+        values: Selector,
+    },
     /// Display a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
     /// channel. A receiver holds an `Arc<Chan<T, Semaphore>>`; `chan_pointer`
     /// is the member path from the receiver to the raw pointer inside that
@@ -500,18 +512,37 @@ impl TypeTable {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum TypeDef {
     /// A primitive with a known encoding.
-    Base { name: StrRef, size: u64, encoding: Encoding },
+    Base {
+        name: StrRef,
+        size: u64,
+        encoding: Encoding,
+    },
     /// A pointer or reference to another type.
-    Pointer { name: Option<StrRef>, target: BundleTypeId },
+    Pointer {
+        name: Option<StrRef>,
+        target: BundleTypeId,
+    },
     /// A fixed-length array.
     Array { elem: BundleTypeId, count: u64 },
     /// A struct (or tuple/closure environment — anything with plain members).
-    Struct { name: StrRef, size: u64, members: Vec<MemberDef> },
+    Struct {
+        name: StrRef,
+        size: u64,
+        members: Vec<MemberDef>,
+    },
     /// A union.
-    Union { name: StrRef, size: u64, members: Vec<MemberDef> },
+    Union {
+        name: StrRef,
+        size: u64,
+        members: Vec<MemberDef>,
+    },
     /// A Rust enum: DWARF variant parts, represented faithfully including
     /// niche encodings.
-    Enum { name: StrRef, size: u64, shape: VariantShape },
+    Enum {
+        name: StrRef,
+        size: u64,
+        shape: VariantShape,
+    },
     /// A C-style enumeration: named integer constants over a repr type.
     CEnum {
         name: StrRef,
@@ -634,7 +665,9 @@ impl TaskTable {
 
     /// Look up a mangled symbol as read from the target's symtab.
     pub fn lookup(&self, symbol: &str) -> Option<&TaskFutureEntry> {
-        let SymbolLookup::Unique(id) = self.lookup_id(symbol) else { return None };
+        let SymbolLookup::Unique(id) = self.lookup_id(symbol) else {
+            return None;
+        };
         self.entries.get(id.0 as usize)
     }
 }
@@ -684,7 +717,9 @@ impl DynFutureTable {
 
     /// Look up a mangled symbol as read from the target's symtab.
     pub fn lookup(&self, symbol: &str) -> Option<BundleTypeId> {
-        let SymbolLookup::Unique(id) = self.lookup_id(symbol) else { return None };
+        let SymbolLookup::Unique(id) = self.lookup_id(symbol) else {
+            return None;
+        };
         Some(id)
     }
 }
@@ -694,8 +729,11 @@ impl DynFutureTable {
 /// must never participate in a join (see `docs/v0-mangling-spike.md`).
 pub fn strip_llvm_suffix(symbol: &str) -> &str {
     match symbol.rfind(".llvm.") {
-        Some(i) if symbol[i + ".llvm.".len()..].bytes().all(|b| b.is_ascii_digit())
-            && i + ".llvm.".len() < symbol.len() =>
+        Some(i)
+            if symbol[i + ".llvm.".len()..]
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+                && i + ".llvm.".len() < symbol.len() =>
         {
             &symbol[..i]
         }

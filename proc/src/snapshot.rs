@@ -473,9 +473,10 @@ mod tests {
         rec.read_bytes(0x1000, 8).unwrap(); // all 1s
         rec.read_bytes(0x1004, 8).unwrap(); // all 2s
         let snap = rec.snapshot().unwrap();
-        assert_eq!(snap.read_bytes(0x1000, 12).unwrap(), [
-            1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2
-        ]);
+        assert_eq!(
+            snap.read_bytes(0x1000, 12).unwrap(),
+            [1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2]
+        );
     }
 
     #[test]
@@ -560,7 +561,10 @@ mod tests {
         // Wrong magic.
         let mut bad = buf.clone();
         bad[0] ^= 0xff;
-        assert!(matches!(Snapshot::read(bad.as_slice()), Err(Error::BadMagic)));
+        assert!(matches!(
+            Snapshot::read(bad.as_slice()),
+            Err(Error::BadMagic)
+        ));
 
         // Wrong version.
         let mut bad = buf.clone();

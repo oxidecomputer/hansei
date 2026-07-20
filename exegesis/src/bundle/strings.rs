@@ -182,14 +182,23 @@ mod tests {
     fn test_corrupt_table_rejected() {
         // Offsets that are out of bounds, decreasing, or off UTF-8
         // boundaries must be caught by is_well_formed, not panic.
-        let t = StringTable { data: "abc".into(), ends: vec![5] };
+        let t = StringTable {
+            data: "abc".into(),
+            ends: vec![5],
+        };
         assert_eq!(t.get(StrRef(0)), None);
         assert!(!t.is_well_formed());
 
-        let t = StringTable { data: "abc".into(), ends: vec![2, 1] };
+        let t = StringTable {
+            data: "abc".into(),
+            ends: vec![2, 1],
+        };
         assert!(!t.is_well_formed());
 
-        let t = StringTable { data: "λ".into(), ends: vec![1, 2] };
+        let t = StringTable {
+            data: "λ".into(),
+            ends: vec![1, 2],
+        };
         assert_eq!(t.get(StrRef(0)), None);
         assert!(!t.is_well_formed());
     }

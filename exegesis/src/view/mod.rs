@@ -1,9 +1,9 @@
 mod types;
 
 pub use types::{
-    Array, Base, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace,
-    NsFuncIter, NsTypeIter, NsVarIter, Param, ParamIter, Pointer, SourceLocView, StaticVariable,
-    Struct, TemplateParam, TemplateParamIter, Type, Union, Variant, VariantIter, VariantShapeView,
+    Array, Base, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace, NsFuncIter,
+    NsTypeIter, NsVarIter, Param, ParamIter, Pointer, SourceLocView, StaticVariable, Struct,
+    TemplateParam, TemplateParamIter, Type, Union, Variant, VariantIter, VariantShapeView,
 };
 
 use crate::raw_types::NsId;
@@ -36,7 +36,10 @@ impl<'a> DwView<'a> {
                 let mut by_name: HashMap<&'a str, Vec<TypeId>> = HashMap::new();
                 for (id, raw_ty) in collector.canonical_types() {
                     if let Some(str_id) = raw_ty.name() {
-                        by_name.entry(collector.strings.get(str_id)).or_default().push(id);
+                        by_name
+                            .entry(collector.strings.get(str_id))
+                            .or_default()
+                            .push(id);
                     }
                 }
                 by_name
@@ -45,7 +48,10 @@ impl<'a> DwView<'a> {
                 let mut vars_by_name: HashMap<&'a str, Vec<VarId>> = HashMap::new();
                 for (&id, var) in &collector.variables {
                     if let Some(str_id) = var.name {
-                        vars_by_name.entry(collector.strings.get(str_id)).or_default().push(id);
+                        vars_by_name
+                            .entry(collector.strings.get(str_id))
+                            .or_default()
+                            .push(id);
                     }
                 }
                 vars_by_name
@@ -54,7 +60,10 @@ impl<'a> DwView<'a> {
             let mut funcs_by_name: HashMap<&'a str, Vec<FuncId>> = HashMap::new();
             for (&id, func) in &collector.functions {
                 if let Some(str_id) = func.name {
-                    funcs_by_name.entry(collector.strings.get(str_id)).or_default().push(id);
+                    funcs_by_name
+                        .entry(collector.strings.get(str_id))
+                        .or_default()
+                        .push(id);
                 }
             }
 
