@@ -802,9 +802,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
                     ctx,
                 );
             }
-            DebugFormat::Known(kf @ KnownFormat::BoundedSemaphore { .. }) => {
-                return write_bounded_semaphore(f, info, ty.name(), kf, ctx);
-            }
             DebugFormat::Known(kf @ KnownFormat::MpscBlock { .. }) => {
                 return write_mpsc_block(f, info, ty.name(), kf, ctx);
             }
@@ -865,7 +862,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 return write_btree_map(f, info, kf, ctx);
             }
             DebugFormat::Node(node) => {
-                return eval_node(f, &node, &ty, info.bytes, info.addr, ctx);
+                return eval_node(f, &node, &ty, info.bytes, info.addr, ctx, f.alternate());
             }
             DebugFormat::Transparent { target, offset } => (target, offset, ctx.proc, ctx.visited),
             DebugFormat::Known(KnownFormat::Atomic { value, offset }) => {
@@ -1152,12 +1149,20 @@ fn apply(decode: &ScalarDecode, word: u64) -> String {
         };
         covered |= value_mask << shift;
         let value = (word >> shift) & value_mask;
-        match render {
-            FieldRender::Uint => parts.push(format!("{name}={value}")),
+        let rendered = match render {
+            FieldRender::Uint => value.to_string(),
             FieldRender::Enum(table) => match table.iter().find(|(v, _)| *v == value) {
-                Some((_, label)) => parts.push(format!("{name}={label}")),
-                None => parts.push(format!("{name}=<unknown: {value}>")),
+                Some((_, label)) => label.clone(),
+                None => format!("<unknown: {value}>"),
             },
+        };
+        // An empty name renders the sub-value bare, for a field the enclosing
+        // record already labels (e.g. a boolean shown as just `false`); a named
+        // field prefixes it as `name=value`.
+        if name.is_empty() {
+            parts.push(rendered);
+        } else {
+            parts.push(format!("{name}={rendered}"));
         }
     }
     let leftover = word & !covered;
@@ -1213,96 +1218,9 @@ fn write_struct_with_decoded_field<'a, T: DebugType<'a>>(
     write_struct_fields(f, info, name, f.alternate(), ctx, override_field)
 }
 
-/// Render a `tokio::sync::mpsc::bounded::Semaphore` compactly as its waiter
-/// mutex state, closed flag, available permits, capacity, and the queue of
-/// waiters (each shown by the permits it is blocked on) — rather than dumping
-/// the raw nested `batch_semaphore::Semaphore` and intrusive linked list.
-fn write_bounded_semaphore<'a, T: DebugType<'a>>(
-    f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    name: &str,
-    format: KnownFormat<T>,
-    ctx: RenderCtx<'_, 'a>,
-) -> fmt::Result {
-    let KnownFormat::BoundedSemaphore {
-        mutex_offset,
-        mutex_decode,
-        closed_offset,
-        permits_offset,
-        permits_decode,
-        bound_offset,
-        head_offset,
-        waiter,
-        waiter_size,
-        waiter_state_offset,
-        waiter_next_offset,
-    } = format
-    else {
-        unreachable!()
-    };
-
-    let pretty = f.alternate();
-    let bytes = info.bytes;
-    // Start each field on its own indented line when pretty, else space-separated.
-    let field = |f: &mut fmt::Formatter<'_>| -> fmt::Result {
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)
-        } else {
-            write!(f, " ")
-        }
-    };
-
-    write!(f, "{name} {{")?;
-
-    field(f)?;
-    write!(f, "mutex: {},", decoded_byte(bytes, mutex_offset, &mutex_decode))?;
-
-    field(f)?;
-    match bytes.get(closed_offset as usize) {
-        Some(&closed) => write!(f, "closed: {},", closed != 0)?,
-        None => write!(f, "closed: <truncated>,")?,
-    }
-
-    field(f)?;
-    // The batch semaphore's permit word: bit 0 the closed flag, the rest the
-    // available count. Its closed bit is also surfaced by the separate `closed`
-    // field above, from a distinct source (`Waitlist.closed`).
-    write!(f, "permits: {},", decoded_usize(bytes, permits_offset, &permits_decode))?;
-
-    field(f)?;
-    match read_u64_at(bytes, bound_offset) {
-        Some(bound) => write!(f, "bound: {bound},")?,
-        None => write!(f, "bound: <truncated>,")?,
-    }
-
-    field(f)?;
-    write!(f, "queue: ")?;
-    let waiters = WaiterList {
-        head_offset,
-        waiter,
-        waiter_size,
-        word_offset: waiter_state_offset,
-        next_offset: waiter_next_offset,
-    };
-    write_semaphore_waiters(f, bytes, waiters, ctx.deeper())?;
-    if pretty {
-        write!(f, ",")?;
-    }
-
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    } else {
-        write!(f, " ")?;
-    }
-    write!(f, "}}")
-}
-
 /// The layout of an intrusive waiter linked list, as walked by
-/// [`write_semaphore_waiters`] and [`write_notify_waiters`]: the head word, the
-/// node type and size, the per-node payload word (permits or notification), and
-/// the successor pointer.
+/// [`write_notify_waiters`]: the head word, the node type and size, the
+/// per-node payload word (the notification state), and the successor pointer.
 #[derive(Copy, Clone)]
 struct WaiterList<T> {
     head_offset: u64,
@@ -1310,77 +1228,6 @@ struct WaiterList<T> {
     waiter_size: u32,
     word_offset: u64,
     next_offset: u64,
-}
-
-/// Walk the intrusive linked list of semaphore waiters from the head word at
-/// `list.head_offset`, rendering each as `Waiter { permits_needed: N }`. Each
-/// node is read from the target and the list followed via each node's successor
-/// pointer, guarded against cycles and unbounded length.
-fn write_semaphore_waiters<'a, T: DebugType<'a>>(
-    f: &mut fmt::Formatter<'_>,
-    bytes: &[u8],
-    list: WaiterList<T>,
-    ctx: RenderCtx<'_, 'a>,
-) -> fmt::Result {
-    let WaiterList {
-        head_offset,
-        waiter,
-        waiter_size,
-        word_offset: state_offset,
-        next_offset,
-    } = list;
-    let pretty = f.alternate();
-    let Some(head) = read_u64_at(bytes, head_offset) else {
-        return write!(f, "<truncated>");
-    };
-    // An empty queue is known from the head word alone; a populated one needs
-    // the target to read each node.
-    if head == 0 {
-        return write!(f, "[]");
-    }
-    let Some(proc) = ctx.proc else {
-        return write!(f, "<target unavailable>");
-    };
-    write!(f, "[")?;
-
-    let name = waiter.name();
-    let mut cur = head;
-    let mut any = false;
-    let mut seen = HashSet::new();
-    let mut guard = 4096u32;
-    while cur != 0 && guard > 0 {
-        guard -= 1;
-        if !seen.insert(cur) {
-            break;
-        }
-        let Ok(node) = proc.read_bytes(cur, waiter_size as u64) else {
-            write!(f, "{}<unreadable waiter>", if any { ", " } else { "" })?;
-            break;
-        };
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
-        } else if any {
-            write!(f, ", ")?;
-        }
-        any = true;
-        match read_u64_at(&node, state_offset) {
-            Some(permits) => write!(f, "{name} {{ permits_needed: {permits} }}")?,
-            None => write!(f, "{name} {{ <truncated> }}")?,
-        }
-        if pretty {
-            write!(f, ",")?;
-        }
-        match read_u64_at(&node, next_offset) {
-            Some(next) => cur = next,
-            None => break,
-        }
-    }
-    if pretty && any {
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    }
-    write!(f, "]")
 }
 
 /// Render a `tokio::sync::notify::Notify` compactly as its decoded notification
@@ -2682,8 +2529,8 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
 /// `ty` is the type the node is rendered against: its name titles a `Struct`
 /// record and its members back `Field::Structural`. `bytes`/`addr` are that
 /// value's buffer and target address; a node's offsets are relative to them.
-/// All pretty-vs-inline, cycle-guard, and degradation-string handling lives
-/// here, written once.
+/// `pretty` requests multi-line layout. All pretty-vs-inline, cycle-guard, and
+/// degradation-string handling lives here, written once.
 fn eval_node<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     node: &DisplayNode<T>,
@@ -2691,6 +2538,7 @@ fn eval_node<'a, T: DebugType<'a>>(
     bytes: &[u8],
     addr: u64,
     ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
 ) -> fmt::Result {
     match node {
         DisplayNode::Scalar { offset, word_size, decode } => {
@@ -2699,9 +2547,9 @@ fn eval_node<'a, T: DebugType<'a>>(
                 None => write!(f, "<truncated>"),
             }
         }
-        DisplayNode::Struct { fields } => eval_struct(f, fields, ty, bytes, addr, ctx),
+        DisplayNode::Struct { fields } => eval_struct(f, fields, ty, bytes, addr, ctx, pretty),
         DisplayNode::List { head_offset, next_offset, node, node_ty, node_size } => {
-            eval_list(f, *head_offset, *next_offset, node, node_ty, *node_size, bytes, ctx)
+            eval_list(f, *head_offset, *next_offset, node, node_ty, *node_size, bytes, ctx, pretty)
         }
     }
 }
@@ -2716,19 +2564,23 @@ fn eval_struct<'a, T: DebugType<'a>>(
     bytes: &[u8],
     addr: u64,
     ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
 ) -> fmt::Result {
-    let pretty = f.alternate();
     write!(f, "{} {{", ty.name())?;
     for (i, field) in fields.iter().enumerate() {
+        // Field prefix: pretty starts a fresh indented line; inline opens with
+        // a space after `{` and separates subsequent fields with `, `.
         if pretty {
             writeln!(f)?;
             write_indent(f, ctx.depth + 1)?;
         } else if i > 0 {
-            write!(f, ",")?;
+            write!(f, ", ")?;
+        } else {
+            write!(f, " ")?;
         }
         match field {
             Field::Structural { name, ty: mem_ty, offset } => {
-                write!(f, " {name}: ")?;
+                write!(f, "{name}: ")?;
                 match byte_range(bytes, *offset, mem_ty.size()) {
                     Some(mem_bytes) => {
                         let child = DisplayRecurse {
@@ -2746,8 +2598,8 @@ fn eval_struct<'a, T: DebugType<'a>>(
                 }
             }
             Field::Computed { label, node } => {
-                write!(f, " {label}: ")?;
-                eval_node(f, node, ty, bytes, addr, ctx.deeper())?;
+                write!(f, "{label}: ")?;
+                eval_node(f, node, ty, bytes, addr, ctx.deeper(), pretty)?;
             }
         }
         if pretty {
@@ -2767,6 +2619,10 @@ fn eval_struct<'a, T: DebugType<'a>>(
 /// `node_ty` element via `node`. Each node is read from the target and the walk
 /// follows the successor word at `next_offset`, guarded against cycles and
 /// runaway length — the shared successor of the old `write_*_waiters` pair.
+///
+/// Elements render compactly (inline) regardless of `pretty`; `pretty` only
+/// puts each on its own indented line. A queue entry is small, so this reads
+/// far better than expanding every entry across several lines.
 #[allow(clippy::too_many_arguments)]
 fn eval_list<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
@@ -2777,8 +2633,8 @@ fn eval_list<'a, T: DebugType<'a>>(
     node_size: u32,
     bytes: &[u8],
     ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
 ) -> fmt::Result {
-    let pretty = f.alternate();
     let Some(head) = read_u64_at(bytes, head_offset) else {
         return write!(f, "<truncated>");
     };
@@ -2812,7 +2668,8 @@ fn eval_list<'a, T: DebugType<'a>>(
             write!(f, ", ")?;
         }
         any = true;
-        eval_node(f, node, node_ty, &node_bytes, cur, ctx.deeper())?;
+        // Each element renders inline (`pretty = false`) even in pretty mode.
+        eval_node(f, node, node_ty, &node_bytes, cur, ctx.deeper(), false)?;
         if pretty {
             write!(f, ",")?;
         }

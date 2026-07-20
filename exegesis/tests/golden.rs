@@ -15,7 +15,8 @@
 //! -p exegesis --test golden`.
 
 use exegesis::bundle::{
-    Bundle, BundleTypeId, DebugFormat, KnownFormat, Selector, StaticRole, Step, TypeDef,
+    Bundle, BundleTypeId, DebugFormat, DisplayNode, Field, KnownFormat, Selector, StaticRole, Step,
+    TypeDef,
 };
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
 
@@ -212,8 +213,9 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
     let f = |root, sel: &Selector| field(bundle, root, sel);
     let known = match fmt {
         DebugFormat::Transparent { .. } => return None,
-        // No detector emits a node tree yet; nothing to describe.
-        DebugFormat::Node(_) => return None,
+        DebugFormat::Node(node) => {
+            return Some(format!("{} :: Node {}", fq_name(bundle, id), describe_node(bundle, id, node)));
+        }
         DebugFormat::Known(k) => k,
     };
     let body = match known {
@@ -288,27 +290,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
                 f(chan_ty, permits),
             )
         }
-        KnownFormat::BoundedSemaphore {
-            mutex,
-            closed,
-            permits,
-            bound,
-            head,
-            waiter,
-            waiter_state,
-            waiter_next,
-            ..
-        } => format!(
-            "BoundedSemaphore {{ mutex={}, closed={}, permits={}, bound={}, head={}, waiter={}, waiter_state={}, waiter_next={} }}",
-            f(id, mutex),
-            f(id, closed),
-            f(id, permits),
-            f(id, bound),
-            f(id, head),
-            fq_name(bundle, *waiter),
-            f(*waiter, waiter_state),
-            f(*waiter, waiter_next),
-        ),
         KnownFormat::IpAddress { octets } => {
             format!("IpAddress {{ octets={} }}", f(id, octets))
         }
@@ -379,6 +360,47 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
         }
     };
     Some(format!("{} :: {}", fq_name(bundle, id), body))
+}
+
+/// Render a [`DisplayNode`] tree as a portable, layout-sensitive summary: every
+/// selector resolved to its field-name chain and byte offset (rooted at the
+/// type the node is rendered against, following the same rooting as resolution),
+/// so a wrong-member regression after a toolchain/layout shift trips the test.
+fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> String {
+    match node {
+        DisplayNode::Scalar { at, .. } => field(bundle, root, at),
+        DisplayNode::Struct { fields } => {
+            let parts: Vec<String> =
+                fields.iter().map(|fld| describe_field(bundle, root, fld)).collect();
+            format!("Struct {{ {} }}", parts.join(", "))
+        }
+        DisplayNode::List { head, next, node, node_ty } => format!(
+            "List {{ head={}, node_ty={}, next={}, {} }}",
+            field(bundle, root, head),
+            fq_name(bundle, *node_ty),
+            field(bundle, *node_ty, next),
+            describe_node(bundle, *node_ty, node),
+        ),
+    }
+}
+
+/// Render one [`Field`] of a [`DisplayNode::Struct`] for [`describe_node`].
+fn describe_field(bundle: &Bundle, root: BundleTypeId, fld: &Field) -> String {
+    let member_name = |index: u32| match &bundle.types.types[root.0 as usize] {
+        TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members
+            .get(index as usize)
+            .map_or("?", |m| bundle.strings.get(m.name).unwrap_or("?")),
+        _ => "?",
+    };
+    match fld {
+        Field::Member(index) => format!("{}: <structural>", member_name(*index)),
+        Field::Named { label, node } => {
+            format!("{}: {}", bundle.strings.get(*label).unwrap_or("?"), describe_node(bundle, root, node))
+        }
+        Field::Override { index, node } => {
+            format!("{}: {}", member_name(*index), describe_node(bundle, root, node))
+        }
+    }
 }
 
 /// Assert that the debug format on the type named exactly `type_name` resolves
@@ -811,14 +833,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "tokio::sync::mpsc::bounded::Semaphore",
-            "tokio::sync::mpsc::bounded::Semaphore :: BoundedSemaphore \
-             { mutex=semaphore.waiters.__1.raw.state.v.value.__0@+0, \
-             closed=semaphore.waiters.__1.data.value.closed@+24, \
-             permits=semaphore.permits.inner.value.v.value.__0@+32, bound=bound@+40, \
-             head=semaphore.waiters.__1.data.value.queue.head@+8, \
-             waiter=tokio::sync::batch_semaphore::Waiter, \
-             waiter_state=state.inner.value.v.value.__0@+32, \
-             waiter_next=pointers.inner.value.next@+24 }",
+            "tokio::sync::mpsc::bounded::Semaphore :: Node Struct \
+             { mutex: semaphore.waiters.__1.raw.state.v.value.__0@+0, \
+             closed: semaphore.waiters.__1.data.value.closed@+24, \
+             permits: semaphore.permits.inner.value.v.value.__0@+32, bound: bound@+40, \
+             queue: List { head=semaphore.waiters.__1.data.value.queue.head@+8, \
+             node_ty=tokio::sync::batch_semaphore::Waiter, \
+             next=pointers.inner.value.next@+24, \
+             Struct { permits_needed: state.inner.value.v.value.__0@+32 } } }",
         );
         assert_format(
             program,

@@ -427,41 +427,6 @@ pub enum KnownFormat {
         permits: Selector,
         permits_decode: ScalarDecode,
     },
-    /// Display a `tokio::sync::mpsc::bounded::Semaphore` (a bounded channel's
-    /// permit semaphore) compactly instead of as the raw nested
-    /// `batch_semaphore::Semaphore`. reify renders
-    /// `{ mutex, closed, permits, bound, queue: [Waiter { permits_needed }, …] }`.
-    ///
-    /// All paths but the `waiter_*` ones are rooted at the bounded semaphore:
-    /// `mutex` reaches the waiter mutex's single state byte (parking_lot's
-    /// `LOCKED_BIT`/`PARKED_BIT` encoding); `closed` reaches the `Waitlist.closed`
-    /// bool; `permits` reaches the batch semaphore's atomic permit `usize` (bit 0
-    /// closed, the rest the available count); `bound` reaches the capacity
-    /// `usize`; and `head` reaches the waiter list's head word (an
-    /// `Option<NonNull<Waiter>>`, null when the queue is empty).
-    ///
-    /// The queue is an intrusive linked list of `Waiter` nodes. `waiter` is that
-    /// node type; `waiter_state` is the path *rooted at `waiter`* to its atomic
-    /// `state` word (the permit count that waiter is blocked on) and
-    /// `waiter_next` is the path rooted at `waiter` to its successor pointer word
-    /// (`pointers.inner.value.next`). reify follows `head` and each `waiter_next`
-    /// to render the queued waiters.
-    ///
-    /// `mutex_decode` and `permits_decode` carry the bit layouts of the mutex
-    /// byte and permit word. The per-waiter `waiter_state` word is a plain
-    /// permit count, rendered raw.
-    BoundedSemaphore {
-        mutex: Selector,
-        mutex_decode: ScalarDecode,
-        closed: Selector,
-        permits: Selector,
-        permits_decode: ScalarDecode,
-        bound: Selector,
-        head: Selector,
-        waiter: BundleTypeId,
-        waiter_state: Selector,
-        waiter_next: Selector,
-    },
     /// Display the octets of an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: Selector },
     /// Display the initialized elements of an `alloc::vec::Vec<T, A>`.
