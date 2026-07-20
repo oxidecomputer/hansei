@@ -335,40 +335,6 @@ pub enum KnownFormat {
         state: Selector,
         state_decode: ScalarDecode,
     },
-    /// Display a `tokio::sync::notify::Notify` compactly as its notification
-    /// state, waiter-mutex lock state, and the queue of parked waiters —
-    /// instead of dumping the raw `waiters` mutex wrapping an intrusive
-    /// `LinkedList<Waiter>`. reify renders
-    /// `{ state, mutex, queue: [Waiter { notification }, …] }`.
-    ///
-    /// All paths but the `waiter_*` ones are rooted at the `Notify`: `state`
-    /// reaches the atomic `usize` state word (low two bits idle/waiting/notified,
-    /// upper bits the `notify_waiters()` generation counter); `mutex` reaches the
-    /// waiter mutex's single state byte (parking_lot's `LOCKED_BIT`/`PARKED_BIT`
-    /// encoding); and `head` reaches the waiter list's head word (an
-    /// `Option<NonNull<Waiter>>`, null when the queue is empty).
-    ///
-    /// The queue is an intrusive linked list of `Waiter` nodes. `waiter` is that
-    /// node type; `waiter_notification` is the path *rooted at `waiter`* to its
-    /// atomic `notification` word (0 none, 1 one/FIFO, 5 one/LIFO, 2 all) and
-    /// `waiter_next` is the path rooted at `waiter` to its successor pointer word
-    /// (`pointers.inner.value.next`). reify follows `head` and each `waiter_next`
-    /// to render the queued waiters.
-    ///
-    /// `state_decode`, `mutex_decode`, and `waiter_notification_decode` carry
-    /// the bit layouts of the three decoded words (state, mutex byte, per-waiter
-    /// notification).
-    Notify {
-        state: Selector,
-        state_decode: ScalarDecode,
-        mutex: Selector,
-        mutex_decode: ScalarDecode,
-        head: Selector,
-        waiter: BundleTypeId,
-        waiter_notification: Selector,
-        waiter_notification_decode: ScalarDecode,
-        waiter_next: Selector,
-    },
     /// Display a `tokio::sync::batch_semaphore::Semaphore` with its `permits`
     /// field decoded. `permits` is the member path to the atomic `usize`;
     /// reify renders the struct normally but interprets that field as the

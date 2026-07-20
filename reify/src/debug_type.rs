@@ -245,26 +245,6 @@ pub enum KnownFormat<T> {
         state_offset: u64,
         state_decode: ScalarDecode,
     },
-    /// Display a `tokio::sync::notify::Notify` compactly: its notification
-    /// state, waiter-mutex lock state, and the queue of parked waiters. The
-    /// `*_offset` fields locate each within the value; `state_offset` is the
-    /// notification state word (low two bits idle/waiting/notified) and
-    /// `head_offset` the queue's head `Option<NonNull<Waiter>>` word. `waiter`
-    /// is the `Waiter` node type (`waiter_size` bytes); `waiter_notification_offset`
-    /// and `waiter_next_offset` locate each node's notification word and
-    /// successor pointer, which reify follows to list the queued waiters.
-    Notify {
-        state_offset: u64,
-        state_decode: ScalarDecode,
-        mutex_offset: u64,
-        mutex_decode: ScalarDecode,
-        head_offset: u64,
-        waiter: T,
-        waiter_size: u32,
-        waiter_notification_offset: u64,
-        waiter_notification_decode: ScalarDecode,
-        waiter_next_offset: u64,
-    },
     /// Display a `tokio::sync::batch_semaphore::Semaphore`, decoding its
     /// `permits` field to the available count and closed flag. `permits_member`
     /// is that field's index and `permits_offset` locates the atomic `usize`.
@@ -721,37 +701,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 Some(DebugFormat::Known(KnownFormat::RawMutex {
                     state_offset,
                     state_decode: resolve_decode(*self, state_decode),
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::Notify {
-                state,
-                state_decode,
-                mutex,
-                mutex_decode,
-                head,
-                waiter,
-                waiter_notification,
-                waiter_notification_decode,
-                waiter_next,
-            }) => {
-                let (_, state_offset) = resolve_selector(*self, state)?;
-                let (_, mutex_offset) = resolve_selector(*self, mutex)?;
-                let (_, head_offset) = resolve_selector(*self, head)?;
-                let waiter_ty = self.related_type(*waiter);
-                let (_, waiter_notification_offset) =
-                    resolve_selector(waiter_ty, waiter_notification)?;
-                let (_, waiter_next_offset) = resolve_selector(waiter_ty, waiter_next)?;
-                Some(DebugFormat::Known(KnownFormat::Notify {
-                    state_offset,
-                    state_decode: resolve_decode(*self, state_decode),
-                    mutex_offset,
-                    mutex_decode: resolve_decode(*self, mutex_decode),
-                    head_offset,
-                    waiter: waiter_ty,
-                    waiter_size: waiter_ty.size() as u32,
-                    waiter_notification_offset,
-                    waiter_notification_decode: resolve_decode(*self, waiter_notification_decode),
-                    waiter_next_offset,
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::Semaphore {
@@ -1866,27 +1815,61 @@ mod bundle_tests {
                     ),
                     (
                         NOTIFY,
-                        BundleDebugFormat::Known(BundleKnownFormat::Notify {
-                            state: sel(&[0]),
-                            state_decode: BundleScalarDecode::Bits(vec![
-                                ebf(
-                                    statel,
-                                    0,
-                                    2,
-                                    vec![(0, idlel), (1, waitingl), (2, notifiedl)],
-                                ),
-                                ubf(generationl, 2),
-                            ]),
-                            mutex: sel(&[1, 0, 0]),
-                            mutex_decode: mutex_decode(),
-                            head: sel(&[1, 1, 0]),
-                            waiter: NOTIFY_WAITER,
-                            waiter_notification: sel(&[0]),
-                            waiter_notification_decode: BundleScalarDecode::Bits(vec![
-                                ebf(kindl, 0, 2, vec![(0, nonel), (1, onel), (2, alll)]),
-                                ebf(orderl, 2, 1, vec![(0, fifol), (1, lifol)]),
-                            ]),
-                            waiter_next: sel(&[1]),
+                        BundleDebugFormat::Node(BundleNode::Struct {
+                            fields: vec![
+                                BundleField::Named {
+                                    label: statel,
+                                    node: BundleNode::Scalar {
+                                        at: sel(&[0]),
+                                        decode: BundleScalarDecode::Bits(vec![
+                                            ebf(
+                                                statel,
+                                                0,
+                                                2,
+                                                vec![(0, idlel), (1, waitingl), (2, notifiedl)],
+                                            ),
+                                            ubf(generationl, 2),
+                                        ]),
+                                    },
+                                },
+                                BundleField::Named {
+                                    label: mutexfl,
+                                    node: BundleNode::Scalar {
+                                        at: sel(&[1, 0, 0]),
+                                        decode: mutex_decode(),
+                                    },
+                                },
+                                BundleField::Named {
+                                    label: queuefl,
+                                    node: BundleNode::List {
+                                        head: sel(&[1, 1, 0]),
+                                        next: sel(&[1]),
+                                        node: Box::new(BundleNode::Struct {
+                                            fields: vec![BundleField::Named {
+                                                label: notificationn,
+                                                node: BundleNode::Scalar {
+                                                    at: sel(&[0]),
+                                                    decode: BundleScalarDecode::Bits(vec![
+                                                        ebf(
+                                                            kindl,
+                                                            0,
+                                                            2,
+                                                            vec![(0, nonel), (1, onel), (2, alll)],
+                                                        ),
+                                                        ebf(
+                                                            orderl,
+                                                            2,
+                                                            1,
+                                                            vec![(0, fifol), (1, lifol)],
+                                                        ),
+                                                    ]),
+                                                },
+                                            }],
+                                        }),
+                                        node_ty: NOTIFY_WAITER,
+                                    },
+                                },
+                            ],
                         }),
                     ),
                     (

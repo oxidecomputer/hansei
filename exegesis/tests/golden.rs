@@ -254,25 +254,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, &m(*drop)),
         ),
         KnownFormat::RawMutex { state, .. } => format!("RawMutex {{ state={} }}", f(id, state)),
-        KnownFormat::Notify {
-            state,
-            mutex,
-            head,
-            waiter,
-            waiter_notification,
-            waiter_next,
-            ..
-        } => {
-            format!(
-                "Notify {{ state={}, mutex={}, head={}, waiter={}, waiter_notification={}, waiter_next={} }}",
-                f(id, state),
-                f(id, mutex),
-                f(id, head),
-                fq_name(bundle, *waiter),
-                f(*waiter, waiter_notification),
-                f(*waiter, waiter_next),
-            )
-        }
         KnownFormat::Semaphore { permits, .. } => {
             format!("Semaphore {{ permits={} }}", f(id, permits))
         }
@@ -845,12 +826,13 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "tokio::sync::notify::Notify",
-            "tokio::sync::notify::Notify :: Notify \
-             { state=state.inner.value.v.value.__0@+0, \
-             mutex=waiters.__1.raw.state.v.value.__0@+8, \
-             head=waiters.__1.data.value.head@+16, waiter=tokio::sync::notify::Waiter, \
-             waiter_notification=notification.__0.inner.value.v.value.__0@+32, \
-             waiter_next=pointers.inner.value.next@+8 }",
+            "tokio::sync::notify::Notify :: Node Struct \
+             { state: state.inner.value.v.value.__0@+0, \
+             mutex: waiters.__1.raw.state.v.value.__0@+8, \
+             queue: List { head=waiters.__1.data.value.head@+16, \
+             node_ty=tokio::sync::notify::Waiter, \
+             next=pointers.inner.value.next@+8, \
+             Struct { notification: notification.__0.inner.value.v.value.__0@+32 } } }",
         );
         assert_format(
             program,
