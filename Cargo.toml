@@ -17,6 +17,7 @@ members = [
 anyhow = "1.0"
 camino = "1.2"
 bindgen = { version = "0.72", default-features = false }
+blake3 = { version = "1", features = ["pure"] }
 clap = { version = "4.5.51", features = ["derive"] }
 console = "0.16"
 debugdb = { git = "https://github.com/andrewjstone/debugdb", branch = "spelunkio-2" }

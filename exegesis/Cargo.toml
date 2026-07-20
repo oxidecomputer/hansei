@@ -21,6 +21,7 @@ path = "src/bin/compare-symbols.rs"
 required-features = ["cli"]
 
 [dependencies]
+blake3.workspace = true
 clap = { workspace = true, optional = true }
 foldhash.workspace = true
 gimli.workspace = true
@@ -31,7 +32,6 @@ regex.workspace = true
 rustc-demangle.workspace = true
 semver = { workspace = true, features = ["serde"] }
 serde.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
