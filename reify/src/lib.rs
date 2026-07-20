@@ -1,7 +1,10 @@
 pub mod debug_type;
 
 pub use debug_type::TypeKind;
-use debug_type::{DebugFormat, DebugMember, DebugType, KnownFormat, TypeClass};
+use debug_type::{
+    BitField, DebugFormat, DebugMember, DebugType, FieldRender, KnownFormat, ScalarDecode,
+    TypeClass,
+};
 
 use proc::Mappings;
 
@@ -748,138 +751,125 @@ fn write_display_value<'a, T: DebugType<'a>>(
     }
 
     if let Some(format) = ty.debug_format() {
-        if let DebugFormat::Known(KnownFormat::FunctionPointer) = format {
-            return write_function_pointer(f, info.bytes, ctx.proc);
-        }
-        if let DebugFormat::Known(format @ KnownFormat::DynPointer { .. }) = format {
-            return write_dyn_pointer(f, info, Some(ty.name()), format, ctx);
-        }
-        if let DebugFormat::Known(KnownFormat::RawWakerVTable {
-            clone_offset,
-            wake_offset,
-            wake_by_ref_offset,
-            drop_offset,
-        }) = format
-        {
-            return write_raw_waker_vtable(
-                f,
-                info,
+        // One `match` consumes `format` so the owned `ScalarDecode`s it now
+        // carries need not be `Copy`. Every arm but `Transparent`/`Atomic`
+        // renders and returns; those two fall through to the shared sub-value
+        // recursion below with the child location they bind.
+        let (target, offset, child_proc, child_visited) = match format {
+            DebugFormat::Known(KnownFormat::FunctionPointer) => {
+                return write_function_pointer(f, info.bytes, ctx.proc);
+            }
+            DebugFormat::Known(kf @ KnownFormat::DynPointer { .. }) => {
+                return write_dyn_pointer(f, info, Some(ty.name()), kf, ctx);
+            }
+            DebugFormat::Known(KnownFormat::RawWakerVTable {
                 clone_offset,
                 wake_offset,
                 wake_by_ref_offset,
                 drop_offset,
-                ctx,
-            );
-        }
-        if let DebugFormat::Known(KnownFormat::RawMutex { state_offset }) = format {
-            return write_raw_mutex(f, ty.name(), info.bytes, state_offset);
-        }
-        if let DebugFormat::Known(KnownFormat::WatchState { state_offset }) = format {
-            return write_watch_state(f, ty.name(), info.bytes, state_offset);
-        }
-        if let DebugFormat::Known(format @ KnownFormat::Notify { .. }) = format {
-            return write_notify(f, info, ty.name(), format, ctx);
-        }
-        if let DebugFormat::Known(KnownFormat::Semaphore { permits_member, permits_offset }) = format
-        {
-            let decoded = decode_semaphore_permits(info.bytes, permits_offset);
-            return write_struct_with_decoded_field(
-                f,
-                info,
-                ty.name(),
+            }) => {
+                return write_raw_waker_vtable(
+                    f,
+                    info,
+                    clone_offset,
+                    wake_offset,
+                    wake_by_ref_offset,
+                    drop_offset,
+                    ctx,
+                );
+            }
+            DebugFormat::Known(KnownFormat::RawMutex { state_offset, state_decode }) => {
+                return write_raw_mutex(f, ty.name(), info.bytes, state_offset, &state_decode);
+            }
+            DebugFormat::Known(KnownFormat::WatchState { state_offset, state_decode }) => {
+                return write_watch_state(f, ty.name(), info.bytes, state_offset, &state_decode);
+            }
+            DebugFormat::Known(kf @ KnownFormat::Notify { .. }) => {
+                return write_notify(f, info, ty.name(), kf, ctx);
+            }
+            DebugFormat::Known(KnownFormat::Semaphore {
                 permits_member,
-                &decoded,
-                ctx,
-            );
-        }
-        if let DebugFormat::Known(format @ KnownFormat::BoundedSemaphore { .. }) = format {
-            return write_bounded_semaphore(f, info, ty.name(), format, ctx);
-        }
-        if let DebugFormat::Known(format @ KnownFormat::MpscBlock { .. }) = format {
-            return write_mpsc_block(f, info, ty.name(), format, ctx);
-        }
-        if let DebugFormat::Known(format @ KnownFormat::MpscChan { .. }) = format {
-            return write_mpsc_chan(f, info, ty.name(), &[], format, ctx);
-        }
-        if let DebugFormat::Known(format @ KnownFormat::MpscRx { .. }) = format {
-            return write_mpsc_rx(f, info, format, ctx);
-        }
-        if let DebugFormat::Known(KnownFormat::IpAddress { octets, offset }) = format {
-            let Some(bytes) = byte_range(bytes, offset, octets.size()) else {
-                return write!(f, "<truncated>");
-            };
-            return match <&[u8; 4]>::try_from(bytes) {
-                Ok(octets) => write!(f, "{}", std::net::Ipv4Addr::from(*octets)),
-                Err(_) => match <&[u8; 16]>::try_from(bytes) {
-                    Ok(octets) => write!(f, "{}", std::net::Ipv6Addr::from(*octets)),
-                    Err(_) => write!(f, "<invalid IP address layout>"),
-                },
-            };
-        }
-        if let DebugFormat::Known(format @ KnownFormat::Vec { .. }) = format {
-            return write_vec(f, info, format, ctx);
-        }
-        if let DebugFormat::Known(KnownFormat::Str {
-            pointer_offset,
-            length,
-            length_offset,
-        }) = format
-        {
-            return write_utf8_string(
-                f,
-                info.bytes,
+                permits_offset,
+                permits_decode,
+            }) => {
+                let decoded = decoded_usize(info.bytes, permits_offset, &permits_decode);
+                return write_struct_with_decoded_field(
+                    f,
+                    info,
+                    ty.name(),
+                    permits_member,
+                    &decoded,
+                    ctx,
+                );
+            }
+            DebugFormat::Known(kf @ KnownFormat::BoundedSemaphore { .. }) => {
+                return write_bounded_semaphore(f, info, ty.name(), kf, ctx);
+            }
+            DebugFormat::Known(kf @ KnownFormat::MpscBlock { .. }) => {
+                return write_mpsc_block(f, info, ty.name(), kf, ctx);
+            }
+            DebugFormat::Known(kf @ KnownFormat::MpscChan { .. }) => {
+                return write_mpsc_chan(f, info, ty.name(), &[], kf, ctx);
+            }
+            DebugFormat::Known(kf @ KnownFormat::MpscRx { .. }) => {
+                return write_mpsc_rx(f, info, kf, ctx);
+            }
+            DebugFormat::Known(KnownFormat::IpAddress { octets, offset }) => {
+                let Some(bytes) = byte_range(bytes, offset, octets.size()) else {
+                    return write!(f, "<truncated>");
+                };
+                return match <&[u8; 4]>::try_from(bytes) {
+                    Ok(octets) => write!(f, "{}", std::net::Ipv4Addr::from(*octets)),
+                    Err(_) => match <&[u8; 16]>::try_from(bytes) {
+                        Ok(octets) => write!(f, "{}", std::net::Ipv6Addr::from(*octets)),
+                        Err(_) => write!(f, "<invalid IP address layout>"),
+                    },
+                };
+            }
+            DebugFormat::Known(kf @ KnownFormat::Vec { .. }) => {
+                return write_vec(f, info, kf, ctx);
+            }
+            DebugFormat::Known(KnownFormat::Str {
                 pointer_offset,
                 length,
                 length_offset,
-                None,
-                ctx.proc,
-            );
-        }
-        if let DebugFormat::Known(KnownFormat::String {
-            pointer_offset,
-            length,
-            length_offset,
-            capacity,
-            capacity_offset,
-        }) = format
-        {
-            return write_utf8_string(
-                f,
-                info.bytes,
+            }) => {
+                return write_utf8_string(
+                    f,
+                    info.bytes,
+                    pointer_offset,
+                    length,
+                    length_offset,
+                    None,
+                    ctx.proc,
+                );
+            }
+            DebugFormat::Known(KnownFormat::String {
                 pointer_offset,
                 length,
                 length_offset,
-                Some((capacity, capacity_offset)),
-                ctx.proc,
-            );
-        }
-        if let DebugFormat::Known(format @ KnownFormat::BTreeMap { .. }) = format {
-            return write_btree_map(f, info, format, ctx);
-        }
-
-        let (target, offset, child_proc, child_visited) = match format {
+                capacity,
+                capacity_offset,
+            }) => {
+                return write_utf8_string(
+                    f,
+                    info.bytes,
+                    pointer_offset,
+                    length,
+                    length_offset,
+                    Some((capacity, capacity_offset)),
+                    ctx.proc,
+                );
+            }
+            DebugFormat::Known(kf @ KnownFormat::BTreeMap { .. }) => {
+                return write_btree_map(f, info, kf, ctx);
+            }
             DebugFormat::Transparent { target, offset } => (target, offset, ctx.proc, ctx.visited),
             DebugFormat::Known(KnownFormat::Atomic { value, offset }) => {
                 // AtomicPtr's Debug implementation reports the stored
                 // address; it does not dereference it.
                 (value, offset, None, None)
             }
-            DebugFormat::Known(KnownFormat::FunctionPointer) => unreachable!(),
-            DebugFormat::Known(KnownFormat::DynPointer { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::RawWakerVTable { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::RawMutex { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::WatchState { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::Notify { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::Semaphore { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::BoundedSemaphore { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::MpscBlock { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::IpAddress { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::Vec { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::Str { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::String { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::BTreeMap { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::MpscChan { .. }) => unreachable!(),
-            DebugFormat::Known(KnownFormat::MpscRx { .. }) => unreachable!(),
         };
         let start = offset as usize;
         let Some(end) = start.checked_add(target.size() as usize) else {
@@ -1137,31 +1127,71 @@ struct VtableFunction {
     concrete: Option<String>,
 }
 
-/// Render a parking_lot `RawMutex` as its decoded lock state, e.g.
-/// `parking_lot::raw_mutex::RawMutex (locked, parked)`. parking_lot uses a
-/// fixed bit layout for the state byte.
-/// Decode a parking_lot `RawMutex` state byte to its lock/park status.
-fn raw_mutex_state(state: u8) -> &'static str {
-    const LOCKED_BIT: u8 = 0b01;
-    const PARKED_BIT: u8 = 0b10;
-    match (state & LOCKED_BIT != 0, state & PARKED_BIT != 0) {
-        (false, false) => "unlocked",
-        (true, false) => "locked",
-        (false, true) => "parked",
-        (true, true) => "locked, parked",
+/// Render one machine `word` through a resolved [`ScalarDecode`], producing the
+/// canonical `field=value, …` form. Enforces the two "no silent state" rules:
+/// an [`FieldRender::Enum`] value absent from its table renders `<unknown: N>`,
+/// and any word bit no field covers renders a trailing `<unknown bits: 0xNN>` —
+/// so upstream layout drift surfaces rather than being dropped.
+fn apply(decode: &ScalarDecode, word: u64) -> String {
+    let fields = match decode {
+        ScalarDecode::Raw => return word.to_string(),
+        ScalarDecode::Bits(fields) => fields,
+    };
+    let mut parts = Vec::with_capacity(fields.len() + 1);
+    let mut covered = 0u64;
+    for BitField { name, shift, width, render } in fields {
+        let shift = *shift;
+        // `None` width means "all bits at and above `shift`".
+        let value_mask = match width {
+            Some(w) if w.get() >= 64 => u64::MAX,
+            Some(w) => (1u64 << w.get()) - 1,
+            None => u64::MAX >> shift,
+        };
+        covered |= value_mask << shift;
+        let value = (word >> shift) & value_mask;
+        match render {
+            FieldRender::Uint => parts.push(format!("{name}={value}")),
+            FieldRender::Enum(table) => match table.iter().find(|(v, _)| *v == value) {
+                Some((_, label)) => parts.push(format!("{name}={label}")),
+                None => parts.push(format!("{name}=<unknown: {value}>")),
+            },
+        }
+    }
+    let leftover = word & !covered;
+    if leftover != 0 {
+        parts.push(format!("<unknown bits: {leftover:#x}>"));
+    }
+    parts.join(", ")
+}
+
+/// Read the `usize` word at `offset` and decode it, or `<truncated>` if the
+/// bytes are short.
+fn decoded_usize(bytes: &[u8], offset: u64, decode: &ScalarDecode) -> String {
+    match read_u64_at(bytes, offset) {
+        Some(word) => apply(decode, word),
+        None => "<truncated>".to_string(),
     }
 }
 
+/// Read the single byte at `offset` and decode it, or `<truncated>` if the
+/// bytes are short.
+fn decoded_byte(bytes: &[u8], offset: u64, decode: &ScalarDecode) -> String {
+    match bytes.get(offset as usize) {
+        Some(&byte) => apply(decode, u64::from(byte)),
+        None => "<truncated>".to_string(),
+    }
+}
+
+/// Render a parking_lot `RawMutex` as its decoded lock state, e.g.
+/// `parking_lot::raw_mutex::RawMutex: locked=locked, parked=unparked`.
 fn write_raw_mutex(
     f: &mut fmt::Formatter<'_>,
     name: &str,
     bytes: &[u8],
     state_offset: u64,
+    decode: &ScalarDecode,
 ) -> fmt::Result {
-    let Some(&state) = bytes.get(state_offset as usize) else {
-        return write!(f, "<truncated>");
-    };
-    write!(f, "{name} ({})", raw_mutex_state(state))
+    write!(f, "{name}: {}", decoded_byte(bytes, state_offset, decode))
 }
 
 /// Render a struct, replacing one member's value with `decoded` text rather
@@ -1180,39 +1210,6 @@ fn write_struct_with_decoded_field<'a, T: DebugType<'a>>(
     write_struct_fields(f, info, name, f.alternate(), ctx, override_field)
 }
 
-/// Decode tokio's `Notify` state word: the low two bits are the notification
-/// state and the rest counts `notify_waiters()` calls.
-fn decode_notify_state(bytes: &[u8], state_offset: u64) -> String {
-    let Some(raw) = read_u64_at(bytes, state_offset) else {
-        return "<truncated>".to_string();
-    };
-    let state = match raw & 0b11 {
-        0 => "idle",
-        1 => "waiting",
-        2 => "notified",
-        _ => "<invalid>",
-    };
-    match raw >> 2 {
-        0 => state.to_string(),
-        1 => format!("{state} (1 notify_waiters call)"),
-        calls => format!("{state} ({calls} notify_waiters calls)"),
-    }
-}
-
-/// Decode tokio's batch-semaphore `permits` word: bit 0 is a closed flag and
-/// the remaining bits are the available permit count.
-fn decode_semaphore_permits(bytes: &[u8], permits_offset: u64) -> String {
-    let Some(raw) = read_u64_at(bytes, permits_offset) else {
-        return "<truncated>".to_string();
-    };
-    let permits = raw >> 1;
-    if raw & 1 == 1 {
-        format!("{permits} (closed)")
-    } else {
-        format!("{permits}")
-    }
-}
-
 /// Render a `tokio::sync::mpsc::bounded::Semaphore` compactly as its waiter
 /// mutex state, closed flag, available permits, capacity, and the queue of
 /// waiters (each shown by the permits it is blocked on) — rather than dumping
@@ -1226,8 +1223,10 @@ fn write_bounded_semaphore<'a, T: DebugType<'a>>(
 ) -> fmt::Result {
     let KnownFormat::BoundedSemaphore {
         mutex_offset,
+        mutex_decode,
         closed_offset,
         permits_offset,
+        permits_decode,
         bound_offset,
         head_offset,
         waiter,
@@ -1254,10 +1253,7 @@ fn write_bounded_semaphore<'a, T: DebugType<'a>>(
     write!(f, "{name} {{")?;
 
     field(f)?;
-    match bytes.get(mutex_offset as usize) {
-        Some(&state) => write!(f, "mutex: {},", raw_mutex_state(state))?,
-        None => write!(f, "mutex: <truncated>,")?,
-    }
+    write!(f, "mutex: {},", decoded_byte(bytes, mutex_offset, &mutex_decode))?;
 
     field(f)?;
     match bytes.get(closed_offset as usize) {
@@ -1266,12 +1262,10 @@ fn write_bounded_semaphore<'a, T: DebugType<'a>>(
     }
 
     field(f)?;
-    // The batch semaphore's permit word: bit 0 is the closed flag (surfaced
-    // separately above), the rest the available count.
-    match read_u64_at(bytes, permits_offset) {
-        Some(raw) => write!(f, "permits: {},", raw >> 1)?,
-        None => write!(f, "permits: <truncated>,")?,
-    }
+    // The batch semaphore's permit word: bit 0 the closed flag, the rest the
+    // available count. Its closed bit is also surfaced by the separate `closed`
+    // field above, from a distinct source (`Waitlist.closed`).
+    write!(f, "permits: {},", decoded_usize(bytes, permits_offset, &permits_decode))?;
 
     field(f)?;
     match read_u64_at(bytes, bound_offset) {
@@ -1399,11 +1393,14 @@ fn write_notify<'a, T: DebugType<'a>>(
 ) -> fmt::Result {
     let KnownFormat::Notify {
         state_offset,
+        state_decode,
         mutex_offset,
+        mutex_decode,
         head_offset,
         waiter,
         waiter_size,
         waiter_notification_offset,
+        waiter_notification_decode,
         waiter_next_offset,
     } = format
     else {
@@ -1425,13 +1422,10 @@ fn write_notify<'a, T: DebugType<'a>>(
     write!(f, "{name} {{")?;
 
     field(f)?;
-    write!(f, "state: {},", decode_notify_state(bytes, state_offset))?;
+    write!(f, "state: {},", decoded_usize(bytes, state_offset, &state_decode))?;
 
     field(f)?;
-    match bytes.get(mutex_offset as usize) {
-        Some(&state) => write!(f, "mutex: {},", raw_mutex_state(state))?,
-        None => write!(f, "mutex: <truncated>,")?,
-    }
+    write!(f, "mutex: {},", decoded_byte(bytes, mutex_offset, &mutex_decode))?;
 
     field(f)?;
     write!(f, "queue: ")?;
@@ -1442,7 +1436,7 @@ fn write_notify<'a, T: DebugType<'a>>(
         word_offset: waiter_notification_offset,
         next_offset: waiter_next_offset,
     };
-    write_notify_waiters(f, bytes, waiters, ctx.deeper())?;
+    write_notify_waiters(f, bytes, waiters, &waiter_notification_decode, ctx.deeper())?;
     if pretty {
         write!(f, ",")?;
     }
@@ -1464,6 +1458,7 @@ fn write_notify_waiters<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     list: WaiterList<T>,
+    notification_decode: &ScalarDecode,
     ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let WaiterList {
@@ -1509,7 +1504,9 @@ fn write_notify_waiters<'a, T: DebugType<'a>>(
         }
         any = true;
         match read_u64_at(&node, notification_offset) {
-            Some(word) => write!(f, "{name} {{ notification: {} }}", decode_notification(word))?,
+            Some(word) => {
+                write!(f, "{name} {{ notification: {} }}", apply(notification_decode, word))?
+            }
             None => write!(f, "{name} {{ <truncated> }}")?,
         }
         if pretty {
@@ -1527,41 +1524,16 @@ fn write_notify_waiters<'a, T: DebugType<'a>>(
     write!(f, "]")
 }
 
-/// Decode a `tokio::sync::notify::AtomicNotification` word: whether a queued
-/// waiter has been handed a notification and, if so, which kind. tokio encodes
-/// 0 as none, 1 as `notify_one` (FIFO), 5 as `notify_one` (LIFO), and 2 as
-/// `notify_waiters` (all).
-fn decode_notification(word: u64) -> String {
-    match word {
-        0 => "none".to_string(),
-        1 => "one".to_string(),
-        5 => "one (lifo)".to_string(),
-        2 => "all".to_string(),
-        other => other.to_string(),
-    }
-}
-
-/// Render a `tokio::sync::watch::state::AtomicState` as its decoded version
-/// and closed flag, e.g. `…::AtomicState (version 4)` or
-/// `…::AtomicState (version 4, closed)`. tokio reserves bit 0 as the closed
-/// flag; the remaining bits are the version.
+/// Render a `tokio::sync::watch::state::AtomicState` as its decoded closed flag
+/// and version, e.g. `…::AtomicState: closed=open, version=4`.
 fn write_watch_state(
     f: &mut fmt::Formatter<'_>,
     name: &str,
     bytes: &[u8],
     state_offset: u64,
+    decode: &ScalarDecode,
 ) -> fmt::Result {
-    const CLOSED_BIT: u64 = 1;
-
-    let Some(raw) = read_u64_at(bytes, state_offset) else {
-        return write!(f, "<truncated>");
-    };
-    let version = raw & !CLOSED_BIT;
-    if raw & CLOSED_BIT == CLOSED_BIT {
-        write!(f, "{name} (version {version}, closed)")
-    } else {
-        write!(f, "{name} (version {version})")
-    }
+    write!(f, "{name}: {}", decoded_usize(bytes, state_offset, decode))
 }
 
 fn write_function_pointer(
@@ -1945,6 +1917,7 @@ fn write_mpsc_rx<'a, T: DebugType<'a>>(
         chan_offset,
         bound_offset,
         permits_offset,
+        permits_decode,
     } = format
     else {
         unreachable!()
@@ -1969,7 +1942,7 @@ fn write_mpsc_rx<'a, T: DebugType<'a>>(
 
     let capacity = read_u64_at(&chan_bytes, bound_offset)
         .map_or_else(|| "<truncated>".to_string(), |c| c.to_string());
-    let free = decode_semaphore_permits(&chan_bytes, permits_offset);
+    let free = decoded_usize(&chan_bytes, permits_offset, &permits_decode);
 
     let chan_info = TypeInfoRef {
         ty: chan,

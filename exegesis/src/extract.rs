@@ -21,11 +21,14 @@
 //!    no silent omissions.
 
 use crate::bundle::{
-    BinaryIdent, Bundle, BundleTypeId, DebugFormat, DiscrDef, DiscrValue, DiscrValues,
-    DynFutureTable, FutureKind, InfraTypes, MemberDef, Meta, Provenance, ProvenanceTable,
-    Selector, SourceLoc, StaticDef, StaticRole, StaticsTable, StrRef, StringInterner, TaskEntryId,
-    TaskFutureEntry, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
+    BinaryIdent, BitField, Bundle, BundleTypeId, DebugFormat, DiscrDef, DiscrValue, DiscrValues,
+    DynFutureTable, FieldRender, FutureKind, InfraTypes, MemberDef, Meta, Provenance,
+    ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole, StaticsTable, StrRef,
+    StringInterner, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, VariantDef,
+    VariantShape,
 };
+use std::num::NonZeroU8;
+
 use crate::raw_types::{NsId, RawType, VariantShape as RawVariantShape};
 use crate::view::{DwView, Func, SourceLocView};
 use crate::{DwReader, Encoding, TypeId};
@@ -1057,11 +1060,10 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| ip_address_debug_format(reader, id))
         .or_else(|| str_debug_format(reader, id))
         .or_else(|| string_debug_format(reader, id))
-        .or_else(|| parking_lot_raw_mutex_debug_format(reader, id))
-        .or_else(|| semaphore_debug_format(reader, id))
-        .or_else(|| watch_state_debug_format(reader, id))
+        // RawMutex, Semaphore, WatchState, and MpscRx carry a `ScalarDecode`
+        // whose labels must be interned; they are built in `Emitter::emit`,
+        // which holds the string interner, rather than in this chain.
         .or_else(|| mpsc_block_debug_format(reader, id))
-        .or_else(|| mpsc_rx_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_atomic_debug_format(reader, id))
@@ -1589,7 +1591,10 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     }))
 }
 
-fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+/// Recognize a `parking_lot::raw_mutex::RawMutex` and return the selector to its
+/// single state byte. The decode table (`LOCKED_BIT`/`PARKED_BIT`) is attached
+/// in [`Emitter::emit`], where the string interner is available.
+fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Selector> {
     if fq_name(reader, id).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
         return None;
     }
@@ -1608,8 +1613,7 @@ fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Opti
     if atomic.size != 1 {
         return None;
     }
-    let state = value.under_member(state_index as u32);
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::RawMutex { state }))
+    Some(value.under_member(state_index as u32))
 }
 
 /// The member path from a struct named `type_name` to the atomic `usize`
@@ -1706,20 +1710,25 @@ fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawNotifyFor
     Some(RawNotifyFormat { state, mutex, head, waiter, waiter_notification, waiter_next })
 }
 
-fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+/// Recognize a `tokio::sync::batch_semaphore::Semaphore` and return the selector
+/// to its atomic permit word; the decode table is attached in
+/// [`Emitter::emit`].
+fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Selector> {
     let permits = atomic_usize_field_path(
         reader,
         id,
         "tokio::sync::batch_semaphore::Semaphore",
         "permits",
     )?;
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::Semaphore { permits: permits.into() }))
+    Some(permits.into())
 }
 
-fn watch_state_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+/// Recognize a `tokio::sync::watch::state::AtomicState` and return the selector
+/// to its atomic word; the decode table is attached in [`Emitter::emit`].
+fn watch_state_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Selector> {
     let state =
         atomic_usize_field_path(reader, id, "tokio::sync::watch::state::AtomicState", "__0")?;
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::WatchState { state: state.into() }))
+    Some(state.into())
 }
 
 fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
@@ -1776,7 +1785,17 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
 /// then across the allocation's sized header to the `Chan`, and record the
 /// bounded capacity (`semaphore.bound`) and available permit word
 /// (`semaphore.semaphore.permits`) as paths rooted at that `Chan`.
-fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+/// A `tokio::sync::mpsc::bounded::Receiver<T>` and the selectors reify needs to
+/// render it as its channel. The permit-word decode is attached in
+/// [`Emitter::emit`]. See [`crate::bundle::KnownFormat::MpscRx`].
+struct RawMpscRxFormat {
+    chan_pointer: Vec<u32>,
+    chan: Vec<u32>,
+    bound: Vec<u32>,
+    permits: Vec<u32>,
+}
+
+fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscRxFormat> {
     if !fq_name(reader, id)
         .as_deref()
         .is_some_and(|name| name.starts_with("tokio::sync::mpsc::bounded::Receiver<"))
@@ -1816,12 +1835,7 @@ fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat
     )?;
     let permits = sem_prefix.into_iter().chain(permits_tail).collect::<Vec<u32>>();
 
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::MpscRx {
-        chan_pointer: chan_pointer.into(),
-        chan: chan.into(),
-        bound: bound.into(),
-        permits: permits.into(),
-    }))
+    Some(RawMpscRxFormat { chan_pointer, chan, bound, permits })
 }
 
 /// A `tokio::sync::mpsc::bounded::Semaphore` and the paths reify needs to render
@@ -2773,6 +2787,67 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Build an enumerated [`BitField`], interning its label and value labels.
+    fn enum_field(
+        &mut self,
+        name: &str,
+        shift: u8,
+        width: u8,
+        table: &[(u64, &str)],
+    ) -> BitField {
+        let name = self.interner.intern(name);
+        let interner = &mut self.interner;
+        let render =
+            FieldRender::Enum(table.iter().map(|(v, l)| (*v, interner.intern(l))).collect());
+        BitField { name, shift, width: NonZeroU8::new(width), render }
+    }
+
+    /// Build an unsigned-integer [`BitField`] covering all bits at and above
+    /// `shift` (`width: None`).
+    fn uint_tail_field(&mut self, name: &str, shift: u8) -> BitField {
+        let name = self.interner.intern(name);
+        BitField { name, shift, width: None, render: FieldRender::Uint }
+    }
+
+    /// parking_lot mutex state byte: bit 0 locked, bit 1 parked.
+    fn mutex_byte_decode(&mut self) -> ScalarDecode {
+        let locked = self.enum_field("locked", 0, 1, &[(0, "unlocked"), (1, "locked")]);
+        let parked = self.enum_field("parked", 1, 1, &[(0, "unparked"), (1, "parked")]);
+        ScalarDecode::Bits(vec![locked, parked])
+    }
+
+    /// tokio `Notify` state word: low two bits the notification state, the rest
+    /// the `notify_waiters()` generation counter.
+    fn notify_state_decode(&mut self) -> ScalarDecode {
+        let state =
+            self.enum_field("state", 0, 2, &[(0, "idle"), (1, "waiting"), (2, "notified")]);
+        let generation = self.uint_tail_field("generation", 2);
+        ScalarDecode::Bits(vec![state, generation])
+    }
+
+    /// tokio per-waiter `AtomicNotification` word: kind in bits 0–1, FIFO/LIFO
+    /// order in bit 2 (so `notify_one` LIFO reads as the packed value 5).
+    fn notification_decode(&mut self) -> ScalarDecode {
+        let kind = self.enum_field("kind", 0, 2, &[(0, "none"), (1, "one"), (2, "all")]);
+        let order = self.enum_field("order", 2, 1, &[(0, "fifo"), (1, "lifo")]);
+        ScalarDecode::Bits(vec![kind, order])
+    }
+
+    /// tokio batch-semaphore permit word: bit 0 closed, the rest the available
+    /// permit count.
+    fn semaphore_permits_decode(&mut self) -> ScalarDecode {
+        let closed = self.enum_field("closed", 0, 1, &[(0, "open"), (1, "closed")]);
+        let permits = self.uint_tail_field("permits", 1);
+        ScalarDecode::Bits(vec![closed, permits])
+    }
+
+    /// tokio watch `AtomicState`: bit 0 closed, the rest the version counter.
+    fn watch_state_decode(&mut self) -> ScalarDecode {
+        let closed = self.enum_field("closed", 0, 1, &[(0, "open"), (1, "closed")]);
+        let version = self.uint_tail_field("version", 1);
+        ScalarDecode::Bits(vec![closed, version])
+    }
+
     /// Emit a type (and, transitively, everything it references),
     /// returning its bundle id.
     fn emit(&mut self, id: TypeId) -> BundleTypeId {
@@ -2821,8 +2896,10 @@ impl<'a> Emitter<'a> {
             } else if let Some(format) = bounded_semaphore_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::BoundedSemaphore {
                     mutex: format.mutex.into(),
+                    mutex_decode: self.mutex_byte_decode(),
                     closed: format.closed.into(),
                     permits: format.permits.into(),
+                    permits_decode: self.semaphore_permits_decode(),
                     bound: format.bound.into(),
                     head: format.head.into(),
                     waiter: self.reserve(format.waiter),
@@ -2833,11 +2910,41 @@ impl<'a> Emitter<'a> {
             } else if let Some(format) = notify_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::Notify {
                     state: format.state.into(),
+                    state_decode: self.notify_state_decode(),
                     mutex: format.mutex.into(),
+                    mutex_decode: self.mutex_byte_decode(),
                     head: format.head.into(),
                     waiter: self.reserve(format.waiter),
                     waiter_notification: format.waiter_notification.into(),
+                    waiter_notification_decode: self.notification_decode(),
                     waiter_next: format.waiter_next.into(),
+                };
+                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(state) = parking_lot_raw_mutex_debug_format(self.reader, tid) {
+                let format = crate::bundle::KnownFormat::RawMutex {
+                    state,
+                    state_decode: self.mutex_byte_decode(),
+                };
+                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(permits) = semaphore_debug_format(self.reader, tid) {
+                let format = crate::bundle::KnownFormat::Semaphore {
+                    permits,
+                    permits_decode: self.semaphore_permits_decode(),
+                };
+                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(state) = watch_state_debug_format(self.reader, tid) {
+                let format = crate::bundle::KnownFormat::WatchState {
+                    state,
+                    state_decode: self.watch_state_decode(),
+                };
+                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(format) = mpsc_rx_debug_format(self.reader, tid) {
+                let format = crate::bundle::KnownFormat::MpscRx {
+                    chan_pointer: format.chan_pointer.into(),
+                    chan: format.chan.into(),
+                    bound: format.bound.into(),
+                    permits: format.permits.into(),
+                    permits_decode: self.semaphore_permits_decode(),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = known_debug_format(self.reader, tid) {

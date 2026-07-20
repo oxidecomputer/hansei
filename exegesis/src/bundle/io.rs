@@ -9,7 +9,8 @@
 //! tool version that wrote it (`format_version` bumps freely).
 
 use crate::bundle::schema::{
-    Bundle, BundleTypeId, Selector, StaticsTable, Step, TypeDef, strip_llvm_suffix,
+    Bundle, BundleTypeId, FieldRender, ScalarDecode, Selector, StaticsTable, Step, TypeDef,
+    strip_llvm_suffix,
 };
 use crate::bundle::strings::StrRef;
 use crate::symbols::normalized_value_index;
@@ -23,7 +24,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 14;
+pub const FORMAT_VERSION: u32 = 15;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -179,6 +180,76 @@ fn check_selector(
     }
     Ok(target)
 }
+
+/// Validate a [`ScalarDecode`] table against a `word_bits`-wide word: every
+/// label [`StrRef`] resolves, no two fields overlap, each field fits within the
+/// word, and each `Enum` value fits its field. A malformed detector table
+/// becomes a save/load-time error instead of garbage (or a panic) at render
+/// time.
+fn check_scalar_decode(
+    bundle: &Bundle,
+    decode: &ScalarDecode,
+    word_bits: u8,
+    what: &str,
+) -> Result<()> {
+    let corrupt = |msg: String| Err(Error::Corrupt(format!("{what}: {msg}")));
+    let ScalarDecode::Bits(fields) = decode else {
+        return Ok(());
+    };
+    if fields.is_empty() {
+        return corrupt("Bits decode has no fields".into());
+    }
+    let mut covered: u64 = 0;
+    for (i, field) in fields.iter().enumerate() {
+        if bundle.strings.get(field.name).is_none() {
+            return corrupt(format!("field {i} name string ref {} out of range", field.name.0));
+        }
+        if field.shift >= word_bits {
+            return corrupt(format!(
+                "field {i} shift {} is beyond the {word_bits}-bit word",
+                field.shift
+            ));
+        }
+        // `None` width means "all bits at and above `shift`".
+        let width = match field.width {
+            Some(w) => w.get(),
+            None => word_bits - field.shift,
+        };
+        if u16::from(field.shift) + u16::from(width) > u16::from(word_bits) {
+            return corrupt(format!(
+                "field {i} (shift {}, width {width}) overflows the {word_bits}-bit word",
+                field.shift
+            ));
+        }
+        let value_mask = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+        let field_mask = value_mask << field.shift;
+        if covered & field_mask != 0 {
+            return corrupt(format!("field {i} overlaps an earlier field"));
+        }
+        covered |= field_mask;
+        if let FieldRender::Enum(table) = &field.render {
+            for (value, label) in table {
+                if bundle.strings.get(*label).is_none() {
+                    return corrupt(format!(
+                        "field {i} enum label string ref {} out of range",
+                        label.0
+                    ));
+                }
+                if value & !value_mask != 0 {
+                    return corrupt(format!(
+                        "field {i} enum value {value} does not fit its {width}-bit field"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Bit width of a `usize` word, for [`check_scalar_decode`].
+const USIZE_BITS: u8 = (crate::bundle::POINTER_SIZE * 8) as u8;
+/// Bit width of a single state byte, for [`check_scalar_decode`].
+const BYTE_BITS: u8 = 8;
 
 fn type_size(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> Option<u64> {
     if seen.contains(&id) {
@@ -505,23 +576,29 @@ impl Bundle {
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::RawMutex { state },
+                    crate::bundle::schema::KnownFormat::RawMutex { state, state_decode },
                 ) => {
                     check_selector(self, id, state, Shape::StateByte, "RawMutex state debug format")?;
+                    check_scalar_decode(self, state_decode, BYTE_BITS, "RawMutex state decode")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::Notify {
                         state,
+                        state_decode,
                         mutex,
+                        mutex_decode,
                         head,
                         waiter,
                         waiter_notification,
+                        waiter_notification_decode,
                         waiter_next,
                     },
                 ) => {
                     check_selector(self, id, state, Shape::Usize, "Notify state debug format")?;
+                    check_scalar_decode(self, state_decode, USIZE_BITS, "Notify state decode")?;
                     // The waiter mutex's single state byte.
                     check_selector(self, id, mutex, Shape::StateByte, "Notify mutex debug format")?;
+                    check_scalar_decode(self, mutex_decode, BYTE_BITS, "Notify mutex decode")?;
                     // `head` reaches the queue's head word, an
                     // `Option<NonNull<Waiter>>` niche-optimized to a pointer.
                     check_selector(self, id, head, Shape::PointerSized, "Notify head debug format")?;
@@ -534,6 +611,12 @@ impl Bundle {
                         Shape::Usize,
                         "Notify waiter_notification debug format",
                     )?;
+                    check_scalar_decode(
+                        self,
+                        waiter_notification_decode,
+                        USIZE_BITS,
+                        "Notify waiter_notification decode",
+                    )?;
                     check_selector(
                         self,
                         *waiter,
@@ -543,14 +626,16 @@ impl Bundle {
                     )?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::Semaphore { permits },
+                    crate::bundle::schema::KnownFormat::Semaphore { permits, permits_decode },
                 ) => {
                     check_selector(self, id, permits, Shape::Usize, "Semaphore permits debug format")?;
+                    check_scalar_decode(self, permits_decode, USIZE_BITS, "Semaphore permits decode")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::WatchState { state },
+                    crate::bundle::schema::KnownFormat::WatchState { state, state_decode },
                 ) => {
                     check_selector(self, id, state, Shape::Usize, "WatchState state debug format")?;
+                    check_scalar_decode(self, state_decode, USIZE_BITS, "WatchState state decode")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::MpscChan {
@@ -609,6 +694,7 @@ impl Bundle {
                         chan,
                         bound,
                         permits,
+                        permits_decode,
                     },
                 ) => {
                     // `chan_pointer` reaches the raw pointer inside the Arc; it
@@ -636,12 +722,15 @@ impl Bundle {
                         Shape::Usize,
                         "MpscRx permits debug format",
                     )?;
+                    check_scalar_decode(self, permits_decode, USIZE_BITS, "MpscRx permits decode")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::BoundedSemaphore {
                         mutex,
+                        mutex_decode,
                         closed,
                         permits,
+                        permits_decode,
                         bound,
                         head,
                         waiter,
@@ -651,9 +740,11 @@ impl Bundle {
                 ) => {
                     // The waiter mutex's single state byte.
                     check_selector(self, id, mutex, Shape::StateByte, "BoundedSemaphore mutex debug format")?;
+                    check_scalar_decode(self, mutex_decode, BYTE_BITS, "BoundedSemaphore mutex decode")?;
                     // The `Waitlist.closed` flag: a single byte.
                     check_selector(self, id, closed, Shape::Byte, "BoundedSemaphore closed debug format")?;
                     check_selector(self, id, permits, Shape::Usize, "BoundedSemaphore permits debug format")?;
+                    check_scalar_decode(self, permits_decode, USIZE_BITS, "BoundedSemaphore permits decode")?;
                     check_selector(self, id, bound, Shape::Usize, "BoundedSemaphore bound debug format")?;
                     // `head` reaches the queue's head word, an
                     // `Option<NonNull<Waiter>>` niche-optimized to a pointer.

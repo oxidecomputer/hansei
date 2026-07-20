@@ -236,8 +236,8 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, &m(*wake_by_ref)),
             f(id, &m(*drop)),
         ),
-        KnownFormat::RawMutex { state } => format!("RawMutex {{ state={} }}", f(id, state)),
-        KnownFormat::Notify { state, mutex, head, waiter, waiter_notification, waiter_next } => {
+        KnownFormat::RawMutex { state, .. } => format!("RawMutex {{ state={} }}", f(id, state)),
+        KnownFormat::Notify { state, mutex, head, waiter, waiter_notification, waiter_next, .. } => {
             format!(
                 "Notify {{ state={}, mutex={}, head={}, waiter={}, waiter_notification={}, waiter_next={} }}",
                 f(id, state),
@@ -248,10 +248,10 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
                 f(*waiter, waiter_next),
             )
         }
-        KnownFormat::Semaphore { permits } => {
+        KnownFormat::Semaphore { permits, .. } => {
             format!("Semaphore {{ permits={} }}", f(id, permits))
         }
-        KnownFormat::WatchState { state } => format!("WatchState {{ state={} }}", f(id, state)),
+        KnownFormat::WatchState { state, .. } => format!("WatchState {{ state={} }}", f(id, state)),
         KnownFormat::MpscChan { tail, index, head, start_index, next, values, element } => {
             let (_, _, head_land) = walk(bundle, id, head);
             let block = ptr_target(bundle, head_land).unwrap_or(id);
@@ -272,7 +272,7 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, ready_slots),
             f(id, values),
         ),
-        KnownFormat::MpscRx { chan_pointer, chan, bound, permits } => {
+        KnownFormat::MpscRx { chan_pointer, chan, bound, permits, .. } => {
             let (_, _, ptr_land) = walk(bundle, id, chan_pointer);
             let arcinner = ptr_target(bundle, ptr_land).unwrap_or(id);
             let (_, _, chan_ty) = walk(bundle, arcinner, chan);
@@ -295,6 +295,7 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             waiter,
             waiter_state,
             waiter_next,
+            ..
         } => format!(
             "BoundedSemaphore {{ mutex={}, closed={}, permits={}, bound={}, head={}, waiter={}, waiter_state={}, waiter_next={} }}",
             f(id, mutex),
