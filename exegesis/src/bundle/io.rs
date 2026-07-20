@@ -698,62 +698,6 @@ impl Bundle {
                     check_scalar_decode(self, state_decode, BYTE_BITS, "RawMutex state decode")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::Notify {
-                        state,
-                        state_decode,
-                        mutex,
-                        mutex_decode,
-                        head,
-                        waiter,
-                        waiter_notification,
-                        waiter_notification_decode,
-                        waiter_next,
-                    },
-                ) => {
-                    check_selector(self, id, state, Shape::Usize, "Notify state debug format")?;
-                    check_scalar_decode(self, state_decode, USIZE_BITS, "Notify state decode")?;
-                    // The waiter mutex's single state byte.
-                    check_selector(
-                        self,
-                        id,
-                        mutex,
-                        Shape::StateByte,
-                        "Notify mutex debug format",
-                    )?;
-                    check_scalar_decode(self, mutex_decode, BYTE_BITS, "Notify mutex decode")?;
-                    // `head` reaches the queue's head word, an
-                    // `Option<NonNull<Waiter>>` niche-optimized to a pointer.
-                    check_selector(
-                        self,
-                        id,
-                        head,
-                        Shape::PointerSized,
-                        "Notify head debug format",
-                    )?;
-                    // The `waiter_*` selectors are rooted at the `Waiter` node type.
-                    check_ty("Notify waiter", *waiter)?;
-                    check_selector(
-                        self,
-                        *waiter,
-                        waiter_notification,
-                        Shape::Usize,
-                        "Notify waiter_notification debug format",
-                    )?;
-                    check_scalar_decode(
-                        self,
-                        waiter_notification_decode,
-                        USIZE_BITS,
-                        "Notify waiter_notification decode",
-                    )?;
-                    check_selector(
-                        self,
-                        *waiter,
-                        waiter_next,
-                        Shape::PointerSized,
-                        "Notify waiter_next debug format",
-                    )?;
-                }
-                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::Semaphore {
                         permits,
                         permits_decode,

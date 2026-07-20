@@ -1923,7 +1923,7 @@ fn atomic_usize_field_path(
 }
 
 /// A `tokio::sync::notify::Notify` and the paths reify needs to render it
-/// compactly. See [`crate::bundle::KnownFormat::Notify`].
+/// compactly as a [`crate::bundle::DisplayNode`] record.
 struct RawNotifyFormat {
     state: Vec<u32>,
     mutex: Vec<u32>,
@@ -3295,6 +3295,44 @@ impl<'a> Emitter<'a> {
         ScalarDecode::Bits(vec![closed, version])
     }
 
+    /// Build the `queue` field shared by the waiter-mutex formatters (`Notify`
+    /// and the bounded-channel `Semaphore`): an intrusive [`DisplayNode::List`]
+    /// over the parked `waiter`s, each shown as a one-field record naming what
+    /// it is blocked on. `head` reaches the list head (rooted at the formatted
+    /// type); `waiter_next` reaches a node's successor and `payload` its
+    /// blocked-on word — decoded by `payload_decode` under `payload_label` —
+    /// both rooted at `waiter`.
+    fn waiter_queue_field(
+        &mut self,
+        head: Vec<u32>,
+        waiter: TypeId,
+        waiter_next: Vec<u32>,
+        payload_label: &str,
+        payload: Vec<u32>,
+        payload_decode: ScalarDecode,
+    ) -> Field {
+        let node_ty = self.reserve(waiter);
+        let payload_label = self.interner.intern(payload_label);
+        let queue = self.interner.intern("queue");
+        Field::Named {
+            label: queue,
+            node: DisplayNode::List {
+                head: head.into(),
+                next: waiter_next.into(),
+                node: Box::new(DisplayNode::Struct {
+                    fields: vec![Field::Named {
+                        label: payload_label,
+                        node: DisplayNode::Scalar {
+                            at: payload.into(),
+                            decode: payload_decode,
+                        },
+                    }],
+                }),
+                node_ty,
+            },
+        }
+    }
+
     /// Emit a type (and, transitively, everything it references),
     /// returning its bundle id.
     fn emit(&mut self, id: TypeId) -> BundleTypeId {
@@ -3347,7 +3385,14 @@ impl<'a> Emitter<'a> {
                 let mutex_decode = self.mutex_byte_decode();
                 let permits_decode = self.semaphore_permits_decode();
                 let bool_decode = self.bool_decode();
-                let waiter = self.reserve(format.waiter);
+                let queue = self.waiter_queue_field(
+                    format.head,
+                    format.waiter,
+                    format.waiter_next,
+                    "permits_needed",
+                    format.waiter_state,
+                    ScalarDecode::Raw,
+                );
                 let scalar = |at: Vec<u32>, decode| DisplayNode::Scalar {
                     at: at.into(),
                     decode,
@@ -3371,36 +3416,44 @@ impl<'a> Emitter<'a> {
                             self.interner.intern("bound"),
                             scalar(format.bound, ScalarDecode::Raw),
                         ),
-                        named(
-                            self.interner.intern("queue"),
-                            DisplayNode::List {
-                                head: format.head.into(),
-                                next: format.waiter_next.into(),
-                                node: Box::new(DisplayNode::Struct {
-                                    fields: vec![named(
-                                        self.interner.intern("permits_needed"),
-                                        scalar(format.waiter_state, ScalarDecode::Raw),
-                                    )],
-                                }),
-                                node_ty: waiter,
-                            },
-                        ),
+                        queue,
                     ],
                 };
                 self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(format) = notify_debug_format(self.reader, tid) {
-                let format = crate::bundle::KnownFormat::Notify {
-                    state: format.state.into(),
-                    state_decode: self.notify_state_decode(),
-                    mutex: format.mutex.into(),
-                    mutex_decode: self.mutex_byte_decode(),
-                    head: format.head.into(),
-                    waiter: self.reserve(format.waiter),
-                    waiter_notification: format.waiter_notification.into(),
-                    waiter_notification_decode: self.notification_decode(),
-                    waiter_next: format.waiter_next.into(),
+                // A curated record: the notification state word, the waiter
+                // mutex byte, and the intrusive waiter queue as a list whose
+                // nodes each show whether that waiter has been notified.
+                let state_decode = self.notify_state_decode();
+                let mutex_decode = self.mutex_byte_decode();
+                let notification_decode = self.notification_decode();
+                let queue = self.waiter_queue_field(
+                    format.head,
+                    format.waiter,
+                    format.waiter_next,
+                    "notification",
+                    format.waiter_notification,
+                    notification_decode,
+                );
+                let scalar = |at: Vec<u32>, decode| DisplayNode::Scalar {
+                    at: at.into(),
+                    decode,
                 };
-                self.debug_formats.insert(bid, DebugFormat::Known(format));
+                let named = |label, node| Field::Named { label, node };
+                let node = DisplayNode::Struct {
+                    fields: vec![
+                        named(
+                            self.interner.intern("state"),
+                            scalar(format.state, state_decode),
+                        ),
+                        named(
+                            self.interner.intern("mutex"),
+                            scalar(format.mutex, mutex_decode),
+                        ),
+                        queue,
+                    ],
+                };
+                self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(state) = parking_lot_raw_mutex_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::RawMutex {
                     state,
