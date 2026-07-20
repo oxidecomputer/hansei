@@ -69,8 +69,6 @@ impl<S, F, A, G> BoundedParallelFold<S, F, A, G> {
     /// back-pressure bound is unchanged; only the ordering guarantee is
     /// dropped. Use this when the fold is commutative — it removes the
     /// head-of-line blocking a single slow item would otherwise cause.
-    // Opt-in mode with no in-crate caller yet; exercised by the tests below.
-    #[allow(dead_code)]
     pub fn unordered(mut self) -> Self {
         self.preserve_order = false;
         self

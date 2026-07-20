@@ -35,7 +35,7 @@ fn default_parallelism() -> usize {
 
 /// A global, deduplicated view of all types from the DWARF debug information.
 ///
-/// CGUs are ingested in `.debug_info` order via [`DwReader::ingest`], then
+/// CGUs are ingested as they finish parsing via [`DwReader::ingest`], then
 /// reconciled after every type is available. Canonical IDs prefer complete
 /// definitions and otherwise use the lowest compatible DWARF offset.
 #[derive(Default, Debug)]
@@ -98,12 +98,13 @@ impl<'dw> DwReader<'dw> {
     /// This is the main entry point for reading types out of DWARF debug
     /// information. It iterates over every compilation unit (CGU) in the
     /// `.debug_info` section, parses each one into a [`CodegenUnit`] on a
-    /// worker thread, and folds the results into a single [`DwReader`]
-    /// **in `.debug_info` order**. After collection, a final reconciliation
-    /// pass resolves declarations to definitions, partitions same-named types
-    /// by compatible layout, and deduplicates anonymous pointers and arrays.
-    /// Section order remains the deterministic tie-breaker between equally
-    /// complete definitions.
+    /// worker thread, and folds the results into a single [`DwReader`] **as
+    /// they finish**. Arrival order does not matter: references are global
+    /// section offsets and dedup is deferred, so after collection a final
+    /// reconciliation pass resolves declarations to definitions, partitions
+    /// same-named types by compatible layout, and deduplicates anonymous
+    /// pointers and arrays. The lowest DWARF offset remains the deterministic
+    /// tie-breaker between equally complete definitions.
     ///
     /// # Arguments
     ///
@@ -124,11 +125,13 @@ impl<'dw> DwReader<'dw> {
     ///
     ///   - [`ReadArgs::cgus_in_flight`]: The maximum number of parsed CGUs
     ///     that may exist between the worker threads and the collector at
-    ///     any given time. Defaults to `2 × cgu_parallelism`. This is the
-    ///     backpressure knob: lowering it reduces peak memory usage (fewer
-    ///     large `CodegenUnit` objects alive simultaneously) at the cost of
-    ///     potentially stalling workers that finish before the collector
-    ///     catches up. Setting it to `1` serialises ingestion entirely.
+    ///     any given time — the memory ceiling, since each is a large,
+    ///     fully-parsed unit. Defaults to `2 × cgu_parallelism`. Because CGUs
+    ///     are folded as they complete rather than buffered for reordering,
+    ///     this needs no slack for out-of-order results and can be lowered
+    ///     toward `cgu_parallelism` to tighten peak memory; it only throttles
+    ///     throughput once it is too small to keep the collector fed. Setting
+    ///     it to `1` serialises ingestion entirely.
     ///
     ///   - [`ReadArgs::targets`]: Reserved for future namespace/type
     ///     filtering. Currently unused — all types are collected.
@@ -141,6 +144,12 @@ impl<'dw> DwReader<'dw> {
         // insertion stay on the serial collector, keyed by unique DIE ids.
         let interner = ShardedInterner::new();
 
+        // The collector ingests CGUs in whatever order they finish parsing:
+        // every cross-DIE reference is a global section offset resolved after
+        // the whole program is collected, and dedup is deferred to
+        // `finalize_types`, so the result does not depend on arrival order.
+        // Folding as-completed avoids the head-of-line blocking a single large
+        // CGU would otherwise cause under source-ordered delivery.
         let mut fold = BoundedParallelFold::new(
             || Ok(units.next()?),
             |header| {
@@ -156,7 +165,8 @@ impl<'dw> DwReader<'dw> {
             |c: &mut DwReader<'dw>, cgu| {
                 c.ingest(cgu);
             },
-        );
+        )
+        .unordered();
 
         // Resolve the parallelism knob to a concrete thread count so both the
         // parallel fold and the parallel finalization honour it (finalization
@@ -195,9 +205,10 @@ impl<'dw> DwReader<'dw> {
     /// Ingest an already-interned CGU into the global type space. The worker
     /// (see [`intern_cgu`]) interned every string, but its namespaces and type
     /// references still carry CGU-local ids; the collector remaps namespaces
-    /// into the global table here. CGUs must be ingested in `.debug_info`
-    /// order; deduplication is deferred to [`Self::finalize_types`] so forward
-    /// references cannot make the result depend on ingestion order.
+    /// into the global table here. CGUs may be ingested in any order: types,
+    /// statics, and functions are keyed by globally-unique DIE offsets, and
+    /// deduplication is deferred to [`Self::finalize_types`], so neither
+    /// forward references nor arrival order can affect the result.
     fn ingest(&mut self, cgu: InternedCgu) {
         let ns_remap = self.remap_namespaces(&cgu.namespaces);
 
