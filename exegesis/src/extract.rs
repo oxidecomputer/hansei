@@ -22,10 +22,10 @@
 
 use crate::bundle::{
     BinaryIdent, BitField, Bundle, BundleTypeId, DebugFormat, DiscrDef, DiscrValue, DiscrValues,
-    DynFutureTable, FieldRender, FutureKind, InfraTypes, MemberDef, Meta, Provenance,
-    ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole, StaticsTable, StrRef,
-    StringInterner, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, VariantDef,
-    VariantShape,
+    DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MemberDef, Meta,
+    Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
+    StaticsTable, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef,
+    TypeTable, VariantDef, VariantShape,
 };
 use std::num::NonZeroU8;
 
@@ -1839,7 +1839,7 @@ fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscRxFo
 }
 
 /// A `tokio::sync::mpsc::bounded::Semaphore` and the paths reify needs to render
-/// it compactly. See [`crate::bundle::KnownFormat::BoundedSemaphore`].
+/// it compactly as a [`crate::bundle::DisplayNode`] record.
 struct RawBoundedSemaphoreFormat {
     mutex: Vec<u32>,
     closed: Vec<u32>,
@@ -2841,6 +2841,20 @@ impl<'a> Emitter<'a> {
         ScalarDecode::Bits(vec![closed, permits])
     }
 
+    /// A boolean byte rendered bare as `false`/`true` (an empty field name, so
+    /// no `name=` prefix) — for a bool shown under a record label of its own.
+    fn bool_decode(&mut self) -> ScalarDecode {
+        let name = self.interner.intern("");
+        let no = self.interner.intern("false");
+        let yes = self.interner.intern("true");
+        ScalarDecode::Bits(vec![BitField {
+            name,
+            shift: 0,
+            width: None,
+            render: FieldRender::Enum(vec![(0, no), (1, yes)]),
+        }])
+    }
+
     /// tokio watch `AtomicState`: bit 0 closed, the rest the version counter.
     fn watch_state_decode(&mut self) -> ScalarDecode {
         let closed = self.enum_field("closed", 0, 1, &[(0, "open"), (1, "closed")]);
@@ -2894,19 +2908,44 @@ impl<'a> Emitter<'a> {
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = bounded_semaphore_debug_format(self.reader, tid) {
-                let format = crate::bundle::KnownFormat::BoundedSemaphore {
-                    mutex: format.mutex.into(),
-                    mutex_decode: self.mutex_byte_decode(),
-                    closed: format.closed.into(),
-                    permits: format.permits.into(),
-                    permits_decode: self.semaphore_permits_decode(),
-                    bound: format.bound.into(),
-                    head: format.head.into(),
-                    waiter: self.reserve(format.waiter),
-                    waiter_state: format.waiter_state.into(),
-                    waiter_next: format.waiter_next.into(),
+                // A curated record: the mutex byte, closed flag, permit word,
+                // and capacity, plus the intrusive waiter queue as a list whose
+                // nodes each show the permits that waiter is blocked on.
+                let mutex_decode = self.mutex_byte_decode();
+                let permits_decode = self.semaphore_permits_decode();
+                let bool_decode = self.bool_decode();
+                let waiter = self.reserve(format.waiter);
+                let scalar = |at: Vec<u32>, decode| DisplayNode::Scalar { at: at.into(), decode };
+                let named = |label, node| Field::Named { label, node };
+                let node = DisplayNode::Struct {
+                    fields: vec![
+                        named(self.interner.intern("mutex"), scalar(format.mutex, mutex_decode)),
+                        named(self.interner.intern("closed"), scalar(format.closed, bool_decode)),
+                        named(
+                            self.interner.intern("permits"),
+                            scalar(format.permits, permits_decode),
+                        ),
+                        named(
+                            self.interner.intern("bound"),
+                            scalar(format.bound, ScalarDecode::Raw),
+                        ),
+                        named(
+                            self.interner.intern("queue"),
+                            DisplayNode::List {
+                                head: format.head.into(),
+                                next: format.waiter_next.into(),
+                                node: Box::new(DisplayNode::Struct {
+                                    fields: vec![named(
+                                        self.interner.intern("permits_needed"),
+                                        scalar(format.waiter_state, ScalarDecode::Raw),
+                                    )],
+                                }),
+                                node_ty: waiter,
+                            },
+                        ),
+                    ],
                 };
-                self.debug_formats.insert(bid, DebugFormat::Known(format));
+                self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(format) = notify_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::Notify {
                     state: format.state.into(),

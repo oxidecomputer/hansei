@@ -305,27 +305,6 @@ pub enum KnownFormat<T> {
         permits_offset: u64,
         permits_decode: ScalarDecode,
     },
-    /// Display a `tokio::sync::mpsc::bounded::Semaphore` compactly: its waiter
-    /// mutex state, closed flag, available permits, capacity, and waiter queue.
-    /// The `*_offset` fields locate each within the value; `permits_offset` is
-    /// the batch semaphore's permit word (bit 0 closed, the rest the count) and
-    /// `head_offset` the queue's head `Option<NonNull<Waiter>>` word. `waiter`
-    /// is the `Waiter` node type (`waiter_size` bytes); `waiter_state_offset`
-    /// and `waiter_next_offset` locate each node's permit-count state word and
-    /// successor pointer, which reify follows to list the queued waiters.
-    BoundedSemaphore {
-        mutex_offset: u64,
-        mutex_decode: ScalarDecode,
-        closed_offset: u64,
-        permits_offset: u64,
-        permits_decode: ScalarDecode,
-        bound_offset: u64,
-        head_offset: u64,
-        waiter: T,
-        waiter_size: u32,
-        waiter_state_offset: u64,
-        waiter_next_offset: u64,
-    },
     /// Display an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: T, offset: u64 },
     /// Display the initialized elements of a Vec.
@@ -824,40 +803,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     bound_offset,
                     permits_offset,
                     permits_decode: resolve_decode(*self, permits_decode),
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::BoundedSemaphore {
-                mutex,
-                mutex_decode,
-                closed,
-                permits,
-                permits_decode,
-                bound,
-                head,
-                waiter,
-                waiter_state,
-                waiter_next,
-            }) => {
-                let (_, mutex_offset) = resolve_selector(*self, mutex)?;
-                let (_, closed_offset) = resolve_selector(*self, closed)?;
-                let (_, permits_offset) = resolve_selector(*self, permits)?;
-                let (_, bound_offset) = resolve_selector(*self, bound)?;
-                let (_, head_offset) = resolve_selector(*self, head)?;
-                let waiter_ty = self.related_type(*waiter);
-                let (_, waiter_state_offset) = resolve_selector(waiter_ty, waiter_state)?;
-                let (_, waiter_next_offset) = resolve_selector(waiter_ty, waiter_next)?;
-                Some(DebugFormat::Known(KnownFormat::BoundedSemaphore {
-                    mutex_offset,
-                    mutex_decode: resolve_decode(*self, mutex_decode),
-                    closed_offset,
-                    permits_offset,
-                    permits_decode: resolve_decode(*self, permits_decode),
-                    bound_offset,
-                    head_offset,
-                    waiter: waiter_ty,
-                    waiter_size: waiter_ty.size() as u32,
-                    waiter_state_offset,
-                    waiter_next_offset,
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::IpAddress { octets }) => {
@@ -1605,6 +1550,20 @@ mod bundle_tests {
             TypeDef::Pointer { name: None, target: NOTIFY_WAITER },
         ];
 
+        // Field labels for the node-based `BoundedSemaphore` formatter (deduped
+        // by the interner, so re-interning existing strings is harmless).
+        let (mutexfl, closedfl, permitsfl, boundfl, queuefl, permits_neededfl) = (
+            s("mutex"),
+            s("closed"),
+            s("permits"),
+            s("bound"),
+            s("queue"),
+            s("permits_needed"),
+        );
+        let (emptyl, falsel, truel) = (s(""), s("false"), s("true"));
+        let bool_decode =
+            || BundleScalarDecode::Bits(vec![ebf(emptyl, 0, 0, vec![(0, falsel), (1, truel)])]);
+
         let b = Bundle {
             meta: Meta { format_version: FORMAT_VERSION, ..Default::default() },
             strings: strings.finish(),
@@ -1774,17 +1733,45 @@ mod bundle_tests {
                     }),
                 ), (
                     BOUNDED_SEM,
-                    BundleDebugFormat::Known(BundleKnownFormat::BoundedSemaphore {
-                        mutex: sel(&[0, 0, 0, 0]),
-                        mutex_decode: mutex_decode(),
-                        closed: sel(&[0, 0, 1, 1]),
-                        permits: sel(&[0, 1]),
-                        permits_decode: semaphore_permits_decode(),
-                        bound: sel(&[1]),
-                        head: sel(&[0, 0, 1, 0, 0]),
-                        waiter: WAITER,
-                        waiter_state: sel(&[0]),
-                        waiter_next: sel(&[1]),
+                    BundleDebugFormat::Node(BundleNode::Struct {
+                        fields: vec![
+                            BundleField::Named {
+                                label: mutexfl,
+                                node: BundleNode::Scalar { at: sel(&[0, 0, 0, 0]), decode: mutex_decode() },
+                            },
+                            BundleField::Named {
+                                label: closedfl,
+                                node: BundleNode::Scalar { at: sel(&[0, 0, 1, 1]), decode: bool_decode() },
+                            },
+                            BundleField::Named {
+                                label: permitsfl,
+                                node: BundleNode::Scalar {
+                                    at: sel(&[0, 1]),
+                                    decode: semaphore_permits_decode(),
+                                },
+                            },
+                            BundleField::Named {
+                                label: boundfl,
+                                node: BundleNode::Scalar { at: sel(&[1]), decode: BundleScalarDecode::Raw },
+                            },
+                            BundleField::Named {
+                                label: queuefl,
+                                node: BundleNode::List {
+                                    head: sel(&[0, 0, 1, 0, 0]),
+                                    next: sel(&[1]),
+                                    node: Box::new(BundleNode::Struct {
+                                        fields: vec![BundleField::Named {
+                                            label: permits_neededfl,
+                                            node: BundleNode::Scalar {
+                                                at: sel(&[0]),
+                                                decode: BundleScalarDecode::Raw,
+                                            },
+                                        }],
+                                    }),
+                                    node_ty: WAITER,
+                                },
+                            },
+                        ],
                     }),
                 )]),
                 name_index: vec![(pointn, POINT)],
@@ -2938,9 +2925,9 @@ mod bundle_tests {
         );
 
         let pretty = format!("{:#}", value.display_from_target(&Reader, 16));
-        assert!(pretty.contains("\n     state: state=waiting, generation=3,"), "{pretty}");
-        assert!(pretty.contains("\n     point: Point {"), "{pretty}");
-        assert!(pretty.contains("\n     queue: ["), "{pretty}");
+        assert!(pretty.contains("\n    state: state=waiting, generation=3,"), "{pretty}");
+        assert!(pretty.contains("\n    point: Point {"), "{pretty}");
+        assert!(pretty.contains("\n    queue: ["), "{pretty}");
         assert!(pretty.contains("notification: kind=one, order=fifo"), "{pretty}");
     }
 

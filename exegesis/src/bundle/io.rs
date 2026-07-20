@@ -55,8 +55,6 @@ enum Shape {
     Usize,
     /// A single unsigned byte: a parking_lot mutex state byte.
     StateByte,
-    /// A single byte of any encoding: a boolean flag.
-    Byte,
     /// A pointer to `u8`: a string/vec data pointer.
     BytePointer,
     /// Any type occupying exactly one pointer word: a niche-optimized
@@ -153,7 +151,6 @@ fn check_selector(
                 ..
             })
         ),
-        Shape::Byte => matches!(landed, Some(TypeDef::Base { size: 1, .. })),
         Shape::BytePointer => matches!(
             landed,
             Some(TypeDef::Pointer { target, .. }) if matches!(
@@ -792,48 +789,6 @@ impl Bundle {
                         "MpscRx permits debug format",
                     )?;
                     check_scalar_decode(self, permits_decode, USIZE_BITS, "MpscRx permits decode")?;
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::BoundedSemaphore {
-                        mutex,
-                        mutex_decode,
-                        closed,
-                        permits,
-                        permits_decode,
-                        bound,
-                        head,
-                        waiter,
-                        waiter_state,
-                        waiter_next,
-                    },
-                ) => {
-                    // The waiter mutex's single state byte.
-                    check_selector(self, id, mutex, Shape::StateByte, "BoundedSemaphore mutex debug format")?;
-                    check_scalar_decode(self, mutex_decode, BYTE_BITS, "BoundedSemaphore mutex decode")?;
-                    // The `Waitlist.closed` flag: a single byte.
-                    check_selector(self, id, closed, Shape::Byte, "BoundedSemaphore closed debug format")?;
-                    check_selector(self, id, permits, Shape::Usize, "BoundedSemaphore permits debug format")?;
-                    check_scalar_decode(self, permits_decode, USIZE_BITS, "BoundedSemaphore permits decode")?;
-                    check_selector(self, id, bound, Shape::Usize, "BoundedSemaphore bound debug format")?;
-                    // `head` reaches the queue's head word, an
-                    // `Option<NonNull<Waiter>>` niche-optimized to a pointer.
-                    check_selector(self, id, head, Shape::PointerSized, "BoundedSemaphore head debug format")?;
-                    // The `waiter_*` selectors are rooted at the `Waiter` node type.
-                    check_ty("BoundedSemaphore waiter", *waiter)?;
-                    check_selector(
-                        self,
-                        *waiter,
-                        waiter_state,
-                        Shape::Usize,
-                        "BoundedSemaphore waiter_state debug format",
-                    )?;
-                    check_selector(
-                        self,
-                        *waiter,
-                        waiter_next,
-                        Shape::PointerSized,
-                        "BoundedSemaphore waiter_next debug format",
-                    )?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::IpAddress { octets },
