@@ -1234,8 +1234,8 @@ mod bundle_tests {
         // Labels for the sync-primitive `ScalarDecode` tables. Interned here so
         // the decode-building closures below can assemble tables from `Copy`
         // `StrRef`s without re-borrowing the interner.
-        let (lockedl, unlockedl, parkedl, unparkedl) =
-            (s("locked"), s("unlocked"), s("parked"), s("unparked"));
+        let (lockedl, parkedl, falsel, truel) =
+            (s("locked"), s("parked"), s("false"), s("true"));
         let (statel, idlel, waitingl, notifiedl, generationl) = (
             s("state"),
             s("idle"),
@@ -1243,8 +1243,7 @@ mod bundle_tests {
             s("notified"),
             s("generation"),
         );
-        let (closedl, openl, permitsl, versionl) =
-            (s("closed"), s("open"), s("permits"), s("version"));
+        let (closedl, permitsl, versionl) = (s("closed"), s("permits"), s("version"));
         let (kindl, nonel, onel, alll, orderl, fifol, lifol) = (
             s("kind"),
             s("none"),
@@ -1256,13 +1255,13 @@ mod bundle_tests {
         );
         let mutex_decode = || {
             BundleScalarDecode::Bits(vec![
-                ebf(lockedl, 0, 1, vec![(0, unlockedl), (1, lockedl)]),
-                ebf(parkedl, 1, 1, vec![(0, unparkedl), (1, parkedl)]),
+                ebf(lockedl, 0, 1, vec![(0, falsel), (1, truel)]),
+                ebf(parkedl, 1, 1, vec![(0, falsel), (1, truel)]),
             ])
         };
         let semaphore_permits_decode = || {
             BundleScalarDecode::Bits(vec![
-                ebf(closedl, 0, 1, vec![(0, openl), (1, closedl)]),
+                ebf(closedl, 0, 1, vec![(0, falsel), (1, truel)]),
                 ubf(permitsl, 1),
             ])
         };
@@ -1746,7 +1745,7 @@ mod bundle_tests {
             s("queue"),
             s("permits_needed"),
         );
-        let (emptyl, falsel, truel) = (s(""), s("false"), s("true"));
+        let emptyl = s("");
         let bool_decode =
             || BundleScalarDecode::Bits(vec![ebf(emptyl, 0, 0, vec![(0, falsel), (1, truel)])]);
 
@@ -1909,7 +1908,7 @@ mod bundle_tests {
                         BundleDebugFormat::Known(BundleKnownFormat::WatchState {
                             state: sel(&[0]),
                             state_decode: BundleScalarDecode::Bits(vec![
-                                ebf(closedl, 0, 1, vec![(0, openl), (1, closedl)]),
+                                ebf(closedl, 0, 1, vec![(0, falsel), (1, truel)]),
                                 ubf(versionl, 1),
                             ]),
                         }),
@@ -2539,19 +2538,19 @@ mod bundle_tests {
         let cases = [
             (
                 0u8,
-                "parking_lot::raw_mutex::RawMutex: locked=unlocked, parked=unparked",
+                "parking_lot::raw_mutex::RawMutex: locked=false, parked=false",
             ),
             (
                 1,
-                "parking_lot::raw_mutex::RawMutex: locked=locked, parked=unparked",
+                "parking_lot::raw_mutex::RawMutex: locked=true, parked=false",
             ),
             (
                 2,
-                "parking_lot::raw_mutex::RawMutex: locked=unlocked, parked=parked",
+                "parking_lot::raw_mutex::RawMutex: locked=false, parked=true",
             ),
             (
                 3,
-                "parking_lot::raw_mutex::RawMutex: locked=locked, parked=parked",
+                "parking_lot::raw_mutex::RawMutex: locked=true, parked=true",
             ),
         ];
         for (state, expected) in cases {
@@ -2599,7 +2598,7 @@ mod bundle_tests {
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
             "tokio::sync::notify::Notify { state: state=idle, generation=0, \
-             mutex: locked=unlocked, parked=unparked, queue: [\
+             mutex: locked=false, parked=false, queue: [\
              tokio::sync::notify::Waiter { notification: kind=none, order=fifo }, \
              tokio::sync::notify::Waiter { notification: kind=one, order=fifo }] }"
         );
@@ -2611,7 +2610,7 @@ mod bundle_tests {
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
             "tokio::sync::notify::Notify { state: state=notified, generation=2, \
-             mutex: locked=locked, parked=unparked, queue: [] }"
+             mutex: locked=true, parked=false, queue: [] }"
         );
 
         // Without a target the queue cannot be walked, but state and mutex
@@ -2629,7 +2628,7 @@ mod bundle_tests {
             format!("{:#}", value.display_from_target(&Reader, 8)),
             "tokio::sync::notify::Notify {\n\
              \x20   state: state=idle, generation=0,\n\
-             \x20   mutex: locked=unlocked, parked=unparked,\n\
+             \x20   mutex: locked=false, parked=false,\n\
              \x20   queue: [\n\
              \x20       tokio::sync::notify::Waiter { notification: kind=none, order=fifo },\n\
              \x20       tokio::sync::notify::Waiter { notification: kind=one, order=fifo },\n\
@@ -2655,20 +2654,20 @@ mod bundle_tests {
             (
                 64u64,
                 3u32,
-                "tokio::sync::batch_semaphore::Semaphore { permits: closed=open, permits=32, \
+                "tokio::sync::batch_semaphore::Semaphore { permits: closed=false, permits=32, \
                  waiters: 3 }",
             ),
             (
                 0,
                 0,
-                "tokio::sync::batch_semaphore::Semaphore { permits: closed=open, permits=0, \
+                "tokio::sync::batch_semaphore::Semaphore { permits: closed=false, permits=0, \
                  waiters: 0 }",
             ),
             // 65 = (32 << 1) | 1: 32 permits, closed.
             (
                 65,
                 9,
-                "tokio::sync::batch_semaphore::Semaphore { permits: closed=closed, permits=32, \
+                "tokio::sync::batch_semaphore::Semaphore { permits: closed=true, permits=32, \
                  waiters: 9 }",
             ),
         ];
@@ -2797,7 +2796,7 @@ mod bundle_tests {
             "{shown}"
         );
         assert!(shown.contains("capacity: 16"), "{shown}");
-        assert!(shown.contains("free: closed=open, permits=3"), "{shown}");
+        assert!(shown.contains("free: closed=false, permits=3"), "{shown}");
         assert!(shown.contains("queued: [20, 30]"), "{shown}");
 
         // A null channel pointer is reported rather than dereferenced.
@@ -2850,8 +2849,8 @@ mod bundle_tests {
         let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
-            "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=unlocked, parked=unparked, \
-             closed: false, permits: closed=open, permits=10, bound: 16, queue: [\
+            "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=false, parked=false, \
+             closed: false, permits: closed=false, permits=10, bound: 16, queue: [\
              tokio::sync::batch_semaphore::Waiter { permits_needed: 2 }, \
              tokio::sync::batch_semaphore::Waiter { permits_needed: 1 }] }"
         );
@@ -2861,8 +2860,8 @@ mod bundle_tests {
         let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
-            "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=locked, parked=unparked, \
-             closed: true, permits: closed=open, permits=0, bound: 16, queue: [] }"
+            "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=true, parked=false, \
+             closed: true, permits: closed=false, permits=0, bound: 16, queue: [] }"
         );
 
         // Without a target the queue cannot be walked, but the inline fields
@@ -2871,7 +2870,7 @@ mod bundle_tests {
         let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         let shown = format!("{}", value.display());
         assert!(
-            shown.contains("permits: closed=open, permits=10"),
+            shown.contains("permits: closed=false, permits=10"),
             "{shown}"
         );
         assert!(shown.contains("queue: <target unavailable>"), "{shown}");
@@ -2882,9 +2881,9 @@ mod bundle_tests {
         assert_eq!(
             format!("{:#}", value.display_from_target(&Reader, 8)),
             "tokio::sync::mpsc::bounded::Semaphore {\n\
-             \x20   mutex: locked=unlocked, parked=unparked,\n\
+             \x20   mutex: locked=false, parked=false,\n\
              \x20   closed: false,\n\
-             \x20   permits: closed=open, permits=10,\n\
+             \x20   permits: closed=false, permits=10,\n\
              \x20   bound: 16,\n\
              \x20   queue: [\n\
              \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 2 },\n\
@@ -2904,19 +2903,19 @@ mod bundle_tests {
             // raw 4 → version 2.
             (
                 0u64,
-                "tokio::sync::watch::state::AtomicState: closed=open, version=0",
+                "tokio::sync::watch::state::AtomicState: closed=false, version=0",
             ),
             (
                 4,
-                "tokio::sync::watch::state::AtomicState: closed=open, version=2",
+                "tokio::sync::watch::state::AtomicState: closed=false, version=2",
             ),
             (
                 1,
-                "tokio::sync::watch::state::AtomicState: closed=closed, version=0",
+                "tokio::sync::watch::state::AtomicState: closed=true, version=0",
             ),
             (
                 5,
-                "tokio::sync::watch::state::AtomicState: closed=closed, version=2",
+                "tokio::sync::watch::state::AtomicState: closed=true, version=2",
             ),
         ];
         for (state, expected) in cases {
