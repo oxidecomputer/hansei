@@ -1,5 +1,5 @@
 use crate::cgu::CodegenUnit;
-use crate::parallel_fold::OrderedParallelFold;
+use crate::parallel_fold::BoundedParallelFold;
 use crate::raw_types::{
     NamespaceTable, NsId, RawBase, RawEnum, RawEnumerator, RawFunc, RawGenericParameter, RawMember,
     RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion, RawVariant,
@@ -27,7 +27,7 @@ const PARALLEL_ALIAS_GROUP_THRESHOLD: usize = 256;
 const ALIAS_BATCH: usize = 32;
 
 /// The thread count used when the caller leaves [`ReadArgs::cgu_parallelism`]
-/// unset. Mirrors [`OrderedParallelFold`]'s own default so parsing and
+/// unset. Mirrors [`BoundedParallelFold`]'s own default so parsing and
 /// finalization agree.
 fn default_parallelism() -> usize {
     std::thread::available_parallelism().map_or(1, NonZero::get)
@@ -141,7 +141,7 @@ impl<'dw> DwReader<'dw> {
         // insertion stay on the serial collector, keyed by unique DIE ids.
         let interner = ShardedInterner::new();
 
-        let mut fold = OrderedParallelFold::new(
+        let mut fold = BoundedParallelFold::new(
             || Ok(units.next()?),
             |header| {
                 let unit = dwarf.unit(header)?;

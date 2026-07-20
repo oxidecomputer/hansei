@@ -3,11 +3,10 @@ use std::collections::BinaryHeap;
 use std::sync::{Condvar, Mutex, mpsc};
 use std::thread;
 
-/// Pulls items from a fallible source, processes them in parallel, and
-/// delivers results to a fold function **in the original source order**.
-/// The goal being to get most of the benefits of parallel execution
-/// while keeping an upper bound on the number of potentially large
-/// objects in memory.
+/// Pulls items from a fallible source, processes them in parallel, and folds
+/// the results on a single collector thread. The goal is to get most of the
+/// benefit of parallel execution while keeping an upper bound on the number of
+/// potentially large objects held in memory at once.
 ///
 /// The source is an `FnMut() -> Result<Option<T>, E>` — matching the
 /// convention used by gimli's fallible iterators. `Ok(Some(item))` yields
@@ -15,19 +14,27 @@ use std::thread;
 /// pipeline.
 ///
 /// Back-pressure is applied via an in-flight counter: workers block when the
-/// number of dispatched-but-not-yet-folded items reaches `max_in_flight`.
-/// The fold function is the sole source of back-pressure — a slot is freed
-/// only when an item is delivered to it in order.
-pub struct OrderedParallelFold<S, F, A, G> {
+/// number of dispatched-but-not-yet-folded items reaches `max_in_flight`, so
+/// no more than roughly `max_in_flight` results are ever alive at once. A slot
+/// is freed each time a result is delivered to the fold function.
+///
+/// By default results are folded **in source order**, buffering out-of-order
+/// completions in a reorder heap. That guarantee is not free: one slow item
+/// stalls every later completion behind it (head-of-line blocking) and lets
+/// those completions consume the in-flight budget. When the fold does not care
+/// about order, [`BoundedParallelFold::unordered`] folds each result the moment it
+/// arrives, which removes the stall.
+pub struct BoundedParallelFold<S, F, A, G> {
     source: S,
     map_fn: F,
     init: A,
     fold_fn: G,
     parallelism: usize,
     max_in_flight: Option<usize>,
+    preserve_order: bool,
 }
 
-impl<S, F, A, G> OrderedParallelFold<S, F, A, G> {
+impl<S, F, A, G> BoundedParallelFold<S, F, A, G> {
     pub fn new<T, R, E>(source: S, map_fn: F, init: A, fold_fn: G) -> Self
     where
         S: FnMut() -> Result<Option<T>, E> + Send,
@@ -44,6 +51,7 @@ impl<S, F, A, G> OrderedParallelFold<S, F, A, G> {
             fold_fn,
             parallelism,
             max_in_flight: None,
+            preserve_order: true,
         }
     }
 
@@ -56,9 +64,20 @@ impl<S, F, A, G> OrderedParallelFold<S, F, A, G> {
         self.max_in_flight = Some(n);
         self
     }
+
+    /// Fold results as they complete rather than in source order. The
+    /// back-pressure bound is unchanged; only the ordering guarantee is
+    /// dropped. Use this when the fold is commutative — it removes the
+    /// head-of-line blocking a single slow item would otherwise cause.
+    // Opt-in mode with no in-crate caller yet; exercised by the tests below.
+    #[allow(dead_code)]
+    pub fn unordered(mut self) -> Self {
+        self.preserve_order = false;
+        self
+    }
 }
 
-impl<S, T, E, F, R, A, G> OrderedParallelFold<S, F, A, G>
+impl<S, T, E, F, R, A, G> BoundedParallelFold<S, F, A, G>
 where
     S: FnMut() -> Result<Option<T>, E> + Send,
     T: Send,
@@ -76,6 +95,7 @@ where
             mut fold_fn,
             parallelism,
             max_in_flight,
+            preserve_order,
         } = self;
         let max_in_flight = max_in_flight.unwrap_or(parallelism * 2);
 
@@ -149,8 +169,10 @@ where
             }
             drop(tx);
 
-            // Collector thread: receives results, reorders via min-heap,
-            // delivers to fold_fn in sequence order.
+            // Collector thread. In ordered mode it buffers results in a
+            // min-heap and delivers them to fold_fn in sequence order; in
+            // unordered mode it folds each result as it arrives. Either way it
+            // frees an in-flight slot per delivered item.
             let collector = scope.spawn(move || {
                 let mut heap: BinaryHeap<Reverse<Sequenced<R>>> = BinaryHeap::new();
                 let mut next_seq: usize = 0;
@@ -160,6 +182,14 @@ where
                         Ok(value) => value,
                         Err(e) => return Err(e),
                     };
+
+                    if !preserve_order {
+                        // Fold immediately — no head-of-line blocking.
+                        (fold_fn)(&mut init, value);
+                        *in_flight.lock().unwrap() -= 1;
+                        in_flight_cv.notify_all();
+                        continue;
+                    }
 
                     heap.push(Reverse(Sequenced {
                         seq: item.seq,
@@ -234,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_preserves_order() {
-        let result = OrderedParallelFold::new(
+        let result = BoundedParallelFold::new(
             vec_source((0..20u64).map(Ok).collect()),
             |x| Ok::<_, ()>(x * 2),
             Vec::new(),
@@ -265,7 +295,7 @@ mod tests {
         let ready = Arc::new((Mutex::new(0usize), Condvar::new()));
         let ready_c = Arc::clone(&ready);
 
-        let result = OrderedParallelFold::new(
+        let result = BoundedParallelFold::new(
             vec_source((0..20u64).map(Ok).collect()),
             move |x| {
                 let (lock, cv) = &*ready_c;
@@ -295,7 +325,7 @@ mod tests {
     #[test]
     fn test_backpressure_with_tiny_limit() {
         // max_in_flight = 1 with many workers — maximizes contention.
-        let result = OrderedParallelFold::new(
+        let result = BoundedParallelFold::new(
             vec_source((0..50u64).map(Ok).collect()),
             Ok::<_, ()>,
             Vec::new(),
@@ -312,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_empty_source() {
-        let result = OrderedParallelFold::new(
+        let result = BoundedParallelFold::new(
             vec_source::<u64, ()>(vec![]),
             Ok::<_, ()>,
             Vec::new(),
@@ -326,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_single_item() {
-        let result = OrderedParallelFold::new(
+        let result = BoundedParallelFold::new(
             vec_source(vec![Ok(42u64)]),
             |x| Ok::<_, ()>(x * 2),
             Vec::new(),
@@ -340,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_map_error_propagates() {
-        let result = OrderedParallelFold::new(
+        let result = BoundedParallelFold::new(
             vec_source((0..10u64).map(Ok).collect()),
             |x| {
                 if x == 5 { Err("boom") } else { Ok(x) }
@@ -375,7 +405,7 @@ mod tests {
 
         // Run the pipeline on a background thread so we can observe state.
         let handle = thread::spawn(move || {
-            OrderedParallelFold::new(
+            BoundedParallelFold::new(
                 vec_source((0..n_items).map(Ok).collect()),
                 move |x| {
                     in_map_c.fetch_add(1, Ordering::SeqCst);
@@ -424,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_source_error_propagates() {
-        let result = OrderedParallelFold::new(
+        let result = BoundedParallelFold::new(
             vec_source(vec![Ok(1u64), Ok(2), Err("source failed"), Ok(4)]),
             Ok::<_, &str>,
             Vec::new(),
@@ -434,5 +464,60 @@ mod tests {
         .run();
 
         assert_eq!(result.unwrap_err(), "source failed");
+    }
+
+    /// Unordered mode makes no ordering promise, but every item must still be
+    /// folded exactly once.
+    #[test]
+    fn test_unordered_folds_every_item() {
+        let mut result = BoundedParallelFold::new(
+            vec_source((0..100u64).map(Ok).collect()),
+            |x| Ok::<_, ()>(x * 2),
+            Vec::new(),
+            |acc: &mut Vec<u64>, x| acc.push(x),
+        )
+        .parallelism(8)
+        .unordered()
+        .run()
+        .unwrap();
+
+        result.sort_unstable();
+        let expected: Vec<u64> = (0..100).map(|x| x * 2).collect();
+        assert_eq!(result, expected);
+    }
+
+    /// Unordered mode keeps the in-flight bound, so a tiny limit with many
+    /// workers must still complete (no deadlock) and lose nothing.
+    #[test]
+    fn test_unordered_with_tiny_limit_folds_all() {
+        let mut result = BoundedParallelFold::new(
+            vec_source((0..50u64).map(Ok).collect()),
+            Ok::<_, ()>,
+            Vec::new(),
+            |acc: &mut Vec<u64>, x| acc.push(x),
+        )
+        .parallelism(8)
+        .max_in_flight(1)
+        .unordered()
+        .run()
+        .unwrap();
+
+        result.sort_unstable();
+        assert_eq!(result, (0..50).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_unordered_map_error_propagates() {
+        let result = BoundedParallelFold::new(
+            vec_source((0..10u64).map(Ok).collect()),
+            |x| if x == 5 { Err("boom") } else { Ok(x) },
+            Vec::new(),
+            |acc: &mut Vec<u64>, x| acc.push(x),
+        )
+        .parallelism(1)
+        .unordered()
+        .run();
+
+        assert_eq!(result.unwrap_err(), "boom");
     }
 }
