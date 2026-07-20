@@ -331,13 +331,18 @@ fn read_object_word(bytes: &[u8], little_endian: bool) -> u64 {
     }
 }
 
-fn resolve_vtable_type_hints(
+/// Below this many types, indexing them by name is not worth spawning threads.
+const VTABLE_INDEX_PARALLEL_THRESHOLD: usize = 4096;
+
+/// Index a slice of type ids by their normalized fully-qualified name. Pulled
+/// out so [`resolve_vtable_type_hints`] can run it on several threads and merge.
+fn vtable_name_index(
     reader: &DwReader<'_>,
-    hints: &[VtableTypeHint],
-    stats: &mut ExtractStats,
-) -> BTreeSet<TypeId> {
-    let mut by_name: BTreeMap<String, Vec<(TypeId, u64)>> = BTreeMap::new();
-    for (id, _) in reader.canonical_types() {
+    ids: &[TypeId],
+) -> foldhash::HashMap<String, Vec<(TypeId, u64)>> {
+    let mut by_name: foldhash::HashMap<String, Vec<(TypeId, u64)>> =
+        foldhash::HashMap::default();
+    for &id in ids {
         let Some(name) = fq_name(reader, id) else { continue };
         let Some(size) = raw_type_size(reader, id) else { continue };
         by_name
@@ -345,6 +350,41 @@ fn resolve_vtable_type_hints(
             .or_default()
             .push((id, size));
     }
+    by_name
+}
+
+fn resolve_vtable_type_hints(
+    reader: &DwReader<'_>,
+    hints: &[VtableTypeHint],
+    stats: &mut ExtractStats,
+) -> BTreeSet<TypeId> {
+    // Index every canonical type by its normalized fully-qualified name.
+    // Computing those names -- a namespace walk, a format, and a normalization
+    // pass per type -- over tens of thousands of types dominates emission and
+    // is read-only, so fan it out and merge the per-thread shards.
+    let ids: Vec<TypeId> = reader.canonical_types().map(|(id, _)| id).collect();
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let by_name = if threads <= 1 || ids.len() < VTABLE_INDEX_PARALLEL_THRESHOLD {
+        vtable_name_index(reader, &ids)
+    } else {
+        let chunk = ids.len().div_ceil(threads);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = ids
+                .chunks(chunk)
+                .map(|c| scope.spawn(move || vtable_name_index(reader, c)))
+                .collect();
+            let mut merged: foldhash::HashMap<String, Vec<(TypeId, u64)>> =
+                foldhash::HashMap::default();
+            for handle in handles {
+                for (name, mut entries) in
+                    handle.join().expect("vtable-index thread panicked")
+                {
+                    merged.entry(name).or_default().append(&mut entries);
+                }
+            }
+            merged
+        })
+    };
 
     stats.vtable_type_hints = hints.len();
     let mut roots = BTreeSet::new();
