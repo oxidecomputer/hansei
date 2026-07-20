@@ -3468,11 +3468,13 @@ impl<'a> Emitter<'a> {
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(state) = watch_state_debug_format(self.reader, tid) {
-                let format = crate::bundle::KnownFormat::WatchState {
-                    state,
-                    state_decode: self.watch_state_decode(),
+                // The whole value is a single decoded atomic state word: the
+                // closed flag in bit 0 and the version counter above it.
+                let node = DisplayNode::Scalar {
+                    at: state,
+                    decode: self.watch_state_decode(),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Known(format));
+                self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(format) = mpsc_rx_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::MpscRx {
                     chan_pointer: format.chan_pointer.into(),

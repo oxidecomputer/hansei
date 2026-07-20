@@ -256,7 +256,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
         KnownFormat::Semaphore { permits, .. } => {
             format!("Semaphore {{ permits={} }}", f(id, permits))
         }
-        KnownFormat::WatchState { state, .. } => format!("WatchState {{ state={} }}", f(id, state)),
         KnownFormat::MpscChan {
             tail,
             index,
@@ -844,8 +843,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "tokio::sync::watch::state::AtomicState",
-            "tokio::sync::watch::state::AtomicState :: WatchState \
-             { state=__0.inner.value.v.value.__0@+0 }",
+            "tokio::sync::watch::state::AtomicState :: Node __0.inner.value.v.value.__0@+0",
         );
         assert_format(
             program,

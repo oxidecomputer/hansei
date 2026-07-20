@@ -778,12 +778,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
                     ctx,
                 );
             }
-            DebugFormat::Known(KnownFormat::WatchState {
-                state_offset,
-                state_decode,
-            }) => {
-                return write_watch_state(f, ty.name(), info.bytes, state_offset, &state_decode);
-            }
             DebugFormat::Known(KnownFormat::Semaphore {
                 permits_member,
                 permits_offset,
@@ -1209,18 +1203,6 @@ fn write_struct_with_decoded_field<'a, T: DebugType<'a>>(
     let field = info.ty.members().nth(member as usize).map(|m| m.name());
     let override_field = field.map(|field| (field, decoded));
     write_struct_fields(f, info, name, f.alternate(), ctx, override_field)
-}
-
-/// Render a `tokio::sync::watch::state::AtomicState` as its decoded closed flag
-/// and version, e.g. `…::AtomicState: closed=false, version=4`.
-fn write_watch_state(
-    f: &mut fmt::Formatter<'_>,
-    name: &str,
-    bytes: &[u8],
-    state_offset: u64,
-    decode: &ScalarDecode,
-) -> fmt::Result {
-    write!(f, "{name}: {}", decoded_usize(bytes, state_offset, decode))
 }
 
 fn write_function_pointer(
