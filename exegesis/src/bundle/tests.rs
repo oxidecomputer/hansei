@@ -231,7 +231,7 @@ fn random_bundle(seed: u64) -> Bundle {
             debug_binary: BinaryIdent {
                 basename: "futurelock".into(),
                 build_id: Some(vec![0xab; 20]),
-                sha256: [0x5a; 32],
+                blake3: [0x5a; 32],
             },
             extract_args: "exegesis extract futurelock -o fl.bundle".into(),
             symbol_fingerprint: (0..rng.below(20)).map(|i| format!("_RINv_fp{i}")).collect(),

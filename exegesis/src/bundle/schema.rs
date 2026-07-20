@@ -69,8 +69,8 @@ pub struct BinaryIdent {
     pub basename: String,
     /// GNU build-id note contents, if present.
     pub build_id: Option<Vec<u8>>,
-    /// sha256 of the whole ELF file.
-    pub sha256: [u8; 32],
+    /// BLAKE3 hash of the whole ELF file.
+    pub blake3: [u8; 32],
 }
 
 /// The layout graph (§5.2): an index-based arena of type definitions.

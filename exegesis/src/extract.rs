@@ -35,7 +35,6 @@ use crate::{DwReader, Encoding, TypeId};
 use crate::symbols::normalized_value_index;
 
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
-use sha2::Digest;
 use tracing::{debug, warn};
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -387,9 +386,19 @@ fn raw_type_size(reader: &DwReader<'_>, id: TypeId) -> Option<u64> {
 /// Extract a bundle from a debug binary (or any DWARF-bearing object).
 pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, ExtractStats)> {
     let f = std::fs::File::open(path)?;
-    let obj_bytes = unsafe { memmap2::Mmap::map(&f) }?;
+    let obj_bytes = std::sync::Arc::new(unsafe { memmap2::Mmap::map(&f) }?);
 
-    let obj = object::File::parse(&*obj_bytes)?;
+    // Hash the whole ELF for the bundle's binary identity on a background
+    // thread. BLAKE3 over a multi-gigabyte binary is pure overhead on the
+    // critical path, but it overlaps entirely with the DWARF parse below.
+    // The thread keeps its own `Arc` handle to the mapping, so it is
+    // independent of the parse's borrows of the same bytes.
+    let blake3_handle = {
+        let obj_bytes = std::sync::Arc::clone(&obj_bytes);
+        std::thread::spawn(move || blake3::hash(&obj_bytes[..]))
+    };
+
+    let obj = object::File::parse(&obj_bytes[..])?;
     let endian = if obj.is_little_endian() {
         gimli::RunTimeEndian::Little
     } else {
@@ -422,7 +431,10 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
         build_id: obj.build_id().ok().flatten().map(|b| b.to_vec()),
-        sha256: sha2::Sha256::digest(&*obj_bytes).into(),
+        blake3: blake3_handle
+            .join()
+            .expect("BLAKE3 hashing thread panicked")
+            .into(),
     };
 
     // Named statics can be absent from `.debug_info` yet present in the

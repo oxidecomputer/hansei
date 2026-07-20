@@ -24,7 +24,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 15;
+pub const FORMAT_VERSION: u32 = 16;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
