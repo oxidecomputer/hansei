@@ -2006,17 +2006,38 @@ fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawNotifyFor
     })
 }
 
-/// Recognize a `tokio::sync::batch_semaphore::Semaphore` and return the selector
-/// to its atomic permit word; the decode table is attached in
+/// A `tokio::sync::batch_semaphore::Semaphore` and the paths reify needs to
+/// render it: the full member list (in DWARF order, zero-sized members elided
+/// to match structural display) and the path to the atomic permit word within
+/// the `permits` member.
+struct RawSemaphoreFormat {
+    permits: Vec<u32>,
+    members: Vec<u32>,
+}
+
+/// Recognize a `tokio::sync::batch_semaphore::Semaphore` and record its members
+/// plus the path to its atomic permit word; the decode table is attached in
 /// [`Emitter::emit`].
-fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Selector> {
+fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawSemaphoreFormat> {
     let permits = atomic_usize_field_path(
         reader,
         id,
         "tokio::sync::batch_semaphore::Semaphore",
         "permits",
     )?;
-    Some(permits.into())
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
+    // Structural display skips zero-sized members; enumerate over the full list
+    // so the surviving indices still address the concrete members.
+    let members = st
+        .members
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
+        .map(|(index, _)| index as u32)
+        .collect();
+    Some(RawSemaphoreFormat { permits, members })
 }
 
 /// Recognize a `tokio::sync::watch::state::AtomicState` and return the selector
@@ -3461,12 +3482,31 @@ impl<'a> Emitter<'a> {
                     decode: self.mutex_byte_decode(),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Node(node));
-            } else if let Some(permits) = semaphore_debug_format(self.reader, tid) {
-                let format = crate::bundle::KnownFormat::Semaphore {
-                    permits,
-                    permits_decode: self.semaphore_permits_decode(),
-                };
-                self.debug_formats.insert(bid, DebugFormat::Known(format));
+            } else if let Some(format) = semaphore_debug_format(self.reader, tid) {
+                // Render the struct, but decode the atomic permit word in place
+                // (available count plus closed flag); every other member shows
+                // structurally.
+                let permits_member = format.permits[0];
+                let permits_decode = self.semaphore_permits_decode();
+                let fields = format
+                    .members
+                    .into_iter()
+                    .map(|index| {
+                        if index == permits_member {
+                            Field::Override {
+                                index,
+                                node: DisplayNode::Scalar {
+                                    at: format.permits.clone().into(),
+                                    decode: permits_decode.clone(),
+                                },
+                            }
+                        } else {
+                            Field::Member(index)
+                        }
+                    })
+                    .collect();
+                let node = DisplayNode::Struct { fields };
+                self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(state) = watch_state_debug_format(self.reader, tid) {
                 // The whole value is a single decoded atomic state word: the
                 // closed flag in bit 0 and the version counter above it.

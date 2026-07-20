@@ -327,16 +327,6 @@ pub enum KnownFormat {
         wake_by_ref: u32,
         drop: u32,
     },
-    /// Display a `tokio::sync::batch_semaphore::Semaphore` with its `permits`
-    /// field decoded. `permits` is the member path to the atomic `usize`;
-    /// reify renders the struct normally but interprets that field as the
-    /// available permit count (`value >> 1`) plus a closed flag (bit 0). The
-    /// path's first element is the index of the `permits` member.
-    /// `permits_decode` carries that bit layout.
-    Semaphore {
-        permits: Selector,
-        permits_decode: ScalarDecode,
-    },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages.
     /// The receiver has read up to `index` and the sender has written up to
     /// `tail` (both member paths to a `usize` within the channel); the

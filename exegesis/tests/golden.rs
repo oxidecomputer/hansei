@@ -253,9 +253,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, &m(*wake_by_ref)),
             f(id, &m(*drop)),
         ),
-        KnownFormat::Semaphore { permits, .. } => {
-            format!("Semaphore {{ permits={} }}", f(id, permits))
-        }
         KnownFormat::MpscChan {
             tail,
             index,
@@ -836,8 +833,8 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "tokio::sync::batch_semaphore::Semaphore",
-            "tokio::sync::batch_semaphore::Semaphore :: Semaphore \
-             { permits=permits.inner.value.v.value.__0@+32 }",
+            "tokio::sync::batch_semaphore::Semaphore :: Node Struct \
+             { waiters: <structural>, permits: permits.inner.value.v.value.__0@+32 }",
         );
         assert_format(
             program,
