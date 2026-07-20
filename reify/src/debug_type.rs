@@ -238,13 +238,6 @@ pub enum KnownFormat<T> {
         wake_by_ref_offset: u64,
         drop_offset: u64,
     },
-    /// Display a parking_lot `RawMutex`'s decoded lock state. `state_offset`
-    /// locates the single state byte within the mutex; `state_decode` is its
-    /// bit layout.
-    RawMutex {
-        state_offset: u64,
-        state_decode: ScalarDecode,
-    },
     /// Display a `tokio::sync::batch_semaphore::Semaphore`, decoding its
     /// `permits` field to the available count and closed flag. `permits_member`
     /// is that field's index and `permits_offset` locates the atomic `usize`.
@@ -691,16 +684,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     wake_offset,
                     wake_by_ref_offset,
                     drop_offset,
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::RawMutex {
-                state,
-                state_decode,
-            }) => {
-                let (_, state_offset) = resolve_selector(*self, state)?;
-                Some(DebugFormat::Known(KnownFormat::RawMutex {
-                    state_offset,
-                    state_decode: resolve_decode(*self, state_decode),
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::Semaphore {
@@ -1183,8 +1166,7 @@ mod bundle_tests {
         // Labels for the sync-primitive `ScalarDecode` tables. Interned here so
         // the decode-building closures below can assemble tables from `Copy`
         // `StrRef`s without re-borrowing the interner.
-        let (lockedl, parkedl, falsel, truel) =
-            (s("locked"), s("parked"), s("false"), s("true"));
+        let (lockedl, parkedl, falsel, truel) = (s("locked"), s("parked"), s("false"), s("true"));
         let (statel, idlel, waitingl, notifiedl, generationl) = (
             s("state"),
             s("idle"),
@@ -1808,9 +1790,9 @@ mod bundle_tests {
                     ),
                     (
                         RAW_MUTEX,
-                        BundleDebugFormat::Known(BundleKnownFormat::RawMutex {
-                            state: sel(&[0]),
-                            state_decode: mutex_decode(),
+                        BundleDebugFormat::Node(BundleNode::Scalar {
+                            at: sel(&[0]),
+                            decode: mutex_decode(),
                         }),
                     ),
                     (

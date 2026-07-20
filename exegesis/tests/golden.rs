@@ -253,7 +253,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, &m(*wake_by_ref)),
             f(id, &m(*drop)),
         ),
-        KnownFormat::RawMutex { state, .. } => format!("RawMutex {{ state={} }}", f(id, state)),
         KnownFormat::Semaphore { permits, .. } => {
             format!("Semaphore {{ permits={} }}", f(id, permits))
         }
@@ -897,7 +896,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "parking_lot::raw_mutex::RawMutex",
-            "parking_lot::raw_mutex::RawMutex :: RawMutex { state=state.v.value.__0@+0 }",
+            "parking_lot::raw_mutex::RawMutex :: Node state.v.value.__0@+0",
         );
     }
 }

@@ -53,8 +53,6 @@ enum Shape {
     /// A `usize`-sized unsigned base type: an atomic word, a length, a
     /// capacity, a permit count.
     Usize,
-    /// A single unsigned byte: a parking_lot mutex state byte.
-    StateByte,
     /// A pointer to `u8`: a string/vec data pointer.
     BytePointer,
     /// Any type occupying exactly one pointer word: a niche-optimized
@@ -159,14 +157,6 @@ fn check_selector(
             landed,
             Some(TypeDef::Base {
                 size: crate::bundle::POINTER_SIZE,
-                encoding: crate::raw_types::Encoding::Unsigned,
-                ..
-            })
-        ),
-        Shape::StateByte => matches!(
-            landed,
-            Some(TypeDef::Base {
-                size: 1,
                 encoding: crate::raw_types::Encoding::Unsigned,
                 ..
             })
@@ -347,8 +337,6 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
 
 /// Bit width of a `usize` word, for [`check_scalar_decode`].
 const USIZE_BITS: u8 = (crate::bundle::POINTER_SIZE * 8) as u8;
-/// Bit width of a single state byte, for [`check_scalar_decode`].
-const BYTE_BITS: u8 = 8;
 
 fn type_size(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> Option<u64> {
     if seen.contains(&id) {
@@ -681,21 +669,6 @@ impl Bundle {
                             id.0
                         ));
                     }
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::RawMutex {
-                        state,
-                        state_decode,
-                    },
-                ) => {
-                    check_selector(
-                        self,
-                        id,
-                        state,
-                        Shape::StateByte,
-                        "RawMutex state debug format",
-                    )?;
-                    check_scalar_decode(self, state_decode, BYTE_BITS, "RawMutex state decode")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::Semaphore {

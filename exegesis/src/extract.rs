@@ -3455,11 +3455,12 @@ impl<'a> Emitter<'a> {
                 };
                 self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(state) = parking_lot_raw_mutex_debug_format(self.reader, tid) {
-                let format = crate::bundle::KnownFormat::RawMutex {
-                    state,
-                    state_decode: self.mutex_byte_decode(),
+                // The whole value is a single decoded lock-state byte.
+                let node = DisplayNode::Scalar {
+                    at: state,
+                    decode: self.mutex_byte_decode(),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Known(format));
+                self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(permits) = semaphore_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::Semaphore {
                     permits,
