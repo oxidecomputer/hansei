@@ -27,29 +27,43 @@ pub struct DwView<'a> {
 impl<'a> DwView<'a> {
     /// Build an indexed view from a collector.
     pub fn new(collector: &'a DwReader<'a>) -> Self {
-        let mut by_name: HashMap<&'a str, Vec<TypeId>> = HashMap::new();
-        for (id, raw_ty) in collector.canonical_types() {
-            if let Some(str_id) = raw_ty.name() {
-                let name = collector.strings.get(str_id);
-                by_name.entry(name).or_default().push(id);
-            }
-        }
+        // The three name indexes are independent and each scans a different
+        // (large) table, so build them concurrently. `collector` is only read
+        // here, and the type index — which walks every type — dominates, so it
+        // gets its own thread while the two smaller ones share the caller's.
+        let (by_name, vars_by_name, funcs_by_name) = std::thread::scope(|scope| {
+            let types = scope.spawn(|| {
+                let mut by_name: HashMap<&'a str, Vec<TypeId>> = HashMap::new();
+                for (id, raw_ty) in collector.canonical_types() {
+                    if let Some(str_id) = raw_ty.name() {
+                        by_name.entry(collector.strings.get(str_id)).or_default().push(id);
+                    }
+                }
+                by_name
+            });
+            let vars = scope.spawn(|| {
+                let mut vars_by_name: HashMap<&'a str, Vec<VarId>> = HashMap::new();
+                for (&id, var) in &collector.variables {
+                    if let Some(str_id) = var.name {
+                        vars_by_name.entry(collector.strings.get(str_id)).or_default().push(id);
+                    }
+                }
+                vars_by_name
+            });
 
-        let mut vars_by_name: HashMap<&'a str, Vec<VarId>> = HashMap::new();
-        for (&id, var) in &collector.variables {
-            if let Some(str_id) = var.name {
-                let name = collector.strings.get(str_id);
-                vars_by_name.entry(name).or_default().push(id);
+            let mut funcs_by_name: HashMap<&'a str, Vec<FuncId>> = HashMap::new();
+            for (&id, func) in &collector.functions {
+                if let Some(str_id) = func.name {
+                    funcs_by_name.entry(collector.strings.get(str_id)).or_default().push(id);
+                }
             }
-        }
 
-        let mut funcs_by_name: HashMap<&'a str, Vec<FuncId>> = HashMap::new();
-        for (&id, func) in &collector.functions {
-            if let Some(str_id) = func.name {
-                let name = collector.strings.get(str_id);
-                funcs_by_name.entry(name).or_default().push(id);
-            }
-        }
+            (
+                types.join().expect("type-index thread panicked"),
+                vars.join().expect("var-index thread panicked"),
+                funcs_by_name,
+            )
+        });
 
         Self {
             collector,
