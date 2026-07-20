@@ -1,7 +1,7 @@
 == mpsc::bounded::Receiver (_rx) ==
 tokio::sync::mpsc::bounded::Receiver<u32> {
      capacity: 8,
-     free: 6,
+     free: closed=open, permits=6,
      queued: [
         10,
         20,
@@ -19,14 +19,14 @@ tokio::sync::mpsc::bounded::Receiver<u32> {
         },
     },
      notify_rx_closed: tokio::sync::notify::Notify {
-        state: idle,
-        mutex: unlocked,
+        state: state=idle, generation=0,
+        mutex: locked=unlocked, parked=unparked,
         queue: [],
     },
      semaphore: tokio::sync::mpsc::bounded::Semaphore {
-        mutex: unlocked,
+        mutex: locked=unlocked, parked=unparked,
         closed: false,
-        permits: 6,
+        permits: closed=open, permits=6,
         bound: 8,
         queue: [],
     },
@@ -66,7 +66,7 @@ alloc::sync::Arc<tokio::sync::semaphore::Semaphore, alloc::alloc::Global> {
              data: tokio::sync::semaphore::Semaphore {
                  ll_sem: tokio::sync::batch_semaphore::Semaphore {
                      waiters: lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::sync::batch_semaphore::Waitlist> {
-                         raw: parking_lot::raw_mutex::RawMutex (unlocked),
+                         raw: parking_lot::raw_mutex::RawMutex: locked=unlocked, parked=unparked,
                          data: tokio::sync::batch_semaphore::Waitlist {
                              queue: tokio::util::linked_list::LinkedList<tokio::sync::batch_semaphore::Waiter, tokio::sync::batch_semaphore::Waiter> {
                                  head: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
@@ -75,7 +75,7 @@ alloc::sync::Arc<tokio::sync::semaphore::Semaphore, alloc::alloc::Global> {
                              closed: false,
                         },
                     },
-                     permits: 4,
+                     permits: closed=open, permits=4,
                 },
             },
         },
@@ -87,10 +87,10 @@ alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
              strong: 2,
              weak: 1,
              data: tokio::sync::notify::Notify {
-                state: waiting,
-                mutex: unlocked,
+                state: state=waiting, generation=0,
+                mutex: locked=unlocked, parked=unparked,
                 queue: [
-                    tokio::sync::notify::Waiter { notification: none },
+                    tokio::sync::notify::Waiter { notification: kind=none, order=fifo },
                 ],
             },
         },
@@ -109,56 +109,56 @@ tokio::sync::watch::Receiver<u32> {
                         },
                          data: 7,
                     },
-                     state: tokio::sync::watch::state::AtomicState (version 0),
+                     state: tokio::sync::watch::state::AtomicState: closed=open, version=0,
                      ref_count_rx: 1,
                      ref_count_tx: 1,
                      notify_rx: tokio::sync::watch::big_notify::BigNotify {
                          inner: [
                             tokio::sync::notify::Notify {
-                                state: idle,
-                                mutex: unlocked,
+                                state: state=idle, generation=0,
+                                mutex: locked=unlocked, parked=unparked,
                                 queue: [],
                             },
                             tokio::sync::notify::Notify {
-                                state: idle,
-                                mutex: unlocked,
+                                state: state=idle, generation=0,
+                                mutex: locked=unlocked, parked=unparked,
                                 queue: [],
                             },
                             tokio::sync::notify::Notify {
-                                state: idle,
-                                mutex: unlocked,
+                                state: state=idle, generation=0,
+                                mutex: locked=unlocked, parked=unparked,
                                 queue: [],
                             },
                             tokio::sync::notify::Notify {
-                                state: idle,
-                                mutex: unlocked,
+                                state: state=idle, generation=0,
+                                mutex: locked=unlocked, parked=unparked,
                                 queue: [],
                             },
                             tokio::sync::notify::Notify {
-                                state: idle,
-                                mutex: unlocked,
+                                state: state=idle, generation=0,
+                                mutex: locked=unlocked, parked=unparked,
                                 queue: [],
                             },
                             tokio::sync::notify::Notify {
-                                state: idle,
-                                mutex: unlocked,
+                                state: state=idle, generation=0,
+                                mutex: locked=unlocked, parked=unparked,
                                 queue: [],
                             },
                             tokio::sync::notify::Notify {
-                                state: idle,
-                                mutex: unlocked,
+                                state: state=idle, generation=0,
+                                mutex: locked=unlocked, parked=unparked,
                                 queue: [],
                             },
                             tokio::sync::notify::Notify {
-                                state: idle,
-                                mutex: unlocked,
+                                state: state=idle, generation=0,
+                                mutex: locked=unlocked, parked=unparked,
                                 queue: [],
                             },
                         ],
                     },
                      notify_tx: tokio::sync::notify::Notify {
-                        state: idle,
-                        mutex: unlocked,
+                        state: state=idle, generation=0,
+                        mutex: locked=unlocked, parked=unparked,
                         queue: [],
                     },
                 },

@@ -220,9 +220,9 @@ fn test_simple_await_offline() {
 fingerprint 15/15
 workers 3
 task 3 idle simple_await::work::{async_fn_env#0}
-  spawned test-programs/src/bin/simple-await.rs:55:21
+  spawned test-programs/src/bin/simple-await.rs:58:21
   defined simple-await.rs:16
-  await simple_await::work::{async_fn_env#0} Suspend1 @ simple-await.rs:26 locals [count, labels, values, ipv4, ipv6, borrowed, owned, first, ready, park]
+  await simple_await::work::{async_fn_env#0} Suspend1 @ simple-await.rs:29 locals [count, labels, values, ipv4, ipv6, borrowed, owned, first, ready, park]
   await tokio::sync::oneshot::Receiver<u32>
   end leaf
 "#,
@@ -293,8 +293,8 @@ task 5 idle futurelock::main::{async_block#0}::{async_block_env#0}
   spawned test-programs/src/bin/futurelock.rs:13:17
   defined futurelock.rs:13
   await futurelock::main::{async_block#0}::{async_block_env#0} Suspend1 @ futurelock.rs:23 locals [lock]
-  await futurelock::do_stuff::{async_fn_env#0} Suspend1 @ futurelock.rs:60 locals [lock, future1, disabled]
-  await futurelock::do_async_thing::{async_fn_env#0} Suspend0 @ futurelock.rs:68 locals [label, lock]
+  await futurelock::do_stuff::{async_fn_env#0} Suspend1 @ futurelock.rs:62 locals [lock, future1, disabled]
+  await futurelock::do_async_thing::{async_fn_env#0} Suspend0 @ futurelock.rs:70 locals [label, lock]
   await tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()> Suspend0 @ src/sync/mutex.rs:455 locals [self]
   await tokio::sync::mutex::{impl#10}::lock::{async_fn#0}::{async_block_env#0}<()> Suspend0 @ src/sync/mutex.rs:436 locals [_ref__self]
   await tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()> Suspend1 @ src/sync/mutex.rs:658 locals [self]
@@ -302,7 +302,7 @@ task 5 idle futurelock::main::{async_block#0}::{async_block_env#0}
   end leaf
   waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
 futurelock: task 5 holds `future1` (futurelock::do_async_thing::{async_fn_env#0}), granted 1 permit(s) of the tokio::sync::Mutex semaphore 0xADDR
-  held across futurelock::do_stuff::{async_fn_env#0} Suspend1 @ futurelock.rs:60
+  held across futurelock::do_stuff::{async_fn_env#0} Suspend1 @ futurelock.rs:62
   blocked: [task 5]
 "#,
     );

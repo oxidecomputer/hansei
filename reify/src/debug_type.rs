@@ -1,6 +1,7 @@
 use crate::Result;
 
 use std::fmt;
+use std::num::NonZeroU8;
 
 /// Reify's own TypeKind — the union of kinds reify cares about.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -119,8 +120,42 @@ pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug {
     }
 }
 
+/// Resolved form of a bundle [`exegesis::bundle::ScalarDecode`]: the bit layout
+/// of one machine word, with labels resolved from the bundle's string table to
+/// owned strings. reify's `apply` interprets it, enforcing the two "no silent
+/// state" rules documented on the bundle type.
+#[derive(Clone, Debug)]
+pub enum ScalarDecode {
+    /// Render the whole word as an unsigned integer.
+    Raw,
+    /// Decompose the word into named sub-fields, low bit first.
+    Bits(Vec<BitField>),
+}
+
+/// One named sub-field of a word decoded by [`ScalarDecode::Bits`].
+#[derive(Clone, Debug)]
+pub struct BitField {
+    /// Label printed for this field (`name=…`).
+    pub name: String,
+    /// Low bit of this field within the word.
+    pub shift: u8,
+    /// Field width in bits; `None` means "all bits at and above `shift`".
+    pub width: Option<NonZeroU8>,
+    /// How the extracted sub-value is rendered.
+    pub render: FieldRender,
+}
+
+/// How a [`BitField`]'s extracted sub-value is rendered.
+#[derive(Clone, Debug)]
+pub enum FieldRender {
+    /// Exhaustive value → label table; a value absent renders `<unknown: N>`.
+    Enum(Vec<(u64, String)>),
+    /// Render the sub-value as an unsigned integer (`name=N`).
+    Uint,
+}
+
 /// Backend-independent, fully resolved custom display instructions.
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub enum DebugFormat<T> {
     /// Display `target` at `offset` as though it were the containing value.
     Transparent { target: T, offset: u64 },
@@ -129,7 +164,7 @@ pub enum DebugFormat<T> {
 }
 
 /// Closed set of semantic formatters understood by reify.
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub enum KnownFormat<T> {
     /// Display an atomic's stored value without following pointer values.
     Atomic { value: T, offset: u64 },
@@ -160,8 +195,9 @@ pub enum KnownFormat<T> {
         drop_offset: u64,
     },
     /// Display a parking_lot `RawMutex`'s decoded lock state. `state_offset`
-    /// locates the single state byte within the mutex.
-    RawMutex { state_offset: u64 },
+    /// locates the single state byte within the mutex; `state_decode` is its
+    /// bit layout.
+    RawMutex { state_offset: u64, state_decode: ScalarDecode },
     /// Display a `tokio::sync::notify::Notify` compactly: its notification
     /// state, waiter-mutex lock state, and the queue of parked waiters. The
     /// `*_offset` fields locate each within the value; `state_offset` is the
@@ -172,20 +208,24 @@ pub enum KnownFormat<T> {
     /// successor pointer, which reify follows to list the queued waiters.
     Notify {
         state_offset: u64,
+        state_decode: ScalarDecode,
         mutex_offset: u64,
+        mutex_decode: ScalarDecode,
         head_offset: u64,
         waiter: T,
         waiter_size: u32,
         waiter_notification_offset: u64,
+        waiter_notification_decode: ScalarDecode,
         waiter_next_offset: u64,
     },
     /// Display a `tokio::sync::batch_semaphore::Semaphore`, decoding its
     /// `permits` field to the available count and closed flag. `permits_member`
     /// is that field's index and `permits_offset` locates the atomic `usize`.
-    Semaphore { permits_member: u32, permits_offset: u64 },
+    Semaphore { permits_member: u32, permits_offset: u64, permits_decode: ScalarDecode },
     /// Display a `tokio::sync::watch::state::AtomicState` decoded to its
-    /// version and closed flag. `state_offset` locates the atomic `usize`.
-    WatchState { state_offset: u64 },
+    /// version and closed flag. `state_offset` locates the atomic `usize`;
+    /// `state_decode` is its bit layout.
+    WatchState { state_offset: u64, state_decode: ScalarDecode },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages
     /// (indices `[index, tail)`) by walking its block chain from the head
     /// block, rendering each queued slot as `element`. `*_offset` fields
@@ -223,6 +263,7 @@ pub enum KnownFormat<T> {
         chan_offset: u64,
         bound_offset: u64,
         permits_offset: u64,
+        permits_decode: ScalarDecode,
     },
     /// Display a `tokio::sync::mpsc::bounded::Semaphore` compactly: its waiter
     /// mutex state, closed flag, available permits, capacity, and waiter queue.
@@ -234,8 +275,10 @@ pub enum KnownFormat<T> {
     /// successor pointer, which reify follows to list the queued waiters.
     BoundedSemaphore {
         mutex_offset: u64,
+        mutex_decode: ScalarDecode,
         closed_offset: u64,
         permits_offset: u64,
+        permits_decode: ScalarDecode,
         bound_offset: u64,
         head_offset: u64,
         waiter: T,
@@ -478,6 +521,37 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             Some((member.ty(), member.offset()))
         }
 
+        /// Resolve a bundle [`exegesis::bundle::ScalarDecode`] into reify's
+        /// owned form, resolving each label [`StrRef`] against `root`'s bundle.
+        fn resolve_decode(
+            root: BundleType<'_>,
+            decode: &exegesis::bundle::ScalarDecode,
+        ) -> ScalarDecode {
+            use exegesis::bundle::{FieldRender as BundleRender, ScalarDecode as BundleDecode};
+            match decode {
+                BundleDecode::Raw => ScalarDecode::Raw,
+                BundleDecode::Bits(fields) => ScalarDecode::Bits(
+                    fields
+                        .iter()
+                        .map(|field| BitField {
+                            name: root.resolve_str(field.name).to_string(),
+                            shift: field.shift,
+                            width: field.width,
+                            render: match &field.render {
+                                BundleRender::Enum(table) => FieldRender::Enum(
+                                    table
+                                        .iter()
+                                        .map(|(v, l)| (*v, root.resolve_str(*l).to_string()))
+                                        .collect(),
+                                ),
+                                BundleRender::Uint => FieldRender::Uint,
+                            },
+                        })
+                        .collect(),
+                ),
+            }
+        }
+
         match BundleType::debug_format(self)? {
             BundleFormat::Transparent { member } => {
                 let (target, offset) = resolve_selector(*self, member)?;
@@ -527,16 +601,22 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     drop_offset,
                 }))
             }
-            BundleFormat::Known(BundleKnownFormat::RawMutex { state }) => {
+            BundleFormat::Known(BundleKnownFormat::RawMutex { state, state_decode }) => {
                 let (_, state_offset) = resolve_selector(*self, state)?;
-                Some(DebugFormat::Known(KnownFormat::RawMutex { state_offset }))
+                Some(DebugFormat::Known(KnownFormat::RawMutex {
+                    state_offset,
+                    state_decode: resolve_decode(*self, state_decode),
+                }))
             }
             BundleFormat::Known(BundleKnownFormat::Notify {
                 state,
+                state_decode,
                 mutex,
+                mutex_decode,
                 head,
                 waiter,
                 waiter_notification,
+                waiter_notification_decode,
                 waiter_next,
             }) => {
                 let (_, state_offset) = resolve_selector(*self, state)?;
@@ -547,22 +627,32 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let (_, waiter_next_offset) = resolve_selector(waiter_ty, waiter_next)?;
                 Some(DebugFormat::Known(KnownFormat::Notify {
                     state_offset,
+                    state_decode: resolve_decode(*self, state_decode),
                     mutex_offset,
+                    mutex_decode: resolve_decode(*self, mutex_decode),
                     head_offset,
                     waiter: waiter_ty,
                     waiter_size: waiter_ty.size() as u32,
                     waiter_notification_offset,
+                    waiter_notification_decode: resolve_decode(*self, waiter_notification_decode),
                     waiter_next_offset,
                 }))
             }
-            BundleFormat::Known(BundleKnownFormat::Semaphore { permits }) => {
+            BundleFormat::Known(BundleKnownFormat::Semaphore { permits, permits_decode }) => {
                 let (_, permits_offset) = resolve_selector(*self, permits)?;
                 let permits_member = permits.first_member()?;
-                Some(DebugFormat::Known(KnownFormat::Semaphore { permits_member, permits_offset }))
+                Some(DebugFormat::Known(KnownFormat::Semaphore {
+                    permits_member,
+                    permits_offset,
+                    permits_decode: resolve_decode(*self, permits_decode),
+                }))
             }
-            BundleFormat::Known(BundleKnownFormat::WatchState { state }) => {
+            BundleFormat::Known(BundleKnownFormat::WatchState { state, state_decode }) => {
                 let (_, state_offset) = resolve_selector(*self, state)?;
-                Some(DebugFormat::Known(KnownFormat::WatchState { state_offset }))
+                Some(DebugFormat::Known(KnownFormat::WatchState {
+                    state_offset,
+                    state_decode: resolve_decode(*self, state_decode),
+                }))
             }
             BundleFormat::Known(BundleKnownFormat::MpscChan {
                 tail,
@@ -611,6 +701,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 chan,
                 bound,
                 permits,
+                permits_decode,
             }) => {
                 let (ptr_ty, chan_pointer_offset) = resolve_selector(*self, chan_pointer)?;
                 let arcinner_ty = ptr_ty.pointer_target()?;
@@ -623,12 +714,15 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     chan_offset,
                     bound_offset,
                     permits_offset,
+                    permits_decode: resolve_decode(*self, permits_decode),
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::BoundedSemaphore {
                 mutex,
+                mutex_decode,
                 closed,
                 permits,
+                permits_decode,
                 bound,
                 head,
                 waiter,
@@ -645,8 +739,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let (_, waiter_next_offset) = resolve_selector(waiter_ty, waiter_next)?;
                 Some(DebugFormat::Known(KnownFormat::BoundedSemaphore {
                     mutex_offset,
+                    mutex_decode: resolve_decode(*self, mutex_decode),
                     closed_offset,
                     permits_offset,
+                    permits_decode: resolve_decode(*self, permits_decode),
                     bound_offset,
                     head_offset,
                     waiter: waiter_ty,
@@ -846,16 +942,34 @@ mod bundle_tests {
 
     use exegesis::Encoding;
     use exegesis::bundle::{
-        Bundle, BundleTypeId, BundleView, DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue,
-        DiscrValues, DynFutureTable, FORMAT_VERSION, InfraTypes, KnownFormat as BundleKnownFormat,
-        MemberDef, Meta, ProvenanceTable, Selector, StaticsTable, StringInterner, TaskTable,
-        TypeDef, TypeTable, VariantDef, VariantShape,
+        BitField as BundleBitField, Bundle, BundleTypeId, BundleView,
+        DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue, DiscrValues, DynFutureTable,
+        FORMAT_VERSION, FieldRender as BundleFieldRender, InfraTypes,
+        KnownFormat as BundleKnownFormat, MemberDef, Meta, ProvenanceTable,
+        ScalarDecode as BundleScalarDecode, Selector, StaticsTable, StrRef, StringInterner,
+        TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
     };
+    use std::num::NonZeroU8;
 
     /// Build a member-only [`Selector`] from member indices — the shape every
     /// selector in these synthetic bundles has (Phase A emits no `Deref`).
     fn sel(members: &[u32]) -> Selector {
         Selector::from(members.to_vec())
+    }
+
+    /// Build an enumerated bundle [`BundleBitField`] from pre-interned labels.
+    fn ebf(name: StrRef, shift: u8, width: u8, table: Vec<(u64, StrRef)>) -> BundleBitField {
+        BundleBitField {
+            name,
+            shift,
+            width: NonZeroU8::new(width),
+            render: BundleFieldRender::Enum(table),
+        }
+    }
+
+    /// Build an unsigned-integer tail bundle [`BundleBitField`] (`width: None`).
+    fn ubf(name: StrRef, shift: u8) -> BundleBitField {
+        BundleBitField { name, shift, width: None, render: BundleFieldRender::Uint }
     }
 
     const U32: BundleTypeId = BundleTypeId(0);
@@ -1009,6 +1123,37 @@ mod bundle_tests {
         );
         let (strongn, weakn, boundn, chanfieldn, semfieldn) =
             (s("strong"), s("weak"), s("bound"), s("chan"), s("semaphore"));
+
+        // Labels for the sync-primitive `ScalarDecode` tables. Interned here so
+        // the decode-building closures below can assemble tables from `Copy`
+        // `StrRef`s without re-borrowing the interner.
+        let (lockedl, unlockedl, parkedl, unparkedl) =
+            (s("locked"), s("unlocked"), s("parked"), s("unparked"));
+        let (statel, idlel, waitingl, notifiedl, generationl) =
+            (s("state"), s("idle"), s("waiting"), s("notified"), s("generation"));
+        let (closedl, openl, permitsl, versionl) =
+            (s("closed"), s("open"), s("permits"), s("version"));
+        let (kindl, nonel, onel, alll, orderl, fifol, lifol) = (
+            s("kind"),
+            s("none"),
+            s("one"),
+            s("all"),
+            s("order"),
+            s("fifo"),
+            s("lifo"),
+        );
+        let mutex_decode = || {
+            BundleScalarDecode::Bits(vec![
+                ebf(lockedl, 0, 1, vec![(0, unlockedl), (1, lockedl)]),
+                ebf(parkedl, 1, 1, vec![(0, unparkedl), (1, parkedl)]),
+            ])
+        };
+        let semaphore_permits_decode = || {
+            BundleScalarDecode::Bits(vec![
+                ebf(closedl, 0, 1, vec![(0, openl), (1, closedl)]),
+                ubf(permitsl, 1),
+            ])
+        };
         let (bsem_mutexn, bsem_waitlistn, bsem_listn, waitern) = (
             s("lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::sync::batch_semaphore::Waitlist>"),
             s("tokio::sync::batch_semaphore::Waitlist"),
@@ -1440,20 +1585,35 @@ mod bundle_tests {
                     }),
                 ), (
                     RAW_MUTEX,
-                    BundleDebugFormat::Known(BundleKnownFormat::RawMutex { state: sel(&[0]) }),
+                    BundleDebugFormat::Known(BundleKnownFormat::RawMutex {
+                        state: sel(&[0]),
+                        state_decode: mutex_decode(),
+                    }),
                 ), (
                     NOTIFY,
                     BundleDebugFormat::Known(BundleKnownFormat::Notify {
                         state: sel(&[0]),
+                        state_decode: BundleScalarDecode::Bits(vec![
+                            ebf(statel, 0, 2, vec![(0, idlel), (1, waitingl), (2, notifiedl)]),
+                            ubf(generationl, 2),
+                        ]),
                         mutex: sel(&[1, 0, 0]),
+                        mutex_decode: mutex_decode(),
                         head: sel(&[1, 1, 0]),
                         waiter: NOTIFY_WAITER,
                         waiter_notification: sel(&[0]),
+                        waiter_notification_decode: BundleScalarDecode::Bits(vec![
+                            ebf(kindl, 0, 2, vec![(0, nonel), (1, onel), (2, alll)]),
+                            ebf(orderl, 2, 1, vec![(0, fifol), (1, lifol)]),
+                        ]),
                         waiter_next: sel(&[1]),
                     }),
                 ), (
                     SEMAPHORE,
-                    BundleDebugFormat::Known(BundleKnownFormat::Semaphore { permits: sel(&[0]) }),
+                    BundleDebugFormat::Known(BundleKnownFormat::Semaphore {
+                        permits: sel(&[0]),
+                        permits_decode: semaphore_permits_decode(),
+                    }),
                 ), (
                     BLOCK,
                     BundleDebugFormat::Known(BundleKnownFormat::MpscBlock {
@@ -1462,7 +1622,13 @@ mod bundle_tests {
                     }),
                 ), (
                     WATCH_STATE,
-                    BundleDebugFormat::Known(BundleKnownFormat::WatchState { state: sel(&[0]) }),
+                    BundleDebugFormat::Known(BundleKnownFormat::WatchState {
+                        state: sel(&[0]),
+                        state_decode: BundleScalarDecode::Bits(vec![
+                            ebf(closedl, 0, 1, vec![(0, openl), (1, closedl)]),
+                            ubf(versionl, 1),
+                        ]),
+                    }),
                 ), (
                     CHAN,
                     BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
@@ -1495,13 +1661,16 @@ mod bundle_tests {
                         chan: sel(&[2]),
                         bound: sel(&[3, 1]),
                         permits: sel(&[3, 0]),
+                        permits_decode: semaphore_permits_decode(),
                     }),
                 ), (
                     BOUNDED_SEM,
                     BundleDebugFormat::Known(BundleKnownFormat::BoundedSemaphore {
                         mutex: sel(&[0, 0, 0, 0]),
+                        mutex_decode: mutex_decode(),
                         closed: sel(&[0, 0, 1, 1]),
                         permits: sel(&[0, 1]),
+                        permits_decode: semaphore_permits_decode(),
                         bound: sel(&[1]),
                         head: sel(&[0, 0, 1, 0, 0]),
                         waiter: WAITER,
@@ -2002,10 +2171,10 @@ mod bundle_tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let cases = [
-            (0u8, "parking_lot::raw_mutex::RawMutex (unlocked)"),
-            (1, "parking_lot::raw_mutex::RawMutex (locked)"),
-            (2, "parking_lot::raw_mutex::RawMutex (parked)"),
-            (3, "parking_lot::raw_mutex::RawMutex (locked, parked)"),
+            (0u8, "parking_lot::raw_mutex::RawMutex: locked=unlocked, parked=unparked"),
+            (1, "parking_lot::raw_mutex::RawMutex: locked=locked, parked=unparked"),
+            (2, "parking_lot::raw_mutex::RawMutex: locked=unlocked, parked=parked"),
+            (3, "parking_lot::raw_mutex::RawMutex: locked=locked, parked=parked"),
         ];
         for (state, expected) in cases {
             let value = TypeInfoRef::new(v.ty(RAW_MUTEX).unwrap(), 0, std::slice::from_ref(&state));
@@ -2051,19 +2220,20 @@ mod bundle_tests {
         let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
-            "tokio::sync::notify::Notify { state: idle, mutex: unlocked, queue: [\
-             tokio::sync::notify::Waiter { notification: none }, \
-             tokio::sync::notify::Waiter { notification: one }] }"
+            "tokio::sync::notify::Notify { state: state=idle, generation=0, \
+             mutex: locked=unlocked, parked=unparked, queue: [\
+             tokio::sync::notify::Waiter { notification: kind=none, order=fifo }, \
+             tokio::sync::notify::Waiter { notification: kind=one, order=fifo }] }"
         );
 
         // Notified with two notify_waiters calls, locked mutex, empty queue.
-        // 0b1010 = notified (state 2) with two calls (10 >> 2).
+        // 0b1010 = notified (state 2) with generation 2 (10 >> 2).
         let buf = notify(0b1010, 0b01, 0);
         let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
-            "tokio::sync::notify::Notify { state: notified (2 notify_waiters calls), \
-             mutex: locked, queue: [] }"
+            "tokio::sync::notify::Notify { state: state=notified, generation=2, \
+             mutex: locked=locked, parked=unparked, queue: [] }"
         );
 
         // Without a target the queue cannot be walked, but state and mutex
@@ -2071,7 +2241,7 @@ mod bundle_tests {
         let buf = notify(1, 0, 0x3000);
         let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
         let shown = format!("{}", value.display());
-        assert!(shown.contains("state: waiting"), "{shown}");
+        assert!(shown.contains("state: state=waiting"), "{shown}");
         assert!(shown.contains("queue: <target unavailable>"), "{shown}");
 
         // Pretty mode puts each field and waiter on its own indented line.
@@ -2080,11 +2250,11 @@ mod bundle_tests {
         assert_eq!(
             format!("{:#}", value.display_from_target(&Reader, 8)),
             "tokio::sync::notify::Notify {\n\
-             \x20   state: idle,\n\
-             \x20   mutex: unlocked,\n\
+             \x20   state: state=idle, generation=0,\n\
+             \x20   mutex: locked=unlocked, parked=unparked,\n\
              \x20   queue: [\n\
-             \x20       tokio::sync::notify::Waiter { notification: none },\n\
-             \x20       tokio::sync::notify::Waiter { notification: one },\n\
+             \x20       tokio::sync::notify::Waiter { notification: kind=none, order=fifo },\n\
+             \x20       tokio::sync::notify::Waiter { notification: kind=one, order=fifo },\n\
              \x20   ],\n\
              }"
         );
@@ -2104,10 +2274,25 @@ mod bundle_tests {
         };
         let cases = [
             // permits are stored shifted left by one; bit 0 is the closed flag.
-            (64u64, 3u32, "tokio::sync::batch_semaphore::Semaphore { permits: 32, waiters: 3 }"),
-            (0, 0, "tokio::sync::batch_semaphore::Semaphore { permits: 0, waiters: 0 }"),
+            (
+                64u64,
+                3u32,
+                "tokio::sync::batch_semaphore::Semaphore { permits: closed=open, permits=32, \
+                 waiters: 3 }",
+            ),
+            (
+                0,
+                0,
+                "tokio::sync::batch_semaphore::Semaphore { permits: closed=open, permits=0, \
+                 waiters: 0 }",
+            ),
             // 65 = (32 << 1) | 1: 32 permits, closed.
-            (65, 9, "tokio::sync::batch_semaphore::Semaphore { permits: 32 (closed), waiters: 9 }"),
+            (
+                65,
+                9,
+                "tokio::sync::batch_semaphore::Semaphore { permits: closed=closed, permits=32, \
+                 waiters: 9 }",
+            ),
         ];
         for (permits, waiters, expected) in cases {
             let buf = bytes(permits, waiters);
@@ -2227,7 +2412,7 @@ mod bundle_tests {
         let shown = format!("{}", value.display_from_target(&Reader, 8));
         assert!(shown.starts_with("tokio::sync::mpsc::bounded::Receiver<u32> {"), "{shown}");
         assert!(shown.contains("capacity: 16"), "{shown}");
-        assert!(shown.contains("free: 3"), "{shown}");
+        assert!(shown.contains("free: closed=open, permits=3"), "{shown}");
         assert!(shown.contains("queued: [20, 30]"), "{shown}");
 
         // A null channel pointer is reported rather than dereferenced.
@@ -2277,8 +2462,8 @@ mod bundle_tests {
         let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
-            "tokio::sync::mpsc::bounded::Semaphore { mutex: unlocked, closed: false, \
-             permits: 10, bound: 16, queue: [\
+            "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=unlocked, parked=unparked, \
+             closed: false, permits: closed=open, permits=10, bound: 16, queue: [\
              tokio::sync::batch_semaphore::Waiter { permits_needed: 2 }, \
              tokio::sync::batch_semaphore::Waiter { permits_needed: 1 }] }"
         );
@@ -2288,8 +2473,8 @@ mod bundle_tests {
         let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
-            "tokio::sync::mpsc::bounded::Semaphore { mutex: locked, closed: true, \
-             permits: 0, bound: 16, queue: [] }"
+            "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=locked, parked=unparked, \
+             closed: true, permits: closed=open, permits=0, bound: 16, queue: [] }"
         );
 
         // Without a target the queue cannot be walked, but the inline fields
@@ -2297,7 +2482,7 @@ mod bundle_tests {
         let buf = sem(0, 0x3000, 0, 20, 16);
         let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         let shown = format!("{}", value.display());
-        assert!(shown.contains("permits: 10"), "{shown}");
+        assert!(shown.contains("permits: closed=open, permits=10"), "{shown}");
         assert!(shown.contains("queue: <target unavailable>"), "{shown}");
 
         // Pretty mode puts each field and waiter on its own indented line.
@@ -2306,9 +2491,9 @@ mod bundle_tests {
         assert_eq!(
             format!("{:#}", value.display_from_target(&Reader, 8)),
             "tokio::sync::mpsc::bounded::Semaphore {\n\
-             \x20   mutex: unlocked,\n\
+             \x20   mutex: locked=unlocked, parked=unparked,\n\
              \x20   closed: false,\n\
-             \x20   permits: 10,\n\
+             \x20   permits: closed=open, permits=10,\n\
              \x20   bound: 16,\n\
              \x20   queue: [\n\
              \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 2 },\n\
@@ -2323,11 +2508,13 @@ mod bundle_tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let cases = [
-            (0u64, "tokio::sync::watch::state::AtomicState (version 0)"),
-            (4, "tokio::sync::watch::state::AtomicState (version 4)"),
-            // Bit 0 is the closed flag; the version is the rest.
-            (1, "tokio::sync::watch::state::AtomicState (version 0, closed)"),
-            (5, "tokio::sync::watch::state::AtomicState (version 4, closed)"),
+            // Bit 0 is the closed flag; the version is the remaining bits, so
+            // it reads as the update count (tokio steps the state by 2), e.g.
+            // raw 4 → version 2.
+            (0u64, "tokio::sync::watch::state::AtomicState: closed=open, version=0"),
+            (4, "tokio::sync::watch::state::AtomicState: closed=open, version=2"),
+            (1, "tokio::sync::watch::state::AtomicState: closed=closed, version=0"),
+            (5, "tokio::sync::watch::state::AtomicState: closed=closed, version=2"),
         ];
         for (state, expected) in cases {
             let bytes = state.to_le_bytes();

@@ -210,6 +210,12 @@ impl<'a> BundleType<'a> {
         self.bundle.strings.get(r).unwrap_or(ANON)
     }
 
+    /// Resolve an interned string ref against this type's bundle. Used by
+    /// consumers (reify) to read the labels carried in a `ScalarDecode` table.
+    pub fn resolve_str(&self, r: crate::bundle::strings::StrRef) -> &'a str {
+        self.str(r)
+    }
+
     /// The type's fully-qualified name, or a placeholder for anonymous
     /// pointer/array types.
     pub fn name(&self) -> &'a str {

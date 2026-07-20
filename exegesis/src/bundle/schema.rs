@@ -20,6 +20,7 @@ use crate::symbols::normalized_v0_key;
 use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU8;
 
 /// Index into [`TypeTable::types`].
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
@@ -155,6 +156,56 @@ impl From<Vec<u32>> for Selector {
     }
 }
 
+/// How a single machine word decomposes into human-readable state.
+///
+/// A word rarely means one thing: it is a small bitfield of an enumerated
+/// state, a counter or two, and often reserved bits. Rather than baking each
+/// type's bit layout into reify, the layout travels in the bundle as data, so
+/// an older reify still renders a newer bundle's semantics correctly.
+///
+/// reify's one `apply` walks the fields and enforces two "no silent state"
+/// rules, so every bit of the word is accountable — a named value, a number,
+/// or an explicit unknown:
+///
+/// 1. An [`FieldRender::Enum`] value absent from its table renders
+///    `<unknown: N>`. Enum tables are *exhaustive* by contract.
+/// 2. After every field is decoded, any leftover word bit no field covers
+///    renders `<unknown bits: 0xNN>`. This is what catches upstream drift: a
+///    bit a newer library sets that no table field mentions.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum ScalarDecode {
+    /// Render the whole word as an unsigned integer.
+    Raw,
+    /// Decompose the word into named sub-fields, low bit first.
+    Bits(Vec<BitField>),
+}
+
+/// One named sub-field of a word decoded by [`ScalarDecode::Bits`].
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct BitField {
+    /// Label printed for this field (`name=…`).
+    pub name: StrRef,
+    /// Low bit of this field within the word.
+    pub shift: u8,
+    /// Field width in bits. `None` means "all bits at and above `shift`" — the
+    /// trailing counter of a permit/version/generation word. `NonZeroU8`
+    /// (rather than a `0` sentinel) makes an empty field unrepresentable.
+    pub width: Option<NonZeroU8>,
+    /// How the extracted sub-value is rendered.
+    pub render: FieldRender,
+}
+
+/// How a [`BitField`]'s extracted sub-value is rendered.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum FieldRender {
+    /// Exhaustive value → label table. A value absent from the table renders
+    /// `<unknown: N>` (rule 1 above); there is deliberately no boolean/flag
+    /// kind, so a two-state field spells out both labels.
+    Enum(Vec<(u64, StrRef)>),
+    /// Render the sub-value as an unsigned integer (`name=N`).
+    Uint,
+}
+
 /// Declarative instructions for displaying a known type.
 ///
 /// Addressing is expressed with [`Selector`]s resolved against the concrete
@@ -209,9 +260,9 @@ pub enum KnownFormat {
     },
     /// Display a `parking_lot::raw_mutex::RawMutex` as its decoded lock state
     /// rather than a raw atomic byte. `state` is the member path to the
-    /// single-byte atomic; reify interprets parking_lot's fixed bit encoding
-    /// (`LOCKED_BIT = 1`, `PARKED_BIT = 2`).
-    RawMutex { state: Selector },
+    /// single-byte atomic; `state_decode` carries parking_lot's fixed bit
+    /// encoding (`LOCKED_BIT = 1`, `PARKED_BIT = 2`).
+    RawMutex { state: Selector, state_decode: ScalarDecode },
     /// Display a `tokio::sync::notify::Notify` compactly as its notification
     /// state, waiter-mutex lock state, and the queue of parked waiters —
     /// instead of dumping the raw `waiters` mutex wrapping an intrusive
@@ -231,12 +282,19 @@ pub enum KnownFormat {
     /// `waiter_next` is the path rooted at `waiter` to its successor pointer word
     /// (`pointers.inner.value.next`). reify follows `head` and each `waiter_next`
     /// to render the queued waiters.
+    ///
+    /// `state_decode`, `mutex_decode`, and `waiter_notification_decode` carry
+    /// the bit layouts of the three decoded words (state, mutex byte, per-waiter
+    /// notification).
     Notify {
         state: Selector,
+        state_decode: ScalarDecode,
         mutex: Selector,
+        mutex_decode: ScalarDecode,
         head: Selector,
         waiter: BundleTypeId,
         waiter_notification: Selector,
+        waiter_notification_decode: ScalarDecode,
         waiter_next: Selector,
     },
     /// Display a `tokio::sync::batch_semaphore::Semaphore` with its `permits`
@@ -244,12 +302,13 @@ pub enum KnownFormat {
     /// reify renders the struct normally but interprets that field as the
     /// available permit count (`value >> 1`) plus a closed flag (bit 0). The
     /// path's first element is the index of the `permits` member.
-    Semaphore { permits: Selector },
+    /// `permits_decode` carries that bit layout.
+    Semaphore { permits: Selector, permits_decode: ScalarDecode },
     /// Display a `tokio::sync::watch::state::AtomicState` as its decoded
     /// version and closed flag rather than a raw atomic word. `state` is the
-    /// member path to the atomic `usize`; reify interprets bit 0 as the closed
-    /// flag (CLOSED_BIT) and the remaining bits as the version.
-    WatchState { state: Selector },
+    /// member path to the atomic `usize`; `state_decode` records that bit 0 is
+    /// the closed flag (CLOSED_BIT) and the remaining bits are the version.
+    WatchState { state: Selector, state_decode: ScalarDecode },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages.
     /// The receiver has read up to `index` and the sender has written up to
     /// `tail` (both member paths to a `usize` within the channel); the
@@ -290,7 +349,15 @@ pub enum KnownFormat {
     /// reads the `Chan` through the pointer and renders it with the capacity
     /// and free-slot count prepended, delegating the queued-message walk to the
     /// `Chan`'s own [`KnownFormat::MpscChan`] formatter.
-    MpscRx { chan_pointer: Selector, chan: Selector, bound: Selector, permits: Selector },
+    /// `permits_decode` carries the bit layout of that permit word (bit 0
+    /// closed, the rest the available count).
+    MpscRx {
+        chan_pointer: Selector,
+        chan: Selector,
+        bound: Selector,
+        permits: Selector,
+        permits_decode: ScalarDecode,
+    },
     /// Display a `tokio::sync::mpsc::bounded::Semaphore` (a bounded channel's
     /// permit semaphore) compactly instead of as the raw nested
     /// `batch_semaphore::Semaphore`. reify renders
@@ -310,10 +377,16 @@ pub enum KnownFormat {
     /// `waiter_next` is the path rooted at `waiter` to its successor pointer word
     /// (`pointers.inner.value.next`). reify follows `head` and each `waiter_next`
     /// to render the queued waiters.
+    ///
+    /// `mutex_decode` and `permits_decode` carry the bit layouts of the mutex
+    /// byte and permit word. The per-waiter `waiter_state` word is a plain
+    /// permit count, rendered raw.
     BoundedSemaphore {
         mutex: Selector,
+        mutex_decode: ScalarDecode,
         closed: Selector,
         permits: Selector,
+        permits_decode: ScalarDecode,
         bound: Selector,
         head: Selector,
         waiter: BundleTypeId,
