@@ -5,7 +5,7 @@ use crate::raw_types::{
     RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion, RawVariant,
     SourceLoc, VariantShape,
 };
-use crate::string_table::{StrId, StringTable};
+use crate::string_table::{FrozenStrings, ShardedInterner, StrId};
 use crate::{Error, FuncId, Result, Slice};
 use crate::{TypeId, VarId};
 
@@ -42,7 +42,7 @@ pub struct DwReader<'dw> {
     /// Global namespace table.
     pub namespaces: NamespaceTable<StrId>,
     /// Interned string table for all strings found in types and variables.
-    pub strings: StringTable<'dw>,
+    pub strings: FrozenStrings<'dw>,
     /// The `DW_AT_producer` of the first compile unit that carries one
     /// (compiler identification, e.g. the rustc version).
     pub producer: Option<StrId>,
@@ -118,6 +118,12 @@ impl<'dw> DwReader<'dw> {
     pub fn read_types(dwarf: &Dwarf<Slice<'dw>>, args: ReadArgs) -> Result<DwReader<'dw>> {
         let mut units = dwarf.units();
 
+        // Interning is the single most expensive part of collection (tens of
+        // millions of strings), so it runs on the parallel workers via a
+        // sharded, lock-striped interner. Namespace assignment and type-map
+        // insertion stay on the serial collector, keyed by unique DIE ids.
+        let interner = ShardedInterner::new();
+
         let mut fold = OrderedParallelFold::new(
             || Ok(units.next()?),
             |header| {
@@ -127,10 +133,10 @@ impl<'dw> DwReader<'dw> {
                 cursor.next_entry()?;
                 let cgu = CodegenUnit::from_cursor(&unit_ref, &mut cursor)?;
                 debug!("processed unit {}", cgu.name);
-                Ok::<_, Error>(cgu)
+                Ok::<_, Error>(intern_cgu(&interner, cgu))
             },
             DwReader::new(),
-            |c: &mut DwReader<'_>, cgu| {
+            |c: &mut DwReader<'dw>, cgu| {
                 c.ingest(cgu);
             },
         );
@@ -143,6 +149,9 @@ impl<'dw> DwReader<'dw> {
         }
 
         let mut collector = fold.run()?;
+        // Workers have released their borrows now that the fold is done; take
+        // ownership of the interned strings.
+        collector.strings = interner.freeze();
         collector.finalize_types();
         Ok(collector)
     }
@@ -157,54 +166,61 @@ impl<'dw> DwReader<'dw> {
             variables: HashMap::new(),
             functions: HashMap::new(),
             namespaces: NamespaceTable::new(),
-            strings: StringTable::new(),
+            strings: FrozenStrings::default(),
             producer: None,
         }
     }
 
-    /// Ingest all types from a [`CodegenUnit`] into the global type space.
-    /// CGUs must be ingested in `.debug_info` order. Deduplication is deferred
-    /// until every CGU has been collected so forward references cannot make
-    /// the result depend on ingestion order.
-    fn ingest(&mut self, mut cgu: CodegenUnit<'dw>) {
+    /// Ingest an already-interned CGU into the global type space. The worker
+    /// (see [`intern_cgu`]) interned every string, but its namespaces and type
+    /// references still carry CGU-local ids; the collector remaps namespaces
+    /// into the global table here. CGUs must be ingested in `.debug_info`
+    /// order; deduplication is deferred to [`Self::finalize_types`] so forward
+    /// references cannot make the result depend on ingestion order.
+    fn ingest(&mut self, cgu: InternedCgu) {
         let ns_remap = self.remap_namespaces(&cgu.namespaces);
 
         if self.producer.is_none() {
-            self.producer = cgu.producer.map(|p| self.strings.intern(p));
+            self.producer = cgu.producer;
         }
 
-        for (type_id, mut ty) in cgu.types.drain() {
+        for (type_id, mut ty) in cgu.types {
             remap_ns_in_place(&mut ty, &ns_remap);
-            let ty = intern_type(&mut self.strings, ty);
-
             self.types.insert(type_id, ty);
         }
 
-        self.subroutine_types.extend(cgu.subroutine_types.drain());
-        self.type_declarations.extend(cgu.type_declarations.drain());
-        self.type_specifications
-            .extend(cgu.type_specifications.drain());
+        self.subroutine_types.extend(cgu.subroutine_types);
+        self.type_declarations.extend(cgu.type_declarations);
+        self.type_specifications.extend(cgu.type_specifications);
 
-        // Static variables are unique by address — no dedup needed.
-        // Remap namespaces now; type references are canonicalized on access
-        // after the final alias map has been built.
-        for (var_id, mut var) in cgu.variables.drain() {
+        // Static variables are unique by address, functions by DIE — no dedup
+        // needed. Type references are canonicalized on access after the final
+        // alias map has been built.
+        for (var_id, mut var) in cgu.variables {
             if let Some(id) = var.namespace {
                 var.namespace = Some(ns_remap[&id]);
             }
-            let var = intern_var(&mut self.strings, var);
             self.variables.insert(var_id, var);
         }
-
-        // Functions — remap namespaces and intern strings. Type references
-        // are canonicalized on access after finalization.
-        for (func_id, mut func) in cgu.funcs.drain() {
+        for (func_id, mut func) in cgu.funcs {
             if let Some(id) = func.namespace {
                 func.namespace = Some(ns_remap[&id]);
             }
-            let func = intern_func(&mut self.strings, func);
             self.functions.insert(func_id, func);
         }
+    }
+
+    /// Merge a CGU's local namespace table into the global one, returning a
+    /// map from each local [`NsId`] to its global id. Names are already
+    /// interned; the global table dedups by `(parent, name)`.
+    fn remap_namespaces(&mut self, local: &NamespaceTable<StrId>) -> HashMap<NsId, NsId> {
+        let mut ns_remap: HashMap<NsId, NsId> = HashMap::new();
+        for (local_id, entry) in local.iter() {
+            let global_parent = entry.parent.map(|p| ns_remap[&p]);
+            let global_id = self.namespaces.insert(global_parent, entry.name);
+            ns_remap.insert(local_id, global_id);
+        }
+        ns_remap
     }
 
     /// Build the global alias map after every CGU has been collected.
@@ -662,18 +678,67 @@ impl<'dw> DwReader<'dw> {
         self.canonical_types().count()
     }
 
-    /// Re-intern all namespaces from a CGU's local table into the global
-    /// table, returning a mapping from local [`NsId`] to global [`NsId`].
-    /// Namespace names are interned into the string table along the way.
-    fn remap_namespaces(&mut self, local: &NamespaceTable<&'dw str>) -> HashMap<NsId, NsId> {
-        let mut ns_remap: HashMap<NsId, NsId> = HashMap::new();
-        for (local_id, entry) in local.iter() {
-            let global_parent = entry.parent.map(|p| ns_remap[&p]);
-            let name_id = self.strings.intern(entry.name);
-            let global_id = self.namespaces.insert(global_parent, name_id);
-            ns_remap.insert(local_id, global_id);
-        }
-        ns_remap
+}
+
+/// A fully-interned CGU, produced by [`intern_cgu`] on a worker thread and
+/// merged by the collector in [`DwReader::ingest`]. Every string has been
+/// replaced by a [`StrId`], so this carries no borrow of the DWARF and the
+/// fold's in-flight buffer no longer pins the underlying section pages. Type
+/// references and namespaces are still CGU-local; the collector remaps them.
+struct InternedCgu {
+    producer: Option<StrId>,
+    /// This CGU's namespace table with interned names, in the original local
+    /// id order so the collector can remap references against it.
+    namespaces: NamespaceTable<StrId>,
+    types: HashMap<TypeId, RawType<StrId>>,
+    subroutine_types: HashSet<TypeId>,
+    variables: HashMap<VarId, RawStaticVariable<StrId>>,
+    type_declarations: HashSet<TypeId>,
+    type_specifications: HashMap<TypeId, TypeId>,
+    funcs: HashMap<FuncId, RawFunc<StrId>>,
+}
+
+/// Intern a freshly-parsed CGU on a worker thread, replacing every borrowed
+/// `&str` with a [`StrId`]. Interning tens of millions of strings is the
+/// dominant cost of collection, so doing it here spreads it across the worker
+/// pool instead of serializing it through the collector. Namespaces and type
+/// references keep their CGU-local ids; the collector remaps them in
+/// [`DwReader::ingest`].
+fn intern_cgu<'dw>(global: &ShardedInterner<'dw>, cgu: CodegenUnit<'dw>) -> InternedCgu {
+    let interner = &CguInterner::new(global);
+    // Rebuild the CGU's namespace table with interned names. Namespaces are
+    // listed parent-first and interning is injective on name content, so the
+    // rebuilt table reproduces the original local ids one-for-one.
+    let mut namespaces = NamespaceTable::<StrId>::new();
+    for (_local_id, entry) in cgu.namespaces.iter() {
+        namespaces.insert(entry.parent, interner.intern(entry.name));
+    }
+
+    let types = cgu
+        .types
+        .into_iter()
+        .map(|(id, ty)| (id, intern_type(interner, ty)))
+        .collect();
+    let variables = cgu
+        .variables
+        .into_iter()
+        .map(|(id, var)| (id, intern_var(interner, var)))
+        .collect();
+    let funcs = cgu
+        .funcs
+        .into_iter()
+        .map(|(id, func)| (id, intern_func(interner, func)))
+        .collect();
+
+    InternedCgu {
+        producer: cgu.producer.map(|p| interner.intern(p)),
+        namespaces,
+        types,
+        subroutine_types: cgu.subroutine_types,
+        variables,
+        type_declarations: cgu.type_declarations,
+        type_specifications: cgu.type_specifications,
+        funcs,
     }
 }
 
@@ -729,9 +794,39 @@ fn optional_type_ids_have_compatible_layout(
     }
 }
 
+/// A per-CGU front for the shared [`ShardedInterner`]. A single CGU interns the
+/// same string enormously often (common namespace, module, and type-name
+/// fragments recur across nearly every DIE), and each global intern takes a
+/// shard lock. Caching the ids seen within this CGU turns those repeats into
+/// lock-free local hits, which is the difference between the workers scaling and
+/// serializing on hot shards. The cache lives only as long as the CGU, so it
+/// stays small and needs no eviction.
+struct CguInterner<'a, 'dw> {
+    global: &'a ShardedInterner<'dw>,
+    cache: std::cell::RefCell<HashMap<&'dw str, StrId>>,
+}
+
+impl<'a, 'dw> CguInterner<'a, 'dw> {
+    fn new(global: &'a ShardedInterner<'dw>) -> Self {
+        Self {
+            global,
+            cache: std::cell::RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn intern(&self, s: &'dw str) -> StrId {
+        if let Some(&id) = self.cache.borrow().get(s) {
+            return id;
+        }
+        let id = self.global.intern(s);
+        self.cache.borrow_mut().insert(s, id);
+        id
+    }
+}
+
 /// Convert a `RawType<&'dw str>` into a `RawType<StrId>` by interning all strings.
-fn intern_type<'dw>(strings: &mut StringTable<'dw>, ty: RawType<&'dw str>) -> RawType<StrId> {
-    let mut intern = |s: Option<&'dw str>| s.map(|s| strings.intern(s));
+fn intern_type<'dw>(strings: &CguInterner<'_, 'dw>, ty: RawType<&'dw str>) -> RawType<StrId> {
+    let intern = |s: Option<&'dw str>| s.map(|s| strings.intern(s));
     match ty {
         RawType::Base(b) => RawType::Base(RawBase {
             name: intern(b.name),
@@ -791,7 +886,7 @@ fn intern_type<'dw>(strings: &mut StringTable<'dw>, ty: RawType<&'dw str>) -> Ra
 
 /// Convert a boxed slice of `RawGenericParameter<&'dw str>` into interned form.
 fn intern_generic_params<'dw>(
-    strings: &mut StringTable<'dw>,
+    strings: &CguInterner<'_, 'dw>,
     params: Box<[RawGenericParameter<&'dw str>]>,
 ) -> Box<[RawGenericParameter<StrId>]> {
     params
@@ -804,7 +899,7 @@ fn intern_generic_params<'dw>(
         .collect()
 }
 
-fn intern_member<'dw>(strings: &mut StringTable<'dw>, m: RawMember<&'dw str>) -> RawMember<StrId> {
+fn intern_member<'dw>(strings: &CguInterner<'_, 'dw>, m: RawMember<&'dw str>) -> RawMember<StrId> {
     RawMember {
         name: m.name.map(|s| strings.intern(s)),
         offset: m.offset,
@@ -816,7 +911,7 @@ fn intern_member<'dw>(strings: &mut StringTable<'dw>, m: RawMember<&'dw str>) ->
 }
 
 fn intern_variant_shape<'dw>(
-    strings: &mut StringTable<'dw>,
+    strings: &CguInterner<'_, 'dw>,
     shape: VariantShape<&'dw str>,
 ) -> VariantShape<StrId> {
     match shape {
@@ -848,7 +943,7 @@ fn intern_variant_shape<'dw>(
 }
 
 fn intern_variant<'dw>(
-    strings: &mut StringTable<'dw>,
+    strings: &CguInterner<'_, 'dw>,
     v: RawVariant<&'dw str>,
 ) -> RawVariant<StrId> {
     RawVariant {
@@ -858,10 +953,10 @@ fn intern_variant<'dw>(
 
 /// Convert a `RawStaticVariable<&'dw str>` into a `RawStaticVariable<StrId>` by interning all strings.
 fn intern_var<'dw>(
-    strings: &mut StringTable<'dw>,
+    strings: &CguInterner<'_, 'dw>,
     var: RawStaticVariable<&'dw str>,
 ) -> RawStaticVariable<StrId> {
-    let mut intern = |s: Option<&'dw str>| s.map(|s| strings.intern(s));
+    let intern = |s: Option<&'dw str>| s.map(|s| strings.intern(s));
     RawStaticVariable {
         name: intern(var.name),
         namespace: var.namespace,
@@ -878,13 +973,13 @@ fn intern_var<'dw>(
 }
 
 /// Intern an optional string.
-fn intern_opt<'dw>(strings: &mut StringTable<'dw>, s: Option<&'dw str>) -> Option<StrId> {
+fn intern_opt<'dw>(strings: &CguInterner<'_, 'dw>, s: Option<&'dw str>) -> Option<StrId> {
     s.map(|s| strings.intern(s))
 }
 
 /// Convert a `SourceLoc<&'dw str>` into a `SourceLoc<StrId>` by interning all strings.
 fn intern_source_loc<'dw>(
-    strings: &mut StringTable<'dw>,
+    strings: &CguInterner<'_, 'dw>,
     loc: SourceLoc<&'dw str>,
 ) -> SourceLoc<StrId> {
     SourceLoc {
@@ -897,7 +992,7 @@ fn intern_source_loc<'dw>(
 
 /// Convert a `RawSubParameter<&'dw str>` into a `RawSubParameter<StrId>` by interning all strings.
 fn intern_param<'dw>(
-    strings: &mut StringTable<'dw>,
+    strings: &CguInterner<'_, 'dw>,
     param: RawSubParameter<&'dw str>,
 ) -> RawSubParameter<StrId> {
     RawSubParameter {
@@ -912,7 +1007,7 @@ fn intern_param<'dw>(
 }
 
 /// Convert a `RawFunc<&'dw str>` into a `RawFunc<StrId>` by interning all strings.
-fn intern_func<'dw>(strings: &mut StringTable<'dw>, func: RawFunc<&'dw str>) -> RawFunc<StrId> {
+fn intern_func<'dw>(strings: &CguInterner<'_, 'dw>, func: RawFunc<&'dw str>) -> RawFunc<StrId> {
     RawFunc {
         name: intern_opt(strings, func.name),
         namespace: func.namespace,
@@ -933,8 +1028,10 @@ fn intern_func<'dw>(strings: &mut StringTable<'dw>, func: RawFunc<&'dw str>) -> 
     }
 }
 
-/// Rewrite namespace references on a type in place.
-fn remap_ns_in_place(ty: &mut RawType<&str>, ns_remap: &HashMap<NsId, NsId>) {
+/// Rewrite namespace references on a type in place. Generic over the string
+/// representation: it touches only the `NsId` fields, so it runs after
+/// interning on `RawType<StrId>` just as well as on the borrowed form.
+fn remap_ns_in_place<S>(ty: &mut RawType<S>, ns_remap: &HashMap<NsId, NsId>) {
     let remap = |ns: &mut Option<NsId>| {
         if let Some(id) = ns {
             *id = ns_remap[id];
