@@ -246,13 +246,6 @@ pub enum KnownFormat<T> {
         permits_offset: u64,
         permits_decode: ScalarDecode,
     },
-    /// Display a `tokio::sync::watch::state::AtomicState` decoded to its
-    /// version and closed flag. `state_offset` locates the atomic `usize`;
-    /// `state_decode` is its bit layout.
-    WatchState {
-        state_offset: u64,
-        state_decode: ScalarDecode,
-    },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages
     /// (indices `[index, tail)`) by walking its block chain from the head
     /// block, rendering each queued slot as `element`. `*_offset` fields
@@ -696,16 +689,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     permits_member,
                     permits_offset,
                     permits_decode: resolve_decode(*self, permits_decode),
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::WatchState {
-                state,
-                state_decode,
-            }) => {
-                let (_, state_offset) = resolve_selector(*self, state)?;
-                Some(DebugFormat::Known(KnownFormat::WatchState {
-                    state_offset,
-                    state_decode: resolve_decode(*self, state_decode),
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::MpscChan {
@@ -1870,9 +1853,9 @@ mod bundle_tests {
                     ),
                     (
                         WATCH_STATE,
-                        BundleDebugFormat::Known(BundleKnownFormat::WatchState {
-                            state: sel(&[0]),
-                            state_decode: BundleScalarDecode::Bits(vec![
+                        BundleDebugFormat::Node(BundleNode::Scalar {
+                            at: sel(&[0]),
+                            decode: BundleScalarDecode::Bits(vec![
                                 ebf(closedl, 0, 1, vec![(0, falsel), (1, truel)]),
                                 ubf(versionl, 1),
                             ]),

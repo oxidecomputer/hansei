@@ -337,14 +337,6 @@ pub enum KnownFormat {
         permits: Selector,
         permits_decode: ScalarDecode,
     },
-    /// Display a `tokio::sync::watch::state::AtomicState` as its decoded
-    /// version and closed flag rather than a raw atomic word. `state` is the
-    /// member path to the atomic `usize`; `state_decode` records that bit 0 is
-    /// the closed flag (CLOSED_BIT) and the remaining bits are the version.
-    WatchState {
-        state: Selector,
-        state_decode: ScalarDecode,
-    },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages.
     /// The receiver has read up to `index` and the sender has written up to
     /// `tail` (both member paths to a `usize` within the channel); the

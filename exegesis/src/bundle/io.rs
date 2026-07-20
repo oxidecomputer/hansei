@@ -691,21 +691,6 @@ impl Bundle {
                     )?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::WatchState {
-                        state,
-                        state_decode,
-                    },
-                ) => {
-                    check_selector(
-                        self,
-                        id,
-                        state,
-                        Shape::Usize,
-                        "WatchState state debug format",
-                    )?;
-                    check_scalar_decode(self, state_decode, USIZE_BITS, "WatchState state decode")?;
-                }
-                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::MpscChan {
                         tail,
                         index,
