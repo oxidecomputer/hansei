@@ -161,6 +161,46 @@ pub enum DebugFormat<T> {
     Transparent { target: T, offset: u64 },
     /// Apply semantics for a known family of types.
     Known(KnownFormat<T>),
+    /// Interpret a composable display program (Formatter IR). The resolved
+    /// counterpart of [`exegesis::bundle::DebugFormat::Node`], with every
+    /// selector reduced to a byte offset and every related type resolved to
+    /// a concrete `T`.
+    Node(DisplayNode<T>),
+}
+
+/// Resolved form of a bundle [`exegesis::bundle::DisplayNode`]: the same tree
+/// shape, but every [`exegesis::bundle::Selector`] is reduced to a byte offset
+/// (relative to the value the node is rendered against) and every related type
+/// id is resolved to a concrete `T`. reify's `eval_node` walks it with one
+/// generic interpreter.
+#[derive(Clone, Debug)]
+pub enum DisplayNode<T> {
+    /// Decode the `word_size`-byte word at `offset` via `decode`.
+    Scalar { offset: u64, word_size: u32, decode: ScalarDecode },
+    /// Render a record of the listed [`Field`]s in order.
+    Struct { fields: Vec<Field<T>> },
+    /// Walk an intrusive linked list: read the head word at `head_offset`
+    /// (0 = empty), then for each node read `node_size` bytes of `node_ty` from
+    /// the target, render it with `node`, and follow the successor word at
+    /// `next_offset`.
+    List {
+        head_offset: u64,
+        next_offset: u64,
+        node: Box<DisplayNode<T>>,
+        node_ty: T,
+        node_size: u32,
+    },
+}
+
+/// One resolved field of a [`DisplayNode::Struct`]. The bundle's `Named` and
+/// `Override` fields both resolve to `Computed` (they differ only in where the
+/// label comes from); `Member` resolves to `Structural`.
+#[derive(Clone, Debug)]
+pub enum Field<T> {
+    /// A real member rendered with reify's ordinary structural display.
+    Structural { name: String, ty: T, offset: u64 },
+    /// A label whose value is produced by a nested node.
+    Computed { label: String, node: DisplayNode<T> },
 }
 
 /// Closed set of semantic formatters understood by reify.
@@ -552,11 +592,80 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             }
         }
 
+        /// Recursively resolve a bundle [`exegesis::bundle::DisplayNode`] into
+        /// reify's offset-carrying form, rooted at `scope` (the type the node
+        /// is rendered against). Mirrors the recursion in io.rs `check_node`.
+        fn resolve_node<'a>(
+            scope: BundleType<'a>,
+            node: &exegesis::bundle::DisplayNode,
+        ) -> Option<DisplayNode<BundleType<'a>>> {
+            use exegesis::bundle::DisplayNode as BundleNode;
+            match node {
+                BundleNode::Scalar { at, decode } => {
+                    let (landed, offset) = resolve_selector(scope, at)?;
+                    Some(DisplayNode::Scalar {
+                        offset,
+                        word_size: landed.size() as u32,
+                        decode: resolve_decode(scope, decode),
+                    })
+                }
+                BundleNode::Struct { fields } => Some(DisplayNode::Struct {
+                    fields: fields
+                        .iter()
+                        .map(|field| resolve_field(scope, field))
+                        .collect::<Option<Vec<_>>>()?,
+                }),
+                BundleNode::List { head, next, node, node_ty } => {
+                    let (_, head_offset) = resolve_selector(scope, head)?;
+                    let node_ty = scope.related_type(*node_ty);
+                    let (_, next_offset) = resolve_selector(node_ty, next)?;
+                    Some(DisplayNode::List {
+                        head_offset,
+                        next_offset,
+                        node: Box::new(resolve_node(node_ty, node)?),
+                        node_ty,
+                        node_size: node_ty.size() as u32,
+                    })
+                }
+            }
+        }
+
+        /// Resolve one bundle [`exegesis::bundle::Field`]. `Named`/`Override`
+        /// collapse to `Computed` (they differ only in the label source).
+        fn resolve_field<'a>(
+            scope: BundleType<'a>,
+            field: &exegesis::bundle::Field,
+        ) -> Option<Field<BundleType<'a>>> {
+            use exegesis::bundle::Field as BundleField;
+            match field {
+                BundleField::Member(index) => {
+                    let member = scope.members().nth(*index as usize)?;
+                    Some(Field::Structural {
+                        name: member.name().to_string(),
+                        ty: member.ty(),
+                        offset: member.offset(),
+                    })
+                }
+                BundleField::Named { label, node } => Some(Field::Computed {
+                    label: scope.resolve_str(*label).to_string(),
+                    node: resolve_node(scope, node)?,
+                }),
+                BundleField::Override { index, node } => {
+                    let member = scope.members().nth(*index as usize)?;
+                    Some(Field::Computed {
+                        label: member.name().to_string(),
+                        node: resolve_node(scope, node)?,
+                    })
+                }
+            }
+        }
+
         match BundleType::debug_format(self)? {
             BundleFormat::Transparent { member } => {
                 let (target, offset) = resolve_selector(*self, member)?;
                 Some(DebugFormat::Transparent { target, offset })
             }
+            BundleFormat::Node(node) => Some(DebugFormat::Node(resolve_node(*self, node)?)),
             BundleFormat::Known(BundleKnownFormat::Atomic { value }) => {
                 let (value, offset) = resolve_selector(*self, value)?;
                 Some(DebugFormat::Known(KnownFormat::Atomic { value, offset }))
@@ -943,9 +1052,9 @@ mod bundle_tests {
     use exegesis::Encoding;
     use exegesis::bundle::{
         BitField as BundleBitField, Bundle, BundleTypeId, BundleView,
-        DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue, DiscrValues, DynFutureTable,
-        FORMAT_VERSION, FieldRender as BundleFieldRender, InfraTypes,
-        KnownFormat as BundleKnownFormat, MemberDef, Meta, ProvenanceTable,
+        DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue, DiscrValues, DisplayNode as BundleNode,
+        DynFutureTable, FORMAT_VERSION, Field as BundleField, FieldRender as BundleFieldRender,
+        InfraTypes, KnownFormat as BundleKnownFormat, MemberDef, Meta, ProvenanceTable,
         ScalarDecode as BundleScalarDecode, Selector, StaticsTable, StrRef, StringInterner,
         TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
     };
@@ -2641,5 +2750,259 @@ mod bundle_tests {
         assert!(shown.contains("\n    2: 20,"), "{shown}");
         assert!(shown.contains("\n    3: 30,"), "{shown}");
         assert!(!shown.contains("2863311530"), "unused 0xaa slots leaked: {shown}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Formatter IR (`DisplayNode`) scaffolding
+    // -----------------------------------------------------------------------
+
+    // Type ids for [`node_bundle`], dense from zero into its own type table.
+    const N_U32: BundleTypeId = BundleTypeId(0);
+    const N_U64: BundleTypeId = BundleTypeId(1);
+    const N_U8: BundleTypeId = BundleTypeId(2);
+    const N_POINT: BundleTypeId = BundleTypeId(3);
+    const N_WAITER: BundleTypeId = BundleTypeId(4);
+    const N_WAITER_PTR: BundleTypeId = BundleTypeId(5);
+    const N_THING: BundleTypeId = BundleTypeId(6);
+
+    /// A self-contained bundle whose sole formatter is a [`BundleNode`] tree,
+    /// exercising every scaffolded node kind and field kind at once:
+    ///
+    /// ```text
+    /// Thing {
+    ///   state: <Scalar Bits>          // Named field
+    ///   flag:  <Scalar Raw>           // Override field (reuses member 1's name)
+    ///   point: Point { x, y }         // Member field (structural recursion)
+    ///   queue: [Waiter { notification: <Scalar Bits> }, …]   // List of Struct
+    /// }
+    /// ```
+    ///
+    /// Built separately from [`test_bundle`] so its layout can't perturb the
+    /// other tests' shared fixtures.
+    fn node_bundle() -> Bundle {
+        use BundleField::{Member, Named, Override};
+
+        let mut strings = StringInterner::new();
+        let mut s = |name: &str| strings.intern(name);
+
+        let (u32n, u64n, u8n) = (s("u32"), s("u64"), s("u8"));
+        let (pointn, xn, yn) = (s("Point"), s("x"), s("y"));
+        let (thingn, staten, flagn, pointfn, headn) =
+            (s("Thing"), s("state"), s("flag"), s("point"), s("head"));
+        let (waitern, notifn, nextn) = (s("Waiter"), s("notification"), s("next"));
+        let (statel, idlel, waitingl, notifiedl, genl) =
+            (s("state"), s("idle"), s("waiting"), s("notified"), s("generation"));
+        let (kindl, nonel, onel, alll, orderl, fifol, lifol) = (
+            s("kind"),
+            s("none"),
+            s("one"),
+            s("all"),
+            s("order"),
+            s("fifo"),
+            s("lifo"),
+        );
+        let queuel = s("queue");
+
+        let m = |name, ty, offset| MemberDef { name, ty, offset };
+
+        let types = vec![
+            TypeDef::Base { name: u32n, size: 4, encoding: Encoding::Unsigned },
+            TypeDef::Base { name: u64n, size: 8, encoding: Encoding::Unsigned },
+            TypeDef::Base { name: u8n, size: 1, encoding: Encoding::Unsigned },
+            TypeDef::Struct { name: pointn, size: 8, members: vec![m(xn, N_U32, 0), m(yn, N_U32, 4)] },
+            TypeDef::Struct {
+                name: waitern,
+                size: 16,
+                members: vec![m(notifn, N_U64, 0), m(nextn, N_WAITER_PTR, 8)],
+            },
+            TypeDef::Pointer { name: None, target: N_WAITER },
+            TypeDef::Struct {
+                name: thingn,
+                size: 28,
+                members: vec![
+                    m(staten, N_U64, 0),
+                    m(flagn, N_U8, 8),
+                    m(pointfn, N_POINT, 12),
+                    m(headn, N_WAITER_PTR, 20),
+                ],
+            },
+        ];
+
+        let state_decode = BundleScalarDecode::Bits(vec![
+            ebf(statel, 0, 2, vec![(0, idlel), (1, waitingl), (2, notifiedl)]),
+            ubf(genl, 2),
+        ]);
+        let notif_decode = BundleScalarDecode::Bits(vec![
+            ebf(kindl, 0, 2, vec![(0, nonel), (1, onel), (2, alll)]),
+            ebf(orderl, 2, 1, vec![(0, fifol), (1, lifol)]),
+        ]);
+
+        let waiter_node = BundleNode::Struct {
+            fields: vec![Named {
+                label: notifn,
+                node: BundleNode::Scalar { at: sel(&[0]), decode: notif_decode },
+            }],
+        };
+        let thing_node = BundleNode::Struct {
+            fields: vec![
+                Named { label: staten, node: BundleNode::Scalar { at: sel(&[0]), decode: state_decode } },
+                Override { index: 1, node: BundleNode::Scalar { at: sel(&[1]), decode: BundleScalarDecode::Raw } },
+                Member(2),
+                Named {
+                    label: queuel,
+                    node: BundleNode::List {
+                        head: sel(&[3]),
+                        next: sel(&[1]),
+                        node: Box::new(waiter_node),
+                        node_ty: N_WAITER,
+                    },
+                },
+            ],
+        };
+
+        let b = Bundle {
+            meta: Meta { format_version: FORMAT_VERSION, ..Default::default() },
+            strings: strings.finish(),
+            types: TypeTable {
+                types,
+                debug_formats: std::collections::BTreeMap::from([(
+                    N_THING,
+                    BundleDebugFormat::Node(thing_node),
+                )]),
+                name_index: vec![],
+            },
+            tasks: TaskTable::default(),
+            dyn_futures: DynFutureTable::default(),
+            statics: StaticsTable::default(),
+            infra: InfraTypes {
+                header: N_U32,
+                vtable: N_U32,
+                trailer: N_U32,
+                context: N_U32,
+                scheduler_handle: N_U32,
+                mt_handle: N_U32,
+                location: N_U32,
+                raw_waker_vtable: N_U32,
+            },
+            provenance: ProvenanceTable::default(),
+        };
+        b.validate().expect("node bundle must validate");
+        b
+    }
+
+    /// Lay out a `Thing` value's 28 bytes. `head` is the queue head word.
+    fn thing_bytes(state: u64, flag: u8, x: u32, y: u32, head: u64) -> Vec<u8> {
+        let mut bytes = vec![0u8; 28];
+        bytes[0..8].copy_from_slice(&state.to_le_bytes());
+        bytes[8] = flag;
+        bytes[12..16].copy_from_slice(&x.to_le_bytes());
+        bytes[16..20].copy_from_slice(&y.to_le_bytes());
+        bytes[20..28].copy_from_slice(&head.to_le_bytes());
+        bytes
+    }
+
+    /// Lay out a `Waiter` node's 16 bytes: notification word + successor.
+    fn waiter_bytes(notification: u64, next: u64) -> Vec<u8> {
+        let mut bytes = vec![0u8; 16];
+        bytes[0..8].copy_from_slice(&notification.to_le_bytes());
+        bytes[8..16].copy_from_slice(&next.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn test_node_struct_renders_every_field_and_list_kind() {
+        // Two queued waiters at 0x100 → 0x200 → end.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(len, 16);
+                Ok(match addr {
+                    0x100 => waiter_bytes(1, 0x200), // kind=one, order=fifo
+                    0x200 => waiter_bytes(6, 0),     // kind=all(2), order=lifo(1): 0b110
+                    _ => panic!("unexpected waiter address 0x{addr:x}"),
+                })
+            }
+        }
+
+        let b = node_bundle();
+        let v = BundleView::new(&b);
+        // state word: waiting (1) with generation 3 → (3 << 2) | 1 = 13.
+        let bytes = thing_bytes(13, 1, 7, 9, 0x100);
+        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &bytes);
+
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 16)),
+            "Thing { state: state=waiting, generation=3, flag: 1, point: Point { x: 7, y: 9 }, \
+             queue: [Waiter { notification: kind=one, order=fifo }, \
+             Waiter { notification: kind=all, order=lifo }] }"
+        );
+
+        let pretty = format!("{:#}", value.display_from_target(&Reader, 16));
+        assert!(pretty.contains("\n     state: state=waiting, generation=3,"), "{pretty}");
+        assert!(pretty.contains("\n     point: Point {"), "{pretty}");
+        assert!(pretty.contains("\n     queue: ["), "{pretty}");
+        assert!(pretty.contains("notification: kind=one, order=fifo"), "{pretty}");
+    }
+
+    #[test]
+    fn test_node_list_empty_and_degradation() {
+        // An empty queue (head word 0) needs no target reads.
+        struct NoReads;
+        impl ReadFromProc for NoReads {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                panic!("no reads expected, got 0x{addr:x}")
+            }
+        }
+
+        let b = node_bundle();
+        let v = BundleView::new(&b);
+
+        let empty = thing_bytes(0, 0, 0, 0, 0);
+        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &empty);
+        assert_eq!(
+            format!("{}", value.display_from_target(&NoReads, 16)),
+            "Thing { state: state=idle, generation=0, flag: 0, point: Point { x: 0, y: 0 }, queue: [] }"
+        );
+
+        // A populated queue with no target reader degrades, not panics.
+        let populated = thing_bytes(0, 0, 0, 0, 0x100);
+        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &populated);
+        let shown = format!("{}", value.display());
+        assert!(shown.contains("queue: <target unavailable>"), "{shown}");
+    }
+
+    #[test]
+    fn test_node_list_guards_cycles() {
+        // A waiter whose successor points back at itself must not loop forever.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x100);
+                Ok(waiter_bytes(1, 0x100)) // self-cycle
+            }
+        }
+
+        let b = node_bundle();
+        let v = BundleView::new(&b);
+        let bytes = thing_bytes(0, 0, 0, 0, 0x100);
+        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 16)),
+            "Thing { state: state=idle, generation=0, flag: 0, point: Point { x: 0, y: 0 }, \
+             queue: [Waiter { notification: kind=one, order=fifo }] }"
+        );
+    }
+
+    #[test]
+    fn test_node_validation_rejects_out_of_range_member() {
+        // A `Member` field naming a member index the type does not have must be
+        // caught by `check_node` at validation time.
+        let mut b = node_bundle();
+        b.types.debug_formats.insert(
+            N_POINT,
+            BundleDebugFormat::Node(BundleNode::Struct { fields: vec![BundleField::Member(9)] }),
+        );
+        let err = b.validate().expect_err("out-of-range Member must be rejected");
+        assert!(format!("{err}").contains("out of range"), "{err}");
     }
 }

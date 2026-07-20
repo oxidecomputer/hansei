@@ -2,8 +2,8 @@ pub mod debug_type;
 
 pub use debug_type::TypeKind;
 use debug_type::{
-    BitField, DebugFormat, DebugMember, DebugType, FieldRender, KnownFormat, ScalarDecode,
-    TypeClass,
+    BitField, DebugFormat, DebugMember, DebugType, DisplayNode, Field, FieldRender, KnownFormat,
+    ScalarDecode, TypeClass,
 };
 
 use proc::Mappings;
@@ -863,6 +863,9 @@ fn write_display_value<'a, T: DebugType<'a>>(
             }
             DebugFormat::Known(kf @ KnownFormat::BTreeMap { .. }) => {
                 return write_btree_map(f, info, kf, ctx);
+            }
+            DebugFormat::Node(node) => {
+                return eval_node(f, &node, &ty, info.bytes, info.addr, ctx);
             }
             DebugFormat::Transparent { target, offset } => (target, offset, ctx.proc, ctx.visited),
             DebugFormat::Known(KnownFormat::Atomic { value, offset }) => {
@@ -2671,6 +2674,158 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
         write!(f, " ")?;
     }
     write!(f, "}}")
+}
+
+/// Interpret a resolved [`DisplayNode`] tree — the single generic evaluator
+/// that stands in for the per-type `write_*` renderers on node-based formats.
+///
+/// `ty` is the type the node is rendered against: its name titles a `Struct`
+/// record and its members back `Field::Structural`. `bytes`/`addr` are that
+/// value's buffer and target address; a node's offsets are relative to them.
+/// All pretty-vs-inline, cycle-guard, and degradation-string handling lives
+/// here, written once.
+fn eval_node<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    node: &DisplayNode<T>,
+    ty: &T,
+    bytes: &[u8],
+    addr: u64,
+    ctx: RenderCtx<'_, 'a>,
+) -> fmt::Result {
+    match node {
+        DisplayNode::Scalar { offset, word_size, decode } => {
+            match read_unsigned_at(bytes, *offset, u64::from(*word_size)) {
+                Some(word) => write!(f, "{}", apply(decode, word)),
+                None => write!(f, "<truncated>"),
+            }
+        }
+        DisplayNode::Struct { fields } => eval_struct(f, fields, ty, bytes, addr, ctx),
+        DisplayNode::List { head_offset, next_offset, node, node_ty, node_size } => {
+            eval_list(f, *head_offset, *next_offset, node, node_ty, *node_size, bytes, ctx)
+        }
+    }
+}
+
+/// Render a [`DisplayNode::Struct`] record: `<ty> { field, … }`, each field
+/// either a real member shown structurally or a label whose value is a nested
+/// node.
+fn eval_struct<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    fields: &[Field<T>],
+    ty: &T,
+    bytes: &[u8],
+    addr: u64,
+    ctx: RenderCtx<'_, 'a>,
+) -> fmt::Result {
+    let pretty = f.alternate();
+    write!(f, "{} {{", ty.name())?;
+    for (i, field) in fields.iter().enumerate() {
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, ctx.depth + 1)?;
+        } else if i > 0 {
+            write!(f, ",")?;
+        }
+        match field {
+            Field::Structural { name, ty: mem_ty, offset } => {
+                write!(f, " {name}: ")?;
+                match byte_range(bytes, *offset, mem_ty.size()) {
+                    Some(mem_bytes) => {
+                        let child = DisplayRecurse {
+                            info: TypeInfoRef {
+                                ty: *mem_ty,
+                                addr: addr + offset,
+                                bytes: mem_bytes,
+                                _marker: std::marker::PhantomData,
+                            },
+                            ctx: ctx.deeper(),
+                        };
+                        if pretty { write!(f, "{child:#}")? } else { write!(f, "{child}")? }
+                    }
+                    None => write!(f, "<truncated>")?,
+                }
+            }
+            Field::Computed { label, node } => {
+                write!(f, " {label}: ")?;
+                eval_node(f, node, ty, bytes, addr, ctx.deeper())?;
+            }
+        }
+        if pretty {
+            write!(f, ",")?;
+        }
+    }
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, ctx.depth)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "}}")
+}
+
+/// Walk the intrusive linked list at `head_offset` (0 = empty), rendering each
+/// `node_ty` element via `node`. Each node is read from the target and the walk
+/// follows the successor word at `next_offset`, guarded against cycles and
+/// runaway length — the shared successor of the old `write_*_waiters` pair.
+#[allow(clippy::too_many_arguments)]
+fn eval_list<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    head_offset: u64,
+    next_offset: u64,
+    node: &DisplayNode<T>,
+    node_ty: &T,
+    node_size: u32,
+    bytes: &[u8],
+    ctx: RenderCtx<'_, 'a>,
+) -> fmt::Result {
+    let pretty = f.alternate();
+    let Some(head) = read_u64_at(bytes, head_offset) else {
+        return write!(f, "<truncated>");
+    };
+    // An empty list is known from the head word alone; a populated one needs
+    // the target to read each node.
+    if head == 0 {
+        return write!(f, "[]");
+    }
+    let Some(proc) = ctx.proc else {
+        return write!(f, "<target unavailable>");
+    };
+    write!(f, "[")?;
+
+    let mut cur = head;
+    let mut any = false;
+    let mut seen = HashSet::new();
+    let mut guard = 4096u32;
+    while cur != 0 && guard > 0 {
+        guard -= 1;
+        if !seen.insert(cur) {
+            break;
+        }
+        let Ok(node_bytes) = proc.read_bytes(cur, u64::from(node_size)) else {
+            write!(f, "{}<unreadable>", if any { ", " } else { "" })?;
+            break;
+        };
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, ctx.depth + 1)?;
+        } else if any {
+            write!(f, ", ")?;
+        }
+        any = true;
+        eval_node(f, node, node_ty, &node_bytes, cur, ctx.deeper())?;
+        if pretty {
+            write!(f, ",")?;
+        }
+        match read_u64_at(&node_bytes, next_offset) {
+            Some(next) => cur = next,
+            None => break,
+        }
+    }
+    if pretty && any {
+        writeln!(f)?;
+        write_indent(f, ctx.depth)?;
+    }
+    write!(f, "]")
 }
 
 fn write_rust_enum<'a, T: DebugType<'a>>(

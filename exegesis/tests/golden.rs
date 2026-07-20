@@ -212,6 +212,8 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
     let f = |root, sel: &Selector| field(bundle, root, sel);
     let known = match fmt {
         DebugFormat::Transparent { .. } => return None,
+        // No detector emits a node tree yet; nothing to describe.
+        DebugFormat::Node(_) => return None,
         DebugFormat::Known(k) => k,
     };
     let body = match known {
