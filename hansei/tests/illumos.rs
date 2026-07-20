@@ -352,17 +352,17 @@ fn test_simple_await_acceptance() {
         assert_eq!(rows.len(), 1, "({}) {rows:#?}", source.describe());
         let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
         assert_eq!(task.state, "idle", "({})", source.describe());
-        assert_eq!(task.spawned, "test-programs/src/bin/simple-await.rs:32:21");
-        assert_eq!(task.defined, "simple-await.rs:14");
+        assert_eq!(task.spawned, "test-programs/src/bin/simple-await.rs:58:21");
+        assert_eq!(task.defined, "simple-await.rs:16");
 
         let expected = format!(
             "\
 Task {id}: simple_await::work::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/simple-await.rs:32:21
-Defined at: simple-await.rs:14
+Spawned at: test-programs/src/bin/simple-await.rs:58:21
+Defined at: simple-await.rs:16
 
   0  async fn      simple_await::work::{{async_fn_env#0}}
-     state         Suspend1 — simple-await.rs:18
+     state         Suspend1 — simple-await.rs:29
      awaits:
      └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
@@ -518,10 +518,10 @@ Defined at: futurelock.rs:13
      state         Suspend1 — futurelock.rs:23
      awaits:
      └─  1  async fn      futurelock::do_stuff::{{async_fn_env#0}}
-         state            Suspend1 — futurelock.rs:60
+         state            Suspend1 — futurelock.rs:62
          awaits:
          └─  2  async fn      futurelock::do_async_thing::{{async_fn_env#0}}
-             state            Suspend0 — futurelock.rs:68
+             state            Suspend0 — futurelock.rs:70
              awaits:
              └─  3  async fn      tokio::sync::mutex::{{impl#10}}::lock::{{async_fn_env#0}}<()>
                  state            Suspend0 — src/sync/mutex.rs:455
@@ -712,7 +712,7 @@ fn test_futurelock_graph() {
              (semaphore 0xADDR) in a future it stopped polling:\n  \
              `future1` (futurelock::do_async_thing::{{async_fn_env#0}})\n  \
              held across futurelock::do_stuff::{{async_fn_env#0}} state Suspend1 \
-             — futurelock.rs:60\n  \
+             — futurelock.rs:62\n  \
              blocked behind it: task {id}\n"
         ));
         assert_eq!(

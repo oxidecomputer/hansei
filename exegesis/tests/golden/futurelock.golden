@@ -3,16 +3,16 @@ program: futurelock
 [tasks]
 task: futurelock::start_background_task::{async_fn#0}::{async_block_env#0}
   kind: AsyncBlock
-  decl: futurelock.rs:37
+  decl: futurelock.rs:39
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<futurelock::start_background_task::{async_fn#0}::{async_block_env#0}>
   variants:
-    Unresumed @ futurelock.rs:37
-    Returned @ futurelock.rs:43
-    Panicked @ futurelock.rs:43
-    Suspend0 @ futurelock.rs:39
-    Suspend1 @ futurelock.rs:41
+    Unresumed @ futurelock.rs:39
+    Returned @ futurelock.rs:45
+    Panicked @ futurelock.rs:45
+    Suspend0 @ futurelock.rs:41
+    Suspend1 @ futurelock.rs:43
 task: futurelock::main::{async_block#0}::{async_block_env#0}
   kind: AsyncBlock
   decl: futurelock.rs:13
