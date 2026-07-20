@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Parser)]
-#[command(name = "exegesis", about = "async debug bundle extractor and inspector")]
+#[command(
+    name = "exegesis",
+    about = "async debug bundle extractor and inspector"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -114,14 +117,16 @@ fn dump_dwarf(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         gimli::RunTimeEndian::Big
     };
 
-    let load_section = |id: gimli::SectionId| -> Result<std::borrow::Cow<[u8]>, Box<dyn std::error::Error>> {
-        use object::{Object, ObjectSection};
-        Ok(match obj.section_by_name(id.name()) {
-            Some(section) => section.uncompressed_data()?,
-            None => std::borrow::Cow::Borrowed(&[]),
-        })
-    };
-    let borrow_section = |section| gimli::EndianSlice::new(std::borrow::Cow::as_ref(section), endian);
+    let load_section =
+        |id: gimli::SectionId| -> Result<std::borrow::Cow<[u8]>, Box<dyn std::error::Error>> {
+            use object::{Object, ObjectSection};
+            Ok(match obj.section_by_name(id.name()) {
+                Some(section) => section.uncompressed_data()?,
+                None => std::borrow::Cow::Borrowed(&[]),
+            })
+        };
+    let borrow_section =
+        |section| gimli::EndianSlice::new(std::borrow::Cow::as_ref(section), endian);
 
     let dwarf_sections = gimli::DwarfSections::load(&load_section)?;
     let dwarf = dwarf_sections.borrow(borrow_section);
@@ -148,8 +153,16 @@ fn stats(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("  extract args:    {}", m.extract_args);
     println!("  fingerprint:     {} symbols", m.symbol_fingerprint.len());
 
-    let mut kinds = [("base", 0usize), ("pointer", 0), ("array", 0), ("struct", 0),
-        ("union", 0), ("enum", 0), ("c-enum", 0), ("opaque", 0)];
+    let mut kinds = [
+        ("base", 0usize),
+        ("pointer", 0),
+        ("array", 0),
+        ("struct", 0),
+        ("union", 0),
+        ("enum", 0),
+        ("c-enum", 0),
+        ("opaque", 0),
+    ];
     for def in &bundle.types.types {
         let slot = match def {
             TypeDef::Base { .. } => 0,
@@ -170,19 +183,44 @@ fn stats(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!("  strings:         {}", bundle.strings.len());
-    println!("  task entries:    {} ({} symbol keys)",
-        bundle.tasks.entries.len(), bundle.tasks.by_symbol.len());
-    println!("    normalized     {} keys ({} ambiguous)",
+    println!(
+        "  task entries:    {} ({} symbol keys)",
+        bundle.tasks.entries.len(),
+        bundle.tasks.by_symbol.len()
+    );
+    println!(
+        "    normalized     {} keys ({} ambiguous)",
         bundle.tasks.by_normalized_symbol.len(),
-        bundle.tasks.by_normalized_symbol.values().filter(|ids| ids.len() > 1).count());
+        bundle
+            .tasks
+            .by_normalized_symbol
+            .values()
+            .filter(|ids| ids.len() > 1)
+            .count()
+    );
     println!("  dyn futures:     {}", bundle.dyn_futures.by_symbol.len());
-    println!("    normalized     {} keys ({} ambiguous)",
+    println!(
+        "    normalized     {} keys ({} ambiguous)",
         bundle.dyn_futures.by_normalized_symbol.len(),
-        bundle.dyn_futures.by_normalized_symbol.values().filter(|ids| ids.len() > 1).count());
+        bundle
+            .dyn_futures
+            .by_normalized_symbol
+            .values()
+            .filter(|ids| ids.len() > 1)
+            .count()
+    );
     println!("  statics:         {}", bundle.statics.entries.len());
-    let with_decl = bundle.provenance.entries.iter().filter(|p| p.decl.is_some()).count();
-    println!("  provenance:      {}/{} with source location",
-        with_decl, bundle.provenance.entries.len());
+    let with_decl = bundle
+        .provenance
+        .entries
+        .iter()
+        .filter(|p| p.decl.is_some())
+        .count();
+    println!(
+        "  provenance:      {}/{} with source location",
+        with_decl,
+        bundle.provenance.entries.len()
+    );
     Ok(())
 }
 
@@ -193,7 +231,11 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("== types ({}) ==", bundle.types.types.len());
     for (i, def) in bundle.types.types.iter().enumerate() {
         match def {
-            TypeDef::Base { name, size, encoding } => {
+            TypeDef::Base {
+                name,
+                size,
+                encoding,
+            } => {
                 println!("[{i}] base {} size={size} {encoding:?}", s(*name));
             }
             TypeDef::Pointer { name, target } => {
@@ -201,13 +243,21 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 println!("[{i}] pointer {name} -> [{}]", target.0);
             }
             TypeDef::Array { elem, count } => println!("[{i}] array [{}; {count}]", elem.0),
-            TypeDef::Struct { name, size, members } => {
+            TypeDef::Struct {
+                name,
+                size,
+                members,
+            } => {
                 println!("[{i}] struct {} size={size}", s(*name));
                 for m in members {
                     println!("      +{:<5} {} : [{}]", m.offset, s(m.name), m.ty.0);
                 }
             }
-            TypeDef::Union { name, size, members } => {
+            TypeDef::Union {
+                name,
+                size,
+                members,
+            } => {
                 println!("[{i}] union {} size={size}", s(*name));
                 for m in members {
                     println!("      +{:<5} {} : [{}]", m.offset, s(m.name), m.ty.0);
@@ -223,14 +273,24 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                         None => "default".to_string(),
                         Some(dv) => format!("{:?}", dv.0),
                     };
-                    let decl = v.decl
+                    let decl = v
+                        .decl
                         .map(|l| format!(" @ {}:{}", s(l.file), l.line))
                         .unwrap_or_default();
-                    println!("      {} ({vals}) +{} : [{}]{decl}",
-                        s(v.name), v.payload.offset, v.payload.ty.0);
+                    println!(
+                        "      {} ({vals}) +{} : [{}]{decl}",
+                        s(v.name),
+                        v.payload.offset,
+                        v.payload.ty.0
+                    );
                 }
             }
-            TypeDef::CEnum { name, size, repr, enumerators } => {
+            TypeDef::CEnum {
+                name,
+                size,
+                repr,
+                enumerators,
+            } => {
                 println!("[{i}] c-enum {} size={size} repr=[{}]", s(*name), repr.0);
                 for (ename, val) in enumerators {
                     println!("      {} = {val}", s(*ename));
@@ -251,10 +311,17 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("== tasks ({}) ==", bundle.tasks.entries.len());
     for (i, e) in bundle.tasks.entries.iter().enumerate() {
-        println!("[{i}] {} future=[{}] cell=[{}] stage=[{}] scheduler=[{}]",
-            s(e.display_name), e.future.0, e.cell.0, e.stage.0, e.scheduler.0);
+        println!(
+            "[{i}] {} future=[{}] cell=[{}] stage=[{}] scheduler=[{}]",
+            s(e.display_name),
+            e.future.0,
+            e.cell.0,
+            e.stage.0,
+            e.scheduler.0
+        );
         if let Some(p) = bundle.provenance.entries.get(i) {
-            let loc = p.decl
+            let loc = p
+                .decl
                 .map(|l| format!("{}:{}", s(l.file), l.line))
                 .unwrap_or_else(|| "<no decl>".into());
             println!("      {:?} {loc}", p.kind);

@@ -49,7 +49,10 @@ fn main() {
         };
         let ctx = ftsd[key];
         let mapped = ctx != 0 && p.addr_is_mapped(ctx);
-        println!("tid {:3} {:24} context={ctx:#x} mapped={mapped}", lwp.tid, name);
+        println!(
+            "tid {:3} {:24} context={ctx:#x} mapped={mapped}",
+            lwp.tid, name
+        );
         if mapped {
             // Prove the pointer is readable, not just mapped.
             let first = p.read_u64(ctx).expect("context not readable");
@@ -66,7 +69,10 @@ fn main() {
         let s = p
             .lookup_symbol_by_name(&poll_sym)
             .expect("poll instantiation not found by name (local syms invisible?)");
-        println!("poll sym by name: {:#x} (st_info {:#x})", s.st_value, s.st_info);
+        println!(
+            "poll sym by name: {:#x} (st_info {:#x})",
+            s.st_value, s.st_info
+        );
         let back = p
             .lookup_symbol_by_addr(s.st_value)
             .expect("poll instantiation not found by addr");

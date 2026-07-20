@@ -778,10 +778,16 @@ fn write_display_value<'a, T: DebugType<'a>>(
                     ctx,
                 );
             }
-            DebugFormat::Known(KnownFormat::RawMutex { state_offset, state_decode }) => {
+            DebugFormat::Known(KnownFormat::RawMutex {
+                state_offset,
+                state_decode,
+            }) => {
                 return write_raw_mutex(f, ty.name(), info.bytes, state_offset, &state_decode);
             }
-            DebugFormat::Known(KnownFormat::WatchState { state_offset, state_decode }) => {
+            DebugFormat::Known(KnownFormat::WatchState {
+                state_offset,
+                state_decode,
+            }) => {
                 return write_watch_state(f, ty.name(), info.bytes, state_offset, &state_decode);
             }
             DebugFormat::Known(kf @ KnownFormat::Notify { .. }) => {
@@ -893,7 +899,11 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 ..ctx
             },
         };
-        return if f.alternate() { write!(f, "{child:#}") } else { write!(f, "{child}") };
+        return if f.alternate() {
+            write!(f, "{child:#}")
+        } else {
+            write!(f, "{child}")
+        };
     }
 
     match ty.classify() {
@@ -1139,7 +1149,13 @@ fn apply(decode: &ScalarDecode, word: u64) -> String {
     };
     let mut parts = Vec::with_capacity(fields.len() + 1);
     let mut covered = 0u64;
-    for BitField { name, shift, width, render } in fields {
+    for BitField {
+        name,
+        shift,
+        width,
+        render,
+    } in fields
+    {
         let shift = *shift;
         // `None` width means "all bits at and above `shift`".
         let value_mask = match width {
@@ -1272,10 +1288,18 @@ fn write_notify<'a, T: DebugType<'a>>(
     write!(f, "{name} {{")?;
 
     field(f)?;
-    write!(f, "state: {},", decoded_usize(bytes, state_offset, &state_decode))?;
+    write!(
+        f,
+        "state: {},",
+        decoded_usize(bytes, state_offset, &state_decode)
+    )?;
 
     field(f)?;
-    write!(f, "mutex: {},", decoded_byte(bytes, mutex_offset, &mutex_decode))?;
+    write!(
+        f,
+        "mutex: {},",
+        decoded_byte(bytes, mutex_offset, &mutex_decode)
+    )?;
 
     field(f)?;
     write!(f, "queue: ")?;
@@ -1354,9 +1378,11 @@ fn write_notify_waiters<'a, T: DebugType<'a>>(
         }
         any = true;
         match read_u64_at(&node, notification_offset) {
-            Some(word) => {
-                write!(f, "{name} {{ notification: {} }}", apply(notification_decode, word))?
-            }
+            Some(word) => write!(
+                f,
+                "{name} {{ notification: {} }}",
+                apply(notification_decode, word)
+            )?,
             None => write!(f, "{name} {{ <truncated> }}")?,
         }
         if pretty {
@@ -1604,17 +1630,31 @@ fn write_mpsc_block<'a, T: DebugType<'a>>(
     format: KnownFormat<T>,
     ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
-    let KnownFormat::MpscBlock { ready_offset, ready_size, values_member, count } = format else {
+    let KnownFormat::MpscBlock {
+        ready_offset,
+        ready_size,
+        values_member,
+        count,
+    } = format
+    else {
         unreachable!()
     };
 
     let ready = read_unsigned_at(info.bytes, ready_offset, ready_size as u64).unwrap_or(0);
     // Only the low `count` bits are per-slot readiness; the rest are the
     // released/closed flags.
-    let mask = if count >= 64 { u64::MAX } else { (1u64 << count) - 1 };
+    let mask = if count >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << count) - 1
+    };
     let written = (ready & mask).count_ones();
     let slots = format!("[{written} slots]");
-    let values_name = info.ty.members().nth(values_member as usize).map(|m| m.name());
+    let values_name = info
+        .ty
+        .members()
+        .nth(values_member as usize)
+        .map(|m| m.name());
 
     let pretty = f.alternate();
     let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
@@ -1873,7 +1913,9 @@ fn write_chan_queue<'a, T: DebugType<'a>>(
             write!(f, "{}<unreadable block>", if any { ", " } else { "" })?;
             break;
         };
-        let Some(start) = read_u64_at(&block, start_index_offset) else { break };
+        let Some(start) = read_u64_at(&block, start_index_offset) else {
+            break;
+        };
         if cur >= start + count as u64 {
             // Advance to the successor block.
             match read_u64_at(&block, next_offset) {
@@ -1886,7 +1928,9 @@ fn write_chan_queue<'a, T: DebugType<'a>>(
             break;
         }
         let slot = values_offset as usize + (cur - start) as usize * stride as usize;
-        let Some(bytes) = block.get(slot..slot + element_size) else { break };
+        let Some(bytes) = block.get(slot..slot + element_size) else {
+            break;
+        };
         if pretty {
             writeln!(f)?;
             write_indent(f, ctx.depth + 1)?;
@@ -2129,7 +2173,11 @@ fn walk_btree_node<'a, T: DebugType<'a>>(
     }
 
     let result = (|| {
-        let node_type = if height == 0 { layout.leaf } else { layout.internal };
+        let node_type = if height == 0 {
+            layout.leaf
+        } else {
+            layout.internal
+        };
         let bytes = proc
             .read_bytes(address, node_type.size())
             .map_err(|_| BTreeWalkError::Invalid("unreadable node"))?;
@@ -2147,25 +2195,36 @@ fn walk_btree_node<'a, T: DebugType<'a>>(
                 walk_btree_node(proc, layout, child, height - 1, remaining, visited, emit)?;
             }
             if *remaining == 0 {
-                return Err(BTreeWalkError::Invalid("tree contains more entries than length"));
+                return Err(BTreeWalkError::Invalid(
+                    "tree contains more entries than length",
+                ));
             }
             let key_start = layout
                 .keys_offset
-                .checked_add(index.checked_mul(layout.key.size()).ok_or(
-                    BTreeWalkError::Invalid("key offset overflow"),
-                )?)
+                .checked_add(
+                    index
+                        .checked_mul(layout.key.size())
+                        .ok_or(BTreeWalkError::Invalid("key offset overflow"))?,
+                )
                 .ok_or(BTreeWalkError::Invalid("key offset overflow"))?;
             let value_start = layout
                 .values_offset
-                .checked_add(index.checked_mul(layout.value.size()).ok_or(
-                    BTreeWalkError::Invalid("value offset overflow"),
-                )?)
+                .checked_add(
+                    index
+                        .checked_mul(layout.value.size())
+                        .ok_or(BTreeWalkError::Invalid("value offset overflow"))?,
+                )
                 .ok_or(BTreeWalkError::Invalid("value offset overflow"))?;
             let key_bytes = byte_range(&bytes, key_start, layout.key.size())
                 .ok_or(BTreeWalkError::Invalid("truncated key slot"))?;
             let value_bytes = byte_range(&bytes, value_start, layout.value.size())
                 .ok_or(BTreeWalkError::Invalid("truncated value slot"))?;
-            emit(address + key_start, key_bytes, address + value_start, value_bytes)?;
+            emit(
+                address + key_start,
+                key_bytes,
+                address + value_start,
+                value_bytes,
+            )?;
             *remaining -= 1;
         }
         if height > 0 {
@@ -2250,14 +2309,20 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
             let Some(display) = resolve_function_symbol(Some(proc), address) else {
                 continue;
             };
-            let concrete = exegesis::symbols::concrete_type_from_vtable_symbol(&display)
-                .map(str::to_owned);
-            functions.push(VtableFunction { slot, display, concrete });
+            let concrete =
+                exegesis::symbols::concrete_type_from_vtable_symbol(&display).map(str::to_owned);
+            functions.push(VtableFunction {
+                slot,
+                display,
+                concrete,
+            });
         }
     }
 
     let concrete = infer_concrete_type(info.ty, words.as_deref(), size_slot, &functions);
-    let concrete_ty = concrete.as_deref().and_then(|name| info.ty.type_by_name(name));
+    let concrete_ty = concrete
+        .as_deref()
+        .and_then(|name| info.ty.type_by_name(name));
     let pretty = f.alternate();
     if let Some(name) = name.filter(|name| !name.is_empty()) {
         write!(f, "{name}")?;
@@ -2274,9 +2339,11 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
     // A zero-sized concrete type (e.g. slog's `()` list terminator) has no
     // pointee worth following — the `concrete type:` line below already names
     // it. Showing `-> ()` would only add noise.
-    if let (Some(concrete_ty), Some(proc), Some(visited)) =
-        (concrete_ty.filter(|ty| ty.size() > 0), ctx.proc, ctx.visited)
-    {
+    if let (Some(concrete_ty), Some(proc), Some(visited)) = (
+        concrete_ty.filter(|ty| ty.size() > 0),
+        ctx.proc,
+        ctx.visited,
+    ) {
         let key = (pointee_address, concrete_ty.name());
         if !visited.borrow_mut().insert(key) {
             write!(f, " -> <cycle>")?;
@@ -2305,7 +2372,11 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
     }
     write!(f, ",")?;
     write_dyn_field_prefix(f, pretty, ctx.depth)?;
-    write!(f, "concrete type: {},", concrete.as_deref().unwrap_or("<unknown>"))?;
+    write!(
+        f,
+        "concrete type: {},",
+        concrete.as_deref().unwrap_or("<unknown>")
+    )?;
     write_dyn_field_prefix(f, pretty, ctx.depth)?;
     write!(f, "vtable: ")?;
 
@@ -2315,7 +2386,9 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
             write_vtable_field_prefix(f, pretty, ctx.depth)?;
             let drop_address = words.get(drop_in_place_slot as usize).copied().unwrap_or(0);
             write!(f, "drop_in_place: 0x{drop_address:x}")?;
-            if let Some(function) = functions.iter().find(|function| function.slot == drop_in_place_slot)
+            if let Some(function) = functions
+                .iter()
+                .find(|function| function.slot == drop_in_place_slot)
             {
                 write!(f, " -> {}", function.display)?;
             }
@@ -2380,11 +2453,7 @@ fn resolve_function_symbol(proc: Option<&dyn ReadFromProc>, address: u64) -> Opt
     )
 }
 
-fn write_dyn_field_prefix(
-    f: &mut fmt::Formatter<'_>,
-    pretty: bool,
-    depth: usize,
-) -> fmt::Result {
+fn write_dyn_field_prefix(f: &mut fmt::Formatter<'_>, pretty: bool, depth: usize) -> fmt::Result {
     if pretty {
         writeln!(f)?;
         write_indent(f, depth + 1)
@@ -2443,14 +2512,17 @@ fn infer_concrete_type<'a, T: DebugType<'a>>(
     size_slot: u32,
     functions: &[VtableFunction],
 ) -> Option<String> {
-    let mut concrete = functions.iter().filter_map(|function| function.concrete.as_deref());
+    let mut concrete = functions
+        .iter()
+        .filter_map(|function| function.concrete.as_deref());
     let candidate = concrete.next()?.to_owned();
     if concrete.any(|other| other != candidate) {
         return None;
     }
-    if let (Some(expected), Some(actual)) =
-        (ty.size_by_name(&candidate), words?.get(size_slot as usize).copied())
-        && expected != actual
+    if let (Some(expected), Some(actual)) = (
+        ty.size_by_name(&candidate),
+        words?.get(size_slot as usize).copied(),
+    ) && expected != actual
     {
         return None;
     }
@@ -2541,16 +2613,32 @@ fn eval_node<'a, T: DebugType<'a>>(
     pretty: bool,
 ) -> fmt::Result {
     match node {
-        DisplayNode::Scalar { offset, word_size, decode } => {
-            match read_unsigned_at(bytes, *offset, u64::from(*word_size)) {
-                Some(word) => write!(f, "{}", apply(decode, word)),
-                None => write!(f, "<truncated>"),
-            }
-        }
+        DisplayNode::Scalar {
+            offset,
+            word_size,
+            decode,
+        } => match read_unsigned_at(bytes, *offset, u64::from(*word_size)) {
+            Some(word) => write!(f, "{}", apply(decode, word)),
+            None => write!(f, "<truncated>"),
+        },
         DisplayNode::Struct { fields } => eval_struct(f, fields, ty, bytes, addr, ctx, pretty),
-        DisplayNode::List { head_offset, next_offset, node, node_ty, node_size } => {
-            eval_list(f, *head_offset, *next_offset, node, node_ty, *node_size, bytes, ctx, pretty)
-        }
+        DisplayNode::List {
+            head_offset,
+            next_offset,
+            node,
+            node_ty,
+            node_size,
+        } => eval_list(
+            f,
+            *head_offset,
+            *next_offset,
+            node,
+            node_ty,
+            *node_size,
+            bytes,
+            ctx,
+            pretty,
+        ),
     }
 }
 
@@ -2579,7 +2667,11 @@ fn eval_struct<'a, T: DebugType<'a>>(
             write!(f, " ")?;
         }
         match field {
-            Field::Structural { name, ty: mem_ty, offset } => {
+            Field::Structural {
+                name,
+                ty: mem_ty,
+                offset,
+            } => {
                 write!(f, "{name}: ")?;
                 match byte_range(bytes, *offset, mem_ty.size()) {
                     Some(mem_bytes) => {
@@ -2592,7 +2684,11 @@ fn eval_struct<'a, T: DebugType<'a>>(
                             },
                             ctx: ctx.deeper(),
                         };
-                        if pretty { write!(f, "{child:#}")? } else { write!(f, "{child}")? }
+                        if pretty {
+                            write!(f, "{child:#}")?
+                        } else {
+                            write!(f, "{child}")?
+                        }
                     }
                     None => write!(f, "<truncated>")?,
                 }

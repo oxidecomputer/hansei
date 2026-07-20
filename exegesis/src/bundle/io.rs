@@ -82,15 +82,22 @@ fn selector_target(
     what: &str,
 ) -> Result<BundleTypeId> {
     let mut current = root;
-    let mut def = bundle.types.get(root).expect("root type validated before formats");
+    let mut def = bundle
+        .types
+        .get(root)
+        .expect("root type validated before formats");
     let mut seen = vec![root];
     for (step, item) in sel.steps().iter().enumerate() {
         match item {
             Step::Member(member_index) => {
                 let members = match def {
                     TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
-                    _ => return Err(Error::Corrupt(format!(
-                        "{what} for type {}: step {step} traverses a non-aggregate type", root.0))),
+                    _ => {
+                        return Err(Error::Corrupt(format!(
+                            "{what} for type {}: step {step} traverses a non-aggregate type",
+                            root.0
+                        )));
+                    }
                 };
                 let member = members.get(*member_index as usize).ok_or_else(|| {
                     Error::Corrupt(format!(
@@ -99,19 +106,29 @@ fn selector_target(
                 })?;
                 if seen.contains(&member.ty) {
                     return Err(Error::Corrupt(format!(
-                        "{what} for type {} contains a type cycle at step {step}", root.0)));
+                        "{what} for type {} contains a type cycle at step {step}",
+                        root.0
+                    )));
                 }
                 seen.push(member.ty);
                 current = member.ty;
-                def = bundle.types.get(member.ty).expect("member type validated before formats");
+                def = bundle
+                    .types
+                    .get(member.ty)
+                    .expect("member type validated before formats");
             }
             Step::Deref => {
                 let TypeDef::Pointer { target, .. } = def else {
                     return Err(Error::Corrupt(format!(
-                        "{what} for type {}: step {step} dereferences a non-pointer type", root.0)));
+                        "{what} for type {}: step {step} dereferences a non-pointer type",
+                        root.0
+                    )));
                 };
                 current = *target;
-                def = bundle.types.get(*target).expect("pointer target validated before formats");
+                def = bundle
+                    .types
+                    .get(*target)
+                    .expect("pointer target validated before formats");
                 seen = vec![current];
             }
         }
@@ -130,7 +147,10 @@ fn check_selector(
     what: &str,
 ) -> Result<BundleTypeId> {
     if sel.is_empty() {
-        return Err(Error::Corrupt(format!("{what} for type {} has an empty selector", root.0)));
+        return Err(Error::Corrupt(format!(
+            "{what} for type {} has an empty selector",
+            root.0
+        )));
     }
     let target = selector_target(bundle, root, sel, what)?;
     let landed = bundle.types.get(target);
@@ -199,7 +219,10 @@ fn check_scalar_decode(
     let mut covered: u64 = 0;
     for (i, field) in fields.iter().enumerate() {
         if bundle.strings.get(field.name).is_none() {
-            return corrupt(format!("field {i} name string ref {} out of range", field.name.0));
+            return corrupt(format!(
+                "field {i} name string ref {} out of range",
+                field.name.0
+            ));
         }
         if field.shift >= word_bits {
             return corrupt(format!(
@@ -218,7 +241,11 @@ fn check_scalar_decode(
                 field.shift
             ));
         }
-        let value_mask = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+        let value_mask = if width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << width) - 1
+        };
         let field_mask = value_mask << field.shift;
         if covered & field_mask != 0 {
             return corrupt(format!("field {i} overlaps an earlier field"));
@@ -253,8 +280,9 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
     match node {
         DisplayNode::Scalar { at, decode } => {
             let landed = check_selector(bundle, scope, at, Shape::Any, what)?;
-            let size = type_size(bundle, landed, &mut Vec::new())
-                .ok_or_else(|| Error::Corrupt(format!("{what}: scalar lands on an unsized type")))?;
+            let size = type_size(bundle, landed, &mut Vec::new()).ok_or_else(|| {
+                Error::Corrupt(format!("{what}: scalar lands on an unsized type"))
+            })?;
             if size == 0 || size > 8 {
                 return corrupt(format!("scalar word size {size} is not in 1..=8 bytes"));
             }
@@ -300,7 +328,12 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 }
             }
         }
-        DisplayNode::List { head, next, node, node_ty } => {
+        DisplayNode::List {
+            head,
+            next,
+            node,
+            node_ty,
+        } => {
             check_selector(bundle, scope, head, Shape::PointerSized, what)?;
             if bundle.types.get(*node_ty).is_none() {
                 return corrupt(format!("list node type id {} out of range", node_ty.0));
@@ -346,9 +379,7 @@ fn has_dyn_tail(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>)
         return false;
     };
     let name = match def {
-        TypeDef::Struct { name, .. } | TypeDef::Opaque { name, .. } => {
-            bundle.strings.get(*name)
-        }
+        TypeDef::Struct { name, .. } | TypeDef::Opaque { name, .. } => bundle.strings.get(*name),
         _ => None,
     };
     if name.is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn ")) {
@@ -398,7 +429,10 @@ impl Bundle {
         }
         let found = u32::from_le_bytes(header[MAGIC.len()..].try_into().unwrap());
         if found != FORMAT_VERSION {
-            return Err(Error::VersionMismatch { found, expected: FORMAT_VERSION });
+            return Err(Error::VersionMismatch {
+                found,
+                expected: FORMAT_VERSION,
+            });
         }
         let payload = zstd::stream::decode_all(r)?;
         let bundle: Bundle = postcard::from_bytes(&payload).map_err(Error::Decode)?;
@@ -439,11 +473,10 @@ impl Bundle {
                 corrupt(format!("{what}: type id {} out of range", id.0))
             }
         };
-        let check_member =
-            |what: &str, m: &crate::bundle::schema::MemberDef| -> Result<()> {
-                check_str(what, m.name)?;
-                check_ty(what, m.ty)
-            };
+        let check_member = |what: &str, m: &crate::bundle::schema::MemberDef| -> Result<()> {
+            check_str(what, m.name)?;
+            check_ty(what, m.ty)
+        };
 
         for (i, def) in self.types.types.iter().enumerate() {
             let what = &format!("type {i}");
@@ -458,8 +491,7 @@ impl Bundle {
                     check_ty(what, *target)?;
                 }
                 TypeDef::Array { elem, .. } => check_ty(what, *elem)?,
-                TypeDef::Struct { name, members, .. }
-                | TypeDef::Union { name, members, .. } => {
+                TypeDef::Struct { name, members, .. } | TypeDef::Union { name, members, .. } => {
                     check_str(what, *name)?;
                     for m in members {
                         check_member(what, m)?;
@@ -478,7 +510,12 @@ impl Bundle {
                         }
                     }
                 }
-                TypeDef::CEnum { name, repr, enumerators, .. } => {
+                TypeDef::CEnum {
+                    name,
+                    repr,
+                    enumerators,
+                    ..
+                } => {
                     check_str(what, *name)?;
                     check_ty(what, *repr)?;
                     for (ename, _) in enumerators {
@@ -569,7 +606,11 @@ impl Bundle {
                             id.0
                         ));
                     };
-                    let Some(TypeDef::Base { size: word_size, encoding, .. }) = self.types.get(*elem)
+                    let Some(TypeDef::Base {
+                        size: word_size,
+                        encoding,
+                        ..
+                    }) = self.types.get(*elem)
                     else {
                         return corrupt(format!(
                             "dyn-pointer debug format for type {}: vtable element is not an integer",
@@ -642,9 +683,18 @@ impl Bundle {
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::RawMutex { state, state_decode },
+                    crate::bundle::schema::KnownFormat::RawMutex {
+                        state,
+                        state_decode,
+                    },
                 ) => {
-                    check_selector(self, id, state, Shape::StateByte, "RawMutex state debug format")?;
+                    check_selector(
+                        self,
+                        id,
+                        state,
+                        Shape::StateByte,
+                        "RawMutex state debug format",
+                    )?;
                     check_scalar_decode(self, state_decode, BYTE_BITS, "RawMutex state decode")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
@@ -663,11 +713,23 @@ impl Bundle {
                     check_selector(self, id, state, Shape::Usize, "Notify state debug format")?;
                     check_scalar_decode(self, state_decode, USIZE_BITS, "Notify state decode")?;
                     // The waiter mutex's single state byte.
-                    check_selector(self, id, mutex, Shape::StateByte, "Notify mutex debug format")?;
+                    check_selector(
+                        self,
+                        id,
+                        mutex,
+                        Shape::StateByte,
+                        "Notify mutex debug format",
+                    )?;
                     check_scalar_decode(self, mutex_decode, BYTE_BITS, "Notify mutex decode")?;
                     // `head` reaches the queue's head word, an
                     // `Option<NonNull<Waiter>>` niche-optimized to a pointer.
-                    check_selector(self, id, head, Shape::PointerSized, "Notify head debug format")?;
+                    check_selector(
+                        self,
+                        id,
+                        head,
+                        Shape::PointerSized,
+                        "Notify head debug format",
+                    )?;
                     // The `waiter_*` selectors are rooted at the `Waiter` node type.
                     check_ty("Notify waiter", *waiter)?;
                     check_selector(
@@ -692,15 +754,38 @@ impl Bundle {
                     )?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::Semaphore { permits, permits_decode },
+                    crate::bundle::schema::KnownFormat::Semaphore {
+                        permits,
+                        permits_decode,
+                    },
                 ) => {
-                    check_selector(self, id, permits, Shape::Usize, "Semaphore permits debug format")?;
-                    check_scalar_decode(self, permits_decode, USIZE_BITS, "Semaphore permits decode")?;
+                    check_selector(
+                        self,
+                        id,
+                        permits,
+                        Shape::Usize,
+                        "Semaphore permits debug format",
+                    )?;
+                    check_scalar_decode(
+                        self,
+                        permits_decode,
+                        USIZE_BITS,
+                        "Semaphore permits decode",
+                    )?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::WatchState { state, state_decode },
+                    crate::bundle::schema::KnownFormat::WatchState {
+                        state,
+                        state_decode,
+                    },
                 ) => {
-                    check_selector(self, id, state, Shape::Usize, "WatchState state debug format")?;
+                    check_selector(
+                        self,
+                        id,
+                        state,
+                        Shape::Usize,
+                        "WatchState state debug format",
+                    )?;
                     check_scalar_decode(self, state_decode, USIZE_BITS, "WatchState state decode")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
@@ -718,8 +803,13 @@ impl Bundle {
                     check_selector(self, id, index, Shape::Usize, "MpscChan index debug format")?;
                     // `head` reaches a pointer to the block type; the remaining
                     // selectors are rooted there.
-                    let head_ptr =
-                        check_selector(self, id, head, Shape::Pointer, "MpscChan head debug format")?;
+                    let head_ptr = check_selector(
+                        self,
+                        id,
+                        head,
+                        Shape::Pointer,
+                        "MpscChan head debug format",
+                    )?;
                     let Some(TypeDef::Pointer { target: block, .. }) = self.types.get(head_ptr)
                     else {
                         unreachable!("check_selector verified a pointer");
@@ -732,8 +822,20 @@ impl Bundle {
                         Shape::Usize,
                         "MpscChan start_index debug format",
                     )?;
-                    check_selector(self, block, next, Shape::Pointer, "MpscChan next debug format")?;
-                    check_selector(self, block, values, Shape::Array, "MpscChan values debug format")?;
+                    check_selector(
+                        self,
+                        block,
+                        next,
+                        Shape::Pointer,
+                        "MpscChan next debug format",
+                    )?;
+                    check_selector(
+                        self,
+                        block,
+                        values,
+                        Shape::Array,
+                        "MpscChan values debug format",
+                    )?;
                     check_ty("MpscChan element", *element)?;
                     if type_size(self, *element, &mut Vec::new()).is_none() {
                         return corrupt(format!(
@@ -743,7 +845,10 @@ impl Bundle {
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::MpscBlock { ready_slots, values },
+                    crate::bundle::schema::KnownFormat::MpscBlock {
+                        ready_slots,
+                        values,
+                    },
                 ) => {
                     check_selector(
                         self,
@@ -752,7 +857,13 @@ impl Bundle {
                         Shape::Usize,
                         "MpscBlock ready_slots debug format",
                     )?;
-                    check_selector(self, id, values, Shape::Array, "MpscBlock values debug format")?;
+                    check_selector(
+                        self,
+                        id,
+                        values,
+                        Shape::Array,
+                        "MpscBlock values debug format",
+                    )?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::MpscRx {
@@ -772,15 +883,28 @@ impl Bundle {
                         Shape::Pointer,
                         "MpscRx chan_pointer debug format",
                     )?;
-                    let Some(TypeDef::Pointer { target: arcinner, .. }) = self.types.get(ptr)
+                    let Some(TypeDef::Pointer {
+                        target: arcinner, ..
+                    }) = self.types.get(ptr)
                     else {
                         unreachable!("check_selector verified a pointer");
                     };
                     // `chan` is rooted at the allocation and reaches the `Chan`;
                     // `bound` and `permits` are rooted at that `Chan`.
-                    let chan_ty =
-                        check_selector(self, *arcinner, chan, Shape::Any, "MpscRx chan debug format")?;
-                    check_selector(self, chan_ty, bound, Shape::Usize, "MpscRx bound debug format")?;
+                    let chan_ty = check_selector(
+                        self,
+                        *arcinner,
+                        chan,
+                        Shape::Any,
+                        "MpscRx chan debug format",
+                    )?;
+                    check_selector(
+                        self,
+                        chan_ty,
+                        bound,
+                        Shape::Usize,
+                        "MpscRx bound debug format",
+                    )?;
                     check_selector(
                         self,
                         chan_ty,
@@ -832,15 +956,33 @@ impl Bundle {
                             id.0
                         ));
                     }
-                    check_selector(self, id, pointer, Shape::BytePointer, "Vec pointer debug format")?;
+                    check_selector(
+                        self,
+                        id,
+                        pointer,
+                        Shape::BytePointer,
+                        "Vec pointer debug format",
+                    )?;
                     for (path, field) in [(length, "length"), (capacity, "capacity")] {
-                        check_selector(self, id, path, Shape::Usize, &format!("Vec {field} debug format"))?;
+                        check_selector(
+                            self,
+                            id,
+                            path,
+                            Shape::Usize,
+                            &format!("Vec {field} debug format"),
+                        )?;
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::Str { pointer, length },
                 ) => {
-                    check_selector(self, id, pointer, Shape::BytePointer, "str pointer debug format")?;
+                    check_selector(
+                        self,
+                        id,
+                        pointer,
+                        Shape::BytePointer,
+                        "str pointer debug format",
+                    )?;
                     check_selector(self, id, length, Shape::Usize, "str length debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
@@ -850,9 +992,21 @@ impl Bundle {
                         capacity,
                     },
                 ) => {
-                    check_selector(self, id, pointer, Shape::BytePointer, "String pointer debug format")?;
+                    check_selector(
+                        self,
+                        id,
+                        pointer,
+                        Shape::BytePointer,
+                        "String pointer debug format",
+                    )?;
                     check_selector(self, id, length, Shape::Usize, "String length debug format")?;
-                    check_selector(self, id, capacity, Shape::Usize, "String capacity debug format")?;
+                    check_selector(
+                        self,
+                        id,
+                        capacity,
+                        Shape::Usize,
+                        "String capacity debug format",
+                    )?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::BTreeMap {
@@ -912,14 +1066,24 @@ impl Bundle {
                         .variants
                         .iter()
                         .find(|variant| self.strings.get(variant.name) == Some("Some"))
-                        .ok_or_else(|| Error::Corrupt(format!(
-                            "BTreeMap debug format for type {} root has no Some variant",
-                            id.0
-                        )))?;
-                    let node_ref =
-                        selector_target(self, some.payload.ty, root_node, "BTreeMap root-node path")?;
+                        .ok_or_else(|| {
+                            Error::Corrupt(format!(
+                                "BTreeMap debug format for type {} root has no Some variant",
+                                id.0
+                            ))
+                        })?;
+                    let node_ref = selector_target(
+                        self,
+                        some.payload.ty,
+                        root_node,
+                        "BTreeMap root-node path",
+                    )?;
                     let node_ref_def = self.types.get(node_ref).expect("path type validated");
-                    let TypeDef::Struct { members: node_members, .. } = node_ref_def else {
+                    let TypeDef::Struct {
+                        members: node_members,
+                        ..
+                    } = node_ref_def
+                    else {
                         return corrupt(format!(
                             "BTreeMap debug format for type {} has a non-struct node ref",
                             id.0
@@ -941,8 +1105,16 @@ impl Bundle {
                         ));
                     }
 
-                    for (field, referenced) in [("key", *key), ("value", *value), ("leaf", *leaf), ("internal", *internal)] {
-                        check_ty(&format!("BTreeMap debug format {} {field}", id.0), referenced)?;
+                    for (field, referenced) in [
+                        ("key", *key),
+                        ("value", *value),
+                        ("leaf", *leaf),
+                        ("internal", *internal),
+                    ] {
+                        check_ty(
+                            &format!("BTreeMap debug format {} {field}", id.0),
+                            referenced,
+                        )?;
                     }
                     let is_unsigned = |member_ty: BundleTypeId, max_size: u64| {
                         matches!(
@@ -958,8 +1130,10 @@ impl Bundle {
                         ));
                     }
 
-                    let TypeDef::Struct { members: leaf_members, .. } =
-                        self.types.get(*leaf).expect("leaf id checked")
+                    let TypeDef::Struct {
+                        members: leaf_members,
+                        ..
+                    } = self.types.get(*leaf).expect("leaf id checked")
                     else {
                         return corrupt(format!(
                             "BTreeMap debug format for type {} leaf is not a struct",
@@ -981,16 +1155,20 @@ impl Bundle {
                             id.0
                         ));
                     }
-                    let Some(TypeDef::Array { elem: key_slot, count: key_slots }) =
-                        self.types.get(keys_member.ty)
+                    let Some(TypeDef::Array {
+                        elem: key_slot,
+                        count: key_slots,
+                    }) = self.types.get(keys_member.ty)
                     else {
                         return corrupt(format!(
                             "BTreeMap debug format for type {} keys are not an array",
                             id.0
                         ));
                     };
-                    let Some(TypeDef::Array { elem: value_slot, count: value_slots }) =
-                        self.types.get(values_member.ty)
+                    let Some(TypeDef::Array {
+                        elem: value_slot,
+                        count: value_slots,
+                    }) = self.types.get(values_member.ty)
                     else {
                         return corrupt(format!(
                             "BTreeMap debug format for type {} values are not an array",
@@ -1016,8 +1194,10 @@ impl Bundle {
                         ));
                     }
 
-                    let TypeDef::Struct { members: internal_members, .. } =
-                        self.types.get(*internal).expect("internal id checked")
+                    let TypeDef::Struct {
+                        members: internal_members,
+                        ..
+                    } = self.types.get(*internal).expect("internal id checked")
                     else {
                         return corrupt(format!(
                             "BTreeMap debug format for type {} internal node is not a struct",
@@ -1037,8 +1217,10 @@ impl Bundle {
                             id.0
                         ))
                     })?;
-                    let Some(TypeDef::Array { elem: edge_elem, count: edge_slots }) =
-                        self.types.get(edges_member.ty)
+                    let Some(TypeDef::Array {
+                        elem: edge_elem,
+                        count: edge_slots,
+                    }) = self.types.get(edges_member.ty)
                     else {
                         return corrupt(format!(
                             "BTreeMap debug format for type {} edges are not an array",
@@ -1092,7 +1274,10 @@ impl Bundle {
             }
             for id in ids {
                 if (id.0 as usize) >= self.tasks.entries.len() {
-                    return corrupt(format!("normalized task table: entry id {} out of range", id.0));
+                    return corrupt(format!(
+                        "normalized task table: entry id {} out of range",
+                        id.0
+                    ));
                 }
             }
         }

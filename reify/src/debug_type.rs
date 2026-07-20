@@ -176,7 +176,11 @@ pub enum DebugFormat<T> {
 #[derive(Clone, Debug)]
 pub enum DisplayNode<T> {
     /// Decode the `word_size`-byte word at `offset` via `decode`.
-    Scalar { offset: u64, word_size: u32, decode: ScalarDecode },
+    Scalar {
+        offset: u64,
+        word_size: u32,
+        decode: ScalarDecode,
+    },
     /// Render a record of the listed [`Field`]s in order.
     Struct { fields: Vec<Field<T>> },
     /// Walk an intrusive linked list: read the head word at `head_offset`
@@ -237,7 +241,10 @@ pub enum KnownFormat<T> {
     /// Display a parking_lot `RawMutex`'s decoded lock state. `state_offset`
     /// locates the single state byte within the mutex; `state_decode` is its
     /// bit layout.
-    RawMutex { state_offset: u64, state_decode: ScalarDecode },
+    RawMutex {
+        state_offset: u64,
+        state_decode: ScalarDecode,
+    },
     /// Display a `tokio::sync::notify::Notify` compactly: its notification
     /// state, waiter-mutex lock state, and the queue of parked waiters. The
     /// `*_offset` fields locate each within the value; `state_offset` is the
@@ -261,11 +268,18 @@ pub enum KnownFormat<T> {
     /// Display a `tokio::sync::batch_semaphore::Semaphore`, decoding its
     /// `permits` field to the available count and closed flag. `permits_member`
     /// is that field's index and `permits_offset` locates the atomic `usize`.
-    Semaphore { permits_member: u32, permits_offset: u64, permits_decode: ScalarDecode },
+    Semaphore {
+        permits_member: u32,
+        permits_offset: u64,
+        permits_decode: ScalarDecode,
+    },
     /// Display a `tokio::sync::watch::state::AtomicState` decoded to its
     /// version and closed flag. `state_offset` locates the atomic `usize`;
     /// `state_decode` is its bit layout.
-    WatchState { state_offset: u64, state_decode: ScalarDecode },
+    WatchState {
+        state_offset: u64,
+        state_decode: ScalarDecode,
+    },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages
     /// (indices `[index, tail)`) by walking its block chain from the head
     /// block, rendering each queued slot as `element`. `*_offset` fields
@@ -289,7 +303,12 @@ pub enum KnownFormat<T> {
     /// readiness bitmap and `count` is the block capacity (to mask off the
     /// released/closed flag bits); `values_member` is the field shown as the
     /// count. Contents are not dereferenced — see the schema note.
-    MpscBlock { ready_offset: u64, ready_size: u32, values_member: u32, count: u32 },
+    MpscBlock {
+        ready_offset: u64,
+        ready_size: u32,
+        values_member: u32,
+        count: u32,
+    },
     /// Display a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
     /// channel. `chan_pointer_offset` locates the receiver's `Arc` raw pointer;
     /// `chan_offset` is added to the pointee address to skip the Arc's
@@ -594,7 +613,12 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         .map(|field| resolve_field(scope, field))
                         .collect::<Option<Vec<_>>>()?,
                 }),
-                BundleNode::List { head, next, node, node_ty } => {
+                BundleNode::List {
+                    head,
+                    next,
+                    node,
+                    node_ty,
+                } => {
                     let (_, head_offset) = resolve_selector(scope, head)?;
                     let node_ty = scope.related_type(*node_ty);
                     let (_, next_offset) = resolve_selector(node_ty, next)?;
@@ -689,7 +713,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     drop_offset,
                 }))
             }
-            BundleFormat::Known(BundleKnownFormat::RawMutex { state, state_decode }) => {
+            BundleFormat::Known(BundleKnownFormat::RawMutex {
+                state,
+                state_decode,
+            }) => {
                 let (_, state_offset) = resolve_selector(*self, state)?;
                 Some(DebugFormat::Known(KnownFormat::RawMutex {
                     state_offset,
@@ -711,7 +738,8 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 let (_, mutex_offset) = resolve_selector(*self, mutex)?;
                 let (_, head_offset) = resolve_selector(*self, head)?;
                 let waiter_ty = self.related_type(*waiter);
-                let (_, waiter_notification_offset) = resolve_selector(waiter_ty, waiter_notification)?;
+                let (_, waiter_notification_offset) =
+                    resolve_selector(waiter_ty, waiter_notification)?;
                 let (_, waiter_next_offset) = resolve_selector(waiter_ty, waiter_next)?;
                 Some(DebugFormat::Known(KnownFormat::Notify {
                     state_offset,
@@ -726,7 +754,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     waiter_next_offset,
                 }))
             }
-            BundleFormat::Known(BundleKnownFormat::Semaphore { permits, permits_decode }) => {
+            BundleFormat::Known(BundleKnownFormat::Semaphore {
+                permits,
+                permits_decode,
+            }) => {
                 let (_, permits_offset) = resolve_selector(*self, permits)?;
                 let permits_member = permits.first_member()?;
                 Some(DebugFormat::Known(KnownFormat::Semaphore {
@@ -735,7 +766,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     permits_decode: resolve_decode(*self, permits_decode),
                 }))
             }
-            BundleFormat::Known(BundleKnownFormat::WatchState { state, state_decode }) => {
+            BundleFormat::Known(BundleKnownFormat::WatchState {
+                state,
+                state_decode,
+            }) => {
                 let (_, state_offset) = resolve_selector(*self, state)?;
                 Some(DebugFormat::Known(KnownFormat::WatchState {
                     state_offset,
@@ -772,7 +806,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     count: count as u32,
                 }))
             }
-            BundleFormat::Known(BundleKnownFormat::MpscBlock { ready_slots, values }) => {
+            BundleFormat::Known(BundleKnownFormat::MpscBlock {
+                ready_slots,
+                values,
+            }) => {
                 let (ready_ty, ready_offset) = resolve_selector(*self, ready_slots)?;
                 let (array_ty, _) = resolve_selector(*self, values)?;
                 let (_, count) = array_ty.array_info()?;
@@ -821,7 +858,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 {
                     return None;
                 }
-                Some(DebugFormat::Known(KnownFormat::IpAddress { octets, offset }))
+                Some(DebugFormat::Known(KnownFormat::IpAddress {
+                    octets,
+                    offset,
+                }))
             }
             BundleFormat::Known(BundleKnownFormat::Vec {
                 pointer,
@@ -997,11 +1037,11 @@ mod bundle_tests {
     use exegesis::Encoding;
     use exegesis::bundle::{
         BitField as BundleBitField, Bundle, BundleTypeId, BundleView,
-        DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue, DiscrValues, DisplayNode as BundleNode,
-        DynFutureTable, FORMAT_VERSION, Field as BundleField, FieldRender as BundleFieldRender,
-        InfraTypes, KnownFormat as BundleKnownFormat, MemberDef, Meta, ProvenanceTable,
-        ScalarDecode as BundleScalarDecode, Selector, StaticsTable, StrRef, StringInterner,
-        TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
+        DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue, DiscrValues,
+        DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION, Field as BundleField,
+        FieldRender as BundleFieldRender, InfraTypes, KnownFormat as BundleKnownFormat, MemberDef,
+        Meta, ProvenanceTable, ScalarDecode as BundleScalarDecode, Selector, StaticsTable, StrRef,
+        StringInterner, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
     };
     use std::num::NonZeroU8;
 
@@ -1023,7 +1063,12 @@ mod bundle_tests {
 
     /// Build an unsigned-integer tail bundle [`BundleBitField`] (`width: None`).
     fn ubf(name: StrRef, shift: u8) -> BundleBitField {
-        BundleBitField { name, shift, width: None, render: BundleFieldRender::Uint }
+        BundleBitField {
+            name,
+            shift,
+            width: None,
+            render: BundleFieldRender::Uint,
+        }
     }
 
     const U32: BundleTypeId = BundleTypeId(0);
@@ -1149,12 +1194,15 @@ mod bundle_tests {
         );
         let (vecn, ptrn, vec_lenn, capacityn) =
             (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
-        let (strn, stringn, data_ptrn, length2n) =
-            (s("&str"), s("alloc::string::String"), s("data_ptr"), s("length"));
+        let (strn, stringn, data_ptrn, length2n) = (
+            s("&str"),
+            s("alloc::string::String"),
+            s("data_ptr"),
+            s("length"),
+        );
         let (raw_mutexn, staten) = (s("parking_lot::raw_mutex::RawMutex"), s("state"));
         let (notifyn, waitersn) = (s("tokio::sync::notify::Notify"), s("waiters"));
-        let (semaphoren, permitsn) =
-            (s("tokio::sync::batch_semaphore::Semaphore"), s("permits"));
+        let (semaphoren, permitsn) = (s("tokio::sync::batch_semaphore::Semaphore"), s("permits"));
         let (blockn, block_headern, ready_slotsn, headerfieldn) = (
             s("tokio::sync::mpsc::block::Block<u32>"),
             s("BlockHeader"),
@@ -1175,16 +1223,26 @@ mod bundle_tests {
             s("tokio::sync::mpsc::bounded::Semaphore"),
             s("alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<u32>>"),
         );
-        let (strongn, weakn, boundn, chanfieldn, semfieldn) =
-            (s("strong"), s("weak"), s("bound"), s("chan"), s("semaphore"));
+        let (strongn, weakn, boundn, chanfieldn, semfieldn) = (
+            s("strong"),
+            s("weak"),
+            s("bound"),
+            s("chan"),
+            s("semaphore"),
+        );
 
         // Labels for the sync-primitive `ScalarDecode` tables. Interned here so
         // the decode-building closures below can assemble tables from `Copy`
         // `StrRef`s without re-borrowing the interner.
         let (lockedl, unlockedl, parkedl, unparkedl) =
             (s("locked"), s("unlocked"), s("parked"), s("unparked"));
-        let (statel, idlel, waitingl, notifiedl, generationl) =
-            (s("state"), s("idle"), s("waiting"), s("notified"), s("generation"));
+        let (statel, idlel, waitingl, notifiedl, generationl) = (
+            s("state"),
+            s("idle"),
+            s("waiting"),
+            s("notified"),
+            s("generation"),
+        );
         let (closedl, openl, permitsl, versionl) =
             (s("closed"), s("open"), s("permits"), s("version"));
         let (kindl, nonel, onel, alll, orderl, fifol, lifol) = (
@@ -1209,15 +1267,23 @@ mod bundle_tests {
             ])
         };
         let (bsem_mutexn, bsem_waitlistn, bsem_listn, waitern) = (
-            s("lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::sync::batch_semaphore::Waitlist>"),
+            s(
+                "lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::sync::batch_semaphore::Waitlist>",
+            ),
             s("tokio::sync::batch_semaphore::Waitlist"),
-            s("tokio::util::linked_list::LinkedList<tokio::sync::batch_semaphore::Waiter, tokio::sync::batch_semaphore::Waiter>"),
+            s(
+                "tokio::util::linked_list::LinkedList<tokio::sync::batch_semaphore::Waiter, tokio::sync::batch_semaphore::Waiter>",
+            ),
             s("tokio::sync::batch_semaphore::Waiter"),
         );
         let (rawn, closedn, queuen) = (s("raw"), s("closed"), s("queue"));
         let (notify_mutexn, notify_listn, notify_waitern, notificationn) = (
-            s("lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::util::linked_list::LinkedList<tokio::sync::notify::Waiter, tokio::sync::notify::Waiter>>"),
-            s("tokio::util::linked_list::LinkedList<tokio::sync::notify::Waiter, tokio::sync::notify::Waiter>"),
+            s(
+                "lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::util::linked_list::LinkedList<tokio::sync::notify::Waiter, tokio::sync::notify::Waiter>>",
+            ),
+            s(
+                "tokio::util::linked_list::LinkedList<tokio::sync::notify::Waiter, tokio::sync::notify::Waiter>",
+            ),
             s("tokio::sync::notify::Waiter"),
             s("notification"),
         );
@@ -1226,11 +1292,31 @@ mod bundle_tests {
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
 
         let types = vec![
-            TypeDef::Base { name: u32n, size: 4, encoding: Encoding::Unsigned },
-            TypeDef::Base { name: u64n, size: 8, encoding: Encoding::Unsigned },
-            TypeDef::Base { name: booln, size: 1, encoding: Encoding::Boolean },
-            TypeDef::Base { name: u8n, size: 1, encoding: Encoding::Unsigned },
-            TypeDef::Struct { name: unitn, size: 0, members: vec![] },
+            TypeDef::Base {
+                name: u32n,
+                size: 4,
+                encoding: Encoding::Unsigned,
+            },
+            TypeDef::Base {
+                name: u64n,
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
+            TypeDef::Base {
+                name: booln,
+                size: 1,
+                encoding: Encoding::Boolean,
+            },
+            TypeDef::Base {
+                name: u8n,
+                size: 1,
+                encoding: Encoding::Unsigned,
+            },
+            TypeDef::Struct {
+                name: unitn,
+                size: 0,
+                members: vec![],
+            },
             TypeDef::Struct {
                 name: pointn,
                 size: 8,
@@ -1242,9 +1328,24 @@ mod bundle_tests {
                 shape: VariantShape {
                     discr: Some(DiscrDef { offset: 0, ty: U8 }),
                     variants: vec![
-                        VariantDef { name: an, discr_values: tag(0), payload: m(an, POINT, 8), decl: None },
-                        VariantDef { name: bn, discr_values: tag(1), payload: m(bn, U64, 8), decl: None },
-                        VariantDef { name: cn, discr_values: tag(2), payload: m(cn, UNIT, 8), decl: None },
+                        VariantDef {
+                            name: an,
+                            discr_values: tag(0),
+                            payload: m(an, POINT, 8),
+                            decl: None,
+                        },
+                        VariantDef {
+                            name: bn,
+                            discr_values: tag(1),
+                            payload: m(bn, U64, 8),
+                            decl: None,
+                        },
+                        VariantDef {
+                            name: cn,
+                            discr_values: tag(2),
+                            payload: m(cn, UNIT, 8),
+                            decl: None,
+                        },
                     ],
                 },
             },
@@ -1254,22 +1355,51 @@ mod bundle_tests {
                 shape: VariantShape {
                     discr: Some(DiscrDef { offset: 0, ty: U64 }),
                     variants: vec![
-                        VariantDef { name: nonen, discr_values: tag(0), payload: m(nonen, UNIT, 0), decl: None },
-                        VariantDef { name: somen, discr_values: None, payload: m(somen, U64, 0), decl: None },
+                        VariantDef {
+                            name: nonen,
+                            discr_values: tag(0),
+                            payload: m(nonen, UNIT, 0),
+                            decl: None,
+                        },
+                        VariantDef {
+                            name: somen,
+                            discr_values: None,
+                            payload: m(somen, U64, 0),
+                            decl: None,
+                        },
                     ],
                 },
             },
-            TypeDef::Struct { name: wrapn, size: 8, members: vec![m(innern, POINT, 0)] },
-            TypeDef::Pointer { name: None, target: POINT },
-            TypeDef::Array { elem: U32, count: 3 },
+            TypeDef::Struct {
+                name: wrapn,
+                size: 8,
+                members: vec![m(innern, POINT, 0)],
+            },
+            TypeDef::Pointer {
+                name: None,
+                target: POINT,
+            },
+            TypeDef::Array {
+                elem: U32,
+                count: 3,
+            },
             TypeDef::Struct {
                 name: noden,
                 size: 16,
                 members: vec![m(valuen, U32, 0), m(nextn, NODE_PTR, 8)],
             },
-            TypeDef::Pointer { name: None, target: NODE },
-            TypeDef::Array { elem: U64, count: 3 },
-            TypeDef::Pointer { name: None, target: VTABLE_ARRAY },
+            TypeDef::Pointer {
+                name: None,
+                target: NODE,
+            },
+            TypeDef::Array {
+                elem: U64,
+                count: 3,
+            },
+            TypeDef::Pointer {
+                name: None,
+                target: VTABLE_ARRAY,
+            },
             TypeDef::Struct {
                 name: fatn,
                 size: 16,
@@ -1300,8 +1430,15 @@ mod bundle_tests {
                 size: 8,
                 members: vec![m(tuple0n, WRAP, 0)],
             },
-            TypeDef::Struct { name: dyn_traitn, size: 0, members: vec![] },
-            TypeDef::Pointer { name: None, target: DYN_TRAIT },
+            TypeDef::Struct {
+                name: dyn_traitn,
+                size: 0,
+                members: vec![],
+            },
+            TypeDef::Pointer {
+                name: None,
+                target: DYN_TRAIT,
+            },
             TypeDef::Struct {
                 name: raw_waker_vtablen,
                 size: 32,
@@ -1312,8 +1449,14 @@ mod bundle_tests {
                     m(dropn, PTR, 24),
                 ],
             },
-            TypeDef::Opaque { name: unresolvedn, size: None },
-            TypeDef::Pointer { name: None, target: FUNCTION_TARGET },
+            TypeDef::Opaque {
+                name: unresolvedn,
+                size: None,
+            },
+            TypeDef::Pointer {
+                name: None,
+                target: FUNCTION_TARGET,
+            },
             TypeDef::Struct {
                 name: btree_mapn,
                 size: 24,
@@ -1345,7 +1488,10 @@ mod bundle_tests {
                 size: 16,
                 members: vec![m(noden2, BTREE_LEAF_PTR, 0), m(heightn, U64, 8)],
             },
-            TypeDef::Pointer { name: None, target: BTREE_LEAF },
+            TypeDef::Pointer {
+                name: None,
+                target: BTREE_LEAF,
+            },
             TypeDef::Struct {
                 name: btree_leafn,
                 size: 20,
@@ -1360,26 +1506,38 @@ mod bundle_tests {
                 size: 4,
                 members: vec![m(uninitn, UNIT, 0), m(valuen, U32, 0)],
             },
-            TypeDef::Array { elem: MAYBE_U32, count: 2 },
+            TypeDef::Array {
+                elem: MAYBE_U32,
+                count: 2,
+            },
             TypeDef::Struct {
                 name: btree_internaln,
                 size: 48,
                 members: vec![m(datan, BTREE_LEAF, 0), m(edgesn, BTREE_EDGES, 24)],
             },
-            TypeDef::Array { elem: BTREE_LEAF_PTR, count: 3 },
+            TypeDef::Array {
+                elem: BTREE_LEAF_PTR,
+                count: 3,
+            },
             TypeDef::Array { elem: U8, count: 4 },
             TypeDef::Struct {
                 name: ipv4n,
                 size: 4,
                 members: vec![m(octetsn, IPV4_OCTETS, 0)],
             },
-            TypeDef::Array { elem: U8, count: 16 },
+            TypeDef::Array {
+                elem: U8,
+                count: 16,
+            },
             TypeDef::Struct {
                 name: ipv6n,
                 size: 16,
                 members: vec![m(octetsn, IPV6_OCTETS, 0)],
             },
-            TypeDef::Pointer { name: None, target: U8 },
+            TypeDef::Pointer {
+                name: None,
+                target: U8,
+            },
             TypeDef::Struct {
                 name: vecn,
                 size: 24,
@@ -1424,9 +1582,15 @@ mod bundle_tests {
             TypeDef::Struct {
                 name: blockn,
                 size: 24,
-                members: vec![m(valuesfieldn, BLOCK_VALUES, 0), m(headerfieldn, BLOCK_HEADER, 16)],
+                members: vec![
+                    m(valuesfieldn, BLOCK_VALUES, 0),
+                    m(headerfieldn, BLOCK_HEADER, 16),
+                ],
             },
-            TypeDef::Array { elem: U32, count: 4 },
+            TypeDef::Array {
+                elem: U32,
+                count: 4,
+            },
             TypeDef::Struct {
                 name: block_headern,
                 size: 8,
@@ -1441,13 +1605,20 @@ mod bundle_tests {
             TypeDef::Struct {
                 name: chann,
                 size: 24,
-                members: vec![m(tailn, U64, 0), m(indexn, U64, 8), m(headn, CHAN_BLOCK_PTR, 16)],
+                members: vec![
+                    m(tailn, U64, 0),
+                    m(indexn, U64, 8),
+                    m(headn, CHAN_BLOCK_PTR, 16),
+                ],
             },
             // ChanBlock { values: [u32; 4] @0, header: ChanBlockHeader @16 }
             TypeDef::Struct {
                 name: chan_blockn,
                 size: 32,
-                members: vec![m(valuesfieldn, BLOCK_VALUES, 0), m(headerfieldn, CHAN_BLOCK_HEADER, 16)],
+                members: vec![
+                    m(valuesfieldn, BLOCK_VALUES, 0),
+                    m(headerfieldn, CHAN_BLOCK_HEADER, 16),
+                ],
             },
             // ChanBlockHeader { start_index: usize @0, next: *ChanBlock @8 }
             TypeDef::Struct {
@@ -1455,7 +1626,10 @@ mod bundle_tests {
                 size: 16,
                 members: vec![m(start_indexn, U64, 0), m(nextn, CHAN_BLOCK_PTR, 8)],
             },
-            TypeDef::Pointer { name: None, target: CHAN_BLOCK },
+            TypeDef::Pointer {
+                name: None,
+                target: CHAN_BLOCK,
+            },
             // RxChan: tail @0, index @8, head @16, semaphore @24 (like Chan
             // but with the bounded semaphore appended).
             TypeDef::Struct {
@@ -1480,7 +1654,10 @@ mod bundle_tests {
                 size: 56,
                 members: vec![m(strongn, U64, 0), m(weakn, U64, 8), m(datan, RX_CHAN, 16)],
             },
-            TypeDef::Pointer { name: None, target: ARC_INNER },
+            TypeDef::Pointer {
+                name: None,
+                target: ARC_INNER,
+            },
             // Receiver { chan: *ArcInner @0 } (Rx/Arc/NonNull collapsed to the
             // single raw pointer the format actually navigates to).
             TypeDef::Struct {
@@ -1526,7 +1703,10 @@ mod bundle_tests {
                 size: 32,
                 members: vec![m(staten, U64, 0), m(nextn, WAITER_PTR, 8)],
             },
-            TypeDef::Pointer { name: None, target: WAITER },
+            TypeDef::Pointer {
+                name: None,
+                target: WAITER,
+            },
             // Notify's waiter mutex: Mutex { raw: RawMutex @0, data: LinkedList
             // @8 } (loom/UnsafeCell wrappers collapsed; unlike the batch
             // semaphore there is no Waitlist — the mutex guards the list directly).
@@ -1539,7 +1719,10 @@ mod bundle_tests {
             TypeDef::Struct {
                 name: notify_listn,
                 size: 16,
-                members: vec![m(headn, NOTIFY_WAITER_PTR, 0), m(tailn, NOTIFY_WAITER_PTR, 8)],
+                members: vec![
+                    m(headn, NOTIFY_WAITER_PTR, 0),
+                    m(tailn, NOTIFY_WAITER_PTR, 8),
+                ],
             },
             // Waiter { notification: usize @0, next: *Waiter @8 }.
             TypeDef::Struct {
@@ -1547,7 +1730,10 @@ mod bundle_tests {
                 size: 32,
                 members: vec![m(notificationn, U64, 0), m(nextn, NOTIFY_WAITER_PTR, 8)],
             },
-            TypeDef::Pointer { name: None, target: NOTIFY_WAITER },
+            TypeDef::Pointer {
+                name: None,
+                target: NOTIFY_WAITER,
+            },
         ];
 
         // Field labels for the node-based `BoundedSemaphore` formatter (deduped
@@ -1565,215 +1751,259 @@ mod bundle_tests {
             || BundleScalarDecode::Bits(vec![ebf(emptyl, 0, 0, vec![(0, falsel), (1, truel)])]);
 
         let b = Bundle {
-            meta: Meta { format_version: FORMAT_VERSION, ..Default::default() },
+            meta: Meta {
+                format_version: FORMAT_VERSION,
+                ..Default::default()
+            },
             strings: strings.finish(),
             types: TypeTable {
                 types,
-                debug_formats: std::collections::BTreeMap::from([(
-                    WRAP,
-                    BundleDebugFormat::Transparent { member: sel(&[0]) },
-                ), (
-                    ATOMIC,
-                    BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: sel(&[0, 0]) }),
-                ), (
-                    ATOMIC_PTR,
-                    BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: sel(&[0]) }),
-                ), (
-                    LOOM_ATOMIC,
-                    BundleDebugFormat::Transparent { member: sel(&[0]) },
-                ), (
-                    LOOM_CELL,
-                    BundleDebugFormat::Transparent { member: sel(&[0]) },
-                ), (
-                    FAT_PTR,
-                    BundleDebugFormat::Known(BundleKnownFormat::DynPointer {
-                        pointer: 0,
-                        vtable: 1,
-                        drop_in_place: 0,
-                        size: 1,
-                        align: 2,
-                        tail_offset: 0,
-                    }),
-                ), (
-                    RAW_WAKER_VTABLE,
-                    BundleDebugFormat::Known(BundleKnownFormat::RawWakerVTable {
-                        clone: 0,
-                        wake: 1,
-                        wake_by_ref: 2,
-                        drop: 3,
-                    }),
-                ), (
-                    FUNCTION_PTR,
-                    BundleDebugFormat::Known(BundleKnownFormat::FunctionPointer),
-                ), (
-                    BTREE_MAP,
-                    BundleDebugFormat::Known(BundleKnownFormat::BTreeMap {
-                        root: 0,
-                        length: 1,
-                        root_node: sel(&[]),
-                        height: 1,
-                        node: sel(&[0]),
-                        key: U32,
-                        value: U32,
-                        leaf: BTREE_LEAF,
-                        leaf_len: 0,
-                        leaf_keys: 1,
-                        leaf_values: 2,
-                        internal: BTREE_INTERNAL,
-                        internal_data: 0,
-                        internal_edges: 1,
-                        edge: sel(&[]),
-                    }),
-                ), (
-                    IPV4,
-                    BundleDebugFormat::Known(BundleKnownFormat::IpAddress { octets: sel(&[0]) }),
-                ), (
-                    IPV6,
-                    BundleDebugFormat::Known(BundleKnownFormat::IpAddress { octets: sel(&[0]) }),
-                ), (
-                    VEC,
-                    BundleDebugFormat::Known(BundleKnownFormat::Vec {
-                        pointer: sel(&[0]),
-                        length: sel(&[1]),
-                        capacity: sel(&[2]),
-                        element: U32,
-                    }),
-                ), (
-                    STR,
-                    BundleDebugFormat::Known(BundleKnownFormat::Str {
-                        pointer: sel(&[0]),
-                        length: sel(&[1]),
-                    }),
-                ), (
-                    STRING,
-                    BundleDebugFormat::Known(BundleKnownFormat::String {
-                        pointer: sel(&[0]),
-                        length: sel(&[1]),
-                        capacity: sel(&[2]),
-                    }),
-                ), (
-                    RAW_MUTEX,
-                    BundleDebugFormat::Known(BundleKnownFormat::RawMutex {
-                        state: sel(&[0]),
-                        state_decode: mutex_decode(),
-                    }),
-                ), (
-                    NOTIFY,
-                    BundleDebugFormat::Known(BundleKnownFormat::Notify {
-                        state: sel(&[0]),
-                        state_decode: BundleScalarDecode::Bits(vec![
-                            ebf(statel, 0, 2, vec![(0, idlel), (1, waitingl), (2, notifiedl)]),
-                            ubf(generationl, 2),
-                        ]),
-                        mutex: sel(&[1, 0, 0]),
-                        mutex_decode: mutex_decode(),
-                        head: sel(&[1, 1, 0]),
-                        waiter: NOTIFY_WAITER,
-                        waiter_notification: sel(&[0]),
-                        waiter_notification_decode: BundleScalarDecode::Bits(vec![
-                            ebf(kindl, 0, 2, vec![(0, nonel), (1, onel), (2, alll)]),
-                            ebf(orderl, 2, 1, vec![(0, fifol), (1, lifol)]),
-                        ]),
-                        waiter_next: sel(&[1]),
-                    }),
-                ), (
-                    SEMAPHORE,
-                    BundleDebugFormat::Known(BundleKnownFormat::Semaphore {
-                        permits: sel(&[0]),
-                        permits_decode: semaphore_permits_decode(),
-                    }),
-                ), (
-                    BLOCK,
-                    BundleDebugFormat::Known(BundleKnownFormat::MpscBlock {
-                        ready_slots: sel(&[1, 0]),
-                        values: sel(&[0]),
-                    }),
-                ), (
-                    WATCH_STATE,
-                    BundleDebugFormat::Known(BundleKnownFormat::WatchState {
-                        state: sel(&[0]),
-                        state_decode: BundleScalarDecode::Bits(vec![
-                            ebf(closedl, 0, 1, vec![(0, openl), (1, closedl)]),
-                            ubf(versionl, 1),
-                        ]),
-                    }),
-                ), (
-                    CHAN,
-                    BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
-                        tail: sel(&[0]),
-                        index: sel(&[1]),
-                        head: sel(&[2]),
-                        start_index: sel(&[1, 0]),
-                        next: sel(&[1, 1]),
-                        values: sel(&[0]),
-                        element: U32,
-                    }),
-                ), (
-                    RX_CHAN,
-                    BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
-                        tail: sel(&[0]),
-                        index: sel(&[1]),
-                        head: sel(&[2]),
-                        start_index: sel(&[1, 0]),
-                        next: sel(&[1, 1]),
-                        values: sel(&[0]),
-                        element: U32,
-                    }),
-                ), (
-                    RECEIVER,
-                    BundleDebugFormat::Known(BundleKnownFormat::MpscRx {
-                        // Receiver → raw pointer @ member 0; ArcInner → `data`
-                        // @ member 2; capacity/permits within the RxChan's
-                        // semaphore (member 3): bound @1, permits @0.
-                        chan_pointer: sel(&[0]),
-                        chan: sel(&[2]),
-                        bound: sel(&[3, 1]),
-                        permits: sel(&[3, 0]),
-                        permits_decode: semaphore_permits_decode(),
-                    }),
-                ), (
-                    BOUNDED_SEM,
-                    BundleDebugFormat::Node(BundleNode::Struct {
-                        fields: vec![
-                            BundleField::Named {
-                                label: mutexfl,
-                                node: BundleNode::Scalar { at: sel(&[0, 0, 0, 0]), decode: mutex_decode() },
-                            },
-                            BundleField::Named {
-                                label: closedfl,
-                                node: BundleNode::Scalar { at: sel(&[0, 0, 1, 1]), decode: bool_decode() },
-                            },
-                            BundleField::Named {
-                                label: permitsfl,
-                                node: BundleNode::Scalar {
-                                    at: sel(&[0, 1]),
-                                    decode: semaphore_permits_decode(),
+                debug_formats: std::collections::BTreeMap::from([
+                    (WRAP, BundleDebugFormat::Transparent { member: sel(&[0]) }),
+                    (
+                        ATOMIC,
+                        BundleDebugFormat::Known(BundleKnownFormat::Atomic {
+                            value: sel(&[0, 0]),
+                        }),
+                    ),
+                    (
+                        ATOMIC_PTR,
+                        BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: sel(&[0]) }),
+                    ),
+                    (
+                        LOOM_ATOMIC,
+                        BundleDebugFormat::Transparent { member: sel(&[0]) },
+                    ),
+                    (
+                        LOOM_CELL,
+                        BundleDebugFormat::Transparent { member: sel(&[0]) },
+                    ),
+                    (
+                        FAT_PTR,
+                        BundleDebugFormat::Known(BundleKnownFormat::DynPointer {
+                            pointer: 0,
+                            vtable: 1,
+                            drop_in_place: 0,
+                            size: 1,
+                            align: 2,
+                            tail_offset: 0,
+                        }),
+                    ),
+                    (
+                        RAW_WAKER_VTABLE,
+                        BundleDebugFormat::Known(BundleKnownFormat::RawWakerVTable {
+                            clone: 0,
+                            wake: 1,
+                            wake_by_ref: 2,
+                            drop: 3,
+                        }),
+                    ),
+                    (
+                        FUNCTION_PTR,
+                        BundleDebugFormat::Known(BundleKnownFormat::FunctionPointer),
+                    ),
+                    (
+                        BTREE_MAP,
+                        BundleDebugFormat::Known(BundleKnownFormat::BTreeMap {
+                            root: 0,
+                            length: 1,
+                            root_node: sel(&[]),
+                            height: 1,
+                            node: sel(&[0]),
+                            key: U32,
+                            value: U32,
+                            leaf: BTREE_LEAF,
+                            leaf_len: 0,
+                            leaf_keys: 1,
+                            leaf_values: 2,
+                            internal: BTREE_INTERNAL,
+                            internal_data: 0,
+                            internal_edges: 1,
+                            edge: sel(&[]),
+                        }),
+                    ),
+                    (
+                        IPV4,
+                        BundleDebugFormat::Known(BundleKnownFormat::IpAddress {
+                            octets: sel(&[0]),
+                        }),
+                    ),
+                    (
+                        IPV6,
+                        BundleDebugFormat::Known(BundleKnownFormat::IpAddress {
+                            octets: sel(&[0]),
+                        }),
+                    ),
+                    (
+                        VEC,
+                        BundleDebugFormat::Known(BundleKnownFormat::Vec {
+                            pointer: sel(&[0]),
+                            length: sel(&[1]),
+                            capacity: sel(&[2]),
+                            element: U32,
+                        }),
+                    ),
+                    (
+                        STR,
+                        BundleDebugFormat::Known(BundleKnownFormat::Str {
+                            pointer: sel(&[0]),
+                            length: sel(&[1]),
+                        }),
+                    ),
+                    (
+                        STRING,
+                        BundleDebugFormat::Known(BundleKnownFormat::String {
+                            pointer: sel(&[0]),
+                            length: sel(&[1]),
+                            capacity: sel(&[2]),
+                        }),
+                    ),
+                    (
+                        RAW_MUTEX,
+                        BundleDebugFormat::Known(BundleKnownFormat::RawMutex {
+                            state: sel(&[0]),
+                            state_decode: mutex_decode(),
+                        }),
+                    ),
+                    (
+                        NOTIFY,
+                        BundleDebugFormat::Known(BundleKnownFormat::Notify {
+                            state: sel(&[0]),
+                            state_decode: BundleScalarDecode::Bits(vec![
+                                ebf(
+                                    statel,
+                                    0,
+                                    2,
+                                    vec![(0, idlel), (1, waitingl), (2, notifiedl)],
+                                ),
+                                ubf(generationl, 2),
+                            ]),
+                            mutex: sel(&[1, 0, 0]),
+                            mutex_decode: mutex_decode(),
+                            head: sel(&[1, 1, 0]),
+                            waiter: NOTIFY_WAITER,
+                            waiter_notification: sel(&[0]),
+                            waiter_notification_decode: BundleScalarDecode::Bits(vec![
+                                ebf(kindl, 0, 2, vec![(0, nonel), (1, onel), (2, alll)]),
+                                ebf(orderl, 2, 1, vec![(0, fifol), (1, lifol)]),
+                            ]),
+                            waiter_next: sel(&[1]),
+                        }),
+                    ),
+                    (
+                        SEMAPHORE,
+                        BundleDebugFormat::Known(BundleKnownFormat::Semaphore {
+                            permits: sel(&[0]),
+                            permits_decode: semaphore_permits_decode(),
+                        }),
+                    ),
+                    (
+                        BLOCK,
+                        BundleDebugFormat::Known(BundleKnownFormat::MpscBlock {
+                            ready_slots: sel(&[1, 0]),
+                            values: sel(&[0]),
+                        }),
+                    ),
+                    (
+                        WATCH_STATE,
+                        BundleDebugFormat::Known(BundleKnownFormat::WatchState {
+                            state: sel(&[0]),
+                            state_decode: BundleScalarDecode::Bits(vec![
+                                ebf(closedl, 0, 1, vec![(0, openl), (1, closedl)]),
+                                ubf(versionl, 1),
+                            ]),
+                        }),
+                    ),
+                    (
+                        CHAN,
+                        BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
+                            tail: sel(&[0]),
+                            index: sel(&[1]),
+                            head: sel(&[2]),
+                            start_index: sel(&[1, 0]),
+                            next: sel(&[1, 1]),
+                            values: sel(&[0]),
+                            element: U32,
+                        }),
+                    ),
+                    (
+                        RX_CHAN,
+                        BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
+                            tail: sel(&[0]),
+                            index: sel(&[1]),
+                            head: sel(&[2]),
+                            start_index: sel(&[1, 0]),
+                            next: sel(&[1, 1]),
+                            values: sel(&[0]),
+                            element: U32,
+                        }),
+                    ),
+                    (
+                        RECEIVER,
+                        BundleDebugFormat::Known(BundleKnownFormat::MpscRx {
+                            // Receiver → raw pointer @ member 0; ArcInner → `data`
+                            // @ member 2; capacity/permits within the RxChan's
+                            // semaphore (member 3): bound @1, permits @0.
+                            chan_pointer: sel(&[0]),
+                            chan: sel(&[2]),
+                            bound: sel(&[3, 1]),
+                            permits: sel(&[3, 0]),
+                            permits_decode: semaphore_permits_decode(),
+                        }),
+                    ),
+                    (
+                        BOUNDED_SEM,
+                        BundleDebugFormat::Node(BundleNode::Struct {
+                            fields: vec![
+                                BundleField::Named {
+                                    label: mutexfl,
+                                    node: BundleNode::Scalar {
+                                        at: sel(&[0, 0, 0, 0]),
+                                        decode: mutex_decode(),
+                                    },
                                 },
-                            },
-                            BundleField::Named {
-                                label: boundfl,
-                                node: BundleNode::Scalar { at: sel(&[1]), decode: BundleScalarDecode::Raw },
-                            },
-                            BundleField::Named {
-                                label: queuefl,
-                                node: BundleNode::List {
-                                    head: sel(&[0, 0, 1, 0, 0]),
-                                    next: sel(&[1]),
-                                    node: Box::new(BundleNode::Struct {
-                                        fields: vec![BundleField::Named {
-                                            label: permits_neededfl,
-                                            node: BundleNode::Scalar {
-                                                at: sel(&[0]),
-                                                decode: BundleScalarDecode::Raw,
-                                            },
-                                        }],
-                                    }),
-                                    node_ty: WAITER,
+                                BundleField::Named {
+                                    label: closedfl,
+                                    node: BundleNode::Scalar {
+                                        at: sel(&[0, 0, 1, 1]),
+                                        decode: bool_decode(),
+                                    },
                                 },
-                            },
-                        ],
-                    }),
-                )]),
+                                BundleField::Named {
+                                    label: permitsfl,
+                                    node: BundleNode::Scalar {
+                                        at: sel(&[0, 1]),
+                                        decode: semaphore_permits_decode(),
+                                    },
+                                },
+                                BundleField::Named {
+                                    label: boundfl,
+                                    node: BundleNode::Scalar {
+                                        at: sel(&[1]),
+                                        decode: BundleScalarDecode::Raw,
+                                    },
+                                },
+                                BundleField::Named {
+                                    label: queuefl,
+                                    node: BundleNode::List {
+                                        head: sel(&[0, 0, 1, 0, 0]),
+                                        next: sel(&[1]),
+                                        node: Box::new(BundleNode::Struct {
+                                            fields: vec![BundleField::Named {
+                                                label: permits_neededfl,
+                                                node: BundleNode::Scalar {
+                                                    at: sel(&[0]),
+                                                    decode: BundleScalarDecode::Raw,
+                                                },
+                                            }],
+                                        }),
+                                        node_ty: WAITER,
+                                    },
+                                },
+                            ],
+                        }),
+                    ),
+                ]),
                 name_index: vec![(pointn, POINT)],
             },
             tasks: TaskTable::default(),
@@ -1821,7 +2051,10 @@ mod bundle_tests {
         assert!(r.try_member("z").expect("no error").is_none());
 
         let shown = format!("{}", r.display());
-        assert!(shown.contains("x: 1") && shown.contains("y: 2"), "got {shown:?}");
+        assert!(
+            shown.contains("x: 1") && shown.contains("y: 2"),
+            "got {shown:?}"
+        );
     }
 
     #[test]
@@ -1830,13 +2063,19 @@ mod bundle_tests {
         let v = BundleView::new(&b);
         let ipv4 = [192, 0, 2, 1];
         assert_eq!(
-            format!("{}", TypeInfoRef::new(v.ty(IPV4).unwrap(), 0, &ipv4).display()),
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(IPV4).unwrap(), 0, &ipv4).display()
+            ),
             "192.0.2.1"
         );
 
         let ipv6 = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
         assert_eq!(
-            format!("{}", TypeInfoRef::new(v.ty(IPV6).unwrap(), 0, &ipv6).display()),
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(IPV6).unwrap(), 0, &ipv6).display()
+            ),
             "2001:db8::1"
         );
     }
@@ -1848,7 +2087,10 @@ mod bundle_tests {
             fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
                 assert_eq!(addr, 0x2000);
                 assert_eq!(len, 12);
-                Ok([5u32, 8, 13].into_iter().flat_map(u32::to_le_bytes).collect())
+                Ok([5u32, 8, 13]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect())
             }
         }
 
@@ -1859,7 +2101,10 @@ mod bundle_tests {
             .flat_map(u64::to_le_bytes)
             .collect();
         let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &bytes);
-        assert_eq!(format!("{}", value.display_from_target(&Reader, 8)), "[5, 8, 13]");
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "[5, 8, 13]"
+        );
         assert_eq!(
             format!("{:#}", value.display_from_target(&Reader, 8)),
             "[\n    5,\n    8,\n    13,\n]"
@@ -1985,7 +2230,10 @@ mod bundle_tests {
         let r = TypeInfoRef::new(v.ty(MSG).unwrap(), 0, &bytes);
         let err = r.active_variant().expect_err("tag 9 must not decode");
         let msg = format!("{err}");
-        assert!(msg.contains("discriminant") || msg.contains("Msg"), "got {msg:?}");
+        assert!(
+            msg.contains("discriminant") || msg.contains("Msg"),
+            "got {msg:?}"
+        );
     }
 
     #[test]
@@ -2004,7 +2252,10 @@ mod bundle_tests {
         let v = BundleView::new(&b);
         let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
         let value = TypeInfoRef::new(v.ty(WRAP).unwrap(), 0, &bytes);
-        assert_eq!(format!("{}", value.display_with_depth(2)), "Point { x: 3, y: 4 }");
+        assert_eq!(
+            format!("{}", value.display_with_depth(2)),
+            "Point { x: 3, y: 4 }"
+        );
     }
 
     #[test]
@@ -2027,7 +2278,10 @@ mod bundle_tests {
 
         let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
         let cell = TypeInfoRef::new(v.ty(LOOM_CELL).unwrap(), 0, &bytes);
-        assert_eq!(format!("{}", cell.display_with_depth(2)), "Point { x: 3, y: 4 }");
+        assert_eq!(
+            format!("{}", cell.display_with_depth(2)),
+            "Point { x: 3, y: 4 }"
+        );
     }
 
     #[test]
@@ -2044,14 +2298,20 @@ mod bundle_tests {
         let v = BundleView::new(&b);
         let bytes = 0x1000u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
-        assert_eq!(format!("{}", value.display_from_target(&NoReads, 8)), "0x1000");
+        assert_eq!(
+            format!("{}", value.display_from_target(&NoReads, 8)),
+            "0x1000"
+        );
     }
 
     #[test]
     fn test_array_elements_through_typeinfo() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let bytes: Vec<u8> = [10u32, 20, 30].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let bytes: Vec<u8> = [10u32, 20, 30]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
         let r = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &bytes);
         let shown: Vec<String> = r
             .array_elements()
@@ -2137,7 +2397,10 @@ mod bundle_tests {
 
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let bytes: Vec<u8> = [0x1234u64, 0x3000].into_iter().flat_map(u64::to_le_bytes).collect();
+        let bytes: Vec<u8> = [0x1234u64, 0x3000]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
         let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&Reader, 8));
         assert_eq!(
@@ -2184,13 +2447,14 @@ mod bundle_tests {
         *count = 4;
         b.validate().expect("expanded vtable must validate");
         let v = BundleView::new(&b);
-        let bytes: Vec<u8> = [0x1234u64, 0x3000].into_iter().flat_map(u64::to_le_bytes).collect();
+        let bytes: Vec<u8> = [0x1234u64, 0x3000]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
         let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&Reader, 8));
         assert!(
-            shown.contains(
-                "pointer: 0x1234 -> Point {\n         x: 1,\n         y: 2,\n    },"
-            ),
+            shown.contains("pointer: 0x1234 -> Point {\n         x: 1,\n         y: 2,\n    },"),
             "{shown}"
         );
         assert!(shown.contains("concrete type: Point,"), "{shown}");
@@ -2223,7 +2487,10 @@ mod bundle_tests {
         shape.variants[1].payload.ty = FAT_PTR;
         b.validate().expect("modified enum bundle must validate");
         let v = BundleView::new(&b);
-        let bytes: Vec<u8> = [0x1234u64, 0x3000].into_iter().flat_map(u64::to_le_bytes).collect();
+        let bytes: Vec<u8> = [0x1234u64, 0x3000]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
         let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&Reader, 8));
         assert!(shown.starts_with("Opt::Some {"), "{shown}");
@@ -2254,7 +2521,10 @@ mod bundle_tests {
         shape.variants[1].payload.ty = STR;
         b.validate().expect("modified enum bundle must validate");
         let v = BundleView::new(&b);
-        let bytes: Vec<u8> = [0x3000u64, 8].into_iter().flat_map(u64::to_le_bytes).collect();
+        let bytes: Vec<u8> = [0x3000u64, 8]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
         let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
@@ -2267,10 +2537,22 @@ mod bundle_tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let cases = [
-            (0u8, "parking_lot::raw_mutex::RawMutex: locked=unlocked, parked=unparked"),
-            (1, "parking_lot::raw_mutex::RawMutex: locked=locked, parked=unparked"),
-            (2, "parking_lot::raw_mutex::RawMutex: locked=unlocked, parked=parked"),
-            (3, "parking_lot::raw_mutex::RawMutex: locked=locked, parked=parked"),
+            (
+                0u8,
+                "parking_lot::raw_mutex::RawMutex: locked=unlocked, parked=unparked",
+            ),
+            (
+                1,
+                "parking_lot::raw_mutex::RawMutex: locked=locked, parked=unparked",
+            ),
+            (
+                2,
+                "parking_lot::raw_mutex::RawMutex: locked=unlocked, parked=parked",
+            ),
+            (
+                3,
+                "parking_lot::raw_mutex::RawMutex: locked=locked, parked=parked",
+            ),
         ];
         for (state, expected) in cases {
             let value = TypeInfoRef::new(v.ty(RAW_MUTEX).unwrap(), 0, std::slice::from_ref(&state));
@@ -2393,7 +2675,11 @@ mod bundle_tests {
         for (permits, waiters, expected) in cases {
             let buf = bytes(permits, waiters);
             let value = TypeInfoRef::new(v.ty(SEMAPHORE).unwrap(), 0, &buf);
-            assert_eq!(format!("{}", value.display()), expected, "permits={permits}");
+            assert_eq!(
+                format!("{}", value.display()),
+                expected,
+                "permits={permits}"
+            );
         }
     }
 
@@ -2506,7 +2792,10 @@ mod bundle_tests {
         let bytes = 0x2000u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&Reader, 8));
-        assert!(shown.starts_with("tokio::sync::mpsc::bounded::Receiver<u32> {"), "{shown}");
+        assert!(
+            shown.starts_with("tokio::sync::mpsc::bounded::Receiver<u32> {"),
+            "{shown}"
+        );
         assert!(shown.contains("capacity: 16"), "{shown}");
         assert!(shown.contains("free: closed=open, permits=3"), "{shown}");
         assert!(shown.contains("queued: [20, 30]"), "{shown}");
@@ -2515,7 +2804,10 @@ mod bundle_tests {
         let bytes = 0u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&Reader, 8));
-        assert_eq!(shown, "tokio::sync::mpsc::bounded::Receiver<u32> { <null> }");
+        assert_eq!(
+            shown,
+            "tokio::sync::mpsc::bounded::Receiver<u32> { <null> }"
+        );
     }
 
     #[test]
@@ -2578,7 +2870,10 @@ mod bundle_tests {
         let buf = sem(0, 0x3000, 0, 20, 16);
         let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         let shown = format!("{}", value.display());
-        assert!(shown.contains("permits: closed=open, permits=10"), "{shown}");
+        assert!(
+            shown.contains("permits: closed=open, permits=10"),
+            "{shown}"
+        );
         assert!(shown.contains("queue: <target unavailable>"), "{shown}");
 
         // Pretty mode puts each field and waiter on its own indented line.
@@ -2607,10 +2902,22 @@ mod bundle_tests {
             // Bit 0 is the closed flag; the version is the remaining bits, so
             // it reads as the update count (tokio steps the state by 2), e.g.
             // raw 4 → version 2.
-            (0u64, "tokio::sync::watch::state::AtomicState: closed=open, version=0"),
-            (4, "tokio::sync::watch::state::AtomicState: closed=open, version=2"),
-            (1, "tokio::sync::watch::state::AtomicState: closed=closed, version=0"),
-            (5, "tokio::sync::watch::state::AtomicState: closed=closed, version=2"),
+            (
+                0u64,
+                "tokio::sync::watch::state::AtomicState: closed=open, version=0",
+            ),
+            (
+                4,
+                "tokio::sync::watch::state::AtomicState: closed=open, version=2",
+            ),
+            (
+                1,
+                "tokio::sync::watch::state::AtomicState: closed=closed, version=0",
+            ),
+            (
+                5,
+                "tokio::sync::watch::state::AtomicState: closed=closed, version=2",
+            ),
         ];
         for (state, expected) in cases {
             let bytes = state.to_le_bytes();
@@ -2736,7 +3043,10 @@ mod bundle_tests {
         assert!(shown.contains("\n    1: 10,"), "{shown}");
         assert!(shown.contains("\n    2: 20,"), "{shown}");
         assert!(shown.contains("\n    3: 30,"), "{shown}");
-        assert!(!shown.contains("2863311530"), "unused 0xaa slots leaked: {shown}");
+        assert!(
+            !shown.contains("2863311530"),
+            "unused 0xaa slots leaked: {shown}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2777,8 +3087,13 @@ mod bundle_tests {
         let (thingn, staten, flagn, pointfn, headn) =
             (s("Thing"), s("state"), s("flag"), s("point"), s("head"));
         let (waitern, notifn, nextn) = (s("Waiter"), s("notification"), s("next"));
-        let (statel, idlel, waitingl, notifiedl, genl) =
-            (s("state"), s("idle"), s("waiting"), s("notified"), s("generation"));
+        let (statel, idlel, waitingl, notifiedl, genl) = (
+            s("state"),
+            s("idle"),
+            s("waiting"),
+            s("notified"),
+            s("generation"),
+        );
         let (kindl, nonel, onel, alll, orderl, fifol, lifol) = (
             s("kind"),
             s("none"),
@@ -2793,16 +3108,35 @@ mod bundle_tests {
         let m = |name, ty, offset| MemberDef { name, ty, offset };
 
         let types = vec![
-            TypeDef::Base { name: u32n, size: 4, encoding: Encoding::Unsigned },
-            TypeDef::Base { name: u64n, size: 8, encoding: Encoding::Unsigned },
-            TypeDef::Base { name: u8n, size: 1, encoding: Encoding::Unsigned },
-            TypeDef::Struct { name: pointn, size: 8, members: vec![m(xn, N_U32, 0), m(yn, N_U32, 4)] },
+            TypeDef::Base {
+                name: u32n,
+                size: 4,
+                encoding: Encoding::Unsigned,
+            },
+            TypeDef::Base {
+                name: u64n,
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
+            TypeDef::Base {
+                name: u8n,
+                size: 1,
+                encoding: Encoding::Unsigned,
+            },
+            TypeDef::Struct {
+                name: pointn,
+                size: 8,
+                members: vec![m(xn, N_U32, 0), m(yn, N_U32, 4)],
+            },
             TypeDef::Struct {
                 name: waitern,
                 size: 16,
                 members: vec![m(notifn, N_U64, 0), m(nextn, N_WAITER_PTR, 8)],
             },
-            TypeDef::Pointer { name: None, target: N_WAITER },
+            TypeDef::Pointer {
+                name: None,
+                target: N_WAITER,
+            },
             TypeDef::Struct {
                 name: thingn,
                 size: 28,
@@ -2816,7 +3150,12 @@ mod bundle_tests {
         ];
 
         let state_decode = BundleScalarDecode::Bits(vec![
-            ebf(statel, 0, 2, vec![(0, idlel), (1, waitingl), (2, notifiedl)]),
+            ebf(
+                statel,
+                0,
+                2,
+                vec![(0, idlel), (1, waitingl), (2, notifiedl)],
+            ),
             ubf(genl, 2),
         ]);
         let notif_decode = BundleScalarDecode::Bits(vec![
@@ -2827,13 +3166,28 @@ mod bundle_tests {
         let waiter_node = BundleNode::Struct {
             fields: vec![Named {
                 label: notifn,
-                node: BundleNode::Scalar { at: sel(&[0]), decode: notif_decode },
+                node: BundleNode::Scalar {
+                    at: sel(&[0]),
+                    decode: notif_decode,
+                },
             }],
         };
         let thing_node = BundleNode::Struct {
             fields: vec![
-                Named { label: staten, node: BundleNode::Scalar { at: sel(&[0]), decode: state_decode } },
-                Override { index: 1, node: BundleNode::Scalar { at: sel(&[1]), decode: BundleScalarDecode::Raw } },
+                Named {
+                    label: staten,
+                    node: BundleNode::Scalar {
+                        at: sel(&[0]),
+                        decode: state_decode,
+                    },
+                },
+                Override {
+                    index: 1,
+                    node: BundleNode::Scalar {
+                        at: sel(&[1]),
+                        decode: BundleScalarDecode::Raw,
+                    },
+                },
                 Member(2),
                 Named {
                     label: queuel,
@@ -2848,7 +3202,10 @@ mod bundle_tests {
         };
 
         let b = Bundle {
-            meta: Meta { format_version: FORMAT_VERSION, ..Default::default() },
+            meta: Meta {
+                format_version: FORMAT_VERSION,
+                ..Default::default()
+            },
             strings: strings.finish(),
             types: TypeTable {
                 types,
@@ -2925,10 +3282,16 @@ mod bundle_tests {
         );
 
         let pretty = format!("{:#}", value.display_from_target(&Reader, 16));
-        assert!(pretty.contains("\n    state: state=waiting, generation=3,"), "{pretty}");
+        assert!(
+            pretty.contains("\n    state: state=waiting, generation=3,"),
+            "{pretty}"
+        );
         assert!(pretty.contains("\n    point: Point {"), "{pretty}");
         assert!(pretty.contains("\n    queue: ["), "{pretty}");
-        assert!(pretty.contains("notification: kind=one, order=fifo"), "{pretty}");
+        assert!(
+            pretty.contains("notification: kind=one, order=fifo"),
+            "{pretty}"
+        );
     }
 
     #[test]
@@ -2987,9 +3350,13 @@ mod bundle_tests {
         let mut b = node_bundle();
         b.types.debug_formats.insert(
             N_POINT,
-            BundleDebugFormat::Node(BundleNode::Struct { fields: vec![BundleField::Member(9)] }),
+            BundleDebugFormat::Node(BundleNode::Struct {
+                fields: vec![BundleField::Member(9)],
+            }),
         );
-        let err = b.validate().expect_err("out-of-range Member must be rejected");
+        let err = b
+            .validate()
+            .expect_err("out-of-range Member must be rejected");
         assert!(format!("{err}").contains("out of range"), "{err}");
     }
 }

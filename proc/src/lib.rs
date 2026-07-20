@@ -460,13 +460,17 @@ impl fmt::Debug for LwpInfo {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub struct Timespec {
     pub tv_sec: i64,
     pub tv_nsec: i64,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub struct Mappings {
     pub(crate) inner: Vec<LoadedObjectWithPath>,
 }
@@ -565,7 +569,9 @@ impl fmt::Debug for LoadedObjectWithPath {
 /// The bit values are fixed by illumos's `<sys/procfs.h>` and are stable
 /// ABI, so they are spelled out here rather than taken from libproc-sys;
 /// snapshots captured on illumos decode them on any platform.
-#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct MapFlags(pub u32);
 
 impl MapFlags {
@@ -677,7 +683,9 @@ pub struct Symbol<'a> {
     pub st_size: u64,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub struct SymbolBuf {
     pub name: String,
     pub st_name: usize,

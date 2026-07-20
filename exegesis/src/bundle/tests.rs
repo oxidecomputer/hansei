@@ -37,10 +37,17 @@ fn tiny_bundle() -> Bundle {
     let name = strings.intern("u64");
     let ty = BundleTypeId(0);
     Bundle {
-        meta: Meta { format_version: FORMAT_VERSION, ..Default::default() },
+        meta: Meta {
+            format_version: FORMAT_VERSION,
+            ..Default::default()
+        },
         strings: strings.finish(),
         types: TypeTable {
-            types: vec![TypeDef::Base { name, size: 8, encoding: Encoding::Unsigned }],
+            types: vec![TypeDef::Base {
+                name,
+                size: 8,
+                encoding: Encoding::Unsigned,
+            }],
             debug_formats: BTreeMap::new(),
             name_index: vec![(name, ty)],
         },
@@ -80,16 +87,25 @@ fn random_bundle(seed: u64) -> Bundle {
             offset: rng.next() % 4096,
         };
         let def = match rng.below(8) {
-            0 => TypeDef::Base { name, size: 1 << rng.below(5), encoding: Encoding::Signed },
+            0 => TypeDef::Base {
+                name,
+                size: 1 << rng.below(5),
+                encoding: Encoding::Signed,
+            },
             1 => TypeDef::Pointer {
                 name: if rng.below(2) == 0 { Some(name) } else { None },
                 target: any_ty(&mut rng),
             },
-            2 => TypeDef::Array { elem: any_ty(&mut rng), count: rng.next() % 256 },
+            2 => TypeDef::Array {
+                elem: any_ty(&mut rng),
+                count: rng.next() % 256,
+            },
             3 => TypeDef::Union {
                 name,
                 size: rng.next() % 128,
-                members: (0..rng.below(4)).map(|j| member(&mut rng, &mut strings, j)).collect(),
+                members: (0..rng.below(4))
+                    .map(|j| member(&mut rng, &mut strings, j))
+                    .collect(),
             },
             4 => TypeDef::Enum {
                 name,
@@ -98,7 +114,10 @@ fn random_bundle(seed: u64) -> Bundle {
                     discr: if rng.below(4) == 0 {
                         None
                     } else {
-                        Some(DiscrDef { offset: rng.next() % 64, ty: any_ty(&mut rng) })
+                        Some(DiscrDef {
+                            offset: rng.next() % 64,
+                            ty: any_ty(&mut rng),
+                        })
                     },
                     variants: (0..1 + rng.below(5))
                         .map(|v| VariantDef {
@@ -131,17 +150,28 @@ fn random_bundle(seed: u64) -> Bundle {
                 size: 4,
                 repr: any_ty(&mut rng),
                 enumerators: (0..rng.below(6))
-                    .map(|e| (strings.intern(&format!("E{e}")), rng.next() as i128 - i64::MAX as i128))
+                    .map(|e| {
+                        (
+                            strings.intern(&format!("E{e}")),
+                            rng.next() as i128 - i64::MAX as i128,
+                        )
+                    })
                     .collect(),
             },
             6 => TypeDef::Opaque {
                 name,
-                size: if rng.below(2) == 0 { Some(rng.next() % 512) } else { None },
+                size: if rng.below(2) == 0 {
+                    Some(rng.next() % 512)
+                } else {
+                    None
+                },
             },
             _ => TypeDef::Struct {
                 name,
                 size: rng.next() % 512,
-                members: (0..rng.below(6)).map(|j| member(&mut rng, &mut strings, j)).collect(),
+                members: (0..rng.below(6))
+                    .map(|j| member(&mut rng, &mut strings, j))
+                    .collect(),
             },
         };
         types.push(def);
@@ -160,7 +190,10 @@ fn random_bundle(seed: u64) -> Bundle {
     let mut by_symbol = BTreeMap::new();
     for (i, _) in entries.iter().enumerate() {
         // several vtable-fn keys may map to the same entry
-        for f in ["poll", "dealloc", "shutdown"].iter().take(1 + rng.below(3)) {
+        for f in ["poll", "dealloc", "shutdown"]
+            .iter()
+            .take(1 + rng.below(3))
+        {
             by_symbol.insert(format!("_RINv_task{i}_{f}"), TaskEntryId(i as u32));
         }
     }
@@ -237,8 +270,16 @@ fn random_bundle(seed: u64) -> Bundle {
             symbol_fingerprint: (0..rng.below(20)).map(|i| format!("_RINv_fp{i}")).collect(),
         },
         strings: table,
-        types: TypeTable { types, debug_formats: BTreeMap::new(), name_index },
-        tasks: TaskTable { by_symbol, by_normalized_symbol: BTreeMap::new(), entries },
+        types: TypeTable {
+            types,
+            debug_formats: BTreeMap::new(),
+            name_index,
+        },
+        tasks: TaskTable {
+            by_symbol,
+            by_normalized_symbol: BTreeMap::new(),
+            entries,
+        },
         dyn_futures,
         statics,
         infra: InfraTypes {
@@ -272,7 +313,8 @@ fn test_roundtrip_tiny() {
 fn test_roundtrip_random_graphs() {
     for seed in 1..=64 {
         let b = random_bundle(seed);
-        b.validate().unwrap_or_else(|e| panic!("seed {seed}: generator made invalid bundle: {e}"));
+        b.validate()
+            .unwrap_or_else(|e| panic!("seed {seed}: generator made invalid bundle: {e}"));
         let decoded = Bundle::read_from(encode(&b).as_slice())
             .unwrap_or_else(|e| panic!("seed {seed}: decode failed: {e}"));
         assert_eq!(b, decoded, "seed {seed}: round trip mismatch");
@@ -290,14 +332,20 @@ fn test_deterministic_encoding() {
 fn test_file_sniffing_header() {
     let bytes = encode(&tiny_bundle());
     assert_eq!(&bytes[..8], b"exegesis");
-    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), FORMAT_VERSION);
+    assert_eq!(
+        u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+        FORMAT_VERSION
+    );
 }
 
 #[test]
 fn test_bad_magic_rejected() {
     let mut bytes = encode(&tiny_bundle());
     bytes[0] = b'X';
-    assert!(matches!(Bundle::read_from(bytes.as_slice()), Err(Error::BadMagic)));
+    assert!(matches!(
+        Bundle::read_from(bytes.as_slice()),
+        Err(Error::BadMagic)
+    ));
 }
 
 #[test]
@@ -323,7 +371,10 @@ fn test_truncated_header_rejected() {
 fn test_truncated_payload_rejected() {
     let bytes = encode(&random_bundle(3));
     let cut = 12 + (bytes.len() - 12) / 2;
-    assert!(matches!(Bundle::read_from(&bytes[..cut]), Err(Error::Io(_))));
+    assert!(matches!(
+        Bundle::read_from(&bytes[..cut]),
+        Err(Error::Io(_))
+    ));
 }
 
 #[test]
@@ -332,7 +383,10 @@ fn test_corrupt_zstd_frame_rejected() {
     // clobber the zstd frame header, right after our 12-byte header
     bytes[12] ^= 0xff;
     bytes[13] ^= 0xff;
-    assert!(matches!(Bundle::read_from(bytes.as_slice()), Err(Error::Io(_))));
+    assert!(matches!(
+        Bundle::read_from(bytes.as_slice()),
+        Err(Error::Io(_))
+    ));
 }
 
 #[test]
@@ -342,7 +396,10 @@ fn test_payload_not_a_bundle_rejected() {
     bytes.extend_from_slice(&MAGIC);
     bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     zstd::stream::copy_encode(&b"not a bundle"[..], &mut bytes, 0).unwrap();
-    assert!(matches!(Bundle::read_from(bytes.as_slice()), Err(Error::Decode(_))));
+    assert!(matches!(
+        Bundle::read_from(bytes.as_slice()),
+        Err(Error::Decode(_))
+    ));
 }
 
 #[test]
@@ -350,14 +407,24 @@ fn test_validate_rejects_oob_type_id() {
     let mut b = tiny_bundle();
     b.infra.header = BundleTypeId(999);
     // write_to skips validation on purpose; the reader must catch it
-    assert!(matches!(Bundle::read_from(encode(&b).as_slice()), Err(Error::Corrupt(_))));
+    assert!(matches!(
+        Bundle::read_from(encode(&b).as_slice()),
+        Err(Error::Corrupt(_))
+    ));
 }
 
 #[test]
 fn test_validate_rejects_oob_str_ref() {
     let mut b = tiny_bundle();
-    b.types.types[0] = TypeDef::Base { name: StrRef(42), size: 8, encoding: Encoding::Unsigned };
-    assert!(matches!(Bundle::read_from(encode(&b).as_slice()), Err(Error::Corrupt(_))));
+    b.types.types[0] = TypeDef::Base {
+        name: StrRef(42),
+        size: 8,
+        encoding: Encoding::Unsigned,
+    };
+    assert!(matches!(
+        Bundle::read_from(encode(&b).as_slice()),
+        Err(Error::Corrupt(_))
+    ));
 }
 
 #[test]
@@ -365,7 +432,9 @@ fn test_validate_rejects_bad_debug_format_path() {
     let mut b = tiny_bundle();
     b.types.debug_formats.insert(
         BundleTypeId(0),
-        DebugFormat::Transparent { member: Selector::member(0) },
+        DebugFormat::Transparent {
+            member: Selector::member(0),
+        },
     );
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
 }
@@ -383,25 +452,43 @@ fn test_validate_accepts_selector_through_deref() {
     let pn = strings.intern("p");
     let ty = BundleTypeId(0);
     let mut b = Bundle {
-        meta: Meta { format_version: FORMAT_VERSION, ..Default::default() },
+        meta: Meta {
+            format_version: FORMAT_VERSION,
+            ..Default::default()
+        },
         strings: strings.finish(),
         types: TypeTable {
             types: vec![
                 // 0: u64
-                TypeDef::Base { name: u64n, size: 8, encoding: Encoding::Unsigned },
+                TypeDef::Base {
+                    name: u64n,
+                    size: 8,
+                    encoding: Encoding::Unsigned,
+                },
                 // 1: *Inner
-                TypeDef::Pointer { name: None, target: BundleTypeId(2) },
+                TypeDef::Pointer {
+                    name: None,
+                    target: BundleTypeId(2),
+                },
                 // 2: Inner { v: u64 @0 }
                 TypeDef::Struct {
                     name: innern,
                     size: 8,
-                    members: vec![MemberDef { name: vn, ty: BundleTypeId(0), offset: 0 }],
+                    members: vec![MemberDef {
+                        name: vn,
+                        ty: BundleTypeId(0),
+                        offset: 0,
+                    }],
                 },
                 // 3: Outer { p: *Inner @0 }
                 TypeDef::Struct {
                     name: outern,
                     size: 8,
-                    members: vec![MemberDef { name: pn, ty: BundleTypeId(1), offset: 0 }],
+                    members: vec![MemberDef {
+                        name: pn,
+                        ty: BundleTypeId(1),
+                        offset: 0,
+                    }],
                 },
             ],
             // Outer, rendered as its pointee's `v` field: p → deref → v.
@@ -441,7 +528,9 @@ fn test_validate_rejects_deref_of_non_pointer() {
     // Type 0 is a `u64`; a leading `Deref` cannot apply to it.
     b.types.debug_formats.insert(
         BundleTypeId(0),
-        DebugFormat::Transparent { member: Selector(vec![Step::Deref]) },
+        DebugFormat::Transparent {
+            member: Selector(vec![Step::Deref]),
+        },
     );
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
 }
@@ -459,7 +548,10 @@ fn test_validate_rejects_function_format_on_non_pointer() {
 #[test]
 fn test_validate_rejects_provenance_length_mismatch() {
     let mut b = tiny_bundle();
-    b.provenance.entries.push(Provenance { decl: None, kind: FutureKind::Manual });
+    b.provenance.entries.push(Provenance {
+        decl: None,
+        kind: FutureKind::Manual,
+    });
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
 }
 
@@ -471,8 +563,16 @@ fn test_validate_rejects_unsorted_name_index() {
     let a = strings.intern("aaa");
     b.strings = strings.finish();
     b.types.types = vec![
-        TypeDef::Base { name: z, size: 1, encoding: Encoding::Unsigned },
-        TypeDef::Base { name: a, size: 1, encoding: Encoding::Unsigned },
+        TypeDef::Base {
+            name: z,
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
+        TypeDef::Base {
+            name: a,
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
     ];
     b.types.name_index = vec![(z, BundleTypeId(0)), (a, BundleTypeId(1))];
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
@@ -524,15 +624,29 @@ fn test_symbol_lookup_is_mangled_exact_match() {
         scheduler: BundleTypeId(0),
         display_name: display,
     });
-    b.tasks.by_symbol.insert("_RINvNtNtNtC_5tokio_pollE".into(), TaskEntryId(0));
-    b.dyn_futures.by_symbol.insert("_RNvX_dynE".into(), BundleTypeId(0));
-    b.provenance.entries.push(Provenance { decl: None, kind: FutureKind::AsyncFn });
+    b.tasks
+        .by_symbol
+        .insert("_RINvNtNtNtC_5tokio_pollE".into(), TaskEntryId(0));
+    b.dyn_futures
+        .by_symbol
+        .insert("_RNvX_dynE".into(), BundleTypeId(0));
+    b.provenance.entries.push(Provenance {
+        decl: None,
+        kind: FutureKind::AsyncFn,
+    });
     b.validate().expect("test bundle invalid");
 
     assert!(b.tasks.lookup("_RINvNtNtNtC_5tokio_pollE").is_some());
-    assert!(b.tasks.lookup("_RINvNtNtNtC_5tokio_pollE.llvm.987").is_some());
+    assert!(
+        b.tasks
+            .lookup("_RINvNtNtNtC_5tokio_pollE.llvm.987")
+            .is_some()
+    );
     assert!(b.tasks.lookup("_RINvNtNtNtC_5tokio_otherE").is_none());
-    assert_eq!(b.dyn_futures.lookup("_RNvX_dynE.llvm.1"), Some(BundleTypeId(0)));
+    assert_eq!(
+        b.dyn_futures.lookup("_RNvX_dynE.llvm.1"),
+        Some(BundleTypeId(0))
+    );
     assert_eq!(b.dyn_futures.lookup("_RNvX_dynE"), Some(BundleTypeId(0)));
 }
 
@@ -566,9 +680,21 @@ fn test_find_by_name() {
     let b_ = strings.intern("crate::B");
     let types = TypeTable {
         types: vec![
-            TypeDef::Base { name: a, size: 1, encoding: Encoding::Unsigned },
-            TypeDef::Base { name: b_, size: 2, encoding: Encoding::Unsigned },
-            TypeDef::Base { name: b_, size: 4, encoding: Encoding::Unsigned },
+            TypeDef::Base {
+                name: a,
+                size: 1,
+                encoding: Encoding::Unsigned,
+            },
+            TypeDef::Base {
+                name: b_,
+                size: 2,
+                encoding: Encoding::Unsigned,
+            },
+            TypeDef::Base {
+                name: b_,
+                size: 4,
+                encoding: Encoding::Unsigned,
+            },
         ],
         debug_formats: BTreeMap::new(),
         name_index: vec![
@@ -627,13 +753,29 @@ mod view_tests {
 
         let mut types = vec![
             // 0: u64
-            TypeDef::Base { name: u64_name, size: 8, encoding: Encoding::Unsigned },
+            TypeDef::Base {
+                name: u64_name,
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
             // 1: zero-sized unit struct
-            TypeDef::Struct { name: unit_name, size: 0, members: vec![] },
+            TypeDef::Struct {
+                name: unit_name,
+                size: 0,
+                members: vec![],
+            },
             // 2: u128
-            TypeDef::Base { name: u128_name, size: 16, encoding: Encoding::Unsigned },
+            TypeDef::Base {
+                name: u128_name,
+                size: 16,
+                encoding: Encoding::Unsigned,
+            },
             // 3: u8 (handy discriminant type)
-            TypeDef::Base { name: u64_name, size: 1, encoding: Encoding::Unsigned },
+            TypeDef::Base {
+                name: u64_name,
+                size: 1,
+                encoding: Encoding::Unsigned,
+            },
         ];
 
         let variants = variants
@@ -641,7 +783,11 @@ mod view_tests {
             .map(|(name, discr_values, ty, offset)| VariantDef {
                 name: strings.intern(name),
                 discr_values,
-                payload: MemberDef { name: strings.intern(name), ty, offset },
+                payload: MemberDef {
+                    name: strings.intern(name),
+                    ty,
+                    offset,
+                },
                 decl: None,
             })
             .collect();
@@ -682,7 +828,9 @@ mod view_tests {
     const U8_ID: BundleTypeId = BundleTypeId(3);
 
     fn vals(vs: &[u128]) -> Option<DiscrValues> {
-        Some(DiscrValues(vs.iter().map(|&v| DiscrValue::Value(v)).collect()))
+        Some(DiscrValues(
+            vs.iter().map(|&v| DiscrValue::Value(v)).collect(),
+        ))
     }
 
     #[test]
@@ -705,10 +853,7 @@ mod view_tests {
             assert_eq!(v.name, want);
             assert_eq!(v.offset, want_off);
         }
-        assert_eq!(
-            e.active_variant(&bytes).unwrap().unwrap().ty.name(),
-            "u64"
-        );
+        assert_eq!(e.active_variant(&bytes).unwrap().unwrap().ty.name(), "u64");
 
         // Invalid tag with no default variant is an error, never a guess.
         bytes[0] = 9;
@@ -724,10 +869,7 @@ mod view_tests {
         // the default variant selected when nothing matches.
         let b = enum_bundle(
             Some((0, U64_ID)),
-            vec![
-                ("None", vals(&[0]), UNIT_ID, 0),
-                ("Some", None, U64_ID, 0),
-            ],
+            vec![("None", vals(&[0]), UNIT_ID, 0), ("Some", None, U64_ID, 0)],
         );
         let view = BundleView::new(&b);
         let e = view.ty(ENUM_ID).unwrap();
@@ -779,16 +921,31 @@ mod view_tests {
                     UNIT_ID,
                     0,
                 ),
-                ("High", Some(DiscrValues(vec![DiscrValue::Range(21, 30)])), UNIT_ID, 0),
+                (
+                    "High",
+                    Some(DiscrValues(vec![DiscrValue::Range(21, 30)])),
+                    UNIT_ID,
+                    0,
+                ),
             ],
         );
         let view = BundleView::new(&b);
         let e = view.ty(ENUM_ID).unwrap();
 
         let mut bytes = [0u8; 24];
-        for (tag, want) in [(0u8, "Low"), (10, "Low"), (20, "Low"), (21, "High"), (30, "High")] {
+        for (tag, want) in [
+            (0u8, "Low"),
+            (10, "Low"),
+            (20, "Low"),
+            (21, "High"),
+            (30, "High"),
+        ] {
             bytes[0] = tag;
-            assert_eq!(e.active_variant(&bytes).unwrap().unwrap().name, want, "tag {tag}");
+            assert_eq!(
+                e.active_variant(&bytes).unwrap().unwrap().name,
+                want,
+                "tag {tag}"
+            );
         }
         bytes[0] = 31;
         assert!(matches!(
@@ -801,7 +958,10 @@ mod view_tests {
     fn test_active_variant_zero_sized_payload() {
         let b = enum_bundle(
             Some((8, U8_ID)),
-            vec![("Unit", vals(&[0]), UNIT_ID, 0), ("Full", vals(&[1]), U64_ID, 0)],
+            vec![
+                ("Unit", vals(&[0]), UNIT_ID, 0),
+                ("Full", vals(&[1]), U64_ID, 0),
+            ],
         );
         let view = BundleView::new(&b);
         let e = view.ty(ENUM_ID).unwrap();
@@ -829,7 +989,10 @@ mod view_tests {
         // Uninhabited enum.
         let b = enum_bundle(None, vec![]);
         let e = BundleView::new(&b).ty(ENUM_ID).unwrap();
-        assert_eq!(e.active_variant(&[]).unwrap().unwrap_err(), VariantError::Uninhabited);
+        assert_eq!(
+            e.active_variant(&[]).unwrap().unwrap_err(),
+            VariantError::Uninhabited
+        );
 
         // Multiple variants, no discriminant: corrupt.
         let b = enum_bundle(None, vec![("A", None, UNIT_ID, 0), ("B", None, UNIT_ID, 0)]);
@@ -848,7 +1011,13 @@ mod view_tests {
         );
 
         // Not an enum at all → outer None.
-        assert!(BundleView::new(&b).ty(U64_ID).unwrap().active_variant(&[0u8; 8]).is_none());
+        assert!(
+            BundleView::new(&b)
+                .ty(U64_ID)
+                .unwrap()
+                .active_variant(&[0u8; 8])
+                .is_none()
+        );
     }
 
     #[test]
@@ -894,28 +1063,51 @@ mod view_tests {
         b.types = TypeTable {
             types: vec![
                 // 0: u8
-                TypeDef::Base { name: u8n, size: 1, encoding: Encoding::Unsigned },
+                TypeDef::Base {
+                    name: u8n,
+                    size: 1,
+                    encoding: Encoding::Unsigned,
+                },
                 // 1: Unresumed payload
-                TypeDef::Struct { name: unresumed, size: 8, members: vec![] },
+                TypeDef::Struct {
+                    name: unresumed,
+                    size: 8,
+                    members: vec![],
+                },
                 // 2: Suspend0 payload
-                TypeDef::Struct { name: suspend0, size: 8, members: vec![] },
+                TypeDef::Struct {
+                    name: suspend0,
+                    size: 8,
+                    members: vec![],
+                },
                 // 3: the coroutine env
                 TypeDef::Enum {
                     name: envn,
                     size: 8,
                     shape: VariantShape {
-                        discr: Some(DiscrDef { offset: 0, ty: BundleTypeId(0) }),
+                        discr: Some(DiscrDef {
+                            offset: 0,
+                            ty: BundleTypeId(0),
+                        }),
                         variants: vec![
                             VariantDef {
                                 name: v0,
                                 discr_values: tag(0),
-                                payload: MemberDef { name: v0, ty: BundleTypeId(1), offset: 0 },
+                                payload: MemberDef {
+                                    name: v0,
+                                    ty: BundleTypeId(1),
+                                    offset: 0,
+                                },
                                 decl: None,
                             },
                             VariantDef {
                                 name: v3,
                                 discr_values: tag(3),
-                                payload: MemberDef { name: v3, ty: BundleTypeId(2), offset: 0 },
+                                payload: MemberDef {
+                                    name: v3,
+                                    ty: BundleTypeId(2),
+                                    offset: 0,
+                                },
                                 decl: Some(SourceLoc { file, line: 18 }),
                             },
                         ],
@@ -943,7 +1135,10 @@ mod view_tests {
         assert_eq!(v.state_name(), "Unresumed");
         assert_eq!(v.decl, None);
 
-        let v = e.active_variant(&[3, 0, 0, 0, 0, 0, 0, 0]).unwrap().unwrap();
+        let v = e
+            .active_variant(&[3, 0, 0, 0, 0, 0, 0, 0])
+            .unwrap()
+            .unwrap();
         assert_eq!(v.name, "3");
         assert_eq!(v.state_name(), "Suspend0");
         assert_eq!(v.decl, Some(("src/work.rs", 18)));
@@ -955,7 +1150,10 @@ mod view_tests {
         // not second-guess it from the payload type.
         let b = enum_bundle(
             Some((0, U8_ID)),
-            vec![("Running", vals(&[0]), U64_ID, 8), ("Consumed", vals(&[1]), UNIT_ID, 0)],
+            vec![
+                ("Running", vals(&[0]), U64_ID, 8),
+                ("Consumed", vals(&[1]), UNIT_ID, 0),
+            ],
         );
         let e = BundleView::new(&b).ty(ENUM_ID).unwrap();
         let v = e.active_variant(&[0u8; 24]).unwrap().unwrap();
@@ -968,7 +1166,8 @@ mod view_tests {
         let mut b = super::tiny_bundle();
         let mut strings = StringInterner::new();
         let usizen = strings.intern("usize");
-        let dynn = strings.intern("(dyn core::future::future::Future<Output=u32> + core::marker::Send)");
+        let dynn =
+            strings.intern("(dyn core::future::future::Future<Output=u32> + core::marker::Send)");
         let boxn = strings.intern("alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global>");
         let arc_innern = strings.intern("alloc::sync::ArcInner<(dyn core::future::future::Future<Output=u32> + core::marker::Send)>");
         let plainn = strings.intern("app::NotDyn");
@@ -979,58 +1178,117 @@ mod view_tests {
         b.types = TypeTable {
             types: vec![
                 // 0: usize
-                TypeDef::Base { name: usizen, size: 8, encoding: Encoding::Unsigned },
+                TypeDef::Base {
+                    name: usizen,
+                    size: 8,
+                    encoding: Encoding::Unsigned,
+                },
                 // 1: the unsized dyn type
-                TypeDef::Struct { name: dynn, size: 0, members: vec![] },
+                TypeDef::Struct {
+                    name: dynn,
+                    size: 0,
+                    members: vec![],
+                },
                 // 2: *dyn
-                TypeDef::Pointer { name: None, target: BundleTypeId(1) },
+                TypeDef::Pointer {
+                    name: None,
+                    target: BundleTypeId(1),
+                },
                 // 3: [usize; 4]
-                TypeDef::Array { elem: BundleTypeId(0), count: 4 },
+                TypeDef::Array {
+                    elem: BundleTypeId(0),
+                    count: 4,
+                },
                 // 4: &[usize; 4]
-                TypeDef::Pointer { name: None, target: BundleTypeId(3) },
+                TypeDef::Pointer {
+                    name: None,
+                    target: BundleTypeId(3),
+                },
                 // 5: Box<dyn Future>
                 TypeDef::Struct {
                     name: boxn,
                     size: 16,
                     members: vec![
-                        MemberDef { name: pointer, ty: BundleTypeId(2), offset: 0 },
-                        MemberDef { name: vtable, ty: BundleTypeId(4), offset: 8 },
+                        MemberDef {
+                            name: pointer,
+                            ty: BundleTypeId(2),
+                            offset: 0,
+                        },
+                        MemberDef {
+                            name: vtable,
+                            ty: BundleTypeId(4),
+                            offset: 8,
+                        },
                     ],
                 },
                 // 6: a sized struct (not a trait object)
-                TypeDef::Struct { name: plainn, size: 8, members: vec![] },
+                TypeDef::Struct {
+                    name: plainn,
+                    size: 8,
+                    members: vec![],
+                },
                 // 7: *NotDyn
-                TypeDef::Pointer { name: None, target: BundleTypeId(6) },
+                TypeDef::Pointer {
+                    name: None,
+                    target: BundleTypeId(6),
+                },
                 // 8: { pointer: *NotDyn, vtable: &[usize; 4] }
                 TypeDef::Struct {
                     name: plainn,
                     size: 16,
                     members: vec![
-                        MemberDef { name: pointer, ty: BundleTypeId(7), offset: 0 },
-                        MemberDef { name: vtable, ty: BundleTypeId(4), offset: 8 },
+                        MemberDef {
+                            name: pointer,
+                            ty: BundleTypeId(7),
+                            offset: 0,
+                        },
+                        MemberDef {
+                            name: vtable,
+                            ty: BundleTypeId(4),
+                            offset: 8,
+                        },
                     ],
                 },
                 // 9: { pointer: *dyn } without a vtable member
                 TypeDef::Struct {
                     name: plainn,
                     size: 8,
-                    members: vec![MemberDef { name: pointer, ty: BundleTypeId(2), offset: 0 }],
+                    members: vec![MemberDef {
+                        name: pointer,
+                        ty: BundleTypeId(2),
+                        offset: 0,
+                    }],
                 },
                 // 10: an unsized wrapper whose final field is dyn
                 TypeDef::Struct {
                     name: arc_innern,
                     size: 16,
-                    members: vec![MemberDef { name: datan, ty: BundleTypeId(1), offset: 16 }],
+                    members: vec![MemberDef {
+                        name: datan,
+                        ty: BundleTypeId(1),
+                        offset: 16,
+                    }],
                 },
                 // 11: *ArcInner<dyn Future>
-                TypeDef::Pointer { name: None, target: BundleTypeId(10) },
+                TypeDef::Pointer {
+                    name: None,
+                    target: BundleTypeId(10),
+                },
                 // 12: a wide pointer to the unsized wrapper
                 TypeDef::Struct {
                     name: arc_innern,
                     size: 16,
                     members: vec![
-                        MemberDef { name: pointer, ty: BundleTypeId(11), offset: 0 },
-                        MemberDef { name: vtable, ty: BundleTypeId(4), offset: 8 },
+                        MemberDef {
+                            name: pointer,
+                            ty: BundleTypeId(11),
+                            offset: 0,
+                        },
+                        MemberDef {
+                            name: vtable,
+                            ty: BundleTypeId(4),
+                            offset: 8,
+                        },
                     ],
                 },
             ],
@@ -1057,7 +1315,11 @@ mod view_tests {
         let b = dyn_bundle();
         let view = BundleView::new(&b);
 
-        let dp = view.ty(BundleTypeId(5)).unwrap().dyn_pointer().expect("Box<dyn> detected");
+        let dp = view
+            .ty(BundleTypeId(5))
+            .unwrap()
+            .dyn_pointer()
+            .expect("Box<dyn> detected");
         assert_eq!(dp.data_offset, 0);
         assert_eq!(dp.vtable_offset, 8);
         assert!(dp.pointee.name().starts_with("(dyn core::future"));
@@ -1081,17 +1343,35 @@ mod view_tests {
         b.strings = strings.finish();
         b.types = TypeTable {
             types: vec![
-                TypeDef::Base { name: u32n, size: 4, encoding: Encoding::Unsigned },
+                TypeDef::Base {
+                    name: u32n,
+                    size: 4,
+                    encoding: Encoding::Unsigned,
+                },
                 TypeDef::Struct {
                     name: point,
                     size: 8,
                     members: vec![
-                        MemberDef { name: x, ty: BundleTypeId(0), offset: 0 },
-                        MemberDef { name: y, ty: BundleTypeId(0), offset: 4 },
+                        MemberDef {
+                            name: x,
+                            ty: BundleTypeId(0),
+                            offset: 0,
+                        },
+                        MemberDef {
+                            name: y,
+                            ty: BundleTypeId(0),
+                            offset: 4,
+                        },
                     ],
                 },
-                TypeDef::Pointer { name: None, target: BundleTypeId(1) },
-                TypeDef::Array { elem: BundleTypeId(0), count: 3 },
+                TypeDef::Pointer {
+                    name: None,
+                    target: BundleTypeId(1),
+                },
+                TypeDef::Array {
+                    elem: BundleTypeId(0),
+                    count: 3,
+                },
             ],
             debug_formats: std::collections::BTreeMap::new(),
             name_index: vec![(point, BundleTypeId(1)), (u32n, BundleTypeId(0))],
@@ -1100,7 +1380,10 @@ mod view_tests {
 
         let view = BundleView::new(&b);
         let s = view.find_by_name("Point").next().expect("Point not found");
-        assert_eq!(s.type_by_name(" Point ").map(|ty| ty.id()), Some(BundleTypeId(1)));
+        assert_eq!(
+            s.type_by_name(" Point ").map(|ty| ty.id()),
+            Some(BundleTypeId(1))
+        );
         assert_eq!(s.size(), 8);
         assert_eq!(s.members().len(), 2);
         let m = s.member("y").expect("no member y");

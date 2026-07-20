@@ -30,9 +30,9 @@ use crate::bundle::{
 use std::num::NonZeroU8;
 
 use crate::raw_types::{NsId, RawType, VariantShape as RawVariantShape};
+use crate::symbols::normalized_value_index;
 use crate::view::{DwView, Func, SourceLocView};
 use crate::{DwReader, Encoding, TypeId};
-use crate::symbols::normalized_value_index;
 
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 use tracing::{debug, warn};
@@ -158,7 +158,11 @@ impl fmt::Display for ExtractStats {
         writeln!(f, "  entries:                {}", self.task_entries)?;
         writeln!(f, "  symbol keys:            {}", self.task_symbols)?;
         writeln!(f, "  poll instantiations:    {}", self.poll_instantiations)?;
-        writeln!(f, "  missing linkage names:  {}", self.vtable_missing_linkage)?;
+        writeln!(
+            f,
+            "  missing linkage names:  {}",
+            self.vtable_missing_linkage
+        )?;
         writeln!(f, "  cells via dealloc:      {}", self.cells_from_dealloc)?;
         writeln!(f, "  cells via scan:         {}", self.cells_by_scan)?;
         writeln!(f, "  cells missing:          {}", self.cells_missing)?;
@@ -180,7 +184,11 @@ impl fmt::Display for ExtractStats {
         writeln!(f, "  hints:                  {}", self.vtable_type_hints)?;
         writeln!(f, "  rooted:                 {}", self.vtable_type_roots)?;
         writeln!(f, "  missing:                {}", self.vtable_types_missing)?;
-        writeln!(f, "  ambiguous:              {}", self.vtable_types_ambiguous)?;
+        writeln!(
+            f,
+            "  ambiguous:              {}",
+            self.vtable_types_ambiguous
+        )?;
         writeln!(
             f,
             "include roots:            {} resolved",
@@ -196,11 +204,7 @@ impl fmt::Display for ExtractStats {
             writeln!(f, "  MISSING static:         {name}")?;
         }
         if self.statics_from_symtab > 0 {
-            writeln!(
-                f,
-                "  statics via symtab:     {}",
-                self.statics_from_symtab
-            )?;
+            writeln!(f, "  statics via symtab:     {}", self.statics_from_symtab)?;
         }
         Ok(())
     }
@@ -252,7 +256,9 @@ fn discover_vtable_types<'data, O: Object<'data>>(obj: &O) -> Vec<VtableTypeHint
         if symbol.kind() == SymbolKind::Text {
             text_addresses.insert(address);
         }
-        let Some(name) = symbol.name().ok() else { continue };
+        let Some(name) = symbol.name().ok() else {
+            continue;
+        };
         let Ok(demangled) = rustc_demangle::try_demangle(strip(name)) else {
             continue;
         };
@@ -268,10 +274,15 @@ fn discover_vtable_types<'data, O: Object<'data>>(obj: &O) -> Vec<VtableTypeHint
 
     let mut hints = BTreeSet::new();
     for section in obj.sections() {
-        if !matches!(section.kind(), SectionKind::Data | SectionKind::ReadOnlyData) {
+        if !matches!(
+            section.kind(),
+            SectionKind::Data | SectionKind::ReadOnlyData
+        ) {
             continue;
         }
-        let Ok(data) = section.uncompressed_data() else { continue };
+        let Ok(data) = section.uncompressed_data() else {
+            continue;
+        };
         scan_vtable_section(
             data.as_ref(),
             section.address(),
@@ -318,7 +329,11 @@ fn scan_vtable_section(
                 concrete.extend(names.iter().cloned());
             }
         }
-        hints.extend(concrete.into_iter().map(|name| VtableTypeHint { name, size }));
+        hints.extend(
+            concrete
+                .into_iter()
+                .map(|name| VtableTypeHint { name, size }),
+        );
     }
 }
 
@@ -340,11 +355,14 @@ fn vtable_name_index(
     reader: &DwReader<'_>,
     ids: &[TypeId],
 ) -> foldhash::HashMap<String, Vec<(TypeId, u64)>> {
-    let mut by_name: foldhash::HashMap<String, Vec<(TypeId, u64)>> =
-        foldhash::HashMap::default();
+    let mut by_name: foldhash::HashMap<String, Vec<(TypeId, u64)>> = foldhash::HashMap::default();
     for &id in ids {
-        let Some(name) = fq_name(reader, id) else { continue };
-        let Some(size) = raw_type_size(reader, id) else { continue };
+        let Some(name) = fq_name(reader, id) else {
+            continue;
+        };
+        let Some(size) = raw_type_size(reader, id) else {
+            continue;
+        };
         by_name
             .entry(crate::symbols::normalized_rust_type_name(&name))
             .or_default()
@@ -376,9 +394,7 @@ fn resolve_vtable_type_hints(
             let mut merged: foldhash::HashMap<String, Vec<(TypeId, u64)>> =
                 foldhash::HashMap::default();
             for handle in handles {
-                for (name, mut entries) in
-                    handle.join().expect("vtable-index thread panicked")
-                {
+                for (name, mut entries) in handle.join().expect("vtable-index thread panicked") {
                     merged.entry(name).or_default().append(&mut entries);
                 }
             }
@@ -419,7 +435,9 @@ fn raw_type_size(reader: &DwReader<'_>, id: TypeId) -> Option<u64> {
         RawType::Enum(en) => Some(en.size),
         RawType::Struct(st) => Some(st.size),
         RawType::Union(union) => Some(union.size),
-        RawType::Array(array) => raw_type_size(reader, array.elem_type_id)?.checked_mul(array.count),
+        RawType::Array(array) => {
+            raw_type_size(reader, array.elem_type_id)?.checked_mul(array.count)
+        }
     }
 }
 
@@ -656,7 +674,8 @@ fn sweep_function(
         if *vtable_fn == "dealloc" && seed.dealloc_param.is_none() {
             seed.dealloc_param = func.params().next().and_then(|p| p.raw().type_id);
         }
-    } else if func.namespace_id() == glue_ns && glue_ns.is_some() && name.starts_with("drop_glue<") {
+    } else if func.namespace_id() == glue_ns && glue_ns.is_some() && name.starts_with("drop_glue<")
+    {
         let Some(linkage) = func.linkage_name() else {
             return;
         };
@@ -1243,15 +1262,21 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
 /// genuine wrapper, never a struct that also carries data. Semantic wrappers
 /// (atomics, `NonZero`, …) are matched by earlier, more specific formatters.
 fn scalar_newtype_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let (index, member) = st.members.iter().enumerate().find(|(_, member)| {
         member.offset == 0 && member.name.map(|name| reader.strings.get(name)) == Some("__0")
     })?;
-    let RawType::Base(base) = reader.canonical_type(member.type_id)? else { return None };
+    let RawType::Base(base) = reader.canonical_type(member.type_id)? else {
+        return None;
+    };
     if base.size == 0 || st.size != base.size {
         return None;
     }
-    Some(DebugFormat::Transparent { member: Selector::member(index as u32) })
+    Some(DebugFormat::Transparent {
+        member: Selector::member(index as u32),
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -1282,11 +1307,15 @@ struct RawVecFormat {
 }
 
 fn vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawVecFormat> {
-    let RawType::Struct(vec) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(vec) = reader.canonical_type(id)? else {
+        return None;
+    };
     if fq_name(reader, id)?.split('<').next()? != "alloc::vec::Vec" {
         return None;
     }
-    let [element_param, alloc_param] = vec.template_params.as_ref() else { return None };
+    let [element_param, alloc_param] = vec.template_params.as_ref() else {
+        return None;
+    };
     if element_param.name.map(|name| reader.strings.get(name)) != Some("T")
         || alloc_param.name.map(|name| reader.strings.get(name)) != Some("A")
     {
@@ -1307,7 +1336,9 @@ fn vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawVecFormat> {
     if fq_name(reader, buf_member.type_id)?.split('<').next()? != "alloc::raw_vec::RawVec" {
         return None;
     }
-    let [raw_element, raw_alloc] = raw_vec.template_params.as_ref() else { return None };
+    let [raw_element, raw_alloc] = raw_vec.template_params.as_ref() else {
+        return None;
+    };
     if reader.canonicalize(raw_element.type_id) != element
         || reader.canonicalize(raw_alloc.type_id) != alloc
     {
@@ -1318,12 +1349,12 @@ fn vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawVecFormat> {
     let RawType::Struct(inner) = reader.canonical_type(inner_member.type_id)? else {
         return None;
     };
-    if fq_name(reader, inner_member.type_id)?.split('<').next()?
-        != "alloc::raw_vec::RawVecInner"
-    {
+    if fq_name(reader, inner_member.type_id)?.split('<').next()? != "alloc::raw_vec::RawVecInner" {
         return None;
     }
-    let [inner_alloc] = inner.template_params.as_ref() else { return None };
+    let [inner_alloc] = inner.template_params.as_ref() else {
+        return None;
+    };
     if reader.canonicalize(inner_alloc.type_id) != alloc {
         return None;
     }
@@ -1337,14 +1368,20 @@ fn vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawVecFormat> {
         &mut Vec::new(),
         &mut pointer_paths,
     );
-    let [(pointer_path, _)] = pointer_paths.as_slice() else { return None };
+    let [(pointer_path, _)] = pointer_paths.as_slice() else {
+        return None;
+    };
 
     let (cap_index, cap_member) = unique_member(reader, &inner.members, "cap")?;
     let (cap_value, _) = usize_no_high_bit_layout(reader, cap_member.type_id)?;
 
     let prefix = [buf_index as u32, inner_index as u32];
     Some(RawVecFormat {
-        pointer: prefix.iter().copied().chain(pointer_path.iter().copied()).collect(),
+        pointer: prefix
+            .iter()
+            .copied()
+            .chain(pointer_path.iter().copied())
+            .collect(),
         length: vec![len_index as u32],
         capacity: prefix
             .iter()
@@ -1362,8 +1399,12 @@ fn btree_map_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawBTreeM
     if fq_name(reader, id)?.split('<').next()? != "alloc::collections::btree::map::BTreeMap" {
         return None;
     }
-    let RawType::Struct(map) = reader.canonical_type(id)? else { return None };
-    let [key_param, value_param, alloc_param] = map.template_params.as_ref() else { return None };
+    let RawType::Struct(map) = reader.canonical_type(id)? else {
+        return None;
+    };
+    let [key_param, value_param, alloc_param] = map.template_params.as_ref() else {
+        return None;
+    };
     if key_param.name.map(|name| reader.strings.get(name)) != Some("K")
         || value_param.name.map(|name| reader.strings.get(name)) != Some("V")
         || alloc_param.name.map(|name| reader.strings.get(name)) != Some("A")
@@ -1395,8 +1436,12 @@ fn btree_map_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawBTreeM
         &mut Vec::new(),
         &mut node_refs,
     );
-    let [(root_node, node_ref)] = node_refs.as_slice() else { return None };
-    let RawType::Struct(node_ref_ty) = reader.canonical_type(*node_ref)? else { return None };
+    let [(root_node, node_ref)] = node_refs.as_slice() else {
+        return None;
+    };
+    let RawType::Struct(node_ref_ty) = reader.canonical_type(*node_ref)? else {
+        return None;
+    };
     let (height, height_member) = unique_member(reader, &node_ref_ty.members, "height")?;
     if !is_unsigned_integer(reader, height_member.type_id, 8) {
         return None;
@@ -1412,19 +1457,27 @@ fn btree_map_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawBTreeM
         &mut Vec::new(),
         &mut node_pointers,
     );
-    let [(node_tail, leaf)] = node_pointers.as_slice() else { return None };
+    let [(node_tail, leaf)] = node_pointers.as_slice() else {
+        return None;
+    };
     let mut node = vec![node_member_index as u32];
     node.extend_from_slice(node_tail);
 
-    let RawType::Struct(leaf_ty) = reader.canonical_type(*leaf)? else { return None };
+    let RawType::Struct(leaf_ty) = reader.canonical_type(*leaf)? else {
+        return None;
+    };
     let (leaf_len, leaf_len_member) = unique_member(reader, &leaf_ty.members, "len")?;
     if !is_unsigned_integer(reader, leaf_len_member.type_id, 2) {
         return None;
     }
     let (leaf_keys, keys_member) = unique_member(reader, &leaf_ty.members, "keys")?;
     let (leaf_values, values_member) = unique_member(reader, &leaf_ty.members, "vals")?;
-    let RawType::Array(keys) = reader.canonical_type(keys_member.type_id)? else { return None };
-    let RawType::Array(values) = reader.canonical_type(values_member.type_id)? else { return None };
+    let RawType::Array(keys) = reader.canonical_type(keys_member.type_id)? else {
+        return None;
+    };
+    let RawType::Array(values) = reader.canonical_type(values_member.type_id)? else {
+        return None;
+    };
     if keys.count == 0
         || keys.count != values.count
         || maybe_uninit_target(reader, keys.elem_type_id) != Some(key)
@@ -1447,14 +1500,20 @@ fn btree_map_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawBTreeM
         &mut Vec::new(),
         &mut parent_pointers,
     );
-    let [(_, internal)] = parent_pointers.as_slice() else { return None };
-    let RawType::Struct(internal_ty) = reader.canonical_type(*internal)? else { return None };
+    let [(_, internal)] = parent_pointers.as_slice() else {
+        return None;
+    };
+    let RawType::Struct(internal_ty) = reader.canonical_type(*internal)? else {
+        return None;
+    };
     let (internal_data, data_member) = unique_member(reader, &internal_ty.members, "data")?;
     if reader.canonicalize(data_member.type_id) != *leaf || data_member.offset != 0 {
         return None;
     }
     let (internal_edges, edges_member) = unique_member(reader, &internal_ty.members, "edges")?;
-    let RawType::Array(edges) = reader.canonical_type(edges_member.type_id)? else { return None };
+    let RawType::Array(edges) = reader.canonical_type(edges_member.type_id)? else {
+        return None;
+    };
     if edges.count != keys.count + 1 {
         return None;
     }
@@ -1467,7 +1526,9 @@ fn btree_map_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawBTreeM
         &mut Vec::new(),
         &mut edge_pointers,
     );
-    let [(edge, _)] = edge_pointers.as_slice() else { return None };
+    let [(edge, _)] = edge_pointers.as_slice() else {
+        return None;
+    };
 
     Some(RawBTreeMapFormat {
         root: root as u32,
@@ -1493,9 +1554,10 @@ fn unique_member<'a>(
     members: &'a [crate::raw_types::RawMember<crate::StrId>],
     expected: &str,
 ) -> Option<(usize, &'a crate::raw_types::RawMember<crate::StrId>)> {
-    let mut matches = members.iter().enumerate().filter(|(_, member)| {
-        member.name.map(|name| reader.strings.get(name)) == Some(expected)
-    });
+    let mut matches = members
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| member.name.map(|name| reader.strings.get(name)) == Some(expected));
     let found = matches.next()?;
     matches.next().is_none().then_some(found)
 }
@@ -1507,14 +1569,15 @@ fn raw_variant<'a>(
 ) -> Option<&'a crate::raw_types::RawMember<crate::StrId>> {
     let variants: Vec<_> = match &en.shape {
         RawVariantShape::One(variant) => vec![&variant.member],
-        RawVariantShape::Many { variants, .. } => {
-            variants.iter().map(|(_, variant)| &variant.member).collect()
-        }
+        RawVariantShape::Many { variants, .. } => variants
+            .iter()
+            .map(|(_, variant)| &variant.member)
+            .collect(),
         RawVariantShape::Zero | RawVariantShape::CStyle { .. } => return None,
     };
-    let mut matches = variants.into_iter().filter(|member| {
-        member.name.map(|name| reader.strings.get(name)) == Some(expected)
-    });
+    let mut matches = variants
+        .into_iter()
+        .filter(|member| member.name.map(|name| reader.strings.get(name)) == Some(expected));
     let found = matches.next()?;
     matches.next().is_none().then_some(found)
 }
@@ -1527,10 +1590,12 @@ fn is_unsigned_integer(reader: &DwReader<'_>, id: TypeId, size: u64) -> bool {
 }
 
 fn is_btree_node_ref(reader: &DwReader<'_>, id: TypeId, key: TypeId, value: TypeId) -> bool {
-    let Some(RawType::Struct(st)) = reader.canonical_type(id) else { return false };
-    fq_name(reader, id)
-        .is_some_and(|name| name.split('<').next() == Some("alloc::collections::btree::node::NodeRef"))
-        && st.template_params.len() == 4
+    let Some(RawType::Struct(st)) = reader.canonical_type(id) else {
+        return false;
+    };
+    fq_name(reader, id).is_some_and(|name| {
+        name.split('<').next() == Some("alloc::collections::btree::node::NodeRef")
+    }) && st.template_params.len() == 4
         && reader.canonicalize(st.template_params[1].type_id) == key
         && reader.canonicalize(st.template_params[2].type_id) == value
 }
@@ -1542,7 +1607,9 @@ fn is_btree_node(
     key: TypeId,
     value: TypeId,
 ) -> bool {
-    let Some(RawType::Struct(st)) = reader.canonical_type(id) else { return false };
+    let Some(RawType::Struct(st)) = reader.canonical_type(id) else {
+        return false;
+    };
     let expected = match kind {
         "LeafNode" => "alloc::collections::btree::node::LeafNode",
         "InternalNode" => "alloc::collections::btree::node::InternalNode",
@@ -1555,11 +1622,15 @@ fn is_btree_node(
 }
 
 fn maybe_uninit_target(reader: &DwReader<'_>, id: TypeId) -> Option<TypeId> {
-    let RawType::Union(union) = reader.canonical_type(id)? else { return None };
+    let RawType::Union(union) = reader.canonical_type(id)? else {
+        return None;
+    };
     if fq_name(reader, id)?.split('<').next()? != "core::mem::maybe_uninit::MaybeUninit" {
         return None;
     }
-    let [param] = union.template_params.as_ref() else { return None };
+    let [param] = union.template_params.as_ref() else {
+        return None;
+    };
     (param.name.map(|name| reader.strings.get(name)) == Some("T"))
         .then(|| reader.canonicalize(param.type_id))
 }
@@ -1586,7 +1657,11 @@ fn find_type_paths(
         _ => return,
     };
     seen.push(current);
-    for (index, member) in members.iter().enumerate().filter(|(_, member)| member.offset == 0) {
+    for (index, member) in members
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| member.offset == 0)
+    {
         path.push(index as u32);
         find_type_paths(reader, member.type_id, matches, path, seen, found);
         path.pop();
@@ -1663,31 +1738,42 @@ fn find_pointer_paths_inner(
 }
 
 fn function_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    let RawType::Pointer(pointer) = reader.canonical_type(id)? else { return None };
+    let RawType::Pointer(pointer) = reader.canonical_type(id)? else {
+        return None;
+    };
     reader
         .is_subroutine_type(pointer.target_type_id)
-        .then_some(DebugFormat::Known(crate::bundle::KnownFormat::FunctionPointer))
+        .then_some(DebugFormat::Known(
+            crate::bundle::KnownFormat::FunctionPointer,
+        ))
 }
 
 fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     if fq_name(reader, id).as_deref() != Some("core::task::wake::RawWakerVTable") {
         return None;
     }
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let member = |expected: &str| {
         let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
             member.name.map(|name| reader.strings.get(name)) == Some(expected)
-                && matches!(reader.canonical_type(member.type_id), Some(RawType::Pointer(_)))
+                && matches!(
+                    reader.canonical_type(member.type_id),
+                    Some(RawType::Pointer(_))
+                )
         });
         let (index, _) = matches.next()?;
         matches.next().is_none().then_some(index as u32)
     };
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::RawWakerVTable {
-        clone: member("clone")?,
-        wake: member("wake")?,
-        wake_by_ref: member("wake_by_ref")?,
-        drop: member("drop")?,
-    }))
+    Some(DebugFormat::Known(
+        crate::bundle::KnownFormat::RawWakerVTable {
+            clone: member("clone")?,
+            wake: member("wake")?,
+            wake_by_ref: member("wake_by_ref")?,
+            drop: member("drop")?,
+        },
+    ))
 }
 
 fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
@@ -1696,12 +1782,16 @@ fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
         "core::net::ip_addr::Ipv6Addr" => 16,
         _ => return None,
     };
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let (index, member) = unique_member(reader, &st.members, "octets")?;
     if member.offset != 0 {
         return None;
     }
-    let RawType::Array(array) = reader.canonical_type(member.type_id)? else { return None };
+    let RawType::Array(array) = reader.canonical_type(member.type_id)? else {
+        return None;
+    };
     if array.count != expected_octets || !is_unsigned_integer(reader, array.elem_type_id, 1) {
         return None;
     }
@@ -1714,7 +1804,9 @@ fn str_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     if fq_name(reader, id).as_deref() != Some("&str") {
         return None;
     }
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
     let (length, length_member) = unique_member(reader, &st.members, "length")?;
     let RawType::Pointer(raw_pointer) = reader.canonical_type(pointer_member.type_id)? else {
@@ -1735,7 +1827,9 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     if fq_name(reader, id).as_deref() != Some("alloc::string::String") {
         return None;
     }
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let (vec_index, vec_member) = unique_member(reader, &st.members, "vec")?;
     let layout = vec_debug_format(reader, vec_member.type_id)?;
     if !is_unsigned_integer(reader, layout.element, 1) {
@@ -1743,9 +1837,24 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     }
     let prefix = [vec_index as u32];
     Some(DebugFormat::Known(crate::bundle::KnownFormat::String {
-        pointer: prefix.iter().copied().chain(layout.pointer).collect::<Vec<u32>>().into(),
-        length: prefix.iter().copied().chain(layout.length).collect::<Vec<u32>>().into(),
-        capacity: prefix.iter().copied().chain(layout.capacity).collect::<Vec<u32>>().into(),
+        pointer: prefix
+            .iter()
+            .copied()
+            .chain(layout.pointer)
+            .collect::<Vec<u32>>()
+            .into(),
+        length: prefix
+            .iter()
+            .copied()
+            .chain(layout.length)
+            .collect::<Vec<u32>>()
+            .into(),
+        capacity: prefix
+            .iter()
+            .copied()
+            .chain(layout.capacity)
+            .collect::<Vec<u32>>()
+            .into(),
     }))
 }
 
@@ -1756,7 +1865,9 @@ fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Opti
     if fq_name(reader, id).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
         return None;
     }
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let (state_index, state_member) = unique_member(reader, &st.members, "state")?;
     // The state is a single-byte atomic (`AtomicU8`). Reuse the atomic
     // detector for the path to the stored byte, then anchor it at `state`.
@@ -1788,7 +1899,9 @@ fn atomic_usize_field_path(
     if fq_name(reader, id).as_deref() != Some(type_name) {
         return None;
     }
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let (field_index, field_member) = unique_member(reader, &st.members, field)?;
     let mut paths = Vec::new();
     find_zero_offset_uint_paths(
@@ -1799,8 +1912,14 @@ fn atomic_usize_field_path(
         &mut Vec::new(),
         &mut paths,
     );
-    let [inner] = paths.as_slice() else { return None };
-    Some(std::iter::once(field_index as u32).chain(inner.iter().copied()).collect())
+    let [inner] = paths.as_slice() else {
+        return None;
+    };
+    Some(
+        std::iter::once(field_index as u32)
+            .chain(inner.iter().copied())
+            .collect(),
+    )
 }
 
 /// A `tokio::sync::notify::Notify` and the paths reify needs to render it
@@ -1845,14 +1964,22 @@ fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawNotifyFor
         &mut Vec::new(),
         &mut state_tails,
     );
-    let [state_tail] = state_tails.as_slice() else { return None };
-    let mutex = raw_prefix.iter().copied().chain(state_tail.iter().copied()).collect();
+    let [state_tail] = state_tails.as_slice() else {
+        return None;
+    };
+    let mutex = raw_prefix
+        .iter()
+        .copied()
+        .chain(state_tail.iter().copied())
+        .collect();
 
     let (head, _) = field_path(reader, id, &["waiters", "__1", "data", "value", "head"])?;
 
     // The queue is a `LinkedList<Waiter, Waiter>`; its node type is the `Waiter`.
     let (_, queue_ty) = field_path(reader, id, &["waiters", "__1", "data", "value"])?;
-    let RawType::Struct(list) = reader.canonical_type(queue_ty)? else { return None };
+    let RawType::Struct(list) = reader.canonical_type(queue_ty)? else {
+        return None;
+    };
     let param = list.template_params.last()?;
     let waiter = reader.canonicalize(param.type_id);
     if fq_name(reader, waiter).as_deref() != Some("tokio::sync::notify::Waiter") {
@@ -1861,11 +1988,22 @@ fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawNotifyFor
 
     // Rooted at the `Waiter`: its atomic `notification` word (whether it has been
     // handed a notification) and its successor pointer (`pointers.inner.value.next`).
-    let waiter_notification =
-        atomic_usize_field_path(reader, waiter, "tokio::sync::notify::Waiter", "notification")?;
+    let waiter_notification = atomic_usize_field_path(
+        reader,
+        waiter,
+        "tokio::sync::notify::Waiter",
+        "notification",
+    )?;
     let (waiter_next, _) = field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
 
-    Some(RawNotifyFormat { state, mutex, head, waiter, waiter_notification, waiter_next })
+    Some(RawNotifyFormat {
+        state,
+        mutex,
+        head,
+        waiter,
+        waiter_notification,
+        waiter_next,
+    })
 }
 
 /// Recognize a `tokio::sync::batch_semaphore::Semaphore` and return the selector
@@ -1896,7 +2034,9 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
     {
         return None;
     }
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
 
     // The readiness bitmap lives in `header.ready_slots`, an atomic `usize`
     // behind the usual loom/UnsafeCell/Atomic wrappers.
@@ -1914,7 +2054,9 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
         &mut Vec::new(),
         &mut ready_tail,
     );
-    let [ready_tail] = ready_tail.as_slice() else { return None };
+    let [ready_tail] = ready_tail.as_slice() else {
+        return None;
+    };
     let ready_slots = [header_index as u32, ready_index as u32]
         .into_iter()
         .chain(ready_tail.iter().copied())
@@ -1926,7 +2068,10 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
         return None;
     };
     let (array_index, array_member) = unique_member(reader, &values.members, "__0")?;
-    if !matches!(reader.canonical_type(array_member.type_id), Some(RawType::Array(_))) {
+    if !matches!(
+        reader.canonical_type(array_member.type_id),
+        Some(RawType::Array(_))
+    ) {
         return None;
     }
     let values = vec![values_index as u32, array_index as u32];
@@ -1963,7 +2108,9 @@ fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscRxFo
     // Receiver → Rx → Arc → the `NonNull` raw pointer at `ptr.pointer`, which
     // targets the `ArcInner<Chan>` allocation.
     let (chan_pointer, ptr_ty) = field_path(reader, id, &["chan", "inner", "ptr", "pointer"])?;
-    let RawType::Pointer(ptr) = reader.canonical_type(ptr_ty)? else { return None };
+    let RawType::Pointer(ptr) = reader.canonical_type(ptr_ty)? else {
+        return None;
+    };
     let arcinner = reader.canonicalize(ptr.target_type_id);
 
     // Skip the Arc's strong/weak header to the `data` field: the `Chan`.
@@ -1991,9 +2138,17 @@ fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscRxFo
         "tokio::sync::batch_semaphore::Semaphore",
         "permits",
     )?;
-    let permits = sem_prefix.into_iter().chain(permits_tail).collect::<Vec<u32>>();
+    let permits = sem_prefix
+        .into_iter()
+        .chain(permits_tail)
+        .collect::<Vec<u32>>();
 
-    Some(RawMpscRxFormat { chan_pointer, chan, bound, permits })
+    Some(RawMpscRxFormat {
+        chan_pointer,
+        chan,
+        bound,
+        permits,
+    })
 }
 
 /// A `tokio::sync::mpsc::bounded::Semaphore` and the paths reify needs to render
@@ -2055,8 +2210,14 @@ fn bounded_semaphore_debug_format(
         &mut Vec::new(),
         &mut state_tails,
     );
-    let [state_tail] = state_tails.as_slice() else { return None };
-    let mutex = raw_prefix.iter().copied().chain(state_tail.iter().copied()).collect();
+    let [state_tail] = state_tails.as_slice() else {
+        return None;
+    };
+    let mutex = raw_prefix
+        .iter()
+        .copied()
+        .chain(state_tail.iter().copied())
+        .collect();
 
     let (closed, closed_ty) = field_path(
         reader,
@@ -2070,7 +2231,15 @@ fn bounded_semaphore_debug_format(
     let (head, _) = field_path(
         reader,
         id,
-        &["semaphore", "waiters", "__1", "data", "value", "queue", "head"],
+        &[
+            "semaphore",
+            "waiters",
+            "__1",
+            "data",
+            "value",
+            "queue",
+            "head",
+        ],
     )?;
 
     // The queue is a `LinkedList<Waiter, Waiter>`; its node type is the `Waiter`.
@@ -2079,7 +2248,9 @@ fn bounded_semaphore_debug_format(
         id,
         &["semaphore", "waiters", "__1", "data", "value", "queue"],
     )?;
-    let RawType::Struct(list) = reader.canonical_type(queue_ty)? else { return None };
+    let RawType::Struct(list) = reader.canonical_type(queue_ty)? else {
+        return None;
+    };
     let param = list.template_params.last()?;
     let waiter = reader.canonicalize(param.type_id);
     if fq_name(reader, waiter).as_deref() != Some("tokio::sync::batch_semaphore::Waiter") {
@@ -2094,8 +2265,7 @@ fn bounded_semaphore_debug_format(
         "tokio::sync::batch_semaphore::Waiter",
         "state",
     )?;
-    let (waiter_next, _) =
-        field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
+    let (waiter_next, _) = field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
 
     Some(RawBoundedSemaphoreFormat {
         mutex,
@@ -2112,11 +2282,7 @@ fn bounded_semaphore_debug_format(
 /// Walk a chain of named struct members, returning the member-index path and
 /// the type reached. Used to record navigation paths through transparent
 /// wrappers (CachePadded, UnsafeCell, NonNull) by name.
-fn field_path(
-    reader: &DwReader<'_>,
-    ty: TypeId,
-    names: &[&str],
-) -> Option<(Vec<u32>, TypeId)> {
+fn field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<(Vec<u32>, TypeId)> {
     let mut path = Vec::with_capacity(names.len());
     let mut cur = reader.canonicalize(ty);
     for name in names {
@@ -2145,7 +2311,9 @@ fn usize_field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option
         &mut Vec::new(),
         &mut tails,
     );
-    let [tail] = tails.as_slice() else { return None };
+    let [tail] = tails.as_slice() else {
+        return None;
+    };
     Some(head.into_iter().chain(tail.iter().copied()).collect())
 }
 
@@ -2172,11 +2340,15 @@ fn mpsc_chan_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscCh
     // `tail_position` is a (shared) atomic usize; `index` is a plain usize on
     // the single-consumer receiver. Walk to the stored word either way.
     let tail = usize_field_path(reader, id, &["tx", "value", "tail_position"])?;
-    let index =
-        usize_field_path(reader, id, &["rx_fields", "__0", "value", "list", "index"])?;
-    let (head, head_ty) =
-        field_path(reader, id, &["rx_fields", "__0", "value", "list", "head", "pointer"])?;
-    let RawType::Pointer(head_ptr) = reader.canonical_type(head_ty)? else { return None };
+    let index = usize_field_path(reader, id, &["rx_fields", "__0", "value", "list", "index"])?;
+    let (head, head_ty) = field_path(
+        reader,
+        id,
+        &["rx_fields", "__0", "value", "list", "head", "pointer"],
+    )?;
+    let RawType::Pointer(head_ptr) = reader.canonical_type(head_ty)? else {
+        return None;
+    };
     let block = reader.canonicalize(head_ptr.target_type_id);
 
     // Paths rooted at the block type.
@@ -2191,22 +2363,40 @@ fn mpsc_chan_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscCh
         &mut Vec::new(),
         &mut next_tails,
     );
-    let [next_tail] = next_tails.as_slice() else { return None };
-    let next = next_head.iter().copied().chain(next_tail.iter().copied()).collect();
+    let [next_tail] = next_tails.as_slice() else {
+        return None;
+    };
+    let next = next_head
+        .iter()
+        .copied()
+        .chain(next_tail.iter().copied())
+        .collect();
     let (values, values_ty) = field_path(reader, block, &["values", "__0"])?;
     if !matches!(reader.canonical_type(values_ty), Some(RawType::Array(_))) {
         return None;
     }
 
     // `element` is the block's message type `T`.
-    let RawType::Struct(bst) = reader.canonical_type(block)? else { return None };
-    let [param] = bst.template_params.as_ref() else { return None };
+    let RawType::Struct(bst) = reader.canonical_type(block)? else {
+        return None;
+    };
+    let [param] = bst.template_params.as_ref() else {
+        return None;
+    };
     if param.name.map(|name| reader.strings.get(name)) != Some("T") {
         return None;
     }
     let element = reader.canonicalize(param.type_id);
 
-    Some(RawMpscChanFormat { tail, index, head, start_index, next, values, element })
+    Some(RawMpscChanFormat {
+        tail,
+        index,
+        head,
+        start_index,
+        next,
+        values,
+        element,
+    })
 }
 
 /// Like [`find_zero_offset_uint_paths`], but the target is any pointer. Used
@@ -2231,9 +2421,19 @@ fn find_zero_offset_pointer_paths(
         Some(RawType::Union(u)) => u.members.as_ref(),
         _ => &[],
     };
-    for (index, member) in members.iter().enumerate().filter(|(_, member)| member.offset == 0) {
+    for (index, member) in members
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| member.offset == 0)
+    {
         path.push(index as u32);
-        find_zero_offset_pointer_paths(reader, reader.canonicalize(member.type_id), path, seen, found);
+        find_zero_offset_pointer_paths(
+            reader,
+            reader.canonicalize(member.type_id),
+            path,
+            seen,
+            found,
+        );
         path.pop();
     }
     seen.pop();
@@ -2263,9 +2463,20 @@ fn find_zero_offset_uint_paths(
         Some(RawType::Union(u)) => u.members.as_ref(),
         _ => &[],
     };
-    for (index, member) in members.iter().enumerate().filter(|(_, member)| member.offset == 0) {
+    for (index, member) in members
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| member.offset == 0)
+    {
         path.push(index as u32);
-        find_zero_offset_uint_paths(reader, reader.canonicalize(member.type_id), size, path, seen, found);
+        find_zero_offset_uint_paths(
+            reader,
+            reader.canonicalize(member.type_id),
+            size,
+            path,
+            seen,
+            found,
+        );
         path.pop();
     }
     seen.pop();
@@ -2276,7 +2487,9 @@ fn find_zero_offset_uint_paths(
 /// ordering so reify never guesses from the private field name or bakes in
 /// rustc's slot numbers independently.
 fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
 
     let mut data_matches = st.members.iter().enumerate().filter_map(|(index, member)| {
         if member.name.map(|name| reader.strings.get(name)) != Some("pointer") {
@@ -2343,8 +2556,7 @@ fn dyn_tail_offset(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) ->
         return None;
     }
     let raw = reader.canonical_type(id)?;
-    if fq_name(reader, id)
-        .is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn "))
+    if fq_name(reader, id).is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn "))
     {
         return Some(0);
     }
@@ -2366,18 +2578,24 @@ fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bo
 
 fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let (member, _) = unsafe_cell_layout(reader, id)?;
-    Some(DebugFormat::Transparent { member: Selector::member(member) })
+    Some(DebugFormat::Transparent {
+        member: Selector::member(member),
+    })
 }
 
 fn unsafe_cell_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
     if namespace != "core::cell" || !name.starts_with("UnsafeCell<") || !name.ends_with('>') {
         return None;
     }
 
-    let [param] = st.template_params.as_ref() else { return None };
+    let [param] = st.template_params.as_ref() else {
+        return None;
+    };
     if param.name.map(|name| reader.strings.get(name)) != Some("T") {
         return None;
     }
@@ -2395,7 +2613,9 @@ fn unsafe_cell_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)
 }
 
 fn loom_unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
     if namespace != "tokio::loom::std::unsafe_cell"
@@ -2405,7 +2625,9 @@ fn loom_unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
         return None;
     }
 
-    let [param] = st.template_params.as_ref() else { return None };
+    let [param] = st.template_params.as_ref() else {
+        return None;
+    };
     if param.name.map(|name| reader.strings.get(name)) != Some("T") {
         return None;
     }
@@ -2420,11 +2642,15 @@ fn loom_unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
     if matches.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent { member: Selector::member(index as u32) })
+    Some(DebugFormat::Transparent {
+        member: Selector::member(index as u32),
+    })
 }
 
 fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let atomic_module = namespace.strip_prefix("tokio::loom::std::atomic_")?;
     if atomic_module.is_empty() || atomic_module.contains("::") {
@@ -2436,9 +2662,7 @@ fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
     }
 
     let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
-        if member.offset != 0
-            || member.name.map(|name| reader.strings.get(name)) != Some("inner")
-        {
+        if member.offset != 0 || member.name.map(|name| reader.strings.get(name)) != Some("inner") {
             return false;
         }
         let Some((_, atomic)) = unsafe_cell_layout(reader, member.type_id) else {
@@ -2450,7 +2674,9 @@ fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
     if matches.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent { member: Selector::member(index as u32) })
+    Some(DebugFormat::Transparent {
+        member: Selector::member(index as u32),
+    })
 }
 
 /// tokio's `loom::std::parking_lot` shims are newtypes that pair a
@@ -2458,7 +2684,9 @@ fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
 /// `Condvar`, and their guards). Display them as the inner lock so the
 /// loom scaffolding does not obscure it.
 fn loom_parking_lot_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     if namespace != "tokio::loom::std::parking_lot" {
         return None;
@@ -2473,30 +2701,37 @@ fn loom_parking_lot_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
     if real.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent { member: Selector::member(index as u32) })
+    Some(DebugFormat::Transparent {
+        member: Selector::member(index as u32),
+    })
 }
 
 fn non_null_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let (member, _) = non_null_layout(reader, id)?;
-    Some(DebugFormat::Transparent { member: Selector::member(member) })
+    Some(DebugFormat::Transparent {
+        member: Selector::member(member),
+    })
 }
 
 fn non_null_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
     if namespace != "core::ptr::non_null" || !name.starts_with("NonNull<") || !name.ends_with('>') {
         return None;
     }
 
-    let [param] = st.template_params.as_ref() else { return None };
+    let [param] = st.template_params.as_ref() else {
+        return None;
+    };
     if param.name.map(|name| reader.strings.get(name)) != Some("T") {
         return None;
     }
     let target = reader.canonicalize(param.type_id);
     let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
-        if member.offset != 0
-            || member.name.map(|name| reader.strings.get(name)) != Some("pointer")
+        if member.offset != 0 || member.name.map(|name| reader.strings.get(name)) != Some("pointer")
         {
             return false;
         }
@@ -2513,14 +2748,18 @@ fn non_null_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
 }
 
 fn unique_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
     if namespace != "core::ptr::unique" || !name.starts_with("Unique<") || !name.ends_with('>') {
         return None;
     }
 
-    let [param] = st.template_params.as_ref() else { return None };
+    let [param] = st.template_params.as_ref() else {
+        return None;
+    };
     if param.name.map(|name| reader.strings.get(name)) != Some("T") {
         return None;
     }
@@ -2535,19 +2774,25 @@ fn unique_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     if matches.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent { member: Selector::member(index as u32) })
+    Some(DebugFormat::Transparent {
+        member: Selector::member(index as u32),
+    })
 }
 
 fn usize_no_high_bit_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     let (member, _) = usize_no_high_bit_layout(reader, id)?;
-    Some(DebugFormat::Transparent { member: Selector::member(member) })
+    Some(DebugFormat::Transparent {
+        member: Selector::member(member),
+    })
 }
 
 fn usize_no_high_bit_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
     if fq_name(reader, id).as_deref() != Some("core::num::niche_types::UsizeNoHighBit") {
         return None;
     }
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
         member.offset == 0
             && member.name.map(|name| reader.strings.get(name)) == Some("__0")
@@ -2572,21 +2817,27 @@ fn is_integer(reader: &DwReader<'_>, id: TypeId) -> bool {
 /// paired with [`nonzero_inner_debug_format`] the two layers collapse to the
 /// value. Handles every width and signedness.
 fn nonzero_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
     if namespace != "core::num::nonzero" || !name.starts_with("NonZero<") || !name.ends_with('>') {
         return None;
     }
     let member = single_zero_offset_field(reader, &st.members, |_| true)?;
-    Some(DebugFormat::Transparent { member: Selector::member(member) })
+    Some(DebugFormat::Transparent {
+        member: Selector::member(member),
+    })
 }
 
 /// The niche-typed inner of a `NonZero<T>`
 /// (`core::num::niche_types::NonZero{U,I}<width>Inner`), transparent over its
 /// integer field.
 fn nonzero_inner_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
     if namespace != "core::num::niche_types"
@@ -2596,7 +2847,9 @@ fn nonzero_inner_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Debug
         return None;
     }
     let member = single_zero_offset_field(reader, &st.members, |ty| is_integer(reader, ty))?;
-    Some(DebugFormat::Transparent { member: Selector::member(member) })
+    Some(DebugFormat::Transparent {
+        member: Selector::member(member),
+    })
 }
 
 /// The index of the unique `__0` member at offset zero whose type satisfies
@@ -2616,14 +2869,18 @@ fn single_zero_offset_field(
 }
 
 fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else { return None };
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
     if namespace != "core::sync::atomic" || !name.starts_with("Atomic<") || !name.ends_with('>') {
         return None;
     }
 
-    let [param] = st.template_params.as_ref() else { return None };
+    let [param] = st.template_params.as_ref() else {
+        return None;
+    };
     if param.name.map(|name| reader.strings.get(name)) != Some("T") {
         return None;
     }
@@ -2637,7 +2894,9 @@ fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
         &mut Vec::new(),
         &mut paths,
     );
-    let [value] = paths.as_slice() else { return None };
+    let [value] = paths.as_slice() else {
+        return None;
+    };
     Some(DebugFormat::Known(crate::bundle::KnownFormat::Atomic {
         value: value.clone().into(),
     }))
@@ -2668,7 +2927,11 @@ fn find_zero_offset_paths(
         Some(RawType::Union(u)) => u.members.as_ref(),
         _ => &[],
     };
-    for (index, member) in members.iter().enumerate().filter(|(_, member)| member.offset == 0) {
+    for (index, member) in members
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| member.offset == 0)
+    {
         path.push(index as u32);
         find_zero_offset_paths(
             reader,
@@ -2898,7 +3161,10 @@ fn rustc_version_of(producer: &str) -> String {
 /// Recover the tokio version from a registry source path such as
 /// `…/tokio-1.52.3/src/runtime/task/raw.rs`.
 fn tokio_version_of(loc: &OwnedLoc) -> Option<semver::Version> {
-    for part in [loc.dir.as_deref(), loc.file.as_deref()].into_iter().flatten() {
+    for part in [loc.dir.as_deref(), loc.file.as_deref()]
+        .into_iter()
+        .flatten()
+    {
         if let Some(i) = part.find("tokio-") {
             let rest = &part[i + "tokio-".len()..];
             let end = rest
@@ -2941,30 +3207,38 @@ impl<'a> Emitter<'a> {
             pending: VecDeque::new(),
             unresolved: None,
             unresolved_refs: 0,
-        cenum_synth_repr: 0,
+            cenum_synth_repr: 0,
         }
     }
 
     /// Build an enumerated [`BitField`], interning its label and value labels.
-    fn enum_field(
-        &mut self,
-        name: &str,
-        shift: u8,
-        width: u8,
-        table: &[(u64, &str)],
-    ) -> BitField {
+    fn enum_field(&mut self, name: &str, shift: u8, width: u8, table: &[(u64, &str)]) -> BitField {
         let name = self.interner.intern(name);
         let interner = &mut self.interner;
-        let render =
-            FieldRender::Enum(table.iter().map(|(v, l)| (*v, interner.intern(l))).collect());
-        BitField { name, shift, width: NonZeroU8::new(width), render }
+        let render = FieldRender::Enum(
+            table
+                .iter()
+                .map(|(v, l)| (*v, interner.intern(l)))
+                .collect(),
+        );
+        BitField {
+            name,
+            shift,
+            width: NonZeroU8::new(width),
+            render,
+        }
     }
 
     /// Build an unsigned-integer [`BitField`] covering all bits at and above
     /// `shift` (`width: None`).
     fn uint_tail_field(&mut self, name: &str, shift: u8) -> BitField {
         let name = self.interner.intern(name);
-        BitField { name, shift, width: None, render: FieldRender::Uint }
+        BitField {
+            name,
+            shift,
+            width: None,
+            render: FieldRender::Uint,
+        }
     }
 
     /// parking_lot mutex state byte: bit 0 locked, bit 1 parked.
@@ -2977,8 +3251,12 @@ impl<'a> Emitter<'a> {
     /// tokio `Notify` state word: low two bits the notification state, the rest
     /// the `notify_waiters()` generation counter.
     fn notify_state_decode(&mut self) -> ScalarDecode {
-        let state =
-            self.enum_field("state", 0, 2, &[(0, "idle"), (1, "waiting"), (2, "notified")]);
+        let state = self.enum_field(
+            "state",
+            0,
+            2,
+            &[(0, "idle"), (1, "waiting"), (2, "notified")],
+        );
         let generation = self.uint_tail_field("generation", 2);
         ScalarDecode::Bits(vec![state, generation])
     }
@@ -3073,12 +3351,21 @@ impl<'a> Emitter<'a> {
                 let permits_decode = self.semaphore_permits_decode();
                 let bool_decode = self.bool_decode();
                 let waiter = self.reserve(format.waiter);
-                let scalar = |at: Vec<u32>, decode| DisplayNode::Scalar { at: at.into(), decode };
+                let scalar = |at: Vec<u32>, decode| DisplayNode::Scalar {
+                    at: at.into(),
+                    decode,
+                };
                 let named = |label, node| Field::Named { label, node };
                 let node = DisplayNode::Struct {
                     fields: vec![
-                        named(self.interner.intern("mutex"), scalar(format.mutex, mutex_decode)),
-                        named(self.interner.intern("closed"), scalar(format.closed, bool_decode)),
+                        named(
+                            self.interner.intern("mutex"),
+                            scalar(format.mutex, mutex_decode),
+                        ),
+                        named(
+                            self.interner.intern("closed"),
+                            scalar(format.closed, bool_decode),
+                        ),
                         named(
                             self.interner.intern("permits"),
                             scalar(format.permits, permits_decode),
@@ -3196,7 +3483,10 @@ impl<'a> Emitter<'a> {
     fn push_placeholder(&mut self, name: Option<String>) -> BundleTypeId {
         let bid = BundleTypeId(self.defs.len() as u32);
         let n = self.interner.intern(UNRESOLVED);
-        self.defs.push(TypeDef::Opaque { name: n, size: None });
+        self.defs.push(TypeDef::Opaque {
+            name: n,
+            size: None,
+        });
         self.names.push(name);
         bid
     }
@@ -3227,10 +3517,7 @@ impl<'a> Emitter<'a> {
 
     /// A variant member's declaration coordinates — for coroutines, the
     /// awaited expression's file and line.
-    fn member_decl(
-        &mut self,
-        m: &crate::raw_types::RawMember<crate::StrId>,
-    ) -> Option<SourceLoc> {
+    fn member_decl(&mut self, m: &crate::raw_types::RawMember<crate::StrId>) -> Option<SourceLoc> {
         let loc = m.source_loc.as_deref()?;
         let file = loc.file.map(|f| self.reader.strings.get(f))?;
         let line = loc.line?;
@@ -3262,9 +3549,7 @@ impl<'a> Emitter<'a> {
                 count: a.count,
             },
             RawType::Struct(st) => {
-                let name = self
-                    .fq_name(id)
-                    .unwrap_or_else(|| "<anon>".to_owned());
+                let name = self.fq_name(id).unwrap_or_else(|| "<anon>".to_owned());
                 TypeDef::Struct {
                     name: self.interner.intern(&name),
                     size: st.size,
@@ -3272,9 +3557,7 @@ impl<'a> Emitter<'a> {
                 }
             }
             RawType::Union(u) => {
-                let name = self
-                    .fq_name(id)
-                    .unwrap_or_else(|| "<anon>".to_owned());
+                let name = self.fq_name(id).unwrap_or_else(|| "<anon>".to_owned());
                 TypeDef::Union {
                     name: self.interner.intern(&name),
                     size: u.size,
@@ -3282,9 +3565,7 @@ impl<'a> Emitter<'a> {
                 }
             }
             RawType::Enum(e) => {
-                let name = self
-                    .fq_name(id)
-                    .unwrap_or_else(|| "<anon>".to_owned());
+                let name = self.fq_name(id).unwrap_or_else(|| "<anon>".to_owned());
                 let name = self.interner.intern(&name);
                 match &e.shape {
                     RawVariantShape::CStyle {
@@ -3375,10 +3656,7 @@ impl<'a> Emitter<'a> {
             .names
             .iter()
             .enumerate()
-            .filter_map(|(i, n)| {
-                n.as_ref()
-                    .map(|n| (n.clone(), BundleTypeId(i as u32)))
-            })
+            .filter_map(|(i, n)| n.as_ref().map(|n| (n.clone(), BundleTypeId(i as u32))))
             .collect();
         index.sort();
         let name_index = index
@@ -3407,9 +3685,9 @@ impl<'a> Emitter<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        dyn_tail_offset, has_dyn_tail, loom_parking_lot_debug_format, match_static_symbol,
-        nonzero_debug_format, nonzero_inner_debug_format, scalar_newtype_debug_format,
-        scan_vtable_section, StaticRole, VtableTypeHint,
+        StaticRole, VtableTypeHint, dyn_tail_offset, has_dyn_tail, loom_parking_lot_debug_format,
+        match_static_symbol, nonzero_debug_format, nonzero_inner_debug_format,
+        scalar_newtype_debug_format, scan_vtable_section,
     };
     use crate::raw_types::{NsId, RawMember, RawStruct, RawType};
     use crate::{DwReader, TypeId};
@@ -3457,8 +3735,12 @@ mod tests {
         let outer_id = type_id(3);
         let plain_id = type_id(4);
         let dyn_name = reader.strings.intern("dyn app::Trait");
-        let inner_name = reader.strings.intern("alloc::sync::ArcInner<dyn app::Trait>");
-        let outer_name = reader.strings.intern("app::Outer<alloc::sync::ArcInner<dyn app::Trait>>");
+        let inner_name = reader
+            .strings
+            .intern("alloc::sync::ArcInner<dyn app::Trait>");
+        let outer_name = reader
+            .strings
+            .intern("app::Outer<alloc::sync::ArcInner<dyn app::Trait>>");
         let plain_name = reader.strings.intern("app::Plain");
         reader.types.insert(dyn_id, empty_struct(dyn_name));
         reader.types.insert(inner_id, wrapper(inner_name, dyn_id));
@@ -3474,8 +3756,14 @@ mod tests {
         // member's offset (16), so the erased value is reached by skipping
         // the accumulated sized headers.
         assert_eq!(dyn_tail_offset(&reader, dyn_id, &mut Vec::new()), Some(0));
-        assert_eq!(dyn_tail_offset(&reader, inner_id, &mut Vec::new()), Some(16));
-        assert_eq!(dyn_tail_offset(&reader, outer_id, &mut Vec::new()), Some(32));
+        assert_eq!(
+            dyn_tail_offset(&reader, inner_id, &mut Vec::new()),
+            Some(16)
+        );
+        assert_eq!(
+            dyn_tail_offset(&reader, outer_id, &mut Vec::new()),
+            Some(32)
+        );
         assert_eq!(dyn_tail_offset(&reader, plain_id, &mut Vec::new()), None);
     }
 
@@ -3520,10 +3808,16 @@ mod tests {
 
         let (m0, m1) = (reader.strings.intern("__0"), reader.strings.intern("__1"));
         let phantom_name = reader.strings.intern("PhantomData<std::sync::Mutex<T>>");
-        let inner_name =
-            reader.strings.intern("lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, T>");
+        let inner_name = reader
+            .strings
+            .intern("lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, T>");
         let mutex_name = reader.strings.intern("Mutex<T>");
-        let member = |name, type_id, offset| RawMember { name: Some(name), offset, type_id, source_loc: None };
+        let member = |name, type_id, offset| RawMember {
+            name: Some(name),
+            offset,
+            type_id,
+            source_loc: None,
+        };
 
         let phantom_id = type_id(1);
         let inner_id = type_id(2);
@@ -3544,7 +3838,9 @@ mod tests {
         // real lock at member index 1.
         assert_eq!(
             loom_parking_lot_debug_format(&reader, mutex_id),
-            Some(DebugFormat::Transparent { member: Selector::member(1) })
+            Some(DebugFormat::Transparent {
+                member: Selector::member(1)
+            })
         );
         // A bare struct outside the loom parking_lot namespace is untouched.
         assert_eq!(loom_parking_lot_debug_format(&reader, inner_id), None);
@@ -3572,7 +3868,12 @@ mod tests {
         };
 
         let m0 = reader.strings.intern("__0");
-        let member = |type_id| RawMember { name: Some(m0), offset: 0, type_id, source_loc: None };
+        let member = |type_id| RawMember {
+            name: Some(m0),
+            offset: 0,
+            type_id,
+            source_loc: None,
+        };
 
         // Exercise a signed width too, to confirm the match is not u64-only.
         let int_id = type_id(1);
@@ -3583,19 +3884,35 @@ mod tests {
         let nonzero_name = reader.strings.intern("NonZero<i32>");
         reader.types.insert(
             int_id,
-            RawBase { name: Some(int_name), namespace: None, encoding: Encoding::Signed, size: 4, alignment: None }
-                .into(),
+            RawBase {
+                name: Some(int_name),
+                namespace: None,
+                encoding: Encoding::Signed,
+                size: 4,
+                alignment: None,
+            }
+            .into(),
         );
-        reader.types.insert(inner_id, ns_struct(Some(niche_ns), inner_name, 4, vec![member(int_id)]));
-        reader.types.insert(nonzero_id, ns_struct(Some(nonzero_ns), nonzero_name, 4, vec![member(inner_id)]));
+        reader.types.insert(
+            inner_id,
+            ns_struct(Some(niche_ns), inner_name, 4, vec![member(int_id)]),
+        );
+        reader.types.insert(
+            nonzero_id,
+            ns_struct(Some(nonzero_ns), nonzero_name, 4, vec![member(inner_id)]),
+        );
 
         assert_eq!(
             nonzero_debug_format(&reader, nonzero_id),
-            Some(DebugFormat::Transparent { member: Selector::member(0) })
+            Some(DebugFormat::Transparent {
+                member: Selector::member(0)
+            })
         );
         assert_eq!(
             nonzero_inner_debug_format(&reader, inner_id),
-            Some(DebugFormat::Transparent { member: Selector::member(0) })
+            Some(DebugFormat::Transparent {
+                member: Selector::member(0)
+            })
         );
         // The public wrapper detector does not fire on the inner, nor vice versa.
         assert_eq!(nonzero_debug_format(&reader, inner_id), None);
@@ -3612,19 +3929,35 @@ mod tests {
         let u64_id = type_id(1);
         reader.types.insert(
             u64_id,
-            RawBase { name: Some(u64n), namespace: None, encoding: Encoding::Unsigned, size: 8, alignment: None }
-                .into(),
+            RawBase {
+                name: Some(u64n),
+                namespace: None,
+                encoding: Encoding::Unsigned,
+                size: 8,
+                alignment: None,
+            }
+            .into(),
         );
         let (m0, m1) = (reader.strings.intern("__0"), reader.strings.intern("__1"));
-        let member = |name, type_id, offset| RawMember { name: Some(name), offset, type_id, source_loc: None };
+        let member = |name, type_id, offset| RawMember {
+            name: Some(name),
+            offset,
+            type_id,
+            source_loc: None,
+        };
 
         // A tuple newtype over a scalar is transparent over its field.
         let epochn = reader.strings.intern("Epoch");
         let epoch_id = type_id(2);
-        reader.types.insert(epoch_id, ns_struct(None, epochn, 8, vec![member(m0, u64_id, 0)]));
+        reader.types.insert(
+            epoch_id,
+            ns_struct(None, epochn, 8, vec![member(m0, u64_id, 0)]),
+        );
         assert_eq!(
             scalar_newtype_debug_format(&reader, epoch_id),
-            Some(DebugFormat::Transparent { member: Selector::member(0) })
+            Some(DebugFormat::Transparent {
+                member: Selector::member(0)
+            })
         );
 
         // A pair is not a wrapper: the scalar does not fill the struct.
@@ -3632,14 +3965,22 @@ mod tests {
         let pair_id = type_id(3);
         reader.types.insert(
             pair_id,
-            ns_struct(None, pairn, 16, vec![member(m0, u64_id, 0), member(m1, u64_id, 8)]),
+            ns_struct(
+                None,
+                pairn,
+                16,
+                vec![member(m0, u64_id, 0), member(m1, u64_id, 8)],
+            ),
         );
         assert_eq!(scalar_newtype_debug_format(&reader, pair_id), None);
 
         // Wrapping a non-scalar (a struct) is left alone.
         let wrapn = reader.strings.intern("Wrap");
         let wrap_id = type_id(4);
-        reader.types.insert(wrap_id, ns_struct(None, wrapn, 8, vec![member(m0, epoch_id, 0)]));
+        reader.types.insert(
+            wrap_id,
+            ns_struct(None, wrapn, 8, vec![member(m0, epoch_id, 0)]),
+        );
         assert_eq!(scalar_newtype_debug_format(&reader, wrap_id), None);
     }
 
@@ -3696,12 +4037,10 @@ mod tests {
     // under `tokio::runtime::context::CONTEXT` is the tokio context key.
     #[test]
     fn test_reject_foreign_internal_val_symbols() {
-        let mpmc_context =
-            "_RNvNCNvNvMNtNtNtCsijgp68BdGXk_3std4sync4mpmc7contextNtB8_7Context4with7CONTEXT023___RUST_STD_INTERNAL_VAL";
+        let mpmc_context = "_RNvNCNvNvMNtNtNtCsijgp68BdGXk_3std4sync4mpmc7contextNtB8_7Context4with7CONTEXT023___RUST_STD_INTERNAL_VAL";
         let tokio_local =
             "_RNvNCNvNtNtCsjd01hASgEtw_5tokio4task5local7CURRENT023___RUST_STD_INTERNAL_VAL";
-        let parking_lot =
-            "_RNvNCNvNvNtCs6eIw0jaMQft_16parking_lot_core11parking_lot16with_thread_data11THREAD_DATA023___RUST_STD_INTERNAL_VAL";
+        let parking_lot = "_RNvNCNvNvNtCs6eIw0jaMQft_16parking_lot_core11parking_lot16with_thread_data11THREAD_DATA023___RUST_STD_INTERNAL_VAL";
         assert_eq!(match_static_symbol(mpmc_context), None);
         assert_eq!(match_static_symbol(tokio_local), None);
         assert_eq!(match_static_symbol(parking_lot), None);

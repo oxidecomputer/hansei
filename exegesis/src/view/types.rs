@@ -1,6 +1,6 @@
 use crate::raw_types::{
-    Encoding, NsId, RawArray, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember,
-    RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawFunc, RawType, RawUnion,
+    Encoding, NsId, RawArray, RawBase, RawEnum, RawEnumerator, RawFunc, RawGenericParameter,
+    RawMember, RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion,
     RawVariant, SourceLoc, VariantShape,
 };
 use crate::reader::DwReader;
@@ -2757,4 +2757,3 @@ mod tests {
         });
     }
 }
-

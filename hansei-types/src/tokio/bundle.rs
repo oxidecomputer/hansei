@@ -173,14 +173,20 @@ impl<'b, T: Target> Context<'b, T> {
         let Some(candidates) = symbols.as_ref().unwrap().get(&key) else {
             return Ok(None);
         };
-        let by_addr: BTreeMap<u64, &SymbolBuf> =
-            candidates.iter().map(|symbol| (symbol.st_value, symbol)).collect();
+        let by_addr: BTreeMap<u64, &SymbolBuf> = candidates
+            .iter()
+            .map(|symbol| (symbol.st_value, symbol))
+            .collect();
         match by_addr.len() {
             0 => Ok(None),
             1 => Ok(Some((*by_addr.values().next().unwrap()).clone())),
             _ => bail!(
                 "normalized static {name} matched multiple target addresses: {}",
-                by_addr.keys().map(|addr| format!("{addr:#x}")).collect::<Vec<_>>().join(", ")
+                by_addr
+                    .keys()
+                    .map(|addr| format!("{addr:#x}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         }
     }
@@ -205,10 +211,14 @@ impl<'b, T: Target> Context<'b, T> {
         // A symbol may exist in the target only as `.llvm.<hash>`-suffixed
         // internalized copies; those still count as a match (the suffix is
         // path-sensitive and never participates in joins).
-        if !missing.is_empty() && let Ok(all) = self.proc.symbols() {
+        if !missing.is_empty()
+            && let Ok(all) = self.proc.symbols()
+        {
             let stripped: HashSet<&str> = all.iter().map(|s| strip_llvm_suffix(&s.name)).collect();
-            let normalized: HashSet<String> =
-                all.iter().filter_map(|s| normalized_v0_key(&s.name)).collect();
+            let normalized: HashSet<String> = all
+                .iter()
+                .filter_map(|s| normalized_v0_key(&s.name))
+                .collect();
             missing.retain(|s| {
                 !stripped.contains(s.as_str())
                     && normalized_v0_key(s).is_none_or(|key| !normalized.contains(&key))
@@ -242,16 +252,14 @@ impl<'b, T: Target> Context<'b, T> {
                      (was it extracted with --allow-missing-infra?)"
                 )
             })?;
-        let sym = self
-            .object_symbol(&def.symbol)?
-            .ok_or_else(|| {
-                anyhow!(
-                    "TLS key static {} ({}) not found in the target's symtab; \
+        let sym = self.object_symbol(&def.symbol)?.ok_or_else(|| {
+            anyhow!(
+                "TLS key static {} ({}) not found in the target's symtab; \
                  wrong binary, or symtab stripped?",
-                    def.display,
-                    def.symbol
-                )
-            })?;
+                def.display,
+                def.symbol
+            )
+        })?;
         let key = self
             .proc
             .read_u64(sym.st_value)
@@ -1614,5 +1622,8 @@ enum DynAwaitee<'b> {
     /// No vtable symbol joined the bundle's dyn-future table.
     Unknown { poll_symbol: Option<String> },
     /// The normalized symbol joined more than one concrete bundle type.
-    Ambiguous { symbol: String, candidates: Vec<String> },
+    Ambiguous {
+        symbol: String,
+        candidates: Vec<String>,
+    },
 }

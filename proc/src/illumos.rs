@@ -15,8 +15,7 @@ use libproc_sys::{
     Psymbol_iter, REG_CS, REG_DS, REG_ERR, REG_ES, REG_FS, REG_FSBASE, REG_GS, REG_GSBASE, REG_R8,
     REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15, REG_RAX, REG_RBP, REG_RBX,
     REG_RCX, REG_RDI, REG_RDX, REG_RFL, REG_RIP, REG_RSI, REG_RSP, REG_SS, REG_TRAPNO, TYPE_FUNC,
-    TYPE_OBJECT,
-    gregset_t, lwpstatus_t, pid_t, prmap_t, ps_lwphandle, ps_prochandle, stack_t,
+    TYPE_OBJECT, gregset_t, lwpstatus_t, pid_t, prmap_t, ps_lwphandle, ps_prochandle, stack_t,
 };
 
 use std::ffi::{CStr, CString, OsStr, c_char, c_int, c_void};

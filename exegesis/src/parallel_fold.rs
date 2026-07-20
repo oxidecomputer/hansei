@@ -387,8 +387,8 @@ mod tests {
     /// verifies no additional workers managed to enter.
     #[test]
     fn test_in_flight_bounded_by_max() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let max = 4;
         let parallelism = 8;
@@ -410,9 +410,7 @@ mod tests {
                     arrived_tx.send(()).unwrap();
 
                     let (lock, cv) = &*gate_c;
-                    let _g = cv
-                        .wait_while(lock.lock().unwrap(), |open| !*open)
-                        .unwrap();
+                    let _g = cv.wait_while(lock.lock().unwrap(), |open| !*open).unwrap();
 
                     in_map_c.fetch_sub(1, Ordering::SeqCst);
                     Ok::<_, ()>(x)

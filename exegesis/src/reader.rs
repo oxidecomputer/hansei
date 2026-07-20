@@ -761,7 +761,6 @@ impl<'dw> DwReader<'dw> {
     pub fn canonical_type_count(&self) -> usize {
         self.canonical_types().count()
     }
-
 }
 
 /// A fully-interned CGU, produced by [`intern_cgu`] on a worker thread and
