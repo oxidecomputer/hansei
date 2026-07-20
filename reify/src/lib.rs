@@ -778,21 +778,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
                     ctx,
                 );
             }
-            DebugFormat::Known(KnownFormat::Semaphore {
-                permits_member,
-                permits_offset,
-                permits_decode,
-            }) => {
-                let decoded = decoded_usize(info.bytes, permits_offset, &permits_decode);
-                return write_struct_with_decoded_field(
-                    f,
-                    info,
-                    ty.name(),
-                    permits_member,
-                    &decoded,
-                    ctx,
-                );
-            }
             DebugFormat::Known(kf @ KnownFormat::MpscBlock { .. }) => {
                 return write_mpsc_block(f, info, ty.name(), kf, ctx);
             }
@@ -1013,7 +998,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
         TypeClass::Struct => {
             let name = ty.name();
             let pretty = f.alternate();
-            write_struct_fields(f, info, name, pretty, ctx, None)
+            write_struct_fields(f, info, name, pretty, ctx)
         }
 
         TypeClass::Union => {
@@ -1187,22 +1172,6 @@ fn decoded_usize(bytes: &[u8], offset: u64, decode: &ScalarDecode) -> String {
         Some(word) => apply(decode, word),
         None => "<truncated>".to_string(),
     }
-}
-
-/// Render a struct, replacing one member's value with `decoded` text rather
-/// than recursing into its bytes. Used by the atomic-state formatters
-/// (`Notify`, `Semaphore`) to show a decoded field in place.
-fn write_struct_with_decoded_field<'a, T: DebugType<'a>>(
-    f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    name: &str,
-    member: u32,
-    decoded: &str,
-    ctx: RenderCtx<'_, 'a>,
-) -> fmt::Result {
-    let field = info.ty.members().nth(member as usize).map(|m| m.name());
-    let override_field = field.map(|field| (field, decoded));
-    write_struct_fields(f, info, name, f.alternate(), ctx, override_field)
 }
 
 fn write_function_pointer(
@@ -2328,10 +2297,6 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
     name: &str,
     pretty: bool,
     ctx: RenderCtx<'_, 'a>,
-    // When set, the named member is rendered as the given text rather than
-    // recursing into its bytes — used to display a decoded field (e.g. a
-    // `Notify`'s state) in place of its raw representation.
-    override_field: Option<(&str, &str)>,
 ) -> fmt::Result {
     let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
 
@@ -2353,9 +2318,7 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
         }
         write!(f, " {}: ", member.name())?;
 
-        if let Some((_, text)) = override_field.filter(|(field, _)| *field == member.name()) {
-            write!(f, "{text}")?;
-        } else if let Some(mem_bytes) = info.bytes.get(start..end) {
+        if let Some(mem_bytes) = info.bytes.get(start..end) {
             let child = DisplayRecurse {
                 info: TypeInfoRef {
                     ty: mem_ty,

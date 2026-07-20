@@ -671,26 +671,6 @@ impl Bundle {
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::Semaphore {
-                        permits,
-                        permits_decode,
-                    },
-                ) => {
-                    check_selector(
-                        self,
-                        id,
-                        permits,
-                        Shape::Usize,
-                        "Semaphore permits debug format",
-                    )?;
-                    check_scalar_decode(
-                        self,
-                        permits_decode,
-                        USIZE_BITS,
-                        "Semaphore permits decode",
-                    )?;
-                }
-                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::MpscChan {
                         tail,
                         index,

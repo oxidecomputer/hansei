@@ -238,14 +238,6 @@ pub enum KnownFormat<T> {
         wake_by_ref_offset: u64,
         drop_offset: u64,
     },
-    /// Display a `tokio::sync::batch_semaphore::Semaphore`, decoding its
-    /// `permits` field to the available count and closed flag. `permits_member`
-    /// is that field's index and `permits_offset` locates the atomic `usize`.
-    Semaphore {
-        permits_member: u32,
-        permits_offset: u64,
-        permits_decode: ScalarDecode,
-    },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages
     /// (indices `[index, tail)`) by walking its block chain from the head
     /// block, rendering each queued slot as `element`. `*_offset` fields
@@ -677,18 +669,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     wake_offset,
                     wake_by_ref_offset,
                     drop_offset,
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::Semaphore {
-                permits,
-                permits_decode,
-            }) => {
-                let (_, permits_offset) = resolve_selector(*self, permits)?;
-                let permits_member = permits.first_member()?;
-                Some(DebugFormat::Known(KnownFormat::Semaphore {
-                    permits_member,
-                    permits_offset,
-                    permits_decode: resolve_decode(*self, permits_decode),
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::MpscChan {
@@ -1839,9 +1819,17 @@ mod bundle_tests {
                     ),
                     (
                         SEMAPHORE,
-                        BundleDebugFormat::Known(BundleKnownFormat::Semaphore {
-                            permits: sel(&[0]),
-                            permits_decode: semaphore_permits_decode(),
+                        BundleDebugFormat::Node(BundleNode::Struct {
+                            fields: vec![
+                                BundleField::Override {
+                                    index: 0,
+                                    node: BundleNode::Scalar {
+                                        at: sel(&[0]),
+                                        decode: semaphore_permits_decode(),
+                                    },
+                                },
+                                BundleField::Member(1),
+                            ],
                         }),
                     ),
                     (
