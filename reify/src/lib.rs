@@ -752,9 +752,9 @@ fn write_display_value<'a, T: DebugType<'a>>(
 
     if let Some(format) = ty.debug_format() {
         // One `match` consumes `format` so the owned `ScalarDecode`s it now
-        // carries need not be `Copy`. Every arm but `Transparent`/`Atomic`
-        // renders and returns; those two fall through to the shared sub-value
-        // recursion below with the child location they bind.
+        // carries need not be `Copy`. Every arm but `Transparent` renders and
+        // returns; that one falls through to the shared sub-value recursion
+        // below with the child location it binds.
         let (target, offset, child_proc, child_visited) = match format {
             DebugFormat::Known(kf @ KnownFormat::DynPointer { .. }) => {
                 return write_dyn_pointer(f, info, Some(ty.name()), kf, ctx);
@@ -775,18 +775,14 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 // A top-level `Scalar` formatter (e.g. a parking_lot `RawMutex`)
                 // has no enclosing field label to give it context, so it is
                 // prefixed with the type name — `<name>: <decoded>`.
-                // `Struct`/`List` nodes name themselves as they render.
+                // `Struct`/`List`/`Alias` nodes name (or elide) themselves as
+                // they render.
                 if let DisplayNode::Scalar { .. } = node {
                     write!(f, "{}: ", ty.name())?;
                 }
                 return eval_node(f, &node, &ty, info.bytes, info.addr, ctx, f.alternate());
             }
             DebugFormat::Transparent { target, offset } => (target, offset, ctx.proc, ctx.visited),
-            DebugFormat::Known(KnownFormat::Atomic { value, offset }) => {
-                // AtomicPtr's Debug implementation reports the stored
-                // address; it does not dereference it.
-                (value, offset, None, None)
-            }
         };
         let start = offset as usize;
         let Some(end) = start.checked_add(target.size() as usize) else {
@@ -2324,6 +2320,46 @@ fn eval_node<'a, T: DebugType<'a>>(
             octets_offset,
             octets_size,
         } => eval_ip_addr(f, bytes, *octets_offset, u64::from(*octets_size)),
+        DisplayNode::Alias {
+            target,
+            offset,
+            follow_pointers,
+        } => {
+            let start = *offset as usize;
+            let Some(end) = start.checked_add(target.size() as usize) else {
+                return write!(f, "<truncated>");
+            };
+            let Some(child_bytes) = bytes.get(start..end) else {
+                return write!(f, "<truncated>");
+            };
+            // Peeling a wrapper elides a representation detail, so it does not
+            // consume the value-depth budget: `ctx` (and its `depth`) threads
+            // through unchanged. An atomic snapshot (`follow_pointers` false)
+            // shows a stored pointer's address rather than its pointee.
+            let child_ctx = if *follow_pointers {
+                ctx
+            } else {
+                RenderCtx {
+                    proc: None,
+                    visited: None,
+                    ..ctx
+                }
+            };
+            let child = DisplayRecurse {
+                info: TypeInfoRef {
+                    ty: *target,
+                    addr: addr + *offset,
+                    bytes: child_bytes,
+                    _marker: std::marker::PhantomData,
+                },
+                ctx: child_ctx,
+            };
+            if pretty {
+                write!(f, "{child:#}")
+            } else {
+                write!(f, "{child}")
+            }
+        }
     }
 }
 

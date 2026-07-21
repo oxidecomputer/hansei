@@ -397,6 +397,15 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 return corrupt("IP-address octets are not 4 or 16 unsigned bytes".to_string());
             }
         }
+        DisplayNode::Alias {
+            at,
+            follow_pointers: _,
+        } => {
+            // The aliased value may have any type — an atomic peels to a plain
+            // integer, a pointer, or a small struct — so only require that the
+            // selector resolves.
+            check_selector(bundle, scope, at, Shape::Any, what)?;
+        }
     }
     Ok(())
 }
@@ -585,11 +594,6 @@ impl Bundle {
             match format {
                 crate::bundle::schema::DebugFormat::Transparent { member } => {
                     check_selector(self, id, member, Shape::Any, "transparent debug format")?;
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::Atomic { value },
-                ) => {
-                    check_selector(self, id, value, Shape::Any, "atomic debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::DynPointer {
