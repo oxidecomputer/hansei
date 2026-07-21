@@ -228,7 +228,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
     };
     let body = match known {
         KnownFormat::Atomic { value } => format!("Atomic {{ value={} }}", f(id, value)),
-        KnownFormat::FunctionPointer => "FunctionPointer".to_owned(),
         KnownFormat::DynPointer {
             pointer,
             vtable,
@@ -392,6 +391,7 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
 fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> String {
     match node {
         DisplayNode::Scalar { at, .. } => field(bundle, root, at),
+        DisplayNode::Symbol { at } => format!("Symbol {{ {} }}", field(bundle, root, at)),
         DisplayNode::Struct { fields } => {
             let parts: Vec<String> = fields
                 .iter()
@@ -723,9 +723,9 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert!(
         bundle.types.debug_formats.values().any(|format| matches!(
             format,
-            exegesis::bundle::DebugFormat::Known(exegesis::bundle::KnownFormat::FunctionPointer)
+            exegesis::bundle::DebugFormat::Node(exegesis::bundle::DisplayNode::Symbol { .. })
         )),
-        "{program}: no function-pointer known-type formats were extracted"
+        "{program}: no function-pointer symbol-node formats were extracted"
     );
     assert!(
         bundle.types.debug_formats.values().any(|format| matches!(

@@ -181,6 +181,9 @@ pub enum DisplayNode<T> {
         word_size: u32,
         decode: ScalarDecode,
     },
+    /// Render the pointer word at `offset` as a code symbol, without ever
+    /// following it as a data pointer.
+    Symbol { offset: u64 },
     /// Render a record of the listed [`Field`]s in order.
     Struct { fields: Vec<Field<T>> },
     /// Walk an intrusive linked list: read the head word at `head_offset`
@@ -212,9 +215,6 @@ pub enum Field<T> {
 pub enum KnownFormat<T> {
     /// Display an atomic's stored value without following pointer values.
     Atomic { value: T, offset: u64 },
-    /// Display a function pointer as an address and symbol without following
-    /// the address as data.
-    FunctionPointer,
     /// Display a Rust trait-object data pointer and vtable.
     ///
     /// `tail_offset` is added to the data-pointer address before reading the
@@ -565,6 +565,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         decode: resolve_decode(scope, decode),
                     })
                 }
+                BundleNode::Symbol { at } => {
+                    let (_, offset) = resolve_selector(scope, at)?;
+                    Some(DisplayNode::Symbol { offset })
+                }
                 BundleNode::Struct { fields } => Some(DisplayNode::Struct {
                     fields: fields
                         .iter()
@@ -630,9 +634,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             BundleFormat::Known(BundleKnownFormat::Atomic { value }) => {
                 let (value, offset) = resolve_selector(*self, value)?;
                 Some(DebugFormat::Known(KnownFormat::Atomic { value, offset }))
-            }
-            BundleFormat::Known(BundleKnownFormat::FunctionPointer) => {
-                Some(DebugFormat::Known(KnownFormat::FunctionPointer))
             }
             BundleFormat::Known(BundleKnownFormat::DynPointer {
                 pointer,
@@ -1693,7 +1694,7 @@ mod bundle_tests {
                     ),
                     (
                         FUNCTION_PTR,
-                        BundleDebugFormat::Known(BundleKnownFormat::FunctionPointer),
+                        BundleDebugFormat::Node(BundleNode::Symbol { at: sel(&[]) }),
                     ),
                     (
                         BTREE_MAP,
