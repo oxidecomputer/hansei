@@ -768,18 +768,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(kf @ KnownFormat::MpscRx { .. }) => {
                 return write_mpsc_rx(f, info, kf, ctx);
             }
-            DebugFormat::Known(KnownFormat::IpAddress { octets, offset }) => {
-                let Some(bytes) = byte_range(bytes, offset, octets.size()) else {
-                    return write!(f, "<truncated>");
-                };
-                return match <&[u8; 4]>::try_from(bytes) {
-                    Ok(octets) => write!(f, "{}", std::net::Ipv4Addr::from(*octets)),
-                    Err(_) => match <&[u8; 16]>::try_from(bytes) {
-                        Ok(octets) => write!(f, "{}", std::net::Ipv6Addr::from(*octets)),
-                        Err(_) => write!(f, "<invalid IP address layout>"),
-                    },
-                };
-            }
             DebugFormat::Known(kf @ KnownFormat::BTreeMap { .. }) => {
                 return write_btree_map(f, info, kf, ctx);
             }
@@ -2332,6 +2320,31 @@ fn eval_node<'a, T: DebugType<'a>>(
             ctx,
             pretty,
         ),
+        DisplayNode::IpAddr {
+            octets_offset,
+            octets_size,
+        } => eval_ip_addr(f, bytes, *octets_offset, u64::from(*octets_size)),
+    }
+}
+
+/// Render the inline octets at `offset` as an IPv4 (4 octets) or IPv6 (16
+/// octets) address in standard notation; the version is inferred from the octet
+/// count that resolution validated to be 4 or 16.
+fn eval_ip_addr(
+    f: &mut fmt::Formatter<'_>,
+    bytes: &[u8],
+    offset: u64,
+    octets_size: u64,
+) -> fmt::Result {
+    let Some(bytes) = byte_range(bytes, offset, octets_size) else {
+        return write!(f, "<truncated>");
+    };
+    match <&[u8; 4]>::try_from(bytes) {
+        Ok(octets) => write!(f, "{}", std::net::Ipv4Addr::from(*octets)),
+        Err(_) => match <&[u8; 16]>::try_from(bytes) {
+            Ok(octets) => write!(f, "{}", std::net::Ipv6Addr::from(*octets)),
+            Err(_) => write!(f, "<invalid IP address layout>"),
+        },
     }
 }
 

@@ -382,6 +382,21 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 check_selector(bundle, scope, capacity, Shape::Usize, what)?;
             }
         }
+        DisplayNode::IpAddr { octets } => {
+            let target = check_selector(bundle, scope, octets, Shape::Array, what)?;
+            let Some(TypeDef::Array { elem, count }) = bundle.types.get(target) else {
+                return corrupt("IP-address octets do not target an array".to_string());
+            };
+            let Some(TypeDef::Base { size, encoding, .. }) = bundle.types.get(*elem) else {
+                return corrupt("IP-address octets are not a base type".to_string());
+            };
+            if *size != 1
+                || !matches!(encoding, crate::raw_types::Encoding::Unsigned)
+                || !matches!(count, 4 | 16)
+            {
+                return corrupt("IP-address octets are not 4 or 16 unsigned bytes".to_string());
+            }
+        }
     }
     Ok(())
 }
@@ -793,33 +808,6 @@ impl Bundle {
                         "MpscRx permits debug format",
                     )?;
                     check_scalar_decode(self, permits_decode, USIZE_BITS, "MpscRx permits decode")?;
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::IpAddress { octets },
-                ) => {
-                    let target =
-                        check_selector(self, id, octets, Shape::Array, "IP-address debug format")?;
-                    let Some(TypeDef::Array { elem, count }) = self.types.get(target) else {
-                        return corrupt(format!(
-                            "IP-address debug format for type {} does not target an array",
-                            id.0
-                        ));
-                    };
-                    let Some(TypeDef::Base { size, encoding, .. }) = self.types.get(*elem) else {
-                        return corrupt(format!(
-                            "IP-address debug format for type {} does not contain base-type octets",
-                            id.0
-                        ));
-                    };
-                    if *size != 1
-                        || !matches!(encoding, crate::raw_types::Encoding::Unsigned)
-                        || !matches!(count, 4 | 16)
-                    {
-                        return corrupt(format!(
-                            "IP-address debug format for type {} does not contain 4 or 16 u8 octets",
-                            id.0
-                        ));
-                    }
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::BTreeMap {

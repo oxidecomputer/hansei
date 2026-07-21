@@ -221,6 +221,12 @@ pub enum DisplayNode<T> {
         element: T,
         element_size: u32,
     },
+    /// Render the inline `octets_size`-byte octet array at `octets_offset` as an
+    /// IPv4 (4 octets) or IPv6 (16 octets) address in standard notation.
+    IpAddr {
+        octets_offset: u64,
+        octets_size: u32,
+    },
 }
 
 /// One resolved field of a [`DisplayNode::Struct`]. The bundle's `Named` and
@@ -298,8 +304,6 @@ pub enum KnownFormat<T> {
         permits_offset: u64,
         permits_decode: ScalarDecode,
     },
-    /// Display an IPv4 or IPv6 address in standard notation.
-    IpAddress { octets: T, offset: u64 },
     /// Display a BTreeMap by walking its initialized nodes in key order.
     BTreeMap {
         root: T,
@@ -633,6 +637,16 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         element_size: element.size() as u32,
                     })
                 }
+                BundleNode::IpAddr { octets } => {
+                    let (octets_ty, octets_offset) = resolve_selector(scope, octets)?;
+                    // `array_info` bounds the read to a real array; io.rs has
+                    // already checked it is 4 or 16 unsigned bytes.
+                    let (_, count) = octets_ty.array_info()?;
+                    Some(DisplayNode::IpAddr {
+                        octets_offset,
+                        octets_size: count as u32,
+                    })
+                }
             }
         }
 
@@ -760,27 +774,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     bound_offset,
                     permits_offset,
                     permits_decode: resolve_decode(*self, permits_decode),
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::IpAddress { octets }) => {
-                let (octets, offset) = resolve_selector(*self, octets)?;
-                let (octet, count) = octets.array_info()?;
-                if !matches!(count, 4 | 16)
-                    || !matches!(
-                        octet.classify(),
-                        TypeClass::Integer {
-                            size: 1,
-                            is_signed: false,
-                            is_bool: false,
-                            is_char: false,
-                        }
-                    )
-                {
-                    return None;
-                }
-                Some(DebugFormat::Known(KnownFormat::IpAddress {
-                    octets,
-                    offset,
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::BTreeMap {
@@ -1720,15 +1713,11 @@ mod bundle_tests {
                     ),
                     (
                         IPV4,
-                        BundleDebugFormat::Known(BundleKnownFormat::IpAddress {
-                            octets: sel(&[0]),
-                        }),
+                        BundleDebugFormat::Node(BundleNode::IpAddr { octets: sel(&[0]) }),
                     ),
                     (
                         IPV6,
-                        BundleDebugFormat::Known(BundleKnownFormat::IpAddress {
-                            octets: sel(&[0]),
-                        }),
+                        BundleDebugFormat::Node(BundleNode::IpAddr { octets: sel(&[0]) }),
                     ),
                     (
                         VEC,

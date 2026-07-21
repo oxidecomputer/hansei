@@ -291,9 +291,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
                 f(chan_ty, permits),
             )
         }
-        KnownFormat::IpAddress { octets } => {
-            format!("IpAddress {{ octets={} }}", f(id, octets))
-        }
         KnownFormat::BTreeMap {
             root,
             length,
@@ -405,6 +402,9 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
                 capacity,
                 fq_name(bundle, *element),
             )
+        }
+        DisplayNode::IpAddr { octets } => {
+            format!("IpAddr {{ octets={} }}", field(bundle, root, octets))
         }
     }
 }
@@ -764,13 +764,13 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "core::net::ip_addr::Ipv4Addr",
-            "core::net::ip_addr::Ipv4Addr :: IpAddress { octets=octets@+0 }",
+            "core::net::ip_addr::Ipv4Addr :: Node IpAddr { octets=octets@+0 }",
         );
         assert_format(
             program,
             bundle,
             "core::net::ip_addr::Ipv6Addr",
-            "core::net::ip_addr::Ipv6Addr :: IpAddress { octets=octets@+0 }",
+            "core::net::ip_addr::Ipv6Addr :: Node IpAddr { octets=octets@+0 }",
         );
         assert_format(
             program,
