@@ -412,12 +412,47 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             check_selector(bundle, scope, bitmap, Shape::Usize, what)?;
             check_selector(bundle, scope, slots, Shape::Array, what)?;
         }
+        DisplayNode::Pointer { at, via, then } => {
+            // `at` reaches the pointer; `via` is rooted at its pointee and
+            // reaches the rendered target, against which `then` is rooted.
+            let ptr = check_selector(bundle, scope, at, Shape::Pointer, what)?;
+            let Some(TypeDef::Pointer { target: pointee, .. }) = bundle.types.get(ptr) else {
+                unreachable!("check_selector verified a pointer");
+            };
+            let target = check_selector(bundle, *pointee, via, Shape::Any, what)?;
+            check_node(bundle, target, then, what)?;
+        }
+        DisplayNode::MpscChan {
+            tail,
+            index,
+            head,
+            start_index,
+            next,
+            values,
+            element,
+        } => {
+            check_selector(bundle, scope, tail, Shape::Usize, what)?;
+            check_selector(bundle, scope, index, Shape::Usize, what)?;
+            // `head` reaches a pointer to the block type; the remaining
+            // selectors are rooted there.
+            let head_ptr = check_selector(bundle, scope, head, Shape::Pointer, what)?;
+            let Some(TypeDef::Pointer { target: block, .. }) = bundle.types.get(head_ptr) else {
+                unreachable!("check_selector verified a pointer");
+            };
+            let block = *block;
+            check_selector(bundle, block, start_index, Shape::Usize, what)?;
+            check_selector(bundle, block, next, Shape::Pointer, what)?;
+            check_selector(bundle, block, values, Shape::Array, what)?;
+            if bundle.types.get(*element).is_none() {
+                return corrupt(format!("MpscChan element type id {} out of range", element.0));
+            }
+            if type_size(bundle, *element, &mut Vec::new()).is_none() {
+                return corrupt(format!("MpscChan has an unsized element type {}", element.0));
+            }
+        }
     }
     Ok(())
 }
-
-/// Bit width of a `usize` word, for [`check_scalar_decode`].
-const USIZE_BITS: u8 = (crate::bundle::POINTER_SIZE * 8) as u8;
 
 fn type_size(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> Option<u64> {
     if seen.contains(&id) {
@@ -692,111 +727,6 @@ impl Bundle {
                             id.0
                         ));
                     }
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::MpscChan {
-                        tail,
-                        index,
-                        head,
-                        start_index,
-                        next,
-                        values,
-                        element,
-                    },
-                ) => {
-                    check_selector(self, id, tail, Shape::Usize, "MpscChan tail debug format")?;
-                    check_selector(self, id, index, Shape::Usize, "MpscChan index debug format")?;
-                    // `head` reaches a pointer to the block type; the remaining
-                    // selectors are rooted there.
-                    let head_ptr = check_selector(
-                        self,
-                        id,
-                        head,
-                        Shape::Pointer,
-                        "MpscChan head debug format",
-                    )?;
-                    let Some(TypeDef::Pointer { target: block, .. }) = self.types.get(head_ptr)
-                    else {
-                        unreachable!("check_selector verified a pointer");
-                    };
-                    let block = *block;
-                    check_selector(
-                        self,
-                        block,
-                        start_index,
-                        Shape::Usize,
-                        "MpscChan start_index debug format",
-                    )?;
-                    check_selector(
-                        self,
-                        block,
-                        next,
-                        Shape::Pointer,
-                        "MpscChan next debug format",
-                    )?;
-                    check_selector(
-                        self,
-                        block,
-                        values,
-                        Shape::Array,
-                        "MpscChan values debug format",
-                    )?;
-                    check_ty("MpscChan element", *element)?;
-                    if type_size(self, *element, &mut Vec::new()).is_none() {
-                        return corrupt(format!(
-                            "MpscChan debug format for type {} has an unsized element",
-                            id.0
-                        ));
-                    }
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::MpscRx {
-                        chan_pointer,
-                        chan,
-                        bound,
-                        permits,
-                        permits_decode,
-                    },
-                ) => {
-                    // `chan_pointer` reaches the raw pointer inside the Arc; it
-                    // targets the `ArcInner` allocation.
-                    let ptr = check_selector(
-                        self,
-                        id,
-                        chan_pointer,
-                        Shape::Pointer,
-                        "MpscRx chan_pointer debug format",
-                    )?;
-                    let Some(TypeDef::Pointer {
-                        target: arcinner, ..
-                    }) = self.types.get(ptr)
-                    else {
-                        unreachable!("check_selector verified a pointer");
-                    };
-                    // `chan` is rooted at the allocation and reaches the `Chan`;
-                    // `bound` and `permits` are rooted at that `Chan`.
-                    let chan_ty = check_selector(
-                        self,
-                        *arcinner,
-                        chan,
-                        Shape::Any,
-                        "MpscRx chan debug format",
-                    )?;
-                    check_selector(
-                        self,
-                        chan_ty,
-                        bound,
-                        Shape::Usize,
-                        "MpscRx bound debug format",
-                    )?;
-                    check_selector(
-                        self,
-                        chan_ty,
-                        permits,
-                        Shape::Usize,
-                        "MpscRx permits debug format",
-                    )?;
-                    check_scalar_decode(self, permits_decode, USIZE_BITS, "MpscRx permits decode")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::BTreeMap {

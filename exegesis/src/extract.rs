@@ -1237,9 +1237,10 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
         .or_else(|| ip_address_debug_format(reader, id))
         .or_else(|| str_debug_format(reader, id))
         .or_else(|| string_debug_format(reader, id))
-        // RawMutex, Semaphore, WatchState, and MpscRx carry a `ScalarDecode`
-        // whose labels must be interned; they are built in `Emitter::emit`,
-        // which holds the string interner, rather than in this chain.
+        // RawMutex, Semaphore, WatchState, and the mpsc channel/receiver carry
+        // a `ScalarDecode` (or a synthesized field label) whose strings must be
+        // interned; they are built in `Emitter::emit`, which holds the string
+        // interner, rather than in this chain.
         .or_else(|| mpsc_block_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
@@ -2182,13 +2183,18 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
 /// bounded capacity (`semaphore.bound`) and available permit word
 /// (`semaphore.semaphore.permits`) as paths rooted at that `Chan`.
 /// A `tokio::sync::mpsc::bounded::Receiver<T>` and the selectors reify needs to
-/// render it as its channel. The permit-word decode is attached in
-/// [`Emitter::emit`]. See [`crate::bundle::KnownFormat::MpscRx`].
+/// render it as its channel: a [`crate::bundle::DisplayNode::Pointer`] hop
+/// (`chan_pointer` + `chan`) to the `Chan`, plus the `bound`/`permits` words
+/// decoded in front of the channel's own struct. The permit-word decode is
+/// attached in [`Emitter::emit`].
 struct RawMpscRxFormat {
     chan_pointer: Vec<u32>,
     chan: Vec<u32>,
     bound: Vec<u32>,
     permits: Vec<u32>,
+    /// The `Chan`'s own queued/members struct, reused verbatim behind the
+    /// pointer hop and prefixed with the decoded capacity/free fields.
+    chan_format: RawMpscChanFormat,
 }
 
 fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscRxFormat> {
@@ -2236,11 +2242,16 @@ fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscRxFo
         .chain(permits_tail)
         .collect::<Vec<u32>>();
 
+    // The channel behind the pointer renders exactly as a standalone `Chan`
+    // would; reuse its detector so the queued walk and member list are shared.
+    let chan_format = mpsc_chan_debug_format(reader, chan_ty)?;
+
     Some(RawMpscRxFormat {
         chan_pointer,
         chan,
         bound,
         permits,
+        chan_format,
     })
 }
 
@@ -2418,6 +2429,9 @@ struct RawMpscChanFormat {
     next: Vec<u32>,
     values: Vec<u32>,
     element: TypeId,
+    /// The channel's own members (zero-sized ones elided, original indices
+    /// preserved), rendered structurally after the synthetic `queued` field.
+    members: Vec<u32>,
 }
 
 fn mpsc_chan_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscChanFormat> {
@@ -2481,6 +2495,20 @@ fn mpsc_chan_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscCh
     }
     let element = reader.canonicalize(param.type_id);
 
+    // The channel renders as a struct: the synthetic `queued` field followed
+    // by its real members. Structural display skips zero-sized members, so
+    // enumerate over the full list and keep the surviving indices.
+    let RawType::Struct(chan_st) = reader.canonical_type(id)? else {
+        return None;
+    };
+    let members = chan_st
+        .members
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
+        .map(|(index, _)| index as u32)
+        .collect();
+
     Some(RawMpscChanFormat {
         tail,
         index,
@@ -2489,6 +2517,7 @@ fn mpsc_chan_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscCh
         next,
         values,
         element,
+        members,
     })
 }
 
@@ -3429,6 +3458,29 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Build the fields of a `tokio::sync::mpsc::chan::Chan` record: the
+    /// synthetic `queued` field (a [`DisplayNode::MpscChan`] block-chain walk)
+    /// followed by the channel's real members shown structurally. Shared by the
+    /// standalone `Chan` formatter and the `Receiver`, which prepends its
+    /// decoded `capacity`/`free` fields to the same list.
+    fn chan_struct_fields(&mut self, format: RawMpscChanFormat) -> Vec<Field> {
+        let queued = Field::Named {
+            label: self.interner.intern("queued"),
+            node: DisplayNode::MpscChan {
+                tail: format.tail.into(),
+                index: format.index.into(),
+                head: format.head.into(),
+                start_index: format.start_index.into(),
+                next: format.next.into(),
+                values: format.values.into(),
+                element: self.reserve(format.element),
+            },
+        };
+        std::iter::once(queued)
+            .chain(format.members.into_iter().map(Field::Member))
+            .collect()
+    }
+
     /// Emit a type (and, transitively, everything it references),
     /// returning its bundle id.
     fn emit(&mut self, id: TypeId) -> BundleTypeId {
@@ -3476,16 +3528,12 @@ impl<'a> Emitter<'a> {
                 };
                 self.debug_formats.insert(bid, DebugFormat::Known(format));
             } else if let Some(format) = mpsc_chan_debug_format(self.reader, tid) {
-                let format = crate::bundle::KnownFormat::MpscChan {
-                    tail: format.tail.into(),
-                    index: format.index.into(),
-                    head: format.head.into(),
-                    start_index: format.start_index.into(),
-                    next: format.next.into(),
-                    values: format.values.into(),
-                    element: self.reserve(format.element),
+                // A channel is a struct whose first field is the synthetic
+                // `queued` block-chain walk; the rest are its real members.
+                let node = DisplayNode::Struct {
+                    fields: self.chan_struct_fields(format),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Known(format));
+                self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(format) = bounded_semaphore_debug_format(self.reader, tid) {
                 // A curated record: the mutex byte, closed flag, permit word,
                 // and capacity, plus the intrusive waiter queue as a list whose
@@ -3603,14 +3651,31 @@ impl<'a> Emitter<'a> {
                 };
                 self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(format) = mpsc_rx_debug_format(self.reader, tid) {
-                let format = crate::bundle::KnownFormat::MpscRx {
-                    chan_pointer: format.chan_pointer.into(),
-                    chan: format.chan.into(),
-                    bound: format.bound.into(),
-                    permits: format.permits.into(),
-                    permits_decode: self.semaphore_permits_decode(),
+                // A receiver reads as the `Chan` it drains, reached across its
+                // `Arc` pointer: a `Pointer` hop whose target is the channel's
+                // own struct, prefixed with the decoded `capacity`/`free` words.
+                let permits_decode = self.semaphore_permits_decode();
+                let scalar = |at: Vec<u32>, decode| DisplayNode::Scalar {
+                    at: at.into(),
+                    decode,
                 };
-                self.debug_formats.insert(bid, DebugFormat::Known(format));
+                let mut fields = vec![
+                    Field::Named {
+                        label: self.interner.intern("capacity"),
+                        node: scalar(format.bound, ScalarDecode::Raw),
+                    },
+                    Field::Named {
+                        label: self.interner.intern("free"),
+                        node: scalar(format.permits, permits_decode),
+                    },
+                ];
+                fields.extend(self.chan_struct_fields(format.chan_format));
+                let node = DisplayNode::Pointer {
+                    at: format.chan_pointer.into(),
+                    via: format.chan.into(),
+                    then: Box::new(DisplayNode::Struct { fields }),
+                };
+                self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(format) = known_debug_format(self.reader, tid) {
                 self.debug_formats.insert(bid, format);
             }

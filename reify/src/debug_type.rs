@@ -244,6 +244,34 @@ pub enum DisplayNode<T> {
         bitmap_size: u32,
         count: u32,
     },
+    /// Follow the pointer at `pointer_offset`, add `via_offset` to reach the
+    /// `target`, read it from the process, and render it with `then`. The
+    /// degradation markers are titled with the enclosing type's name (a
+    /// `Receiver` reads as the `Chan` it drains).
+    Pointer {
+        pointer_offset: u64,
+        via_offset: u64,
+        target: T,
+        then: Box<DisplayNode<T>>,
+    },
+    /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages
+    /// (indices `[index, tail)`) by walking its block chain from the head
+    /// block, rendering each queued slot as `element`. `*_offset` fields within
+    /// the channel locate the read/write positions and head pointer; the
+    /// block-relative offsets locate each block's start index, successor
+    /// pointer, and inline slot array (`stride` bytes each, `count` per block).
+    MpscChan {
+        tail_offset: u64,
+        index_offset: u64,
+        head_offset: u64,
+        block_size: u32,
+        start_index_offset: u64,
+        next_offset: u64,
+        values_offset: u64,
+        element: T,
+        stride: u32,
+        count: u32,
+    },
 }
 
 /// One resolved field of a [`DisplayNode::Struct`]. The bundle's `Named` and
@@ -274,39 +302,6 @@ pub enum KnownFormat<T> {
         size: u32,
         align: u32,
         tail_offset: u64,
-    },
-    /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages
-    /// (indices `[index, tail)`) by walking its block chain from the head
-    /// block, rendering each queued slot as `element`. `*_offset` fields
-    /// within the channel locate the read/write positions and head pointer;
-    /// the block-relative offsets locate each block's start index, successor
-    /// pointer, and inline slot array (`stride` bytes each, `count` per block).
-    MpscChan {
-        tail_offset: u64,
-        index_offset: u64,
-        head_offset: u64,
-        block_size: u32,
-        start_index_offset: u64,
-        next_offset: u64,
-        values_offset: u64,
-        element: T,
-        stride: u32,
-        count: u32,
-    },
-    /// Display a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
-    /// channel. `chan_pointer_offset` locates the receiver's `Arc` raw pointer;
-    /// `chan_offset` is added to the pointee address to skip the Arc's
-    /// strong/weak header and reach the `Chan`, which is rendered as `chan`
-    /// (carrying its own [`KnownFormat::MpscChan`]). `bound_offset` and
-    /// `permits_offset` locate the bounded capacity and available permit word
-    /// within that `Chan`, shown as `capacity` and `free`.
-    MpscRx {
-        chan: T,
-        chan_pointer_offset: u64,
-        chan_offset: u64,
-        bound_offset: u64,
-        permits_offset: u64,
-        permits_decode: ScalarDecode,
     },
     /// Display a BTreeMap by walking its initialized nodes in key order.
     BTreeMap {
@@ -672,6 +667,47 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         count: count as u32,
                     })
                 }
+                BundleNode::Pointer { at, via, then } => {
+                    let (ptr_ty, pointer_offset) = resolve_selector(scope, at)?;
+                    let pointee_ty = ptr_ty.pointer_target()?;
+                    let (target, via_offset) = resolve_selector(pointee_ty, via)?;
+                    Some(DisplayNode::Pointer {
+                        pointer_offset,
+                        via_offset,
+                        target,
+                        then: Box::new(resolve_node(target, then)?),
+                    })
+                }
+                BundleNode::MpscChan {
+                    tail,
+                    index,
+                    head,
+                    start_index,
+                    next,
+                    values,
+                    element,
+                } => {
+                    let (_, tail_offset) = resolve_selector(scope, tail)?;
+                    let (_, index_offset) = resolve_selector(scope, index)?;
+                    let (head_ty, head_offset) = resolve_selector(scope, head)?;
+                    let block_ty = head_ty.pointer_target()?;
+                    let (_, start_index_offset) = resolve_selector(block_ty, start_index)?;
+                    let (_, next_offset) = resolve_selector(block_ty, next)?;
+                    let (array_ty, values_offset) = resolve_selector(block_ty, values)?;
+                    let (elem_ty, count) = array_ty.array_info()?;
+                    Some(DisplayNode::MpscChan {
+                        tail_offset,
+                        index_offset,
+                        head_offset,
+                        block_size: block_ty.size() as u32,
+                        start_index_offset,
+                        next_offset,
+                        values_offset,
+                        element: scope.related_type(*element),
+                        stride: elem_ty.size() as u32,
+                        count: count as u32,
+                    })
+                }
             }
         }
 
@@ -729,57 +765,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     size: *size,
                     align: *align,
                     tail_offset: *tail_offset,
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::MpscChan {
-                tail,
-                index,
-                head,
-                start_index,
-                next,
-                values,
-                element,
-            }) => {
-                let (_, tail_offset) = resolve_selector(*self, tail)?;
-                let (_, index_offset) = resolve_selector(*self, index)?;
-                let (head_ty, head_offset) = resolve_selector(*self, head)?;
-                let block_ty = head_ty.pointer_target()?;
-                let (_, start_index_offset) = resolve_selector(block_ty, start_index)?;
-                let (_, next_offset) = resolve_selector(block_ty, next)?;
-                let (array_ty, values_offset) = resolve_selector(block_ty, values)?;
-                let (elem_ty, count) = array_ty.array_info()?;
-                Some(DebugFormat::Known(KnownFormat::MpscChan {
-                    tail_offset,
-                    index_offset,
-                    head_offset,
-                    block_size: block_ty.size() as u32,
-                    start_index_offset,
-                    next_offset,
-                    values_offset,
-                    element: self.related_type(*element),
-                    stride: elem_ty.size() as u32,
-                    count: count as u32,
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::MpscRx {
-                chan_pointer,
-                chan,
-                bound,
-                permits,
-                permits_decode,
-            }) => {
-                let (ptr_ty, chan_pointer_offset) = resolve_selector(*self, chan_pointer)?;
-                let arcinner_ty = ptr_ty.pointer_target()?;
-                let (chan_ty, chan_offset) = resolve_selector(arcinner_ty, chan)?;
-                let (_, bound_offset) = resolve_selector(chan_ty, bound)?;
-                let (_, permits_offset) = resolve_selector(chan_ty, permits)?;
-                Some(DebugFormat::Known(KnownFormat::MpscRx {
-                    chan: chan_ty,
-                    chan_pointer_offset,
-                    chan_offset,
-                    bound_offset,
-                    permits_offset,
-                    permits_decode: resolve_decode(*self, permits_decode),
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::BTreeMap {
@@ -1627,6 +1612,22 @@ mod bundle_tests {
             s("queue"),
             s("permits_needed"),
         );
+        let (queuedl, capacityl, freel) = (s("queued"), s("capacity"), s("free"));
+        // A channel's synthetic `queued` field: the block-chain walk, rooted at
+        // the Chan/RxChan (tail @0, index @1, head @2; block start_index @1.0,
+        // next @1.1, values @0). Reused by the standalone Chan and the Receiver.
+        let chan_queued = || BundleField::Named {
+            label: queuedl,
+            node: BundleNode::MpscChan {
+                tail: sel(&[0]),
+                index: sel(&[1]),
+                head: sel(&[2]),
+                start_index: sel(&[1, 0]),
+                next: sel(&[1, 1]),
+                values: sel(&[0]),
+                element: U32,
+            },
+        };
         let emptyl = s("");
         let bool_decode =
             || BundleScalarDecode::Bits(vec![ebf(emptyl, 0, 0, vec![(0, falsel), (1, truel)])]);
@@ -1870,40 +1871,63 @@ mod bundle_tests {
                         }),
                     ),
                     (
+                        // Chan: `queued` then its three members (tail, index, head).
                         CHAN,
-                        BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
-                            tail: sel(&[0]),
-                            index: sel(&[1]),
-                            head: sel(&[2]),
-                            start_index: sel(&[1, 0]),
-                            next: sel(&[1, 1]),
-                            values: sel(&[0]),
-                            element: U32,
+                        BundleDebugFormat::Node(BundleNode::Struct {
+                            fields: vec![
+                                chan_queued(),
+                                BundleField::Member(0),
+                                BundleField::Member(1),
+                                BundleField::Member(2),
+                            ],
                         }),
                     ),
                     (
+                        // RxChan: like Chan plus the bounded semaphore (member 3).
                         RX_CHAN,
-                        BundleDebugFormat::Known(BundleKnownFormat::MpscChan {
-                            tail: sel(&[0]),
-                            index: sel(&[1]),
-                            head: sel(&[2]),
-                            start_index: sel(&[1, 0]),
-                            next: sel(&[1, 1]),
-                            values: sel(&[0]),
-                            element: U32,
+                        BundleDebugFormat::Node(BundleNode::Struct {
+                            fields: vec![
+                                chan_queued(),
+                                BundleField::Member(0),
+                                BundleField::Member(1),
+                                BundleField::Member(2),
+                                BundleField::Member(3),
+                            ],
                         }),
                     ),
                     (
+                        // Receiver: a pointer hop to the RxChan (raw pointer @
+                        // member 0; ArcInner → `data` @ member 2), rendered as
+                        // the RxChan's own struct with `capacity`/`free` decoded
+                        // from its semaphore (member 3: bound @1, permits @0)
+                        // prepended.
                         RECEIVER,
-                        BundleDebugFormat::Known(BundleKnownFormat::MpscRx {
-                            // Receiver → raw pointer @ member 0; ArcInner → `data`
-                            // @ member 2; capacity/permits within the RxChan's
-                            // semaphore (member 3): bound @1, permits @0.
-                            chan_pointer: sel(&[0]),
-                            chan: sel(&[2]),
-                            bound: sel(&[3, 1]),
-                            permits: sel(&[3, 0]),
-                            permits_decode: semaphore_permits_decode(),
+                        BundleDebugFormat::Node(BundleNode::Pointer {
+                            at: sel(&[0]),
+                            via: sel(&[2]),
+                            then: Box::new(BundleNode::Struct {
+                                fields: vec![
+                                    BundleField::Named {
+                                        label: capacityl,
+                                        node: BundleNode::Scalar {
+                                            at: sel(&[3, 1]),
+                                            decode: BundleScalarDecode::Raw,
+                                        },
+                                    },
+                                    BundleField::Named {
+                                        label: freel,
+                                        node: BundleNode::Scalar {
+                                            at: sel(&[3, 0]),
+                                            decode: semaphore_permits_decode(),
+                                        },
+                                    },
+                                    chan_queued(),
+                                    BundleField::Member(0),
+                                    BundleField::Member(1),
+                                    BundleField::Member(2),
+                                    BundleField::Member(3),
+                                ],
+                            }),
                         }),
                     ),
                     (
