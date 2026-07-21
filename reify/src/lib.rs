@@ -783,21 +783,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(kf @ KnownFormat::Vec { .. }) => {
                 return write_vec(f, info, kf, ctx);
             }
-            DebugFormat::Known(KnownFormat::Str {
-                pointer_offset,
-                length,
-                length_offset,
-            }) => {
-                return write_utf8_string(
-                    f,
-                    info.bytes,
-                    pointer_offset,
-                    length,
-                    length_offset,
-                    None,
-                    ctx.proc,
-                );
-            }
             DebugFormat::Known(KnownFormat::String {
                 pointer_offset,
                 length,
@@ -809,9 +794,9 @@ fn write_display_value<'a, T: DebugType<'a>>(
                     f,
                     info.bytes,
                     pointer_offset,
-                    length,
                     length_offset,
-                    Some((capacity, capacity_offset)),
+                    length.size(),
+                    Some((capacity_offset, capacity.size())),
                     ctx.proc,
                 );
             }
@@ -1181,20 +1166,20 @@ fn write_symbol(
     Ok(())
 }
 
-fn write_utf8_string<'a, T: DebugType<'a>>(
+fn write_utf8_string(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     pointer_offset: u64,
-    length: T,
     length_offset: u64,
-    capacity: Option<(T, u64)>,
+    length_size: u64,
+    capacity: Option<(u64, u64)>,
     proc: Option<&dyn ReadFromProc>,
 ) -> fmt::Result {
-    let Some(len) = read_unsigned_at(bytes, length_offset, length.size()) else {
+    let Some(len) = read_unsigned_at(bytes, length_offset, length_size) else {
         return write!(f, "<truncated string length>");
     };
-    if let Some((capacity, offset)) = capacity {
-        let Some(capacity) = read_unsigned_at(bytes, offset, capacity.size()) else {
+    if let Some((capacity_offset, capacity_size)) = capacity {
+        let Some(capacity) = read_unsigned_at(bytes, capacity_offset, capacity_size) else {
             return write!(f, "<truncated String capacity>");
         };
         if len > capacity {
@@ -2332,6 +2317,20 @@ fn eval_node<'a, T: DebugType<'a>>(
             bytes,
             ctx,
             pretty,
+        ),
+        DisplayNode::Str {
+            pointer_offset,
+            length_offset,
+            length_size,
+            capacity,
+        } => write_utf8_string(
+            f,
+            bytes,
+            *pointer_offset,
+            *length_offset,
+            u64::from(*length_size),
+            capacity.map(|(offset, size)| (offset, u64::from(size))),
+            ctx.proc,
         ),
     }
 }

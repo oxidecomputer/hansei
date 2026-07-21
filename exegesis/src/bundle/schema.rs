@@ -278,6 +278,20 @@ pub enum DisplayNode {
         node: Box<DisplayNode>,
         node_ty: BundleTypeId,
     },
+    /// Follow a `(data, len)` string slice to its byte buffer and render it as
+    /// a quoted, escaped UTF-8 string.
+    ///
+    /// `pointer` reaches the data-pointer word and `length` the byte length;
+    /// reify reads `length` bytes from the target through the pointer.
+    /// `capacity`, when present, reaches an owned buffer's capacity word (a
+    /// borrowed `&str` omits it) and is validated to be at least the length. A
+    /// null data pointer, an unreadable buffer, or non-UTF-8 bytes render an
+    /// explicit marker in place of the string.
+    Str {
+        pointer: Selector,
+        length: Selector,
+        capacity: Option<Selector>,
+    },
 }
 
 /// One field of a [`DisplayNode::Struct`] record.
@@ -386,8 +400,6 @@ pub enum KnownFormat {
         capacity: Selector,
         element: BundleTypeId,
     },
-    /// Display a `&str` as quoted, escaped UTF-8.
-    Str { pointer: Selector, length: Selector },
     /// Display an `alloc::string::String` as quoted, escaped UTF-8.
     String {
         pointer: Selector,
