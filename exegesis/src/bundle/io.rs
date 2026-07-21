@@ -827,29 +827,6 @@ impl Bundle {
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::String {
-                        pointer,
-                        length,
-                        capacity,
-                    },
-                ) => {
-                    check_selector(
-                        self,
-                        id,
-                        pointer,
-                        Shape::BytePointer,
-                        "String pointer debug format",
-                    )?;
-                    check_selector(self, id, length, Shape::Usize, "String length debug format")?;
-                    check_selector(
-                        self,
-                        id,
-                        capacity,
-                        Shape::Usize,
-                        "String capacity debug format",
-                    )?;
-                }
-                crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::BTreeMap {
                         root,
                         length,

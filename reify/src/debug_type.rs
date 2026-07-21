@@ -295,14 +295,6 @@ pub enum KnownFormat<T> {
         capacity_offset: u64,
         element: T,
     },
-    /// Display an owned string as quoted, escaped UTF-8.
-    String {
-        pointer_offset: u64,
-        length: T,
-        length_offset: u64,
-        capacity: T,
-        capacity_offset: u64,
-    },
     /// Display a BTreeMap by walking its initialized nodes in key order.
     BTreeMap {
         root: T,
@@ -777,23 +769,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     capacity,
                     capacity_offset,
                     element: self.related_type(*element),
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::String {
-                pointer,
-                length,
-                capacity,
-            }) => {
-                let (pointer, pointer_offset) = resolve_selector(*self, pointer)?;
-                pointer.pointer_target()?;
-                let (length, length_offset) = resolve_selector(*self, length)?;
-                let (capacity, capacity_offset) = resolve_selector(*self, capacity)?;
-                Some(DebugFormat::Known(KnownFormat::String {
-                    pointer_offset,
-                    length,
-                    length_offset,
-                    capacity,
-                    capacity_offset,
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::BTreeMap {
@@ -1752,10 +1727,10 @@ mod bundle_tests {
                     ),
                     (
                         STRING,
-                        BundleDebugFormat::Known(BundleKnownFormat::String {
+                        BundleDebugFormat::Node(BundleNode::Str {
                             pointer: sel(&[0]),
                             length: sel(&[1]),
-                            capacity: sel(&[2]),
+                            capacity: Some(sel(&[2])),
                         }),
                     ),
                     (
