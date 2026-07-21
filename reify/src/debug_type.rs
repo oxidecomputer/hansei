@@ -1015,6 +1015,7 @@ mod bundle_tests {
     const NOTIFY_LIST: BundleTypeId = BundleTypeId(67);
     const NOTIFY_WAITER: BundleTypeId = BundleTypeId(68);
     const NOTIFY_WAITER_PTR: BundleTypeId = BundleTypeId(69);
+    const SLICE: BundleTypeId = BundleTypeId(70);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1068,6 +1069,7 @@ mod bundle_tests {
         );
         let (vecn, ptrn, vec_lenn, capacityn) =
             (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
+        let slicen = s("&[u32]");
         let (strn, stringn, data_ptrn, length2n) = (
             s("&str"),
             s("alloc::string::String"),
@@ -1606,6 +1608,14 @@ mod bundle_tests {
                 name: None,
                 target: NOTIFY_WAITER,
             },
+            // &[u32] { data_ptr: *u8 @0, length: usize @8 } — a `(ptr, len)`
+            // fat pointer with no capacity (the byte-erased pointer mirrors the
+            // `Vec` type above; reify reads the pointer word regardless).
+            TypeDef::Struct {
+                name: slicen,
+                size: 16,
+                members: vec![m(data_ptrn, U8_PTR, 0), m(length2n, U64, 8)],
+            },
         ];
 
         // Field labels for the node-based `BoundedSemaphore` formatter (deduped
@@ -1726,6 +1736,15 @@ mod bundle_tests {
                             pointer: sel(&[0]),
                             length: sel(&[1]),
                             capacity: Some(sel(&[2])),
+                            element: U32,
+                        }),
+                    ),
+                    (
+                        SLICE,
+                        BundleDebugFormat::Node(BundleNode::Slice {
+                            pointer: sel(&[0]),
+                            length: sel(&[1]),
+                            capacity: None,
                             element: U32,
                         }),
                     ),
@@ -2047,6 +2066,42 @@ mod bundle_tests {
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
             "<invalid slice: length exceeds capacity>"
+        );
+    }
+
+    #[test]
+    fn test_slice_displays_initialized_elements() {
+        // A `&[T]`/`Box<[T]>` renders through the same `Slice` node as `Vec`
+        // but with no capacity word, so the length is used directly (the
+        // capacity-less path — otherwise untested).
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x2000);
+                assert_eq!(len, 12);
+                Ok([5u32, 8, 13]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect())
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // A `(data_ptr, length)` fat pointer: address then element count, no
+        // capacity word.
+        let bytes: Vec<u8> = [0x2000u64, 3]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "[5, 8, 13]"
+        );
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&Reader, 8)),
+            "[\n    5,\n    8,\n    13,\n]"
         );
     }
 

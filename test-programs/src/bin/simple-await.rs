@@ -20,6 +20,11 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
     // the golden test asserts its resolved member path.
     #[allow(clippy::useless_vec)]
     let values = vec![5u32, 8, 13];
+    // A boxed slice and a borrowed slice: `Box<[T]>`/`&[T]` are `(ptr, len)`
+    // fat pointers with no capacity, exercising the Slice formatter's
+    // no-capacity path. Both are kept live across the await below.
+    let boxed: Box<[u32]> = vec![21u32, 34].into_boxed_slice();
+    let slice: &[u32] = &values;
     let ipv4 = Ipv4Addr::new(192, 0, 2, 1);
     let ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
     let borrowed = "borrowed\ntext";
@@ -32,6 +37,8 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
         + second
         + label_for(&labels, u64::from(second))
         + values[0]
+        + boxed[0]
+        + slice[2]
         + u32::from(ipv4.octets()[3])
         + u32::from(ipv6.octets()[15])
         + borrowed.len() as u32

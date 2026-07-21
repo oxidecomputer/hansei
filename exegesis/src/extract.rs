@@ -1834,6 +1834,46 @@ fn str_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     }))
 }
 
+/// The member indices and element type of a slice-shaped fat pointer, for
+/// [`slice_debug_format`].
+#[derive(Clone, Debug)]
+struct RawSliceFormat {
+    pointer: usize,
+    length: usize,
+    element: TypeId,
+}
+
+/// A `&[T]` slice reference or a `Box<[T]>` boxed slice. Both are laid out as a
+/// `{ data_ptr: *T, length: usize }` fat pointer — identical to `&str` but with
+/// an arbitrary element type and no capacity — so both render through the
+/// `Slice` node with `capacity: None`, the borrowed counterpart to an owned
+/// `Vec`. Returns the pointer/length member indices and the element type.
+fn slice_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawSliceFormat> {
+    // `Box<T>` for a sized `T` is a thin pointer (no `[`), so it is excluded;
+    // `&str`/`String` are UTF-8 and have their own named formatters. Any boxed
+    // slice allocator matches: the name is `alloc::boxed::Box<[T], A>`.
+    let name = fq_name(reader, id)?;
+    if !name.starts_with("&[") && !name.starts_with("alloc::boxed::Box<[") {
+        return None;
+    }
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
+    let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
+    let (length, length_member) = unique_member(reader, &st.members, "length")?;
+    let RawType::Pointer(raw_pointer) = reader.canonical_type(pointer_member.type_id)? else {
+        return None;
+    };
+    if !is_unsigned_integer(reader, length_member.type_id, crate::bundle::POINTER_SIZE) {
+        return None;
+    }
+    Some(RawSliceFormat {
+        pointer,
+        length,
+        element: reader.canonicalize(raw_pointer.target_type_id),
+    })
+}
+
 fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     if fq_name(reader, id).as_deref() != Some("alloc::string::String") {
         return None;
@@ -3376,6 +3416,16 @@ impl<'a> Emitter<'a> {
                     pointer: format.pointer.into(),
                     length: format.length.into(),
                     capacity: Some(format.capacity.into()),
+                    element: self.reserve(format.element),
+                };
+                self.debug_formats.insert(bid, DebugFormat::Node(node));
+            } else if let Some(format) = slice_debug_format(self.reader, tid) {
+                // A `&[T]` or `Box<[T]>` fat pointer: the same buffer walk as a
+                // `Vec` but with only a pointer and length, no capacity word.
+                let node = DisplayNode::Slice {
+                    pointer: Selector::member(format.pointer as u32),
+                    length: Selector::member(format.length as u32),
+                    capacity: None,
                     element: self.reserve(format.element),
                 };
                 self.debug_formats.insert(bid, DebugFormat::Node(node));
