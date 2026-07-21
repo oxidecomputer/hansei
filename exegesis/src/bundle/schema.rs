@@ -332,8 +332,47 @@ pub enum DisplayNode {
     /// `i` set means slot `i` was written); `slots` reaches the inline
     /// `[MaybeUninit<T>; N]` array whose length `N` bounds which bits count
     /// (higher bits are unrelated released/closed flags). The live messages
-    /// are shown by the channel-level [`KnownFormat::MpscChan`] formatter.
+    /// are shown by the channel-level [`DisplayNode::MpscChan`] formatter.
     SlotCount { bitmap: Selector, slots: Selector },
+    /// Follow the pointer reached by `at`, step `via` across the pointee to the
+    /// rendered target, and render that target with `then`.
+    ///
+    /// `at` reaches a pointer word; `via` is rooted at its pointee and reaches
+    /// the value actually rendered (skipping, e.g., an `Arc`'s strong/weak
+    /// header to land on the `Chan` inside an `ArcInner`). `then`'s selectors
+    /// are rooted at that target. reify reads the target from the process
+    /// through the pointer and degrades to a marker (`<null>`, `<truncated>`,
+    /// `<target unavailable>`, `<unreadable>`) titled with the *enclosing*
+    /// type's name — a `Receiver` reads as the `Chan` it drains. This is the
+    /// single-hop cousin of `List`: one pointer, one re-rooted node.
+    Pointer {
+        at: Selector,
+        via: Selector,
+        then: Box<DisplayNode>,
+    },
+    /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages as
+    /// `[elem, elem, …]` by walking its block chain.
+    ///
+    /// The receiver has read up to `index` and the sender written up to `tail`
+    /// (both selectors to a `usize` within the channel); the messages in
+    /// `[index, tail)` are still queued. `head` reaches the receiver's head
+    /// block pointer. The remaining selectors are rooted at the *block* type
+    /// (reached through `head`): `start_index` gives a block's first absolute
+    /// slot index, `next` its successor block pointer, and `values` its inline
+    /// slot array. `element` is the message type `T`. reify walks the block
+    /// chain and renders each queued slot as `element`. This is a bespoke leaf:
+    /// its block-window traversal does not decompose into the other
+    /// combinators, but it composes into a `Struct` (a `Chan` is a struct whose
+    /// `queued` field is this node) like any other.
+    MpscChan {
+        tail: Selector,
+        index: Selector,
+        head: Selector,
+        start_index: Selector,
+        next: Selector,
+        values: Selector,
+        element: BundleTypeId,
+    },
 }
 
 /// One field of a [`DisplayNode::Struct`] record.
@@ -377,44 +416,6 @@ pub enum KnownFormat {
         size: u32,
         align: u32,
         tail_offset: u64,
-    },
-    /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages.
-    /// The receiver has read up to `index` and the sender has written up to
-    /// `tail` (both member paths to a `usize` within the channel); the
-    /// messages in `[index, tail)` are still queued. `head` is the path to the
-    /// receiver's head block pointer. The remaining paths are rooted at the
-    /// *block* type (reached through `head`): `start_index` gives a block's
-    /// first absolute slot index, `next` its successor block pointer, and
-    /// `values` its inline slot array. `element` is the message type `T`. reify
-    /// walks the block chain and renders each queued slot as `element`.
-    MpscChan {
-        tail: Selector,
-        index: Selector,
-        head: Selector,
-        start_index: Selector,
-        next: Selector,
-        values: Selector,
-        element: BundleTypeId,
-    },
-    /// Display a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
-    /// channel. A receiver holds an `Arc<Chan<T, Semaphore>>`; `chan_pointer`
-    /// is the member path from the receiver to the raw pointer inside that
-    /// `Arc` (ending at a pointer to the `ArcInner` allocation), and `chan` is
-    /// the path from the allocation to the `Chan` value, skipping the Arc's
-    /// strong/weak header. `bound` and `permits` are member paths *within the
-    /// Chan* to the bounded capacity (a plain `usize`) and the batch-semaphore
-    /// permit word (bit 0 closed, the rest the available buffer slots). reify
-    /// reads the `Chan` through the pointer and renders it with the capacity
-    /// and free-slot count prepended, delegating the queued-message walk to the
-    /// `Chan`'s own [`KnownFormat::MpscChan`] formatter.
-    /// `permits_decode` carries the bit layout of that permit word (bit 0
-    /// closed, the rest the available count).
-    MpscRx {
-        chan_pointer: Selector,
-        chan: Selector,
-        bound: Selector,
-        permits: Selector,
-        permits_decode: ScalarDecode,
     },
     /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
     /// its initialized key/value entries.

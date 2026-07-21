@@ -759,12 +759,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(kf @ KnownFormat::DynPointer { .. }) => {
                 return write_dyn_pointer(f, info, Some(ty.name()), kf, ctx);
             }
-            DebugFormat::Known(kf @ KnownFormat::MpscChan { .. }) => {
-                return write_mpsc_chan(f, info, ty.name(), &[], kf, ctx);
-            }
-            DebugFormat::Known(kf @ KnownFormat::MpscRx { .. }) => {
-                return write_mpsc_rx(f, info, kf, ctx);
-            }
             DebugFormat::Known(kf @ KnownFormat::BTreeMap { .. }) => {
                 return write_btree_map(f, info, kf, ctx);
             }
@@ -1092,15 +1086,6 @@ fn apply(decode: &ScalarDecode, word: u64) -> String {
     parts.join(", ")
 }
 
-/// Read the `usize` word at `offset` and decode it, or `<truncated>` if the
-/// bytes are short.
-fn decoded_usize(bytes: &[u8], offset: u64, decode: &ScalarDecode) -> String {
-    match read_u64_at(bytes, offset) {
-        Some(word) => apply(decode, word),
-        None => "<truncated>".to_string(),
-    }
-}
-
 /// Render the code pointer in `bytes` at `offset` as `0x<addr> -> <symbol>`,
 /// resolving the address to a function symbol without ever following it as a
 /// data pointer. A null pointer is `null`; an address that resolves appends
@@ -1264,184 +1249,33 @@ fn eval_slice<'a, T: DebugType<'a>>(
     write!(f, "]")
 }
 
-/// Render an mpsc `Chan`, prepending a `queued` field that walks the block
-/// chain and shows the messages still in flight (absolute indices
-/// `[index, tail)`), each rendered as `element`. The remaining channel
-/// members render normally (their block pointers show the elided block view).
-/// `extra` are pre-decoded fields (e.g. a bounded receiver's `capacity` and
-/// `free`) written verbatim ahead of the synthetic `queued` list.
-fn write_mpsc_chan<'a, T: DebugType<'a>>(
+/// Walk an mpsc channel's block chain and render the queued messages
+/// (absolute indices `[index, tail)`) as `[elem, elem, …]`, each rendered as
+/// `element`. `ctx.depth` is the indentation level of the field holding the
+/// list. This is the bespoke traversal behind the [`DisplayNode::MpscChan`]
+/// leaf; a `Chan` composes it into a `Struct` as its synthetic `queued` field,
+/// and a `Receiver` reaches the same leaf across its `Pointer` hop.
+#[allow(clippy::too_many_arguments)]
+fn eval_chan_queue<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    name: &str,
-    extra: &[(&str, &str)],
-    format: KnownFormat<T>,
+    tail_offset: u64,
+    index_offset: u64,
+    head_offset: u64,
+    block_size: u32,
+    start_index_offset: u64,
+    next_offset: u64,
+    values_offset: u64,
+    element: &T,
+    stride: u32,
+    count: u32,
+    bytes: &[u8],
     ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
 ) -> fmt::Result {
-    let pretty = f.alternate();
-    if !name.is_empty() {
-        write!(f, "{name}")?;
-    }
-    write!(f, " {{")?;
-
-    // Any caller-supplied leading fields, each terminated by a comma so the
-    // synthetic `queued` field (and the real members) can follow uniformly.
-    for (key, value) in extra {
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
-        }
-        write!(f, " {key}: {value},")?;
-    }
-
-    // Synthetic `queued` field next.
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.depth + 1)?;
-    }
-    write!(f, " queued: ")?;
-    write_chan_queue(f, info, &format, ctx.deeper())?;
-    if pretty {
-        write!(f, ",")?;
-    }
-
-    // Then the real members.
-    let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
-    for member in &members {
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
-        } else {
-            write!(f, ",")?;
-        }
-        write!(f, " {}: ", member.name())?;
-        let start = member.offset() as usize;
-        let end = start + member.ty().size() as usize;
-        if let Some(bytes) = info.bytes.get(start..end) {
-            let child = DisplayRecurse {
-                info: TypeInfoRef {
-                    ty: member.ty(),
-                    addr: info.addr + member.offset(),
-                    bytes,
-                    _marker: std::marker::PhantomData,
-                },
-                ctx: ctx.deeper(),
-            };
-            if pretty {
-                write!(f, "{child:#},")?;
-            } else {
-                write!(f, "{child}")?;
-            }
-        } else {
-            write!(f, "<truncated>")?;
-        }
-    }
-
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    } else {
-        write!(f, " ")?;
-    }
-    write!(f, "}}")
-}
-
-/// Render a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
-/// channel. The channel state lives behind the receiver's `Arc<Chan>`: read
-/// the pointer, step past the Arc allocation header to the `Chan`, and render
-/// it in place with the bounded `capacity` and available `free` slots
-/// prepended, so a receiver reads as the channel it drains.
-fn write_mpsc_rx<'a, T: DebugType<'a>>(
-    f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    format: KnownFormat<T>,
-    ctx: RenderCtx<'_, 'a>,
-) -> fmt::Result {
-    let KnownFormat::MpscRx {
-        chan,
-        chan_pointer_offset,
-        chan_offset,
-        bound_offset,
-        permits_offset,
-        permits_decode,
-    } = format
-    else {
-        unreachable!()
-    };
-
-    let name = info.ty.name();
-    let Some(pointer) = read_u64_at(info.bytes, chan_pointer_offset) else {
-        return write!(f, "{name} {{ <truncated> }}");
-    };
-    // Both accessors must be present to read the channel behind the Arc; the
-    // reused `ctx` still carries them.
-    let (Some(proc), Some(_visited)) = (ctx.proc, ctx.visited) else {
-        return write!(f, "{name} {{ <target unavailable> }}");
-    };
-    if pointer == 0 {
-        return write!(f, "{name} {{ <null> }}");
-    }
-    let chan_addr = pointer.wrapping_add(chan_offset);
-    let Ok(chan_bytes) = proc.read_bytes(chan_addr, chan.size()) else {
-        return write!(f, "{name} {{ <unreadable> }}");
-    };
-
-    let capacity = read_u64_at(&chan_bytes, bound_offset)
-        .map_or_else(|| "<truncated>".to_string(), |c| c.to_string());
-    let free = decoded_usize(&chan_bytes, permits_offset, &permits_decode);
-
-    let chan_info = TypeInfoRef {
-        ty: chan,
-        addr: chan_addr,
-        bytes: &chan_bytes,
-        _marker: std::marker::PhantomData,
-    };
-    // The `Chan` carries the queued-message formatter; delegate to it, giving
-    // it the receiver's own name and the decoded capacity/free fields. `proc`
-    // and `visited` are known-present here, so reuse the same context.
-    match chan.debug_format() {
-        Some(DebugFormat::Known(format @ KnownFormat::MpscChan { .. })) => write_mpsc_chan(
-            f,
-            &chan_info,
-            name,
-            &[("capacity", capacity.as_str()), ("free", free.as_str())],
-            format,
-            ctx,
-        ),
-        // The inner type is expected to be an mpsc `Chan`; if the format is
-        // missing, fall back to rendering it structurally.
-        _ => write_display_value(f, &chan_info, ctx),
-    }
-}
-
-/// Walk an mpsc channel's block chain and render the queued messages as a
-/// list. `ctx.depth` is the indentation level of the field holding the list.
-fn write_chan_queue<'a, T: DebugType<'a>>(
-    f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    format: &KnownFormat<T>,
-    ctx: RenderCtx<'_, 'a>,
-) -> fmt::Result {
-    let &KnownFormat::MpscChan {
-        tail_offset,
-        index_offset,
-        head_offset,
-        block_size,
-        start_index_offset,
-        next_offset,
-        values_offset,
-        element,
-        stride,
-        count,
-    } = format
-    else {
-        unreachable!()
-    };
-
     let (Some(tail), Some(index), Some(head)) = (
-        read_u64_at(info.bytes, tail_offset),
-        read_u64_at(info.bytes, index_offset),
-        read_u64_at(info.bytes, head_offset),
+        read_u64_at(bytes, tail_offset),
+        read_u64_at(bytes, index_offset),
+        read_u64_at(bytes, head_offset),
     ) else {
         return write!(f, "<truncated>");
     };
@@ -1449,7 +1283,6 @@ fn write_chan_queue<'a, T: DebugType<'a>>(
         return write!(f, "<target unavailable>");
     };
 
-    let pretty = f.alternate();
     let element_ctx = RenderCtx {
         proc: Some(proc),
         visited: Some(visited),
@@ -1496,7 +1329,7 @@ fn write_chan_queue<'a, T: DebugType<'a>>(
         any = true;
         let child = DisplayRecurse {
             info: TypeInfoRef {
-                ty: element,
+                ty: *element,
                 addr: block_ptr + slot as u64,
                 bytes,
                 _marker: std::marker::PhantomData,
@@ -2172,7 +2005,9 @@ fn eval_node<'a, T: DebugType<'a>>(
             None => write!(f, "<truncated>"),
         },
         DisplayNode::Symbol { offset } => write_symbol(f, bytes, *offset, ctx.proc),
-        DisplayNode::Struct { fields } => eval_struct(f, fields, ty, bytes, addr, ctx, pretty),
+        DisplayNode::Struct { fields } => {
+            eval_struct(f, fields, ty, None, bytes, addr, ctx, pretty)
+        }
         DisplayNode::List {
             head_offset,
             next_offset,
@@ -2284,6 +2119,66 @@ fn eval_node<'a, T: DebugType<'a>>(
             let written = (ready & mask).count_ones();
             write!(f, "[{written} slots]")
         }
+        DisplayNode::Pointer {
+            pointer_offset,
+            via_offset,
+            target,
+            then,
+        } => {
+            // The record reads as its target but keeps the enclosing name, so a
+            // degraded read still reports as e.g. `Receiver<T> { <null> }`.
+            let name = ty.name();
+            let Some(pointer) = read_u64_at(bytes, *pointer_offset) else {
+                return write!(f, "{name} {{ <truncated> }}");
+            };
+            // Both accessors must be present to follow the pointer into the
+            // process; without them the target cannot be read.
+            let (Some(proc), Some(_visited)) = (ctx.proc, ctx.visited) else {
+                return write!(f, "{name} {{ <target unavailable> }}");
+            };
+            if pointer == 0 {
+                return write!(f, "{name} {{ <null> }}");
+            }
+            let addr = pointer.wrapping_add(*via_offset);
+            let Ok(target_bytes) = proc.read_bytes(addr, target.size()) else {
+                return write!(f, "{name} {{ <unreadable> }}");
+            };
+            // Render the target against its own bytes, titled with this type's
+            // name. `then` is a `Struct` for the receiver, but any node works.
+            match then.as_ref() {
+                DisplayNode::Struct { fields } => {
+                    eval_struct(f, fields, target, Some(name), &target_bytes, addr, ctx, pretty)
+                }
+                other => eval_node(f, other, target, &target_bytes, addr, ctx, pretty),
+            }
+        }
+        DisplayNode::MpscChan {
+            tail_offset,
+            index_offset,
+            head_offset,
+            block_size,
+            start_index_offset,
+            next_offset,
+            values_offset,
+            element,
+            stride,
+            count,
+        } => eval_chan_queue(
+            f,
+            *tail_offset,
+            *index_offset,
+            *head_offset,
+            *block_size,
+            *start_index_offset,
+            *next_offset,
+            *values_offset,
+            element,
+            *stride,
+            *count,
+            bytes,
+            ctx,
+            pretty,
+        ),
     }
 }
 
@@ -2311,16 +2206,21 @@ fn eval_ip_addr(
 /// Render a [`DisplayNode::Struct`] record: `<ty> { field, … }`, each field
 /// either a real member shown structurally or a label whose value is a nested
 /// node.
+#[allow(clippy::too_many_arguments)]
 fn eval_struct<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     fields: &[Field<T>],
     ty: &T,
+    name: Option<&str>,
     bytes: &[u8],
     addr: u64,
     ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
-    write!(f, "{} {{", ty.name())?;
+    // A `Pointer` re-roots the record at its target but titles it with the
+    // enclosing type's name (a `Receiver` reads as its `Chan`); every other
+    // caller titles it with the rendered type's own name.
+    write!(f, "{} {{", name.unwrap_or_else(|| ty.name()))?;
     for (i, field) in fields.iter().enumerate() {
         // Field prefix: pretty starts a fresh indented line; inline opens with
         // a space after `{` and separates subsequent fields with `, `.
