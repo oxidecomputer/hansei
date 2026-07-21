@@ -1766,14 +1766,24 @@ fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
         let (index, _) = matches.next()?;
         matches.next().is_none().then_some(index as u32)
     };
-    Some(DebugFormat::Known(
-        crate::bundle::KnownFormat::RawWakerVTable {
-            clone: member("clone")?,
-            wake: member("wake")?,
-            wake_by_ref: member("wake_by_ref")?,
-            drop: member("drop")?,
+    // Render the whole struct, replacing each function-pointer member's value
+    // with a `Symbol` node (its address and resolved name) while keeping the
+    // member's own name. The fields are emitted in RawWakerVTable's declared
+    // order (clone, wake, wake_by_ref, drop) regardless of DWARF member order.
+    let symbol = |index: u32| Field::Override {
+        index,
+        node: DisplayNode::Symbol {
+            at: Selector::member(index),
         },
-    ))
+    };
+    Some(DebugFormat::Node(DisplayNode::Struct {
+        fields: vec![
+            symbol(member("clone")?),
+            symbol(member("wake")?),
+            symbol(member("wake_by_ref")?),
+            symbol(member("drop")?),
+        ],
+    }))
 }
 
 fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {

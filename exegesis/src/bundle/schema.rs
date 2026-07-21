@@ -325,14 +325,6 @@ pub enum KnownFormat {
         align: u32,
         tail_offset: u64,
     },
-    /// Display the four function pointers in `core::task::RawWakerVTable`
-    /// as symbols rather than following them as data pointers.
-    RawWakerVTable {
-        clone: u32,
-        wake: u32,
-        wake_by_ref: u32,
-        drop: u32,
-    },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages.
     /// The receiver has read up to `index` and the sender has written up to
     /// `tail` (both member paths to a `usize` within the channel); the

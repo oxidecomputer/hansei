@@ -230,14 +230,6 @@ pub enum KnownFormat<T> {
         align: u32,
         tail_offset: u64,
     },
-    /// Display the fields of `core::task::RawWakerVTable` as function
-    /// addresses and symbols.
-    RawWakerVTable {
-        clone_offset: u64,
-        wake_offset: u64,
-        wake_by_ref_offset: u64,
-        drop_offset: u64,
-    },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages
     /// (indices `[index, tail)`) by walking its block chain from the head
     /// block, rendering each queued slot as `element`. `*_offset` fields
@@ -653,23 +645,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     size: *size,
                     align: *align,
                     tail_offset: *tail_offset,
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::RawWakerVTable {
-                clone,
-                wake,
-                wake_by_ref,
-                drop,
-            }) => {
-                let (_, clone_offset) = member_at(*self, *clone)?;
-                let (_, wake_offset) = member_at(*self, *wake)?;
-                let (_, wake_by_ref_offset) = member_at(*self, *wake_by_ref)?;
-                let (_, drop_offset) = member_at(*self, *drop)?;
-                Some(DebugFormat::Known(KnownFormat::RawWakerVTable {
-                    clone_offset,
-                    wake_offset,
-                    wake_by_ref_offset,
-                    drop_offset,
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::MpscChan {
@@ -1685,11 +1660,25 @@ mod bundle_tests {
                     ),
                     (
                         RAW_WAKER_VTABLE,
-                        BundleDebugFormat::Known(BundleKnownFormat::RawWakerVTable {
-                            clone: 0,
-                            wake: 1,
-                            wake_by_ref: 2,
-                            drop: 3,
+                        BundleDebugFormat::Node(BundleNode::Struct {
+                            fields: vec![
+                                BundleField::Override {
+                                    index: 0,
+                                    node: BundleNode::Symbol { at: sel(&[0]) },
+                                },
+                                BundleField::Override {
+                                    index: 1,
+                                    node: BundleNode::Symbol { at: sel(&[1]) },
+                                },
+                                BundleField::Override {
+                                    index: 2,
+                                    node: BundleNode::Symbol { at: sel(&[2]) },
+                                },
+                                BundleField::Override {
+                                    index: 3,
+                                    node: BundleNode::Symbol { at: sel(&[3]) },
+                                },
+                            ],
                         }),
                     ),
                     (
