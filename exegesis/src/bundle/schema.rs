@@ -79,7 +79,7 @@ pub struct TypeTable {
     pub types: Vec<TypeDef>,
     /// Optional display instructions attached to concrete type layouts.
     /// Types absent from this map use reify's ordinary structural display.
-    pub debug_formats: BTreeMap<BundleTypeId, DebugFormat>,
+    pub debug_formats: BTreeMap<BundleTypeId, DisplayNode>,
     /// By-name index for the (rarer) name-based lookups: pairs of
     /// (fully-qualified name, type id), sorted by the *resolved string*
     /// so lookups can binary-search without materializing owned keys.
@@ -194,23 +194,6 @@ pub enum FieldRender {
     Enum(Vec<(u64, StrRef)>),
     /// Render the sub-value as an unsigned integer (`name=N`).
     Uint,
-}
-
-/// Declarative instructions for displaying a known type.
-///
-/// Addressing is expressed with [`Selector`]s resolved against the concrete
-/// [`TypeDef`]. Exegesis resolves and validates them while it still has the
-/// source DWARF's structured generic parameter information; consumers never
-/// match type names or private field names.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-pub enum DebugFormat {
-    /// Display one member as though it were the containing value.
-    Transparent { member: Selector },
-    /// Render the type by interpreting a composable [`DisplayNode`] program.
-    ///
-    /// A detector emits a tree of shared combinators and dedicated traversal
-    /// leaves that reify walks with one generic evaluator.
-    Node(DisplayNode),
 }
 
 /// A composable display program for a known type: a recursive tree of nodes

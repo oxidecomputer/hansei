@@ -21,9 +21,9 @@
 //!    no silent omissions.
 
 use crate::bundle::{
-    BinaryIdent, BitField, Bundle, BundleTypeId, DebugFormat, DiscrDef, DiscrValue, DiscrValues,
-    DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
-    Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
+    BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues, DisplayNode,
+    DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef, Meta,
+    Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
     StaticsTable, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef,
     TypeTable, VariantDef, VariantShape,
 };
@@ -1230,7 +1230,7 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
 /// their private storage layout. Matching happens here, while structured
 /// generic parameters are still available; the bundle records only resolved
 /// member indices.
-fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     dyn_pointer_debug_format(reader, id)
         .or_else(|| raw_waker_vtable_debug_format(reader, id))
         .or_else(|| function_pointer_debug_format(reader, id))
@@ -1262,7 +1262,7 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> 
 /// struct (any other members are zero-sized), so this only ever collapses a
 /// genuine wrapper, never a struct that also carries data. Semantic wrappers
 /// (atomics, `NonZero`, …) are matched by earlier, more specific formatters.
-fn scalar_newtype_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn scalar_newtype_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -1275,8 +1275,9 @@ fn scalar_newtype_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Debu
     if base.size == 0 || st.size != base.size {
         return None;
     }
-    Some(DebugFormat::Transparent {
-        member: Selector::member(index as u32),
+    Some(DisplayNode::Alias {
+        at: Selector::member(index as u32),
+        follow_pointers: true,
     })
 }
 
@@ -1738,18 +1739,18 @@ fn find_pointer_paths_inner(
     seen.pop();
 }
 
-fn function_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn function_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Pointer(pointer) = reader.canonical_type(id)? else {
         return None;
     };
     reader
         .is_subroutine_type(pointer.target_type_id)
-        .then_some(DebugFormat::Node(DisplayNode::Symbol {
+        .then_some(DisplayNode::Symbol {
             at: Selector::default(),
-        }))
+        })
 }
 
-fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     if fq_name(reader, id).as_deref() != Some("core::task::wake::RawWakerVTable") {
         return None;
     }
@@ -1777,17 +1778,17 @@ fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
             at: Selector::member(index),
         },
     };
-    Some(DebugFormat::Node(DisplayNode::Struct {
+    Some(DisplayNode::Struct {
         fields: vec![
             symbol(member("clone")?),
             symbol(member("wake")?),
             symbol(member("wake_by_ref")?),
             symbol(member("drop")?),
         ],
-    }))
+    })
 }
 
-fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let expected_octets = match fq_name(reader, id).as_deref()? {
         "core::net::ip_addr::Ipv4Addr" => 4,
         "core::net::ip_addr::Ipv6Addr" => 16,
@@ -1806,12 +1807,12 @@ fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
     if array.count != expected_octets || !is_unsigned_integer(reader, array.elem_type_id, 1) {
         return None;
     }
-    Some(DebugFormat::Node(DisplayNode::IpAddr {
+    Some(DisplayNode::IpAddr {
         octets: Selector::member(index as u32),
-    }))
+    })
 }
 
-fn str_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn str_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     if fq_name(reader, id).as_deref() != Some("&str") {
         return None;
     }
@@ -1828,11 +1829,11 @@ fn str_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     {
         return None;
     }
-    Some(DebugFormat::Node(DisplayNode::Str {
+    Some(DisplayNode::Str {
         pointer: Selector::member(pointer as u32),
         length: Selector::member(length as u32),
         capacity: None,
-    }))
+    })
 }
 
 /// The member indices and element type of a slice-shaped fat pointer, for
@@ -1875,7 +1876,7 @@ fn slice_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawSliceForma
     })
 }
 
-fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     if fq_name(reader, id).as_deref() != Some("alloc::string::String") {
         return None;
     }
@@ -1900,11 +1901,11 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
             .collect::<Vec<u32>>()
             .into()
     };
-    Some(DebugFormat::Node(DisplayNode::Str {
+    Some(DisplayNode::Str {
         pointer: path(layout.pointer),
         length: path(layout.length),
         capacity: Some(path(layout.capacity)),
-    }))
+    })
 }
 
 /// Recognize a `parking_lot::raw_mutex::RawMutex` and return the selector to its
@@ -1920,7 +1921,7 @@ fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Opti
     let (state_index, state_member) = unique_member(reader, &st.members, "state")?;
     // The state is a single-byte atomic (`AtomicU8`). Reuse the atomic
     // detector for the path to the stored byte, then anchor it at `state`.
-    let Some(DebugFormat::Node(DisplayNode::Alias { at: value, .. })) =
+    let Some(DisplayNode::Alias { at: value, .. }) =
         atomic_debug_format(reader, state_member.type_id)
     else {
         return None;
@@ -2097,7 +2098,7 @@ fn watch_state_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Selecto
     Some(state.into())
 }
 
-fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     if !fq_name(reader, id)
         .as_deref()
         .is_some_and(|name| name.starts_with("tokio::sync::mpsc::block::Block<"))
@@ -2173,7 +2174,7 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
         })
         .collect();
 
-    Some(DebugFormat::Node(DisplayNode::Struct { fields }))
+    Some(DisplayNode::Struct { fields })
 }
 
 /// Recognize a `tokio::sync::mpsc::bounded::Receiver<T>` and record the paths
@@ -2608,7 +2609,7 @@ fn find_zero_offset_uint_paths(
 /// pointer. The bundle records both member indices and the vtable header
 /// ordering so reify never guesses from the private field name or bakes in
 /// rustc's slot numbers independently.
-fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2653,14 +2654,14 @@ fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
         return None;
     }
 
-    Some(DebugFormat::Node(DisplayNode::DynPointer {
+    Some(DisplayNode::DynPointer {
         pointer: Selector::member(pointer_index as u32),
         vtable: Selector::member(vtable_index as u32),
         drop_in_place: 0,
         size: 1,
         align: 2,
         tail_offset,
-    }))
+    })
 }
 
 /// The byte offset of the `dyn Trait` tail within `id`, if `id` is a
@@ -2698,10 +2699,11 @@ fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bo
     dyn_tail_offset(reader, id, seen).is_some()
 }
 
-fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let (member, _) = unsafe_cell_layout(reader, id)?;
-    Some(DebugFormat::Transparent {
-        member: Selector::member(member),
+    Some(DisplayNode::Alias {
+        at: Selector::member(member),
+        follow_pointers: true,
     })
 }
 
@@ -2734,7 +2736,7 @@ fn unsafe_cell_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)
     Some((index as u32, target))
 }
 
-fn loom_unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn loom_unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2764,12 +2766,13 @@ fn loom_unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
     if matches.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent {
-        member: Selector::member(index as u32),
+    Some(DisplayNode::Alias {
+        at: Selector::member(index as u32),
+        follow_pointers: true,
     })
 }
 
-fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2796,8 +2799,9 @@ fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
     if matches.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent {
-        member: Selector::member(index as u32),
+    Some(DisplayNode::Alias {
+        at: Selector::member(index as u32),
+        follow_pointers: true,
     })
 }
 
@@ -2805,7 +2809,7 @@ fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
 /// `PhantomData` marker with the real parking_lot lock (`Mutex`, `RwLock`,
 /// `Condvar`, and their guards). Display them as the inner lock so the
 /// loom scaffolding does not obscure it.
-fn loom_parking_lot_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn loom_parking_lot_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2823,15 +2827,17 @@ fn loom_parking_lot_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
     if real.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent {
-        member: Selector::member(index as u32),
+    Some(DisplayNode::Alias {
+        at: Selector::member(index as u32),
+        follow_pointers: true,
     })
 }
 
-fn non_null_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn non_null_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let (member, _) = non_null_layout(reader, id)?;
-    Some(DebugFormat::Transparent {
-        member: Selector::member(member),
+    Some(DisplayNode::Alias {
+        at: Selector::member(member),
+        follow_pointers: true,
     })
 }
 
@@ -2869,7 +2875,7 @@ fn non_null_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
     Some((index as u32, target))
 }
 
-fn unique_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn unique_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2896,15 +2902,17 @@ fn unique_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     if matches.next().is_some() {
         return None;
     }
-    Some(DebugFormat::Transparent {
-        member: Selector::member(index as u32),
+    Some(DisplayNode::Alias {
+        at: Selector::member(index as u32),
+        follow_pointers: true,
     })
 }
 
-fn usize_no_high_bit_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn usize_no_high_bit_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let (member, _) = usize_no_high_bit_layout(reader, id)?;
-    Some(DebugFormat::Transparent {
-        member: Selector::member(member),
+    Some(DisplayNode::Alias {
+        at: Selector::member(member),
+        follow_pointers: true,
     })
 }
 
@@ -2938,7 +2946,7 @@ fn is_integer(reader: &DwReader<'_>, id: TypeId) -> bool {
 /// wrapper (`NonZero{U,I}<width>Inner`). Display it as the wrapped integer;
 /// paired with [`nonzero_inner_debug_format`] the two layers collapse to the
 /// value. Handles every width and signedness.
-fn nonzero_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn nonzero_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2948,15 +2956,16 @@ fn nonzero_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat
         return None;
     }
     let member = single_zero_offset_field(reader, &st.members, |_| true)?;
-    Some(DebugFormat::Transparent {
-        member: Selector::member(member),
+    Some(DisplayNode::Alias {
+        at: Selector::member(member),
+        follow_pointers: true,
     })
 }
 
 /// The niche-typed inner of a `NonZero<T>`
 /// (`core::num::niche_types::NonZero{U,I}<width>Inner`), transparent over its
 /// integer field.
-fn nonzero_inner_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn nonzero_inner_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2969,8 +2978,9 @@ fn nonzero_inner_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Debug
         return None;
     }
     let member = single_zero_offset_field(reader, &st.members, |ty| is_integer(reader, ty))?;
-    Some(DebugFormat::Transparent {
-        member: Selector::member(member),
+    Some(DisplayNode::Alias {
+        at: Selector::member(member),
+        follow_pointers: true,
     })
 }
 
@@ -2990,7 +3000,7 @@ fn single_zero_offset_field(
     matches.next().is_none().then_some(index as u32)
 }
 
-fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
+fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -3021,10 +3031,10 @@ fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     };
     // An atomic aliases its stored value but does not chase it: an `AtomicPtr`'s
     // `Debug` reports the address it holds, so `follow_pointers` is false.
-    Some(DebugFormat::Node(DisplayNode::Alias {
+    Some(DisplayNode::Alias {
         at: value.clone().into(),
         follow_pointers: false,
-    }))
+    })
 }
 
 /// Find all short, acyclic member paths from `current` to `target` whose
@@ -3311,7 +3321,7 @@ struct Emitter<'a> {
     interner: StringInterner,
     ids: BTreeMap<TypeId, BundleTypeId>,
     defs: Vec<TypeDef>,
-    debug_formats: BTreeMap<BundleTypeId, DebugFormat>,
+    debug_formats: BTreeMap<BundleTypeId, DisplayNode>,
     /// Fully-qualified names for the name index, parallel to `defs`.
     names: Vec<Option<String>>,
     pending: VecDeque<(TypeId, BundleTypeId)>,
@@ -3497,7 +3507,7 @@ impl<'a> Emitter<'a> {
                     capacity: Some(format.capacity.into()),
                     element: self.reserve(format.element),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Node(node));
+                self.debug_formats.insert(bid, node);
             } else if let Some(format) = slice_debug_format(self.reader, tid) {
                 // A `&[T]` or `Box<[T]>` fat pointer: the same buffer walk as a
                 // `Vec` but with only a pointer and length, no capacity word.
@@ -3507,7 +3517,7 @@ impl<'a> Emitter<'a> {
                     capacity: None,
                     element: self.reserve(format.element),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Node(node));
+                self.debug_formats.insert(bid, node);
             } else if let Some(format) = btree_map_debug_format(self.reader, tid) {
                 let node = DisplayNode::Map {
                     length: Selector::member(format.length),
@@ -3528,14 +3538,14 @@ impl<'a> Emitter<'a> {
                         edge: format.edge.into(),
                     }),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Node(node));
+                self.debug_formats.insert(bid, node);
             } else if let Some(format) = mpsc_chan_debug_format(self.reader, tid) {
                 // A channel is a struct whose first field is the synthetic
                 // `queued` block-chain walk; the rest are its real members.
                 let node = DisplayNode::Struct {
                     fields: self.chan_struct_fields(format),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Node(node));
+                self.debug_formats.insert(bid, node);
             } else if let Some(format) = bounded_semaphore_debug_format(self.reader, tid) {
                 // A curated record: the mutex byte, closed flag, permit word,
                 // and capacity, plus the intrusive waiter queue as a list whose
@@ -3577,7 +3587,7 @@ impl<'a> Emitter<'a> {
                         queue,
                     ],
                 };
-                self.debug_formats.insert(bid, DebugFormat::Node(node));
+                self.debug_formats.insert(bid, node);
             } else if let Some(format) = notify_debug_format(self.reader, tid) {
                 // A curated record: the notification state word, the waiter
                 // mutex byte, and the intrusive waiter queue as a list whose
@@ -3611,14 +3621,14 @@ impl<'a> Emitter<'a> {
                         queue,
                     ],
                 };
-                self.debug_formats.insert(bid, DebugFormat::Node(node));
+                self.debug_formats.insert(bid, node);
             } else if let Some(state) = parking_lot_raw_mutex_debug_format(self.reader, tid) {
                 // The whole value is a single decoded lock-state byte.
                 let node = DisplayNode::Scalar {
                     at: state,
                     decode: self.mutex_byte_decode(),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Node(node));
+                self.debug_formats.insert(bid, node);
             } else if let Some(format) = semaphore_debug_format(self.reader, tid) {
                 // Render the struct, but decode the atomic permit word in place
                 // (available count plus closed flag); every other member shows
@@ -3643,7 +3653,7 @@ impl<'a> Emitter<'a> {
                     })
                     .collect();
                 let node = DisplayNode::Struct { fields };
-                self.debug_formats.insert(bid, DebugFormat::Node(node));
+                self.debug_formats.insert(bid, node);
             } else if let Some(state) = watch_state_debug_format(self.reader, tid) {
                 // The whole value is a single decoded atomic state word: the
                 // closed flag in bit 0 and the version counter above it.
@@ -3651,7 +3661,7 @@ impl<'a> Emitter<'a> {
                     at: state,
                     decode: self.watch_state_decode(),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Node(node));
+                self.debug_formats.insert(bid, node);
             } else if let Some(format) = mpsc_rx_debug_format(self.reader, tid) {
                 // A receiver reads as the `Chan` it drains, reached across its
                 // `Arc` pointer: a `Pointer` hop whose target is the channel's
@@ -3677,7 +3687,7 @@ impl<'a> Emitter<'a> {
                     via: format.chan.into(),
                     then: Box::new(DisplayNode::Struct { fields }),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Node(node));
+                self.debug_formats.insert(bid, node);
             } else if let Some(format) = known_debug_format(self.reader, tid) {
                 self.debug_formats.insert(bid, format);
             }
@@ -4033,7 +4043,7 @@ mod tests {
 
     #[test]
     fn test_loom_parking_lot_mutex_is_transparent_over_inner_lock() {
-        use crate::bundle::{DebugFormat, Selector};
+        use crate::bundle::{DisplayNode, Selector};
 
         let mut reader = DwReader::default();
 
@@ -4085,8 +4095,9 @@ mod tests {
         // real lock at member index 1.
         assert_eq!(
             loom_parking_lot_debug_format(&reader, mutex_id),
-            Some(DebugFormat::Transparent {
-                member: Selector::member(1)
+            Some(DisplayNode::Alias {
+                at: Selector::member(1),
+                follow_pointers: true,
             })
         );
         // A bare struct outside the loom parking_lot namespace is untouched.
@@ -4095,7 +4106,7 @@ mod tests {
 
     #[test]
     fn test_nonzero_layers_are_transparent_over_the_integer() {
-        use crate::bundle::{DebugFormat, Selector};
+        use crate::bundle::{DisplayNode, Selector};
         use crate::raw_types::{Encoding, RawBase};
 
         let mut reader = DwReader::default();
@@ -4151,14 +4162,16 @@ mod tests {
 
         assert_eq!(
             nonzero_debug_format(&reader, nonzero_id),
-            Some(DebugFormat::Transparent {
-                member: Selector::member(0)
+            Some(DisplayNode::Alias {
+                at: Selector::member(0),
+                follow_pointers: true,
             })
         );
         assert_eq!(
             nonzero_inner_debug_format(&reader, inner_id),
-            Some(DebugFormat::Transparent {
-                member: Selector::member(0)
+            Some(DisplayNode::Alias {
+                at: Selector::member(0),
+                follow_pointers: true,
             })
         );
         // The public wrapper detector does not fire on the inner, nor vice versa.
@@ -4168,7 +4181,7 @@ mod tests {
 
     #[test]
     fn test_scalar_newtype_is_transparent_over_its_value() {
-        use crate::bundle::{DebugFormat, Selector};
+        use crate::bundle::{DisplayNode, Selector};
         use crate::raw_types::{Encoding, RawBase};
 
         let mut reader = DwReader::default();
@@ -4202,8 +4215,9 @@ mod tests {
         );
         assert_eq!(
             scalar_newtype_debug_format(&reader, epoch_id),
-            Some(DebugFormat::Transparent {
-                member: Selector::member(0)
+            Some(DisplayNode::Alias {
+                at: Selector::member(0),
+                follow_pointers: true,
             })
         );
 

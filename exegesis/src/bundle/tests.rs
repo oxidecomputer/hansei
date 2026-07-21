@@ -432,8 +432,9 @@ fn test_validate_rejects_bad_debug_format_path() {
     let mut b = tiny_bundle();
     b.types.debug_formats.insert(
         BundleTypeId(0),
-        DebugFormat::Transparent {
-            member: Selector::member(0),
+        DisplayNode::Alias {
+            at: Selector::member(0),
+            follow_pointers: true,
         },
     );
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
@@ -494,8 +495,9 @@ fn test_validate_accepts_selector_through_deref() {
             // Outer, rendered as its pointee's `v` field: p → deref → v.
             debug_formats: BTreeMap::from([(
                 BundleTypeId(3),
-                DebugFormat::Transparent {
-                    member: Selector(vec![Step::Member(0), Step::Deref, Step::Member(0)]),
+                DisplayNode::Alias {
+                    at: Selector(vec![Step::Member(0), Step::Deref, Step::Member(0)]),
+                    follow_pointers: true,
                 },
             )]),
             name_index: vec![],
@@ -528,8 +530,9 @@ fn test_validate_rejects_deref_of_non_pointer() {
     // Type 0 is a `u64`; a leading `Deref` cannot apply to it.
     b.types.debug_formats.insert(
         BundleTypeId(0),
-        DebugFormat::Transparent {
-            member: Selector(vec![Step::Deref]),
+        DisplayNode::Alias {
+            at: Selector(vec![Step::Deref]),
+            follow_pointers: true,
         },
     );
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
@@ -541,9 +544,9 @@ fn test_validate_rejects_symbol_node_on_non_pointer() {
     // Type 0 is a `u64`; a symbol node must land on a pointer.
     b.types.debug_formats.insert(
         BundleTypeId(0),
-        DebugFormat::Node(DisplayNode::Symbol {
+        DisplayNode::Symbol {
             at: Selector::default(),
-        }),
+        },
     );
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
 }
@@ -1297,14 +1300,14 @@ mod view_tests {
             ],
             debug_formats: std::collections::BTreeMap::from([(
                 BundleTypeId(12),
-                DebugFormat::Node(DisplayNode::DynPointer {
+                DisplayNode::DynPointer {
                     pointer: Selector::member(0),
                     vtable: Selector::member(1),
                     drop_in_place: 0,
                     size: 1,
                     align: 2,
                     tail_offset: 0,
-                }),
+                },
             )]),
             name_index: vec![],
         };
