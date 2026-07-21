@@ -2,7 +2,7 @@ pub mod debug_type;
 
 pub use debug_type::TypeKind;
 use debug_type::{
-    BitField, DebugFormat, DebugMember, DebugType, DisplayNode, Field, FieldRender, KnownFormat,
+    BitField, DebugFormat, DebugMember, DebugType, DisplayNode, Field, FieldRender, MapEntries,
     ScalarDecode, TypeClass,
 };
 
@@ -756,9 +756,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
         // returns; that one falls through to the shared sub-value recursion
         // below with the child location it binds.
         let (target, offset, child_proc, child_visited) = match format {
-            DebugFormat::Known(kf @ KnownFormat::BTreeMap { .. }) => {
-                return write_btree_map(f, info, kf, ctx);
-            }
             DebugFormat::Node(node) => {
                 // A top-level `Scalar` formatter (e.g. a parking_lot `RawMutex`)
                 // has no enclosing field label to give it context, so it is
@@ -1363,117 +1360,60 @@ struct BTreeNodeLayout<T> {
     edge_pointer_offset: u64,
 }
 
-enum BTreeWalkError {
+enum MapWalkError {
     Format,
     Invalid(&'static str),
+    Marker(&'static str),
 }
 
-impl From<fmt::Error> for BTreeWalkError {
+impl From<fmt::Error> for MapWalkError {
     fn from(_: fmt::Error) -> Self {
         Self::Format
     }
 }
 
-fn write_btree_map<'a, T: DebugType<'a>>(
+/// Render the presentation shared by associative collections. The entry source
+/// owns storage traversal; this function owns recursive key/value display,
+/// exact-length accounting, and inline/pretty punctuation.
+#[allow(clippy::too_many_arguments)]
+fn eval_map<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    format: KnownFormat<T>,
+    ty: &T,
+    bytes: &[u8],
     ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
+    length_offset: u64,
+    length_size: u32,
+    key: T,
+    value: T,
+    entries: &MapEntries<T>,
 ) -> fmt::Result {
-    let KnownFormat::BTreeMap {
-        root,
-        root_offset,
-        root_node,
-        root_node_offset,
-        length,
-        length_offset,
-        height,
-        height_offset,
-        node_offset,
-        key,
-        value,
-        leaf,
-        leaf_len,
-        leaf_len_offset,
-        keys_offset,
-        key_slots,
-        values_offset,
-        internal,
-        edges_offset,
-        edge,
-        edge_pointer_offset,
-    } = format;
-
-    let Some(map_length) = read_unsigned_at(info.bytes, length_offset, length.size()) else {
+    let Some(map_length) = read_unsigned_at(bytes, length_offset, u64::from(length_size)) else {
         return write!(f, "<truncated>");
     };
-    let pretty = f.alternate();
-    write!(f, "{} {{", info.ty.name())?;
+    write!(f, "{} {{", ty.name())?;
     if map_length == 0 {
         return write!(f, "}}");
     }
 
-    let root_start = root_offset as usize;
-    let Some(root_end) = root_start.checked_add(root.size() as usize) else {
-        return write!(f, " <invalid root> }}");
-    };
-    let Some(root_bytes) = info.bytes.get(root_start..root_end) else {
-        return write!(f, " <truncated root> }}");
-    };
-    if !matches!(root.check_variant(root_bytes, "Some"), Some(Ok(Some(_)))) {
-        return write!(f, " <invalid missing root> }}");
-    }
-
-    let root_node_start = root_node_offset as usize;
-    let Some(root_node_end) = root_node_start.checked_add(root_node.size() as usize) else {
-        return write!(f, " <invalid root node> }}");
-    };
-    let Some(root_node_bytes) = info.bytes.get(root_node_start..root_node_end) else {
-        return write!(f, " <truncated root node> }}");
-    };
-    let Some(height) = read_unsigned_at(root_node_bytes, height_offset, height.size()) else {
-        return write!(f, " <truncated height> }}");
-    };
-    let Some(root_address) = read_u64_at(root_node_bytes, node_offset) else {
-        return write!(f, " <truncated node pointer> }}");
-    };
-    let Some(proc) = ctx.proc else {
-        return write!(f, " <target unavailable> }}");
-    };
-
-    let layout = BTreeNodeLayout {
+    let entry_ctx = ctx.deeper();
+    let mut emitted = 0u64;
+    let walk = walk_map_entries(
+        bytes,
+        ctx.proc,
         key,
         value,
-        leaf,
-        leaf_len,
-        leaf_len_offset,
-        keys_offset,
-        key_slots,
-        values_offset,
-        internal,
-        edges_offset,
-        edge,
-        edge_pointer_offset,
-    };
-    // Keys and values are read from the target at one deeper level; `proc` is
-    // known-present here so the same context applies.
-    let entry_ctx = ctx.deeper();
-    let mut remaining = map_length;
-    let mut node_addresses = HashSet::new();
-    let mut entries = 0usize;
-    let walk = walk_btree_node(
-        proc,
-        layout,
-        root_address,
-        height,
-        &mut remaining,
-        &mut node_addresses,
+        entries,
         &mut |key_addr, key_bytes, value_addr, value_bytes| {
-            write_btree_entry_prefix(f, pretty, ctx.depth, entries)?;
-            entries += 1;
+            if emitted == map_length {
+                return Err(MapWalkError::Invalid(
+                    "tree contains more entries than length",
+                ));
+            }
+            write_map_entry_prefix(f, pretty, ctx.depth, emitted)?;
             let key = DisplayRecurse {
                 info: TypeInfoRef {
-                    ty: layout.key,
+                    ty: key,
                     addr: key_addr,
                     bytes: key_bytes,
                     _marker: std::marker::PhantomData,
@@ -1482,7 +1422,7 @@ fn write_btree_map<'a, T: DebugType<'a>>(
             };
             let value = DisplayRecurse {
                 info: TypeInfoRef {
-                    ty: layout.value,
+                    ty: value,
                     addr: value_addr,
                     bytes: value_bytes,
                     _marker: std::marker::PhantomData,
@@ -1494,21 +1434,26 @@ fn write_btree_map<'a, T: DebugType<'a>>(
             } else {
                 write!(f, "{key}: {value}")?;
             }
+            emitted += 1;
             Ok(())
         },
     );
 
     match walk {
-        Ok(()) if remaining == 0 => {}
+        Ok(()) if emitted == map_length => {}
         Ok(()) => {
-            write_btree_entry_prefix(f, pretty, ctx.depth, entries)?;
+            write_map_entry_prefix(f, pretty, ctx.depth, emitted)?;
             write!(f, "<invalid: tree contains fewer entries than length>")?;
         }
-        Err(BTreeWalkError::Invalid(reason)) => {
-            write_btree_entry_prefix(f, pretty, ctx.depth, entries)?;
+        Err(MapWalkError::Invalid(reason)) => {
+            write_map_entry_prefix(f, pretty, ctx.depth, emitted)?;
             write!(f, "<invalid: {reason}>")?;
         }
-        Err(BTreeWalkError::Format) => return Err(fmt::Error),
+        Err(MapWalkError::Marker(marker)) => {
+            write_map_entry_prefix(f, pretty, ctx.depth, emitted)?;
+            write!(f, "{marker}")?;
+        }
+        Err(MapWalkError::Format) => return Err(fmt::Error),
     }
 
     if pretty {
@@ -1520,11 +1465,11 @@ fn write_btree_map<'a, T: DebugType<'a>>(
     write!(f, "}}")
 }
 
-fn write_btree_entry_prefix(
+fn write_map_entry_prefix(
     f: &mut fmt::Formatter<'_>,
     pretty: bool,
     depth: usize,
-    entry: usize,
+    entry: u64,
 ) -> fmt::Result {
     if pretty {
         writeln!(f)?;
@@ -1536,23 +1481,100 @@ fn write_btree_entry_prefix(
     }
 }
 
+fn walk_map_entries<'a, T: DebugType<'a>>(
+    bytes: &[u8],
+    proc: Option<&dyn ReadFromProc>,
+    key: T,
+    value: T,
+    entries: &MapEntries<T>,
+    emit: &mut impl FnMut(u64, &[u8], u64, &[u8]) -> std::result::Result<(), MapWalkError>,
+) -> std::result::Result<(), MapWalkError> {
+    let MapEntries::BTree {
+        root,
+        root_offset,
+        root_node,
+        root_node_offset,
+        height,
+        height_offset,
+        node_offset,
+        leaf,
+        leaf_len,
+        leaf_len_offset,
+        keys_offset,
+        key_slots,
+        values_offset,
+        internal,
+        edges_offset,
+        edge,
+        edge_pointer_offset,
+    } = entries;
+
+    let root_start =
+        usize::try_from(*root_offset).map_err(|_| MapWalkError::Marker("<invalid root>"))?;
+    let root_end = root_start
+        .checked_add(root.size() as usize)
+        .ok_or(MapWalkError::Marker("<invalid root>"))?;
+    let root_bytes = bytes
+        .get(root_start..root_end)
+        .ok_or(MapWalkError::Marker("<truncated root>"))?;
+    if !matches!(root.check_variant(root_bytes, "Some"), Some(Ok(Some(_)))) {
+        return Err(MapWalkError::Marker("<invalid missing root>"));
+    }
+
+    let root_node_start = usize::try_from(*root_node_offset)
+        .map_err(|_| MapWalkError::Marker("<invalid root node>"))?;
+    let root_node_end = root_node_start
+        .checked_add(root_node.size() as usize)
+        .ok_or(MapWalkError::Marker("<invalid root node>"))?;
+    let root_node_bytes = bytes
+        .get(root_node_start..root_node_end)
+        .ok_or(MapWalkError::Marker("<truncated root node>"))?;
+    let height = read_unsigned_at(root_node_bytes, *height_offset, height.size())
+        .ok_or(MapWalkError::Marker("<truncated height>"))?;
+    let root_address = read_u64_at(root_node_bytes, *node_offset)
+        .ok_or(MapWalkError::Marker("<truncated node pointer>"))?;
+    let proc = proc.ok_or(MapWalkError::Marker("<target unavailable>"))?;
+
+    let layout = BTreeNodeLayout {
+        key,
+        value,
+        leaf: *leaf,
+        leaf_len: *leaf_len,
+        leaf_len_offset: *leaf_len_offset,
+        keys_offset: *keys_offset,
+        key_slots: *key_slots,
+        values_offset: *values_offset,
+        internal: *internal,
+        edges_offset: *edges_offset,
+        edge: *edge,
+        edge_pointer_offset: *edge_pointer_offset,
+    };
+    walk_btree_node(
+        proc,
+        layout,
+        root_address,
+        height,
+        &mut HashSet::new(),
+        emit,
+    )
+}
+
 fn walk_btree_node<'a, T: DebugType<'a>>(
     proc: &dyn ReadFromProc,
     layout: BTreeNodeLayout<T>,
     address: u64,
     height: u64,
-    remaining: &mut u64,
     visited: &mut HashSet<u64>,
-    emit: &mut impl FnMut(u64, &[u8], u64, &[u8]) -> fmt::Result,
-) -> std::result::Result<(), BTreeWalkError> {
+    emit: &mut impl FnMut(u64, &[u8], u64, &[u8]) -> std::result::Result<(), MapWalkError>,
+) -> std::result::Result<(), MapWalkError> {
     if address == 0 {
-        return Err(BTreeWalkError::Invalid("null node pointer"));
+        return Err(MapWalkError::Invalid("null node pointer"));
     }
     if height > 64 {
-        return Err(BTreeWalkError::Invalid("implausible tree height"));
+        return Err(MapWalkError::Invalid("implausible tree height"));
     }
     if !visited.insert(address) {
-        return Err(BTreeWalkError::Invalid("node cycle"));
+        return Err(MapWalkError::Invalid("node cycle"));
     }
 
     let result = (|| {
@@ -1563,56 +1585,49 @@ fn walk_btree_node<'a, T: DebugType<'a>>(
         };
         let bytes = proc
             .read_bytes(address, node_type.size())
-            .map_err(|_| BTreeWalkError::Invalid("unreadable node"))?;
-        let Some(len) = read_unsigned_at(&bytes, layout.leaf_len_offset, layout.leaf_len.size())
-        else {
-            return Err(BTreeWalkError::Invalid("truncated node length"));
-        };
+            .map_err(|_| MapWalkError::Invalid("unreadable node"))?;
+        let len = read_unsigned_at(&bytes, layout.leaf_len_offset, layout.leaf_len.size())
+            .ok_or(MapWalkError::Invalid("truncated node length"))?;
         if len > layout.key_slots {
-            return Err(BTreeWalkError::Invalid("node length exceeds capacity"));
+            return Err(MapWalkError::Invalid("node length exceeds capacity"));
         }
 
         for index in 0..len {
             if height > 0 {
                 let child = btree_edge_address(&bytes, layout, index)?;
-                walk_btree_node(proc, layout, child, height - 1, remaining, visited, emit)?;
-            }
-            if *remaining == 0 {
-                return Err(BTreeWalkError::Invalid(
-                    "tree contains more entries than length",
-                ));
+                walk_btree_node(proc, layout, child, height - 1, visited, emit)?;
             }
             let key_start = layout
                 .keys_offset
                 .checked_add(
                     index
                         .checked_mul(layout.key.size())
-                        .ok_or(BTreeWalkError::Invalid("key offset overflow"))?,
+                        .ok_or(MapWalkError::Invalid("key offset overflow"))?,
                 )
-                .ok_or(BTreeWalkError::Invalid("key offset overflow"))?;
+                .ok_or(MapWalkError::Invalid("key offset overflow"))?;
             let value_start = layout
                 .values_offset
                 .checked_add(
                     index
                         .checked_mul(layout.value.size())
-                        .ok_or(BTreeWalkError::Invalid("value offset overflow"))?,
+                        .ok_or(MapWalkError::Invalid("value offset overflow"))?,
                 )
-                .ok_or(BTreeWalkError::Invalid("value offset overflow"))?;
+                .ok_or(MapWalkError::Invalid("value offset overflow"))?;
             let key_bytes = byte_range(&bytes, key_start, layout.key.size())
-                .ok_or(BTreeWalkError::Invalid("truncated key slot"))?;
+                .ok_or(MapWalkError::Invalid("truncated key slot"))?;
             let value_bytes = byte_range(&bytes, value_start, layout.value.size())
-                .ok_or(BTreeWalkError::Invalid("truncated value slot"))?;
-            emit(
-                address + key_start,
-                key_bytes,
-                address + value_start,
-                value_bytes,
-            )?;
-            *remaining -= 1;
+                .ok_or(MapWalkError::Invalid("truncated value slot"))?;
+            let key_addr = address
+                .checked_add(key_start)
+                .ok_or(MapWalkError::Invalid("key address overflow"))?;
+            let value_addr = address
+                .checked_add(value_start)
+                .ok_or(MapWalkError::Invalid("value address overflow"))?;
+            emit(key_addr, key_bytes, value_addr, value_bytes)?;
         }
         if height > 0 {
             let child = btree_edge_address(&bytes, layout, len)?;
-            walk_btree_node(proc, layout, child, height - 1, remaining, visited, emit)?;
+            walk_btree_node(proc, layout, child, height - 1, visited, emit)?;
         }
         Ok(())
     })();
@@ -1624,17 +1639,17 @@ fn btree_edge_address<'a, T: DebugType<'a>>(
     bytes: &[u8],
     layout: BTreeNodeLayout<T>,
     index: u64,
-) -> std::result::Result<u64, BTreeWalkError> {
+) -> std::result::Result<u64, MapWalkError> {
     let offset = layout
         .edges_offset
         .checked_add(
             index
                 .checked_mul(layout.edge.size())
-                .ok_or(BTreeWalkError::Invalid("edge offset overflow"))?,
+                .ok_or(MapWalkError::Invalid("edge offset overflow"))?,
         )
         .and_then(|offset| offset.checked_add(layout.edge_pointer_offset))
-        .ok_or(BTreeWalkError::Invalid("edge offset overflow"))?;
-    read_u64_at(bytes, offset).ok_or(BTreeWalkError::Invalid("truncated edge slot"))
+        .ok_or(MapWalkError::Invalid("edge offset overflow"))?;
+    read_u64_at(bytes, offset).ok_or(MapWalkError::Invalid("truncated edge slot"))
 }
 
 fn byte_range(bytes: &[u8], offset: u64, size: u64) -> Option<&[u8]> {
@@ -2184,6 +2199,24 @@ fn eval_node<'a, T: DebugType<'a>>(
             bytes,
             ctx,
             pretty,
+        ),
+        DisplayNode::Map {
+            length_offset,
+            length_size,
+            key,
+            value,
+            entries,
+        } => eval_map(
+            f,
+            ty,
+            bytes,
+            ctx,
+            pretty,
+            *length_offset,
+            *length_size,
+            *key,
+            *value,
+            entries,
         ),
     }
 }
