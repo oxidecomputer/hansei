@@ -780,9 +780,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
                     },
                 };
             }
-            DebugFormat::Known(kf @ KnownFormat::Vec { .. }) => {
-                return write_vec(f, info, kf, ctx);
-            }
             DebugFormat::Known(kf @ KnownFormat::BTreeMap { .. }) => {
                 return write_btree_map(f, info, kf, ctx);
             }
@@ -1190,62 +1187,63 @@ fn write_utf8_string(
     write!(f, "{text:?}")
 }
 
-fn write_vec<'a, T: DebugType<'a>>(
+/// Follow a `(data, len)` fat pointer to a contiguous buffer and render its
+/// first `len` `element`s as `[e, e, …]`. `capacity`, when present, bounds
+/// `len` (skipped for a zero-sized element, whose buffer is not read). Unlike
+/// [`eval_list`] the elements are contiguous, read in one target access.
+#[allow(clippy::too_many_arguments)]
+fn eval_slice<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    format: KnownFormat<T>,
+    pointer_offset: u64,
+    length_offset: u64,
+    length_size: u32,
+    capacity: Option<(u64, u32)>,
+    element: &T,
+    element_size: u32,
+    bytes: &[u8],
     ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
 ) -> fmt::Result {
-    let KnownFormat::Vec {
-        pointer_offset,
-        length,
-        length_offset,
-        capacity,
-        capacity_offset,
-        element,
-    } = format
-    else {
-        unreachable!()
+    let Some(len) = read_unsigned_at(bytes, length_offset, u64::from(length_size)) else {
+        return write!(f, "<truncated slice length>");
     };
-
-    let Some(len) = read_unsigned_at(info.bytes, length_offset, length.size()) else {
-        return write!(f, "<truncated Vec length>");
-    };
-    let Some(capacity) = read_unsigned_at(info.bytes, capacity_offset, capacity.size()) else {
-        return write!(f, "<truncated Vec capacity>");
-    };
-    let element_size = element.size();
-    if element_size != 0 && len > capacity {
-        return write!(f, "<invalid Vec: length exceeds capacity>");
+    let element_size = u64::from(element_size);
+    if let Some((capacity_offset, capacity_size)) = capacity {
+        let Some(capacity) = read_unsigned_at(bytes, capacity_offset, u64::from(capacity_size))
+        else {
+            return write!(f, "<truncated slice capacity>");
+        };
+        if element_size != 0 && len > capacity {
+            return write!(f, "<invalid slice: length exceeds capacity>");
+        }
     }
     if len == 0 {
         return write!(f, "[]");
     }
-    let Some(pointer) = read_u64_at(info.bytes, pointer_offset) else {
-        return write!(f, "<truncated Vec pointer>");
+    let Some(pointer) = read_u64_at(bytes, pointer_offset) else {
+        return write!(f, "<truncated slice pointer>");
     };
 
     let allocation = if element_size == 0 {
         Vec::new()
     } else {
         if pointer == 0 {
-            return write!(f, "<invalid Vec: null allocation pointer>");
+            return write!(f, "<invalid slice: null data pointer>");
         }
         let Some(byte_len) = len.checked_mul(element_size) else {
-            return write!(f, "<invalid Vec: allocation size overflow>");
+            return write!(f, "<invalid slice: buffer size overflow>");
         };
         let Some(proc) = ctx.proc else {
             return write!(f, "<target unavailable>");
         };
         let Ok(bytes) = proc.read_bytes(pointer, byte_len) else {
-            return write!(f, "<unreadable Vec allocation>");
+            return write!(f, "<unreadable slice buffer>");
         };
         bytes
     };
 
     // Vec elements pick their own integer rendering (never hex).
     let element_ctx = ctx.deeper().with_hex(false);
-    let pretty = f.alternate();
     write!(f, "[")?;
     for index in 0..len {
         if pretty {
@@ -1265,7 +1263,7 @@ fn write_vec<'a, T: DebugType<'a>>(
         };
         let child = DisplayRecurse {
             info: TypeInfoRef {
-                ty: element,
+                ty: *element,
                 addr: address,
                 bytes,
                 _marker: std::marker::PhantomData,
@@ -2314,6 +2312,25 @@ fn eval_node<'a, T: DebugType<'a>>(
             u64::from(*length_size),
             capacity.map(|(offset, size)| (offset, u64::from(size))),
             ctx.proc,
+        ),
+        DisplayNode::Slice {
+            pointer_offset,
+            length_offset,
+            length_size,
+            capacity,
+            element,
+            element_size,
+        } => eval_slice(
+            f,
+            *pointer_offset,
+            *length_offset,
+            *length_size,
+            *capacity,
+            element,
+            *element_size,
+            bytes,
+            ctx,
+            pretty,
         ),
     }
 }

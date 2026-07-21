@@ -294,18 +294,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
         KnownFormat::IpAddress { octets } => {
             format!("IpAddress {{ octets={} }}", f(id, octets))
         }
-        KnownFormat::Vec {
-            pointer,
-            length,
-            capacity,
-            element,
-        } => format!(
-            "Vec {{ pointer={}, length={}, capacity={}, element={} }}",
-            f(id, pointer),
-            f(id, length),
-            f(id, capacity),
-            fq_name(bundle, *element),
-        ),
         KnownFormat::BTreeMap {
             root,
             length,
@@ -398,6 +386,24 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
                 field(bundle, root, pointer),
                 field(bundle, root, length),
                 capacity,
+            )
+        }
+        DisplayNode::Slice {
+            pointer,
+            length,
+            capacity,
+            element,
+        } => {
+            let capacity = match capacity {
+                Some(capacity) => format!(", capacity={}", field(bundle, root, capacity)),
+                None => String::new(),
+            };
+            format!(
+                "Slice {{ pointer={}, length={}{}, element={} }}",
+                field(bundle, root, pointer),
+                field(bundle, root, length),
+                capacity,
+                fq_name(bundle, *element),
             )
         }
     }
@@ -770,7 +776,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "alloc::vec::Vec<u32, alloc::alloc::Global>",
-            "alloc::vec::Vec<u32, alloc::alloc::Global> :: Vec \
+            "alloc::vec::Vec<u32, alloc::alloc::Global> :: Node Slice \
              { pointer=buf.inner.ptr.pointer.pointer@+8, length=len@+16, \
              capacity=buf.inner.cap.__0@+0, element=u32 }",
         );

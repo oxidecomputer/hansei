@@ -207,6 +207,20 @@ pub enum DisplayNode<T> {
         length_size: u32,
         capacity: Option<(u64, u32)>,
     },
+    /// Follow a `(data, len)` fat pointer to a contiguous buffer and render its
+    /// first `length` `element`s as `[e, e, …]`. `pointer_offset` locates the
+    /// data pointer and `length_offset`/`length_size` the element count;
+    /// `capacity`, when present, locates an owned buffer's capacity (validated
+    /// against the length). `element_size` is the stride between successive
+    /// elements.
+    Slice {
+        pointer_offset: u64,
+        length_offset: u64,
+        length_size: u32,
+        capacity: Option<(u64, u32)>,
+        element: T,
+        element_size: u32,
+    },
 }
 
 /// One resolved field of a [`DisplayNode::Struct`]. The bundle's `Named` and
@@ -286,15 +300,6 @@ pub enum KnownFormat<T> {
     },
     /// Display an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: T, offset: u64 },
-    /// Display the initialized elements of a Vec.
-    Vec {
-        pointer_offset: u64,
-        length: T,
-        length_offset: u64,
-        capacity: T,
-        capacity_offset: u64,
-        element: T,
-    },
     /// Display a BTreeMap by walking its initialized nodes in key order.
     BTreeMap {
         root: T,
@@ -602,6 +607,32 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         capacity,
                     })
                 }
+                BundleNode::Slice {
+                    pointer,
+                    length,
+                    capacity,
+                    element,
+                } => {
+                    let (pointer_ty, pointer_offset) = resolve_selector(scope, pointer)?;
+                    pointer_ty.pointer_target()?;
+                    let (length_ty, length_offset) = resolve_selector(scope, length)?;
+                    let capacity = match capacity {
+                        Some(capacity) => {
+                            let (capacity_ty, capacity_offset) = resolve_selector(scope, capacity)?;
+                            Some((capacity_offset, capacity_ty.size() as u32))
+                        }
+                        None => None,
+                    };
+                    let element = scope.related_type(*element);
+                    Some(DisplayNode::Slice {
+                        pointer_offset,
+                        length_offset,
+                        length_size: length_ty.size() as u32,
+                        capacity,
+                        element,
+                        element_size: element.size() as u32,
+                    })
+                }
             }
         }
 
@@ -750,25 +781,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 Some(DebugFormat::Known(KnownFormat::IpAddress {
                     octets,
                     offset,
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::Vec {
-                pointer,
-                length,
-                capacity,
-                element,
-            }) => {
-                let (pointer, pointer_offset) = resolve_selector(*self, pointer)?;
-                pointer.pointer_target()?;
-                let (length, length_offset) = resolve_selector(*self, length)?;
-                let (capacity, capacity_offset) = resolve_selector(*self, capacity)?;
-                Some(DebugFormat::Known(KnownFormat::Vec {
-                    pointer_offset,
-                    length,
-                    length_offset,
-                    capacity,
-                    capacity_offset,
-                    element: self.related_type(*element),
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::BTreeMap {
@@ -1710,10 +1722,10 @@ mod bundle_tests {
                     ),
                     (
                         VEC,
-                        BundleDebugFormat::Known(BundleKnownFormat::Vec {
+                        BundleDebugFormat::Node(BundleNode::Slice {
                             pointer: sel(&[0]),
                             length: sel(&[1]),
-                            capacity: sel(&[2]),
+                            capacity: Some(sel(&[2])),
                             element: U32,
                         }),
                     ),
@@ -2034,7 +2046,7 @@ mod bundle_tests {
         let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &invalid);
         assert_eq!(
             format!("{}", value.display_from_target(&Reader, 8)),
-            "<invalid Vec: length exceeds capacity>"
+            "<invalid slice: length exceeds capacity>"
         );
     }
 

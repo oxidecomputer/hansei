@@ -292,6 +292,25 @@ pub enum DisplayNode {
         length: Selector,
         capacity: Option<Selector>,
     },
+    /// Follow a `(data, len)` fat pointer to a contiguous buffer and render its
+    /// first `length` `element`s as `[elem, elem, …]`.
+    ///
+    /// Covers any slice-shaped value — an owned `Vec<T>`, a boxed slice
+    /// `Box<[T]>`, or a borrowed slice `&[T]` — just as the `Str` node covers
+    /// `&str` and `String`. `pointer` reaches the data-pointer word and `length` the
+    /// element count; each element is an `element` value read contiguously from
+    /// the buffer. `capacity`, when present, reaches an owned buffer's
+    /// allocation capacity (validated to be at least the length, except for a
+    /// zero-sized element); it is absent for a borrowed or boxed slice that
+    /// carries only a pointer and length. Unlike the intrusive `List` node the
+    /// elements are packed in one allocation rather than chained by successor
+    /// pointers.
+    Slice {
+        pointer: Selector,
+        length: Selector,
+        capacity: Option<Selector>,
+        element: BundleTypeId,
+    },
 }
 
 /// One field of a [`DisplayNode::Struct`] record.
@@ -393,13 +412,6 @@ pub enum KnownFormat {
     },
     /// Display the octets of an IPv4 or IPv6 address in standard notation.
     IpAddress { octets: Selector },
-    /// Display the initialized elements of an `alloc::vec::Vec<T, A>`.
-    Vec {
-        pointer: Selector,
-        length: Selector,
-        capacity: Selector,
-        element: BundleTypeId,
-    },
     /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
     /// its initialized key/value entries.
     ///

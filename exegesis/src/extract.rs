@@ -3370,13 +3370,15 @@ impl<'a> Emitter<'a> {
             let def = self.convert(tid);
             self.defs[bid.0 as usize] = def;
             if let Some(format) = vec_debug_format(self.reader, tid) {
-                let format = crate::bundle::KnownFormat::Vec {
+                // An owned `Vec` supplies its capacity for the length check; a
+                // borrowed or boxed slice would pass `capacity: None`.
+                let node = DisplayNode::Slice {
                     pointer: format.pointer.into(),
                     length: format.length.into(),
-                    capacity: format.capacity.into(),
+                    capacity: Some(format.capacity.into()),
                     element: self.reserve(format.element),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Known(format));
+                self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(format) = btree_map_debug_format(self.reader, tid) {
                 let format = crate::bundle::KnownFormat::BTreeMap {
                     root: format.root,
