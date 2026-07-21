@@ -22,8 +22,8 @@
 
 use crate::bundle::{
     BinaryIdent, BitField, Bundle, BundleTypeId, DebugFormat, DiscrDef, DiscrValue, DiscrValues,
-    DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MemberDef, Meta,
-    Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
+    DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
+    Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
     StaticsTable, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef,
     TypeTable, VariantDef, VariantShape,
 };
@@ -3509,24 +3509,26 @@ impl<'a> Emitter<'a> {
                 };
                 self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(format) = btree_map_debug_format(self.reader, tid) {
-                let format = crate::bundle::KnownFormat::BTreeMap {
-                    root: format.root,
-                    length: format.length,
-                    root_node: format.root_node.into(),
-                    height: format.height,
-                    node: format.node.into(),
+                let node = DisplayNode::Map {
+                    length: Selector::member(format.length),
                     key: self.reserve(format.key),
                     value: self.reserve(format.value),
-                    leaf: self.reserve(format.leaf),
-                    leaf_len: format.leaf_len,
-                    leaf_keys: format.leaf_keys,
-                    leaf_values: format.leaf_values,
-                    internal: self.reserve(format.internal),
-                    internal_data: format.internal_data,
-                    internal_edges: format.internal_edges,
-                    edge: format.edge.into(),
+                    entries: Box::new(MapEntries::BTree {
+                        root: Selector::member(format.root),
+                        root_node: format.root_node.into(),
+                        height: Selector::member(format.height),
+                        node: format.node.into(),
+                        leaf: self.reserve(format.leaf),
+                        leaf_len: Selector::member(format.leaf_len),
+                        leaf_keys: Selector::member(format.leaf_keys),
+                        leaf_values: Selector::member(format.leaf_values),
+                        internal: self.reserve(format.internal),
+                        internal_data: Selector::member(format.internal_data),
+                        internal_edges: Selector::member(format.internal_edges),
+                        edge: format.edge.into(),
+                    }),
                 };
-                self.debug_formats.insert(bid, DebugFormat::Known(format));
+                self.debug_formats.insert(bid, DebugFormat::Node(node));
             } else if let Some(format) = mpsc_chan_debug_format(self.reader, tid) {
                 // A channel is a struct whose first field is the synthetic
                 // `queued` block-chain walk; the rest are its real members.

@@ -206,15 +206,10 @@ pub enum FieldRender {
 pub enum DebugFormat {
     /// Display one member as though it were the containing value.
     Transparent { member: Selector },
-    /// Apply semantics for a known family of types.
-    Known(KnownFormat),
     /// Render the type by interpreting a composable [`DisplayNode`] program.
     ///
-    /// This is the target representation of the Formatter IR: instead of one
-    /// bespoke [`KnownFormat`] variant per type, a detector emits a tree of a
-    /// few shared combinators that reify walks with one generic evaluator. It
-    /// is introduced alongside `Known` and formatters migrate onto it one at a
-    /// time, so during the transition a bundle may carry either spelling.
+    /// A detector emits a tree of shared combinators and dedicated traversal
+    /// leaves that reify walks with one generic evaluator.
     Node(DisplayNode),
 }
 
@@ -392,6 +387,44 @@ pub enum DisplayNode {
         values: Selector,
         element: BundleTypeId,
     },
+    /// Render an associative collection as `{ key: value, ... }`.
+    ///
+    /// `length` reaches the collection's initialized entry count. `key` and
+    /// `value` identify the types yielded by `entries`; the entry source owns
+    /// only the storage-specific traversal. This keeps presentation, recursive
+    /// key/value display, and exact-length accounting shared while allowing
+    /// genuinely different collection layouts to retain dedicated walkers.
+    Map {
+        length: Selector,
+        key: BundleTypeId,
+        value: BundleTypeId,
+        entries: Box<MapEntries>,
+    },
+}
+
+/// A storage-specific producer of key/value entries for [`DisplayNode::Map`].
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum MapEntries {
+    /// Walk an `alloc::collections::btree::map::BTreeMap` in key order.
+    ///
+    /// `root` reaches the map's `Option` root. `root_node` begins at its
+    /// `Some` payload and lands on the node-reference structure; `height` and
+    /// `node` begin there. Leaf selectors begin at `leaf`, internal selectors
+    /// at `internal`, and `edge` at one element of the internal edge array.
+    BTree {
+        root: Selector,
+        root_node: Selector,
+        height: Selector,
+        node: Selector,
+        leaf: BundleTypeId,
+        leaf_len: Selector,
+        leaf_keys: Selector,
+        leaf_values: Selector,
+        internal: BundleTypeId,
+        internal_data: Selector,
+        internal_edges: Selector,
+        edge: Selector,
+    },
 }
 
 /// One field of a [`DisplayNode::Struct`] record.
@@ -410,34 +443,6 @@ pub enum Field {
     /// label need not be duplicated as a string; used to decode one field of a
     /// struct in place while keeping its name.
     Override { index: u32, node: DisplayNode },
-}
-
-/// Closed set of semantic formatters understood by reify.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-pub enum KnownFormat {
-    /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
-    /// its initialized key/value entries.
-    ///
-    /// Paths are rooted in the type named by their preceding field. The
-    /// root-node path begins at `Option::Some`'s payload, while the edge
-    /// path begins at one element of the internal node's edge array.
-    BTreeMap {
-        root: u32,
-        length: u32,
-        root_node: Selector,
-        height: u32,
-        node: Selector,
-        key: BundleTypeId,
-        value: BundleTypeId,
-        leaf: BundleTypeId,
-        leaf_len: u32,
-        leaf_keys: u32,
-        leaf_values: u32,
-        internal: BundleTypeId,
-        internal_data: u32,
-        internal_edges: u32,
-        edge: Selector,
-    },
 }
 
 impl TypeTable {

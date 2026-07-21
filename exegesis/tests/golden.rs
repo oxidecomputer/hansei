@@ -15,7 +15,7 @@
 //! -p exegesis --test golden`.
 
 use exegesis::bundle::{
-    Bundle, BundleTypeId, DebugFormat, DisplayNode, Field, KnownFormat, Selector, StaticRole, Step,
+    Bundle, BundleTypeId, DebugFormat, DisplayNode, Field, MapEntries, Selector, StaticRole, Step,
     TypeDef,
 };
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
@@ -155,12 +155,6 @@ fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, Bu
     (names.join("."), offset, cur)
 }
 
-/// A single-member selector, for the structural member-index fields the
-/// bespoke formatters still carry as bare `u32`.
-fn m(index: u32) -> Selector {
-    Selector::member(index)
-}
-
 /// Render one path as `chain@+offset` (rooted at `root`).
 fn field(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> String {
     let (chain, offset, _) = walk(bundle, root, sel);
@@ -199,83 +193,18 @@ fn array_elem(bundle: &Bundle, id: BundleTypeId) -> Option<BundleTypeId> {
     }
 }
 
-/// Render a `Known` debug format as a portable, layout-sensitive summary:
-/// every member path resolved to its field-name chain and terminal byte
-/// offset (rooted correctly, including the cross-pointer roots), and every
-/// embedded related type shown by name. Mirrors the per-format root logic in
-/// `bundle/io.rs::validate`. Returns `None` for the plain `Transparent`
-/// formats (single-membered, covered by the presence assertions in
-/// `assert_clean`).
-///
-/// The render is keyed only on toolchain-determined facts — member names and
-/// byte offsets — so a given named type resolves identically on every LP64
-/// target. That is what makes the [`assert_format`] path checks portable:
-/// dumping *every* format present is not, because which incidental types a
-/// build instantiates differs by platform, but a specific named type's layout
-/// does not.
+/// Render a debug format as a portable, layout-sensitive summary. Returns
+/// `None` for plain `Transparent` formats, which are covered by presence
+/// assertions in `assert_clean`.
 fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -> Option<String> {
-    let f = |root, sel: &Selector| field(bundle, root, sel);
-    let known = match fmt {
-        DebugFormat::Transparent { .. } => return None,
-        DebugFormat::Node(node) => {
-            return Some(format!(
-                "{} :: Node {}",
-                fq_name(bundle, id),
-                describe_node(bundle, id, node)
-            ));
-        }
-        DebugFormat::Known(k) => k,
-    };
-    let body = match known {
-        KnownFormat::BTreeMap {
-            root,
-            length,
-            root_node,
-            height,
-            node,
-            key,
-            value,
-            leaf,
-            leaf_len,
-            leaf_keys,
-            leaf_values,
-            internal,
-            internal_data,
-            internal_edges,
-            edge,
-        } => {
-            // `root` is `Option<Box<node ref>>`; `root_node` is rooted at its
-            // `Some` payload and lands on the node-ref struct, against which
-            // `height` and `node` resolve. `edge` is rooted at one element of
-            // the internal node's edge array.
-            let (_, _, root_ty) = walk(bundle, id, &m(*root));
-            let some = some_payload(bundle, root_ty).unwrap_or(id);
-            let (_, _, node_ref) = walk(bundle, some, root_node);
-            let (_, _, edges_ty) = walk(bundle, *internal, &m(*internal_edges));
-            let edge_elem = array_elem(bundle, edges_ty).unwrap_or(*internal);
-            format!(
-                "BTreeMap {{ root={}, length={}, root_node={}, height={}, node={}, \
-                 key={}, value={}, leaf={}, leaf_len={}, leaf_keys={}, leaf_values={}, \
-                 internal={}, internal_data={}, internal_edges={}, edge={} }}",
-                f(id, &m(*root)),
-                f(id, &m(*length)),
-                f(some, root_node),
-                f(node_ref, &m(*height)),
-                f(node_ref, node),
-                fq_name(bundle, *key),
-                fq_name(bundle, *value),
-                fq_name(bundle, *leaf),
-                f(*leaf, &m(*leaf_len)),
-                f(*leaf, &m(*leaf_keys)),
-                f(*leaf, &m(*leaf_values)),
-                fq_name(bundle, *internal),
-                f(*internal, &m(*internal_data)),
-                f(*internal, &m(*internal_edges)),
-                f(edge_elem, edge),
-            )
-        }
-    };
-    Some(format!("{} :: {}", fq_name(bundle, id), body))
+    match fmt {
+        DebugFormat::Transparent { .. } => None,
+        DebugFormat::Node(node) => Some(format!(
+            "{} :: Node {}",
+            fq_name(bundle, id),
+            describe_node(bundle, id, node)
+        )),
+    }
 }
 
 /// Render a [`DisplayNode`] tree as a portable, layout-sensitive summary: every
@@ -399,6 +328,52 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
                 field(bundle, block, next),
                 field(bundle, block, values),
                 fq_name(bundle, *element),
+            )
+        }
+        DisplayNode::Map {
+            length,
+            key,
+            value,
+            entries,
+        } => {
+            let MapEntries::BTree {
+                root: map_root,
+                root_node,
+                height,
+                node,
+                leaf,
+                leaf_len,
+                leaf_keys,
+                leaf_values,
+                internal,
+                internal_data,
+                internal_edges,
+                edge,
+            } = entries.as_ref();
+            let (_, _, root_ty) = walk(bundle, root, map_root);
+            let some = some_payload(bundle, root_ty).unwrap_or(root_ty);
+            let (_, _, node_ref) = walk(bundle, some, root_node);
+            let (_, _, edges_ty) = walk(bundle, *internal, internal_edges);
+            let edge_elem = array_elem(bundle, edges_ty).unwrap_or(*internal);
+            format!(
+                "Map {{ length={}, key={}, value={}, entries=BTree {{ root={}, root_node={}, \
+                 height={}, node={}, leaf={}, leaf_len={}, leaf_keys={}, leaf_values={}, \
+                 internal={}, internal_data={}, internal_edges={}, edge={} }} }}",
+                field(bundle, root, length),
+                fq_name(bundle, *key),
+                fq_name(bundle, *value),
+                field(bundle, root, map_root),
+                field(bundle, some, root_node),
+                field(bundle, node_ref, height),
+                field(bundle, node_ref, node),
+                fq_name(bundle, *leaf),
+                field(bundle, *leaf, leaf_len),
+                field(bundle, *leaf, leaf_keys),
+                field(bundle, *leaf, leaf_values),
+                fq_name(bundle, *internal),
+                field(bundle, *internal, internal_data),
+                field(bundle, *internal, internal_edges),
+                field(bundle, edge_elem, edge),
             )
         }
     }
@@ -809,14 +784,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global>",
-            "alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global> :: BTreeMap \
-             { root=root@+0, length=length@+16, root_node=__0@+0, height=height@+8, \
-             node=node.pointer@+0, key=u64, value=u32, \
-             leaf=alloc::collections::btree::node::LeafNode<u64, u32>, \
-             leaf_len=len@+142, leaf_keys=keys@+8, leaf_values=vals@+96, \
+            "alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global> :: Node Map \
+             { length=length@+16, key=u64, value=u32, entries=BTree { root=root@+0, \
+             root_node=__0@+0, height=height@+8, node=node.pointer@+0, \
+             leaf=alloc::collections::btree::node::LeafNode<u64, u32>, leaf_len=len@+142, \
+             leaf_keys=keys@+8, leaf_values=vals@+96, \
              internal=alloc::collections::btree::node::InternalNode<u64, u32>, \
              internal_data=data@+0, internal_edges=edges@+144, \
-             edge=value.value.__0.pointer@+0 }",
+             edge=value.value.__0.pointer@+0 } }",
         );
     }
     if program == "channels" {

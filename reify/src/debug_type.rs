@@ -159,8 +159,6 @@ pub enum FieldRender {
 pub enum DebugFormat<T> {
     /// Display `target` at `offset` as though it were the containing value.
     Transparent { target: T, offset: u64 },
-    /// Apply semantics for a known family of types.
-    Known(KnownFormat<T>),
     /// Interpret a composable display program (Formatter IR). The resolved
     /// counterpart of [`exegesis::bundle::DebugFormat::Node`], with every
     /// selector reduced to a byte offset and every related type resolved to
@@ -284,35 +282,29 @@ pub enum DisplayNode<T> {
         stride: u32,
         count: u32,
     },
+    /// Render an associative collection, using `entries` to produce exactly
+    /// `length` key/value pairs and the shared map presentation for output.
+    Map {
+        length_offset: u64,
+        length_size: u32,
+        key: T,
+        value: T,
+        entries: Box<MapEntries<T>>,
+    },
 }
 
-/// One resolved field of a [`DisplayNode::Struct`]. The bundle's `Named` and
-/// `Override` fields both resolve to `Computed` (they differ only in where the
-/// label comes from); `Member` resolves to `Structural`.
+/// Resolved storage-specific entry traversal for [`DisplayNode::Map`].
 #[derive(Clone, Debug)]
-pub enum Field<T> {
-    /// A real member rendered with reify's ordinary structural display.
-    Structural { name: String, ty: T, offset: u64 },
-    /// A label whose value is produced by a nested node.
-    Computed { label: String, node: DisplayNode<T> },
-}
-
-/// Closed set of semantic formatters understood by reify.
-#[derive(Clone, Debug)]
-pub enum KnownFormat<T> {
-    /// Display a BTreeMap by walking its initialized nodes in key order.
-    BTreeMap {
+pub enum MapEntries<T> {
+    /// Resolved B-tree node layout and root location.
+    BTree {
         root: T,
         root_offset: u64,
         root_node: T,
         root_node_offset: u64,
-        length: T,
-        length_offset: u64,
         height: T,
         height_offset: u64,
         node_offset: u64,
-        key: T,
-        value: T,
         leaf: T,
         leaf_len: T,
         leaf_len_offset: u64,
@@ -324,6 +316,17 @@ pub enum KnownFormat<T> {
         edge: T,
         edge_pointer_offset: u64,
     },
+}
+
+/// One resolved field of a [`DisplayNode::Struct`]. The bundle's `Named` and
+/// `Override` fields both resolve to `Computed` (they differ only in where the
+/// label comes from); `Member` resolves to `Structural`.
+#[derive(Clone, Debug)]
+pub enum Field<T> {
+    /// A real member rendered with reify's ordinary structural display.
+    Structural { name: String, ty: T, offset: u64 },
+    /// A label whose value is produced by a nested node.
+    Computed { label: String, node: DisplayNode<T> },
 }
 
 /// A member (field) of a struct, union, or enum variant payload.
@@ -474,9 +477,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
     }
 
     fn debug_format(&self) -> Option<DebugFormat<Self>> {
-        use exegesis::bundle::{
-            DebugFormat as BundleFormat, KnownFormat as BundleKnownFormat, Selector, Step,
-        };
+        use exegesis::bundle::{DebugFormat as BundleFormat, Selector, Step};
 
         /// Resolve a selector against `root` to `(landed type, byte offset)`.
         ///
@@ -501,13 +502,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 }
             }
             Some((ty, offset))
-        }
-
-        /// Resolve a single member index against `ty`. Used for the structural
-        /// member-index fields the bespoke formatters still carry as `u32`.
-        fn member_at(ty: BundleType<'_>, index: u32) -> Option<(BundleType<'_>, u64)> {
-            let member = ty.members().nth(index as usize)?;
-            Some((member.ty(), member.offset()))
         }
 
         /// Resolve a bundle [`exegesis::bundle::ScalarDecode`] into reify's
@@ -725,7 +719,97 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         count: count as u32,
                     })
                 }
+                BundleNode::Map {
+                    length,
+                    key,
+                    value,
+                    entries,
+                } => {
+                    let (length_ty, length_offset) = resolve_selector(scope, length)?;
+                    let key = scope.related_type(*key);
+                    let value = scope.related_type(*value);
+                    Some(DisplayNode::Map {
+                        length_offset,
+                        length_size: length_ty.size() as u32,
+                        key,
+                        value,
+                        entries: Box::new(resolve_map_entries(scope, key, value, entries)?),
+                    })
+                }
             }
+        }
+
+        fn resolve_map_entries<'a>(
+            scope: BundleType<'a>,
+            key: BundleType<'a>,
+            value: BundleType<'a>,
+            entries: &exegesis::bundle::MapEntries,
+        ) -> Option<MapEntries<BundleType<'a>>> {
+            let exegesis::bundle::MapEntries::BTree {
+                root,
+                root_node,
+                height,
+                node,
+                leaf,
+                leaf_len,
+                leaf_keys,
+                leaf_values,
+                internal,
+                internal_data: _,
+                internal_edges,
+                edge: edge_path,
+            } = entries;
+
+            let (root, root_offset) = resolve_selector(scope, root)?;
+            let (some, some_offset) = root.variant("Some")?;
+            let (root_node, root_node_offset) = resolve_selector(some, root_node)?;
+            let (height, height_offset) = resolve_selector(root_node, height)?;
+            let (node, node_offset) = resolve_selector(root_node, node)?;
+            node.pointer_target()?;
+
+            let leaf = scope.related_type(*leaf);
+            let (leaf_len, leaf_len_offset) = resolve_selector(leaf, leaf_len)?;
+            let (keys, keys_offset) = resolve_selector(leaf, leaf_keys)?;
+            let (key_slot, key_slots) = keys.array_info()?;
+            if key_slot.size() != key.size() {
+                return None;
+            }
+            let (values, values_offset) = resolve_selector(leaf, leaf_values)?;
+            let (value_slot, value_slots) = values.array_info()?;
+            if value_slot.size() != value.size() || value_slots != key_slots {
+                return None;
+            }
+
+            let internal = scope.related_type(*internal);
+            let (edges, edges_offset) = resolve_selector(internal, internal_edges)?;
+            let (edge, edge_slots) = edges.array_info()?;
+            if edge_slots != key_slots + 1 {
+                return None;
+            }
+            let (edge_pointer, edge_pointer_offset) = resolve_selector(edge, edge_path)?;
+            edge_pointer.pointer_target()?;
+
+            Some(MapEntries::BTree {
+                root,
+                root_offset,
+                root_node,
+                root_node_offset: root_offset
+                    .checked_add(some_offset)?
+                    .checked_add(root_node_offset)?,
+                height,
+                height_offset,
+                node_offset,
+                leaf,
+                leaf_len,
+                leaf_len_offset,
+                keys_offset,
+                key_slots,
+                values_offset,
+                internal,
+                edges_offset,
+                edge,
+                edge_pointer_offset,
+            })
         }
 
         /// Resolve one bundle [`exegesis::bundle::Field`]. `Named`/`Override`
@@ -764,81 +848,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 Some(DebugFormat::Transparent { target, offset })
             }
             BundleFormat::Node(node) => Some(DebugFormat::Node(resolve_node(*self, node)?)),
-            BundleFormat::Known(BundleKnownFormat::BTreeMap {
-                root,
-                length,
-                root_node,
-                height,
-                node,
-                key,
-                value,
-                leaf,
-                leaf_len,
-                leaf_keys,
-                leaf_values,
-                internal,
-                internal_data: _,
-                internal_edges,
-                edge: edge_path,
-            }) => {
-                let (root, root_offset) = member_at(*self, *root)?;
-                let (some, some_offset) = root.variant("Some")?;
-                let (root_node, root_node_offset) = resolve_selector(some, root_node)?;
-                let (length, length_offset) = member_at(*self, *length)?;
-                let (height, height_offset) = member_at(root_node, *height)?;
-                let (node, node_offset) = resolve_selector(root_node, node)?;
-                node.pointer_target()?;
-
-                let key = self.related_type(*key);
-                let value = self.related_type(*value);
-                let leaf = self.related_type(*leaf);
-                let (leaf_len, leaf_len_offset) = member_at(leaf, *leaf_len)?;
-                let (keys, keys_offset) = member_at(leaf, *leaf_keys)?;
-                let (key_slot, key_slots) = keys.array_info()?;
-                if key_slot.size() != key.size() {
-                    return None;
-                }
-                let (values, values_offset) = member_at(leaf, *leaf_values)?;
-                let (value_slot, value_slots) = values.array_info()?;
-                if value_slot.size() != value.size() || value_slots != key_slots {
-                    return None;
-                }
-
-                let internal = self.related_type(*internal);
-                let (edges, edges_offset) = member_at(internal, *internal_edges)?;
-                let (edge, edge_slots) = edges.array_info()?;
-                if edge_slots != key_slots + 1 {
-                    return None;
-                }
-                let (edge_pointer, edge_pointer_offset) = resolve_selector(edge, edge_path)?;
-                edge_pointer.pointer_target()?;
-
-                Some(DebugFormat::Known(KnownFormat::BTreeMap {
-                    root,
-                    root_offset,
-                    root_node,
-                    root_node_offset: root_offset
-                        .checked_add(some_offset)?
-                        .checked_add(root_node_offset)?,
-                    length,
-                    length_offset,
-                    height,
-                    height_offset,
-                    node_offset,
-                    key,
-                    value,
-                    leaf,
-                    leaf_len,
-                    leaf_len_offset,
-                    keys_offset,
-                    key_slots,
-                    values_offset,
-                    internal,
-                    edges_offset,
-                    edge,
-                    edge_pointer_offset,
-                }))
-            }
         }
     }
 
@@ -894,7 +903,7 @@ mod bundle_tests {
         BitField as BundleBitField, Bundle, BundleTypeId, BundleView,
         DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue, DiscrValues,
         DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION, Field as BundleField,
-        FieldRender as BundleFieldRender, InfraTypes, KnownFormat as BundleKnownFormat, MemberDef,
+        FieldRender as BundleFieldRender, InfraTypes, MapEntries as BundleMapEntries, MemberDef,
         Meta, ProvenanceTable, ScalarDecode as BundleScalarDecode, Selector, StaticsTable, StrRef,
         StringInterner, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
     };
@@ -1701,22 +1710,24 @@ mod bundle_tests {
                     ),
                     (
                         BTREE_MAP,
-                        BundleDebugFormat::Known(BundleKnownFormat::BTreeMap {
-                            root: 0,
-                            length: 1,
-                            root_node: sel(&[]),
-                            height: 1,
-                            node: sel(&[0]),
+                        BundleDebugFormat::Node(BundleNode::Map {
+                            length: sel(&[1]),
                             key: U32,
                             value: U32,
-                            leaf: BTREE_LEAF,
-                            leaf_len: 0,
-                            leaf_keys: 1,
-                            leaf_values: 2,
-                            internal: BTREE_INTERNAL,
-                            internal_data: 0,
-                            internal_edges: 1,
-                            edge: sel(&[]),
+                            entries: Box::new(BundleMapEntries::BTree {
+                                root: sel(&[0]),
+                                root_node: sel(&[]),
+                                height: sel(&[1]),
+                                node: sel(&[0]),
+                                leaf: BTREE_LEAF,
+                                leaf_len: sel(&[0]),
+                                leaf_keys: sel(&[1]),
+                                leaf_values: sel(&[2]),
+                                internal: BTREE_INTERNAL,
+                                internal_data: sel(&[0]),
+                                internal_edges: sel(&[1]),
+                                edge: sel(&[]),
+                            }),
                         }),
                     ),
                     (
@@ -3059,6 +3070,58 @@ mod bundle_tests {
             !shown.contains("2863311530"),
             "unused 0xaa slots leaked: {shown}"
         );
+    }
+
+    #[test]
+    fn test_btree_map_reports_length_mismatch_and_node_cycle() {
+        enum Layout {
+            OneLeaf,
+            SelfCycle,
+        }
+
+        struct Reader(Layout);
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                if addr != 0x1000 {
+                    return Err(crate::Error::invalid_addr(addr));
+                }
+                let mut bytes = vec![0; len as usize];
+                match self.0 {
+                    Layout::OneLeaf => {
+                        bytes[0] = 1;
+                        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+                        bytes[12..16].copy_from_slice(&10u32.to_le_bytes());
+                    }
+                    Layout::SelfCycle => {
+                        bytes[24..32].copy_from_slice(&addr.to_le_bytes());
+                    }
+                }
+                Ok(bytes)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ty = v.ty(BTREE_MAP).unwrap();
+        let mut bytes = [0u8; 24];
+        bytes[..8].copy_from_slice(&0x1000u64.to_le_bytes());
+        bytes[16..].copy_from_slice(&2u64.to_le_bytes());
+        let value = TypeInfoRef::new(ty, 0x5000, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader(Layout::OneLeaf), 8));
+        assert!(
+            shown.contains("<invalid: tree contains fewer entries than length>"),
+            "{shown}"
+        );
+
+        bytes[8..16].copy_from_slice(&1u64.to_le_bytes());
+        bytes[16..].copy_from_slice(&1u64.to_le_bytes());
+        let value = TypeInfoRef::new(ty, 0x5000, &bytes);
+        let shown = format!(
+            "{}",
+            value.display_from_target(&Reader(Layout::SelfCycle), 8)
+        );
+        assert!(shown.contains("<invalid: node cycle>"), "{shown}");
     }
 
     // -----------------------------------------------------------------------
