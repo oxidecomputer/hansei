@@ -416,11 +416,73 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             // `at` reaches the pointer; `via` is rooted at its pointee and
             // reaches the rendered target, against which `then` is rooted.
             let ptr = check_selector(bundle, scope, at, Shape::Pointer, what)?;
-            let Some(TypeDef::Pointer { target: pointee, .. }) = bundle.types.get(ptr) else {
+            let Some(TypeDef::Pointer {
+                target: pointee, ..
+            }) = bundle.types.get(ptr)
+            else {
                 unreachable!("check_selector verified a pointer");
             };
             let target = check_selector(bundle, *pointee, via, Shape::Any, what)?;
             check_node(bundle, target, then, what)?;
+        }
+        DisplayNode::DynPointer {
+            pointer,
+            vtable,
+            drop_in_place,
+            size,
+            align,
+            tail_offset: _,
+        } => {
+            if pointer == vtable {
+                return corrupt("dyn pointer reuses one selector".to_string());
+            }
+            let data_ptr = check_selector(bundle, scope, pointer, Shape::Pointer, what)?;
+            let Some(TypeDef::Pointer {
+                target: data_target,
+                ..
+            }) = bundle.types.get(data_ptr)
+            else {
+                unreachable!("check_selector verified a pointer");
+            };
+            if !has_dyn_tail(bundle, *data_target, &mut Vec::new()) {
+                return corrupt("dyn-pointer data selector does not target dyn".to_string());
+            }
+
+            let vtable_ptr = check_selector(bundle, scope, vtable, Shape::Pointer, what)?;
+            let Some(TypeDef::Pointer {
+                target: vtable_array,
+                ..
+            }) = bundle.types.get(vtable_ptr)
+            else {
+                unreachable!("check_selector verified a pointer");
+            };
+            let Some(TypeDef::Array { elem, count }) = bundle.types.get(*vtable_array) else {
+                return corrupt(
+                    "dyn-pointer vtable selector does not point to an array".to_string(),
+                );
+            };
+            let Some(TypeDef::Base {
+                size: word_size,
+                encoding,
+                ..
+            }) = bundle.types.get(*elem)
+            else {
+                return corrupt("dyn-pointer vtable element is not an integer".to_string());
+            };
+            if *word_size != crate::bundle::POINTER_SIZE
+                || !matches!(encoding, crate::raw_types::Encoding::Unsigned)
+            {
+                return corrupt("dyn-pointer vtable element is not usize-sized".to_string());
+            }
+            let slots = [*drop_in_place, *size, *align];
+            if slots.iter().any(|&slot| u64::from(slot) >= *count) {
+                return corrupt(format!(
+                    "dyn pointer has a header slot outside its {count}-entry vtable"
+                ));
+            }
+            if slots[0] == slots[1] || slots[0] == slots[2] || slots[1] == slots[2] {
+                return corrupt("dyn pointer reuses a header slot".to_string());
+            }
         }
         DisplayNode::MpscChan {
             tail,
@@ -444,10 +506,16 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             check_selector(bundle, block, next, Shape::Pointer, what)?;
             check_selector(bundle, block, values, Shape::Array, what)?;
             if bundle.types.get(*element).is_none() {
-                return corrupt(format!("MpscChan element type id {} out of range", element.0));
+                return corrupt(format!(
+                    "MpscChan element type id {} out of range",
+                    element.0
+                ));
             }
             if type_size(bundle, *element, &mut Vec::new()).is_none() {
-                return corrupt(format!("MpscChan has an unsized element type {}", element.0));
+                return corrupt(format!(
+                    "MpscChan has an unsized element type {}",
+                    element.0
+                ));
             }
         }
     }
@@ -635,98 +703,6 @@ impl Bundle {
             match format {
                 crate::bundle::schema::DebugFormat::Transparent { member } => {
                     check_selector(self, id, member, Shape::Any, "transparent debug format")?;
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::DynPointer {
-                        pointer,
-                        vtable,
-                        drop_in_place,
-                        size,
-                        align,
-                        tail_offset: _,
-                    },
-                ) => {
-                    let aggregate_members = match def {
-                        TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
-                        _ => {
-                            return corrupt(format!(
-                                "dyn-pointer debug format for type {} is not an aggregate",
-                                id.0
-                            ));
-                        }
-                    };
-                    let data = aggregate_members.get(*pointer as usize).ok_or_else(|| {
-                        Error::Corrupt(format!(
-                            "dyn-pointer debug format for type {}: pointer member index {} out of range",
-                            id.0, pointer
-                        ))
-                    })?;
-                    let vtable_member = aggregate_members.get(*vtable as usize).ok_or_else(|| {
-                        Error::Corrupt(format!(
-                            "dyn-pointer debug format for type {}: vtable member index {} out of range",
-                            id.0, vtable
-                        ))
-                    })?;
-                    if pointer == vtable {
-                        return corrupt(format!(
-                            "dyn-pointer debug format for type {} reuses one member",
-                            id.0
-                        ));
-                    }
-                    let data_target_id = match self.types.get(data.ty) {
-                        Some(TypeDef::Pointer { target, .. }) => Some(*target),
-                        _ => None,
-                    };
-                    if !data_target_id
-                        .is_some_and(|target| has_dyn_tail(self, target, &mut Vec::new()))
-                    {
-                        return corrupt(format!(
-                            "dyn-pointer debug format for type {}: data member does not target dyn",
-                            id.0
-                        ));
-                    }
-                    let array = match self.types.get(vtable_member.ty) {
-                        Some(TypeDef::Pointer { target, .. }) => self.types.get(*target),
-                        _ => None,
-                    };
-                    let Some(TypeDef::Array { elem, count }) = array else {
-                        return corrupt(format!(
-                            "dyn-pointer debug format for type {}: vtable member does not point to an array",
-                            id.0
-                        ));
-                    };
-                    let Some(TypeDef::Base {
-                        size: word_size,
-                        encoding,
-                        ..
-                    }) = self.types.get(*elem)
-                    else {
-                        return corrupt(format!(
-                            "dyn-pointer debug format for type {}: vtable element is not an integer",
-                            id.0
-                        ));
-                    };
-                    if *word_size != crate::bundle::POINTER_SIZE
-                        || !matches!(encoding, crate::raw_types::Encoding::Unsigned)
-                    {
-                        return corrupt(format!(
-                            "dyn-pointer debug format for type {}: vtable element is not usize-sized",
-                            id.0
-                        ));
-                    }
-                    let slots = [*drop_in_place, *size, *align];
-                    if slots.iter().any(|&slot| u64::from(slot) >= *count) {
-                        return corrupt(format!(
-                            "dyn-pointer debug format for type {} has a header slot outside its {count}-entry vtable",
-                            id.0
-                        ));
-                    }
-                    if slots[0] == slots[1] || slots[0] == slots[2] || slots[1] == slots[2] {
-                        return corrupt(format!(
-                            "dyn-pointer debug format for type {} reuses a header slot",
-                            id.0
-                        ));
-                    }
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::BTreeMap {
