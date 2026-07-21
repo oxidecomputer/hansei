@@ -311,6 +311,15 @@ pub enum DisplayNode {
         capacity: Option<Selector>,
         element: BundleTypeId,
     },
+    /// Render an inline octet array as an IPv4 or IPv6 address in standard
+    /// notation.
+    ///
+    /// `octets` reaches an inline `[u8; 4]` or `[u8; 16]` array (an
+    /// `Ipv4Addr`/`Ipv6Addr`'s only member) — the address version is inferred
+    /// from the octet count, which is validated to be 4 or 16. Unlike `Str`
+    /// and `Slice` this reads no pointer: the octets live in the value's own
+    /// bytes, so it is a leaf that renders the bytes it lands on directly.
+    IpAddr { octets: Selector },
 }
 
 /// One field of a [`DisplayNode::Struct`] record.
@@ -410,8 +419,6 @@ pub enum KnownFormat {
         permits: Selector,
         permits_decode: ScalarDecode,
     },
-    /// Display the octets of an IPv4 or IPv6 address in standard notation.
-    IpAddress { octets: Selector },
     /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
     /// its initialized key/value entries.
     ///

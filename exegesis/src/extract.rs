@@ -1805,7 +1805,7 @@ fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
     if array.count != expected_octets || !is_unsigned_integer(reader, array.elem_type_id, 1) {
         return None;
     }
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::IpAddress {
+    Some(DebugFormat::Node(DisplayNode::IpAddr {
         octets: Selector::member(index as u32),
     }))
 }
