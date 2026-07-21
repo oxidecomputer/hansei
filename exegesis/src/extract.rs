@@ -1743,9 +1743,9 @@ fn function_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<De
     };
     reader
         .is_subroutine_type(pointer.target_type_id)
-        .then_some(DebugFormat::Known(
-            crate::bundle::KnownFormat::FunctionPointer,
-        ))
+        .then_some(DebugFormat::Node(DisplayNode::Symbol {
+            at: Selector::default(),
+        }))
 }
 
 fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {

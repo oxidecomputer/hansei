@@ -278,6 +278,19 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             }
             check_scalar_decode(bundle, decode, (size * 8) as u8, what)?;
         }
+        DisplayNode::Symbol { at } => {
+            // `at` may be empty (the value itself is the code pointer, as for a
+            // bare function pointer), which `check_selector` forbids, so resolve
+            // the landed type directly. A symbol is rendered from a pointer word
+            // and never followed as data, so the target must be a pointer.
+            let landed = selector_target(bundle, scope, at, what)?;
+            if !matches!(bundle.types.get(landed), Some(TypeDef::Pointer { .. })) {
+                return corrupt(format!(
+                    "symbol node lands on type {} which is not a pointer",
+                    landed.0
+                ));
+            }
+        }
         DisplayNode::Struct { fields } => {
             let members = match bundle.types.get(scope) {
                 Some(TypeDef::Struct { members, .. } | TypeDef::Union { members, .. }) => {
@@ -524,16 +537,6 @@ impl Bundle {
                     crate::bundle::schema::KnownFormat::Atomic { value },
                 ) => {
                     check_selector(self, id, value, Shape::Any, "atomic debug format")?;
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::FunctionPointer,
-                ) => {
-                    if !matches!(def, TypeDef::Pointer { .. }) {
-                        return corrupt(format!(
-                            "function-pointer debug format for type {} is not a pointer",
-                            id.0
-                        ));
-                    }
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::DynPointer {

@@ -244,6 +244,15 @@ pub enum DisplayNode {
     /// byte, …); the word's byte width is the size of the type `at` lands on.
     /// `decode` interprets its bits (see [`ScalarDecode`]).
     Scalar { at: Selector, decode: ScalarDecode },
+    /// Render the code pointer at `at` as its address and resolved symbol
+    /// name, never following it as a data pointer.
+    ///
+    /// `at` reaches the pointer word (an empty selector addresses the value
+    /// itself, as for a bare function pointer; a nonempty one reaches an
+    /// embedded slot such as a vtable entry). reify prints `0x<addr>`, appends
+    /// ` -> <symbol>` when the address resolves to a function symbol, and
+    /// renders a null pointer as `null`.
+    Symbol { at: Selector },
     /// Render a curated record of named fields, in order, as
     /// `<type> { field, field, … }`.
     ///
@@ -295,9 +304,6 @@ pub enum KnownFormat {
     /// Display an atomic's stored value. The selector walks zero or more
     /// concrete struct/union members from the atomic to its value type.
     Atomic { value: Selector },
-    /// Display a pointer value as a function address and symbol. Function
-    /// pointers must never be followed as data pointers.
-    FunctionPointer,
     /// Display a Rust trait-object wide pointer and its vtable semantically.
     ///
     /// `pointer` and `vtable` index members of the containing aggregate. The

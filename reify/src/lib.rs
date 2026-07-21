@@ -756,9 +756,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
         // renders and returns; those two fall through to the shared sub-value
         // recursion below with the child location they bind.
         let (target, offset, child_proc, child_visited) = match format {
-            DebugFormat::Known(KnownFormat::FunctionPointer) => {
-                return write_function_pointer(f, info.bytes, ctx.proc);
-            }
             DebugFormat::Known(kf @ KnownFormat::DynPointer { .. }) => {
                 return write_dyn_pointer(f, info, Some(ty.name()), kf, ctx);
             }
@@ -1174,12 +1171,18 @@ fn decoded_usize(bytes: &[u8], offset: u64, decode: &ScalarDecode) -> String {
     }
 }
 
-fn write_function_pointer(
+/// Render the code pointer in `bytes` at `offset` as `0x<addr> -> <symbol>`,
+/// resolving the address to a function symbol without ever following it as a
+/// data pointer. A null pointer is `null`; an address that resolves appends
+/// ` -> <symbol>`, and one that does not appends ` -> <unknown symbol>` only
+/// when a target is attached to resolve against.
+fn write_symbol(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
+    offset: u64,
     proc: Option<&dyn ReadFromProc>,
 ) -> fmt::Result {
-    let Some(address) = read_u64_at(bytes, 0) else {
+    let Some(address) = read_u64_at(bytes, offset) else {
         return write!(f, "<truncated>");
     };
     if address == 0 {
@@ -2377,6 +2380,7 @@ fn eval_node<'a, T: DebugType<'a>>(
             Some(word) => write!(f, "{}", apply(decode, word)),
             None => write!(f, "<truncated>"),
         },
+        DisplayNode::Symbol { offset } => write_symbol(f, bytes, *offset, ctx.proc),
         DisplayNode::Struct { fields } => eval_struct(f, fields, ty, bytes, addr, ctx, pretty),
         DisplayNode::List {
             head_offset,

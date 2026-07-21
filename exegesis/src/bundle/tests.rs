@@ -536,11 +536,14 @@ fn test_validate_rejects_deref_of_non_pointer() {
 }
 
 #[test]
-fn test_validate_rejects_function_format_on_non_pointer() {
+fn test_validate_rejects_symbol_node_on_non_pointer() {
     let mut b = tiny_bundle();
+    // Type 0 is a `u64`; a symbol node must land on a pointer.
     b.types.debug_formats.insert(
         BundleTypeId(0),
-        DebugFormat::Known(KnownFormat::FunctionPointer),
+        DebugFormat::Node(DisplayNode::Symbol {
+            at: Selector::default(),
+        }),
     );
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
 }
