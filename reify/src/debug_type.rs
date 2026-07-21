@@ -279,6 +279,22 @@ pub enum DisplayNode<T> {
         value: T,
         entries: Box<MapEntries<T>>,
     },
+    /// Display a Tokio watch receiver as an optional unseen value plus the
+    /// independent shared closed flag. The observed word lives in the outer
+    /// receiver; the state and value offsets are relative to the shared object
+    /// reached through the Arc pointer and `shared_data_offset`.
+    WatchReceiver {
+        observed_offset: u64,
+        observed_size: u32,
+        shared_pointer_offset: u64,
+        shared_data_offset: u64,
+        state_offset: u64,
+        state_size: u32,
+        value_offset: u64,
+        element: T,
+        element_size: u32,
+        closed_mask: u64,
+    },
 }
 
 /// Resolved storage-specific entry traversal for [`DisplayNode::Map`].
@@ -724,6 +740,35 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         entries: Box::new(resolve_map_entries(scope, key, value, entries)?),
                     })
                 }
+                BundleNode::WatchReceiver {
+                    observed,
+                    shared,
+                    shared_data,
+                    state,
+                    value,
+                    element,
+                    closed_mask,
+                } => {
+                    let (observed_ty, observed_offset) = resolve_selector(scope, observed)?;
+                    let (shared_ptr, shared_pointer_offset) = resolve_selector(scope, shared)?;
+                    let arc_inner = shared_ptr.pointer_target()?;
+                    let (shared_ty, shared_data_offset) = resolve_selector(arc_inner, shared_data)?;
+                    let (state_ty, state_offset) = resolve_selector(shared_ty, state)?;
+                    let (_, value_offset) = resolve_selector(shared_ty, value)?;
+                    let element = scope.related_type(*element);
+                    Some(DisplayNode::WatchReceiver {
+                        observed_offset,
+                        observed_size: observed_ty.size() as u32,
+                        shared_pointer_offset,
+                        shared_data_offset,
+                        state_offset,
+                        state_size: state_ty.size() as u32,
+                        value_offset,
+                        element,
+                        element_size: element.size() as u32,
+                        closed_mask: *closed_mask,
+                    })
+                }
             }
         }
 
@@ -988,6 +1033,10 @@ mod bundle_tests {
     const NOTIFY_WAITER: BundleTypeId = BundleTypeId(68);
     const NOTIFY_WAITER_PTR: BundleTypeId = BundleTypeId(69);
     const SLICE: BundleTypeId = BundleTypeId(70);
+    const WATCH_RECEIVER: BundleTypeId = BundleTypeId(71);
+    const WATCH_ARC_INNER: BundleTypeId = BundleTypeId(72);
+    const WATCH_ARC_INNER_PTR: BundleTypeId = BundleTypeId(73);
+    const WATCH_SHARED: BundleTypeId = BundleTypeId(74);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1059,6 +1108,12 @@ mod bundle_tests {
         );
         let valuesfieldn = s("values");
         let watch_staten = s("tokio::sync::watch::state::AtomicState");
+        let (watch_receivern, watch_arc_innern, watch_sharedn, sharedn) = (
+            s("tokio::sync::watch::Receiver<u32>"),
+            s("alloc::sync::ArcInner<tokio::sync::watch::Shared<u32>>"),
+            s("tokio::sync::watch::Shared<u32>"),
+            s("shared"),
+        );
         let (chann, chan_blockn, chan_block_headern) = (
             s("tokio::sync::mpsc::chan::Chan<u32>"),
             s("ChanBlock"),
@@ -1588,6 +1643,33 @@ mod bundle_tests {
                 size: 16,
                 members: vec![m(data_ptrn, U8_PTR, 0), m(length2n, U64, 8)],
             },
+            // watch::Receiver { shared: *ArcInner @0, version: usize @8 }.
+            TypeDef::Struct {
+                name: watch_receivern,
+                size: 16,
+                members: vec![m(sharedn, WATCH_ARC_INNER_PTR, 0), m(versionl, U64, 8)],
+            },
+            // ArcInner { strong, weak, data: Shared<u32> }.
+            TypeDef::Struct {
+                name: watch_arc_innern,
+                size: 32,
+                members: vec![
+                    m(strongn, U64, 0),
+                    m(weakn, U64, 8),
+                    m(datan, WATCH_SHARED, 16),
+                ],
+            },
+            TypeDef::Pointer {
+                name: None,
+                target: WATCH_ARC_INNER,
+            },
+            // The real Shared is much larger; only these two selector targets
+            // matter to the resolved WatchReceiver node.
+            TypeDef::Struct {
+                name: watch_sharedn,
+                size: 16,
+                members: vec![m(staten, U64, 0), m(valuen, U32, 8)],
+            },
         ];
 
         // Field labels for the node-based `BoundedSemaphore` formatter (deduped
@@ -1973,6 +2055,18 @@ mod bundle_tests {
                                     },
                                 },
                             ],
+                        },
+                    ),
+                    (
+                        WATCH_RECEIVER,
+                        BundleNode::WatchReceiver {
+                            observed: sel(&[1]),
+                            shared: sel(&[0]),
+                            shared_data: sel(&[2]),
+                            state: sel(&[0]),
+                            value: sel(&[1]),
+                            element: U32,
+                            closed_mask: 1,
                         },
                     ),
                 ]),
@@ -2961,6 +3055,109 @@ mod bundle_tests {
             let value = TypeInfoRef::new(v.ty(WATCH_STATE).unwrap(), 0, &bytes);
             assert_eq!(format!("{}", value.display()), expected, "state={state}");
         }
+    }
+
+    #[test]
+    fn test_watch_receiver_renders_unseen_value_and_closed_independently() {
+        struct Reader {
+            state: u64,
+            value: u32,
+        }
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                let bytes = match addr {
+                    // ArcInner::data is at 0x2010; Shared::state is at +0.
+                    0x2010 => self.state.to_le_bytes().to_vec(),
+                    // Shared::value is at +8.
+                    0x2018 => self.value.to_le_bytes().to_vec(),
+                    other => panic!("unexpected read at {other:#x}"),
+                };
+                assert_eq!(bytes.len(), len as usize);
+                Ok(bytes)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let receiver = |observed: u64, pointer: u64| {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&pointer.to_le_bytes());
+            bytes.extend_from_slice(&observed.to_le_bytes());
+            bytes
+        };
+        let cases = [
+            (
+                2,
+                2,
+                "tokio::sync::watch::Receiver<u32> { unseen: None, closed: false }",
+            ),
+            (
+                0,
+                2,
+                "tokio::sync::watch::Receiver<u32> { unseen: Some(42), closed: false }",
+            ),
+            (
+                2,
+                3,
+                "tokio::sync::watch::Receiver<u32> { unseen: None, closed: true }",
+            ),
+            (
+                0,
+                3,
+                "tokio::sync::watch::Receiver<u32> { unseen: Some(42), closed: true }",
+            ),
+        ];
+        for (observed, state, expected) in cases {
+            let bytes = receiver(observed, 0x2000);
+            let value = TypeInfoRef::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
+            assert_eq!(
+                format!(
+                    "{}",
+                    value.display_from_target(&Reader { state, value: 42 }, 8)
+                ),
+                expected,
+                "observed={observed}, state={state}"
+            );
+        }
+
+        let bytes = receiver(0, 0x2000);
+        let value = TypeInfoRef::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!(
+                "{:#}",
+                value.display_from_target(
+                    &Reader {
+                        state: 2,
+                        value: 42,
+                    },
+                    8,
+                )
+            ),
+            "tokio::sync::watch::Receiver<u32> {\n\
+             \x20   unseen: Some(42),\n\
+             \x20   closed: false,\n\
+             }"
+        );
+
+        assert_eq!(
+            format!("{}", value.display()),
+            "tokio::sync::watch::Receiver<u32> { <target unavailable> }"
+        );
+        let bytes = receiver(0, 0);
+        let value = TypeInfoRef::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!(
+                "{}",
+                value.display_from_target(
+                    &Reader {
+                        state: 2,
+                        value: 42
+                    },
+                    8
+                )
+            ),
+            "tokio::sync::watch::Receiver<u32> { <null> }"
+        );
     }
 
     #[test]

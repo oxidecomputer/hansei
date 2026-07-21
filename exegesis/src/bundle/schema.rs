@@ -383,6 +383,24 @@ pub enum DisplayNode {
         value: BundleTypeId,
         entries: Box<MapEntries>,
     },
+    /// Display a `tokio::sync::watch::Receiver<T>` as a one-slot inbox holding
+    /// the newest value this receiver has not yet observed.
+    ///
+    /// `observed` and `shared` are rooted at the receiver. `shared` reaches the
+    /// raw pointer inside its `Arc`; `shared_data` begins at that pointer's
+    /// target and lands on `Shared<T>`. `state` and `value` begin there. The
+    /// shared state word packs the published version with the single-bit
+    /// `closed_mask`; after clearing that bit, a version unequal to `observed`
+    /// means `value` is rendered as `Some(T)`, otherwise as `None`.
+    WatchReceiver {
+        observed: Selector,
+        shared: Selector,
+        shared_data: Selector,
+        state: Selector,
+        value: Selector,
+        element: BundleTypeId,
+        closed_mask: u64,
+    },
 }
 
 /// A storage-specific producer of key/value entries for [`DisplayNode::Map`].

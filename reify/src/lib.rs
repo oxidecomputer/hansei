@@ -2181,7 +2181,142 @@ fn eval_node<'a, T: DebugType<'a>>(
             *value,
             entries,
         ),
+        DisplayNode::WatchReceiver {
+            observed_offset,
+            observed_size,
+            shared_pointer_offset,
+            shared_data_offset,
+            state_offset,
+            state_size,
+            value_offset,
+            element,
+            element_size,
+            closed_mask,
+        } => eval_watch_receiver(
+            f,
+            ty,
+            bytes,
+            ctx,
+            pretty,
+            *observed_offset,
+            *observed_size,
+            *shared_pointer_offset,
+            *shared_data_offset,
+            *state_offset,
+            *state_size,
+            *value_offset,
+            *element,
+            *element_size,
+            *closed_mask,
+        ),
     }
+}
+
+/// Render a Tokio watch receiver as a one-slot inbox. Tokio keeps the
+/// receiver's last-observed version inline but the published version and value
+/// behind an Arc, so this comparison cannot be expressed by the ordinary
+/// single-root `Struct`/`Pointer` combinators.
+#[allow(clippy::too_many_arguments)]
+fn eval_watch_receiver<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    ty: &T,
+    bytes: &[u8],
+    ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
+    observed_offset: u64,
+    observed_size: u32,
+    shared_pointer_offset: u64,
+    shared_data_offset: u64,
+    state_offset: u64,
+    state_size: u32,
+    value_offset: u64,
+    element: T,
+    element_size: u32,
+    closed_mask: u64,
+) -> fmt::Result {
+    let name = ty.name();
+    let Some(observed) = read_unsigned_at(bytes, observed_offset, u64::from(observed_size)) else {
+        return write!(f, "{name} {{ <truncated> }}");
+    };
+    let Some(pointer) = read_u64_at(bytes, shared_pointer_offset) else {
+        return write!(f, "{name} {{ <truncated> }}");
+    };
+    let (Some(proc), Some(_visited)) = (ctx.proc, ctx.visited) else {
+        return write!(f, "{name} {{ <target unavailable> }}");
+    };
+    if pointer == 0 {
+        return write!(f, "{name} {{ <null> }}");
+    }
+    let Some(shared_addr) = pointer.checked_add(shared_data_offset) else {
+        return write!(f, "{name} {{ <invalid address> }}");
+    };
+    let Some(state_addr) = shared_addr.checked_add(state_offset) else {
+        return write!(f, "{name} {{ <invalid address> }}");
+    };
+    let Ok(state_bytes) = proc.read_bytes(state_addr, u64::from(state_size)) else {
+        return write!(f, "{name} {{ <unreadable> }}");
+    };
+    let Some(state) = read_unsigned_at(&state_bytes, 0, u64::from(state_size)) else {
+        return write!(f, "{name} {{ <unreadable> }}");
+    };
+    let closed = state & closed_mask != 0;
+    let unseen = observed != (state & !closed_mask);
+
+    write!(f, "{name} {{")?;
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, ctx.depth + 1)?;
+    } else {
+        write!(f, " ")?;
+    }
+    write!(f, "unseen: ")?;
+    if unseen {
+        write!(f, "Some(")?;
+        let value = shared_addr
+            .checked_add(value_offset)
+            .ok_or(())
+            .and_then(|value_addr| {
+                if element_size == 0 {
+                    Ok((value_addr, Vec::new()))
+                } else {
+                    proc.read_bytes(value_addr, u64::from(element_size))
+                        .map(|bytes| (value_addr, bytes))
+                        .map_err(|_| ())
+                }
+            });
+        match value {
+            Ok((value_addr, value_bytes)) => {
+                let child = DisplayRecurse {
+                    info: TypeInfoRef {
+                        ty: element,
+                        addr: value_addr,
+                        bytes: &value_bytes,
+                        _marker: std::marker::PhantomData,
+                    },
+                    ctx: ctx.deeper(),
+                };
+                if pretty {
+                    write!(f, "{child:#}")?;
+                } else {
+                    write!(f, "{child}")?;
+                }
+            }
+            Err(()) => write!(f, "<unreadable>")?,
+        }
+        write!(f, ")")?;
+    } else {
+        write!(f, "None")?;
+    }
+    if pretty {
+        writeln!(f, ",")?;
+        write_indent(f, ctx.depth + 1)?;
+        write!(f, "closed: {closed},")?;
+        writeln!(f)?;
+        write_indent(f, ctx.depth)?;
+    } else {
+        write!(f, ", closed: {closed} ")?;
+    }
+    write!(f, "}}")
 }
 
 /// Render the inline octets at `offset` as an IPv4 (4 octets) or IPv6 (16

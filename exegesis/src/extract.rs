@@ -1671,6 +1671,40 @@ fn find_type_paths(
     seen.pop();
 }
 
+/// Like [`find_type_paths`], but member offsets need not be zero. This is used
+/// to find the protected value inside a lock, where bookkeeping fields precede
+/// the `UnsafeCell<T>`. The caller still requires one unique path, so layout
+/// drift fails closed rather than selecting an arbitrary occurrence of `T`.
+fn find_type_paths_any_offset(
+    reader: &DwReader<'_>,
+    current: TypeId,
+    matches: &impl Fn(TypeId) -> bool,
+    path: &mut Vec<u32>,
+    seen: &mut Vec<TypeId>,
+    found: &mut Vec<(Vec<u32>, TypeId)>,
+) {
+    let current = reader.canonicalize(current);
+    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
+        return;
+    }
+    if matches(current) {
+        found.push((path.clone(), current));
+        return;
+    }
+    let members = match reader.canonical_type(current) {
+        Some(RawType::Struct(st)) => st.members.as_ref(),
+        Some(RawType::Union(union)) => union.members.as_ref(),
+        _ => return,
+    };
+    seen.push(current);
+    for (index, member) in members.iter().enumerate() {
+        path.push(index as u32);
+        find_type_paths_any_offset(reader, member.type_id, matches, path, seen, found);
+        path.pop();
+    }
+    seen.pop();
+}
+
 fn find_pointer_paths(
     reader: &DwReader<'_>,
     current: TypeId,
@@ -2175,6 +2209,93 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayN
         .collect();
 
     Some(DisplayNode::Struct { fields })
+}
+
+/// The selectors needed to compare a watch receiver's last-observed version
+/// with its shared published version and, when they differ, render the newest
+/// protected value.
+struct RawWatchReceiverFormat {
+    observed: Vec<u32>,
+    shared: Vec<u32>,
+    shared_data: Vec<u32>,
+    state: Vec<u32>,
+    value: Vec<u32>,
+    element: TypeId,
+}
+
+fn watch_receiver_debug_format(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<RawWatchReceiverFormat> {
+    if fq_name(reader, id)?.split('<').next()? != "tokio::sync::watch::Receiver" {
+        return None;
+    }
+    let RawType::Struct(receiver) = reader.canonical_type(id)? else {
+        return None;
+    };
+    let [element_param] = receiver.template_params.as_ref() else {
+        return None;
+    };
+    if element_param.name.map(|name| reader.strings.get(name)) != Some("T") {
+        return None;
+    }
+    let element = reader.canonicalize(element_param.type_id);
+
+    // Receiver::version is a transparent `Version(usize)` wrapper.
+    let observed = usize_field_path(reader, id, &["version"])?;
+
+    // Receiver::shared is an Arc. Its NonNull raw pointer targets ArcInner,
+    // whose `data` member is the actual Shared<T> allocation payload.
+    let (shared, ptr_ty) = field_path(reader, id, &["shared", "ptr", "pointer"])?;
+    let RawType::Pointer(ptr) = reader.canonical_type(ptr_ty)? else {
+        return None;
+    };
+    let arc_inner = reader.canonicalize(ptr.target_type_id);
+    let (shared_data, shared_ty) = field_path(reader, arc_inner, &["data"])?;
+    if fq_name(reader, shared_ty)?.split('<').next()? != "tokio::sync::watch::Shared" {
+        return None;
+    }
+    let RawType::Struct(shared_def) = reader.canonical_type(shared_ty)? else {
+        return None;
+    };
+    let [shared_element] = shared_def.template_params.as_ref() else {
+        return None;
+    };
+    if reader.canonicalize(shared_element.type_id) != element {
+        return None;
+    }
+
+    // The packed state is an atomic usize behind Tokio's loom wrappers.
+    let state = usize_field_path(reader, shared_ty, &["state"])?;
+
+    // The value is behind the platform-selected RwLock implementation. Search
+    // its concrete aggregate storage for the one T rather than baking in the
+    // std/parking_lot wrapper chain.
+    let (value_index, value_member) = unique_member(reader, &shared_def.members, "value")?;
+    let mut value_paths = Vec::new();
+    find_type_paths_any_offset(
+        reader,
+        value_member.type_id,
+        &|candidate| reader.canonicalize(candidate) == element,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut value_paths,
+    );
+    let [(value_tail, _)] = value_paths.as_slice() else {
+        return None;
+    };
+    let value = std::iter::once(value_index as u32)
+        .chain(value_tail.iter().copied())
+        .collect();
+
+    Some(RawWatchReceiverFormat {
+        observed,
+        shared,
+        shared_data,
+        state,
+        value,
+        element,
+    })
 }
 
 /// Recognize a `tokio::sync::mpsc::bounded::Receiver<T>` and record the paths
@@ -3660,6 +3781,19 @@ impl<'a> Emitter<'a> {
                 let node = DisplayNode::Scalar {
                     at: state,
                     decode: self.watch_state_decode(),
+                };
+                self.debug_formats.insert(bid, node);
+            } else if let Some(format) = watch_receiver_debug_format(self.reader, tid) {
+                // A receiver-local version is compared with the packed version
+                // in Shared<T>; only an unseen newest value is rendered.
+                let node = DisplayNode::WatchReceiver {
+                    observed: format.observed.into(),
+                    shared: format.shared.into(),
+                    shared_data: format.shared_data.into(),
+                    state: format.state.into(),
+                    value: format.value.into(),
+                    element: self.reserve(format.element),
+                    closed_mask: 1,
                 };
                 self.debug_formats.insert(bid, node);
             } else if let Some(format) = mpsc_rx_debug_format(self.reader, tid) {
