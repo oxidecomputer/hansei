@@ -355,6 +355,30 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 check_selector(bundle, scope, capacity, Shape::Usize, what)?;
             }
         }
+        DisplayNode::Slice {
+            pointer,
+            length,
+            capacity,
+            element,
+        } => {
+            if bundle.types.get(*element).is_none() {
+                return corrupt(format!(
+                    "slice node element type id {} out of range",
+                    element.0
+                ));
+            }
+            if type_size(bundle, *element, &mut Vec::new()).is_none() {
+                return corrupt(format!(
+                    "slice node has an unsized element type {}",
+                    element.0
+                ));
+            }
+            check_selector(bundle, scope, pointer, Shape::BytePointer, what)?;
+            check_selector(bundle, scope, length, Shape::Usize, what)?;
+            if let Some(capacity) = capacity {
+                check_selector(bundle, scope, capacity, Shape::Usize, what)?;
+            }
+        }
     }
     Ok(())
 }
@@ -792,38 +816,6 @@ impl Bundle {
                             "IP-address debug format for type {} does not contain 4 or 16 u8 octets",
                             id.0
                         ));
-                    }
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::Vec {
-                        pointer,
-                        length,
-                        capacity,
-                        element,
-                    },
-                ) => {
-                    check_ty("Vec element", *element)?;
-                    if type_size(self, *element, &mut Vec::new()).is_none() {
-                        return corrupt(format!(
-                            "Vec debug format for type {} has an unsized element",
-                            id.0
-                        ));
-                    }
-                    check_selector(
-                        self,
-                        id,
-                        pointer,
-                        Shape::BytePointer,
-                        "Vec pointer debug format",
-                    )?;
-                    for (path, field) in [(length, "length"), (capacity, "capacity")] {
-                        check_selector(
-                            self,
-                            id,
-                            path,
-                            Shape::Usize,
-                            &format!("Vec {field} debug format"),
-                        )?;
                     }
                 }
                 crate::bundle::schema::DebugFormat::Known(
