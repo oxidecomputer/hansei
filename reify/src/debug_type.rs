@@ -197,6 +197,16 @@ pub enum DisplayNode<T> {
         node_ty: T,
         node_size: u32,
     },
+    /// Follow a `(data, len)` string slice and render its bytes as a quoted,
+    /// escaped UTF-8 string. `pointer_offset` locates the data pointer,
+    /// `length_offset`/`length_size` the byte length; `capacity`, when present,
+    /// locates an owned buffer's capacity word (validated against the length).
+    Str {
+        pointer_offset: u64,
+        length_offset: u64,
+        length_size: u32,
+        capacity: Option<(u64, u32)>,
+    },
 }
 
 /// One resolved field of a [`DisplayNode::Struct`]. The bundle's `Named` and
@@ -284,12 +294,6 @@ pub enum KnownFormat<T> {
         capacity: T,
         capacity_offset: u64,
         element: T,
-    },
-    /// Display a borrowed string as quoted, escaped UTF-8.
-    Str {
-        pointer_offset: u64,
-        length: T,
-        length_offset: u64,
     },
     /// Display an owned string as quoted, escaped UTF-8.
     String {
@@ -584,6 +588,28 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         node_size: node_ty.size() as u32,
                     })
                 }
+                BundleNode::Str {
+                    pointer,
+                    length,
+                    capacity,
+                } => {
+                    let (pointer_ty, pointer_offset) = resolve_selector(scope, pointer)?;
+                    pointer_ty.pointer_target()?;
+                    let (length_ty, length_offset) = resolve_selector(scope, length)?;
+                    let capacity = match capacity {
+                        Some(capacity) => {
+                            let (capacity_ty, capacity_offset) = resolve_selector(scope, capacity)?;
+                            Some((capacity_offset, capacity_ty.size() as u32))
+                        }
+                        None => None,
+                    };
+                    Some(DisplayNode::Str {
+                        pointer_offset,
+                        length_offset,
+                        length_size: length_ty.size() as u32,
+                        capacity,
+                    })
+                }
             }
         }
 
@@ -751,16 +777,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     capacity,
                     capacity_offset,
                     element: self.related_type(*element),
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::Str { pointer, length }) => {
-                let (pointer, pointer_offset) = resolve_selector(*self, pointer)?;
-                pointer.pointer_target()?;
-                let (length, length_offset) = resolve_selector(*self, length)?;
-                Some(DebugFormat::Known(KnownFormat::Str {
-                    pointer_offset,
-                    length,
-                    length_offset,
                 }))
             }
             BundleFormat::Known(BundleKnownFormat::String {
@@ -1728,9 +1744,10 @@ mod bundle_tests {
                     ),
                     (
                         STR,
-                        BundleDebugFormat::Known(BundleKnownFormat::Str {
+                        BundleDebugFormat::Node(BundleNode::Str {
                             pointer: sel(&[0]),
                             length: sel(&[1]),
+                            capacity: None,
                         }),
                     ),
                     (

@@ -1827,9 +1827,10 @@ fn str_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat> {
     {
         return None;
     }
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::Str {
+    Some(DebugFormat::Node(DisplayNode::Str {
         pointer: Selector::member(pointer as u32),
         length: Selector::member(length as u32),
+        capacity: None,
     }))
 }
 

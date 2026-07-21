@@ -306,11 +306,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, capacity),
             fq_name(bundle, *element),
         ),
-        KnownFormat::Str { pointer, length } => format!(
-            "Str {{ pointer={}, length={} }}",
-            f(id, pointer),
-            f(id, length),
-        ),
         KnownFormat::String {
             pointer,
             length,
@@ -399,6 +394,22 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
             field(bundle, *node_ty, next),
             describe_node(bundle, *node_ty, node),
         ),
+        DisplayNode::Str {
+            pointer,
+            length,
+            capacity,
+        } => {
+            let capacity = match capacity {
+                Some(capacity) => format!(", capacity={}", field(bundle, root, capacity)),
+                None => String::new(),
+            };
+            format!(
+                "Str {{ pointer={}, length={}{} }}",
+                field(bundle, root, pointer),
+                field(bundle, root, length),
+                capacity,
+            )
+        }
     }
 }
 
@@ -777,7 +788,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "&str",
-            "&str :: Str { pointer=data_ptr@+0, length=length@+8 }",
+            "&str :: Node Str { pointer=data_ptr@+0, length=length@+8 }",
         );
         assert_format(
             program,

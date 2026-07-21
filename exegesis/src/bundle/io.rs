@@ -344,6 +344,17 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             check_selector(bundle, *node_ty, next, Shape::PointerSized, what)?;
             check_node(bundle, *node_ty, node, what)?;
         }
+        DisplayNode::Str {
+            pointer,
+            length,
+            capacity,
+        } => {
+            check_selector(bundle, scope, pointer, Shape::BytePointer, what)?;
+            check_selector(bundle, scope, length, Shape::Usize, what)?;
+            if let Some(capacity) = capacity {
+                check_selector(bundle, scope, capacity, Shape::Usize, what)?;
+            }
+        }
     }
     Ok(())
 }
@@ -814,18 +825,6 @@ impl Bundle {
                             &format!("Vec {field} debug format"),
                         )?;
                     }
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::Str { pointer, length },
-                ) => {
-                    check_selector(
-                        self,
-                        id,
-                        pointer,
-                        Shape::BytePointer,
-                        "str pointer debug format",
-                    )?;
-                    check_selector(self, id, length, Shape::Usize, "str length debug format")?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::String {
