@@ -406,6 +406,12 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             // selector resolves.
             check_selector(bundle, scope, at, Shape::Any, what)?;
         }
+        DisplayNode::SlotCount { bitmap, slots } => {
+            // The readiness word is a `usize`; `slots` is the inline array
+            // whose length bounds which of its bits count as slots.
+            check_selector(bundle, scope, bitmap, Shape::Usize, what)?;
+            check_selector(bundle, scope, slots, Shape::Array, what)?;
+        }
     }
     Ok(())
 }
@@ -742,27 +748,6 @@ impl Bundle {
                             id.0
                         ));
                     }
-                }
-                crate::bundle::schema::DebugFormat::Known(
-                    crate::bundle::schema::KnownFormat::MpscBlock {
-                        ready_slots,
-                        values,
-                    },
-                ) => {
-                    check_selector(
-                        self,
-                        id,
-                        ready_slots,
-                        Shape::Usize,
-                        "MpscBlock ready_slots debug format",
-                    )?;
-                    check_selector(
-                        self,
-                        id,
-                        values,
-                        Shape::Array,
-                        "MpscBlock values debug format",
-                    )?;
                 }
                 crate::bundle::schema::DebugFormat::Known(
                     crate::bundle::schema::KnownFormat::MpscRx {

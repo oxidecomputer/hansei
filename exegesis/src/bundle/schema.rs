@@ -137,16 +137,6 @@ impl Selector {
     pub fn steps(&self) -> &[Step] {
         &self.0
     }
-
-    /// The index of the first step when it is a [`Step::Member`], i.e. the
-    /// top-level member this selector descends into. Used where a formatter
-    /// also needs that member index (e.g. rendering a struct field in place).
-    pub fn first_member(&self) -> Option<u32> {
-        match self.0.first() {
-            Some(Step::Member(index)) => Some(*index),
-            _ => None,
-        }
-    }
 }
 
 /// Build a member-only selector from a legacy member-index path.
@@ -330,6 +320,20 @@ pub enum DisplayNode {
     /// being followed — matching an atomic's `Debug`, which reports an
     /// `AtomicPtr`'s address rather than its pointee.
     Alias { at: Selector, follow_pointers: bool },
+    /// Render a readiness bitmap as a count of written slots — `[<n> slots]`
+    /// — where `n` is the number of set bits in `bitmap` among the low bits
+    /// that cover `slots`.
+    ///
+    /// Used for a `tokio::sync::mpsc::block::Block<T>`'s inline slot array,
+    /// which is not shown directly: a block cannot tell a still-queued
+    /// message from an already-consumed one (that needs the channel's
+    /// read/write positions), so its `MaybeUninit` bytes may be stale. Only
+    /// the written count is reported. `bitmap` reaches the readiness word (bit
+    /// `i` set means slot `i` was written); `slots` reaches the inline
+    /// `[MaybeUninit<T>; N]` array whose length `N` bounds which bits count
+    /// (higher bits are unrelated released/closed flags). The live messages
+    /// are shown by the channel-level [`KnownFormat::MpscChan`] formatter.
+    SlotCount { bitmap: Selector, slots: Selector },
 }
 
 /// One field of a [`DisplayNode::Struct`] record.
@@ -391,20 +395,6 @@ pub enum KnownFormat {
         next: Selector,
         values: Selector,
         element: BundleTypeId,
-    },
-    /// Display a `tokio::sync::mpsc::block::Block<T>` with its inline `values`
-    /// array elided to a count of written slots rather than raw `MaybeUninit`
-    /// bytes. `ready_slots` is the member path to the header's readiness
-    /// bitmap (bit `i` set means slot `i` was written); `values` is the member
-    /// path to the `[MaybeUninit<T>; N]` array, its first element the index of
-    /// the `values` member. The slot *contents* are not shown here: a block
-    /// cannot tell which written slots are still queued versus already
-    /// consumed (that needs the channel's read/write positions), so their
-    /// bytes may be stale. The live messages are shown by the channel-level
-    /// [`KnownFormat::MpscChan`] formatter instead.
-    MpscBlock {
-        ready_slots: Selector,
-        values: Selector,
     },
     /// Display a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
     /// channel. A receiver holds an `Arc<Chan<T, Semaphore>>`; `chan_pointer`

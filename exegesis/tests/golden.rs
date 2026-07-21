@@ -262,14 +262,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
                 fq_name(bundle, *element),
             )
         }
-        KnownFormat::MpscBlock {
-            ready_slots,
-            values,
-        } => format!(
-            "MpscBlock {{ ready_slots={}, values={} }}",
-            f(id, ready_slots),
-            f(id, values),
-        ),
         KnownFormat::MpscRx {
             chan_pointer,
             chan,
@@ -412,6 +404,11 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
             let follow = if *follow_pointers { ", follow" } else { "" };
             format!("Alias {{ {}{} }}", field(bundle, root, at), follow)
         }
+        DisplayNode::SlotCount { bitmap, slots } => format!(
+            "SlotCount {{ bitmap={}, slots={} }}",
+            field(bundle, root, bitmap),
+            field(bundle, root, slots),
+        ),
     }
 }
 
@@ -876,9 +873,10 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "tokio::sync::mpsc::block::Block<u32>",
-            "tokio::sync::mpsc::block::Block<u32> :: MpscBlock \
-             { ready_slots=header.ready_slots.inner.value.v.value.__0@+144, \
-             values=values.__0@+0 }",
+            "tokio::sync::mpsc::block::Block<u32> :: Node Struct \
+             { header: <structural>, \
+             values: SlotCount { bitmap=header.ready_slots.inner.value.v.value.__0@+144, \
+             slots=values.__0@+0 } }",
         );
         assert_format(
             program,

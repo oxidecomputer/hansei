@@ -759,9 +759,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(kf @ KnownFormat::DynPointer { .. }) => {
                 return write_dyn_pointer(f, info, Some(ty.name()), kf, ctx);
             }
-            DebugFormat::Known(kf @ KnownFormat::MpscBlock { .. }) => {
-                return write_mpsc_block(f, info, ty.name(), kf, ctx);
-            }
             DebugFormat::Known(kf @ KnownFormat::MpscChan { .. }) => {
                 return write_mpsc_chan(f, info, ty.name(), &[], kf, ctx);
             }
@@ -1265,96 +1262,6 @@ fn eval_slice<'a, T: DebugType<'a>>(
         write_indent(f, ctx.depth)?;
     }
     write!(f, "]")
-}
-
-/// Render a `tokio::sync::mpsc::block::Block<T>` with its `values` member
-/// shown as a count of written slots rather than raw `MaybeUninit` bytes.
-/// Other members render normally. The contents are not dereferenced: a block
-/// cannot tell live slots from consumed ones (their bytes may be stale), so
-/// the actual messages are shown by the channel formatter instead.
-fn write_mpsc_block<'a, T: DebugType<'a>>(
-    f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    name: &str,
-    format: KnownFormat<T>,
-    ctx: RenderCtx<'_, 'a>,
-) -> fmt::Result {
-    let KnownFormat::MpscBlock {
-        ready_offset,
-        ready_size,
-        values_member,
-        count,
-    } = format
-    else {
-        unreachable!()
-    };
-
-    let ready = read_unsigned_at(info.bytes, ready_offset, ready_size as u64).unwrap_or(0);
-    // Only the low `count` bits are per-slot readiness; the rest are the
-    // released/closed flags.
-    let mask = if count >= 64 {
-        u64::MAX
-    } else {
-        (1u64 << count) - 1
-    };
-    let written = (ready & mask).count_ones();
-    let slots = format!("[{written} slots]");
-    let values_name = info
-        .ty
-        .members()
-        .nth(values_member as usize)
-        .map(|m| m.name());
-
-    let pretty = f.alternate();
-    let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
-    if !name.is_empty() {
-        write!(f, "{name}")?;
-    }
-    write!(f, " {{")?;
-    for (i, member) in members.iter().enumerate() {
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
-        } else if i > 0 {
-            write!(f, ",")?;
-        }
-        write!(f, " {}: ", member.name())?;
-
-        if Some(member.name()) == values_name {
-            write!(f, "{slots}")?;
-        } else {
-            let start = member.offset() as usize;
-            let end = start + member.ty().size() as usize;
-            if let Some(bytes) = info.bytes.get(start..end) {
-                let child = DisplayRecurse {
-                    info: TypeInfoRef {
-                        ty: member.ty(),
-                        addr: info.addr + member.offset(),
-                        bytes,
-                        _marker: std::marker::PhantomData,
-                    },
-                    ctx: ctx.deeper(),
-                };
-                if pretty {
-                    write!(f, "{child:#}")?;
-                } else {
-                    write!(f, "{child}")?;
-                }
-            } else {
-                write!(f, "<truncated>")?;
-            }
-        }
-        if pretty {
-            write!(f, ",")?;
-        }
-    }
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    } else {
-        write!(f, " ")?;
-    }
-    write!(f, "}}")
 }
 
 /// Render an mpsc `Chan`, prepending a `queued` field that walks the block
@@ -2359,6 +2266,23 @@ fn eval_node<'a, T: DebugType<'a>>(
             } else {
                 write!(f, "{child}")
             }
+        }
+        DisplayNode::SlotCount {
+            bitmap_offset,
+            bitmap_size,
+            count,
+        } => {
+            let ready =
+                read_unsigned_at(bytes, *bitmap_offset, u64::from(*bitmap_size)).unwrap_or(0);
+            // Only the low `count` bits are per-slot readiness; the rest are
+            // the released/closed flags.
+            let mask = if *count >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << count) - 1
+            };
+            let written = (ready & mask).count_ones();
+            write!(f, "[{written} slots]")
         }
     }
 }
