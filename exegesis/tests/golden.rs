@@ -370,6 +370,29 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
                 field(bundle, edge_elem, edge),
             )
         }
+        DisplayNode::WatchReceiver {
+            observed,
+            shared,
+            shared_data,
+            state,
+            value,
+            element,
+            closed_mask,
+        } => {
+            let (_, _, pointer_ty) = walk(bundle, root, shared);
+            let arc_inner = ptr_target(bundle, pointer_ty).unwrap_or(root);
+            let (_, _, shared_ty) = walk(bundle, arc_inner, shared_data);
+            format!(
+                "WatchReceiver {{ observed={}, shared={}, pointee={}, shared_data={}, state={}, value={}, element={}, closed_mask={closed_mask:#x} }}",
+                field(bundle, root, observed),
+                field(bundle, root, shared),
+                fq_name(bundle, arc_inner),
+                field(bundle, arc_inner, shared_data),
+                field(bundle, shared_ty, state),
+                field(bundle, shared_ty, value),
+                fq_name(bundle, *element),
+            )
+        }
     }
 }
 
@@ -839,6 +862,16 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "tokio::sync::watch::state::AtomicState",
             "tokio::sync::watch::state::AtomicState :: Node __0.inner.value.v.value.__0@+0",
+        );
+        assert_format(
+            program,
+            bundle,
+            "tokio::sync::watch::Receiver<u32>",
+            "tokio::sync::watch::Receiver<u32> :: Node WatchReceiver \
+             { observed=version.__0@+8, shared=shared.ptr.pointer@+0, \
+             pointee=alloc::sync::ArcInner<tokio::sync::watch::Shared<u32>>, \
+             shared_data=data@+16, state=state.__0.inner.value.v.value.__0@+304, \
+             value=value.__1.data.value@+296, element=u32, closed_mask=0x1 }",
         );
         assert_format(
             program,

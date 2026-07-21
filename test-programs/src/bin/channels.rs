@@ -49,8 +49,10 @@ fn main() {
         tx.send(10).await.expect("capacity available");
         tx.send(20).await.expect("capacity available");
 
-        // A watch channel with a published value.
+        // A watch channel with a value published after receiver creation, so
+        // the receiver's one-slot inbox remains unseen while it is parked.
         let (watch_tx, watch_rx) = watch::channel(7u32);
+        watch_tx.send(11).expect("watch receiver remains live");
 
         // A semaphore with available permits.
         let sem = Arc::new(Semaphore::new(4));

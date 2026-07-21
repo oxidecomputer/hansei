@@ -24,7 +24,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 18;
+pub const FORMAT_VERSION: u32 = 19;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -559,6 +559,54 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 }
             }
             check_map_entries(bundle, scope, *key, *value, entries, what)?;
+        }
+        DisplayNode::WatchReceiver {
+            observed,
+            shared,
+            shared_data,
+            state,
+            value,
+            element,
+            closed_mask,
+        } => {
+            let observed_ty = check_selector(bundle, scope, observed, Shape::Usize, what)?;
+            let shared_ptr = check_selector(bundle, scope, shared, Shape::Pointer, what)?;
+            let Some(TypeDef::Pointer {
+                target: arc_inner, ..
+            }) = bundle.types.get(shared_ptr)
+            else {
+                unreachable!("check_selector verified a pointer");
+            };
+            let shared_ty = check_selector(bundle, *arc_inner, shared_data, Shape::Any, what)?;
+            let state_ty = check_selector(bundle, shared_ty, state, Shape::Usize, what)?;
+            if type_size(bundle, observed_ty, &mut Vec::new())
+                != type_size(bundle, state_ty, &mut Vec::new())
+            {
+                return corrupt("watch receiver version words have different sizes".to_string());
+            }
+            if bundle.types.get(*element).is_none() {
+                return corrupt(format!(
+                    "watch receiver element type id {} out of range",
+                    element.0
+                ));
+            }
+            if type_size(bundle, *element, &mut Vec::new()).is_none() {
+                return corrupt(format!(
+                    "watch receiver has an unsized element type {}",
+                    element.0
+                ));
+            }
+            let value_ty = check_selector(bundle, shared_ty, value, Shape::Any, what)?;
+            if value_ty != *element {
+                return corrupt("watch receiver value does not match its element type".to_string());
+            }
+            let state_bits =
+                type_size(bundle, state_ty, &mut Vec::new()).expect("usize has a size") * 8;
+            if !closed_mask.is_power_of_two()
+                || state_bits < 64 && *closed_mask >= (1u64 << state_bits)
+            {
+                return corrupt("watch receiver closed mask is not one state-word bit".to_string());
+            }
         }
     }
     Ok(())
