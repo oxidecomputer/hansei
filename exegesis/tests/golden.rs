@@ -15,8 +15,7 @@
 //! -p exegesis --test golden`.
 
 use exegesis::bundle::{
-    Bundle, BundleTypeId, DebugFormat, DisplayNode, Field, MapEntries, Selector, StaticRole, Step,
-    TypeDef,
+    Bundle, BundleTypeId, DisplayNode, Field, MapEntries, Selector, StaticRole, Step, TypeDef,
 };
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
 
@@ -193,18 +192,13 @@ fn array_elem(bundle: &Bundle, id: BundleTypeId) -> Option<BundleTypeId> {
     }
 }
 
-/// Render a debug format as a portable, layout-sensitive summary. Returns
-/// `None` for plain `Transparent` formats, which are covered by presence
-/// assertions in `assert_clean`.
-fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -> Option<String> {
-    match fmt {
-        DebugFormat::Transparent { .. } => None,
-        DebugFormat::Node(node) => Some(format!(
-            "{} :: Node {}",
-            fq_name(bundle, id),
-            describe_node(bundle, id, node)
-        )),
-    }
+/// Render a debug format as a portable, layout-sensitive summary.
+fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, node: &DisplayNode) -> String {
+    format!(
+        "{} :: Node {}",
+        fq_name(bundle, id),
+        describe_node(bundle, id, node)
+    )
 }
 
 /// Render a [`DisplayNode`] tree as a portable, layout-sensitive summary: every
@@ -428,7 +422,7 @@ fn assert_format(program: &str, bundle: &Bundle, type_name: &str, expected: &str
                 .types
                 .debug_formats
                 .get(&id)
-                .and_then(|fmt| describe_debug_format(bundle, id, fmt))
+                .map(|node| describe_debug_format(bundle, id, node))
         });
     match rendered {
         Some(rendered) => assert_eq!(
@@ -640,23 +634,30 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         );
     }
     assert!(
-        bundle
-            .types
-            .debug_formats
-            .values()
-            .any(|format| matches!(format, exegesis::bundle::DebugFormat::Transparent { .. })),
-        "{program}: no transparent known-type formats were extracted"
+        bundle.types.debug_formats.values().any(|node| matches!(
+            node,
+            DisplayNode::Alias {
+                follow_pointers: true,
+                ..
+            }
+        )),
+        "{program}: no following alias formats were extracted"
     );
     assert!(
         bundle.types.debug_formats.iter().any(|(id, format)| {
-            matches!(format, exegesis::bundle::DebugFormat::Transparent { .. })
-                && match &bundle.types.types[id.0 as usize] {
-                    TypeDef::Struct { name, .. } => bundle
-                        .strings
-                        .get(*name)
-                        .is_some_and(|name| name.starts_with("core::ptr::non_null::NonNull<")),
-                    _ => false,
+            matches!(
+                format,
+                DisplayNode::Alias {
+                    follow_pointers: true,
+                    ..
                 }
+            ) && match &bundle.types.types[id.0 as usize] {
+                TypeDef::Struct { name, .. } => bundle
+                    .strings
+                    .get(*name)
+                    .is_some_and(|name| name.starts_with("core::ptr::non_null::NonNull<")),
+                _ => false,
+            }
         }),
         "{program}: no transparent NonNull format was extracted"
     );
@@ -666,14 +667,19 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     ] {
         assert!(
             bundle.types.debug_formats.iter().any(|(id, format)| {
-                matches!(format, exegesis::bundle::DebugFormat::Transparent { .. })
-                    && match &bundle.types.types[id.0 as usize] {
-                        TypeDef::Struct { name, .. } => bundle
-                            .strings
-                            .get(*name)
-                            .is_some_and(|name| name.starts_with(prefix)),
-                        _ => false,
+                matches!(
+                    format,
+                    DisplayNode::Alias {
+                        follow_pointers: true,
+                        ..
                     }
+                ) && match &bundle.types.types[id.0 as usize] {
+                    TypeDef::Struct { name, .. } => bundle
+                        .strings
+                        .get(*name)
+                        .is_some_and(|name| name.starts_with(prefix)),
+                    _ => false,
+                }
             }),
             "{program}: no transparent {prefix} format was extracted"
         );
@@ -681,22 +687,27 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert!(
         bundle.types.debug_formats.values().any(|format| matches!(
             format,
-            exegesis::bundle::DebugFormat::Node(exegesis::bundle::DisplayNode::Alias { .. })
+            DisplayNode::Alias {
+                follow_pointers: false,
+                ..
+            }
         )),
         "{program}: no atomic alias-node formats were extracted"
     );
     assert!(
-        bundle.types.debug_formats.values().any(|format| matches!(
-            format,
-            exegesis::bundle::DebugFormat::Node(exegesis::bundle::DisplayNode::Symbol { .. })
-        )),
+        bundle
+            .types
+            .debug_formats
+            .values()
+            .any(|format| matches!(format, DisplayNode::Symbol { .. })),
         "{program}: no function-pointer symbol-node formats were extracted"
     );
     assert!(
-        bundle.types.debug_formats.values().any(|format| matches!(
-            format,
-            exegesis::bundle::DebugFormat::Node(exegesis::bundle::DisplayNode::DynPointer { .. })
-        )),
+        bundle
+            .types
+            .debug_formats
+            .values()
+            .any(|format| matches!(format, DisplayNode::DynPointer { .. })),
         "{program}: no dyn-pointer nodes were extracted"
     );
     assert_format(
@@ -714,14 +725,19 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         ] {
             assert!(
                 bundle.types.debug_formats.iter().any(|(id, format)| {
-                    matches!(format, exegesis::bundle::DebugFormat::Transparent { .. })
-                        && match &bundle.types.types[id.0 as usize] {
-                            TypeDef::Struct { name, .. } => bundle
-                                .strings
-                                .get(*name)
-                                .is_some_and(|name| name.starts_with(prefix)),
-                            _ => false,
+                    matches!(
+                        format,
+                        DisplayNode::Alias {
+                            follow_pointers: true,
+                            ..
                         }
+                    ) && match &bundle.types.types[id.0 as usize] {
+                        TypeDef::Struct { name, .. } => bundle
+                            .strings
+                            .get(*name)
+                            .is_some_and(|name| name.starts_with(prefix)),
+                        _ => false,
+                    }
                 }),
                 "{program}: no transparent {prefix} format was extracted"
             );

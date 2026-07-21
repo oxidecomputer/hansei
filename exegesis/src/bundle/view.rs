@@ -178,7 +178,7 @@ impl<'a> BundleType<'a> {
 
     /// Custom display instructions resolved from this type's DWARF at
     /// extraction time.
-    pub fn debug_format(&self) -> Option<&'a crate::bundle::DebugFormat> {
+    pub fn debug_format(&self) -> Option<&'a crate::bundle::DisplayNode> {
         self.bundle.types.debug_formats.get(&self.id)
     }
 

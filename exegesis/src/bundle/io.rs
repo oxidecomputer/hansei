@@ -24,7 +24,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 17;
+pub const FORMAT_VERSION: u32 = 18;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -861,16 +861,9 @@ impl Bundle {
             }
         }
 
-        for (&id, format) in &self.types.debug_formats {
+        for (&id, node) in &self.types.debug_formats {
             check_ty("debug format", id)?;
-            match format {
-                crate::bundle::schema::DebugFormat::Transparent { member } => {
-                    check_selector(self, id, member, Shape::Any, "transparent debug format")?;
-                }
-                crate::bundle::schema::DebugFormat::Node(node) => {
-                    check_node(self, id, node, "node debug format")?;
-                }
-            }
+            check_node(self, id, node, "debug format")?;
         }
 
         let mut prev: Option<&str> = None;

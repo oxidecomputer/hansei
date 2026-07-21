@@ -2,8 +2,8 @@ pub mod debug_type;
 
 pub use debug_type::TypeKind;
 use debug_type::{
-    BitField, DebugFormat, DebugMember, DebugType, DisplayNode, Field, FieldRender, MapEntries,
-    ScalarDecode, TypeClass,
+    BitField, DebugMember, DebugType, DisplayNode, Field, FieldRender, MapEntries, ScalarDecode,
+    TypeClass,
 };
 
 use proc::Mappings;
@@ -750,52 +750,15 @@ fn write_display_value<'a, T: DebugType<'a>>(
         return write!(f, "<truncated>");
     }
 
-    if let Some(format) = ty.debug_format() {
-        // One `match` consumes `format` so the owned `ScalarDecode`s it now
-        // carries need not be `Copy`. Every arm but `Transparent` renders and
-        // returns; that one falls through to the shared sub-value recursion
-        // below with the child location it binds.
-        let (target, offset, child_proc, child_visited) = match format {
-            DebugFormat::Node(node) => {
-                // A top-level `Scalar` formatter (e.g. a parking_lot `RawMutex`)
-                // has no enclosing field label to give it context, so it is
-                // prefixed with the type name — `<name>: <decoded>`.
-                // `Struct`/`List`/`Alias` nodes name (or elide) themselves as
-                // they render.
-                if let DisplayNode::Scalar { .. } = node {
-                    write!(f, "{}: ", ty.name())?;
-                }
-                return eval_node(f, &node, &ty, info.bytes, info.addr, ctx, f.alternate());
-            }
-            DebugFormat::Transparent { target, offset } => (target, offset, ctx.proc, ctx.visited),
-        };
-        let start = offset as usize;
-        let Some(end) = start.checked_add(target.size() as usize) else {
-            return write!(f, "<truncated>");
-        };
-        let Some(child_bytes) = bytes.get(start..end) else {
-            return write!(f, "<truncated>");
-        };
-        let child = DisplayRecurse {
-            info: TypeInfoRef {
-                ty: target,
-                addr: info.addr + offset,
-                bytes: child_bytes,
-                _marker: std::marker::PhantomData,
-            },
-            // Eliding a representation detail does not consume the user's
-            // value-depth budget, so `depth` is unchanged.
-            ctx: RenderCtx {
-                proc: child_proc,
-                visited: child_visited,
-                ..ctx
-            },
-        };
-        return if f.alternate() {
-            write!(f, "{child:#}")
-        } else {
-            write!(f, "{child}")
-        };
+    if let Some(node) = ty.debug_format() {
+        // A top-level `Scalar` formatter (e.g. a parking_lot `RawMutex`)
+        // has no enclosing field label to give it context, so it is prefixed
+        // with the type name — `<name>: <decoded>`. Other nodes name (or
+        // elide) themselves as they render.
+        if let DisplayNode::Scalar { .. } = node {
+            write!(f, "{}: ", ty.name())?;
+        }
+        return eval_node(f, &node, &ty, info.bytes, info.addr, ctx, f.alternate());
     }
 
     match ty.classify() {
@@ -2431,9 +2394,7 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
         return Ok(());
     }
 
-    if let Some(DebugFormat::Node(node @ DisplayNode::DynPointer { .. })) =
-        variant_info.ty.debug_format()
-    {
+    if let Some(node @ DisplayNode::DynPointer { .. }) = variant_info.ty.debug_format() {
         return eval_dyn_pointer(f, variant_info.ty, None, &node, variant_info.bytes, ctx);
     }
 

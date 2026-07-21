@@ -102,7 +102,7 @@ pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug {
     fn classify(&self) -> TypeClass<Self>;
 
     /// Custom display instructions supplied by the debug-info backend.
-    fn debug_format(&self) -> Option<DebugFormat<Self>> {
+    fn debug_format(&self) -> Option<DisplayNode<Self>> {
         None
     }
 
@@ -152,18 +152,6 @@ pub enum FieldRender {
     Enum(Vec<(u64, String)>),
     /// Render the sub-value as an unsigned integer (`name=N`).
     Uint,
-}
-
-/// Backend-independent, fully resolved custom display instructions.
-#[derive(Clone, Debug)]
-pub enum DebugFormat<T> {
-    /// Display `target` at `offset` as though it were the containing value.
-    Transparent { target: T, offset: u64 },
-    /// Interpret a composable display program (Formatter IR). The resolved
-    /// counterpart of [`exegesis::bundle::DebugFormat::Node`], with every
-    /// selector reduced to a byte offset and every related type resolved to
-    /// a concrete `T`.
-    Node(DisplayNode<T>),
 }
 
 /// Resolved form of a bundle [`exegesis::bundle::DisplayNode`]: the same tree
@@ -476,8 +464,8 @@ impl<'a> DebugType<'a> for BundleType<'a> {
         }
     }
 
-    fn debug_format(&self) -> Option<DebugFormat<Self>> {
-        use exegesis::bundle::{DebugFormat as BundleFormat, Selector, Step};
+    fn debug_format(&self) -> Option<DisplayNode<Self>> {
+        use exegesis::bundle::{Selector, Step};
 
         /// Resolve a selector against `root` to `(landed type, byte offset)`.
         ///
@@ -842,13 +830,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             }
         }
 
-        match BundleType::debug_format(self)? {
-            BundleFormat::Transparent { member } => {
-                let (target, offset) = resolve_selector(*self, member)?;
-                Some(DebugFormat::Transparent { target, offset })
-            }
-            BundleFormat::Node(node) => Some(DebugFormat::Node(resolve_node(*self, node)?)),
-        }
+        resolve_node(*self, BundleType::debug_format(self)?)
     }
 
     fn size_by_name(&self, name: &str) -> Option<u64> {
@@ -900,12 +882,12 @@ mod bundle_tests {
 
     use exegesis::Encoding;
     use exegesis::bundle::{
-        BitField as BundleBitField, Bundle, BundleTypeId, BundleView,
-        DebugFormat as BundleDebugFormat, DiscrDef, DiscrValue, DiscrValues,
-        DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION, Field as BundleField,
-        FieldRender as BundleFieldRender, InfraTypes, MapEntries as BundleMapEntries, MemberDef,
-        Meta, ProvenanceTable, ScalarDecode as BundleScalarDecode, Selector, StaticsTable, StrRef,
-        StringInterner, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
+        BitField as BundleBitField, Bundle, BundleTypeId, BundleView, DiscrDef, DiscrValue,
+        DiscrValues, DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION,
+        Field as BundleField, FieldRender as BundleFieldRender, InfraTypes,
+        MapEntries as BundleMapEntries, MemberDef, Meta, ProvenanceTable,
+        ScalarDecode as BundleScalarDecode, Selector, StaticsTable, StrRef, StringInterner,
+        TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
     };
     use std::num::NonZeroU8;
 
@@ -1647,43 +1629,55 @@ mod bundle_tests {
             types: TypeTable {
                 types,
                 debug_formats: std::collections::BTreeMap::from([
-                    (WRAP, BundleDebugFormat::Transparent { member: sel(&[0]) }),
+                    (
+                        WRAP,
+                        BundleNode::Alias {
+                            at: sel(&[0]),
+                            follow_pointers: true,
+                        },
+                    ),
                     (
                         ATOMIC,
-                        BundleDebugFormat::Node(BundleNode::Alias {
+                        BundleNode::Alias {
                             at: sel(&[0, 0]),
                             follow_pointers: false,
-                        }),
+                        },
                     ),
                     (
                         ATOMIC_PTR,
-                        BundleDebugFormat::Node(BundleNode::Alias {
+                        BundleNode::Alias {
                             at: sel(&[0]),
                             follow_pointers: false,
-                        }),
+                        },
                     ),
                     (
                         LOOM_ATOMIC,
-                        BundleDebugFormat::Transparent { member: sel(&[0]) },
+                        BundleNode::Alias {
+                            at: sel(&[0]),
+                            follow_pointers: true,
+                        },
                     ),
                     (
                         LOOM_CELL,
-                        BundleDebugFormat::Transparent { member: sel(&[0]) },
+                        BundleNode::Alias {
+                            at: sel(&[0]),
+                            follow_pointers: true,
+                        },
                     ),
                     (
                         FAT_PTR,
-                        BundleDebugFormat::Node(BundleNode::DynPointer {
+                        BundleNode::DynPointer {
                             pointer: sel(&[0]),
                             vtable: sel(&[1]),
                             drop_in_place: 0,
                             size: 1,
                             align: 2,
                             tail_offset: 0,
-                        }),
+                        },
                     ),
                     (
                         RAW_WAKER_VTABLE,
-                        BundleDebugFormat::Node(BundleNode::Struct {
+                        BundleNode::Struct {
                             fields: vec![
                                 BundleField::Override {
                                     index: 0,
@@ -1702,15 +1696,12 @@ mod bundle_tests {
                                     node: BundleNode::Symbol { at: sel(&[3]) },
                                 },
                             ],
-                        }),
+                        },
                     ),
-                    (
-                        FUNCTION_PTR,
-                        BundleDebugFormat::Node(BundleNode::Symbol { at: sel(&[]) }),
-                    ),
+                    (FUNCTION_PTR, BundleNode::Symbol { at: sel(&[]) }),
                     (
                         BTREE_MAP,
-                        BundleDebugFormat::Node(BundleNode::Map {
+                        BundleNode::Map {
                             length: sel(&[1]),
                             key: U32,
                             value: U32,
@@ -1728,60 +1719,54 @@ mod bundle_tests {
                                 internal_edges: sel(&[1]),
                                 edge: sel(&[]),
                             }),
-                        }),
+                        },
                     ),
-                    (
-                        IPV4,
-                        BundleDebugFormat::Node(BundleNode::IpAddr { octets: sel(&[0]) }),
-                    ),
-                    (
-                        IPV6,
-                        BundleDebugFormat::Node(BundleNode::IpAddr { octets: sel(&[0]) }),
-                    ),
+                    (IPV4, BundleNode::IpAddr { octets: sel(&[0]) }),
+                    (IPV6, BundleNode::IpAddr { octets: sel(&[0]) }),
                     (
                         VEC,
-                        BundleDebugFormat::Node(BundleNode::Slice {
+                        BundleNode::Slice {
                             pointer: sel(&[0]),
                             length: sel(&[1]),
                             capacity: Some(sel(&[2])),
                             element: U32,
-                        }),
+                        },
                     ),
                     (
                         SLICE,
-                        BundleDebugFormat::Node(BundleNode::Slice {
+                        BundleNode::Slice {
                             pointer: sel(&[0]),
                             length: sel(&[1]),
                             capacity: None,
                             element: U32,
-                        }),
+                        },
                     ),
                     (
                         STR,
-                        BundleDebugFormat::Node(BundleNode::Str {
+                        BundleNode::Str {
                             pointer: sel(&[0]),
                             length: sel(&[1]),
                             capacity: None,
-                        }),
+                        },
                     ),
                     (
                         STRING,
-                        BundleDebugFormat::Node(BundleNode::Str {
+                        BundleNode::Str {
                             pointer: sel(&[0]),
                             length: sel(&[1]),
                             capacity: Some(sel(&[2])),
-                        }),
+                        },
                     ),
                     (
                         RAW_MUTEX,
-                        BundleDebugFormat::Node(BundleNode::Scalar {
+                        BundleNode::Scalar {
                             at: sel(&[0]),
                             decode: mutex_decode(),
-                        }),
+                        },
                     ),
                     (
                         NOTIFY,
-                        BundleDebugFormat::Node(BundleNode::Struct {
+                        BundleNode::Struct {
                             fields: vec![
                                 BundleField::Named {
                                     label: statel,
@@ -1836,11 +1821,11 @@ mod bundle_tests {
                                     },
                                 },
                             ],
-                        }),
+                        },
                     ),
                     (
                         SEMAPHORE,
-                        BundleDebugFormat::Node(BundleNode::Struct {
+                        BundleNode::Struct {
                             fields: vec![
                                 BundleField::Override {
                                     index: 0,
@@ -1851,11 +1836,11 @@ mod bundle_tests {
                                 },
                                 BundleField::Member(1),
                             ],
-                        }),
+                        },
                     ),
                     (
                         BLOCK,
-                        BundleDebugFormat::Node(BundleNode::Struct {
+                        BundleNode::Struct {
                             fields: vec![
                                 BundleField::Override {
                                     index: 0,
@@ -1866,34 +1851,34 @@ mod bundle_tests {
                                 },
                                 BundleField::Member(1),
                             ],
-                        }),
+                        },
                     ),
                     (
                         WATCH_STATE,
-                        BundleDebugFormat::Node(BundleNode::Scalar {
+                        BundleNode::Scalar {
                             at: sel(&[0]),
                             decode: BundleScalarDecode::Bits(vec![
                                 ebf(closedl, 0, 1, vec![(0, falsel), (1, truel)]),
                                 ubf(versionl, 1),
                             ]),
-                        }),
+                        },
                     ),
                     (
                         // Chan: `queued` then its three members (tail, index, head).
                         CHAN,
-                        BundleDebugFormat::Node(BundleNode::Struct {
+                        BundleNode::Struct {
                             fields: vec![
                                 chan_queued(),
                                 BundleField::Member(0),
                                 BundleField::Member(1),
                                 BundleField::Member(2),
                             ],
-                        }),
+                        },
                     ),
                     (
                         // RxChan: like Chan plus the bounded semaphore (member 3).
                         RX_CHAN,
-                        BundleDebugFormat::Node(BundleNode::Struct {
+                        BundleNode::Struct {
                             fields: vec![
                                 chan_queued(),
                                 BundleField::Member(0),
@@ -1901,7 +1886,7 @@ mod bundle_tests {
                                 BundleField::Member(2),
                                 BundleField::Member(3),
                             ],
-                        }),
+                        },
                     ),
                     (
                         // Receiver: a pointer hop to the RxChan (raw pointer @
@@ -1910,7 +1895,7 @@ mod bundle_tests {
                         // from its semaphore (member 3: bound @1, permits @0)
                         // prepended.
                         RECEIVER,
-                        BundleDebugFormat::Node(BundleNode::Pointer {
+                        BundleNode::Pointer {
                             at: sel(&[0]),
                             via: sel(&[2]),
                             then: Box::new(BundleNode::Struct {
@@ -1936,11 +1921,11 @@ mod bundle_tests {
                                     BundleField::Member(3),
                                 ],
                             }),
-                        }),
+                        },
                     ),
                     (
                         BOUNDED_SEM,
-                        BundleDebugFormat::Node(BundleNode::Struct {
+                        BundleNode::Struct {
                             fields: vec![
                                 BundleField::Named {
                                     label: mutexfl,
@@ -1988,7 +1973,7 @@ mod bundle_tests {
                                     },
                                 },
                             ],
-                        }),
+                        },
                     ),
                 ]),
                 name_index: vec![(pointn, POINT)],
@@ -2324,6 +2309,35 @@ mod bundle_tests {
         assert_eq!(
             format!("{}", value.display_from_target(&NoReads, 8)),
             "0x1000"
+        );
+    }
+
+    #[test]
+    fn test_following_alias_preserves_pointer_traversal() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!((addr, len), (0x1000, 8));
+                Ok([3u32, 4].into_iter().flat_map(u32::to_le_bytes).collect())
+            }
+        }
+
+        let mut b = test_bundle();
+        b.types.debug_formats.insert(
+            ATOMIC_PTR,
+            BundleNode::Alias {
+                at: sel(&[0]),
+                follow_pointers: true,
+            },
+        );
+        b.validate().expect("following alias must validate");
+        let v = BundleView::new(&b);
+        let bytes = 0x1000u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "0x1000 -> Point { x: 3, y: 4 }"
         );
     }
 
@@ -3284,10 +3298,7 @@ mod bundle_tests {
             strings: strings.finish(),
             types: TypeTable {
                 types,
-                debug_formats: std::collections::BTreeMap::from([(
-                    N_THING,
-                    BundleDebugFormat::Node(thing_node),
-                )]),
+                debug_formats: std::collections::BTreeMap::from([(N_THING, thing_node)]),
                 name_index: vec![],
             },
             tasks: TaskTable::default(),
@@ -3425,9 +3436,9 @@ mod bundle_tests {
         let mut b = node_bundle();
         b.types.debug_formats.insert(
             N_POINT,
-            BundleDebugFormat::Node(BundleNode::Struct {
+            BundleNode::Struct {
                 fields: vec![BundleField::Member(9)],
-            }),
+            },
         );
         let err = b
             .validate()
