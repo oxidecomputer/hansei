@@ -2653,9 +2653,9 @@ fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFo
         return None;
     }
 
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::DynPointer {
-        pointer: pointer_index as u32,
-        vtable: vtable_index as u32,
+    Some(DebugFormat::Node(DisplayNode::DynPointer {
+        pointer: Selector::member(pointer_index as u32),
+        vtable: Selector::member(vtable_index as u32),
         drop_in_place: 0,
         size: 1,
         align: 2,

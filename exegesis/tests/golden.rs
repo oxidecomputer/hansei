@@ -227,18 +227,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
         DebugFormat::Known(k) => k,
     };
     let body = match known {
-        KnownFormat::DynPointer {
-            pointer,
-            vtable,
-            drop_in_place,
-            size,
-            align,
-            tail_offset,
-        } => format!(
-            "DynPointer {{ pointer={}, vtable={}, slots=[drop_in_place:{drop_in_place}, size:{size}, align:{align}], tail_offset={tail_offset} }}",
-            f(id, &m(*pointer)),
-            f(id, &m(*vtable)),
-        ),
         KnownFormat::BTreeMap {
             root,
             length,
@@ -378,6 +366,18 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
                 describe_node(bundle, target, then),
             )
         }
+        DisplayNode::DynPointer {
+            pointer,
+            vtable,
+            drop_in_place,
+            size,
+            align,
+            tail_offset,
+        } => format!(
+            "DynPointer {{ pointer={}, vtable={}, slots=[drop_in_place:{drop_in_place}, size:{size}, align:{align}], tail_offset={tail_offset} }}",
+            field(bundle, root, pointer),
+            field(bundle, root, vtable),
+        ),
         DisplayNode::MpscChan {
             tail,
             index,
@@ -720,9 +720,9 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert!(
         bundle.types.debug_formats.values().any(|format| matches!(
             format,
-            exegesis::bundle::DebugFormat::Known(exegesis::bundle::KnownFormat::DynPointer { .. })
+            exegesis::bundle::DebugFormat::Node(exegesis::bundle::DisplayNode::DynPointer { .. })
         )),
-        "{program}: no dyn-pointer known-type formats were extracted"
+        "{program}: no dyn-pointer nodes were extracted"
     );
     assert_format(
         program,

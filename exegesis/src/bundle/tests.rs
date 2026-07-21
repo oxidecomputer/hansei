@@ -1297,9 +1297,9 @@ mod view_tests {
             ],
             debug_formats: std::collections::BTreeMap::from([(
                 BundleTypeId(12),
-                DebugFormat::Known(KnownFormat::DynPointer {
-                    pointer: 0,
-                    vtable: 1,
+                DebugFormat::Node(DisplayNode::DynPointer {
+                    pointer: Selector::member(0),
+                    vtable: Selector::member(1),
                     drop_in_place: 0,
                     size: 1,
                     align: 2,

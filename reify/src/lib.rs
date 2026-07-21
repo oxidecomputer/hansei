@@ -756,9 +756,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
         // returns; that one falls through to the shared sub-value recursion
         // below with the child location it binds.
         let (target, offset, child_proc, child_visited) = match format {
-            DebugFormat::Known(kf @ KnownFormat::DynPointer { .. }) => {
-                return write_dyn_pointer(f, info, Some(ty.name()), kf, ctx);
-            }
             DebugFormat::Known(kf @ KnownFormat::BTreeMap { .. }) => {
                 return write_btree_map(f, info, kf, ctx);
             }
@@ -1405,10 +1402,7 @@ fn write_btree_map<'a, T: DebugType<'a>>(
         edges_offset,
         edge,
         edge_pointer_offset,
-    } = format
-    else {
-        unreachable!()
-    };
+    } = format;
 
     let Some(map_length) = read_unsigned_at(info.bytes, length_offset, length.size()) else {
         return write!(f, "<truncated>");
@@ -1660,14 +1654,15 @@ fn read_unsigned_at(bytes: &[u8], offset: u64, size: u64) -> Option<u64> {
     })
 }
 
-fn write_dyn_pointer<'a, T: DebugType<'a>>(
+fn eval_dyn_pointer<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
+    ty: T,
     name: Option<&str>,
-    format: KnownFormat<T>,
+    node: &DisplayNode<T>,
+    bytes: &[u8],
     ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
-    let KnownFormat::DynPointer {
+    let DisplayNode::DynPointer {
         pointer_offset,
         vtable,
         vtable_offset,
@@ -1675,24 +1670,24 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
         size: size_slot,
         align: align_slot,
         tail_offset,
-    } = format
+    } = node
     else {
         unreachable!()
     };
 
-    let Some(pointer_address) = read_u64_at(info.bytes, pointer_offset) else {
+    let Some(pointer_address) = read_u64_at(bytes, *pointer_offset) else {
         return write!(f, "<truncated>");
     };
-    let Some(vtable_address) = read_u64_at(info.bytes, vtable_offset) else {
+    let Some(vtable_address) = read_u64_at(bytes, *vtable_offset) else {
         return write!(f, "<truncated>");
     };
-    let words = read_vtable_words(vtable, vtable_address, ctx.proc);
+    let words = read_vtable_words(*vtable, vtable_address, ctx.proc);
 
     let mut functions = Vec::new();
     if let (Some(proc), Some(words)) = (ctx.proc, words.as_deref()) {
         for (slot, &address) in words.iter().enumerate() {
             let slot = slot as u32;
-            if slot == size_slot || slot == align_slot || address == 0 {
+            if slot == *size_slot || slot == *align_slot || address == 0 {
                 continue;
             }
             let Some(display) = resolve_function_symbol(Some(proc), address) else {
@@ -1708,10 +1703,8 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
         }
     }
 
-    let concrete = infer_concrete_type(info.ty, words.as_deref(), size_slot, &functions);
-    let concrete_ty = concrete
-        .as_deref()
-        .and_then(|name| info.ty.type_by_name(name));
+    let concrete = infer_concrete_type(ty, words.as_deref(), *size_slot, &functions);
+    let concrete_ty = concrete.as_deref().and_then(|name| ty.type_by_name(name));
     let pretty = f.alternate();
     if let Some(name) = name.filter(|name| !name.is_empty()) {
         write!(f, "{name}")?;
@@ -1724,7 +1717,7 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
     // unsized wrapper (e.g. `ArcInner<dyn Trait>`) the value lives past a
     // sized header, so read the pointee at the tail offset, not the raw
     // pointer.
-    let pointee_address = pointer_address.wrapping_add(tail_offset);
+    let pointee_address = pointer_address.wrapping_add(*tail_offset);
     // A zero-sized concrete type (e.g. slog's `()` list terminator) has no
     // pointee worth following — the `concrete type:` line below already names
     // it. Showing `-> ()` would only add noise.
@@ -1773,30 +1766,33 @@ fn write_dyn_pointer<'a, T: DebugType<'a>>(
         Some(words) if ctx.depth + 1 < ctx.max_depth => {
             write!(f, "{{")?;
             write_vtable_field_prefix(f, pretty, ctx.depth)?;
-            let drop_address = words.get(drop_in_place_slot as usize).copied().unwrap_or(0);
+            let drop_address = words
+                .get(*drop_in_place_slot as usize)
+                .copied()
+                .unwrap_or(0);
             write!(f, "drop_in_place: 0x{drop_address:x}")?;
             if let Some(function) = functions
                 .iter()
-                .find(|function| function.slot == drop_in_place_slot)
+                .find(|function| function.slot == *drop_in_place_slot)
             {
                 write!(f, " -> {}", function.display)?;
             }
             write!(f, ",")?;
 
             write_vtable_field_prefix(f, pretty, ctx.depth)?;
-            match words.get(size_slot as usize) {
+            match words.get(*size_slot as usize) {
                 Some(size) => write!(f, "size: {size},")?,
                 None => write!(f, "size: <unavailable>,")?,
             }
             write_vtable_field_prefix(f, pretty, ctx.depth)?;
-            match words.get(align_slot as usize) {
+            match words.get(*align_slot as usize) {
                 Some(align) => write!(f, "align: {align},")?,
                 None => write!(f, "align: <unavailable>,")?,
             }
 
             for (slot, &address) in words.iter().enumerate() {
                 let slot = slot as u32;
-                if slot == drop_in_place_slot || slot == size_slot || slot == align_slot {
+                if slot == *drop_in_place_slot || slot == *size_slot || slot == *align_slot {
                     continue;
                 }
                 write_vtable_field_prefix(f, pretty, ctx.depth)?;
@@ -2146,11 +2142,21 @@ fn eval_node<'a, T: DebugType<'a>>(
             // Render the target against its own bytes, titled with this type's
             // name. `then` is a `Struct` for the receiver, but any node works.
             match then.as_ref() {
-                DisplayNode::Struct { fields } => {
-                    eval_struct(f, fields, target, Some(name), &target_bytes, addr, ctx, pretty)
-                }
+                DisplayNode::Struct { fields } => eval_struct(
+                    f,
+                    fields,
+                    target,
+                    Some(name),
+                    &target_bytes,
+                    addr,
+                    ctx,
+                    pretty,
+                ),
                 other => eval_node(f, other, target, &target_bytes, addr, ctx, pretty),
             }
+        }
+        DisplayNode::DynPointer { .. } => {
+            eval_dyn_pointer(f, *ty, Some(ty.name()), node, bytes, ctx)
         }
         DisplayNode::MpscChan {
             tail_offset,
@@ -2392,10 +2398,10 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
         return Ok(());
     }
 
-    if let Some(DebugFormat::Known(format @ KnownFormat::DynPointer { .. })) =
+    if let Some(DebugFormat::Node(node @ DisplayNode::DynPointer { .. })) =
         variant_info.ty.debug_format()
     {
-        return write_dyn_pointer(f, &variant_info, None, format, ctx);
+        return eval_dyn_pointer(f, variant_info.ty, None, &node, variant_info.bytes, ctx);
     }
 
     // A payload carrying a semantic display format (a `&str`/`String`, a

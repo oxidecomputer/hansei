@@ -350,6 +350,25 @@ pub enum DisplayNode {
         via: Selector,
         then: Box<DisplayNode>,
     },
+    /// Display a Rust trait-object wide pointer and its vtable semantically.
+    ///
+    /// `pointer` reaches the data pointer and `vtable` the metadata pointer.
+    /// The remaining indices address machine words in the vtable array itself;
+    /// recording them here keeps rustc's private slot ordering out of bundle
+    /// consumers.
+    ///
+    /// `tail_offset` is the byte offset of the `dyn Trait` tail *within the
+    /// struct the data pointer targets*. It is zero for a bare `dyn Trait`
+    /// pointee, but nonzero when the pointee is an unsized wrapper such as
+    /// `ArcInner<dyn Trait>`, whose sized header precedes the erased value.
+    DynPointer {
+        pointer: Selector,
+        vtable: Selector,
+        drop_in_place: u32,
+        size: u32,
+        align: u32,
+        tail_offset: u64,
+    },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages as
     /// `[elem, elem, …]` by walking its block chain.
     ///
@@ -396,27 +415,6 @@ pub enum Field {
 /// Closed set of semantic formatters understood by reify.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum KnownFormat {
-    /// Display a Rust trait-object wide pointer and its vtable semantically.
-    ///
-    /// `pointer` and `vtable` index members of the containing aggregate. The
-    /// remaining indices address machine words in the vtable array itself;
-    /// recording them here keeps rustc's private slot ordering out of bundle
-    /// consumers.
-    ///
-    /// `tail_offset` is the byte offset of the `dyn Trait` tail *within the
-    /// struct the data pointer targets*. It is zero for a bare `dyn Trait`
-    /// pointee, but nonzero when the pointee is an unsized wrapper such as
-    /// `ArcInner<dyn Trait>`, whose sized header (the strong/weak counts)
-    /// precedes the erased value. Consumers add it to the data-pointer
-    /// address before reading the concrete pointee.
-    DynPointer {
-        pointer: u32,
-        vtable: u32,
-        drop_in_place: u32,
-        size: u32,
-        align: u32,
-        tail_offset: u64,
-    },
     /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
     /// its initialized key/value entries.
     ///

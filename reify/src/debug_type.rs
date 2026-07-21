@@ -254,6 +254,18 @@ pub enum DisplayNode<T> {
         target: T,
         then: Box<DisplayNode<T>>,
     },
+    /// Display a Rust trait-object data pointer and vtable. `tail_offset` is
+    /// added to the data-pointer address before reading the concrete pointee,
+    /// skipping the sized header of an unsized wrapper such as `ArcInner`.
+    DynPointer {
+        pointer_offset: u64,
+        vtable: T,
+        vtable_offset: u64,
+        drop_in_place: u32,
+        size: u32,
+        align: u32,
+        tail_offset: u64,
+    },
     /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages
     /// (indices `[index, tail)`) by walking its block chain from the head
     /// block, rendering each queued slot as `element`. `*_offset` fields within
@@ -288,21 +300,6 @@ pub enum Field<T> {
 /// Closed set of semantic formatters understood by reify.
 #[derive(Clone, Debug)]
 pub enum KnownFormat<T> {
-    /// Display a Rust trait-object data pointer and vtable.
-    ///
-    /// `tail_offset` is added to the data-pointer address before reading the
-    /// concrete pointee: it is the offset of the `dyn Trait` tail within the
-    /// struct the pointer targets, so an `Arc`'s sized header (its strong and
-    /// weak counts) is skipped. Zero for a bare `dyn Trait` pointee.
-    DynPointer {
-        pointer_offset: u64,
-        vtable: T,
-        vtable_offset: u64,
-        drop_in_place: u32,
-        size: u32,
-        align: u32,
-        tail_offset: u64,
-    },
     /// Display a BTreeMap by walking its initialized nodes in key order.
     BTreeMap {
         root: T,
@@ -678,6 +675,26 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         then: Box::new(resolve_node(target, then)?),
                     })
                 }
+                BundleNode::DynPointer {
+                    pointer,
+                    vtable,
+                    drop_in_place,
+                    size,
+                    align,
+                    tail_offset,
+                } => {
+                    let (_, pointer_offset) = resolve_selector(scope, pointer)?;
+                    let (vtable, vtable_offset) = resolve_selector(scope, vtable)?;
+                    Some(DisplayNode::DynPointer {
+                        pointer_offset,
+                        vtable,
+                        vtable_offset,
+                        drop_in_place: *drop_in_place,
+                        size: *size,
+                        align: *align,
+                        tail_offset: *tail_offset,
+                    })
+                }
                 BundleNode::MpscChan {
                     tail,
                     index,
@@ -747,26 +764,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 Some(DebugFormat::Transparent { target, offset })
             }
             BundleFormat::Node(node) => Some(DebugFormat::Node(resolve_node(*self, node)?)),
-            BundleFormat::Known(BundleKnownFormat::DynPointer {
-                pointer,
-                vtable,
-                drop_in_place,
-                size,
-                align,
-                tail_offset,
-            }) => {
-                let (_, pointer_offset) = member_at(*self, *pointer)?;
-                let (vtable, vtable_offset) = member_at(*self, *vtable)?;
-                Some(DebugFormat::Known(KnownFormat::DynPointer {
-                    pointer_offset,
-                    vtable,
-                    vtable_offset,
-                    drop_in_place: *drop_in_place,
-                    size: *size,
-                    align: *align,
-                    tail_offset: *tail_offset,
-                }))
-            }
             BundleFormat::Known(BundleKnownFormat::BTreeMap {
                 root,
                 length,
@@ -1666,9 +1663,9 @@ mod bundle_tests {
                     ),
                     (
                         FAT_PTR,
-                        BundleDebugFormat::Known(BundleKnownFormat::DynPointer {
-                            pointer: 0,
-                            vtable: 1,
+                        BundleDebugFormat::Node(BundleNode::DynPointer {
+                            pointer: sel(&[0]),
+                            vtable: sel(&[1]),
                             drop_in_place: 0,
                             size: 1,
                             align: 2,
