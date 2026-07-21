@@ -2143,12 +2143,36 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFor
     ) {
         return None;
     }
-    let values = vec![values_index as u32, array_index as u32];
+    let slots = vec![values_index as u32, array_index as u32];
 
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::MpscBlock {
-        ready_slots: ready_slots.into(),
-        values: values.into(),
-    }))
+    // Render the block structurally, but replace the `values` array with a
+    // written-slot count derived from the readiness bitmap. Zero-sized members
+    // are elided (structural display skips them); the survivors keep their
+    // original indices so they still address the concrete members.
+    let bitmap: Selector = ready_slots.into();
+    let slots: Selector = slots.into();
+    let fields = st
+        .members
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
+        .map(|(index, _)| {
+            let index = index as u32;
+            if index == values_index as u32 {
+                Field::Override {
+                    index,
+                    node: DisplayNode::SlotCount {
+                        bitmap: bitmap.clone(),
+                        slots: slots.clone(),
+                    },
+                }
+            } else {
+                Field::Member(index)
+            }
+        })
+        .collect();
+
+    Some(DebugFormat::Node(DisplayNode::Struct { fields }))
 }
 
 /// Recognize a `tokio::sync::mpsc::bounded::Receiver<T>` and record the paths

@@ -236,6 +236,14 @@ pub enum DisplayNode<T> {
         offset: u64,
         follow_pointers: bool,
     },
+    /// Render a readiness bitmap as `[<n> slots]`. `bitmap_offset`/`bitmap_size`
+    /// locate the readiness word; `count` is the slot capacity, used to mask
+    /// off the unrelated high flag bits before counting the set bits.
+    SlotCount {
+        bitmap_offset: u64,
+        bitmap_size: u32,
+        count: u32,
+    },
 }
 
 /// One resolved field of a [`DisplayNode::Struct`]. The bundle's `Named` and
@@ -283,17 +291,6 @@ pub enum KnownFormat<T> {
         values_offset: u64,
         element: T,
         stride: u32,
-        count: u32,
-    },
-    /// Display a `tokio::sync::mpsc::block::Block<T>` with its `values` member
-    /// elided to a written-slot count. `ready_offset`/`ready_size` locate the
-    /// readiness bitmap and `count` is the block capacity (to mask off the
-    /// released/closed flag bits); `values_member` is the field shown as the
-    /// count. Contents are not dereferenced — see the schema note.
-    MpscBlock {
-        ready_offset: u64,
-        ready_size: u32,
-        values_member: u32,
         count: u32,
     },
     /// Display a `tokio::sync::mpsc::bounded::Receiver<T>` as its underlying
@@ -665,6 +662,16 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         follow_pointers: *follow_pointers,
                     })
                 }
+                BundleNode::SlotCount { bitmap, slots } => {
+                    let (bitmap_ty, bitmap_offset) = resolve_selector(scope, bitmap)?;
+                    let (array_ty, _) = resolve_selector(scope, slots)?;
+                    let (_, count) = array_ty.array_info()?;
+                    Some(DisplayNode::SlotCount {
+                        bitmap_offset,
+                        bitmap_size: bitmap_ty.size() as u32,
+                        count: count as u32,
+                    })
+                }
             }
         }
 
@@ -751,21 +758,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     values_offset,
                     element: self.related_type(*element),
                     stride: elem_ty.size() as u32,
-                    count: count as u32,
-                }))
-            }
-            BundleFormat::Known(BundleKnownFormat::MpscBlock {
-                ready_slots,
-                values,
-            }) => {
-                let (ready_ty, ready_offset) = resolve_selector(*self, ready_slots)?;
-                let (array_ty, _) = resolve_selector(*self, values)?;
-                let (_, count) = array_ty.array_info()?;
-                let values_member = values.first_member()?;
-                Some(DebugFormat::Known(KnownFormat::MpscBlock {
-                    ready_offset,
-                    ready_size: ready_ty.size() as u32,
-                    values_member,
                     count: count as u32,
                 }))
             }
@@ -1854,9 +1846,17 @@ mod bundle_tests {
                     ),
                     (
                         BLOCK,
-                        BundleDebugFormat::Known(BundleKnownFormat::MpscBlock {
-                            ready_slots: sel(&[1, 0]),
-                            values: sel(&[0]),
+                        BundleDebugFormat::Node(BundleNode::Struct {
+                            fields: vec![
+                                BundleField::Override {
+                                    index: 0,
+                                    node: BundleNode::SlotCount {
+                                        bitmap: sel(&[1, 0]),
+                                        slots: sel(&[0]),
+                                    },
+                                },
+                                BundleField::Member(1),
+                            ],
                         }),
                     ),
                     (
