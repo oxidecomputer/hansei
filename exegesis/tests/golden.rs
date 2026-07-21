@@ -240,18 +240,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, &m(*pointer)),
             f(id, &m(*vtable)),
         ),
-        KnownFormat::RawWakerVTable {
-            clone,
-            wake,
-            wake_by_ref,
-            drop,
-        } => format!(
-            "RawWakerVTable {{ clone={}, wake={}, wake_by_ref={}, drop={} }}",
-            f(id, &m(*clone)),
-            f(id, &m(*wake)),
-            f(id, &m(*wake_by_ref)),
-            f(id, &m(*drop)),
-        ),
         KnownFormat::MpscChan {
             tail,
             index,
@@ -738,8 +726,9 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         program,
         bundle,
         "core::task::wake::RawWakerVTable",
-        "core::task::wake::RawWakerVTable :: RawWakerVTable \
-         { clone=clone@+0, wake=wake@+8, wake_by_ref=wake_by_ref@+16, drop=drop@+24 }",
+        "core::task::wake::RawWakerVTable :: Node Struct \
+         { clone: Symbol { clone@+0 }, wake: Symbol { wake@+8 }, \
+         wake_by_ref: Symbol { wake_by_ref@+16 }, drop: Symbol { drop@+24 } }",
     );
     if program == "simple-await" {
         for prefix in [

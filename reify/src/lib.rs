@@ -759,22 +759,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(kf @ KnownFormat::DynPointer { .. }) => {
                 return write_dyn_pointer(f, info, Some(ty.name()), kf, ctx);
             }
-            DebugFormat::Known(KnownFormat::RawWakerVTable {
-                clone_offset,
-                wake_offset,
-                wake_by_ref_offset,
-                drop_offset,
-            }) => {
-                return write_raw_waker_vtable(
-                    f,
-                    info,
-                    clone_offset,
-                    wake_offset,
-                    wake_by_ref_offset,
-                    drop_offset,
-                    ctx,
-                );
-            }
             DebugFormat::Known(kf @ KnownFormat::MpscBlock { .. }) => {
                 return write_mpsc_block(f, info, ty.name(), kf, ctx);
             }
@@ -1195,56 +1179,6 @@ fn write_symbol(
         write!(f, " -> <unknown symbol>")?;
     }
     Ok(())
-}
-
-fn write_raw_waker_vtable<'a, T: DebugType<'a>>(
-    f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    clone_offset: u64,
-    wake_offset: u64,
-    wake_by_ref_offset: u64,
-    drop_offset: u64,
-    ctx: RenderCtx<'_, 'a>,
-) -> fmt::Result {
-    let fields = [
-        ("clone", clone_offset),
-        ("wake", wake_offset),
-        ("wake_by_ref", wake_by_ref_offset),
-        ("drop", drop_offset),
-    ];
-    let pretty = f.alternate();
-    write!(f, "{} {{", info.ty.name())?;
-    for (index, (name, offset)) in fields.into_iter().enumerate() {
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
-        } else if index == 0 {
-            write!(f, " ")?;
-        } else {
-            write!(f, ", ")?;
-        }
-        write!(f, "{name}: ")?;
-        if let Some(address) = read_u64_at(info.bytes, offset) {
-            write!(f, "0x{address:x}")?;
-            if let Some(symbol) = resolve_function_symbol(ctx.proc, address) {
-                write!(f, " -> {symbol}")?;
-            } else if ctx.proc.is_some() && address != 0 {
-                write!(f, " -> <unknown symbol>")?;
-            }
-        } else {
-            write!(f, "<truncated>")?;
-        }
-        if pretty {
-            write!(f, ",")?;
-        }
-    }
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    } else {
-        write!(f, " ")?;
-    }
-    write!(f, "}}")
 }
 
 fn write_utf8_string<'a, T: DebugType<'a>>(
