@@ -352,17 +352,17 @@ fn test_simple_await_acceptance() {
         assert_eq!(rows.len(), 1, "({}) {rows:#?}", source.describe());
         let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
         assert_eq!(task.state, "idle", "({})", source.describe());
-        assert_eq!(task.spawned, "test-programs/src/bin/simple-await.rs:58:21");
+        assert_eq!(task.spawned, "test-programs/src/bin/simple-await.rs:65:21");
         assert_eq!(task.defined, "simple-await.rs:16");
 
         let expected = format!(
             "\
 Task {id}: simple_await::work::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/simple-await.rs:58:21
+Spawned at: test-programs/src/bin/simple-await.rs:65:21
 Defined at: simple-await.rs:16
 
   0  async fn      simple_await::work::{{async_fn_env#0}}
-     state         Suspend1 — simple-await.rs:29
+     state         Suspend1 — simple-await.rs:34
      awaits:
      └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",

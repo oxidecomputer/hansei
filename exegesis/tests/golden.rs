@@ -780,6 +780,22 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              { pointer=buf.inner.ptr.pointer.pointer@+8, length=len@+16, \
              capacity=buf.inner.cap.__0@+0, element=u32 }",
         );
+        // A borrowed `&[T]` and a boxed `Box<[T]>` are `(ptr, len)` fat
+        // pointers with no capacity — the same `Slice` node as `Vec`, minus
+        // the capacity field.
+        assert_format(
+            program,
+            bundle,
+            "&[u32]",
+            "&[u32] :: Node Slice { pointer=data_ptr@+0, length=length@+8, element=u32 }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "alloc::boxed::Box<[u32], alloc::alloc::Global>",
+            "alloc::boxed::Box<[u32], alloc::alloc::Global> :: Node Slice \
+             { pointer=data_ptr@+0, length=length@+8, element=u32 }",
+        );
         assert_format(
             program,
             bundle,

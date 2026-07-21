@@ -373,7 +373,10 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                     element.0
                 ));
             }
-            check_selector(bundle, scope, pointer, Shape::BytePointer, what)?;
+            // A `Vec`'s pointer is byte-erased (`*u8`), but a `&[T]`/`Box<[T]>`
+            // data pointer is typed (`*T`), so accept any pointer, not just a
+            // byte pointer.
+            check_selector(bundle, scope, pointer, Shape::Pointer, what)?;
             check_selector(bundle, scope, length, Shape::Usize, what)?;
             if let Some(capacity) = capacity {
                 check_selector(bundle, scope, capacity, Shape::Usize, what)?;
