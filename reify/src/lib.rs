@@ -783,23 +783,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
             DebugFormat::Known(kf @ KnownFormat::Vec { .. }) => {
                 return write_vec(f, info, kf, ctx);
             }
-            DebugFormat::Known(KnownFormat::String {
-                pointer_offset,
-                length,
-                length_offset,
-                capacity,
-                capacity_offset,
-            }) => {
-                return write_utf8_string(
-                    f,
-                    info.bytes,
-                    pointer_offset,
-                    length_offset,
-                    length.size(),
-                    Some((capacity_offset, capacity.size())),
-                    ctx.proc,
-                );
-            }
             DebugFormat::Known(kf @ KnownFormat::BTreeMap { .. }) => {
                 return write_btree_map(f, info, kf, ctx);
             }

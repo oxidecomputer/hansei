@@ -400,12 +400,6 @@ pub enum KnownFormat {
         capacity: Selector,
         element: BundleTypeId,
     },
-    /// Display an `alloc::string::String` as quoted, escaped UTF-8.
-    String {
-        pointer: Selector,
-        length: Selector,
-        capacity: Selector,
-    },
     /// Display an `alloc::collections::btree::map::BTreeMap<K, V, A>` as
     /// its initialized key/value entries.
     ///

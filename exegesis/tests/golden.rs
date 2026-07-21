@@ -306,16 +306,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
             f(id, capacity),
             fq_name(bundle, *element),
         ),
-        KnownFormat::String {
-            pointer,
-            length,
-            capacity,
-        } => format!(
-            "String {{ pointer={}, length={}, capacity={} }}",
-            f(id, pointer),
-            f(id, length),
-            f(id, capacity),
-        ),
         KnownFormat::BTreeMap {
             root,
             length,
@@ -794,7 +784,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "alloc::string::String",
-            "alloc::string::String :: String \
+            "alloc::string::String :: Node Str \
              { pointer=vec.buf.inner.ptr.pointer.pointer@+8, length=vec.len@+16, \
              capacity=vec.buf.inner.cap.__0@+0 }",
         );

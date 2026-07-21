@@ -1846,26 +1846,23 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     if !is_unsigned_integer(reader, layout.element, 1) {
         return None;
     }
+    // A `String` is a `Vec<u8>` behind a single member, so its data pointer,
+    // length, and capacity are the Vec's own paths prefixed with the `vec`
+    // member index. It renders exactly as a `&str` with the capacity checked,
+    // so it reuses the `Str` node with the capacity selector supplied.
     let prefix = [vec_index as u32];
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::String {
-        pointer: prefix
+    let path = |sub: Vec<u32>| -> Selector {
+        prefix
             .iter()
             .copied()
-            .chain(layout.pointer)
+            .chain(sub)
             .collect::<Vec<u32>>()
-            .into(),
-        length: prefix
-            .iter()
-            .copied()
-            .chain(layout.length)
-            .collect::<Vec<u32>>()
-            .into(),
-        capacity: prefix
-            .iter()
-            .copied()
-            .chain(layout.capacity)
-            .collect::<Vec<u32>>()
-            .into(),
+            .into()
+    };
+    Some(DebugFormat::Node(DisplayNode::Str {
+        pointer: path(layout.pointer),
+        length: path(layout.length),
+        capacity: Some(path(layout.capacity)),
     }))
 }
 
