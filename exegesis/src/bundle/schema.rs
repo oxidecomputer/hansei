@@ -320,6 +320,16 @@ pub enum DisplayNode {
     /// and `Slice` this reads no pointer: the octets live in the value's own
     /// bytes, so it is a leaf that renders the bytes it lands on directly.
     IpAddr { octets: Selector },
+    /// Render the value reached by `at` as though it were the whole value,
+    /// peeling a transparent wrapper down to one inner member.
+    ///
+    /// `at` walks zero or more members from the wrapper to the aliased value,
+    /// which is then rendered with reify's ordinary display for its own type.
+    /// When `follow_pointers` is true a pointer alias is dereferenced like any
+    /// other pointer; when it is false the stored address is shown without
+    /// being followed — matching an atomic's `Debug`, which reports an
+    /// `AtomicPtr`'s address rather than its pointee.
+    Alias { at: Selector, follow_pointers: bool },
 }
 
 /// One field of a [`DisplayNode::Struct`] record.
@@ -343,9 +353,6 @@ pub enum Field {
 /// Closed set of semantic formatters understood by reify.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum KnownFormat {
-    /// Display an atomic's stored value. The selector walks zero or more
-    /// concrete struct/union members from the atomic to its value type.
-    Atomic { value: Selector },
     /// Display a Rust trait-object wide pointer and its vtable semantically.
     ///
     /// `pointer` and `vtable` index members of the containing aggregate. The

@@ -227,6 +227,15 @@ pub enum DisplayNode<T> {
         octets_offset: u64,
         octets_size: u32,
     },
+    /// Render the `target` value at `offset` as though it were the whole value,
+    /// peeling a transparent wrapper. `follow_pointers` mirrors the bundle node:
+    /// when false a pointer alias (an atomic's stored address) is shown without
+    /// being dereferenced.
+    Alias {
+        target: T,
+        offset: u64,
+        follow_pointers: bool,
+    },
 }
 
 /// One resolved field of a [`DisplayNode::Struct`]. The bundle's `Named` and
@@ -243,8 +252,6 @@ pub enum Field<T> {
 /// Closed set of semantic formatters understood by reify.
 #[derive(Clone, Debug)]
 pub enum KnownFormat<T> {
-    /// Display an atomic's stored value without following pointer values.
-    Atomic { value: T, offset: u64 },
     /// Display a Rust trait-object data pointer and vtable.
     ///
     /// `tail_offset` is added to the data-pointer address before reading the
@@ -647,6 +654,17 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         octets_size: count as u32,
                     })
                 }
+                BundleNode::Alias {
+                    at,
+                    follow_pointers,
+                } => {
+                    let (target, offset) = resolve_selector(scope, at)?;
+                    Some(DisplayNode::Alias {
+                        target,
+                        offset,
+                        follow_pointers: *follow_pointers,
+                    })
+                }
             }
         }
 
@@ -686,10 +704,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                 Some(DebugFormat::Transparent { target, offset })
             }
             BundleFormat::Node(node) => Some(DebugFormat::Node(resolve_node(*self, node)?)),
-            BundleFormat::Known(BundleKnownFormat::Atomic { value }) => {
-                let (value, offset) = resolve_selector(*self, value)?;
-                Some(DebugFormat::Known(KnownFormat::Atomic { value, offset }))
-            }
             BundleFormat::Known(BundleKnownFormat::DynPointer {
                 pointer,
                 vtable,
@@ -1637,13 +1651,17 @@ mod bundle_tests {
                     (WRAP, BundleDebugFormat::Transparent { member: sel(&[0]) }),
                     (
                         ATOMIC,
-                        BundleDebugFormat::Known(BundleKnownFormat::Atomic {
-                            value: sel(&[0, 0]),
+                        BundleDebugFormat::Node(BundleNode::Alias {
+                            at: sel(&[0, 0]),
+                            follow_pointers: false,
                         }),
                     ),
                     (
                         ATOMIC_PTR,
-                        BundleDebugFormat::Known(BundleKnownFormat::Atomic { value: sel(&[0]) }),
+                        BundleDebugFormat::Node(BundleNode::Alias {
+                            at: sel(&[0]),
+                            follow_pointers: false,
+                        }),
                     ),
                     (
                         LOOM_ATOMIC,

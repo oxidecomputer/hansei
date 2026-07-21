@@ -227,7 +227,6 @@ fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, fmt: &DebugFormat) -
         DebugFormat::Known(k) => k,
     };
     let body = match known {
-        KnownFormat::Atomic { value } => format!("Atomic {{ value={} }}", f(id, value)),
         KnownFormat::DynPointer {
             pointer,
             vtable,
@@ -405,6 +404,13 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
         }
         DisplayNode::IpAddr { octets } => {
             format!("IpAddr {{ octets={} }}", field(bundle, root, octets))
+        }
+        DisplayNode::Alias {
+            at,
+            follow_pointers,
+        } => {
+            let follow = if *follow_pointers { ", follow" } else { "" };
+            format!("Alias {{ {}{} }}", field(bundle, root, at), follow)
         }
     }
 }
@@ -711,9 +717,9 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert!(
         bundle.types.debug_formats.values().any(|format| matches!(
             format,
-            exegesis::bundle::DebugFormat::Known(exegesis::bundle::KnownFormat::Atomic { .. })
+            exegesis::bundle::DebugFormat::Node(exegesis::bundle::DisplayNode::Alias { .. })
         )),
-        "{program}: no atomic known-type formats were extracted"
+        "{program}: no atomic alias-node formats were extracted"
     );
     assert!(
         bundle.types.debug_formats.values().any(|format| matches!(

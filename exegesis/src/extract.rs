@@ -1919,7 +1919,7 @@ fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Opti
     let (state_index, state_member) = unique_member(reader, &st.members, "state")?;
     // The state is a single-byte atomic (`AtomicU8`). Reuse the atomic
     // detector for the path to the stored byte, then anchor it at `state`.
-    let Some(DebugFormat::Known(crate::bundle::KnownFormat::Atomic { value })) =
+    let Some(DebugFormat::Node(DisplayNode::Alias { at: value, .. })) =
         atomic_debug_format(reader, state_member.type_id)
     else {
         return None;
@@ -2966,8 +2966,11 @@ fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DebugFormat>
     let [value] = paths.as_slice() else {
         return None;
     };
-    Some(DebugFormat::Known(crate::bundle::KnownFormat::Atomic {
-        value: value.clone().into(),
+    // An atomic aliases its stored value but does not chase it: an `AtomicPtr`'s
+    // `Debug` reports the address it holds, so `follow_pointers` is false.
+    Some(DebugFormat::Node(DisplayNode::Alias {
+        at: value.clone().into(),
+        follow_pointers: false,
     }))
 }
 
