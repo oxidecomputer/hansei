@@ -213,13 +213,15 @@ pub enum DisplayNode<T> {
         octets_offset: u64,
         octets_size: u32,
     },
-    /// Render the `target` value at `offset` as though it were the whole value,
-    /// peeling a transparent wrapper. `follow_pointers` mirrors the bundle node:
-    /// when false a pointer alias (an atomic's stored address) is shown without
-    /// being dereferenced.
+    /// Render the `target` value at `place` as though it were the whole value,
+    /// peeling a transparent wrapper. `place` is usually a plain local offset
+    /// (a wrapper member), but may cross a pointer — that is how a
+    /// `watch::Receiver`'s `Some(T)` payload renders the `T` living behind its
+    /// `Arc`. `follow_pointers` mirrors the bundle node: when false a pointer
+    /// alias (an atomic's stored address) is shown without being dereferenced.
     Alias {
         target: T,
-        offset: u64,
+        place: Place,
         follow_pointers: bool,
     },
     /// Render a readiness bitmap as `[<n> slots]`. `bitmap_offset`/`bitmap_size`
@@ -279,22 +281,48 @@ pub enum DisplayNode<T> {
         value: T,
         entries: Box<MapEntries<T>>,
     },
-    /// Display a Tokio watch receiver as an optional unseen value plus the
-    /// independent shared closed flag. The observed word lives in the outer
-    /// receiver; the state and value offsets are relative to the shared object
-    /// reached through the Arc pointer and `shared_data_offset`.
-    WatchReceiver {
-        observed_offset: u64,
-        observed_size: u32,
-        shared_pointer_offset: u64,
-        shared_data_offset: u64,
-        state_offset: u64,
-        state_size: u32,
-        value_offset: u64,
-        element: T,
-        element_size: u32,
-        closed_mask: u64,
+    /// Select one of `arms` (else `default`) by matching the value the
+    /// `discriminant` expression computes. See the bundle
+    /// [`exegesis::bundle::DisplayNode::Variant`] for the model.
+    Variant {
+        discriminant: ValueExpr,
+        arms: Vec<Arm<T>>,
+        default: Option<Box<DisplayNode<T>>>,
     },
+}
+
+/// A resolved location that may cross pointer hops, read at render time. An
+/// empty `hops` is a plain local offset (the common case); each hop follows the
+/// pointer word located so far and advances into the pointee. This is the
+/// resolved form of a [`Selector`] that contains a [`Step::Deref`].
+#[derive(Clone, Debug)]
+pub struct Place {
+    /// Offset from the enclosing value's base to the first pointer word (when
+    /// there are hops) or directly to the datum (when there are none).
+    pub(crate) root_offset: u64,
+    /// Successive pointer hops; the last entry's offset reaches the final
+    /// datum, earlier entries reach the next pointer word.
+    pub(crate) hops: Vec<u64>,
+}
+
+/// One resolved [`DisplayNode::Variant`] arm.
+#[derive(Clone, Debug)]
+pub struct Arm<T> {
+    pub(crate) value: u64,
+    pub(crate) label: Option<String>,
+    pub(crate) payload: Option<Box<DisplayNode<T>>>,
+}
+
+/// Resolved [`exegesis::bundle::ValueExpr`]: a `Read` carries its resolved
+/// [`Place`] and word width; the rest mirror the bundle form. Not generic over
+/// the type parameter — an expression only ever yields a machine word.
+#[derive(Clone, Debug)]
+pub enum ValueExpr {
+    Read(Place, u32),
+    Const(u64),
+    And(Box<ValueExpr>, Box<ValueExpr>),
+    Not(Box<ValueExpr>),
+    Ne(Box<ValueExpr>, Box<ValueExpr>),
 }
 
 /// Resolved storage-specific entry traversal for [`DisplayNode::Map`].
@@ -483,18 +511,22 @@ impl<'a> DebugType<'a> for BundleType<'a> {
     fn debug_format(&self) -> Option<DisplayNode<Self>> {
         use exegesis::bundle::{Selector, Step};
 
-        /// Resolve a selector against `root` to `(landed type, byte offset)`.
-        ///
-        /// `Member` steps accumulate member offsets. A `Deref` step needs a
-        /// runtime pointer read the flat resolved form can't represent, so it
-        /// bails to structural display; the node resolver (a later phase)
-        /// handles cross-pointer selectors. No detector emits a `Deref` today.
-        fn resolve_selector<'a>(
+        /// Resolve a selector against `root` to `(landed type, Place)`. The one
+        /// traversal primitive: `Member` steps accumulate offsets, a `Deref`
+        /// step segments the [`Place`] (stashing the offset so far and
+        /// restarting inside the pointee). Its flat sibling `resolve_selector`
+        /// is the adapter used by every node that reads within one allocation.
+        fn resolve_place<'a>(
             root: BundleType<'a>,
             sel: &Selector,
-        ) -> Option<(BundleType<'a>, u64)> {
+        ) -> Option<(BundleType<'a>, Place)> {
             let mut ty = root;
             let mut offset = 0u64;
+            let mut place = Place {
+                root_offset: 0,
+                hops: Vec::new(),
+            };
+            let mut before_first_deref = true;
             for step in sel.steps() {
                 match step {
                     Step::Member(index) => {
@@ -502,10 +534,64 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         offset = offset.checked_add(member.offset())?;
                         ty = member.ty();
                     }
-                    Step::Deref => return None,
+                    Step::Deref => {
+                        if before_first_deref {
+                            place.root_offset = offset;
+                            before_first_deref = false;
+                        } else {
+                            place.hops.push(offset);
+                        }
+                        ty = ty.pointer_target()?;
+                        offset = 0;
+                    }
                 }
             }
-            Some((ty, offset))
+            if before_first_deref {
+                place.root_offset = offset;
+            } else {
+                place.hops.push(offset);
+            }
+            Some((ty, place))
+        }
+
+        /// Resolve a selector that stays within the value's own bytes to
+        /// `(landed type, byte offset)`. Returns `None` if the selector
+        /// unexpectedly crosses a pointer — a fail-safe fallback to structural
+        /// display rather than a misread. Every node but `Variant`/`Alias`
+        /// reads locally and uses this.
+        fn resolve_selector<'a>(
+            root: BundleType<'a>,
+            sel: &Selector,
+        ) -> Option<(BundleType<'a>, u64)> {
+            let (ty, place) = resolve_place(root, sel)?;
+            place.hops.is_empty().then_some((ty, place.root_offset))
+        }
+
+        /// Resolve a bundle [`exegesis::bundle::ValueExpr`] into reify's form,
+        /// resolving each `Read` selector to a [`Place`] plus its word width.
+        fn resolve_value_expr<'a>(
+            scope: BundleType<'a>,
+            expr: &exegesis::bundle::ValueExpr,
+        ) -> Option<ValueExpr> {
+            use exegesis::bundle::ValueExpr as BundleExpr;
+            Some(match expr {
+                BundleExpr::Read(sel) => {
+                    let (ty, place) = resolve_place(scope, sel)?;
+                    ValueExpr::Read(place, ty.size() as u32)
+                }
+                BundleExpr::Const(value) => ValueExpr::Const(*value),
+                BundleExpr::And(a, b) => ValueExpr::And(
+                    Box::new(resolve_value_expr(scope, a)?),
+                    Box::new(resolve_value_expr(scope, b)?),
+                ),
+                BundleExpr::Not(inner) => {
+                    ValueExpr::Not(Box::new(resolve_value_expr(scope, inner)?))
+                }
+                BundleExpr::Ne(a, b) => ValueExpr::Ne(
+                    Box::new(resolve_value_expr(scope, a)?),
+                    Box::new(resolve_value_expr(scope, b)?),
+                ),
+            })
         }
 
         /// Resolve a bundle [`exegesis::bundle::ScalarDecode`] into reify's
@@ -645,10 +731,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     at,
                     follow_pointers,
                 } => {
-                    let (target, offset) = resolve_selector(scope, at)?;
+                    let (target, place) = resolve_place(scope, at)?;
                     Some(DisplayNode::Alias {
                         target,
-                        offset,
+                        place,
                         follow_pointers: *follow_pointers,
                     })
                 }
@@ -740,33 +826,32 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         entries: Box::new(resolve_map_entries(scope, key, value, entries)?),
                     })
                 }
-                BundleNode::WatchReceiver {
-                    observed,
-                    shared,
-                    shared_data,
-                    state,
-                    value,
-                    element,
-                    closed_mask,
+                BundleNode::Variant {
+                    discriminant,
+                    arms,
+                    default,
                 } => {
-                    let (observed_ty, observed_offset) = resolve_selector(scope, observed)?;
-                    let (shared_ptr, shared_pointer_offset) = resolve_selector(scope, shared)?;
-                    let arc_inner = shared_ptr.pointer_target()?;
-                    let (shared_ty, shared_data_offset) = resolve_selector(arc_inner, shared_data)?;
-                    let (state_ty, state_offset) = resolve_selector(shared_ty, state)?;
-                    let (_, value_offset) = resolve_selector(shared_ty, value)?;
-                    let element = scope.related_type(*element);
-                    Some(DisplayNode::WatchReceiver {
-                        observed_offset,
-                        observed_size: observed_ty.size() as u32,
-                        shared_pointer_offset,
-                        shared_data_offset,
-                        state_offset,
-                        state_size: state_ty.size() as u32,
-                        value_offset,
-                        element,
-                        element_size: element.size() as u32,
-                        closed_mask: *closed_mask,
+                    let arms = arms
+                        .iter()
+                        .map(|arm| {
+                            Some(Arm {
+                                value: arm.value,
+                                label: arm.label.map(|label| scope.resolve_str(label).to_string()),
+                                payload: match &arm.payload {
+                                    Some(payload) => Some(Box::new(resolve_node(scope, payload)?)),
+                                    None => None,
+                                },
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    let default = match default {
+                        Some(default) => Some(Box::new(resolve_node(scope, default)?)),
+                        None => None,
+                    };
+                    Some(DisplayNode::Variant {
+                        discriminant: resolve_value_expr(scope, discriminant)?,
+                        arms,
+                        default,
                     })
                 }
             }
@@ -927,12 +1012,12 @@ mod bundle_tests {
 
     use exegesis::Encoding;
     use exegesis::bundle::{
-        BitField as BundleBitField, Bundle, BundleTypeId, BundleView, DiscrDef, DiscrValue,
+        Arm, BitField as BundleBitField, Bundle, BundleTypeId, BundleView, DiscrDef, DiscrValue,
         DiscrValues, DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION,
         Field as BundleField, FieldRender as BundleFieldRender, InfraTypes,
         MapEntries as BundleMapEntries, MemberDef, Meta, ProvenanceTable,
-        ScalarDecode as BundleScalarDecode, Selector, StaticsTable, StrRef, StringInterner,
-        TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
+        ScalarDecode as BundleScalarDecode, Selector, StaticsTable, Step, StrRef, StringInterner,
+        TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape,
     };
     use std::num::NonZeroU8;
 
@@ -1691,6 +1776,75 @@ mod bundle_tests {
             s("permits_needed"),
         );
         let (queuedl, capacityl, freel) = (s("queued"), s("capacity"), s("free"));
+        // watch::Receiver, composed from Variant + ValueExpr: the state/value
+        // words live in `Shared<T>` reached across the `Arc` (shared ptr @0 ->
+        // deref -> data @2 -> state @0 / value @1). closed is state & 1; unseen
+        // is `version @1 != state & !1` (the published version).
+        let (unseenl, some_arml, none_arml, false_arml, true_arml) =
+            (s("unseen"), s("Some"), s("None"), s("false"), s("true"));
+        let watch_cross = |tail: u32| {
+            Selector(vec![
+                Step::Member(0),
+                Step::Deref,
+                Step::Member(2),
+                Step::Member(tail),
+            ])
+        };
+        let watch_state_sel = watch_cross(0);
+        let watch_receiver_node = BundleNode::Struct {
+            fields: vec![
+                BundleField::Named {
+                    label: unseenl,
+                    node: BundleNode::Variant {
+                        discriminant: ValueExpr::Ne(
+                            Box::new(ValueExpr::Read(sel(&[1]))),
+                            Box::new(ValueExpr::And(
+                                Box::new(ValueExpr::Read(watch_state_sel.clone())),
+                                Box::new(ValueExpr::Not(Box::new(ValueExpr::Const(1)))),
+                            )),
+                        ),
+                        arms: vec![
+                            Arm {
+                                value: 0,
+                                label: Some(none_arml),
+                                payload: None,
+                            },
+                            Arm {
+                                value: 1,
+                                label: Some(some_arml),
+                                payload: Some(Box::new(BundleNode::Alias {
+                                    at: watch_cross(1),
+                                    follow_pointers: true,
+                                })),
+                            },
+                        ],
+                        default: None,
+                    },
+                },
+                BundleField::Named {
+                    label: closedfl,
+                    node: BundleNode::Variant {
+                        discriminant: ValueExpr::And(
+                            Box::new(ValueExpr::Read(watch_state_sel)),
+                            Box::new(ValueExpr::Const(1)),
+                        ),
+                        arms: vec![
+                            Arm {
+                                value: 0,
+                                label: Some(false_arml),
+                                payload: None,
+                            },
+                            Arm {
+                                value: 1,
+                                label: Some(true_arml),
+                                payload: None,
+                            },
+                        ],
+                        default: None,
+                    },
+                },
+            ],
+        };
         // A channel's synthetic `queued` field: the block-chain walk, rooted at
         // the Chan/RxChan (tail @0, index @1, head @2; block start_index @1.0,
         // next @1.1, values @0). Reused by the standalone Chan and the Receiver.
@@ -2065,18 +2219,7 @@ mod bundle_tests {
                             ],
                         },
                     ),
-                    (
-                        WATCH_RECEIVER,
-                        BundleNode::WatchReceiver {
-                            observed: sel(&[1]),
-                            shared: sel(&[0]),
-                            shared_data: sel(&[2]),
-                            state: sel(&[0]),
-                            value: sel(&[1]),
-                            element: U32,
-                            closed_mask: 1,
-                        },
-                    ),
+                    (WATCH_RECEIVER, watch_receiver_node),
                 ]),
                 name_index: vec![(pointn, POINT)],
             },
@@ -3170,9 +3313,12 @@ mod bundle_tests {
              }"
         );
 
+        // Degradation is now per field (the cross-Arc reads fail independently
+        // in each Variant), rather than one whole-record marker.
         assert_eq!(
             format!("{}", value.display()),
-            "tokio::sync::watch::Receiver<u32> { <target unavailable> }"
+            "tokio::sync::watch::Receiver<u32> \
+             { unseen: <target unavailable>, closed: <target unavailable> }"
         );
         let bytes = receiver(0, 0);
         let value = TypeInfoRef::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
@@ -3187,7 +3333,7 @@ mod bundle_tests {
                     8
                 )
             ),
-            "tokio::sync::watch::Receiver<u32> { <null> }"
+            "tokio::sync::watch::Receiver<u32> { unseen: <null>, closed: <null> }"
         );
     }
 

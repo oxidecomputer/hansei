@@ -383,24 +383,56 @@ pub enum DisplayNode {
         value: BundleTypeId,
         entries: Box<MapEntries>,
     },
-    /// Display a `tokio::sync::watch::Receiver<T>` as a one-slot inbox holding
-    /// the newest value this receiver has not yet observed.
+    /// Select one of several renderings by matching a computed discriminant,
+    /// the way a Rust sum type (`Option`, `Result`, a tagged enum) chooses a
+    /// variant — but from a value the IR *computes* rather than a tag read at a
+    /// fixed offset. This is what lets a `watch::Receiver` render its unseen
+    /// value as `Some(T)`/`None` from a cross-pointer version comparison
+    /// without a bespoke node.
     ///
-    /// `observed` and `shared` are rooted at the receiver. `shared` reaches the
-    /// raw pointer inside its `Arc`; `shared_data` begins at that pointer's
-    /// target and lands on `Shared<T>`. `state` and `value` begin there. The
-    /// shared state word packs the published version with the single-bit
-    /// `closed_mask`; after clearing that bit, a version unequal to `observed`
-    /// means `value` is rendered as `Some(T)`, otherwise as `None`.
-    WatchReceiver {
-        observed: Selector,
-        shared: Selector,
-        shared_data: Selector,
-        state: Selector,
-        value: Selector,
-        element: BundleTypeId,
-        closed_mask: u64,
+    /// `discriminant` is evaluated (see [`ValueExpr`]); the first [`Arm`] whose
+    /// `value` equals it renders, else `default`, else `<unknown: N>` (the same
+    /// "no silent state" contract as [`ScalarDecode`]). Only the selected arm
+    /// is evaluated, so an unmatched arm's `payload` is never read.
+    Variant {
+        discriminant: ValueExpr,
+        arms: Vec<Arm>,
+        default: Option<Box<DisplayNode>>,
     },
+}
+
+/// One arm of a [`DisplayNode::Variant`]: the discriminant `value` it matches,
+/// an optional constructor `label`, and an optional `payload` node. It renders
+/// as `label`, `label(<payload>)`, or `<payload>` depending on which are
+/// present — covering unit variants (`None`), tuple variants (`Some(x)`), and
+/// bare boolean-style labels (`closed: false`).
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Arm {
+    pub value: u64,
+    pub label: Option<StrRef>,
+    pub payload: Option<Box<DisplayNode>>,
+}
+
+/// A small value sublanguage evaluated at render time against a value's bytes
+/// (and, across a [`Step::Deref`], the target process). It exists so a
+/// [`DisplayNode::Variant`] discriminant — a length, an index, a predicate —
+/// can be *computed* from decoded words rather than only read at a fixed
+/// offset. Kept deliberately minimal: operators are added only when a real
+/// type needs one (there is, for instance, no shift yet — every current use is
+/// mask-and-compare).
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum ValueExpr {
+    /// Read the machine word (≤ 8 bytes) the selector lands on. The selector
+    /// may cross a [`Step::Deref`], so a `Read` can reach an `Arc`-backed word.
+    Read(Selector),
+    /// A literal, e.g. a mask.
+    Const(u64),
+    /// Bitwise AND of two sub-expressions.
+    And(Box<ValueExpr>, Box<ValueExpr>),
+    /// Bitwise complement of a sub-expression (`state & Not(mask)` clears bits).
+    Not(Box<ValueExpr>),
+    /// `1` if the sub-expressions are unequal, else `0`.
+    Ne(Box<ValueExpr>, Box<ValueExpr>),
 }
 
 /// A storage-specific producer of key/value entries for [`DisplayNode::Map`].

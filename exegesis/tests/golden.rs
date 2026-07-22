@@ -16,6 +16,7 @@
 
 use exegesis::bundle::{
     Bundle, BundleTypeId, DisplayNode, Field, MapEntries, Selector, StaticRole, Step, TypeDef,
+    ValueExpr,
 };
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
 
@@ -370,29 +371,57 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
                 field(bundle, edge_elem, edge),
             )
         }
-        DisplayNode::WatchReceiver {
-            observed,
-            shared,
-            shared_data,
-            state,
-            value,
-            element,
-            closed_mask,
+        DisplayNode::Variant {
+            discriminant,
+            arms,
+            default,
         } => {
-            let (_, _, pointer_ty) = walk(bundle, root, shared);
-            let arc_inner = ptr_target(bundle, pointer_ty).unwrap_or(root);
-            let (_, _, shared_ty) = walk(bundle, arc_inner, shared_data);
+            let arms = arms
+                .iter()
+                .map(|arm| {
+                    let label = arm
+                        .label
+                        .map_or("", |l| bundle.strings.get(l).unwrap_or("?"));
+                    match &arm.payload {
+                        Some(payload) => format!(
+                            "{}=>{label}({})",
+                            arm.value,
+                            describe_node(bundle, root, payload)
+                        ),
+                        None => format!("{}=>{label}", arm.value),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let default = match default {
+                Some(node) => format!(", default={}", describe_node(bundle, root, node)),
+                None => String::new(),
+            };
             format!(
-                "WatchReceiver {{ observed={}, shared={}, pointee={}, shared_data={}, state={}, value={}, element={}, closed_mask={closed_mask:#x} }}",
-                field(bundle, root, observed),
-                field(bundle, root, shared),
-                fq_name(bundle, arc_inner),
-                field(bundle, arc_inner, shared_data),
-                field(bundle, shared_ty, state),
-                field(bundle, shared_ty, value),
-                fq_name(bundle, *element),
+                "Variant {{ discr={}, arms=[{arms}]{default} }}",
+                describe_value_expr(bundle, root, discriminant),
             )
         }
+    }
+}
+
+/// Render a [`ValueExpr`] for [`describe_node`], resolving each `Read` selector
+/// to its member path (crossing any `Deref` via [`walk`]).
+fn describe_value_expr(bundle: &Bundle, root: BundleTypeId, expr: &ValueExpr) -> String {
+    match expr {
+        ValueExpr::Read(sel) => format!("Read({})", field(bundle, root, sel)),
+        ValueExpr::Const(value) => format!("{value:#x}"),
+        ValueExpr::And(a, b) => format!(
+            "({} & {})",
+            describe_value_expr(bundle, root, a),
+            describe_value_expr(bundle, root, b)
+        ),
+        ValueExpr::Not(inner) => format!("~{}", describe_value_expr(bundle, root, inner)),
+        ValueExpr::Ne(a, b) => format!(
+            "({} != {})",
+            describe_value_expr(bundle, root, a),
+            describe_value_expr(bundle, root, b)
+        ),
     }
 }
 
@@ -867,11 +896,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "tokio::sync::watch::Receiver<u32>",
-            "tokio::sync::watch::Receiver<u32> :: Node WatchReceiver \
-             { observed=version.__0@+8, shared=shared.ptr.pointer@+0, \
-             pointee=alloc::sync::ArcInner<tokio::sync::watch::Shared<u32>>, \
-             shared_data=data@+16, state=state.__0.inner.value.v.value.__0@+304, \
-             value=value.__1.data.value@+296, element=u32, closed_mask=0x1 }",
+            "tokio::sync::watch::Receiver<u32> :: Node Struct { unseen: Variant { \
+             discr=(Read(version.__0@+8) != \
+             (Read(shared.ptr.pointer.*.data.state.__0.inner.value.v.value.__0@+320) & ~0x1)), \
+             arms=[0=>None, 1=>Some(Alias \
+             { shared.ptr.pointer.*.data.value.__1.data.value@+312, follow })] }, \
+             closed: Variant { \
+             discr=(Read(shared.ptr.pointer.*.data.state.__0.inner.value.v.value.__0@+320) & 0x1), \
+             arms=[0=>false, 1=>true] } }",
         );
         assert_format(
             program,

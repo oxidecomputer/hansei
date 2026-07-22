@@ -10,11 +10,11 @@ mod view;
 
 pub use io::{Error, FORMAT_VERSION, MAGIC, Result};
 pub use schema::{
-    BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues, DisplayNode,
-    DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef, Meta,
-    Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
+    Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
+    DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
+    Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
     StaticsTable, Step, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable,
-    VariantDef, VariantShape, strip_llvm_suffix,
+    ValueExpr, VariantDef, VariantShape, strip_llvm_suffix,
 };
 pub use strings::{StrRef, StringInterner, StringTable};
 pub use view::{
