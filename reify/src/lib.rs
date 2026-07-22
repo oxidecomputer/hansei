@@ -1892,6 +1892,121 @@ fn infer_concrete_type<'a, T: DebugType<'a>>(
     Some(candidate)
 }
 
+/// True when `members` are a Rust tuple aggregate — a tuple struct or a tuple
+/// enum variant — whose fields rustc names `__0, __1, …` in declaration order.
+/// Such a value renders positionally (`Name(v0, v1)`), eliding the synthetic
+/// labels, to match `rustc`/gdb/lldb `Debug` output. A regular struct names a
+/// field something other than `__i`, so one non-matching member rules it out.
+/// Detection runs on the *full* member list so a `(ZST, T)` tuple is still
+/// recognized even though the ZST is not displayed.
+fn is_tuple<'a, M: DebugMember<'a>>(members: &[M]) -> bool {
+    !members.is_empty()
+        && members.iter().enumerate().all(|(i, m)| {
+            m.name()
+                .strip_prefix("__")
+                .and_then(|rest| rest.parse::<usize>().ok())
+                == Some(i)
+        })
+}
+
+/// Render one member's value (or `<truncated>`) at its offset, recursing with
+/// the deeper context. Shared by the tuple and named aggregate bodies.
+fn write_member_value<'a, M: DebugMember<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    member: &M,
+    bytes: &[u8],
+    addr: u64,
+    ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
+) -> fmt::Result {
+    let mem_ty = member.ty();
+    let start = member.offset() as usize;
+    let end = start + mem_ty.size() as usize;
+    match bytes.get(start..end) {
+        Some(mem_bytes) => {
+            let child = DisplayRecurse {
+                info: TypeInfoRef {
+                    ty: mem_ty,
+                    addr: addr + member.offset(),
+                    bytes: mem_bytes,
+                    _marker: std::marker::PhantomData,
+                },
+                ctx: ctx.deeper(),
+            };
+            if pretty {
+                write!(f, "{:#}", child)
+            } else {
+                write!(f, "{}", child)
+            }
+        }
+        None => write!(f, "<truncated>"),
+    }
+}
+
+/// Render the body of a struct or enum-variant payload after its name/variant
+/// has been written: a tuple aggregate as `(v0, v1)` (labels elided), a named
+/// aggregate as ` { field: v, … }`, and an empty/all-ZST aggregate as nothing
+/// (a unit). Zero-sized members are never displayed.
+fn write_aggregate_body<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    ty: &T,
+    bytes: &[u8],
+    addr: u64,
+    ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
+) -> fmt::Result {
+    let all: Vec<_> = ty.members().collect();
+    let tuple = is_tuple(&all);
+    let shown: Vec<_> = all.into_iter().filter(|m| m.ty().size() > 0).collect();
+
+    if shown.is_empty() {
+        return Ok(());
+    }
+
+    if tuple {
+        write!(f, "(")?;
+        for (i, member) in shown.iter().enumerate() {
+            if pretty {
+                writeln!(f)?;
+                write_indent(f, ctx.depth + 1)?;
+            } else if i > 0 {
+                write!(f, ", ")?;
+            }
+            write_member_value(f, member, bytes, addr, ctx, pretty)?;
+            if pretty {
+                write!(f, ",")?;
+            }
+        }
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, ctx.depth)?;
+        }
+        write!(f, ")")
+    } else {
+        write!(f, " {{")?;
+        for (i, member) in shown.iter().enumerate() {
+            if pretty {
+                writeln!(f)?;
+                write_indent(f, ctx.depth + 1)?;
+            } else if i > 0 {
+                write!(f, ",")?;
+            }
+            write!(f, " {}: ", member.name())?;
+            write_member_value(f, member, bytes, addr, ctx, pretty)?;
+            if pretty {
+                write!(f, ",")?;
+            }
+        }
+        if pretty {
+            writeln!(f)?;
+            write_indent(f, ctx.depth)?;
+        } else {
+            write!(f, " ")?;
+        }
+        write!(f, "}}")
+    }
+}
+
 fn write_struct_fields<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
@@ -1899,57 +2014,10 @@ fn write_struct_fields<'a, T: DebugType<'a>>(
     pretty: bool,
     ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
-    let members: Vec<_> = info.ty.members().filter(|m| m.ty().size() > 0).collect();
-
     if !name.is_empty() {
         write!(f, "{}", name)?;
     }
-    write!(f, " {{")?;
-
-    for (i, member) in members.iter().enumerate() {
-        let mem_ty = member.ty();
-        let start = member.offset() as usize;
-        let end = start + mem_ty.size() as usize;
-
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
-        } else if i > 0 {
-            write!(f, ",")?;
-        }
-        write!(f, " {}: ", member.name())?;
-
-        if let Some(mem_bytes) = info.bytes.get(start..end) {
-            let child = DisplayRecurse {
-                info: TypeInfoRef {
-                    ty: mem_ty,
-                    addr: info.addr + member.offset(),
-                    bytes: mem_bytes,
-                    _marker: std::marker::PhantomData,
-                },
-                ctx: ctx.deeper(),
-            };
-            if pretty {
-                write!(f, "{:#}", child)?;
-            } else {
-                write!(f, "{}", child)?;
-            }
-        } else {
-            write!(f, "<truncated>")?;
-        }
-
-        if pretty {
-            write!(f, ",")?;
-        }
-    }
-
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    } else {
-        write!(f, " ")?;
-    }
-    write!(f, "}}")
+    write_aggregate_body(f, &info.ty, info.bytes, info.addr, ctx, pretty)
 }
 
 /// Interpret a resolved [`DisplayNode`] tree — the single generic evaluator
@@ -2555,61 +2623,17 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
         return write!(f, ")");
     }
 
-    let members: Vec<_> = variant_info
-        .ty
-        .members()
-        .filter(|m| m.ty().size() > 0)
-        .collect();
-
-    if members.is_empty() {
-        return Ok(());
-    }
-
-    write!(f, " {{")?;
-    for (i, member) in members.iter().enumerate() {
-        let mem_ty = member.ty();
-        let mem_start = member.offset() as usize;
-        let mem_end = mem_start + mem_ty.size() as usize;
-
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
-        } else if i > 0 {
-            write!(f, ",")?;
-        }
-        write!(f, " {}: ", member.name())?;
-
-        if let Some(mem_bytes) = variant_info.bytes.get(mem_start..mem_end) {
-            let child = DisplayRecurse {
-                info: TypeInfoRef {
-                    ty: mem_ty,
-                    addr: variant_info.addr + member.offset(),
-                    bytes: mem_bytes,
-                    _marker: std::marker::PhantomData,
-                },
-                ctx: ctx.deeper(),
-            };
-            if pretty {
-                write!(f, "{:#}", child)?;
-            } else {
-                write!(f, "{}", child)?;
-            }
-        } else {
-            write!(f, "<truncated>")?;
-        }
-
-        if pretty {
-            write!(f, ",")?;
-        }
-    }
-
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    } else {
-        write!(f, " ")?;
-    }
-    write!(f, "}}")
+    // A tuple variant (`Some(x)`, `Ok(x)`) renders positionally; a struct
+    // variant (`Variant { field: x }`) keeps its labels. Both share the
+    // aggregate body renderer, so the `__N` elision is applied in one place.
+    write_aggregate_body(
+        f,
+        &variant_info.ty,
+        variant_info.bytes,
+        variant_info.addr,
+        ctx,
+        pretty,
+    )
 }
 
 fn write_indent(f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
