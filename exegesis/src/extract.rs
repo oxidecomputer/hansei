@@ -1237,6 +1237,8 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> 
         .or_else(|| ip_address_debug_format(reader, id))
         .or_else(|| str_debug_format(reader, id))
         .or_else(|| string_debug_format(reader, id))
+        .or_else(|| utf8_path_debug_format(reader, id))
+        .or_else(|| utf8_path_buf_debug_format(reader, id))
         // RawMutex, Semaphore, WatchState, and the mpsc channel/receiver carry
         // a `ScalarDecode` (or a synthesized field label) whose strings must be
         // interned; they are built in `Emitter::emit`, which holds the string
@@ -1927,6 +1929,61 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode>
     // member index. It renders exactly as a `&str` with the capacity checked,
     // so it reuses the `Str` node with the capacity selector supplied.
     let prefix = [vec_index as u32];
+    let path = |sub: Vec<u32>| -> Selector {
+        prefix
+            .iter()
+            .copied()
+            .chain(sub)
+            .collect::<Vec<u32>>()
+            .into()
+    };
+    Some(DisplayNode::Str {
+        pointer: path(layout.pointer),
+        length: path(layout.length),
+        capacity: Some(path(layout.capacity)),
+    })
+}
+
+/// A borrowed `&camino::Utf8Path` is a `{ data_ptr, length }` fat pointer over a
+/// guaranteed-UTF-8 byte buffer, laid out exactly like `&str` — only the data
+/// pointer is typed `*Utf8Path` rather than `*u8`. It renders through the same
+/// `Str` node with no capacity.
+fn utf8_path_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+    if fq_name(reader, id).as_deref() != Some("&camino::Utf8Path") {
+        return None;
+    }
+    let RawType::Struct(st) = reader.canonical_type(id)? else {
+        return None;
+    };
+    let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
+    let (length, length_member) = unique_member(reader, &st.members, "length")?;
+    let RawType::Pointer(_) = reader.canonical_type(pointer_member.type_id)? else {
+        return None;
+    };
+    if !is_unsigned_integer(reader, length_member.type_id, crate::bundle::POINTER_SIZE) {
+        return None;
+    }
+    Some(DisplayNode::Str {
+        pointer: Selector::member(pointer as u32),
+        length: Selector::member(length as u32),
+        capacity: None,
+    })
+}
+
+/// An owned `camino::Utf8PathBuf` wraps a `std::path::PathBuf`, which nests
+/// `OsString`/`Buf` down to a `Vec<u8>` behind four transparent single-member
+/// wrappers (`__0` → `inner` → `inner` → `inner`). Like `String` it is a
+/// guaranteed-UTF-8 `Vec<u8>`, so it reuses the same `Str` node with the
+/// capacity checked, prefixing the Vec's own paths with the wrapper chain.
+fn utf8_path_buf_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+    if fq_name(reader, id).as_deref() != Some("camino::Utf8PathBuf") {
+        return None;
+    }
+    let (prefix, vec_type) = field_path(reader, id, &["__0", "inner", "inner", "inner"])?;
+    let layout = vec_debug_format(reader, vec_type)?;
+    if !is_unsigned_integer(reader, layout.element, 1) {
+        return None;
+    }
     let path = |sub: Vec<u32>| -> Selector {
         prefix
             .iter()

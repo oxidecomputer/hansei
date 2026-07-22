@@ -53,8 +53,6 @@ enum Shape {
     /// A `usize`-sized unsigned base type: an atomic word, a length, a
     /// capacity, a permit count.
     Usize,
-    /// A pointer to `u8`: a string/vec data pointer.
-    BytePointer,
     /// Any type occupying exactly one pointer word: a niche-optimized
     /// `Option<NonNull<_>>` list head/next.
     PointerSized,
@@ -181,17 +179,6 @@ fn check_selector(
                 encoding: crate::raw_types::Encoding::Unsigned,
                 ..
             })
-        ),
-        Shape::BytePointer => matches!(
-            landed,
-            Some(TypeDef::Pointer { target, .. }) if matches!(
-                bundle.types.get(*target),
-                Some(TypeDef::Base {
-                    size: 1,
-                    encoding: crate::raw_types::Encoding::Unsigned,
-                    ..
-                })
-            )
         ),
         Shape::PointerSized => {
             type_size(bundle, target, &mut Vec::new()) == Some(crate::bundle::POINTER_SIZE)
@@ -370,7 +357,11 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             length,
             capacity,
         } => {
-            check_selector(bundle, scope, pointer, Shape::BytePointer, what)?;
+            // A `&str`/`String` data pointer is byte-erased (`*u8`), but a
+            // `&camino::Utf8Path` data pointer is typed (`*Utf8Path`), so accept
+            // any pointer, not just a byte pointer — the render reads `length`
+            // bytes through the pointer regardless of its pointee type.
+            check_selector(bundle, scope, pointer, Shape::Pointer, what)?;
             check_selector(bundle, scope, length, Shape::Usize, what)?;
             if let Some(capacity) = capacity {
                 check_selector(bundle, scope, capacity, Shape::Usize, what)?;
