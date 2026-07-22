@@ -106,6 +106,17 @@ pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug {
         None
     }
 
+    /// Whether this type's own [`debug_format`](Self::debug_format) renders it
+    /// as a self-contained value that [`peel`](crate::TypeInfoRef::peel) must
+    /// not unwrap into its representation (a `Str`, a `Slice`, a `Map`, …). A
+    /// transparent `Alias` format (an atomic, a newtype wrapper) is *not* a
+    /// leaf — it renders as an inner member — so peeling continues through it.
+    /// The default resolves the full node; backends that can answer more
+    /// cheaply should override it.
+    fn is_display_leaf(&self) -> bool {
+        !matches!(self.debug_format(), None | Some(DisplayNode::Alias { .. }))
+    }
+
     /// Look up the unique byte size of a fully-qualified type name in the
     /// same debug-info backend. Used only to corroborate a concrete type
     /// recovered from a vtable function symbol.
@@ -1030,6 +1041,15 @@ impl<'a> DebugType<'a> for BundleType<'a> {
         }
 
         resolve_node(*self, BundleType::debug_format(self)?)
+    }
+
+    fn is_display_leaf(&self) -> bool {
+        // A raw map lookup — no `resolve_node`, so `peel` can call it per step.
+        use exegesis::bundle::DisplayNode as BundleNode;
+        matches!(
+            BundleType::debug_format(self),
+            Some(node) if !matches!(node, BundleNode::Alias { .. })
+        )
     }
 
     fn size_by_name(&self, name: &str) -> Option<u64> {
@@ -2958,6 +2978,57 @@ mod bundle_tests {
         b.validate().expect("modified enum bundle must validate");
         let v = BundleView::new(&b);
         let bytes: Vec<u8> = [0x3000u64, 8]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "Opt::Some(\"hi\\nthere\")"
+        );
+    }
+
+    #[test]
+    fn test_wrapped_str_payload_in_enum_is_not_peeled() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x3000);
+                assert_eq!(len, 8);
+                Ok(b"hi\nthere".to_vec())
+            }
+        }
+
+        // A `String`/`Utf8PathBuf` is a single-member wrapper carrying its own
+        // `Str` format around an inner `Vec<u8>` (which has a `Slice` format).
+        // Reshape `Wrap` into that: a one-member wrapper over `Vec` with a `Str`
+        // format of its own. As `Opt::Some`'s payload it must render as the
+        // string, not peel past its `Str` to the inner `Vec`'s byte slice.
+        let mut b = test_bundle();
+        let TypeDef::Struct { size, members, .. } = &mut b.types.types[WRAP.0 as usize] else {
+            panic!("Wrap is not a struct");
+        };
+        *size = 24;
+        members[0].ty = VEC;
+        b.types.debug_formats.insert(
+            WRAP,
+            BundleNode::Str {
+                pointer: sel(&[0, 0]),
+                length: sel(&[0, 1]),
+                capacity: Some(sel(&[0, 2])),
+            },
+        );
+        let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+            panic!("Opt is not an enum");
+        };
+        *size = 24;
+        shape.variants[1].payload.ty = WRAP;
+        b.validate().expect("modified enum bundle must validate");
+
+        let v = BundleView::new(&b);
+        // Vec-shaped payload bytes: data pointer, length, capacity.
+        let bytes: Vec<u8> = [0x3000u64, 8, 16]
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();

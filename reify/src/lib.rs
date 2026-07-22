@@ -543,6 +543,17 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
         let mut info = self;
 
         loop {
+            // A type whose own display format is a leaf (a `Str`, a `Slice`, …)
+            // must render through that format, not be peeled into its
+            // representation. Without this, a `String`/`Utf8PathBuf` payload — a
+            // single-member wrapper around `Vec<u8>` — peels past its `Str`
+            // format down to the inner `Vec`, rendering as a byte slice instead
+            // of a string. A transparent `Alias` format is not a leaf, so peeling
+            // still descends through atomics and newtype wrappers.
+            if info.ty.is_display_leaf() {
+                break;
+            }
+
             if info.ty.kind() != TypeKind::Struct {
                 break;
             }
