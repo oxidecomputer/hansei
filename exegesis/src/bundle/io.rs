@@ -24,7 +24,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 20;
+pub const FORMAT_VERSION: u32 = 21;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -503,40 +503,6 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             }
             if slots[0] == slots[1] || slots[0] == slots[2] || slots[1] == slots[2] {
                 return corrupt("dyn pointer reuses a header slot".to_string());
-            }
-        }
-        DisplayNode::MpscChan {
-            tail,
-            index,
-            head,
-            start_index,
-            next,
-            values,
-            element,
-        } => {
-            check_selector(bundle, scope, tail, Shape::Usize, what)?;
-            check_selector(bundle, scope, index, Shape::Usize, what)?;
-            // `head` reaches a pointer to the block type; the remaining
-            // selectors are rooted there.
-            let head_ptr = check_selector(bundle, scope, head, Shape::Pointer, what)?;
-            let Some(TypeDef::Pointer { target: block, .. }) = bundle.types.get(head_ptr) else {
-                unreachable!("check_selector verified a pointer");
-            };
-            let block = *block;
-            check_selector(bundle, block, start_index, Shape::Usize, what)?;
-            check_selector(bundle, block, next, Shape::Pointer, what)?;
-            check_selector(bundle, block, values, Shape::Array, what)?;
-            if bundle.types.get(*element).is_none() {
-                return corrupt(format!(
-                    "MpscChan element type id {} out of range",
-                    element.0
-                ));
-            }
-            if type_size(bundle, *element, &mut Vec::new()).is_none() {
-                return corrupt(format!(
-                    "MpscChan has an unsized element type {}",
-                    element.0
-                ));
             }
         }
         DisplayNode::Map {

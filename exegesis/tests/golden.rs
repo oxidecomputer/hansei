@@ -302,29 +302,6 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
             field(bundle, root, pointer),
             field(bundle, root, vtable),
         ),
-        DisplayNode::MpscChan {
-            tail,
-            index,
-            head,
-            start_index,
-            next,
-            values,
-            element,
-        } => {
-            let (_, _, head_land) = walk(bundle, root, head);
-            let block = ptr_target(bundle, head_land).unwrap_or(root);
-            format!(
-                "MpscChan {{ tail={}, index={}, head={}, block={}, start_index={}, next={}, values={}, element={} }}",
-                field(bundle, root, tail),
-                field(bundle, root, index),
-                field(bundle, root, head),
-                fq_name(bundle, block),
-                field(bundle, block, start_index),
-                field(bundle, block, next),
-                field(bundle, block, values),
-                fq_name(bundle, *element),
-            )
-        }
         DisplayNode::Map {
             length,
             key,
@@ -952,13 +929,11 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "tokio::sync::mpsc::chan::Chan<u32, tokio::sync::mpsc::bounded::Semaphore>",
             "tokio::sync::mpsc::chan::Chan<u32, tokio::sync::mpsc::bounded::Semaphore> :: Node Struct \
-             { queued: MpscChan \
-             { tail=tx.value.tail_position.inner.value.v.value.__0@+8, \
-             index=rx_fields.__0.value.list.index@+304, \
-             head=rx_fields.__0.value.list.head.pointer@+288, \
-             block=tokio::sync::mpsc::block::Block<u32>, \
-             start_index=header.start_index@+128, next=header.next.v.value.__0@+136, \
-             values=values.__0@+0, element=u32 }, \
+             { queued: CustomList \
+             { vars=[Read(rx_fields.__0.value.list.index@+304), \
+             Read(tx.value.tail_position.inner.value.v.value.__0@+8), \
+             Read(rx_fields.__0.value.list.head.pointer@+288)], \
+             condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=2 stmts, element=u32 }, \
              tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, \
              semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, \
              rx_fields: <structural> }",
@@ -982,12 +957,10 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              tokio::sync::mpsc::bounded::Semaphore>>, via=data@+128, \
              then=Struct { capacity: semaphore.bound@+360, \
              free: semaphore.semaphore.permits.inner.value.v.value.__0@+352, \
-             queued: MpscChan { tail=tx.value.tail_position.inner.value.v.value.__0@+8, \
-             index=rx_fields.__0.value.list.index@+304, \
-             head=rx_fields.__0.value.list.head.pointer@+288, \
-             block=tokio::sync::mpsc::block::Block<u32>, \
-             start_index=header.start_index@+128, next=header.next.v.value.__0@+136, \
-             values=values.__0@+0, element=u32 }, \
+             queued: CustomList { vars=[Read(rx_fields.__0.value.list.index@+304), \
+             Read(tx.value.tail_position.inner.value.v.value.__0@+8), \
+             Read(rx_fields.__0.value.list.head.pointer@+288)], \
+             condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=2 stmts, element=u32 }, \
              tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, \
              semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, \
              rx_fields: <structural> } }",

@@ -310,7 +310,7 @@ pub enum DisplayNode {
     /// `i` set means slot `i` was written); `slots` reaches the inline
     /// `[MaybeUninit<T>; N]` array whose length `N` bounds which bits count
     /// (higher bits are unrelated released/closed flags). The live messages
-    /// are shown by the channel-level [`DisplayNode::MpscChan`] formatter.
+    /// are shown by the channel-level [`DisplayNode::CustomList`] walk.
     SlotCount { bitmap: Selector, slots: Selector },
     /// Follow the pointer reached by `at`, step `via` across the pointee to the
     /// rendered target, and render that target with `then`.
@@ -346,29 +346,6 @@ pub enum DisplayNode {
         size: u32,
         align: u32,
         tail_offset: u64,
-    },
-    /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages as
-    /// `[elem, elem, …]` by walking its block chain.
-    ///
-    /// The receiver has read up to `index` and the sender written up to `tail`
-    /// (both selectors to a `usize` within the channel); the messages in
-    /// `[index, tail)` are still queued. `head` reaches the receiver's head
-    /// block pointer. The remaining selectors are rooted at the *block* type
-    /// (reached through `head`): `start_index` gives a block's first absolute
-    /// slot index, `next` its successor block pointer, and `values` its inline
-    /// slot array. `element` is the message type `T`. reify walks the block
-    /// chain and renders each queued slot as `element`. This is a bespoke leaf:
-    /// its block-window traversal does not decompose into the other
-    /// combinators, but it composes into a `Struct` (a `Chan` is a struct whose
-    /// `queued` field is this node) like any other.
-    MpscChan {
-        tail: Selector,
-        index: Selector,
-        head: Selector,
-        start_index: Selector,
-        next: Selector,
-        values: Selector,
-        element: BundleTypeId,
     },
     /// Render an associative collection as `{ key: value, ... }`.
     ///

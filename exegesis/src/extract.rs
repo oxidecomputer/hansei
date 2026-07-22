@@ -24,8 +24,8 @@ use crate::bundle::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
     Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
-    StaticsTable, Step, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef,
-    TypeTable, ValueExpr, VariantDef, VariantShape,
+    StaticsTable, Step, Stmt, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TaskTable,
+    TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape,
 };
 use std::num::NonZeroU8;
 
@@ -2524,6 +2524,26 @@ fn field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<(Vec<
     Some((path, cur))
 }
 
+/// Sum the byte offsets of a member-index `path` within `ty`, returning the
+/// datum's total offset and the type it lands on. A [`DisplayNode::CustomList`]
+/// bakes block-relative offsets as `Const`s (the block base is a runtime word),
+/// so a member selector produced by [`field_path`] becomes a plain number here.
+fn path_offset(reader: &DwReader<'_>, ty: TypeId, path: &[u32]) -> Option<(u64, TypeId)> {
+    let mut cur = reader.canonicalize(ty);
+    let mut offset = 0u64;
+    for &index in path {
+        let members = match reader.canonical_type(cur)? {
+            RawType::Struct(st) => &st.members,
+            RawType::Union(u) => &u.members,
+            _ => return None,
+        };
+        let member = members.get(index as usize)?;
+        offset = offset.checked_add(member.offset)?;
+        cur = reader.canonicalize(member.type_id);
+    }
+    Some((offset, cur))
+}
+
 /// Navigate named members to a field, then walk any atomic/cell wrappers to
 /// the `usize` it stores, returning the full member path.
 fn usize_field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<Vec<u32>> {
@@ -2544,12 +2564,18 @@ fn usize_field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option
 }
 
 struct RawMpscChanFormat {
+    /// Value-anchored selectors seeding the walk's loop variables.
     tail: Vec<u32>,
     index: Vec<u32>,
     head: Vec<u32>,
-    start_index: Vec<u32>,
-    next: Vec<u32>,
-    values: Vec<u32>,
+    /// Byte offsets of a block's fields, baked into the CustomList program as
+    /// constants since the block base is a runtime pointer.
+    start_index_offset: u64,
+    next_offset: u64,
+    values_offset: u64,
+    /// Slot stride and per-block slot count of the inline values array.
+    stride: u64,
+    count: u64,
     element: TypeId,
     /// The channel's own members (zero-sized ones elided, original indices
     /// preserved), rendered structurally after the synthetic `queued` field.
@@ -2595,15 +2621,24 @@ fn mpsc_chan_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscCh
     let [next_tail] = next_tails.as_slice() else {
         return None;
     };
-    let next = next_head
+    let next: Vec<u32> = next_head
         .iter()
         .copied()
         .chain(next_tail.iter().copied())
         .collect();
     let (values, values_ty) = field_path(reader, block, &["values", "__0"])?;
-    if !matches!(reader.canonical_type(values_ty), Some(RawType::Array(_))) {
+    let RawType::Array(values_arr) = reader.canonical_type(values_ty)? else {
         return None;
-    }
+    };
+
+    // The block base is a runtime pointer, so its fields are reached by Load at
+    // constant offsets rather than selectors; resolve those offsets and the
+    // slot array's stride/count here.
+    let start_index_offset = path_offset(reader, block, &start_index)?.0;
+    let next_offset = path_offset(reader, block, &next)?.0;
+    let values_offset = path_offset(reader, block, &values)?.0;
+    let stride = raw_type_size(reader, values_arr.elem_type_id)?;
+    let count = values_arr.count;
 
     // `element` is the block's message type `T`.
     let RawType::Struct(bst) = reader.canonical_type(block)? else {
@@ -2635,12 +2670,108 @@ fn mpsc_chan_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscCh
         tail,
         index,
         head,
-        start_index,
-        next,
-        values,
+        start_index_offset,
+        next_offset,
+        values_offset,
+        stride,
+        count,
         element,
         members,
     })
+}
+
+// Compact builders for the mpsc `queued` CustomList program below. The value
+// language is verbose to spell with `Box::new`; these keep the program legible.
+fn ve_var(id: u32) -> ValueExpr {
+    ValueExpr::Var(id)
+}
+fn ve_const(n: u64) -> ValueExpr {
+    ValueExpr::Const(n)
+}
+fn ve_add(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+    ValueExpr::Add(Box::new(a), Box::new(b))
+}
+fn ve_sub(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+    ValueExpr::Sub(Box::new(a), Box::new(b))
+}
+fn ve_mul(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+    ValueExpr::Mul(Box::new(a), Box::new(b))
+}
+fn ve_lt(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+    ValueExpr::Lt(Box::new(a), Box::new(b))
+}
+fn ve_load(addr: ValueExpr) -> ValueExpr {
+    ValueExpr::Load {
+        addr: Box::new(addr),
+        size: crate::bundle::POINTER_SIZE as u32,
+    }
+}
+
+/// Build the synthetic `queued` field's node: a [`DisplayNode::CustomList`] that
+/// walks the mpsc block chain and emits the live `[index, tail)` messages,
+/// reproducing the retired bespoke `MpscChan` leaf from the general value
+/// language. Loop variables are `0 = cur` (the read index, advanced per
+/// message), `1 = tail`, and `2 = block` (the current block pointer). A block's
+/// fields are read with `Load` at constant offsets because the block base is a
+/// runtime word, not a member of the rendered value.
+#[allow(clippy::too_many_arguments)]
+fn mpsc_queued_node(
+    tail: Selector,
+    index: Selector,
+    head: Selector,
+    start_index_offset: u64,
+    next_offset: u64,
+    values_offset: u64,
+    stride: u64,
+    count: u64,
+    element: BundleTypeId,
+) -> DisplayNode {
+    // `block->start_index`, recomputed at each use (there is no `start` var).
+    let start = || ve_load(ve_add(ve_var(2), ve_const(start_index_offset)));
+    DisplayNode::CustomList {
+        vars: vec![
+            ValueExpr::Read(index), // 0: cur = read index
+            ValueExpr::Read(tail),  // 1: tail
+            ValueExpr::Read(head),  // 2: block = head pointer
+        ],
+        condition: ValueExpr::And(
+            Box::new(ve_lt(ve_var(0), ve_var(1))),
+            Box::new(ValueExpr::Ne(Box::new(ve_var(2)), Box::new(ve_const(0)))),
+        ),
+        body: vec![
+            // A block starting past cur is malformed; stop before the offset
+            // subtraction below would underflow.
+            Stmt::Break {
+                cond: ve_lt(ve_var(0), start()),
+            },
+            Stmt::If {
+                // cur - start < slots: the message lives in this block.
+                cond: ve_lt(ve_sub(ve_var(0), start()), ve_const(count)),
+                then: vec![
+                    // Emit values[cur - start] at values_offset + i*stride.
+                    Stmt::Emit {
+                        at: ve_add(
+                            ve_var(2),
+                            ve_add(
+                                ve_const(values_offset),
+                                ve_mul(ve_sub(ve_var(0), start()), ve_const(stride)),
+                            ),
+                        ),
+                    },
+                    Stmt::Set {
+                        var: 0,
+                        value: ve_add(ve_var(0), ve_const(1)),
+                    },
+                ],
+                // Past this block: follow the successor pointer.
+                otherwise: vec![Stmt::Set {
+                    var: 2,
+                    value: ve_load(ve_add(ve_var(2), ve_const(next_offset))),
+                }],
+            },
+        ],
+        element,
+    }
 }
 
 /// Like [`find_zero_offset_uint_paths`], but the target is any pointer. Used
@@ -3595,20 +3726,35 @@ impl<'a> Emitter<'a> {
     /// standalone `Chan` formatter and the `Receiver`, which prepends its
     /// decoded `capacity`/`free` fields to the same list.
     fn chan_struct_fields(&mut self, format: RawMpscChanFormat) -> Vec<Field> {
+        let RawMpscChanFormat {
+            tail,
+            index,
+            head,
+            start_index_offset,
+            next_offset,
+            values_offset,
+            stride,
+            count,
+            element,
+            members,
+        } = format;
+        let element = self.reserve(element);
         let queued = Field::Named {
             label: self.interner.intern("queued"),
-            node: DisplayNode::MpscChan {
-                tail: format.tail.into(),
-                index: format.index.into(),
-                head: format.head.into(),
-                start_index: format.start_index.into(),
-                next: format.next.into(),
-                values: format.values.into(),
-                element: self.reserve(format.element),
-            },
+            node: mpsc_queued_node(
+                tail.into(),
+                index.into(),
+                head.into(),
+                start_index_offset,
+                next_offset,
+                values_offset,
+                stride,
+                count,
+                element,
+            ),
         };
         std::iter::once(queued)
-            .chain(format.members.into_iter().map(Field::Member))
+            .chain(members.into_iter().map(Field::Member))
             .collect()
     }
 

@@ -254,24 +254,6 @@ pub enum DisplayNode<T> {
         align: u32,
         tail_offset: u64,
     },
-    /// Display a `tokio::sync::mpsc::chan::Chan<T, S>`'s live queued messages
-    /// (indices `[index, tail)`) by walking its block chain from the head
-    /// block, rendering each queued slot as `element`. `*_offset` fields within
-    /// the channel locate the read/write positions and head pointer; the
-    /// block-relative offsets locate each block's start index, successor
-    /// pointer, and inline slot array (`stride` bytes each, `count` per block).
-    MpscChan {
-        tail_offset: u64,
-        index_offset: u64,
-        head_offset: u64,
-        block_size: u32,
-        start_index_offset: u64,
-        next_offset: u64,
-        values_offset: u64,
-        element: T,
-        stride: u32,
-        count: u32,
-    },
     /// Render an associative collection, using `entries` to produce exactly
     /// `length` key/value pairs and the shared map presentation for output.
     Map {
@@ -875,36 +857,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         tail_offset: *tail_offset,
                     })
                 }
-                BundleNode::MpscChan {
-                    tail,
-                    index,
-                    head,
-                    start_index,
-                    next,
-                    values,
-                    element,
-                } => {
-                    let (_, tail_offset) = resolve_selector(scope, tail)?;
-                    let (_, index_offset) = resolve_selector(scope, index)?;
-                    let (head_ty, head_offset) = resolve_selector(scope, head)?;
-                    let block_ty = head_ty.pointer_target()?;
-                    let (_, start_index_offset) = resolve_selector(block_ty, start_index)?;
-                    let (_, next_offset) = resolve_selector(block_ty, next)?;
-                    let (array_ty, values_offset) = resolve_selector(block_ty, values)?;
-                    let (elem_ty, count) = array_ty.array_info()?;
-                    Some(DisplayNode::MpscChan {
-                        tail_offset,
-                        index_offset,
-                        head_offset,
-                        block_size: block_ty.size() as u32,
-                        start_index_offset,
-                        next_offset,
-                        values_offset,
-                        element: scope.related_type(*element),
-                        stride: elem_ty.size() as u32,
-                        count: count as u32,
-                    })
-                }
                 BundleNode::Map {
                     length,
                     key,
@@ -1161,6 +1113,76 @@ mod bundle_tests {
             shift,
             width: None,
             render: BundleFieldRender::Uint,
+        }
+    }
+
+    // Compact builders for the CustomList value language used by the synthetic
+    // mpsc-queue bundle and its focused test.
+    fn vvar(id: u32) -> ValueExpr {
+        ValueExpr::Var(id)
+    }
+    fn vconst(n: u64) -> ValueExpr {
+        ValueExpr::Const(n)
+    }
+    fn vread(selector: Selector) -> ValueExpr {
+        ValueExpr::Read(selector)
+    }
+    fn vadd(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+        ValueExpr::Add(Box::new(a), Box::new(b))
+    }
+    fn vsub(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+        ValueExpr::Sub(Box::new(a), Box::new(b))
+    }
+    fn vmul(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+        ValueExpr::Mul(Box::new(a), Box::new(b))
+    }
+    fn vlt(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+        ValueExpr::Lt(Box::new(a), Box::new(b))
+    }
+    fn vne(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+        ValueExpr::Ne(Box::new(a), Box::new(b))
+    }
+    fn vand(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+        ValueExpr::And(Box::new(a), Box::new(b))
+    }
+    fn vload(addr: ValueExpr) -> ValueExpr {
+        ValueExpr::Load {
+            addr: Box::new(addr),
+            size: 8,
+        }
+    }
+
+    /// The synthetic mpsc block-chain walk as a [`BundleNode::CustomList`],
+    /// mirroring what the extractor now emits. Block layout: values @0,
+    /// start_index @16, next @24; 4-byte slots, 4 per block. Loop vars are
+    /// 0 = cur (index), 1 = tail, 2 = block pointer. Reproduces `[20, 30]`.
+    fn chan_queued_node(element: BundleTypeId) -> BundleNode {
+        let start = || vload(vadd(vvar(2), vconst(16)));
+        BundleNode::CustomList {
+            vars: vec![vread(sel(&[1])), vread(sel(&[0])), vread(sel(&[2]))],
+            condition: vand(vlt(vvar(0), vvar(1)), vne(vvar(2), vconst(0))),
+            body: vec![
+                BundleStmt::Break {
+                    cond: vlt(vvar(0), start()),
+                },
+                BundleStmt::If {
+                    cond: vlt(vsub(vvar(0), start()), vconst(4)),
+                    then: vec![
+                        BundleStmt::Emit {
+                            at: vadd(vvar(2), vmul(vsub(vvar(0), start()), vconst(4))),
+                        },
+                        BundleStmt::Set {
+                            var: 0,
+                            value: vadd(vvar(0), vconst(1)),
+                        },
+                    ],
+                    otherwise: vec![BundleStmt::Set {
+                        var: 2,
+                        value: vload(vadd(vvar(2), vconst(24))),
+                    }],
+                },
+            ],
+            element,
         }
     }
 
@@ -1962,20 +1984,12 @@ mod bundle_tests {
                 },
             ],
         };
-        // A channel's synthetic `queued` field: the block-chain walk, rooted at
-        // the Chan/RxChan (tail @0, index @1, head @2; block start_index @1.0,
-        // next @1.1, values @0). Reused by the standalone Chan and the Receiver.
+        // A channel's synthetic `queued` field: the block-chain walk as a
+        // CustomList (see `chan_queued_node`). Reused by the standalone Chan and
+        // the Receiver.
         let chan_queued = || BundleField::Named {
             label: queuedl,
-            node: BundleNode::MpscChan {
-                tail: sel(&[0]),
-                index: sel(&[1]),
-                head: sel(&[2]),
-                start_index: sel(&[1, 0]),
-                next: sel(&[1, 1]),
-                values: sel(&[0]),
-                element: U32,
-            },
+            node: chan_queued_node(U32),
         };
         let emptyl = s("");
         let bool_decode =
@@ -3137,16 +3151,17 @@ mod bundle_tests {
         struct Reader;
         impl ReadFromProc for Reader {
             fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                assert_eq!(addr, 0x1000);
-                // ChanBlock: [u32; 4] values @0, start_index usize @16, next ptr @24.
-                let mut b = Vec::new();
+                // Block at [0x1000, 0x1020): [u32; 4] values @0, start_index
+                // usize @16, next ptr @24 (null). The queued CustomList reads its
+                // fields and slots piecemeal, so serve any sub-read of it.
+                let mut block = Vec::new();
                 for v in [10u32, 20, 30, 40] {
-                    b.extend_from_slice(&v.to_le_bytes());
+                    block.extend_from_slice(&v.to_le_bytes());
                 }
-                b.extend_from_slice(&0u64.to_le_bytes()); // start_index
-                b.extend_from_slice(&0u64.to_le_bytes()); // next (null)
-                b.truncate(len as usize);
-                Ok(b)
+                block.extend_from_slice(&0u64.to_le_bytes()); // start_index @16
+                block.extend_from_slice(&0u64.to_le_bytes()); // next @24 (null)
+                let start = addr.checked_sub(0x1000).expect("read below block") as usize;
+                Ok(block[start..start + len as usize].to_vec())
             }
         }
 
@@ -3176,17 +3191,15 @@ mod bundle_tests {
 
     #[test]
     fn test_custom_list_walks_mpsc_block_chain() {
-        // A CustomList reproduces the MpscChan block-chain walk from the general
-        // ValueExpr primitives: seed cur/tail/block from the Chan, then loop
-        // reading each block's start_index (a Load), emit the in-window slots,
-        // and follow the `next` pointer — rendering the same `[20, 30]`.
+        // The shared `chan_queued_node` CustomList, installed as a top-level
+        // format, walks the block chain from the value language: seed
+        // cur/tail/block from the Chan, then loop reading each block's
+        // start_index (a Load), emit the in-window slots, and follow `next`.
         struct Reader;
         impl ReadFromProc for Reader {
             fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
                 // One block at [0x1000, 0x1020): [u32; 4] values @0, start_index
-                // usize @16, next ptr @24 (null). Serve any sub-read of it, since
-                // the CustomList reads fields and slots piecemeal (unlike the
-                // MpscChan renderer, which slurps the whole block at once).
+                // usize @16, next ptr @24 (null), served piecemeal.
                 let mut block = Vec::new();
                 for value in [10u32, 20, 30, 40] {
                     block.extend_from_slice(&value.to_le_bytes());
@@ -3198,75 +3211,8 @@ mod bundle_tests {
             }
         }
 
-        fn var(id: u32) -> ValueExpr {
-            ValueExpr::Var(id)
-        }
-        fn con(n: u64) -> ValueExpr {
-            ValueExpr::Const(n)
-        }
-        fn add(a: ValueExpr, b: ValueExpr) -> ValueExpr {
-            ValueExpr::Add(Box::new(a), Box::new(b))
-        }
-        fn sub(a: ValueExpr, b: ValueExpr) -> ValueExpr {
-            ValueExpr::Sub(Box::new(a), Box::new(b))
-        }
-        fn mul(a: ValueExpr, b: ValueExpr) -> ValueExpr {
-            ValueExpr::Mul(Box::new(a), Box::new(b))
-        }
-        fn lt(a: ValueExpr, b: ValueExpr) -> ValueExpr {
-            ValueExpr::Lt(Box::new(a), Box::new(b))
-        }
-        fn ne(a: ValueExpr, b: ValueExpr) -> ValueExpr {
-            ValueExpr::Ne(Box::new(a), Box::new(b))
-        }
-        fn load(a: ValueExpr) -> ValueExpr {
-            ValueExpr::Load {
-                addr: Box::new(a),
-                size: 8,
-            }
-        }
-        // block.start_index at block+16; recomputed at each use (no `start` var).
-        let start = || load(add(var(2), con(16)));
-
-        let node = BundleNode::CustomList {
-            vars: vec![
-                ValueExpr::Read(sel(&[1])), // 0: cur = index
-                ValueExpr::Read(sel(&[0])), // 1: tail
-                ValueExpr::Read(sel(&[2])), // 2: block = head pointer
-            ],
-            condition: ValueExpr::And(Box::new(lt(var(0), var(1))), Box::new(ne(var(2), con(0)))),
-            body: vec![
-                // Malformed guard: cur before this block would underflow the Sub.
-                BundleStmt::Break {
-                    cond: lt(var(0), start()),
-                },
-                BundleStmt::If {
-                    // cur - start < BLOCK_CAP (4): the slot lives in this block.
-                    cond: lt(sub(var(0), start()), con(4)),
-                    then: vec![
-                        // Emit values[cur - start] (values_offset 0, stride 4).
-                        BundleStmt::Emit {
-                            at: add(var(2), mul(sub(var(0), start()), con(4))),
-                        },
-                        BundleStmt::Set {
-                            var: 0,
-                            value: add(var(0), con(1)),
-                        },
-                    ],
-                    otherwise: vec![
-                        // Past this block: follow `next` at block+24.
-                        BundleStmt::Set {
-                            var: 2,
-                            value: load(add(var(2), con(24))),
-                        },
-                    ],
-                },
-            ],
-            element: U32,
-        };
-
         let mut b = test_bundle();
-        b.types.debug_formats.insert(CHAN, node);
+        b.types.debug_formats.insert(CHAN, chan_queued_node(U32));
         b.validate().expect("CustomList bundle must validate");
         let view = BundleView::new(&b);
 
@@ -3300,6 +3246,18 @@ mod bundle_tests {
         struct Reader;
         impl ReadFromProc for Reader {
             fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                // The head block lives at [0x1000, 0x1020) and is read piecemeal
+                // by the queued CustomList; the RxChan is read whole at 0x2010.
+                if (0x1000..0x1020).contains(&addr) {
+                    let mut block = Vec::new();
+                    for v in [10u32, 20, 30, 40] {
+                        block.extend_from_slice(&v.to_le_bytes());
+                    }
+                    block.extend_from_slice(&0u64.to_le_bytes()); // start_index @16
+                    block.extend_from_slice(&0u64.to_le_bytes()); // next @24 (null)
+                    let start = (addr - 0x1000) as usize;
+                    return Ok(block[start..start + len as usize].to_vec());
+                }
                 let mut b = Vec::new();
                 match addr {
                     0x2010 => {
@@ -3310,14 +3268,6 @@ mod bundle_tests {
                         b.extend_from_slice(&0x1000u64.to_le_bytes()); // head
                         b.extend_from_slice(&6u64.to_le_bytes()); // permits -> free 3
                         b.extend_from_slice(&16u64.to_le_bytes()); // bound -> capacity 16
-                    }
-                    0x1000 => {
-                        // ChanBlock: [u32; 4] values, start_index, next (null).
-                        for v in [10u32, 20, 30, 40] {
-                            b.extend_from_slice(&v.to_le_bytes());
-                        }
-                        b.extend_from_slice(&0u64.to_le_bytes()); // start_index
-                        b.extend_from_slice(&0u64.to_le_bytes()); // next
                     }
                     other => panic!("unexpected read at {other:#x}"),
                 }
