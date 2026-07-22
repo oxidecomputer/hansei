@@ -1199,99 +1199,6 @@ fn eval_slice<'a, T: DebugType<'a>>(
     write!(f, "]")
 }
 
-/// Walk an mpsc channel's block chain and render the queued messages
-/// (absolute indices `[index, tail)`) as `[elem, elem, …]`, each rendered as
-/// `element`. `ctx.depth` is the indentation level of the field holding the
-/// list. This is the bespoke traversal behind the [`DisplayNode::MpscChan`]
-/// leaf; a `Chan` composes it into a `Struct` as its synthetic `queued` field,
-/// and a `Receiver` reaches the same leaf across its `Pointer` hop.
-#[allow(clippy::too_many_arguments)]
-fn eval_chan_queue<'a, T: DebugType<'a>>(
-    f: &mut fmt::Formatter<'_>,
-    tail_offset: u64,
-    index_offset: u64,
-    head_offset: u64,
-    block_size: u32,
-    start_index_offset: u64,
-    next_offset: u64,
-    values_offset: u64,
-    element: &T,
-    stride: u32,
-    count: u32,
-    bytes: &[u8],
-    ctx: RenderCtx<'_, 'a>,
-    pretty: bool,
-) -> fmt::Result {
-    let (Some(tail), Some(index), Some(head)) = (
-        read_u64_at(bytes, tail_offset),
-        read_u64_at(bytes, index_offset),
-        read_u64_at(bytes, head_offset),
-    ) else {
-        return write!(f, "<truncated>");
-    };
-    let (Some(proc), Some(visited)) = (ctx.proc, ctx.visited) else {
-        return write!(f, "<target unavailable>");
-    };
-
-    let element_ctx = RenderCtx {
-        proc: Some(proc),
-        visited: Some(visited),
-        ..ctx.deeper()
-    };
-    let element_size = element.size() as usize;
-    write!(f, "[")?;
-    let mut any = false;
-    let mut cur = index;
-    let mut block_ptr = head;
-    // The queue spans at most (tail - index) messages; the loop advances `cur`
-    // for each and only re-reads a block when crossing into the next one.
-    let mut guard = tail.saturating_sub(index) + 64;
-    while cur < tail && block_ptr != 0 && guard > 0 {
-        guard -= 1;
-        let Ok(block) = proc.read_bytes(block_ptr, block_size as u64) else {
-            write!(f, "{}<unreadable block>", if any { ", " } else { "" })?;
-            break;
-        };
-        let Some(start) = read_u64_at(&block, start_index_offset) else {
-            break;
-        };
-        if cur >= start + count as u64 {
-            // Advance to the successor block.
-            match read_u64_at(&block, next_offset) {
-                Some(next) => block_ptr = next,
-                None => break,
-            }
-            continue;
-        }
-        if cur < start {
-            break;
-        }
-        let slot = values_offset as usize + (cur - start) as usize * stride as usize;
-        let Some(bytes) = block.get(slot..slot + element_size) else {
-            break;
-        };
-        write_seq_prefix(f, pretty, ctx.depth, !any)?;
-        any = true;
-        let child = DisplayRecurse {
-            info: TypeInfoRef {
-                ty: *element,
-                addr: block_ptr + slot as u64,
-                bytes,
-                _marker: std::marker::PhantomData,
-            },
-            ctx: element_ctx,
-        };
-        if pretty {
-            write!(f, "{child:#},")?;
-        } else {
-            write!(f, "{child}")?;
-        }
-        cur += 1;
-    }
-    write_seq_close(f, pretty, ctx.depth, any)?;
-    write!(f, "]")
-}
-
 #[derive(Copy, Clone)]
 struct BTreeNodeLayout<T> {
     key: T,
@@ -2189,33 +2096,6 @@ fn eval_node<'a, T: DebugType<'a>>(
         DisplayNode::DynPointer { .. } => {
             eval_dyn_pointer(f, *ty, Some(ty.name()), node, bytes, ctx)
         }
-        DisplayNode::MpscChan {
-            tail_offset,
-            index_offset,
-            head_offset,
-            block_size,
-            start_index_offset,
-            next_offset,
-            values_offset,
-            element,
-            stride,
-            count,
-        } => eval_chan_queue(
-            f,
-            *tail_offset,
-            *index_offset,
-            *head_offset,
-            *block_size,
-            *start_index_offset,
-            *next_offset,
-            *values_offset,
-            element,
-            *stride,
-            *count,
-            bytes,
-            ctx,
-            pretty,
-        ),
         DisplayNode::Map {
             length_offset,
             length_size,
