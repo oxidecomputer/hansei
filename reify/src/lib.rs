@@ -1170,12 +1170,7 @@ fn eval_slice<'a, T: DebugType<'a>>(
     let element_ctx = ctx.deeper().with_hex(false);
     write!(f, "[")?;
     for index in 0..len {
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
-        } else if index != 0 {
-            write!(f, ", ")?;
-        }
+        write_seq_prefix(f, pretty, ctx.depth, index == 0)?;
         let Some(offset) = index.checked_mul(element_size) else {
             return write!(f, "<invalid element offset>");
         };
@@ -1200,10 +1195,7 @@ fn eval_slice<'a, T: DebugType<'a>>(
             write!(f, "{child}")?;
         }
     }
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    }
+    write_seq_close(f, pretty, ctx.depth, true)?;
     write!(f, "]")
 }
 
@@ -1278,12 +1270,7 @@ fn eval_chan_queue<'a, T: DebugType<'a>>(
         let Some(bytes) = block.get(slot..slot + element_size) else {
             break;
         };
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
-        } else if any {
-            write!(f, ", ")?;
-        }
+        write_seq_prefix(f, pretty, ctx.depth, !any)?;
         any = true;
         let child = DisplayRecurse {
             info: TypeInfoRef {
@@ -1301,10 +1288,7 @@ fn eval_chan_queue<'a, T: DebugType<'a>>(
         }
         cur += 1;
     }
-    if pretty && any {
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    }
+    write_seq_close(f, pretty, ctx.depth, any)?;
     write!(f, "]")
 }
 
@@ -2512,12 +2496,7 @@ fn eval_list<'a, T: DebugType<'a>>(
             write!(f, "{}<unreadable>", if any { ", " } else { "" })?;
             break;
         };
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
-        } else if any {
-            write!(f, ", ")?;
-        }
+        write_seq_prefix(f, pretty, ctx.depth, !any)?;
         any = true;
         // Each element renders inline (`pretty = false`) even in pretty mode.
         eval_node(f, node, node_ty, &node_bytes, cur, ctx.deeper(), false)?;
@@ -2529,10 +2508,7 @@ fn eval_list<'a, T: DebugType<'a>>(
             None => break,
         }
     }
-    if pretty && any {
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    }
+    write_seq_close(f, pretty, ctx.depth, any)?;
     write!(f, "]")
 }
 
@@ -2623,6 +2599,44 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
 fn write_indent(f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
     for _ in 0..depth {
         write!(f, "    ")?;
+    }
+    Ok(())
+}
+
+/// Prefix punctuation before one element of a `[e, e, …]` sequence. In pretty
+/// mode: a newline and one deeper indent so each element sits on its own line.
+/// Inline: a `, ` separator before every element but the first (`first` is
+/// whether no element has been written yet). Shared by the slice, list, and
+/// mpsc-queue renderers so the bracket/indent/comma dance lives in one place.
+fn write_seq_prefix(
+    f: &mut fmt::Formatter<'_>,
+    pretty: bool,
+    depth: usize,
+    first: bool,
+) -> fmt::Result {
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, depth + 1)
+    } else if first {
+        Ok(())
+    } else {
+        write!(f, ", ")
+    }
+}
+
+/// Whitespace closing a `[e, e, …]` sequence body, written before the caller's
+/// `]`. In pretty mode, once `any` element has been emitted, a newline and an
+/// indent back to `depth` so the bracket lines up with the opener; inline (or
+/// when empty), nothing.
+fn write_seq_close(
+    f: &mut fmt::Formatter<'_>,
+    pretty: bool,
+    depth: usize,
+    any: bool,
+) -> fmt::Result {
+    if pretty && any {
+        writeln!(f)?;
+        write_indent(f, depth)?;
     }
     Ok(())
 }
