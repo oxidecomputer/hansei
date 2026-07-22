@@ -21,11 +21,11 @@
 //!    no silent omissions.
 
 use crate::bundle::{
-    BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues, DisplayNode,
-    DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef, Meta,
-    Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
-    StaticsTable, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef,
-    TypeTable, VariantDef, VariantShape,
+    Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
+    DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
+    Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
+    StaticsTable, Step, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef,
+    TypeTable, ValueExpr, VariantDef, VariantShape,
 };
 use std::num::NonZeroU8;
 
@@ -3784,16 +3784,85 @@ impl<'a> Emitter<'a> {
                 };
                 self.debug_formats.insert(bid, node);
             } else if let Some(format) = watch_receiver_debug_format(self.reader, tid) {
-                // A receiver-local version is compared with the packed version
-                // in Shared<T>; only an unseen newest value is rendered.
-                let node = DisplayNode::WatchReceiver {
-                    observed: format.observed.into(),
-                    shared: format.shared.into(),
-                    shared_data: format.shared_data.into(),
-                    state: format.state.into(),
-                    value: format.value.into(),
-                    element: self.reserve(format.element),
-                    closed_mask: 1,
+                // The receiver renders as its one-slot inbox — an unseen value
+                // and an independent closed flag — computed by comparing the
+                // receiver's observed version with the Arc-backed published
+                // version. This composes from `Variant` + `ValueExpr` rather
+                // than a bespoke node: the state and value words are reached by
+                // selectors that cross the `Arc` via a `Deref` step.
+                //
+                // Reserve the element type so the `Some(T)` alias resolves even
+                // if nothing else pulls it into the type graph.
+                self.reserve(format.element);
+                let cross_arc = |mid: &[u32], tail: &[u32]| -> Selector {
+                    let mut steps: Vec<Step> =
+                        format.shared.iter().map(|&i| Step::Member(i)).collect();
+                    steps.push(Step::Deref);
+                    steps.extend(mid.iter().chain(tail).map(|&i| Step::Member(i)));
+                    Selector(steps)
+                };
+                let state_sel = cross_arc(&format.shared_data, &format.state);
+                let value_sel = cross_arc(&format.shared_data, &format.value);
+                let observed_sel: Selector = format.observed.clone().into();
+                let closed_mask = 1u64;
+                // unseen = observed != (state & !closed_mask), the published
+                // version; render the newest value as `Some(T)` when it differs.
+                let unseen = DisplayNode::Variant {
+                    discriminant: ValueExpr::Ne(
+                        Box::new(ValueExpr::Read(observed_sel)),
+                        Box::new(ValueExpr::And(
+                            Box::new(ValueExpr::Read(state_sel.clone())),
+                            Box::new(ValueExpr::Not(Box::new(ValueExpr::Const(closed_mask)))),
+                        )),
+                    ),
+                    arms: vec![
+                        Arm {
+                            value: 0,
+                            label: Some(self.interner.intern("None")),
+                            payload: None,
+                        },
+                        Arm {
+                            value: 1,
+                            label: Some(self.interner.intern("Some")),
+                            payload: Some(Box::new(DisplayNode::Alias {
+                                at: value_sel,
+                                follow_pointers: true,
+                            })),
+                        },
+                    ],
+                    default: None,
+                };
+                // closed is the low state bit, independent of the version.
+                let closed = DisplayNode::Variant {
+                    discriminant: ValueExpr::And(
+                        Box::new(ValueExpr::Read(state_sel)),
+                        Box::new(ValueExpr::Const(closed_mask)),
+                    ),
+                    arms: vec![
+                        Arm {
+                            value: 0,
+                            label: Some(self.interner.intern("false")),
+                            payload: None,
+                        },
+                        Arm {
+                            value: 1,
+                            label: Some(self.interner.intern("true")),
+                            payload: None,
+                        },
+                    ],
+                    default: None,
+                };
+                let node = DisplayNode::Struct {
+                    fields: vec![
+                        Field::Named {
+                            label: self.interner.intern("unseen"),
+                            node: unseen,
+                        },
+                        Field::Named {
+                            label: self.interner.intern("closed"),
+                            node: closed,
+                        },
+                    ],
                 };
                 self.debug_formats.insert(bid, node);
             } else if let Some(format) = mpsc_rx_debug_format(self.reader, tid) {

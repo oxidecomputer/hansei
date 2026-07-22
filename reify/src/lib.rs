@@ -2,12 +2,13 @@ pub mod debug_type;
 
 pub use debug_type::TypeKind;
 use debug_type::{
-    BitField, DebugMember, DebugType, DisplayNode, Field, FieldRender, MapEntries, ScalarDecode,
-    TypeClass,
+    Arm, BitField, DebugMember, DebugType, DisplayNode, Field, FieldRender, MapEntries, Place,
+    ScalarDecode, TypeClass, ValueExpr,
 };
 
 use proc::Mappings;
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
@@ -2106,20 +2107,15 @@ fn eval_node<'a, T: DebugType<'a>>(
         } => eval_ip_addr(f, bytes, *octets_offset, u64::from(*octets_size)),
         DisplayNode::Alias {
             target,
-            offset,
+            place,
             follow_pointers,
         } => {
-            let start = *offset as usize;
-            let Some(end) = start.checked_add(target.size() as usize) else {
-                return write!(f, "<truncated>");
-            };
-            let Some(child_bytes) = bytes.get(start..end) else {
-                return write!(f, "<truncated>");
-            };
             // Peeling a wrapper elides a representation detail, so it does not
             // consume the value-depth budget: `ctx` (and its `depth`) threads
             // through unchanged. An atomic snapshot (`follow_pointers` false)
-            // shows a stored pointer's address rather than its pointee.
+            // shows a stored pointer's address rather than its pointee. Nulling
+            // `proc` also stops a place from crossing a pointer, which a
+            // non-following alias never does (its place is a local offset).
             let child_ctx = if *follow_pointers {
                 ctx
             } else {
@@ -2129,19 +2125,24 @@ fn eval_node<'a, T: DebugType<'a>>(
                     ..ctx
                 }
             };
-            let child = DisplayRecurse {
-                info: TypeInfoRef {
-                    ty: *target,
-                    addr: addr + *offset,
-                    bytes: child_bytes,
-                    _marker: std::marker::PhantomData,
-                },
-                ctx: child_ctx,
-            };
-            if pretty {
-                write!(f, "{child:#}")
-            } else {
-                write!(f, "{child}")
+            match read_place_bytes(place, bytes, addr, child_ctx, target.size()) {
+                Ok((child_addr, child_bytes)) => {
+                    let child = DisplayRecurse {
+                        info: TypeInfoRef {
+                            ty: *target,
+                            addr: child_addr,
+                            bytes: child_bytes.as_ref(),
+                            _marker: std::marker::PhantomData,
+                        },
+                        ctx: child_ctx,
+                    };
+                    if pretty {
+                        write!(f, "{child:#}")
+                    } else {
+                        write!(f, "{child}")
+                    }
+                }
+                Err(marker) => write!(f, "{marker}"),
             }
         }
         DisplayNode::SlotCount {
@@ -2249,142 +2250,125 @@ fn eval_node<'a, T: DebugType<'a>>(
             *value,
             entries,
         ),
-        DisplayNode::WatchReceiver {
-            observed_offset,
-            observed_size,
-            shared_pointer_offset,
-            shared_data_offset,
-            state_offset,
-            state_size,
-            value_offset,
-            element,
-            element_size,
-            closed_mask,
-        } => eval_watch_receiver(
+        DisplayNode::Variant {
+            discriminant,
+            arms,
+            default,
+        } => eval_variant(
             f,
+            discriminant,
+            arms,
+            default.as_deref(),
             ty,
             bytes,
+            addr,
             ctx,
             pretty,
-            *observed_offset,
-            *observed_size,
-            *shared_pointer_offset,
-            *shared_data_offset,
-            *state_offset,
-            *state_size,
-            *value_offset,
-            *element,
-            *element_size,
-            *closed_mask,
         ),
     }
 }
 
-/// Render a Tokio watch receiver as a one-slot inbox. Tokio keeps the
-/// receiver's last-observed version inline but the published version and value
-/// behind an Arc, so this comparison cannot be expressed by the ordinary
-/// single-root `Struct`/`Pointer` combinators.
+/// Read the `size`-byte machine word at `place`, following any pointer hops
+/// through `proc`. Empty `hops` is the common case: a borrowed local slice, no
+/// process read. On failure the `Err` carries the exact degradation marker to
+/// print in the value's place.
+fn read_place_bytes<'b>(
+    place: &Place,
+    bytes: &'b [u8],
+    addr: u64,
+    ctx: RenderCtx<'_, '_>,
+    size: u64,
+) -> std::result::Result<(u64, Cow<'b, [u8]>), &'static str> {
+    if place.hops.is_empty() {
+        let slice = byte_range(bytes, place.root_offset, size).ok_or("<truncated>")?;
+        return Ok((addr.wrapping_add(place.root_offset), Cow::Borrowed(slice)));
+    }
+    let proc = ctx.proc.ok_or("<target unavailable>")?;
+    let mut pointer = read_u64_at(bytes, place.root_offset).ok_or("<truncated>")?;
+    let (last, intermediate) = place.hops.split_last().expect("hops is non-empty");
+    for hop in intermediate {
+        if pointer == 0 {
+            return Err("<null>");
+        }
+        let addr = pointer.checked_add(*hop).ok_or("<invalid address>")?;
+        let word = proc.read_bytes(addr, 8).map_err(|_| "<unreadable>")?;
+        pointer = read_u64_at(&word, 0).ok_or("<unreadable>")?;
+    }
+    if pointer == 0 {
+        return Err("<null>");
+    }
+    let target = pointer.checked_add(*last).ok_or("<invalid address>")?;
+    let read = if size == 0 {
+        Vec::new()
+    } else {
+        proc.read_bytes(target, size).map_err(|_| "<unreadable>")?
+    };
+    Ok((target, Cow::Owned(read)))
+}
+
+/// Evaluate a resolved [`ValueExpr`] against `bytes`, crossing pointer hops via
+/// `ctx.proc`. `Err` carries a degradation marker for a failed read.
+fn eval_expr(
+    expr: &ValueExpr,
+    bytes: &[u8],
+    addr: u64,
+    ctx: RenderCtx<'_, '_>,
+) -> std::result::Result<u64, &'static str> {
+    Ok(match expr {
+        ValueExpr::Const(value) => *value,
+        ValueExpr::Read(place, size) => {
+            let (_, word) = read_place_bytes(place, bytes, addr, ctx, u64::from(*size))?;
+            read_unsigned_at(word.as_ref(), 0, u64::from(*size)).ok_or("<unreadable>")?
+        }
+        ValueExpr::And(a, b) => eval_expr(a, bytes, addr, ctx)? & eval_expr(b, bytes, addr, ctx)?,
+        ValueExpr::Not(inner) => !eval_expr(inner, bytes, addr, ctx)?,
+        ValueExpr::Ne(a, b) => {
+            u64::from(eval_expr(a, bytes, addr, ctx)? != eval_expr(b, bytes, addr, ctx)?)
+        }
+    })
+}
+
+/// Render a [`DisplayNode::Variant`]: evaluate the discriminant, then render the
+/// first arm whose value matches (else `default`, else `<unknown: N>` — the
+/// same no-silent-state contract the scalar decoder follows). Only the selected
+/// arm is evaluated, so an unseen watch receiver never reads its value.
 #[allow(clippy::too_many_arguments)]
-fn eval_watch_receiver<'a, T: DebugType<'a>>(
+fn eval_variant<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
+    discriminant: &ValueExpr,
+    arms: &[Arm<T>],
+    default: Option<&DisplayNode<T>>,
     ty: &T,
     bytes: &[u8],
+    addr: u64,
     ctx: RenderCtx<'_, 'a>,
     pretty: bool,
-    observed_offset: u64,
-    observed_size: u32,
-    shared_pointer_offset: u64,
-    shared_data_offset: u64,
-    state_offset: u64,
-    state_size: u32,
-    value_offset: u64,
-    element: T,
-    element_size: u32,
-    closed_mask: u64,
 ) -> fmt::Result {
-    let name = ty.name();
-    let Some(observed) = read_unsigned_at(bytes, observed_offset, u64::from(observed_size)) else {
-        return write!(f, "{name} {{ <truncated> }}");
+    let value = match eval_expr(discriminant, bytes, addr, ctx) {
+        Ok(value) => value,
+        Err(marker) => return write!(f, "{marker}"),
     };
-    let Some(pointer) = read_u64_at(bytes, shared_pointer_offset) else {
-        return write!(f, "{name} {{ <truncated> }}");
-    };
-    let (Some(proc), Some(_visited)) = (ctx.proc, ctx.visited) else {
-        return write!(f, "{name} {{ <target unavailable> }}");
-    };
-    if pointer == 0 {
-        return write!(f, "{name} {{ <null> }}");
-    }
-    let Some(shared_addr) = pointer.checked_add(shared_data_offset) else {
-        return write!(f, "{name} {{ <invalid address> }}");
-    };
-    let Some(state_addr) = shared_addr.checked_add(state_offset) else {
-        return write!(f, "{name} {{ <invalid address> }}");
-    };
-    let Ok(state_bytes) = proc.read_bytes(state_addr, u64::from(state_size)) else {
-        return write!(f, "{name} {{ <unreadable> }}");
-    };
-    let Some(state) = read_unsigned_at(&state_bytes, 0, u64::from(state_size)) else {
-        return write!(f, "{name} {{ <unreadable> }}");
-    };
-    let closed = state & closed_mask != 0;
-    let unseen = observed != (state & !closed_mask);
-
-    write!(f, "{name} {{")?;
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.depth + 1)?;
-    } else {
-        write!(f, " ")?;
-    }
-    write!(f, "unseen: ")?;
-    if unseen {
-        write!(f, "Some(")?;
-        let value = shared_addr
-            .checked_add(value_offset)
-            .ok_or(())
-            .and_then(|value_addr| {
-                if element_size == 0 {
-                    Ok((value_addr, Vec::new()))
-                } else {
-                    proc.read_bytes(value_addr, u64::from(element_size))
-                        .map(|bytes| (value_addr, bytes))
-                        .map_err(|_| ())
-                }
-            });
-        match value {
-            Ok((value_addr, value_bytes)) => {
-                let child = DisplayRecurse {
-                    info: TypeInfoRef {
-                        ty: element,
-                        addr: value_addr,
-                        bytes: &value_bytes,
-                        _marker: std::marker::PhantomData,
-                    },
-                    ctx: ctx.deeper(),
-                };
-                if pretty {
-                    write!(f, "{child:#}")?;
-                } else {
-                    write!(f, "{child}")?;
-                }
-            }
-            Err(()) => write!(f, "<unreadable>")?,
+    if let Some(arm) = arms.iter().find(|arm| arm.value == value) {
+        // `label`, `label(<payload>)`, or `<payload>` — covering a unit variant
+        // (`None`), a tuple variant (`Some(x)`), and a bare label (`false`).
+        if let Some(label) = &arm.label {
+            write!(f, "{label}")?;
         }
-        write!(f, ")")?;
-    } else {
-        write!(f, "None")?;
+        if let Some(payload) = &arm.payload {
+            if arm.label.is_some() {
+                write!(f, "(")?;
+            }
+            eval_node(f, payload, ty, bytes, addr, ctx.deeper(), pretty)?;
+            if arm.label.is_some() {
+                write!(f, ")")?;
+            }
+        }
+        return Ok(());
     }
-    if pretty {
-        writeln!(f, ",")?;
-        write_indent(f, ctx.depth + 1)?;
-        write!(f, "closed: {closed},")?;
-        writeln!(f)?;
-        write_indent(f, ctx.depth)?;
-    } else {
-        write!(f, ", closed: {closed} ")?;
+    match default {
+        Some(node) => eval_node(f, node, ty, bytes, addr, ctx, pretty),
+        None => write!(f, "<unknown: {value}>"),
     }
-    write!(f, "}}")
 }
 
 /// Render the inline octets at `offset` as an IPv4 (4 octets) or IPv6 (16
