@@ -1037,6 +1037,7 @@ mod bundle_tests {
     const WATCH_ARC_INNER: BundleTypeId = BundleTypeId(72);
     const WATCH_ARC_INNER_PTR: BundleTypeId = BundleTypeId(73);
     const WATCH_SHARED: BundleTypeId = BundleTypeId(74);
+    const PAIR: BundleTypeId = BundleTypeId(75);
 
     /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
     ///
@@ -1065,6 +1066,7 @@ mod bundle_tests {
         let atomic_ptrn = s("Atomic<*mut Point>");
         let (loom_atomicn, loom_celln, tuple0n) =
             (s("AtomicU32"), s("LoomUnsafeCell<Point>"), s("__0"));
+        let (pairn, tuple1n) = (s("Pair"), s("__1"));
         let btree_mapn = s("alloc::collections::btree::map::BTreeMap<u32, u32>");
         let btree_rootn = s("Option<NodeRef>");
         let btree_node_refn = s("NodeRef");
@@ -1669,6 +1671,12 @@ mod bundle_tests {
                 name: watch_sharedn,
                 size: 16,
                 members: vec![m(staten, U64, 0), m(valuen, U32, 8)],
+            },
+            // A two-field tuple struct: `Pair(u32, u32)`, fields `__0`/`__1`.
+            TypeDef::Struct {
+                name: pairn,
+                size: 8,
+                members: vec![m(tuple0n, U32, 0), m(tuple1n, U32, 4)],
             },
         ];
 
@@ -2357,6 +2365,29 @@ mod bundle_tests {
         assert_eq!(
             format!("{}", value.display_with_depth(2)),
             "Point { x: 3, y: 4 }"
+        );
+    }
+
+    #[test]
+    fn test_tuple_struct_elides_synthetic_field_names() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+
+        // A tuple struct's `__0`/`__1` fields render positionally, eliding the
+        // synthetic labels, to match Rust `Debug` (`Pair(1, 2)`).
+        let pair = TypeInfoRef::new(v.ty(PAIR).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", pair.display_with_depth(2)), "Pair(1, 2)");
+        assert_eq!(
+            format!("{:#}", pair.display_with_depth(2)),
+            "Pair(\n    1,\n    2,\n)"
+        );
+
+        // A regular struct still shows its field names (regression guard).
+        let point = TypeInfoRef::new(v.ty(POINT).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", point.display_with_depth(2)),
+            "Point { x: 1, y: 2 }"
         );
     }
 
