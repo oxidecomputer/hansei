@@ -289,6 +289,37 @@ pub enum DisplayNode<T> {
         arms: Vec<Arm<T>>,
         default: Option<Box<DisplayNode<T>>>,
     },
+    /// Interpret a small imperative program to generate a `[e, e, …]` sequence:
+    /// the resolved form of the bundle
+    /// [`exegesis::bundle::DisplayNode::CustomList`]. `vars` seed loop
+    /// variables, `body` runs each iteration while `condition` holds, and each
+    /// [`Stmt::Emit`] renders `element` against the bytes read at a computed
+    /// address. The evaluator caps iterations, so a cyclic walk terminates.
+    CustomList {
+        vars: Vec<ValueExpr>,
+        condition: ValueExpr,
+        body: Vec<Stmt>,
+        element: T,
+    },
+}
+
+/// One resolved [`DisplayNode::CustomList`] body statement, mirroring the bundle
+/// [`exegesis::bundle::Stmt`]. Carries no type parameter: a statement only moves
+/// words and addresses, and the sole element type lives on the list itself.
+#[derive(Clone, Debug)]
+pub enum Stmt {
+    /// Assign loop variable `var`: `vars[var] = value`.
+    Set { var: u32, value: ValueExpr },
+    /// Run `then` when `cond` is nonzero, otherwise `otherwise`.
+    If {
+        cond: ValueExpr,
+        then: Vec<Stmt>,
+        otherwise: Vec<Stmt>,
+    },
+    /// Emit one element: render the list's element at the address `at` computes.
+    Emit { at: ValueExpr },
+    /// Stop the loop when `cond` is nonzero.
+    Break { cond: ValueExpr },
 }
 
 /// A resolved location that may cross pointer hops, read at render time. An
@@ -323,6 +354,17 @@ pub enum ValueExpr {
     And(Box<ValueExpr>, Box<ValueExpr>),
     Not(Box<ValueExpr>),
     Ne(Box<ValueExpr>, Box<ValueExpr>),
+    /// Read a [`DisplayNode::CustomList`] loop variable by index.
+    Var(u32),
+    /// Read a `size`-byte word from the process at a computed address.
+    Load {
+        addr: Box<ValueExpr>,
+        size: u32,
+    },
+    Add(Box<ValueExpr>, Box<ValueExpr>),
+    Sub(Box<ValueExpr>, Box<ValueExpr>),
+    Mul(Box<ValueExpr>, Box<ValueExpr>),
+    Lt(Box<ValueExpr>, Box<ValueExpr>),
 }
 
 /// Resolved storage-specific entry traversal for [`DisplayNode::Map`].
@@ -591,6 +633,60 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                     Box::new(resolve_value_expr(scope, a)?),
                     Box::new(resolve_value_expr(scope, b)?),
                 ),
+                BundleExpr::Var(id) => ValueExpr::Var(*id),
+                BundleExpr::Load { addr, size } => ValueExpr::Load {
+                    addr: Box::new(resolve_value_expr(scope, addr)?),
+                    size: *size,
+                },
+                BundleExpr::Add(a, b) => ValueExpr::Add(
+                    Box::new(resolve_value_expr(scope, a)?),
+                    Box::new(resolve_value_expr(scope, b)?),
+                ),
+                BundleExpr::Sub(a, b) => ValueExpr::Sub(
+                    Box::new(resolve_value_expr(scope, a)?),
+                    Box::new(resolve_value_expr(scope, b)?),
+                ),
+                BundleExpr::Mul(a, b) => ValueExpr::Mul(
+                    Box::new(resolve_value_expr(scope, a)?),
+                    Box::new(resolve_value_expr(scope, b)?),
+                ),
+                BundleExpr::Lt(a, b) => ValueExpr::Lt(
+                    Box::new(resolve_value_expr(scope, a)?),
+                    Box::new(resolve_value_expr(scope, b)?),
+                ),
+            })
+        }
+
+        /// Resolve a bundle [`exegesis::bundle::Stmt`] into reify's form,
+        /// resolving every embedded [`ValueExpr`] against `scope`.
+        fn resolve_stmt(scope: BundleType<'_>, stmt: &exegesis::bundle::Stmt) -> Option<Stmt> {
+            use exegesis::bundle::Stmt as BundleStmt;
+            Some(match stmt {
+                BundleStmt::Set { var, value } => Stmt::Set {
+                    var: *var,
+                    value: resolve_value_expr(scope, value)?,
+                },
+                BundleStmt::If {
+                    cond,
+                    then,
+                    otherwise,
+                } => Stmt::If {
+                    cond: resolve_value_expr(scope, cond)?,
+                    then: then
+                        .iter()
+                        .map(|stmt| resolve_stmt(scope, stmt))
+                        .collect::<Option<Vec<_>>>()?,
+                    otherwise: otherwise
+                        .iter()
+                        .map(|stmt| resolve_stmt(scope, stmt))
+                        .collect::<Option<Vec<_>>>()?,
+                },
+                BundleStmt::Emit { at } => Stmt::Emit {
+                    at: resolve_value_expr(scope, at)?,
+                },
+                BundleStmt::Break { cond } => Stmt::Break {
+                    cond: resolve_value_expr(scope, cond)?,
+                },
             })
         }
 
@@ -854,6 +950,27 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         default,
                     })
                 }
+                BundleNode::CustomList {
+                    vars,
+                    condition,
+                    body,
+                    element,
+                } => {
+                    let vars = vars
+                        .iter()
+                        .map(|expr| resolve_value_expr(scope, expr))
+                        .collect::<Option<Vec<_>>>()?;
+                    let body = body
+                        .iter()
+                        .map(|stmt| resolve_stmt(scope, stmt))
+                        .collect::<Option<Vec<_>>>()?;
+                    Some(DisplayNode::CustomList {
+                        vars,
+                        condition: resolve_value_expr(scope, condition)?,
+                        body,
+                        element: scope.related_type(*element),
+                    })
+                }
             }
         }
 
@@ -1016,8 +1133,8 @@ mod bundle_tests {
         DiscrValues, DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION,
         Field as BundleField, FieldRender as BundleFieldRender, InfraTypes,
         MapEntries as BundleMapEntries, MemberDef, Meta, ProvenanceTable,
-        ScalarDecode as BundleScalarDecode, Selector, StaticsTable, Step, StrRef, StringInterner,
-        TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape,
+        ScalarDecode as BundleScalarDecode, Selector, StaticsTable, Step, Stmt as BundleStmt,
+        StrRef, StringInterner, TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape,
     };
     use std::num::NonZeroU8;
 
@@ -3055,6 +3172,124 @@ mod bundle_tests {
         let value = TypeInfoRef::new(v.ty(CHAN).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&Reader, 8));
         assert!(shown.contains("queued: []"), "{shown}");
+    }
+
+    #[test]
+    fn test_custom_list_walks_mpsc_block_chain() {
+        // A CustomList reproduces the MpscChan block-chain walk from the general
+        // ValueExpr primitives: seed cur/tail/block from the Chan, then loop
+        // reading each block's start_index (a Load), emit the in-window slots,
+        // and follow the `next` pointer — rendering the same `[20, 30]`.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                // One block at [0x1000, 0x1020): [u32; 4] values @0, start_index
+                // usize @16, next ptr @24 (null). Serve any sub-read of it, since
+                // the CustomList reads fields and slots piecemeal (unlike the
+                // MpscChan renderer, which slurps the whole block at once).
+                let mut block = Vec::new();
+                for value in [10u32, 20, 30, 40] {
+                    block.extend_from_slice(&value.to_le_bytes());
+                }
+                block.extend_from_slice(&0u64.to_le_bytes()); // start_index @16
+                block.extend_from_slice(&0u64.to_le_bytes()); // next @24 (null)
+                let start = addr.checked_sub(0x1000).expect("read below block") as usize;
+                Ok(block[start..start + len as usize].to_vec())
+            }
+        }
+
+        fn var(id: u32) -> ValueExpr {
+            ValueExpr::Var(id)
+        }
+        fn con(n: u64) -> ValueExpr {
+            ValueExpr::Const(n)
+        }
+        fn add(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+            ValueExpr::Add(Box::new(a), Box::new(b))
+        }
+        fn sub(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+            ValueExpr::Sub(Box::new(a), Box::new(b))
+        }
+        fn mul(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+            ValueExpr::Mul(Box::new(a), Box::new(b))
+        }
+        fn lt(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+            ValueExpr::Lt(Box::new(a), Box::new(b))
+        }
+        fn ne(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+            ValueExpr::Ne(Box::new(a), Box::new(b))
+        }
+        fn load(a: ValueExpr) -> ValueExpr {
+            ValueExpr::Load {
+                addr: Box::new(a),
+                size: 8,
+            }
+        }
+        // block.start_index at block+16; recomputed at each use (no `start` var).
+        let start = || load(add(var(2), con(16)));
+
+        let node = BundleNode::CustomList {
+            vars: vec![
+                ValueExpr::Read(sel(&[1])), // 0: cur = index
+                ValueExpr::Read(sel(&[0])), // 1: tail
+                ValueExpr::Read(sel(&[2])), // 2: block = head pointer
+            ],
+            condition: ValueExpr::And(Box::new(lt(var(0), var(1))), Box::new(ne(var(2), con(0)))),
+            body: vec![
+                // Malformed guard: cur before this block would underflow the Sub.
+                BundleStmt::Break {
+                    cond: lt(var(0), start()),
+                },
+                BundleStmt::If {
+                    // cur - start < BLOCK_CAP (4): the slot lives in this block.
+                    cond: lt(sub(var(0), start()), con(4)),
+                    then: vec![
+                        // Emit values[cur - start] (values_offset 0, stride 4).
+                        BundleStmt::Emit {
+                            at: add(var(2), mul(sub(var(0), start()), con(4))),
+                        },
+                        BundleStmt::Set {
+                            var: 0,
+                            value: add(var(0), con(1)),
+                        },
+                    ],
+                    otherwise: vec![
+                        // Past this block: follow `next` at block+24.
+                        BundleStmt::Set {
+                            var: 2,
+                            value: load(add(var(2), con(24))),
+                        },
+                    ],
+                },
+            ],
+            element: U32,
+        };
+
+        let mut b = test_bundle();
+        b.types.debug_formats.insert(CHAN, node);
+        b.validate().expect("CustomList bundle must validate");
+        let view = BundleView::new(&b);
+
+        // Chan: tail usize @0, index usize @8, head ptr @16.
+        let chan = |tail: u64, index: u64| {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&tail.to_le_bytes());
+            buf.extend_from_slice(&index.to_le_bytes());
+            buf.extend_from_slice(&0x1000u64.to_le_bytes());
+            buf
+        };
+
+        // index=1, tail=3: slots 1 and 2 are still queued — as MpscChan renders.
+        let bytes = chan(3, 1);
+        let value = TypeInfoRef::new(view.ty(CHAN).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert_eq!(shown, "[20, 30]", "{shown}");
+
+        // Drained (index == tail): empty, and no block is read at all.
+        let bytes = chan(3, 3);
+        let value = TypeInfoRef::new(view.ty(CHAN).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert_eq!(shown, "[]", "{shown}");
     }
 
     #[test]

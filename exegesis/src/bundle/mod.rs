@@ -13,8 +13,8 @@ pub use schema::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
     Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
-    StaticsTable, Step, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable,
-    ValueExpr, VariantDef, VariantShape, strip_llvm_suffix,
+    StaticsTable, Step, Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef,
+    TypeTable, ValueExpr, VariantDef, VariantShape, strip_llvm_suffix,
 };
 pub use strings::{StrRef, StringInterner, StringTable};
 pub use view::{

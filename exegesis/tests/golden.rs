@@ -402,6 +402,24 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
                 describe_value_expr(bundle, root, discriminant),
             )
         }
+        DisplayNode::CustomList {
+            vars,
+            condition,
+            body,
+            element,
+        } => {
+            let vars = vars
+                .iter()
+                .map(|expr| describe_value_expr(bundle, root, expr))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "CustomList {{ vars=[{vars}], condition={}, body={} stmts, element={} }}",
+                describe_value_expr(bundle, root, condition),
+                body.len(),
+                fq_name(bundle, *element),
+            )
+        }
     }
 }
 
@@ -419,6 +437,30 @@ fn describe_value_expr(bundle: &Bundle, root: BundleTypeId, expr: &ValueExpr) ->
         ValueExpr::Not(inner) => format!("~{}", describe_value_expr(bundle, root, inner)),
         ValueExpr::Ne(a, b) => format!(
             "({} != {})",
+            describe_value_expr(bundle, root, a),
+            describe_value_expr(bundle, root, b)
+        ),
+        ValueExpr::Var(id) => format!("Var({id})"),
+        ValueExpr::Load { addr, size } => {
+            format!("Load({}, {size})", describe_value_expr(bundle, root, addr))
+        }
+        ValueExpr::Add(a, b) => format!(
+            "({} + {})",
+            describe_value_expr(bundle, root, a),
+            describe_value_expr(bundle, root, b)
+        ),
+        ValueExpr::Sub(a, b) => format!(
+            "({} - {})",
+            describe_value_expr(bundle, root, a),
+            describe_value_expr(bundle, root, b)
+        ),
+        ValueExpr::Mul(a, b) => format!(
+            "({} * {})",
+            describe_value_expr(bundle, root, a),
+            describe_value_expr(bundle, root, b)
+        ),
+        ValueExpr::Lt(a, b) => format!(
+            "({} < {})",
             describe_value_expr(bundle, root, a),
             describe_value_expr(bundle, root, b)
         ),

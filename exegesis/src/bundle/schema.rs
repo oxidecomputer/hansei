@@ -399,6 +399,46 @@ pub enum DisplayNode {
         arms: Vec<Arm>,
         default: Option<Box<DisplayNode>>,
     },
+    /// Generate a `[e, e, …]` sequence by interpreting a small imperative
+    /// program — the general escape hatch for a windowed or paged traversal the
+    /// declarative combinators can't shape, such as the mpsc block chain (a
+    /// linked list of blocks each holding a slot array, windowed to the queued
+    /// range).
+    ///
+    /// `vars` are seeded once from the rendered value (a seed may not reference
+    /// another variable), then while `condition` holds the interpreter runs
+    /// `body`: assignments, branches, and `Emit`s. Each `Emit` renders
+    /// `element` against the bytes read at the address it computes. The
+    /// evaluator caps iterations, so a malformed or cyclic program degrades
+    /// rather than looping forever. See [`Stmt`] for the body statements and
+    /// [`ValueExpr`] for the sublanguage the program is built from.
+    CustomList {
+        vars: Vec<ValueExpr>,
+        condition: ValueExpr,
+        body: Vec<Stmt>,
+        element: BundleTypeId,
+    },
+}
+
+/// One statement in a [`DisplayNode::CustomList`] body. The body is a flat
+/// sequence run each loop iteration; `If` nests further sequences, but there is
+/// no inner loop — iteration is the outer `CustomList` loop alone, which keeps
+/// the interpreter's iteration cap a hard bound on the work a program can do.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum Stmt {
+    /// Assign loop variable `var`: `vars[var] = value`.
+    Set { var: u32, value: ValueExpr },
+    /// Run `then` when `cond` is nonzero, otherwise `otherwise`.
+    If {
+        cond: ValueExpr,
+        then: Vec<Stmt>,
+        otherwise: Vec<Stmt>,
+    },
+    /// Emit one sequence element: render the list's `element` type against the
+    /// bytes read at the address `at` computes.
+    Emit { at: ValueExpr },
+    /// Stop the loop when `cond` is nonzero.
+    Break { cond: ValueExpr },
 }
 
 /// One arm of a [`DisplayNode::Variant`]: the discriminant `value` it matches,
@@ -417,9 +457,11 @@ pub struct Arm {
 /// (and, across a [`Step::Deref`], the target process). It exists so a
 /// [`DisplayNode::Variant`] discriminant — a length, an index, a predicate —
 /// can be *computed* from decoded words rather than only read at a fixed
-/// offset. Kept deliberately minimal: operators are added only when a real
-/// type needs one (there is, for instance, no shift yet — every current use is
-/// mask-and-compare).
+/// offset. A [`DisplayNode::CustomList`] program builds on the same language,
+/// adding loop [`ValueExpr::Var`]iables, computed [`ValueExpr::Load`]s, and
+/// integer arithmetic so a block-chain walk can index a slot and test a bound.
+/// Still deliberately minimal: operators are added only when a real type needs
+/// one (there is, for instance, no shift or division yet).
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum ValueExpr {
     /// Read the machine word (≤ 8 bytes) the selector lands on. The selector
@@ -433,6 +475,24 @@ pub enum ValueExpr {
     Not(Box<ValueExpr>),
     /// `1` if the sub-expressions are unequal, else `0`.
     Ne(Box<ValueExpr>, Box<ValueExpr>),
+    /// Read a [`DisplayNode::CustomList`] loop variable by index. Meaningless
+    /// outside a `CustomList` body, where validation checks the index is in
+    /// range; a `Variant` discriminant declares no variables, so any `Var`
+    /// there is rejected.
+    Var(u32),
+    /// Read a `size`-byte machine word (1, 2, 4, or 8) from the target process
+    /// at the address the sub-expression computes. Where [`ValueExpr::Read`] is
+    /// anchored at the rendered value, `Load` reaches an address held in a loop
+    /// variable — the block pointer a `CustomList` walks.
+    Load { addr: Box<ValueExpr>, size: u32 },
+    /// Wrapping sum of two sub-expressions.
+    Add(Box<ValueExpr>, Box<ValueExpr>),
+    /// Wrapping difference `lhs - rhs`.
+    Sub(Box<ValueExpr>, Box<ValueExpr>),
+    /// Wrapping product of two sub-expressions.
+    Mul(Box<ValueExpr>, Box<ValueExpr>),
+    /// `1` if `lhs < rhs` (unsigned), else `0`.
+    Lt(Box<ValueExpr>, Box<ValueExpr>),
 }
 
 /// A storage-specific producer of key/value entries for [`DisplayNode::Map`].
