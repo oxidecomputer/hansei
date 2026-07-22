@@ -3,7 +3,7 @@ pub mod debug_type;
 pub use debug_type::TypeKind;
 use debug_type::{
     Arm, BitField, DebugMember, DebugType, DisplayNode, Field, FieldRender, MapEntries, Place,
-    ScalarDecode, TypeClass, ValueExpr,
+    ScalarDecode, Stmt, TypeClass, ValueExpr,
 };
 
 use proc::Mappings;
@@ -2249,6 +2249,12 @@ fn eval_node<'a, T: DebugType<'a>>(
             ctx,
             pretty,
         ),
+        DisplayNode::CustomList {
+            vars,
+            condition,
+            body,
+            element,
+        } => eval_custom_list(f, vars, condition, body, element, bytes, addr, ctx, pretty),
     }
 }
 
@@ -2294,6 +2300,7 @@ fn read_place_bytes<'b>(
 /// `ctx.proc`. `Err` carries a degradation marker for a failed read.
 fn eval_expr(
     expr: &ValueExpr,
+    vars: &[u64],
     bytes: &[u8],
     addr: u64,
     ctx: RenderCtx<'_, '_>,
@@ -2304,12 +2311,203 @@ fn eval_expr(
             let (_, word) = read_place_bytes(place, bytes, addr, ctx, u64::from(*size))?;
             read_unsigned_at(word.as_ref(), 0, u64::from(*size)).ok_or("<unreadable>")?
         }
-        ValueExpr::And(a, b) => eval_expr(a, bytes, addr, ctx)? & eval_expr(b, bytes, addr, ctx)?,
-        ValueExpr::Not(inner) => !eval_expr(inner, bytes, addr, ctx)?,
-        ValueExpr::Ne(a, b) => {
-            u64::from(eval_expr(a, bytes, addr, ctx)? != eval_expr(b, bytes, addr, ctx)?)
+        ValueExpr::And(a, b) => {
+            eval_expr(a, vars, bytes, addr, ctx)? & eval_expr(b, vars, bytes, addr, ctx)?
+        }
+        ValueExpr::Not(inner) => !eval_expr(inner, vars, bytes, addr, ctx)?,
+        ValueExpr::Ne(a, b) => u64::from(
+            eval_expr(a, vars, bytes, addr, ctx)? != eval_expr(b, vars, bytes, addr, ctx)?,
+        ),
+        ValueExpr::Var(id) => *vars.get(*id as usize).ok_or("<invalid var>")?,
+        ValueExpr::Load {
+            addr: addr_expr,
+            size,
+        } => {
+            let target = eval_expr(addr_expr, vars, bytes, addr, ctx)?;
+            let proc = ctx.proc.ok_or("<target unavailable>")?;
+            let word = proc
+                .read_bytes(target, u64::from(*size))
+                .map_err(|_| "<unreadable>")?;
+            read_unsigned_at(&word, 0, u64::from(*size)).ok_or("<unreadable>")?
+        }
+        ValueExpr::Add(a, b) => eval_expr(a, vars, bytes, addr, ctx)?
+            .wrapping_add(eval_expr(b, vars, bytes, addr, ctx)?),
+        ValueExpr::Sub(a, b) => eval_expr(a, vars, bytes, addr, ctx)?
+            .wrapping_sub(eval_expr(b, vars, bytes, addr, ctx)?),
+        ValueExpr::Mul(a, b) => eval_expr(a, vars, bytes, addr, ctx)?
+            .wrapping_mul(eval_expr(b, vars, bytes, addr, ctx)?),
+        ValueExpr::Lt(a, b) => {
+            u64::from(eval_expr(a, vars, bytes, addr, ctx)? < eval_expr(b, vars, bytes, addr, ctx)?)
         }
     })
+}
+
+/// Cap on [`DisplayNode::CustomList`] loop iterations. A body has no inner loop,
+/// so this hard-bounds the emitted items (and any cyclic pointer walk) without a
+/// per-node `visited` set: a malformed or cyclic program stops here instead of
+/// spinning. A live tokio mpsc queue is a few blocks of ≤32 slots, far under it.
+const MAX_CUSTOM_LIST_ITERS: u32 = 1000;
+
+/// Result of running a [`Stmt`] sequence: whether to run the next loop iteration
+/// or stop — a `Break` fired, or a read degraded to a marker already written.
+enum Flow {
+    Next,
+    Stop,
+}
+
+/// Write a degradation marker as a pseudo-element in a sequence body: an inline
+/// `, ` separator when elements precede it, then the marker. Matches the
+/// `<unreadable>` handling in the list and mpsc-queue renderers.
+fn write_seq_marker(f: &mut fmt::Formatter<'_>, marker: &str, any: bool) -> fmt::Result {
+    write!(f, "{}{marker}", if any { ", " } else { "" })
+}
+
+/// Render a [`DisplayNode::CustomList`]: seed the loop variables from the value,
+/// then interpret `body` each iteration while `condition` holds, emitting one
+/// `element` per [`Stmt::Emit`]. Owns the iteration cap and reuses the shared
+/// sequence punctuation; a failed read degrades to a marker like the other list
+/// nodes. This is the general escape hatch a windowed/paged walk (the mpsc block
+/// chain) uses in place of a bespoke leaf.
+#[allow(clippy::too_many_arguments)]
+fn eval_custom_list<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    vars_init: &[ValueExpr],
+    condition: &ValueExpr,
+    body: &[Stmt],
+    element: &T,
+    bytes: &[u8],
+    addr: u64,
+    ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
+) -> fmt::Result {
+    // Seeds read the value alone (no variables exist yet); a failed seed read
+    // degrades the whole list before any bracket, like the other list nodes.
+    let mut vars: Vec<u64> = Vec::with_capacity(vars_init.len());
+    for init in vars_init {
+        match eval_expr(init, &[], bytes, addr, ctx) {
+            Ok(value) => vars.push(value),
+            Err(marker) => return write!(f, "{marker}"),
+        }
+    }
+
+    write!(f, "[")?;
+    let mut any = false;
+    for _ in 0..MAX_CUSTOM_LIST_ITERS {
+        match eval_expr(condition, &vars, bytes, addr, ctx) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(marker) => {
+                write_seq_marker(f, marker, any)?;
+                break;
+            }
+        }
+        match eval_stmts(
+            f, body, &mut vars, element, bytes, addr, ctx, pretty, &mut any,
+        )? {
+            Flow::Next => {}
+            Flow::Stop => break,
+        }
+    }
+    write_seq_close(f, pretty, ctx.depth, any)?;
+    write!(f, "]")
+}
+
+/// Run one [`Stmt`] sequence for a [`DisplayNode::CustomList`] iteration,
+/// mutating `vars`, emitting elements, and returning whether the loop continues.
+/// A read that degrades writes its marker inline and stops the loop.
+#[allow(clippy::too_many_arguments)]
+fn eval_stmts<'a, T: DebugType<'a>>(
+    f: &mut fmt::Formatter<'_>,
+    stmts: &[Stmt],
+    vars: &mut Vec<u64>,
+    element: &T,
+    bytes: &[u8],
+    addr: u64,
+    ctx: RenderCtx<'_, 'a>,
+    pretty: bool,
+    any: &mut bool,
+) -> std::result::Result<Flow, fmt::Error> {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Set { var, value } => {
+                let value = match eval_expr(value, vars, bytes, addr, ctx) {
+                    Ok(value) => value,
+                    Err(marker) => {
+                        write_seq_marker(f, marker, *any)?;
+                        return Ok(Flow::Stop);
+                    }
+                };
+                if let Some(slot) = vars.get_mut(*var as usize) {
+                    *slot = value;
+                }
+            }
+            Stmt::If {
+                cond,
+                then,
+                otherwise,
+            } => {
+                let cond = match eval_expr(cond, vars, bytes, addr, ctx) {
+                    Ok(cond) => cond,
+                    Err(marker) => {
+                        write_seq_marker(f, marker, *any)?;
+                        return Ok(Flow::Stop);
+                    }
+                };
+                let branch = if cond != 0 { then } else { otherwise };
+                if let Flow::Stop =
+                    eval_stmts(f, branch, vars, element, bytes, addr, ctx, pretty, any)?
+                {
+                    return Ok(Flow::Stop);
+                }
+            }
+            Stmt::Break { cond } => {
+                let cond = match eval_expr(cond, vars, bytes, addr, ctx) {
+                    Ok(cond) => cond,
+                    Err(marker) => {
+                        write_seq_marker(f, marker, *any)?;
+                        return Ok(Flow::Stop);
+                    }
+                };
+                if cond != 0 {
+                    return Ok(Flow::Stop);
+                }
+            }
+            Stmt::Emit { at } => {
+                let target = match eval_expr(at, vars, bytes, addr, ctx) {
+                    Ok(target) => target,
+                    Err(marker) => {
+                        write_seq_marker(f, marker, *any)?;
+                        return Ok(Flow::Stop);
+                    }
+                };
+                let Some(proc) = ctx.proc else {
+                    write_seq_marker(f, "<target unavailable>", *any)?;
+                    return Ok(Flow::Stop);
+                };
+                let Ok(element_bytes) = proc.read_bytes(target, element.size()) else {
+                    write_seq_marker(f, "<unreadable>", *any)?;
+                    return Ok(Flow::Stop);
+                };
+                write_seq_prefix(f, pretty, ctx.depth, !*any)?;
+                *any = true;
+                let child = DisplayRecurse {
+                    info: TypeInfoRef {
+                        ty: *element,
+                        addr: target,
+                        bytes: &element_bytes,
+                        _marker: std::marker::PhantomData,
+                    },
+                    ctx: ctx.deeper(),
+                };
+                if pretty {
+                    write!(f, "{child:#},")?;
+                } else {
+                    write!(f, "{child}")?;
+                }
+            }
+        }
+    }
+    Ok(Flow::Next)
 }
 
 /// Render a [`DisplayNode::Variant`]: evaluate the discriminant, then render the
@@ -2328,7 +2526,7 @@ fn eval_variant<'a, T: DebugType<'a>>(
     ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
-    let value = match eval_expr(discriminant, bytes, addr, ctx) {
+    let value = match eval_expr(discriminant, &[], bytes, addr, ctx) {
         Ok(value) => value,
         Err(marker) => return write!(f, "{marker}"),
     };

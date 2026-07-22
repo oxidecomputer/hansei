@@ -10,7 +10,7 @@
 
 use crate::bundle::schema::{
     Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MapEntries, ScalarDecode, Selector,
-    StaticsTable, Step, TypeDef, ValueExpr, strip_llvm_suffix,
+    StaticsTable, Step, Stmt, TypeDef, ValueExpr, strip_llvm_suffix,
 };
 use crate::bundle::strings::StrRef;
 use crate::symbols::normalized_value_index;
@@ -565,7 +565,7 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             arms,
             default,
         } => {
-            check_value_expr(bundle, scope, discriminant, what)?;
+            check_value_expr(bundle, scope, discriminant, 0, what)?;
             for (i, arm) in arms.iter().enumerate() {
                 if let Some(label) = arm.label
                     && bundle.strings.get(label).is_none()
@@ -586,6 +586,33 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 check_node(bundle, scope, default, what)?;
             }
         }
+        DisplayNode::CustomList {
+            vars,
+            condition,
+            body,
+            element,
+        } => {
+            // Seeds are evaluated against the value alone, before any variable
+            // exists, so they may not reference one another (num_vars = 0).
+            for expr in vars {
+                check_value_expr(bundle, scope, expr, 0, what)?;
+            }
+            let num_vars = vars.len() as u32;
+            check_value_expr(bundle, scope, condition, num_vars, what)?;
+            check_stmts(bundle, scope, body, num_vars, what)?;
+            if bundle.types.get(*element).is_none() {
+                return corrupt(format!(
+                    "CustomList element type id {} out of range",
+                    element.0
+                ));
+            }
+            if type_size(bundle, *element, &mut Vec::new()).is_none() {
+                return corrupt(format!(
+                    "CustomList has an unsized element type {}",
+                    element.0
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -597,6 +624,7 @@ fn check_value_expr(
     bundle: &Bundle,
     scope: BundleTypeId,
     expr: &ValueExpr,
+    num_vars: u32,
     what: &str,
 ) -> Result<()> {
     match expr {
@@ -610,12 +638,71 @@ fn check_value_expr(
                 ))),
             }
         }
-        ValueExpr::Not(inner) => check_value_expr(bundle, scope, inner, what),
-        ValueExpr::And(a, b) | ValueExpr::Ne(a, b) => {
-            check_value_expr(bundle, scope, a, what)?;
-            check_value_expr(bundle, scope, b, what)
+        ValueExpr::Var(id) => {
+            if *id >= num_vars {
+                Err(Error::Corrupt(format!(
+                    "{what}: value-expression variable {id} out of range ({num_vars} declared)"
+                )))
+            } else {
+                Ok(())
+            }
+        }
+        ValueExpr::Load { addr, size } => {
+            if !matches!(size, 1 | 2 | 4 | 8) {
+                return Err(Error::Corrupt(format!(
+                    "{what}: value-expression load size {size} is not a machine-word width"
+                )));
+            }
+            check_value_expr(bundle, scope, addr, num_vars, what)
+        }
+        ValueExpr::Not(inner) => check_value_expr(bundle, scope, inner, num_vars, what),
+        ValueExpr::And(a, b)
+        | ValueExpr::Ne(a, b)
+        | ValueExpr::Add(a, b)
+        | ValueExpr::Sub(a, b)
+        | ValueExpr::Mul(a, b)
+        | ValueExpr::Lt(a, b) => {
+            check_value_expr(bundle, scope, a, num_vars, what)?;
+            check_value_expr(bundle, scope, b, num_vars, what)
         }
     }
+}
+
+/// Validate a [`DisplayNode::CustomList`] body: every assigned or read variable
+/// index is in range and every sub-expression is well-formed. Recurses into
+/// `If` branches; there is no inner loop, so nothing here bounds iteration —
+/// that is the evaluator's fixed cap.
+fn check_stmts(
+    bundle: &Bundle,
+    scope: BundleTypeId,
+    stmts: &[Stmt],
+    num_vars: u32,
+    what: &str,
+) -> Result<()> {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Set { var, value } => {
+                if *var >= num_vars {
+                    return Err(Error::Corrupt(format!(
+                        "{what}: CustomList assigns out-of-range variable {var} ({num_vars} declared)"
+                    )));
+                }
+                check_value_expr(bundle, scope, value, num_vars, what)?;
+            }
+            Stmt::If {
+                cond,
+                then,
+                otherwise,
+            } => {
+                check_value_expr(bundle, scope, cond, num_vars, what)?;
+                check_stmts(bundle, scope, then, num_vars, what)?;
+                check_stmts(bundle, scope, otherwise, num_vars, what)?;
+            }
+            Stmt::Emit { at } => check_value_expr(bundle, scope, at, num_vars, what)?,
+            Stmt::Break { cond } => check_value_expr(bundle, scope, cond, num_vars, what)?,
+        }
+    }
+    Ok(())
 }
 
 fn check_map_entries(
