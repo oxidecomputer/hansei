@@ -1396,6 +1396,86 @@ fn vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawVecFormat> {
     })
 }
 
+/// Recognize `allocator_api2::stable::vec::Vec<T, A>`, the `allocator-api2`
+/// crate's stable-channel reimplementation of `Vec`. It renders through the
+/// same `Slice` node as [`vec_debug_format`]'s `alloc::vec::Vec`, but its buffer
+/// has the pre-`RawVecInner` shape and so needs its own detector: `buf` is a
+/// `RawVec<T, A>` holding `ptr: NonNull<T>` and a plain `cap: usize` directly,
+/// with no type-erased `Unique<u8>` and no `Cap` niche newtype. Because the
+/// pointer is `NonNull<T>` over the real element (not a `u8` byte pointer), the
+/// buffer pointer is matched by its element target rather than by width.
+fn allocator_api2_vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawVecFormat> {
+    let RawType::Struct(vec) = reader.canonical_type(id)? else {
+        return None;
+    };
+    if fq_name(reader, id)?.split('<').next()? != "allocator_api2::stable::vec::Vec" {
+        return None;
+    }
+    let [element_param, alloc_param] = vec.template_params.as_ref() else {
+        return None;
+    };
+    if element_param.name.map(|name| reader.strings.get(name)) != Some("T")
+        || alloc_param.name.map(|name| reader.strings.get(name)) != Some("A")
+    {
+        return None;
+    }
+    let element = reader.canonicalize(element_param.type_id);
+    let alloc = reader.canonicalize(alloc_param.type_id);
+
+    let (buf_index, buf_member) = unique_member(reader, &vec.members, "buf")?;
+    let (len_index, len_member) = unique_member(reader, &vec.members, "len")?;
+    if !is_unsigned_integer(reader, len_member.type_id, crate::bundle::POINTER_SIZE) {
+        return None;
+    }
+
+    let RawType::Struct(raw_vec) = reader.canonical_type(buf_member.type_id)? else {
+        return None;
+    };
+    if fq_name(reader, buf_member.type_id)?.split('<').next()?
+        != "allocator_api2::stable::raw_vec::RawVec"
+    {
+        return None;
+    }
+    let [raw_element, raw_alloc] = raw_vec.template_params.as_ref() else {
+        return None;
+    };
+    if reader.canonicalize(raw_element.type_id) != element
+        || reader.canonicalize(raw_alloc.type_id) != alloc
+    {
+        return None;
+    }
+
+    // `ptr` and `cap` sit at fixed offsets in `RawVec`, so a zero-offset walk
+    // from the buffer yields exactly the one pointer that targets the element
+    // type — `ptr.pointer` through the `NonNull<T>` wrapper.
+    let mut pointer_paths = Vec::new();
+    find_pointer_paths(
+        reader,
+        reader.canonicalize(buf_member.type_id),
+        &|target| reader.canonicalize(target) == element,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut pointer_paths,
+    );
+    let [(pointer_path, _)] = pointer_paths.as_slice() else {
+        return None;
+    };
+
+    let (cap_index, cap_member) = unique_member(reader, &raw_vec.members, "cap")?;
+    if !is_unsigned_integer(reader, cap_member.type_id, crate::bundle::POINTER_SIZE) {
+        return None;
+    }
+
+    Some(RawVecFormat {
+        pointer: std::iter::once(buf_index as u32)
+            .chain(pointer_path.iter().copied())
+            .collect(),
+        length: vec![len_index as u32],
+        capacity: vec![buf_index as u32, cap_index as u32],
+        element,
+    })
+}
+
 /// Recognize the private node layout of `BTreeMap<K, V, A>`. Unlike the
 /// simpler known formats, this retains a few referenced types until emission
 /// so they can be translated to bundle ids.
@@ -3822,9 +3902,12 @@ impl<'a> Emitter<'a> {
         while let Some((tid, bid)) = self.pending.pop_front() {
             let def = self.convert(tid);
             self.defs[bid.0 as usize] = def;
-            if let Some(format) = vec_debug_format(self.reader, tid) {
+            if let Some(format) = vec_debug_format(self.reader, tid)
+                .or_else(|| allocator_api2_vec_debug_format(self.reader, tid))
+            {
                 // An owned `Vec` supplies its capacity for the length check; a
-                // borrowed or boxed slice would pass `capacity: None`.
+                // borrowed or boxed slice would pass `capacity: None`. The
+                // `allocator-api2` stable `Vec` renders through this same node.
                 let node = DisplayNode::Slice {
                     pointer: format.pointer.into(),
                     length: format.length.into(),
