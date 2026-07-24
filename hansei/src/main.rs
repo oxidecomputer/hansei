@@ -150,6 +150,11 @@ struct TaskTrace {
     /// Maximum depth to recurse when formatting variable values.
     #[arg(long, default_value_t = 2, requires = "verbose")]
     value_depth: usize,
+
+    /// Disable every type's custom formatter and show the raw structural
+    /// view of values instead.
+    #[arg(long)]
+    ugly: bool,
 }
 
 #[derive(Args)]
@@ -269,7 +274,7 @@ fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
     match ctx.task_stage(task)? {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
-            print_await_chain(&ctx, &chain, args.verbose, args.value_depth, out)?;
+            print_await_chain(&ctx, &chain, args.verbose, args.value_depth, args.ugly, out)?;
             // The leaf-future knowledge base (§3.6): name what the task
             // is actually waiting on when the leaf is a known primitive.
             match ctx.wait_target(&chain) {
@@ -291,7 +296,12 @@ fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
                 out,
                 "The task has finished; its output has not been consumed:"
             )?;
-            writeln!(out, "  {:#}", result.as_ref().display_with_depth(4))?;
+            let output = result.as_ref();
+            let mut value = output.display_with_depth(4);
+            if args.ugly {
+                value = value.ugly();
+            }
+            writeln!(out, "  {:#}", value)?;
         }
         bundle::TaskStage::Consumed => {
             writeln!(out, "The task has finished and its output was consumed.")?;
@@ -307,6 +317,7 @@ fn print_await_chain<'b, T: proc::Target>(
     chain: &bundle::AwaitChain<'b>,
     verbose: bool,
     value_depth: usize,
+    ugly: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let active_frame = chain.frames.len().checked_sub(1);
@@ -391,7 +402,11 @@ fn print_await_chain<'b, T: proc::Target>(
                     Some(bytes) => {
                         let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes)
                             .peel();
-                        let value = format!("{:#}", v.display_from_target(ctx.proc, value_depth));
+                        let mut disp = v.display_from_target(ctx.proc, value_depth);
+                        if ugly {
+                            disp = disp.ugly();
+                        }
+                        let value = format!("{:#}", disp);
                         print_variable(out, &value_indent, m.name(), &value)?;
                     }
                     None => writeln!(out, "{value_indent}{}: <unreadable>", m.name())?,

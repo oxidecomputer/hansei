@@ -2564,6 +2564,62 @@ mod bundle_tests {
     }
 
     #[test]
+    fn test_ugly_suppresses_custom_formatters() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+
+        // A `Scalar` format (`RawMutex`) renders its decoded bits normally, but
+        // `--ugly` shows the underlying struct field.
+        let mutex = TypeInfoRef::new(v.ty(RAW_MUTEX).unwrap(), 0, &[1u8]);
+        assert_eq!(
+            format!("{}", mutex.display()),
+            "parking_lot::raw_mutex::RawMutex: locked=true, parked=false"
+        );
+        assert_eq!(
+            format!("{}", mutex.display().ugly()),
+            "parking_lot::raw_mutex::RawMutex { state: 1 }"
+        );
+
+        // A `Str` format renders as a quoted string normally; `--ugly` shows the
+        // pointer/length representation instead. (No target: the pointer prints
+        // as a bare address rather than being followed.)
+        let str_bytes: Vec<u8> = [0x3000u64, 8]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let s = TypeInfoRef::new(v.ty(STR).unwrap(), 0, &str_bytes);
+        assert_eq!(
+            format!("{}", s.display().ugly()),
+            "&str { data_ptr: 0x3000, length: 8 }"
+        );
+    }
+
+    #[test]
+    fn test_ugly_suppresses_enum_payload_formatter() {
+        // Reshape `Opt::Some`'s payload to a `&str`, whose own `Str` format is
+        // normally delegated to when it appears as an enum payload. `--ugly`
+        // suppresses that delegation and shows the payload's raw fields.
+        let mut b = test_bundle();
+        let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+            panic!("Opt is not an enum");
+        };
+        *size = 16;
+        shape.variants[1].payload.ty = STR;
+        b.validate().expect("modified enum bundle must validate");
+
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x3000u64, 8]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display().ugly()),
+            "Opt::Some { data_ptr: 0x3000, length: 8 }"
+        );
+    }
+
+    #[test]
     fn test_active_variant_through_typeinfo() {
         let b = test_bundle();
         let v = BundleView::new(&b);

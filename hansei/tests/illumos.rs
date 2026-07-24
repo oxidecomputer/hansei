@@ -301,6 +301,12 @@ fn task_with_future<'a>(rows: &'a [TaskRow], future: &str) -> &'a TaskRow {
 
 /// Run `hansei task-trace --task-id` and return its output.
 fn trace(bundle: &Path, source: &Source, task_id: &str, verbose: bool) -> String {
+    trace_opts(bundle, source, task_id, verbose, false)
+}
+
+/// Like [`trace`], but also toggles `--ugly` (the raw structural view, with
+/// every type's custom formatter suppressed).
+fn trace_opts(bundle: &Path, source: &Source, task_id: &str, verbose: bool, ugly: bool) -> String {
     let mut args = vec![
         "task-trace",
         "--bundle",
@@ -310,6 +316,9 @@ fn trace(bundle: &Path, source: &Source, task_id: &str, verbose: bool) -> String
     ];
     if verbose {
         args.push("--verbose");
+    }
+    if ugly {
+        args.push("--ugly");
     }
     let source_args = source.args();
     args.extend(source_args.iter().map(String::as_str));
@@ -377,6 +386,59 @@ Defined at: simple-await.rs:16
 
         let verbose = trace(&bundle, source, &task.id, true);
         assert_locals(&verbose, &["count", "first", "ready", "park"]);
+    });
+}
+
+/// `--ugly` suppresses every type's custom formatter and falls back to the
+/// raw structural view. The simple-await task keeps a spread of
+/// custom-formatted locals live across its park — an IP address, a borrowed
+/// `&str`, an owned `String` — each of which reads as its decoded value
+/// normally and as its underlying representation under `--ugly`.
+#[test]
+#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
+fn test_ugly_locals_acceptance() {
+    let bundle = fixtures().bundle("simple-await");
+    for_each_source("simple-await", |source| {
+        let rows = list_tasks(&bundle, source);
+        let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
+        let who = source.describe();
+
+        // Normal verbose rendering: each local reads as its decoded value,
+        // through its own formatter.
+        let pretty = trace_opts(&bundle, source, &task.id, true, false);
+        assert!(pretty.contains("ipv4: 192.0.2.1"), "({who})\n{pretty}");
+        assert!(
+            pretty.contains(r#"borrowed: "borrowed\ntext""#),
+            "({who})\n{pretty}"
+        );
+        assert!(
+            pretty.contains(r#"owned: "owned\ttext""#),
+            "({who})\n{pretty}"
+        );
+
+        // --ugly: the very same locals render through their structure, and the
+        // formatted forms are gone entirely.
+        let ugly = trace_opts(&bundle, source, &task.id, true, true);
+        assert!(
+            !ugly.contains("192.0.2.1"),
+            "({who}) --ugly still formatted the IP:\n{ugly}"
+        );
+        assert!(
+            !ugly.contains(r#""borrowed\ntext""#),
+            "({who}) --ugly still formatted the &str:\n{ugly}"
+        );
+        assert!(
+            ugly.contains("core::net::ip_addr::Ipv4Addr {"),
+            "({who}) --ugly IP is not structural:\n{ugly}"
+        );
+        assert!(
+            ugly.contains("&str {") && ugly.contains("length: 13"),
+            "({who}) --ugly &str is not structural:\n{ugly}"
+        );
+        assert!(
+            ugly.contains("alloc::string::String {"),
+            "({who}) --ugly String is not structural:\n{ugly}"
+        );
     });
 }
 
