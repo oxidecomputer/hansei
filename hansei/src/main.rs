@@ -27,6 +27,7 @@ enum Action {
     TaskTrace(TaskTrace),
     Tasks(Tasks),
     Graph(Graph),
+    #[command(hide = true)]
     Snapshot(SnapshotCmd),
 }
 
