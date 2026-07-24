@@ -625,11 +625,24 @@ pub struct DisplayValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>> {
     info: &'r TypeInfoRef<'buf, 'a, T>,
     depth: usize,
     max_depth: usize,
+    ugly: bool,
+}
+
+impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>> DisplayValue<'r, 'buf, 'a, T> {
+    /// Suppress custom formatters and render the base structural view.
+    pub fn ugly(mut self) -> Self {
+        self.ugly = true;
+        self
+    }
 }
 
 impl<'a, T: DebugType<'a>> fmt::Display for DisplayValue<'_, '_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, self.info, RenderCtx::plain(self.depth, self.max_depth))
+        write_display_value(
+            f,
+            self.info,
+            RenderCtx::plain(self.depth, self.max_depth).with_ugly(self.ugly),
+        )
     }
 }
 
@@ -637,7 +650,16 @@ pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromP
     info: &'r TypeInfoRef<'buf, 'a, T>,
     proc: &'r P,
     max_depth: usize,
+    ugly: bool,
     visited: RefCell<HashSet<(u64, &'a str)>>,
+}
+
+impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc> DisplayTargetValue<'r, 'buf, 'a, T, P> {
+    /// Suppress custom formatters and render the base structural view.
+    pub fn ugly(mut self) -> Self {
+        self.ugly = true;
+        self
+    }
 }
 
 impl<'a, T: DebugType<'a>, P: ReadFromProc> fmt::Display for DisplayTargetValue<'_, '_, 'a, T, P> {
@@ -648,6 +670,7 @@ impl<'a, T: DebugType<'a>, P: ReadFromProc> fmt::Display for DisplayTargetValue<
             proc: Some(self.proc),
             visited: Some(&self.visited),
             hex_integers: false,
+            ugly: self.ugly,
         };
         write_display_value(f, self.info, ctx)
     }
@@ -659,6 +682,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             info: self,
             depth: 0,
             max_depth: 8,
+            ugly: false,
         }
     }
 
@@ -667,6 +691,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             info: self,
             depth: 0,
             max_depth,
+            ugly: false,
         }
     }
 
@@ -681,6 +706,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             info: self,
             proc,
             max_depth,
+            ugly: false,
             visited: RefCell::new(HashSet::new()),
         }
     }
@@ -688,9 +714,10 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
 
 /// The context threaded through the recursive `write_*` renderers: recursion
 /// depth bookkeeping, the optional target reader and cycle-guard used to
-/// follow pointers into the process, and whether integers render in hex.
-/// Bundling these keeps the renderer signatures small (they otherwise take the
-/// same five trailing arguments everywhere).
+/// follow pointers into the process, whether integers render in hex, and
+/// whether custom debug formatters are suppressed in favour of the base
+/// structural view. Bundling these keeps the renderer signatures small (they
+/// otherwise take the same trailing arguments everywhere).
 #[derive(Copy, Clone)]
 struct RenderCtx<'buf, 'a> {
     depth: usize,
@@ -698,6 +725,11 @@ struct RenderCtx<'buf, 'a> {
     proc: Option<&'buf dyn ReadFromProc>,
     visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
     hex_integers: bool,
+    /// Suppress every type's own [`debug_format`](DebugType::debug_format) and
+    /// render purely through [`classify`](DebugType::classify) — the "ugly",
+    /// structural view. Propagates to nested values, so a whole subtree
+    /// renders without custom formatters once set.
+    ugly: bool,
 }
 
 impl<'buf, 'a> RenderCtx<'buf, 'a> {
@@ -709,6 +741,7 @@ impl<'buf, 'a> RenderCtx<'buf, 'a> {
             proc: None,
             visited: None,
             hex_integers: false,
+            ugly: false,
         }
     }
 
@@ -727,6 +760,11 @@ impl<'buf, 'a> RenderCtx<'buf, 'a> {
             hex_integers,
             ..self
         }
+    }
+
+    /// The same context with custom formatters suppressed (or not).
+    fn with_ugly(self, ugly: bool) -> Self {
+        Self { ugly, ..self }
     }
 }
 
@@ -762,7 +800,11 @@ fn write_display_value<'a, T: DebugType<'a>>(
         return write!(f, "<truncated>");
     }
 
-    if let Some(node) = ty.debug_format() {
+    // `--ugly` mode skips every custom formatter and renders the type through
+    // its structural classification below.
+    if !ctx.ugly
+        && let Some(node) = ty.debug_format()
+    {
         // A top-level `Scalar` formatter (e.g. a parking_lot `RawMutex`)
         // has no enclosing field label to give it context, so it is prefixed
         // with the type name — `<name>: <decoded>`. Other nodes name (or
@@ -2646,7 +2688,9 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
         return Ok(());
     }
 
-    if let Some(node @ DisplayNode::DynPointer { .. }) = variant_info.ty.debug_format() {
+    if !ctx.ugly
+        && let Some(node @ DisplayNode::DynPointer { .. }) = variant_info.ty.debug_format()
+    {
         return eval_dyn_pointer(f, variant_info.ty, None, &node, variant_info.bytes, ctx);
     }
 
@@ -2655,8 +2699,9 @@ fn write_rust_enum<'a, T: DebugType<'a>>(
     // raw representation fields. `Cow<str>::Borrowed("x")` reads far better
     // than `Borrowed { data_ptr: .., length: .. }`. Delegating to the value
     // formatter keeps this general across every known format (trait objects
-    // are handled above, with their own layout).
-    if variant_info.ty.debug_format().is_some() {
+    // are handled above, with their own layout). `--ugly` mode forgoes this
+    // and renders the payload's raw fields.
+    if !ctx.ugly && variant_info.ty.debug_format().is_some() {
         // Peeling into the payload's own formatter is a representation detail,
         // so it stays at the same depth.
         let child = DisplayRecurse {
