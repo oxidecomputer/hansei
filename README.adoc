@@ -1,7 +1,8 @@
 = Durin
 
-A suite of tools for creating and using debug information — illumos CTF and DWARF-derived debug bundles — for
-Rust binaries.
+A suite of tools for extracting DWARF-derived *debug bundles* from Rust
+binaries and using them to reconstruct the runtime state of a live (or cored)
+`tokio` process.
 
 Experimental and mostly untested, expect bugs.
 
@@ -9,16 +10,85 @@ Experimental and mostly untested, expect bugs.
 
 These are the workspace members that may be useful:
 
-* dwarf2ctf: Convert DWARF to CTF for specified types.
-* durin: Read and write CTF files.
-* exegesis: Read DWARF and extract *debug bundles* describing a binary's async runtime; also the bundle format's
+* exegesis: Read a debug binary's DWARF and extract a self-contained *debug
+  bundle* describing its async runtime and types; also the bundle format's
   reader and type views.
-* hansei: Inspect the state of the `tokio` multi-threaded runtime in a core dump or live process: task listings,
-  automatic await-chain traces, and task dependency graphs with futurelock detection (bundles); scheduler dumps
-  and polling (CTF).
-* hansei-types: The tokio-introspection library behind hansei, generic over both debug-info backends.
-* proc: Minimal bindings for illumos `libproc`, plus replayable target snapshots.
-* reify: Interpret a process's memory through a debug-info backend (CTF or bundle).
+* hansei: Inspect the state of the `tokio` multi-threaded runtime in a core
+  dump or live process: task listings, automatic await-chain traces, and task
+  dependency graphs with futurelock detection.
+* hansei-types: The tokio-introspection library behind hansei.
+* reify: Interpret a process's memory through a debug bundle, rendering values
+  of the bundle's types for humans.
+* proc: Minimal bindings for illumos `libproc`, plus replayable target
+  snapshots.
+* durin: Read and write CTF files.
+
+Note that hansei and proc read a live/cored target and are
+`#[cfg(target_os = "illumos")]` — they only build and run on illumos. Bundle
+extraction (exegesis) and type/value work (reify) are portable.
+
+== Usage
+
+The workflow has two stages: extract a bundle once from a debug binary
+(anywhere), then point hansei at a matching target on illumos.
+
+=== 1. Extract a bundle (exegesis)
+
+Read the DWARF from a debug build and write a bundle:
+
+[source,sh]
+----
+exegesis extract path/to/sled-agent.debug -o sled-agent.bundle
+----
+
+The bundle is self-contained; the debug binary is not needed again. Other
+subcommands inspect what was produced:
+
+[source,sh]
+----
+exegesis stats sled-agent.bundle   # summary counts
+exegesis dump  sled-agent.bundle    # full tables as text
+----
+
+`extract --include-type <fqn>` forces an otherwise-unreached type to be
+emitted, and `--allow-missing-infra` lets extraction proceed on a binary that
+isn't a tokio target.
+
+=== 2. Inspect a target (hansei)
+
+hansei reads a core dump (`--core`) or a live process (`--pid`, which requires
+`-w`/`--destructive` since pausing the process is destructive), interpreting it
+through the bundle from step 1.
+
+List every task the runtime owns — id, lifecycle state, future type, and spawn
+location:
+
+[source,sh]
+----
+hansei tasks --bundle sled-agent.bundle --core core.sled-agent
+----
+
+Trace one task's await chain (select the id from `hansei tasks`); `-v` shows the
+live locals at each await point, `--value-depth` bounds how deep values are
+formatted:
+
+[source,sh]
+----
+hansei task-trace --task-id 42 --bundle sled-agent.bundle --core core.sled-agent -v
+----
+
+Print the waker-based task dependency graph and flag any futurelock — a lock
+future granted or queued on a contended semaphore whose task stopped polling it
+(RFD 609):
+
+[source,sh]
+----
+hansei graph --bundle sled-agent.bundle --core core.sled-agent
+----
+
+Pass `--force` to proceed even when the bundle's symbols don't all resolve in
+the target (a bundle from a mismatched build otherwise refuses to run), and
+`--ugly` to bypass the custom value formatters and show the raw structural view.
 
 == What's with the name?
 
