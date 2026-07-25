@@ -551,6 +551,78 @@ fn test_validate_rejects_symbol_node_on_non_pointer() {
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
 }
 
+/// A `Struct` node's `Member` field naming an index the scope type does not
+/// have must be caught by `check_node`, not left for the renderer to trip over.
+#[test]
+fn test_validate_rejects_out_of_range_member() {
+    let mut strings = StringInterner::new();
+    let u32n = strings.intern("u32");
+    let pointn = strings.intern("Point");
+    let xn = strings.intern("x");
+    let yn = strings.intern("y");
+    let ty = BundleTypeId(0);
+    let b = Bundle {
+        meta: Meta {
+            format_version: FORMAT_VERSION,
+            ..Default::default()
+        },
+        strings: strings.finish(),
+        types: TypeTable {
+            types: vec![
+                // 0: u32
+                TypeDef::Base {
+                    name: u32n,
+                    size: 4,
+                    encoding: Encoding::Unsigned,
+                },
+                // 1: Point { x: u32 @0, y: u32 @4 }
+                TypeDef::Struct {
+                    name: pointn,
+                    size: 8,
+                    members: vec![
+                        MemberDef {
+                            name: xn,
+                            ty: BundleTypeId(0),
+                            offset: 0,
+                        },
+                        MemberDef {
+                            name: yn,
+                            ty: BundleTypeId(0),
+                            offset: 4,
+                        },
+                    ],
+                },
+            ],
+            // Point has two members, so member 9 does not resolve.
+            debug_formats: BTreeMap::from([(
+                BundleTypeId(1),
+                DisplayNode::Struct {
+                    fields: vec![Field::Member(9)],
+                },
+            )]),
+            name_index: vec![],
+        },
+        tasks: TaskTable::default(),
+        dyn_futures: DynFutureTable::default(),
+        statics: StaticsTable::default(),
+        infra: InfraTypes {
+            header: ty,
+            vtable: ty,
+            trailer: ty,
+            context: ty,
+            scheduler_handle: ty,
+            mt_handle: ty,
+            location: ty,
+            raw_waker_vtable: ty,
+        },
+        provenance: ProvenanceTable::default(),
+    };
+    let err = b
+        .validate()
+        .expect_err("out-of-range Member must be rejected");
+    assert!(format!("{err}").contains("out of range"), "{err}");
+}
+
 #[test]
 fn test_validate_rejects_provenance_length_mismatch() {
     let mut b = tiny_bundle();
