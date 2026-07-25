@@ -80,45 +80,6 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfo<'a, T> {
     {
         self.as_ref().parse(ctx)
     }
-
-    /// Pass the elements of a boxed slice to the provided closure.
-    pub fn boxed_slice_elements<Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<()>
-    where
-        F: FnMut(&TypeInfoRef<'_, 'a, T>) -> Result<()>,
-        Ctx: ParseCtx,
-    {
-        let proc = ctx.proc();
-
-        let len: u64 = self.member("length")?.parse(ctx)?;
-        let ptr = self.member("data_ptr")?;
-        let Some(param_ty) = ptr.ty.pointer_target() else {
-            return Err(Error::unexpected_type(
-                ptr.ty.kind(),
-                TypeKind::Pointer,
-                self.ty.name().to_string(),
-            ));
-        };
-
-        let elem_size = param_ty.size();
-
-        let p: u64 = ptr.parse(ctx)?;
-        let total_len = len * param_ty.size();
-
-        let raw = proc.read_bytes(p, total_len)?;
-
-        for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
-            let item_info = TypeInfoRef {
-                ty: param_ty,
-                addr: p + (i as u64) * elem_size,
-                bytes: chunk,
-                _marker: std::marker::PhantomData,
-            }
-            .peel();
-            f(&item_info)?;
-        }
-
-        Ok(())
-    }
 }
 
 impl<'buf, 'a: 'buf, T: DebugType<'a>> From<TypeInfoRef<'buf, 'a, T>> for TypeInfo<'a, T> {
@@ -308,21 +269,6 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
 
     pub fn to_owned(&self) -> TypeInfo<'a, T> {
         self.clone().into()
-    }
-
-    pub fn with_ty(mut self, ty: T) -> TypeInfoRef<'buf, 'a, T> {
-        self.ty = ty;
-        self
-    }
-
-    pub fn with_addr(mut self, addr: u64) -> TypeInfoRef<'buf, 'a, T> {
-        self.addr = addr;
-        self
-    }
-
-    pub fn with_buf(mut self, buf: &'buf [u8]) -> TypeInfoRef<'buf, 'a, T> {
-        self.bytes = buf;
-        self
     }
 
     /// Get an iterator of `TypeInfoRef`s over the elements of an array.
@@ -645,13 +591,10 @@ mod tests {
         // are the bytes behind the pointer, addressed from the buffer they
         // were read from rather than from the fat pointer.
         let slice = crate::TypeInfo::from_addr(&ctx, v.ty(SLICE).unwrap(), 0x4000).unwrap();
-        let mut seen = Vec::new();
-        slice
-            .boxed_slice_elements(&ctx, |e| {
-                seen.push((e.addr, format!("{}", e.display())));
-                Ok(())
-            })
-            .expect("callback walk");
+        let seen: Vec<(u64, String)> = slice
+            .as_ref()
+            .boxed_slice_elements(&ctx, |e| Ok((e.addr, format!("{}", e.display()))))
+            .expect("boxed slice walk");
         assert_eq!(
             seen,
             [
@@ -671,5 +614,42 @@ mod tests {
         let point = crate::TypeInfo::from_addr(&ctx, v.ty(POINT).unwrap(), 0x1000).unwrap();
         assert_eq!(point.member("x").unwrap().parse::<u32, _>(&ctx).unwrap(), 1);
         assert_eq!(point.parse::<u32, _>(&ctx).ok(), None, "Point is not a u32");
+    }
+
+    /// `to_owned` copies a borrowed view's bytes into an owned one, which is
+    /// how a caller keeps a value past the buffer it was read from. Equality
+    /// and `Debug` are the other two things a caller does with a view.
+    #[test]
+    fn test_borrowed_views_convert_compare_and_format() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = u32s(&[1, 2]);
+        let point = TypeInfoRef::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
+
+        let owned = point.to_owned();
+        assert_eq!(owned.addr, 0x1000);
+        assert_eq!(&*owned.buf, &bytes[..]);
+        assert_eq!(format!("{owned}"), format!("{point}"));
+
+        // Equality is over the type, address and bytes together.
+        assert_eq!(
+            point,
+            TypeInfoRef::new(v.ty(POINT).unwrap(), 0x1000, &bytes)
+        );
+        assert_ne!(
+            point,
+            TypeInfoRef::new(v.ty(POINT).unwrap(), 0x2000, &bytes)
+        );
+        let other = u32s(&[9, 9]);
+        assert_ne!(
+            point,
+            TypeInfoRef::new(v.ty(POINT).unwrap(), 0x1000, &other)
+        );
+
+        // `Debug` shows the address in hex, unlike `Display`.
+        let shown = format!("{point:?}");
+        assert!(shown.contains("TypeInfoRef"), "{shown}");
+        assert!(shown.contains("0x1000"), "{shown}");
+        assert!(format!("{owned:?}").contains("TypeInfo"), "{owned:?}");
     }
 }
