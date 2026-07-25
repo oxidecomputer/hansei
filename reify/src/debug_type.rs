@@ -69,12 +69,6 @@ pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug {
     /// If this is an array type, return `(element_type, count)`.
     fn array_info(&self) -> Option<(Self, u64)>;
 
-    // --- Wrapper type unwrapping ---
-
-    /// Unwrap transparent wrapper types (typedef, const, volatile, restrict)
-    /// to the underlying type. Returns `self` if not a wrapper.
-    fn peel_wrappers(&self) -> Self;
-
     // --- Enum variant operations ---
     //
     // These abstract the bundle's VariantShape encoding of Rust enums
@@ -432,9 +426,6 @@ pub enum TypeClass<T> {
     RustEnum,
     /// A C-style enum (named integer constants).
     CEnum,
-    /// A transparent wrapper (typedef, const, volatile, restrict) — recurse
-    /// into the inner type.
-    Wrapper(T),
     /// Opaque / unknown — hex dump.
     Opaque,
 }
@@ -487,12 +478,6 @@ impl<'a> DebugType<'a> for BundleType<'a> {
 
     fn array_info(&self) -> Option<(Self, u64)> {
         BundleType::array_info(self)
-    }
-
-    fn peel_wrappers(&self) -> Self {
-        // Wrapper kinds (typedef/const/volatile) are resolved away at
-        // extraction time and never appear in bundles.
-        *self
     }
 
     fn active_variant(&self, bytes: &[u8]) -> Option<Result<(&'a str, Self, u64)>> {
