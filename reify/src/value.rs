@@ -411,6 +411,10 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
     /// is. These are defined as a struct with only a single sized member. The
     /// buffer will be adjusted if the member is smaller than the parent
     /// struct.
+    ///
+    /// Peeling stops early at a member the buffer cannot cover, returning the
+    /// outermost type whose bytes are intact rather than descending past the
+    /// end of the value.
     pub fn peel(self) -> TypeInfoRef<'buf, 'a, T> {
         let mut info = self;
 
@@ -445,8 +449,15 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             let start = member.offset() as usize;
             let end = start + mem_ty.size() as usize;
 
-            // TODO VALIDATE AHEAD OF TIME
-            info.bytes = info.bytes.get(start..end).unwrap();
+            // A member the buffer does not cover means the bytes in hand are
+            // not the whole value — a short read, most often. Stop at the
+            // outermost type whose bytes are intact and let the caller see a
+            // buffer too short for its type, which the renderer reports as
+            // `<truncated>`.
+            let Some(bytes) = info.bytes.get(start..end) else {
+                break;
+            };
+            info.bytes = bytes;
             info.addr += start as u64;
             info.ty = mem_ty;
         }
@@ -536,3 +547,41 @@ fn boxed_slice_elements<'buf, 'a: 'buf, T: DebugType<'a>, Ctx: ParseCtx>(
 // ---------------------------------------------------------------------------
 // ReadFromProc
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use crate::TypeInfoRef;
+    use crate::testhelper::*;
+
+    use exegesis::bundle::BundleView;
+
+    /// `peel` descends through single-member wrappers, and stops at the last
+    /// type the buffer covers. A value read short must not take it past the end
+    /// of the bytes in hand -- it used to slice unconditionally and panic.
+    #[test]
+    fn test_peel_stops_at_a_buffer_it_cannot_cover() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let wrap = v.ty(WRAP).unwrap();
+
+        // `Wrap { inner: Point @0 }`, with all 8 bytes, peels to the Point.
+        let full: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let peeled = TypeInfoRef::new(wrap, 0, &full).peel();
+        assert_eq!(peeled.ty.name(), "Point");
+        assert_eq!(format!("{}", peeled.display()), "Point { x: 3, y: 4 }");
+
+        // Short of that, peeling stops at Wrap and the renderer reports the
+        // buffer rather than reading past it.
+        for len in 0..8 {
+            let short = &full[..len];
+            let peeled = TypeInfoRef::new(wrap, 0, short).peel();
+            assert_eq!(peeled.ty.name(), "Wrap", "{len} bytes");
+            assert_eq!(peeled.bytes.len(), len, "{len} bytes");
+            assert_eq!(
+                format!("{}", peeled.display()),
+                "<truncated>",
+                "{len} bytes"
+            );
+        }
+    }
+}
