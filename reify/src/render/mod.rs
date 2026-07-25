@@ -414,6 +414,11 @@ fn write_display_value<'a, T: DebugType<'a>>(
                         write!(f, "{}", child)?;
                     }
                 } else {
+                    // Unreachable for a backend whose array size agrees with
+                    // its element size times count, which the guard at the top
+                    // of this function has already checked the buffer against.
+                    // Kept because the slice is fallible and a backend that
+                    // disagreed must degrade rather than read past the end.
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -426,23 +431,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
                 write_indent(f, ctx.depth)?;
             }
             write!(f, "]")
-        }
-
-        TypeClass::Wrapper(inner) => {
-            let child = DisplayRecurse {
-                info: TypeInfoRef {
-                    ty: inner,
-                    addr: info.addr,
-                    bytes,
-                    _marker: std::marker::PhantomData,
-                },
-                ctx: ctx.deeper(),
-            };
-            if f.alternate() {
-                write!(f, "{:#}", child)
-            } else {
-                write!(f, "{}", child)
-            }
         }
 
         TypeClass::Opaque => {
