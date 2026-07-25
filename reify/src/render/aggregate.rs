@@ -228,8 +228,8 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
 
 #[cfg(test)]
 mod tests {
+    use crate::TypeInfoRef;
     use crate::testhelper::*;
-    use crate::{ReadFromProc, TypeInfoRef};
 
     use exegesis::bundle::{BundleView, DisplayNode as BundleNode, TypeDef};
 
@@ -283,15 +283,7 @@ mod tests {
 
     #[test]
     fn test_str_payload_in_enum_renders_as_value() {
-        struct Reader;
-
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                assert_eq!(addr, 0x3000);
-                assert_eq!(len, 8);
-                Ok(b"hi\nthere".to_vec())
-            }
-        }
+        let mem = FakeMem::new().at(0x3000, b"hi\nthere".to_vec());
 
         // Point Opt::Some's payload at a `&str`; its `Str` display format
         // must win over dumping the fat pointer's raw fields, matching how a
@@ -310,22 +302,14 @@ mod tests {
             .collect();
         let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "Opt::Some(\"hi\\nthere\")"
         );
     }
 
     #[test]
     fn test_wrapped_str_payload_in_enum_is_not_peeled() {
-        struct Reader;
-
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                assert_eq!(addr, 0x3000);
-                assert_eq!(len, 8);
-                Ok(b"hi\nthere".to_vec())
-            }
-        }
+        let mem = FakeMem::new().at(0x3000, b"hi\nthere".to_vec());
 
         // A `String`/`Utf8PathBuf` is a single-member wrapper carrying its own
         // `Str` format around an inner `Vec<u8>` (which has a `Slice` format).
@@ -361,7 +345,7 @@ mod tests {
             .collect();
         let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "Opt::Some(\"hi\\nthere\")"
         );
     }

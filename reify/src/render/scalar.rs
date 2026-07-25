@@ -176,8 +176,8 @@ pub(crate) fn eval_ip_addr(
 
 #[cfg(test)]
 mod tests {
+    use crate::TypeInfoRef;
     use crate::testhelper::*;
-    use crate::{ReadFromProc, TypeInfoRef};
 
     use exegesis::bundle::BundleView;
 
@@ -206,18 +206,10 @@ mod tests {
 
     #[test]
     fn test_str_and_string_display_quoted_utf8() {
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                let bytes: &[u8] = match addr {
-                    0x3000 => b"hi\nthere",
-                    0x4000 => b"owned\ttext",
-                    _ => panic!("unexpected address 0x{addr:x}"),
-                };
-                assert_eq!(len, bytes.len() as u64);
-                Ok(bytes.to_vec())
-            }
-        }
+        let mem = FakeMem::new()
+            .at(0x3000, b"hi\nthere".to_vec())
+            .at(0x4000, b"owned\ttext".to_vec())
+            .panic_on_unmapped();
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -227,7 +219,7 @@ mod tests {
             .collect();
         let value = TypeInfoRef::new(v.ty(STR).unwrap(), 0, &str_bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "\"hi\\nthere\""
         );
 
@@ -237,7 +229,7 @@ mod tests {
             .collect();
         let value = TypeInfoRef::new(v.ty(STRING).unwrap(), 0, &string_bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "\"owned\\ttext\""
         );
     }
@@ -304,23 +296,14 @@ mod tests {
 
     #[test]
     fn test_raw_waker_vtable_resolves_function_symbols() {
-        struct Reader;
-
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                panic!("function pointer at {addr:#x} must not be dereferenced")
-            }
-
-            fn function_symbol(&self, addr: u64) -> Option<String> {
-                match addr {
-                    0x1000 => Some("tokio::runtime::task::waker::clone_waker".to_owned()),
-                    0x2000 => Some("tokio::runtime::task::waker::wake_by_val".to_owned()),
-                    0x3000 => Some("tokio::runtime::task::waker::wake_by_ref".to_owned()),
-                    0x4000 => Some("tokio::runtime::task::waker::drop_waker".to_owned()),
-                    _ => None,
-                }
-            }
-        }
+        // No regions: a code pointer must be resolved as a symbol, never
+        // followed as data, so any read at all is a failure.
+        let mem = FakeMem::new()
+            .symbol(0x1000, "tokio::runtime::task::waker::clone_waker")
+            .symbol(0x2000, "tokio::runtime::task::waker::wake_by_val")
+            .symbol(0x3000, "tokio::runtime::task::waker::wake_by_ref")
+            .symbol(0x4000, "tokio::runtime::task::waker::drop_waker")
+            .panic_on_unmapped();
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -329,7 +312,7 @@ mod tests {
             .flat_map(u64::to_le_bytes)
             .collect();
         let value = TypeInfoRef::new(v.ty(RAW_WAKER_VTABLE).unwrap(), 0, &bytes);
-        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        let shown = format!("{:#}", value.display_from_target(&mem, 8));
         assert_eq!(
             shown,
             concat!(
@@ -345,31 +328,23 @@ mod tests {
 
     #[test]
     fn test_function_pointer_resolves_symbol_without_dereference() {
-        struct Reader;
-
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                panic!("function pointer at {addr:#x} must not be dereferenced")
-            }
-
-            fn function_symbol(&self, addr: u64) -> Option<String> {
-                (addr == 0x5000).then(|| "app::callback".to_owned())
-            }
-        }
+        let mem = FakeMem::new()
+            .symbol(0x5000, "app::callback")
+            .panic_on_unmapped();
 
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes = 0x5000u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(FUNCTION_PTR).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "0x5000 -> app::callback"
         );
         assert_eq!(format!("{}", value.display()), "0x5000");
 
         let null = 0u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(FUNCTION_PTR).unwrap(), 0, &null);
-        assert_eq!(format!("{}", value.display_from_target(&Reader, 8)), "null");
+        assert_eq!(format!("{}", value.display_from_target(&mem, 8)), "null");
     }
 
     /// The two "no silent state" rules the scalar decoder exists to enforce: a
@@ -418,12 +393,7 @@ mod tests {
     /// lossily transcoded.
     #[test]
     fn test_invalid_utf8_string_is_reported() {
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, _addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                Ok(vec![0x68, 0x69, 0xff, 0xfe])
-            }
-        }
+        let mem = FakeMem::new().at(0x3000, vec![0x68, 0x69, 0xff, 0xfe]);
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -433,7 +403,7 @@ mod tests {
             .collect();
         let value = TypeInfoRef::new(v.ty(STR).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "<invalid UTF-8 string>"
         );
     }
@@ -443,20 +413,16 @@ mod tests {
     /// address is printed without a marker.
     #[test]
     fn test_unresolvable_symbol_is_reported() {
-        struct NoSymbols;
-        impl ReadFromProc for NoSymbols {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                panic!("function pointer at {addr:#x} must not be dereferenced")
-            }
-            // `function_symbol` is left at its default, which resolves nothing.
-        }
+        // No symbols at all, and any read is a failure: a code pointer is
+        // never followed as data.
+        let mem = FakeMem::new().panic_on_unmapped();
 
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes = 0x5000u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(FUNCTION_PTR).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&NoSymbols, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "0x5000 -> <unknown symbol>"
         );
         assert_eq!(format!("{}", value.display()), "0x5000");
@@ -467,12 +433,7 @@ mod tests {
     /// of the fat pointer was wrong, rather than a single opaque failure.
     #[test]
     fn test_string_read_degradations_are_distinct() {
-        struct Unreadable;
-        impl ReadFromProc for Unreadable {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                Err(crate::Error::invalid_addr(addr))
-            }
-        }
+        let mem = FakeMem::new().unreadable();
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -486,7 +447,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                TypeInfoRef::new(str_ty, 0, &fat(&[0, 0])).display_from_target(&Unreadable, 8)
+                TypeInfoRef::new(str_ty, 0, &fat(&[0, 0])).display_from_target(&mem, 8)
             ),
             "\"\""
         );
@@ -494,7 +455,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                TypeInfoRef::new(str_ty, 0, &fat(&[0, 4])).display_from_target(&Unreadable, 8)
+                TypeInfoRef::new(str_ty, 0, &fat(&[0, 4])).display_from_target(&mem, 8)
             ),
             "<invalid string: null data pointer>"
         );
@@ -502,7 +463,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                TypeInfoRef::new(str_ty, 0, &fat(&[0x3000, 4])).display_from_target(&Unreadable, 8)
+                TypeInfoRef::new(str_ty, 0, &fat(&[0x3000, 4])).display_from_target(&mem, 8)
             ),
             "<unreadable string data>"
         );
@@ -518,8 +479,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                TypeInfoRef::new(string_ty, 0, &fat(&[0x4000, 9, 4]))
-                    .display_from_target(&Unreadable, 8)
+                TypeInfoRef::new(string_ty, 0, &fat(&[0x4000, 9, 4])).display_from_target(&mem, 8)
             ),
             "<invalid String: length exceeds capacity>"
         );

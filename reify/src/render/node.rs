@@ -614,8 +614,8 @@ fn eval_struct<'a, T: DebugType<'a>>(
 
 #[cfg(test)]
 mod tests {
+    use crate::TypeInfoRef;
     use crate::testhelper::*;
-    use crate::{ReadFromProc, TypeInfoRef};
 
     use exegesis::bundle::{BundleView, DisplayNode as BundleNode};
 
@@ -659,34 +659,19 @@ mod tests {
 
     #[test]
     fn test_atomic_pointer_does_not_dereference_stored_address() {
-        struct NoReads;
-
-        impl ReadFromProc for NoReads {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                panic!("atomic pointer formatter unexpectedly read {addr:#x}")
-            }
-        }
+        // Any read at all means the stored address was dereferenced.
+        let mem = FakeMem::new().panic_on_unmapped();
 
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes = 0x1000u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
-        assert_eq!(
-            format!("{}", value.display_from_target(&NoReads, 8)),
-            "0x1000"
-        );
+        assert_eq!(format!("{}", value.display_from_target(&mem, 8)), "0x1000");
     }
 
     #[test]
     fn test_following_alias_preserves_pointer_traversal() {
-        struct Reader;
-
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                assert_eq!((addr, len), (0x1000, 8));
-                Ok([3u32, 4].into_iter().flat_map(u32::to_le_bytes).collect())
-            }
-        }
+        let mem = FakeMem::new().at(0x1000, u32s(&[3, 4]));
 
         let mut b = test_bundle();
         b.types.debug_formats.insert(
@@ -701,7 +686,7 @@ mod tests {
         let bytes = 0x1000u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "0x1000 -> Point { x: 3, y: 4 }"
         );
     }
@@ -710,23 +695,10 @@ mod tests {
     fn test_notify_renders_compact_state_mutex_and_waiters() {
         // Two waiters live at 0x3000 and 0x3020: the first still parked (no
         // notification), the second handed a `notify_one` notification.
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                // Waiter { notification: usize @0, next: *Waiter @8 }.
-                let (notification, next) = match addr {
-                    0x3000 => (0u64, 0x3020u64),
-                    0x3020 => (1u64, 0u64),
-                    other => panic!("unexpected read at {other:#x}"),
-                };
-                let mut b = Vec::new();
-                b.extend_from_slice(&notification.to_le_bytes());
-                b.extend_from_slice(&next.to_le_bytes());
-                b.resize(32, 0);
-                b.truncate(len as usize);
-                Ok(b)
-            }
-        }
+        let mem = FakeMem::new()
+            .at(0x3000, sync_waiter(0, 0x3020))
+            .at(0x3020, sync_waiter(1, 0))
+            .panic_on_unmapped();
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -743,7 +715,7 @@ mod tests {
         let buf = notify(0, 0, 0x3000);
         let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "tokio::sync::notify::Notify { state: state=idle, generation=0, \
              mutex: locked=false, parked=false, queue: [\
              tokio::sync::notify::Waiter { notification: kind=none, order=fifo }, \
@@ -755,7 +727,7 @@ mod tests {
         let buf = notify(0b1010, 0b01, 0);
         let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "tokio::sync::notify::Notify { state: state=notified, generation=2, \
              mutex: locked=true, parked=false, queue: [] }"
         );
@@ -772,7 +744,7 @@ mod tests {
         let buf = notify(0, 0, 0x3000);
         let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
         assert_eq!(
-            format!("{:#}", value.display_from_target(&Reader, 8)),
+            format!("{:#}", value.display_from_target(&mem, 8)),
             "tokio::sync::notify::Notify {\n\
              \x20   state: state=idle, generation=0,\n\
              \x20   mutex: locked=false, parked=false,\n\
@@ -858,22 +830,7 @@ mod tests {
 
     #[test]
     fn test_mpsc_chan_shows_only_queued_messages() {
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                // Block at [0x1000, 0x1020): [u32; 4] values @0, start_index
-                // usize @16, next ptr @24 (null). The queued CustomList reads its
-                // fields and slots piecemeal, so serve any sub-read of it.
-                let mut block = Vec::new();
-                for v in [10u32, 20, 30, 40] {
-                    block.extend_from_slice(&v.to_le_bytes());
-                }
-                block.extend_from_slice(&0u64.to_le_bytes()); // start_index @16
-                block.extend_from_slice(&0u64.to_le_bytes()); // next @24 (null)
-                let start = addr.checked_sub(0x1000).expect("read below block") as usize;
-                Ok(block[start..start + len as usize].to_vec())
-            }
-        }
+        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0));
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -889,13 +846,13 @@ mod tests {
         // index=1, tail=3: slots 1 and 2 are still queued.
         let bytes = chan(3, 1);
         let value = TypeInfoRef::new(v.ty(CHAN).unwrap(), 0, &bytes);
-        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        let shown = format!("{}", value.display_from_target(&mem, 8));
         assert!(shown.contains("queued: [20, 30]"), "{shown}");
 
         // Drained channel (index == tail): nothing queued, no stale slots shown.
         let bytes = chan(3, 3);
         let value = TypeInfoRef::new(v.ty(CHAN).unwrap(), 0, &bytes);
-        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        let shown = format!("{}", value.display_from_target(&mem, 8));
         assert!(shown.contains("queued: []"), "{shown}");
     }
 
@@ -905,21 +862,7 @@ mod tests {
         // format, walks the block chain from the value language: seed
         // cur/tail/block from the Chan, then loop reading each block's
         // start_index (a Load), emit the in-window slots, and follow `next`.
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                // One block at [0x1000, 0x1020): [u32; 4] values @0, start_index
-                // usize @16, next ptr @24 (null), served piecemeal.
-                let mut block = Vec::new();
-                for value in [10u32, 20, 30, 40] {
-                    block.extend_from_slice(&value.to_le_bytes());
-                }
-                block.extend_from_slice(&0u64.to_le_bytes()); // start_index @16
-                block.extend_from_slice(&0u64.to_le_bytes()); // next @24 (null)
-                let start = addr.checked_sub(0x1000).expect("read below block") as usize;
-                Ok(block[start..start + len as usize].to_vec())
-            }
-        }
+        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0));
 
         let mut b = test_bundle();
         b.types.debug_formats.insert(CHAN, chan_queued_node(U32));
@@ -938,13 +881,13 @@ mod tests {
         // index=1, tail=3: slots 1 and 2 are still queued — as MpscChan renders.
         let bytes = chan(3, 1);
         let value = TypeInfoRef::new(view.ty(CHAN).unwrap(), 0, &bytes);
-        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        let shown = format!("{}", value.display_from_target(&mem, 8));
         assert_eq!(shown, "[20, 30]", "{shown}");
 
         // Drained (index == tail): empty, and no block is read at all.
         let bytes = chan(3, 3);
         let value = TypeInfoRef::new(view.ty(CHAN).unwrap(), 0, &bytes);
-        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        let shown = format!("{}", value.display_from_target(&mem, 8));
         assert_eq!(shown, "[]", "{shown}");
     }
 
@@ -953,45 +896,19 @@ mod tests {
         // The receiver's Arc raw pointer is 0x2000; the Chan sits 16 bytes in,
         // past the ArcInner strong/weak header, at 0x2010. Its head block is at
         // 0x1000.
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                // The head block lives at [0x1000, 0x1020) and is read piecemeal
-                // by the queued CustomList; the RxChan is read whole at 0x2010.
-                if (0x1000..0x1020).contains(&addr) {
-                    let mut block = Vec::new();
-                    for v in [10u32, 20, 30, 40] {
-                        block.extend_from_slice(&v.to_le_bytes());
-                    }
-                    block.extend_from_slice(&0u64.to_le_bytes()); // start_index @16
-                    block.extend_from_slice(&0u64.to_le_bytes()); // next @24 (null)
-                    let start = (addr - 0x1000) as usize;
-                    return Ok(block[start..start + len as usize].to_vec());
-                }
-                let mut b = Vec::new();
-                match addr {
-                    0x2010 => {
-                        // RxChan: tail @0, index @8, head @16, semaphore @24
-                        // (permits @24, bound @32).
-                        b.extend_from_slice(&3u64.to_le_bytes()); // tail
-                        b.extend_from_slice(&1u64.to_le_bytes()); // index
-                        b.extend_from_slice(&0x1000u64.to_le_bytes()); // head
-                        b.extend_from_slice(&6u64.to_le_bytes()); // permits -> free 3
-                        b.extend_from_slice(&16u64.to_le_bytes()); // bound -> capacity 16
-                    }
-                    other => panic!("unexpected read at {other:#x}"),
-                }
-                b.truncate(len as usize);
-                Ok(b)
-            }
-        }
+        // RxChan at 0x2010: tail @0, index @8, head @16, then the semaphore's
+        // permits @24 (-> free 3) and bound @32 (-> capacity 16).
+        let mem = FakeMem::new()
+            .at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0))
+            .at(0x2010, u64s(&[3, 1, 0x1000, 6, 16]))
+            .panic_on_unmapped();
 
         let b = test_bundle();
         let v = BundleView::new(&b);
         // Receiver holds the Arc raw pointer.
         let bytes = 0x2000u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
-        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        let shown = format!("{}", value.display_from_target(&mem, 8));
         assert!(
             shown.starts_with("tokio::sync::mpsc::bounded::Receiver<u32> {"),
             "{shown}"
@@ -1003,7 +920,7 @@ mod tests {
         // A null channel pointer is reported rather than dereferenced.
         let bytes = 0u64.to_le_bytes();
         let value = TypeInfoRef::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
-        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        let shown = format!("{}", value.display_from_target(&mem, 8));
         assert_eq!(
             shown,
             "tokio::sync::mpsc::bounded::Receiver<u32> { <null> }"
@@ -1013,23 +930,10 @@ mod tests {
     #[test]
     fn test_bounded_semaphore_renders_compact_state_and_waiters() {
         // Two waiters live at 0x3000 and 0x3020, blocked on 2 and 1 permits.
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                // Waiter { state: usize @0, next: *Waiter @8 }.
-                let (state, next) = match addr {
-                    0x3000 => (2u64, 0x3020u64),
-                    0x3020 => (1u64, 0u64),
-                    other => panic!("unexpected read at {other:#x}"),
-                };
-                let mut b = Vec::new();
-                b.extend_from_slice(&state.to_le_bytes());
-                b.extend_from_slice(&next.to_le_bytes());
-                b.resize(32, 0);
-                b.truncate(len as usize);
-                Ok(b)
-            }
-        }
+        let mem = FakeMem::new()
+            .at(0x3000, sync_waiter(2, 0x3020))
+            .at(0x3020, sync_waiter(1, 0))
+            .panic_on_unmapped();
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -1049,7 +953,7 @@ mod tests {
         let buf = sem(0, 0x3000, 0, 20, 16);
         let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=false, parked=false, \
              closed: false, permits: closed=false, permits=10, bound: 16, queue: [\
              tokio::sync::batch_semaphore::Waiter { permits_needed: 2 }, \
@@ -1060,7 +964,7 @@ mod tests {
         let buf = sem(0b01, 0, 1, 0, 16);
         let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=true, parked=false, \
              closed: true, permits: closed=false, permits=0, bound: 16, queue: [] }"
         );
@@ -1080,7 +984,7 @@ mod tests {
         let buf = sem(0, 0x3000, 0, 20, 16);
         let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         assert_eq!(
-            format!("{:#}", value.display_from_target(&Reader, 8)),
+            format!("{:#}", value.display_from_target(&mem, 8)),
             "tokio::sync::mpsc::bounded::Semaphore {\n\
              \x20   mutex: locked=false, parked=false,\n\
              \x20   closed: false,\n\
@@ -1096,23 +1000,13 @@ mod tests {
 
     #[test]
     fn test_watch_receiver_renders_unseen_value_and_closed_independently() {
-        struct Reader {
-            state: u64,
-            value: u32,
-        }
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                let bytes = match addr {
-                    // ArcInner::data is at 0x2010; Shared::state is at +0.
-                    0x2010 => self.state.to_le_bytes().to_vec(),
-                    // Shared::value is at +8.
-                    0x2018 => self.value.to_le_bytes().to_vec(),
-                    other => panic!("unexpected read at {other:#x}"),
-                };
-                assert_eq!(bytes.len(), len as usize);
-                Ok(bytes)
-            }
-        }
+        // ArcInner::data is at 0x2010, holding Shared { state @0, value @8 }.
+        let shared = |state: u64, value: u32| {
+            FakeMem::new()
+                .at(0x2010, state.to_le_bytes())
+                .at(0x2018, value.to_le_bytes())
+                .panic_on_unmapped()
+        };
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -1148,10 +1042,7 @@ mod tests {
             let bytes = receiver(observed, 0x2000);
             let value = TypeInfoRef::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
             assert_eq!(
-                format!(
-                    "{}",
-                    value.display_from_target(&Reader { state, value: 42 }, 8)
-                ),
+                format!("{}", value.display_from_target(&shared(state, 42), 8)),
                 expected,
                 "observed={observed}, state={state}"
             );
@@ -1160,16 +1051,7 @@ mod tests {
         let bytes = receiver(0, 0x2000);
         let value = TypeInfoRef::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
         assert_eq!(
-            format!(
-                "{:#}",
-                value.display_from_target(
-                    &Reader {
-                        state: 2,
-                        value: 42,
-                    },
-                    8,
-                )
-            ),
+            format!("{:#}", value.display_from_target(&shared(2, 42), 8)),
             "tokio::sync::watch::Receiver<u32> {\n\
              \x20   unseen: Some(42),\n\
              \x20   closed: false,\n\
@@ -1186,16 +1068,7 @@ mod tests {
         let bytes = receiver(0, 0);
         let value = TypeInfoRef::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
         assert_eq!(
-            format!(
-                "{}",
-                value.display_from_target(
-                    &Reader {
-                        state: 2,
-                        value: 42
-                    },
-                    8
-                )
-            ),
+            format!("{}", value.display_from_target(&shared(2, 42), 8)),
             "tokio::sync::watch::Receiver<u32> { unseen: <null>, closed: <null> }"
         );
     }
@@ -1203,17 +1076,10 @@ mod tests {
     #[test]
     fn test_node_struct_renders_every_field_and_list_kind() {
         // Two queued waiters at 0x100 → 0x200 → end.
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                assert_eq!(len, 16);
-                Ok(match addr {
-                    0x100 => waiter_bytes(1, 0x200), // kind=one, order=fifo
-                    0x200 => waiter_bytes(6, 0),     // kind=all(2), order=lifo(1): 0b110
-                    _ => panic!("unexpected waiter address 0x{addr:x}"),
-                })
-            }
-        }
+        let mem = FakeMem::new()
+            .at(0x100, waiter_bytes(1, 0x200)) // kind=one, order=fifo
+            .at(0x200, waiter_bytes(6, 0)) // kind=all(2), order=lifo(1): 0b110
+            .panic_on_unmapped();
 
         let b = node_bundle();
         let v = BundleView::new(&b);
@@ -1222,13 +1088,13 @@ mod tests {
         let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &bytes);
 
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 16)),
+            format!("{}", value.display_from_target(&mem, 16)),
             "Thing { state: state=waiting, generation=3, flag: 1, point: Point { x: 7, y: 9 }, \
              queue: [Waiter { notification: kind=one, order=fifo }, \
              Waiter { notification: kind=all, order=lifo }] }"
         );
 
-        let pretty = format!("{:#}", value.display_from_target(&Reader, 16));
+        let pretty = format!("{:#}", value.display_from_target(&mem, 16));
         assert!(
             pretty.contains("\n    state: state=waiting, generation=3,"),
             "{pretty}"
