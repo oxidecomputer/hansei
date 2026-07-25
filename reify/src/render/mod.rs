@@ -759,4 +759,55 @@ mod tests {
             "Node { value: 1, next: 0x300 -> Node { value: 9, next: null } }"
         );
     }
+
+    /// The bare `Display` impls are a separate entry point from `display()`,
+    /// with their own depth budget -- 16 rather than 8 -- so a value nested
+    /// past eight levels renders through one and truncates through the other.
+    /// Both spellings, borrowed and owned, reach the same renderer.
+    #[test]
+    fn test_bare_display_impls_use_their_own_depth() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let point = TypeInfoRef::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
+
+        // `{}` on the value itself, rather than on a Display* wrapper.
+        assert_eq!(format!("{point}"), "Point { x: 1, y: 2 }");
+        assert_eq!(
+            format!("{point}"),
+            format!("{}", point.display_with_depth(16))
+        );
+        assert_eq!(format!("{point:#}"), "Point {\n     x: 1,\n     y: 2,\n}");
+
+        // The owned form renders identically, through the same impl.
+        let owned = crate::TypeInfo::from(point.clone());
+        assert_eq!(format!("{owned}"), format!("{point}"));
+        assert_eq!(format!("{owned:#}"), format!("{point:#}"));
+    }
+
+    /// `ugly()` on a target-reading display suppresses custom formatters the
+    /// same way it does without a target, and keeps following pointers.
+    #[test]
+    fn test_ugly_applies_to_a_target_reading_display() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x2000, u32s(&[5, 8, 13]));
+        let bytes: Vec<u8> = [0x2000u64, 3, 3]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &bytes);
+
+        // The Vec's own format renders its elements.
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8)),
+            "[5, 8, 13]"
+        );
+        // `ugly` renders the representation instead, still reading the target
+        // for the data pointer it now shows structurally.
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8).ugly()),
+            "alloc::vec::Vec<u32> { ptr: 0x2000 -> 5, len: 3, capacity: 3 }"
+        );
+    }
 }
