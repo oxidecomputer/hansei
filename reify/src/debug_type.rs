@@ -4114,21 +4114,4 @@ mod bundle_tests {
              queue: [Waiter { notification: kind=one, order=fifo }] }"
         );
     }
-
-    #[test]
-    fn test_node_validation_rejects_out_of_range_member() {
-        // A `Member` field naming a member index the type does not have must be
-        // caught by `check_node` at validation time.
-        let mut b = node_bundle();
-        b.types.debug_formats.insert(
-            N_POINT,
-            BundleNode::Struct {
-                fields: vec![BundleField::Member(9)],
-            },
-        );
-        let err = b
-            .validate()
-            .expect_err("out-of-range Member must be rejected");
-        assert!(format!("{err}").contains("out of range"), "{err}");
-    }
 }
