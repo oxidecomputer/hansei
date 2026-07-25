@@ -1,5 +1,10 @@
 pub mod debug_type;
 
+#[cfg(test)]
+mod testhelper;
+#[cfg(test)]
+mod tests;
+
 pub use debug_type::TypeKind;
 use debug_type::{
     Arm, BitField, DebugMember, DebugType, DisplayNode, Field, FieldRender, MapEntries, Place,
