@@ -810,4 +810,61 @@ mod tests {
             "alloc::vec::Vec<u32> { ptr: 0x2000 -> 5, len: 3, capacity: 3 }"
         );
     }
+
+    /// Nesting in pretty mode, and the one place it does not line up. A field
+    /// line is indented `4 * depth + 1` -- four spaces per level from
+    /// `write_indent`, plus the leading space in the `" name: "` prefix -- while
+    /// the closing brace is written at `4 * depth`. So a nested record's fields
+    /// sit one column right of where its closer suggests, and the mismatch
+    /// compounds with depth. Pinned as it stands; worth straightening when the
+    /// display logic is restructured.
+    #[test]
+    fn test_pretty_nesting_indents_fields_one_past_their_closer() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+
+        // A pointer followed in pretty mode: the pointee opens after the
+        // arrow, its fields indent from the pointee's depth, and its closer
+        // lands four columns left of them.
+        let mem = FakeMem::new().at(0x2000, u32s(&[3, 4]));
+        let bytes = 0x2000u64.to_le_bytes();
+        let ptr = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{:#}", ptr.display_from_target(&mem, 8)),
+            "0x2000 -> Point {\n         x: 3,\n         y: 4,\n    }"
+        );
+
+        // Two levels of record nesting, from the structural `ugly` view of a
+        // type whose own formatter would otherwise flatten it.
+        let notify = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &[0u8; 32]);
+        let shown = format!("{:#}", notify.display().ugly());
+        let indent = |needle: &str| {
+            shown
+                .lines()
+                .find(|l| l.trim_start().starts_with(needle))
+                .map(|l| l.len() - l.trim_start().len())
+                .unwrap_or_else(|| panic!("no line for {needle}: {shown}"))
+        };
+        // Depth 1 fields at five, depth 2 at nine, depth 3 at thirteen.
+        assert_eq!(indent("state: 0,"), 5);
+        assert_eq!(indent("raw:"), 9);
+        assert_eq!(indent("head: null,"), 13);
+        // ...but each record closes four columns left of its own fields.
+        assert!(shown.contains("\n             head: null,\n             tail: null,\n        },"));
+    }
+
+    /// Suppressing custom formatters leaves the structural view, which lays out
+    /// with the same rules and still follows a pointer it is handed.
+    #[test]
+    fn test_ugly_renders_the_structural_view_in_pretty() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x2000, u32s(&[5, 8, 13]));
+        let fat = u64s(&[0x2000, 3, 3]);
+        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &fat);
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&mem, 8).ugly()),
+            "alloc::vec::Vec<u32> {\n     ptr: 0x2000 -> 5,\n     len: 3,\n     capacity: 3,\n}"
+        );
+    }
 }
