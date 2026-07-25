@@ -1127,4 +1127,23 @@ mod tests {
         assert_eq!(show(2), "<unknown: 2>");
         assert_eq!(show(255), "<unknown: 255>");
     }
+
+    /// A `CustomList` lays out like the other sequence nodes in pretty mode:
+    /// one element per indented line with a trailing comma.
+    #[test]
+    fn test_custom_list_lays_out_like_a_sequence() {
+        let mut b = test_bundle();
+        b.types.debug_formats.insert(CHAN, chan_queued_node(U32));
+        b.validate().expect("CustomList bundle must validate");
+        let view = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0));
+
+        // Chan: tail usize @0, index usize @8, head ptr @16.
+        let chan = u64s(&[3, 1, 0x1000]);
+        let value = TypeInfoRef::new(view.ty(CHAN).unwrap(), 0, &chan);
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&mem, 8)),
+            "[\n    20,\n    30,\n]"
+        );
+    }
 }

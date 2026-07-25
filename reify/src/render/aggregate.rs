@@ -349,4 +349,46 @@ mod tests {
             "Opt::Some(\"hi\\nthere\")"
         );
     }
+
+    /// Enum variant bodies in pretty mode. The variant name is written inline
+    /// and the payload is laid out by the same aggregate body a struct uses, so
+    /// a named payload nests and a unit variant adds nothing.
+    #[test]
+    fn test_enum_variant_bodies_lay_out_like_structs() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let msg = v.ty(MSG).unwrap();
+        let variant = |discr: u8, payload: &[u8]| {
+            let mut bytes = vec![0u8; 16];
+            bytes[0] = discr;
+            bytes[8..8 + payload.len()].copy_from_slice(payload);
+            bytes
+        };
+
+        // A(Point): the payload's own fields, prefixed with the variant.
+        let a = variant(0, &u32s(&[1, 2]));
+        let a = TypeInfoRef::new(msg, 0, &a);
+        assert_eq!(format!("{}", a.display()), "Msg::A { x: 1, y: 2 }");
+        assert_eq!(
+            format!("{:#}", a.display()),
+            "Msg::A {\n     x: 1,\n     y: 2,\n}"
+        );
+
+        // C(unit): a zero-sized payload writes no body at all.
+        let c = variant(2, &[]);
+        let c = TypeInfoRef::new(msg, 0, &c);
+        assert_eq!(format!("{}", c.display()), "Msg::C");
+        assert_eq!(format!("{:#}", c.display()), "Msg::C");
+
+        // B(u64): the payload type is a bare scalar, so the aggregate body
+        // finds no members and prints nothing -- the 7 is dropped. This cannot
+        // happen against extracted DWARF, where a variant payload is always a
+        // struct (892 of 892 in the channels fixture bundle); it is reachable
+        // only because this fixture points the payload straight at a base
+        // type. Pinned so the renderer's behaviour on a non-aggregate payload
+        // is written down, not because the output is right.
+        let b_bytes = variant(1, &7u64.to_le_bytes());
+        let b_val = TypeInfoRef::new(msg, 0, &b_bytes);
+        assert_eq!(format!("{}", b_val.display()), "Msg::B");
+    }
 }
