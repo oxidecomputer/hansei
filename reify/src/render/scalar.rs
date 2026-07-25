@@ -371,4 +371,157 @@ mod tests {
         let value = TypeInfoRef::new(v.ty(FUNCTION_PTR).unwrap(), 0, &null);
         assert_eq!(format!("{}", value.display_from_target(&Reader, 8)), "null");
     }
+
+    /// The two "no silent state" rules the scalar decoder exists to enforce: a
+    /// value with no entry in its field's table renders `<unknown: N>`, and any
+    /// bit no field covers renders a trailing `<unknown bits: 0xNN>`. Without
+    /// both, layout drift in a future tokio would be dropped rather than shown.
+    #[test]
+    fn test_scalar_decode_reports_unmapped_values_and_stray_bits() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+
+        // RawMutex covers bit 0 (locked) and bit 1 (parked) of a byte; the top
+        // six bits belong to no field.
+        let mutex = v.ty(RAW_MUTEX).unwrap();
+        let show = |state: u8| {
+            format!(
+                "{}",
+                TypeInfoRef::new(mutex, 0, std::slice::from_ref(&state)).display()
+            )
+        };
+        assert_eq!(
+            show(0x84),
+            "parking_lot::raw_mutex::RawMutex: locked=false, parked=false, \
+             <unknown bits: 0x84>"
+        );
+        assert_eq!(
+            show(0xff),
+            "parking_lot::raw_mutex::RawMutex: locked=true, parked=true, \
+             <unknown bits: 0xfc>"
+        );
+
+        // Thing's `state` is a two-bit field with three enumerated values, so 3
+        // is in range for the field but absent from its table.
+        let nb = node_bundle();
+        let nv = BundleView::new(&nb);
+        let state_bytes = thing_bytes(3, 0, 0, 0, 0);
+        let thing = TypeInfoRef::new(nv.ty(N_THING).unwrap(), 0, &state_bytes);
+        let shown = format!("{}", thing.display());
+        assert!(
+            shown.contains("state: state=<unknown: 3>, generation=0"),
+            "{shown}"
+        );
+    }
+
+    /// A string whose bytes are not valid UTF-8 is reported rather than
+    /// lossily transcoded.
+    #[test]
+    fn test_invalid_utf8_string_is_reported() {
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, _addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                Ok(vec![0x68, 0x69, 0xff, 0xfe])
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x3000u64, 4]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(STR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "<invalid UTF-8 string>"
+        );
+    }
+
+    /// A code pointer the target cannot name keeps its address and says so.
+    /// With no target attached there is nothing to have failed, so the bare
+    /// address is printed without a marker.
+    #[test]
+    fn test_unresolvable_symbol_is_reported() {
+        struct NoSymbols;
+        impl ReadFromProc for NoSymbols {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                panic!("function pointer at {addr:#x} must not be dereferenced")
+            }
+            // `function_symbol` is left at its default, which resolves nothing.
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = 0x5000u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(FUNCTION_PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&NoSymbols, 8)),
+            "0x5000 -> <unknown symbol>"
+        );
+        assert_eq!(format!("{}", value.display()), "0x5000");
+    }
+
+    /// The remaining ways a string read degrades, in the order the renderer
+    /// checks them. Each is a distinct marker so a bad render says which part
+    /// of the fat pointer was wrong, rather than a single opaque failure.
+    #[test]
+    fn test_string_read_degradations_are_distinct() {
+        struct Unreadable;
+        impl ReadFromProc for Unreadable {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                Err(crate::Error::invalid_addr(addr))
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let str_ty = v.ty(STR).unwrap();
+        let string_ty = v.ty(STRING).unwrap();
+        let fat = |parts: &[u64]| -> Vec<u8> {
+            parts.iter().copied().flat_map(u64::to_le_bytes).collect()
+        };
+
+        // A length of zero never reads, so it needs no pointer at all.
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(str_ty, 0, &fat(&[0, 0])).display_from_target(&Unreadable, 8)
+            ),
+            "\"\""
+        );
+        // A non-empty string through a null pointer.
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(str_ty, 0, &fat(&[0, 4])).display_from_target(&Unreadable, 8)
+            ),
+            "<invalid string: null data pointer>"
+        );
+        // A pointer the target cannot read.
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(str_ty, 0, &fat(&[0x3000, 4])).display_from_target(&Unreadable, 8)
+            ),
+            "<unreadable string data>"
+        );
+        // No target at all is distinct from a failed read.
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(str_ty, 0, &fat(&[0x3000, 4])).display()
+            ),
+            "<target unavailable>"
+        );
+        // An owned String whose length exceeds its capacity cannot be trusted.
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(string_ty, 0, &fat(&[0x4000, 9, 4]))
+                    .display_from_target(&Unreadable, 8)
+            ),
+            "<invalid String: length exceeds capacity>"
+        );
+    }
 }

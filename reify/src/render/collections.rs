@@ -708,4 +708,43 @@ mod tests {
              queue: [Waiter { notification: kind=one, order=fifo }] }"
         );
     }
+
+    /// The slice equivalents: a null buffer, an unreadable buffer, and a length
+    /// whose byte extent overflows. Each degrades to its own marker instead of
+    /// rendering a partial or invented list.
+    #[test]
+    fn test_slice_read_degradations_are_distinct() {
+        struct Unreadable;
+        impl ReadFromProc for Unreadable {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                Err(crate::Error::invalid_addr(addr))
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let vec_ty = v.ty(VEC).unwrap();
+        // Vec is (pointer, length, capacity).
+        let fat = |parts: &[u64]| -> Vec<u8> {
+            parts.iter().copied().flat_map(u64::to_le_bytes).collect()
+        };
+        let show = |parts: &[u64]| {
+            format!(
+                "{}",
+                TypeInfoRef::new(vec_ty, 0, &fat(parts)).display_from_target(&Unreadable, 8)
+            )
+        };
+
+        assert_eq!(show(&[0, 0, 0]), "[]");
+        assert_eq!(show(&[0, 3, 3]), "<invalid slice: null data pointer>");
+        assert_eq!(show(&[0x2000, 3, 3]), "<unreadable slice buffer>");
+        assert_eq!(
+            show(&[0x2000, 4, 3]),
+            "<invalid slice: length exceeds capacity>"
+        );
+        assert_eq!(
+            show(&[0x2000, u64::MAX, u64::MAX]),
+            "<invalid slice: buffer size overflow>"
+        );
+    }
 }

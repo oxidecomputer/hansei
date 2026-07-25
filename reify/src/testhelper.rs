@@ -188,6 +188,20 @@ pub const WATCH_ARC_INNER: BundleTypeId = BundleTypeId(72);
 pub const WATCH_ARC_INNER_PTR: BundleTypeId = BundleTypeId(73);
 pub const WATCH_SHARED: BundleTypeId = BundleTypeId(74);
 pub const PAIR: BundleTypeId = BundleTypeId(75);
+// Base and aggregate kinds that reach a `TypeClass` arm no other fixture type
+// does: the float, signed, character and odd-width integer encodings, plus a
+// C enumeration, a union and a sized opaque.
+pub const F32: BundleTypeId = BundleTypeId(76);
+pub const F64: BundleTypeId = BundleTypeId(77);
+pub const I8: BundleTypeId = BundleTypeId(78);
+pub const I16: BundleTypeId = BundleTypeId(79);
+pub const I32: BundleTypeId = BundleTypeId(80);
+pub const I64: BundleTypeId = BundleTypeId(81);
+pub const CHAR: BundleTypeId = BundleTypeId(82);
+pub const U24: BundleTypeId = BundleTypeId(83);
+pub const COLOR: BundleTypeId = BundleTypeId(84);
+pub const VAL_UNION: BundleTypeId = BundleTypeId(85);
+pub const UNMODELLED: BundleTypeId = BundleTypeId(86);
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
 ///
@@ -216,6 +230,12 @@ pub fn test_bundle() -> Bundle {
     let (loom_atomicn, loom_celln, tuple0n) =
         (s("AtomicU32"), s("LoomUnsafeCell<Point>"), s("__0"));
     let (pairn, tuple1n) = (s("Pair"), s("__1"));
+    let (f32n, f64n) = (s("f32"), s("f64"));
+    let (i8n, i16n, i32n, i64n) = (s("i8"), s("i16"), s("i32"), s("i64"));
+    let (charn, u24n) = (s("char"), s("u24"));
+    let (colorn, redn, greenn) = (s("Color"), s("Red"), s("Green"));
+    let (val_unionn, intn, floatn) = (s("Val"), s("int"), s("float"));
+    let unmodelledn = s("Unmodelled");
     let btree_mapn = s("alloc::collections::btree::map::BTreeMap<u32, u32>");
     let btree_rootn = s("Option<NodeRef>");
     let btree_node_refn = s("NodeRef");
@@ -826,6 +846,71 @@ pub fn test_bundle() -> Bundle {
             size: 8,
             members: vec![m(tuple0n, U32, 0), m(tuple1n, U32, 4)],
         },
+        // f32 @76, f64 @77 — the only `Encoding::Float` types in the fixture.
+        TypeDef::Base {
+            name: f32n,
+            size: 4,
+            encoding: Encoding::Float,
+        },
+        TypeDef::Base {
+            name: f64n,
+            size: 8,
+            encoding: Encoding::Float,
+        },
+        // i8 @78 .. i64 @81 — every width the signed branch has a case for.
+        TypeDef::Base {
+            name: i8n,
+            size: 1,
+            encoding: Encoding::Signed,
+        },
+        TypeDef::Base {
+            name: i16n,
+            size: 2,
+            encoding: Encoding::Signed,
+        },
+        TypeDef::Base {
+            name: i32n,
+            size: 4,
+            encoding: Encoding::Signed,
+        },
+        TypeDef::Base {
+            name: i64n,
+            size: 8,
+            encoding: Encoding::Signed,
+        },
+        // char @82 — a 4-byte Rust `char`.
+        TypeDef::Base {
+            name: charn,
+            size: 4,
+            encoding: Encoding::UtfChar,
+        },
+        // u24 @83 — a width with no case in the integer branch, so it falls
+        // back to a hex dump.
+        TypeDef::Base {
+            name: u24n,
+            size: 3,
+            encoding: Encoding::Unsigned,
+        },
+        // Color @84 — a C-style enumeration over u32.
+        TypeDef::CEnum {
+            name: colorn,
+            size: 4,
+            repr: U32,
+            enumerators: vec![(redn, 0), (greenn, 1)],
+        },
+        // Val @85 — a union of the two 8-byte reads of one word.
+        TypeDef::Union {
+            name: val_unionn,
+            size: 8,
+            members: vec![m(intn, U64, 0), m(floatn, F64, 0)],
+        },
+        // Unmodelled @86 — an opaque the extractor could not model, but whose
+        // size is known (the `<unresolved>` opaque above has none, so it is a
+        // zero-sized type and never reaches the opaque display arm).
+        TypeDef::Opaque {
+            name: unmodelledn,
+            size: Some(4),
+        },
     ];
 
     // Field labels for the node-based `BoundedSemaphore` formatter (deduped
@@ -1304,6 +1389,10 @@ pub const N_POINT: BundleTypeId = BundleTypeId(3);
 pub const N_WAITER: BundleTypeId = BundleTypeId(4);
 pub const N_WAITER_PTR: BundleTypeId = BundleTypeId(5);
 pub const N_THING: BundleTypeId = BundleTypeId(6);
+/// A one-byte struct whose whole format is a `Variant` with arms for 0 and 1
+/// and no default -- the only way to reach an unmatched discriminant, which
+/// every other `Variant` in these fixtures computes a boolean for.
+pub const N_CHOICE: BundleTypeId = BundleTypeId(7);
 
 /// A self-contained bundle whose sole formatter is a [`BundleNode`] tree,
 /// exercising every scaffolded node kind and field kind at once:
@@ -1347,6 +1436,7 @@ pub fn node_bundle() -> Bundle {
         s("lifo"),
     );
     let queuel = s("queue");
+    let (choicen, tagn) = (s("Choice"), s("tag"));
 
     let m = |name, ty, offset| MemberDef { name, ty, offset };
 
@@ -1389,6 +1479,12 @@ pub fn node_bundle() -> Bundle {
                 m(pointfn, N_POINT, 12),
                 m(headn, N_WAITER_PTR, 20),
             ],
+        },
+        // Choice { tag: u8 @0 } -- id 7.
+        TypeDef::Struct {
+            name: choicen,
+            size: 1,
+            members: vec![m(tagn, N_U8, 0)],
         },
     ];
 
@@ -1444,6 +1540,23 @@ pub fn node_bundle() -> Bundle {
         ],
     };
 
+    let choice_node = BundleNode::Variant {
+        discriminant: ValueExpr::Read(sel(&[0])),
+        arms: vec![
+            Arm {
+                value: 0,
+                label: Some(nonel),
+                payload: None,
+            },
+            Arm {
+                value: 1,
+                label: Some(onel),
+                payload: None,
+            },
+        ],
+        default: None,
+    };
+
     let b = Bundle {
         meta: Meta {
             format_version: FORMAT_VERSION,
@@ -1452,7 +1565,10 @@ pub fn node_bundle() -> Bundle {
         strings: strings.finish(),
         types: TypeTable {
             types,
-            debug_formats: std::collections::BTreeMap::from([(N_THING, thing_node)]),
+            debug_formats: std::collections::BTreeMap::from([
+                (N_THING, thing_node),
+                (N_CHOICE, choice_node),
+            ]),
             name_index: vec![],
         },
         tasks: TaskTable::default(),

@@ -1240,4 +1240,25 @@ mod tests {
             "{pretty}"
         );
     }
+
+    /// A `Variant` whose discriminant matches no arm and that declares no
+    /// default reports the value rather than rendering nothing. This is the
+    /// same "no silent state" rule the scalar decoder enforces, one level up:
+    /// an enum gaining a variant upstream shows as an unknown, not a blank.
+    #[test]
+    fn test_variant_without_matching_arm_reports_the_value() {
+        let b = node_bundle();
+        let v = BundleView::new(&b);
+        let choice = v.ty(N_CHOICE).unwrap();
+        let show = |tag: u8| {
+            format!(
+                "{}",
+                TypeInfoRef::new(choice, 0, std::slice::from_ref(&tag)).display()
+            )
+        };
+        assert_eq!(show(0), "none");
+        assert_eq!(show(1), "one");
+        assert_eq!(show(2), "<unknown: 2>");
+        assert_eq!(show(255), "<unknown: 255>");
+    }
 }
