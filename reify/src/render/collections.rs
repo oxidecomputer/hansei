@@ -470,3 +470,242 @@ pub(crate) fn eval_list<'a, T: DebugType<'a>>(
     write_seq_close(f, pretty, ctx.depth, any)?;
     write!(f, "]")
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::testhelper::*;
+    use crate::{ReadFromProc, TypeInfoRef};
+
+    use exegesis::bundle::BundleView;
+
+    #[test]
+    fn test_vec_displays_initialized_elements() {
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x2000);
+                assert_eq!(len, 12);
+                Ok([5u32, 8, 13]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect())
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x2000u64, 3, 4]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "[5, 8, 13]"
+        );
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&Reader, 8)),
+            "[\n    5,\n    8,\n    13,\n]"
+        );
+
+        let invalid: Vec<u8> = [0x2000u64, 5, 4]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &invalid);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "<invalid slice: length exceeds capacity>"
+        );
+    }
+
+    #[test]
+    fn test_slice_displays_initialized_elements() {
+        // A `&[T]`/`Box<[T]>` renders through the same `Slice` node as `Vec`
+        // but with no capacity word, so the length is used directly (the
+        // capacity-less path — otherwise untested).
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x2000);
+                assert_eq!(len, 12);
+                Ok([5u32, 8, 13]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect())
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // A `(data_ptr, length)` fat pointer: address then element count, no
+        // capacity word.
+        let bytes: Vec<u8> = [0x2000u64, 3]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "[5, 8, 13]"
+        );
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&Reader, 8)),
+            "[\n    5,\n    8,\n    13,\n]"
+        );
+    }
+
+    #[test]
+    fn test_btree_map_displays_only_initialized_slots_in_order() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                let mut bytes = vec![0xaa; len as usize];
+                match addr {
+                    0x1000 => {
+                        bytes[0] = 1;
+                        bytes[4..8].copy_from_slice(&2u32.to_le_bytes());
+                        bytes[12..16].copy_from_slice(&20u32.to_le_bytes());
+                        bytes[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
+                        bytes[32..40].copy_from_slice(&0x3000u64.to_le_bytes());
+                    }
+                    0x2000 => {
+                        bytes[0] = 1;
+                        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+                        bytes[12..16].copy_from_slice(&10u32.to_le_bytes());
+                    }
+                    0x3000 => {
+                        bytes[0] = 1;
+                        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+                        bytes[12..16].copy_from_slice(&30u32.to_le_bytes());
+                    }
+                    _ => return Err(crate::Error::invalid_addr(addr)),
+                }
+                Ok(bytes)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mut bytes = [0u8; 24];
+        bytes[..8].copy_from_slice(&0x1000u64.to_le_bytes());
+        bytes[8..16].copy_from_slice(&1u64.to_le_bytes());
+        bytes[16..].copy_from_slice(&3u64.to_le_bytes());
+        let value = TypeInfoRef::new(v.ty(BTREE_MAP).unwrap(), 0x5000, &bytes);
+
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "alloc::collections::btree::map::BTreeMap<u32, u32> { 1: 10, 2: 20, 3: 30 }"
+        );
+        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        assert!(shown.contains("\n    1: 10,"), "{shown}");
+        assert!(shown.contains("\n    2: 20,"), "{shown}");
+        assert!(shown.contains("\n    3: 30,"), "{shown}");
+        assert!(
+            !shown.contains("2863311530"),
+            "unused 0xaa slots leaked: {shown}"
+        );
+    }
+
+    #[test]
+    fn test_btree_map_reports_length_mismatch_and_node_cycle() {
+        enum Layout {
+            OneLeaf,
+            SelfCycle,
+        }
+
+        struct Reader(Layout);
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                if addr != 0x1000 {
+                    return Err(crate::Error::invalid_addr(addr));
+                }
+                let mut bytes = vec![0; len as usize];
+                match self.0 {
+                    Layout::OneLeaf => {
+                        bytes[0] = 1;
+                        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+                        bytes[12..16].copy_from_slice(&10u32.to_le_bytes());
+                    }
+                    Layout::SelfCycle => {
+                        bytes[24..32].copy_from_slice(&addr.to_le_bytes());
+                    }
+                }
+                Ok(bytes)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ty = v.ty(BTREE_MAP).unwrap();
+        let mut bytes = [0u8; 24];
+        bytes[..8].copy_from_slice(&0x1000u64.to_le_bytes());
+        bytes[16..].copy_from_slice(&2u64.to_le_bytes());
+        let value = TypeInfoRef::new(ty, 0x5000, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader(Layout::OneLeaf), 8));
+        assert!(
+            shown.contains("<invalid: tree contains fewer entries than length>"),
+            "{shown}"
+        );
+
+        bytes[8..16].copy_from_slice(&1u64.to_le_bytes());
+        bytes[16..].copy_from_slice(&1u64.to_le_bytes());
+        let value = TypeInfoRef::new(ty, 0x5000, &bytes);
+        let shown = format!(
+            "{}",
+            value.display_from_target(&Reader(Layout::SelfCycle), 8)
+        );
+        assert!(shown.contains("<invalid: node cycle>"), "{shown}");
+    }
+
+    #[test]
+    fn test_node_list_empty_and_degradation() {
+        // An empty queue (head word 0) needs no target reads.
+        struct NoReads;
+        impl ReadFromProc for NoReads {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                panic!("no reads expected, got 0x{addr:x}")
+            }
+        }
+
+        let b = node_bundle();
+        let v = BundleView::new(&b);
+
+        let empty = thing_bytes(0, 0, 0, 0, 0);
+        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &empty);
+        assert_eq!(
+            format!("{}", value.display_from_target(&NoReads, 16)),
+            "Thing { state: state=idle, generation=0, flag: 0, point: Point { x: 0, y: 0 }, queue: [] }"
+        );
+
+        // A populated queue with no target reader degrades, not panics.
+        let populated = thing_bytes(0, 0, 0, 0, 0x100);
+        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &populated);
+        let shown = format!("{}", value.display());
+        assert!(shown.contains("queue: <target unavailable>"), "{shown}");
+    }
+
+    #[test]
+    fn test_node_list_guards_cycles() {
+        // A waiter whose successor points back at itself must not loop forever.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x100);
+                Ok(waiter_bytes(1, 0x100)) // self-cycle
+            }
+        }
+
+        let b = node_bundle();
+        let v = BundleView::new(&b);
+        let bytes = thing_bytes(0, 0, 0, 0, 0x100);
+        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 16)),
+            "Thing { state: state=idle, generation=0, flag: 0, point: Point { x: 0, y: 0 }, \
+             queue: [Waiter { notification: kind=one, order=fifo }] }"
+        );
+    }
+}

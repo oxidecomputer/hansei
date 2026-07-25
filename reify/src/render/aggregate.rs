@@ -225,3 +225,144 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
         pretty,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::testhelper::*;
+    use crate::{ReadFromProc, TypeInfoRef};
+
+    use exegesis::bundle::{BundleView, DisplayNode as BundleNode, TypeDef};
+
+    #[test]
+    fn test_ugly_suppresses_enum_payload_formatter() {
+        // Reshape `Opt::Some`'s payload to a `&str`, whose own `Str` format is
+        // normally delegated to when it appears as an enum payload. `--ugly`
+        // suppresses that delegation and shows the payload's raw fields.
+        let mut b = test_bundle();
+        let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+            panic!("Opt is not an enum");
+        };
+        *size = 16;
+        shape.variants[1].payload.ty = STR;
+        b.validate().expect("modified enum bundle must validate");
+
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x3000u64, 8]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display().ugly()),
+            "Opt::Some { data_ptr: 0x3000, length: 8 }"
+        );
+    }
+
+    #[test]
+    fn test_tuple_struct_elides_synthetic_field_names() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+
+        // A tuple struct's `__0`/`__1` fields render positionally, eliding the
+        // synthetic labels, to match Rust `Debug` (`Pair(1, 2)`).
+        let pair = TypeInfoRef::new(v.ty(PAIR).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", pair.display_with_depth(2)), "Pair(1, 2)");
+        assert_eq!(
+            format!("{:#}", pair.display_with_depth(2)),
+            "Pair(\n    1,\n    2,\n)"
+        );
+
+        // A regular struct still shows its field names (regression guard).
+        let point = TypeInfoRef::new(v.ty(POINT).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", point.display_with_depth(2)),
+            "Point { x: 1, y: 2 }"
+        );
+    }
+
+    #[test]
+    fn test_str_payload_in_enum_renders_as_value() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x3000);
+                assert_eq!(len, 8);
+                Ok(b"hi\nthere".to_vec())
+            }
+        }
+
+        // Point Opt::Some's payload at a `&str`; its `Str` display format
+        // must win over dumping the fat pointer's raw fields, matching how a
+        // `Cow<str>::Borrowed` key should read.
+        let mut b = test_bundle();
+        let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+            panic!("Opt is not an enum");
+        };
+        *size = 16;
+        shape.variants[1].payload.ty = STR;
+        b.validate().expect("modified enum bundle must validate");
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x3000u64, 8]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "Opt::Some(\"hi\\nthere\")"
+        );
+    }
+
+    #[test]
+    fn test_wrapped_str_payload_in_enum_is_not_peeled() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x3000);
+                assert_eq!(len, 8);
+                Ok(b"hi\nthere".to_vec())
+            }
+        }
+
+        // A `String`/`Utf8PathBuf` is a single-member wrapper carrying its own
+        // `Str` format around an inner `Vec<u8>` (which has a `Slice` format).
+        // Reshape `Wrap` into that: a one-member wrapper over `Vec` with a `Str`
+        // format of its own. As `Opt::Some`'s payload it must render as the
+        // string, not peel past its `Str` to the inner `Vec`'s byte slice.
+        let mut b = test_bundle();
+        let TypeDef::Struct { size, members, .. } = &mut b.types.types[WRAP.0 as usize] else {
+            panic!("Wrap is not a struct");
+        };
+        *size = 24;
+        members[0].ty = VEC;
+        b.types.debug_formats.insert(
+            WRAP,
+            BundleNode::Str {
+                pointer: sel(&[0, 0]),
+                length: sel(&[0, 1]),
+                capacity: Some(sel(&[0, 2])),
+            },
+        );
+        let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+            panic!("Opt is not an enum");
+        };
+        *size = 24;
+        shape.variants[1].payload.ty = WRAP;
+        b.validate().expect("modified enum bundle must validate");
+
+        let v = BundleView::new(&b);
+        // Vec-shaped payload bytes: data pointer, length, capacity.
+        let bytes: Vec<u8> = [0x3000u64, 8, 16]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "Opt::Some(\"hi\\nthere\")"
+        );
+    }
+}

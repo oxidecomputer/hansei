@@ -273,3 +273,128 @@ fn infer_concrete_type<'a, T: DebugType<'a>>(
     }
     Some(candidate)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::testhelper::*;
+    use crate::{ReadFromProc, TypeInfoRef};
+
+    use exegesis::bundle::{BundleView, TypeDef};
+
+    #[test]
+    fn test_dyn_pointer_formats_unknown_concrete_type() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x3000);
+                Ok([0x2c557a0u64, 152, 8]
+                    .into_iter()
+                    .flat_map(u64::to_le_bytes)
+                    .collect())
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x1234u64, 0x3000]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        assert_eq!(
+            shown,
+            concat!(
+                "FatPtr {\n",
+                "    pointer: 0x1234,\n",
+                "    concrete type: <unknown>,\n",
+                "    vtable: {\n",
+                "        drop_in_place: 0x2c557a0,\n",
+                "        size: 152,\n",
+                "        align: 8,\n",
+                "    },\n",
+                "}"
+            )
+        );
+    }
+
+    #[test]
+    fn test_dyn_pointer_infers_concrete_type_from_method_with_null_drop() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                match addr {
+                    0x1234 => Ok([1u32, 2].into_iter().flat_map(u32::to_le_bytes).collect()),
+                    0x3000 => Ok([0u64, 8, 8, 0x4000]
+                        .into_iter()
+                        .flat_map(u64::to_le_bytes)
+                        .collect()),
+                    _ => Err(crate::Error::invalid_addr(addr)),
+                }
+            }
+
+            fn function_symbol(&self, addr: u64) -> Option<String> {
+                (addr == 0x4000).then(|| "<Point as app::Trait>::run".to_owned())
+            }
+        }
+
+        let mut b = test_bundle();
+        let TypeDef::Array { count, .. } = &mut b.types.types[VTABLE_ARRAY.0 as usize] else {
+            panic!("vtable is not an array");
+        };
+        *count = 4;
+        b.validate().expect("expanded vtable must validate");
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x1234u64, 0x3000]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        assert!(
+            shown.contains("pointer: 0x1234 -> Point {\n         x: 1,\n         y: 2,\n    },"),
+            "{shown}"
+        );
+        assert!(shown.contains("concrete type: Point,"), "{shown}");
+        assert!(shown.contains("drop_in_place: 0x0,"), "{shown}");
+        assert!(
+            shown.contains("method[3]: 0x4000 -> <Point as app::Trait>::run,"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn test_dyn_pointer_format_is_preserved_in_enum_payload() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(addr, 0x3000);
+                Ok([0u64, 8, 8]
+                    .into_iter()
+                    .flat_map(u64::to_le_bytes)
+                    .collect())
+            }
+        }
+
+        let mut b = test_bundle();
+        let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+            panic!("Opt is not an enum");
+        };
+        *size = 16;
+        shape.variants[1].payload.ty = FAT_PTR;
+        b.validate().expect("modified enum bundle must validate");
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [0x1234u64, 0x3000]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        assert!(shown.starts_with("Opt::Some {"), "{shown}");
+        assert!(!shown.contains("FatPtr"), "{shown}");
+        assert!(shown.contains("concrete type: <unknown>,"), "{shown}");
+    }
+}

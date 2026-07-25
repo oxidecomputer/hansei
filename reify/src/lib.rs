@@ -9,8 +9,6 @@ mod value;
 
 #[cfg(test)]
 mod testhelper;
-#[cfg(test)]
-mod tests;
 
 pub use debug_type::TypeKind;
 pub use error::Error;
