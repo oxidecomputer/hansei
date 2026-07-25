@@ -107,10 +107,17 @@ fn write_aggregate_body<'a, T: DebugType<'a>>(
             if pretty {
                 writeln!(f)?;
                 write_indent(f, ctx.depth + 1)?;
-            } else if i > 0 {
-                write!(f, ",")?;
+            } else {
+                // Inline, the space separates the field from the opening brace
+                // or from the preceding comma. Pretty has already indented, so
+                // adding it there would put the field one column past the
+                // closing brace's own indent.
+                if i > 0 {
+                    write!(f, ",")?;
+                }
+                write!(f, " ")?;
             }
-            write!(f, " {}: ", member.name())?;
+            write!(f, "{}: ", member.name())?;
             write_member_value(f, member, bytes, addr, ctx, pretty)?;
             if pretty {
                 write!(f, ",")?;
@@ -371,7 +378,7 @@ mod tests {
         assert_eq!(format!("{}", a.display()), "Msg::A { x: 1, y: 2 }");
         assert_eq!(
             format!("{:#}", a.display()),
-            "Msg::A {\n     x: 1,\n     y: 2,\n}"
+            "Msg::A {\n    x: 1,\n    y: 2,\n}"
         );
 
         // C(unit): a zero-sized payload writes no body at all.

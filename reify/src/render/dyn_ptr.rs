@@ -330,7 +330,7 @@ mod tests {
         let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&mem, 8));
         assert!(
-            shown.contains("pointer: 0x1234 -> Point {\n         x: 1,\n         y: 2,\n    },"),
+            shown.contains("pointer: 0x1234 -> Point {\n        x: 1,\n        y: 2,\n    },"),
             "{shown}"
         );
         assert!(shown.contains("concrete type: Point,"), "{shown}");
