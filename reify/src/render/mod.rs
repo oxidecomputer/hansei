@@ -517,8 +517,8 @@ pub(crate) fn write_hex_bytes(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::
 
 #[cfg(test)]
 mod tests {
+    use crate::TypeInfoRef;
     use crate::testhelper::*;
-    use crate::{ReadFromProc, TypeInfoRef};
 
     use exegesis::bundle::BundleView;
 
@@ -585,31 +585,19 @@ mod tests {
 
     #[test]
     fn test_target_display_recurses_through_pointers() {
-        struct Reader;
-
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                let (value, next) = match addr {
-                    0x1000 => (1u32, 0x2000u64),
-                    0x2000 => (2u32, 0u64),
-                    _ => return Err(crate::Error::invalid_addr(addr)),
-                };
-                let mut bytes = vec![0; 16];
-                bytes[..4].copy_from_slice(&value.to_le_bytes());
-                bytes[8..].copy_from_slice(&next.to_le_bytes());
-                Ok(bytes)
-            }
-        }
+        let mem = FakeMem::new()
+            .at(0x1000, node_bytes(1, 0x2000))
+            .at(0x2000, node_bytes(2, 0));
 
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes = 0x1000u64.to_le_bytes();
         let root = TypeInfoRef::new(v.ty(NODE_PTR).unwrap(), 0, &bytes);
-        let shown = format!("{:#}", root.display_from_target(&Reader, 8));
+        let shown = format!("{:#}", root.display_from_target(&mem, 8));
         assert!(shown.contains("value: 1"), "{shown}");
         assert!(shown.contains("value: 2"), "{shown}");
 
-        let shallow = format!("{:#}", root.display_from_target(&Reader, 1));
+        let shallow = format!("{:#}", root.display_from_target(&mem, 1));
         assert_eq!(shallow, "0x1000 -> ...");
     }
 
@@ -739,39 +727,13 @@ mod tests {
     /// once a pointee is done.
     #[test]
     fn test_pointer_traversal_degrades_and_guards_cycles() {
-        // `Node { value: u32 @0, next: *Node @8 }`.
-        fn node(value: u32, next: u64) -> Vec<u8> {
-            let mut bytes = vec![0u8; 16];
-            bytes[..4].copy_from_slice(&value.to_le_bytes());
-            bytes[8..].copy_from_slice(&next.to_le_bytes());
-            bytes
-        }
-
-        struct Unreadable;
-        impl ReadFromProc for Unreadable {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                Err(crate::Error::invalid_addr(addr))
-            }
-        }
-
+        let unreadable = FakeMem::new().unreadable();
         // 0x100 points at itself.
-        struct SelfCycle;
-        impl ReadFromProc for SelfCycle {
-            fn read_bytes(&self, _addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                Ok(node(1, 0x100))
-            }
-        }
-
-        // 0x100 and 0x200 both point at 0x300, which ends the chain.
-        struct Diamond;
-        impl ReadFromProc for Diamond {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                Ok(match addr {
-                    0x300 => node(9, 0),
-                    _ => node(1, 0x300),
-                })
-            }
-        }
+        let self_cycle = FakeMem::new().at(0x100, node_bytes(1, 0x100));
+        // Two pointers reach 0x300, which ends the chain.
+        let diamond = FakeMem::new()
+            .at(0x100, node_bytes(1, 0x300))
+            .at(0x300, node_bytes(9, 0));
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -780,14 +742,14 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                TypeInfoRef::new(ptr, 0, &head).display_from_target(&Unreadable, 16)
+                TypeInfoRef::new(ptr, 0, &head).display_from_target(&unreadable, 16)
             ),
             "0x100 -> <unreadable>"
         );
         assert_eq!(
             format!(
                 "{}",
-                TypeInfoRef::new(ptr, 0, &head).display_from_target(&SelfCycle, 16)
+                TypeInfoRef::new(ptr, 0, &head).display_from_target(&self_cycle, 16)
             ),
             "0x100 -> Node { value: 1, next: 0x100 -> <cycle> }"
         );
@@ -796,13 +758,13 @@ mod tests {
         // 0x300 render it, because the guard entry is dropped on the way out.
         let two = v.ty(NODE).unwrap();
         let pair = {
-            let mut bytes = node(1, 0x100);
+            let mut bytes = node_bytes(1, 0x100);
             bytes[8..].copy_from_slice(&0x300u64.to_le_bytes());
             bytes
         };
         let shown = format!(
             "{}",
-            TypeInfoRef::new(two, 0, &pair).display_from_target(&Diamond, 16)
+            TypeInfoRef::new(two, 0, &pair).display_from_target(&diamond, 16)
         );
         assert_eq!(
             shown,

@@ -473,24 +473,14 @@ pub(crate) fn eval_list<'a, T: DebugType<'a>>(
 
 #[cfg(test)]
 mod tests {
+    use crate::TypeInfoRef;
     use crate::testhelper::*;
-    use crate::{ReadFromProc, TypeInfoRef};
 
     use exegesis::bundle::BundleView;
 
     #[test]
     fn test_vec_displays_initialized_elements() {
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                assert_eq!(addr, 0x2000);
-                assert_eq!(len, 12);
-                Ok([5u32, 8, 13]
-                    .into_iter()
-                    .flat_map(u32::to_le_bytes)
-                    .collect())
-            }
-        }
+        let mem = FakeMem::new().at(0x2000, u32s(&[5, 8, 13]));
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -500,11 +490,11 @@ mod tests {
             .collect();
         let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "[5, 8, 13]"
         );
         assert_eq!(
-            format!("{:#}", value.display_from_target(&Reader, 8)),
+            format!("{:#}", value.display_from_target(&mem, 8)),
             "[\n    5,\n    8,\n    13,\n]"
         );
 
@@ -514,7 +504,7 @@ mod tests {
             .collect();
         let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &invalid);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "<invalid slice: length exceeds capacity>"
         );
     }
@@ -524,17 +514,7 @@ mod tests {
         // A `&[T]`/`Box<[T]>` renders through the same `Slice` node as `Vec`
         // but with no capacity word, so the length is used directly (the
         // capacity-less path — otherwise untested).
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                assert_eq!(addr, 0x2000);
-                assert_eq!(len, 12);
-                Ok([5u32, 8, 13]
-                    .into_iter()
-                    .flat_map(u32::to_le_bytes)
-                    .collect())
-            }
-        }
+        let mem = FakeMem::new().at(0x2000, u32s(&[5, 8, 13]));
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -546,45 +526,22 @@ mod tests {
             .collect();
         let value = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "[5, 8, 13]"
         );
         assert_eq!(
-            format!("{:#}", value.display_from_target(&Reader, 8)),
+            format!("{:#}", value.display_from_target(&mem, 8)),
             "[\n    5,\n    8,\n    13,\n]"
         );
     }
 
     #[test]
     fn test_btree_map_displays_only_initialized_slots_in_order() {
-        struct Reader;
-
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                let mut bytes = vec![0xaa; len as usize];
-                match addr {
-                    0x1000 => {
-                        bytes[0] = 1;
-                        bytes[4..8].copy_from_slice(&2u32.to_le_bytes());
-                        bytes[12..16].copy_from_slice(&20u32.to_le_bytes());
-                        bytes[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
-                        bytes[32..40].copy_from_slice(&0x3000u64.to_le_bytes());
-                    }
-                    0x2000 => {
-                        bytes[0] = 1;
-                        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
-                        bytes[12..16].copy_from_slice(&10u32.to_le_bytes());
-                    }
-                    0x3000 => {
-                        bytes[0] = 1;
-                        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
-                        bytes[12..16].copy_from_slice(&30u32.to_le_bytes());
-                    }
-                    _ => return Err(crate::Error::invalid_addr(addr)),
-                }
-                Ok(bytes)
-            }
-        }
+        // A root holding key 2, with a smaller leaf left and a larger right.
+        let mem = FakeMem::new()
+            .at(0x1000, btree_internal(&[(2, 20)], &[0x2000, 0x3000]))
+            .at(0x2000, btree_leaf(&[(1, 10)]))
+            .at(0x3000, btree_leaf(&[(3, 30)]));
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -595,10 +552,10 @@ mod tests {
         let value = TypeInfoRef::new(v.ty(BTREE_MAP).unwrap(), 0x5000, &bytes);
 
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 8)),
+            format!("{}", value.display_from_target(&mem, 8)),
             "alloc::collections::btree::map::BTreeMap<u32, u32> { 1: 10, 2: 20, 3: 30 }"
         );
-        let shown = format!("{:#}", value.display_from_target(&Reader, 8));
+        let shown = format!("{:#}", value.display_from_target(&mem, 8));
         assert!(shown.contains("\n    1: 10,"), "{shown}");
         assert!(shown.contains("\n    2: 20,"), "{shown}");
         assert!(shown.contains("\n    3: 30,"), "{shown}");
@@ -610,32 +567,10 @@ mod tests {
 
     #[test]
     fn test_btree_map_reports_length_mismatch_and_node_cycle() {
-        enum Layout {
-            OneLeaf,
-            SelfCycle,
-        }
-
-        struct Reader(Layout);
-
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
-                if addr != 0x1000 {
-                    return Err(crate::Error::invalid_addr(addr));
-                }
-                let mut bytes = vec![0; len as usize];
-                match self.0 {
-                    Layout::OneLeaf => {
-                        bytes[0] = 1;
-                        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
-                        bytes[12..16].copy_from_slice(&10u32.to_le_bytes());
-                    }
-                    Layout::SelfCycle => {
-                        bytes[24..32].copy_from_slice(&addr.to_le_bytes());
-                    }
-                }
-                Ok(bytes)
-            }
-        }
+        // One leaf holding a single entry, against a map claiming two.
+        let one_leaf = FakeMem::new().at(0x1000, btree_leaf(&[(1, 10)]));
+        // An internal node whose first edge points back at itself.
+        let self_cycle = FakeMem::new().at(0x1000, btree_internal(&[], &[0x1000]));
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -644,7 +579,7 @@ mod tests {
         bytes[..8].copy_from_slice(&0x1000u64.to_le_bytes());
         bytes[16..].copy_from_slice(&2u64.to_le_bytes());
         let value = TypeInfoRef::new(ty, 0x5000, &bytes);
-        let shown = format!("{}", value.display_from_target(&Reader(Layout::OneLeaf), 8));
+        let shown = format!("{}", value.display_from_target(&one_leaf, 8));
         assert!(
             shown.contains("<invalid: tree contains fewer entries than length>"),
             "{shown}"
@@ -653,22 +588,14 @@ mod tests {
         bytes[8..16].copy_from_slice(&1u64.to_le_bytes());
         bytes[16..].copy_from_slice(&1u64.to_le_bytes());
         let value = TypeInfoRef::new(ty, 0x5000, &bytes);
-        let shown = format!(
-            "{}",
-            value.display_from_target(&Reader(Layout::SelfCycle), 8)
-        );
+        let shown = format!("{}", value.display_from_target(&self_cycle, 8));
         assert!(shown.contains("<invalid: node cycle>"), "{shown}");
     }
 
     #[test]
     fn test_node_list_empty_and_degradation() {
         // An empty queue (head word 0) needs no target reads.
-        struct NoReads;
-        impl ReadFromProc for NoReads {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                panic!("no reads expected, got 0x{addr:x}")
-            }
-        }
+        let no_reads = FakeMem::new().panic_on_unmapped();
 
         let b = node_bundle();
         let v = BundleView::new(&b);
@@ -676,7 +603,7 @@ mod tests {
         let empty = thing_bytes(0, 0, 0, 0, 0);
         let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &empty);
         assert_eq!(
-            format!("{}", value.display_from_target(&NoReads, 16)),
+            format!("{}", value.display_from_target(&no_reads, 16)),
             "Thing { state: state=idle, generation=0, flag: 0, point: Point { x: 0, y: 0 }, queue: [] }"
         );
 
@@ -690,20 +617,14 @@ mod tests {
     #[test]
     fn test_node_list_guards_cycles() {
         // A waiter whose successor points back at itself must not loop forever.
-        struct Reader;
-        impl ReadFromProc for Reader {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                assert_eq!(addr, 0x100);
-                Ok(waiter_bytes(1, 0x100)) // self-cycle
-            }
-        }
+        let mem = FakeMem::new().at(0x100, waiter_bytes(1, 0x100));
 
         let b = node_bundle();
         let v = BundleView::new(&b);
         let bytes = thing_bytes(0, 0, 0, 0, 0x100);
         let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", value.display_from_target(&Reader, 16)),
+            format!("{}", value.display_from_target(&mem, 16)),
             "Thing { state: state=idle, generation=0, flag: 0, point: Point { x: 0, y: 0 }, \
              queue: [Waiter { notification: kind=one, order=fifo }] }"
         );
@@ -714,12 +635,7 @@ mod tests {
     /// rendering a partial or invented list.
     #[test]
     fn test_slice_read_degradations_are_distinct() {
-        struct Unreadable;
-        impl ReadFromProc for Unreadable {
-            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
-                Err(crate::Error::invalid_addr(addr))
-            }
-        }
+        let mem = FakeMem::new().unreadable();
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -731,7 +647,7 @@ mod tests {
         let show = |parts: &[u64]| {
             format!(
                 "{}",
-                TypeInfoRef::new(vec_ty, 0, &fat(parts)).display_from_target(&Unreadable, 8)
+                TypeInfoRef::new(vec_ty, 0, &fat(parts)).display_from_target(&mem, 8)
             )
         };
 

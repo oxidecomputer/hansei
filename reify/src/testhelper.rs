@@ -14,7 +14,164 @@ use exegesis::bundle::{
     VariantDef, VariantShape,
 };
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU8;
+
+/// A stand-in for a target's memory.
+///
+/// Render tests need three things from a process: bytes at an address, a
+/// function symbol at an address, and the ability to make a read fail. Rather
+/// than a bespoke `ReadFromProc` per test asserting on the exact address and
+/// length it expects, describe the memory that should exist and let an
+/// unsatisfiable read degrade the way it would against a real target.
+///
+/// Reads are served from any region that wholly contains them, so a formatter
+/// that walks a structure field by field is served the same as one that reads
+/// it whole -- an mpsc block read piecemeal by a `CustomList`, say.
+#[derive(Default)]
+pub struct FakeMem {
+    regions: Vec<(u64, Vec<u8>)>,
+    symbols: BTreeMap<u64, String>,
+    unmapped: Unmapped,
+    all_reads_fail: bool,
+}
+
+/// What a read no region satisfies does.
+#[derive(Default, Clone, Copy)]
+pub enum Unmapped {
+    /// Fail, as reading an unmapped page would. The renderer degrades.
+    #[default]
+    Fail,
+    /// Panic, for a test asserting some address is never read at all -- an
+    /// atomic's stored pointer, or a function pointer that must not be
+    /// followed as data.
+    Panic,
+}
+
+impl FakeMem {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Place `bytes` at `addr`. Any read wholly inside the region is served
+    /// from it.
+    pub fn at(mut self, addr: u64, bytes: impl Into<Vec<u8>>) -> Self {
+        self.regions.push((addr, bytes.into()));
+        self
+    }
+
+    /// Resolve `addr` to a function symbol, as a target with symbols would.
+    pub fn symbol(mut self, addr: u64, name: &str) -> Self {
+        self.symbols.insert(addr, name.to_owned());
+        self
+    }
+
+    /// Panic rather than fail on a read nothing satisfies.
+    pub fn panic_on_unmapped(mut self) -> Self {
+        self.unmapped = Unmapped::Panic;
+        self
+    }
+
+    /// Fail every read, mapped or not -- an exited process, or a snapshot
+    /// that did not capture the pages.
+    pub fn unreadable(mut self) -> Self {
+        self.all_reads_fail = true;
+        self
+    }
+}
+
+impl crate::ReadFromProc for FakeMem {
+    fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+        if self.all_reads_fail {
+            return Err(crate::Error::invalid_addr(addr));
+        }
+        for (base, bytes) in &self.regions {
+            let Some(start) = addr.checked_sub(*base) else {
+                continue;
+            };
+            let (Ok(start), Ok(len)) = (usize::try_from(start), usize::try_from(len)) else {
+                continue;
+            };
+            if let Some(end) = start.checked_add(len)
+                && end <= bytes.len()
+            {
+                return Ok(bytes[start..end].to_vec());
+            }
+        }
+        match self.unmapped {
+            Unmapped::Fail => Err(crate::Error::invalid_addr(addr)),
+            Unmapped::Panic => panic!("unexpected read of {len} bytes at {addr:#x}"),
+        }
+    }
+
+    fn function_symbol(&self, addr: u64) -> Option<String> {
+        self.symbols.get(&addr).cloned()
+    }
+}
+
+/// Bytes for a [`NODE`] value: `Node { value: u32 @0, next: *Node @8 }`.
+pub fn node_bytes(value: u32, next: u64) -> Vec<u8> {
+    let mut bytes = vec![0u8; 16];
+    bytes[..4].copy_from_slice(&value.to_le_bytes());
+    bytes[8..].copy_from_slice(&next.to_le_bytes());
+    bytes
+}
+
+/// Bytes for a [`BTREE_LEAF`]: `LeafNode { len: u8 @0, keys: [MaybeUninit<u32>;
+/// 2] @4, vals: [MaybeUninit<u32>; 2] @12 }`. Slots past `entries` keep the
+/// `0xaa` fill, standing in for the uninitialized memory a real node has.
+pub fn btree_leaf(entries: &[(u32, u32)]) -> Vec<u8> {
+    let mut bytes = vec![0xaa; 20];
+    bytes[0] = entries.len() as u8;
+    for (i, (key, value)) in entries.iter().enumerate() {
+        bytes[4 + i * 4..8 + i * 4].copy_from_slice(&key.to_le_bytes());
+        bytes[12 + i * 4..16 + i * 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+/// Bytes for a [`BTREE_INTERNAL`]: `InternalNode { data: LeafNode @0, edges:
+/// [*LeafNode; 3] @24 }`.
+pub fn btree_internal(entries: &[(u32, u32)], edges: &[u64]) -> Vec<u8> {
+    let mut bytes = vec![0xaa; 48];
+    bytes[..20].copy_from_slice(&btree_leaf(entries));
+    for (i, edge) in edges.iter().enumerate() {
+        bytes[24 + i * 8..32 + i * 8].copy_from_slice(&edge.to_le_bytes());
+    }
+    bytes
+}
+
+/// Bytes for an mpsc [`BLOCK`]: `[u32; 4] values @0, start_index: usize @16,
+/// next: *Block @24`. The queued-message walk reads a block field by field, so
+/// this is placed as one region and served piecemeal.
+pub fn mpsc_block(values: &[u32; 4], start_index: u64, next: u64) -> Vec<u8> {
+    let mut bytes = u32s(values);
+    bytes.extend_from_slice(&start_index.to_le_bytes());
+    bytes.extend_from_slice(&next.to_le_bytes());
+    bytes
+}
+
+/// Bytes for a tokio sync waiter -- `{ <state word>: usize @0, next: *Waiter
+/// @8 }` -- padded to the 32 bytes the fixture's waiter types declare, so a
+/// read of any prefix is served.
+pub fn sync_waiter(state: u64, next: u64) -> Vec<u8> {
+    let mut bytes = vec![0u8; 32];
+    bytes[..8].copy_from_slice(&state.to_le_bytes());
+    bytes[8..16].copy_from_slice(&next.to_le_bytes());
+    bytes
+}
+
+/// Little-endian bytes for a sequence of `u32`s -- the shape most fixture
+/// values take.
+pub fn u32s(values: &[u32]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// Little-endian bytes for a sequence of `u64`s, for pointer words and the
+/// `(pointer, length, capacity)` triples a slice or string is read from.
+pub fn u64s(values: &[u64]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
 
 /// Build a member-only [`Selector`] from member indices — the shape every
 /// selector in these synthetic bundles has (Phase A emits no `Deref`).
