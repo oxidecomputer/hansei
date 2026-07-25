@@ -611,6 +611,8 @@ mod tests {
         assert_eq!(show(I32, &(-70000i32).to_le_bytes()), "-70000");
         assert_eq!(show(I64, &i64::MIN.to_le_bytes()), "-9223372036854775808");
 
+        assert_eq!(show(U16, &4242u16.to_le_bytes()), "4242");
+
         // A width the signed/unsigned match has no case for dumps its bytes.
         assert_eq!(show(U24, &[0x01, 0x02, 0x03]), "[0x01, 0x02, 0x03]");
 
@@ -868,6 +870,72 @@ mod tests {
         assert_eq!(
             format!("{:#}", value.display_from_target(&mem, 8).ugly()),
             "alloc::vec::Vec<u32> {\n    ptr: 0x2000 -> 5,\n    len: 3,\n    capacity: 3,\n}"
+        );
+    }
+
+    /// A bool renders by its truth rather than its byte, so any non-zero
+    /// pattern reads as `true`. A zero-sized type has no bytes to render and
+    /// is shown by name.
+    #[test]
+    fn test_bool_and_zero_sized_types_render_structurally() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bool_ty = v.ty(BOOL).unwrap();
+        let show = |byte: u8| {
+            format!(
+                "{}",
+                TypeInfoRef::new(bool_ty, 0, std::slice::from_ref(&byte)).display()
+            )
+        };
+        assert_eq!(show(0), "false");
+        assert_eq!(show(1), "true");
+        // Not a comparison against 1: a byte that is neither is still true.
+        assert_eq!(show(7), "true");
+
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(UNIT).unwrap(), 0, &[]).display()
+            ),
+            "Unit"
+        );
+    }
+
+    /// A pointer with nothing to read through shows its address and stops.
+    /// Null is named, and a word too short to hold an address is reported.
+    #[test]
+    fn test_pointer_without_a_target_shows_its_address() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ptr = v.ty(PTR).unwrap();
+        let show = |bytes: &[u8]| format!("{}", TypeInfoRef::new(ptr, 0, bytes).display());
+
+        assert_eq!(show(&0x2000u64.to_le_bytes()), "0x2000");
+        assert_eq!(show(&0u64.to_le_bytes()), "null");
+        assert_eq!(show(&[0u8; 4]), "<truncated>");
+    }
+
+    /// Integer array elements render zero-padded to their own width, so the
+    /// column lines up whatever the element type is. Every width the renderer
+    /// has a case for, from one byte to eight.
+    #[test]
+    fn test_integer_arrays_pad_hex_to_the_element_width() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let show = |id, bytes: &[u8]| {
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(id).unwrap(), 0, bytes).display()
+            )
+        };
+        assert_eq!(
+            show(IPV4_OCTETS, &[1, 2, 3, 0xff]),
+            "[0x01, 0x02, 0x03, 0xff]"
+        );
+        assert_eq!(show(U16_ARR, &[0x01, 0x00, 0xff, 0xff]), "[0x0001, 0xffff]");
+        assert_eq!(
+            show(ARR, &u32s(&[1, 0xabcdef, u32::MAX])),
+            "[0x00000001, 0x00abcdef, 0xffffffff]"
         );
     }
 }
