@@ -1289,10 +1289,6 @@ impl<T: Target> ParseCtx for Context<'_, T> {
     fn proc(&self) -> &T {
         self.proc
     }
-
-    fn mappings(&self) -> &Mappings {
-        &self.mappings
-    }
 }
 
 /// Result of resolving the bundle's symbol fingerprint against the target

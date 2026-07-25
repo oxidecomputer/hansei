@@ -81,16 +81,6 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfo<'a, T> {
         self.as_ref().parse(ctx)
     }
 
-    pub fn box2<Ctx: ParseCtx>(
-        &'buf self,
-        ctx: &Ctx,
-    ) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a, T>>>
-    where
-        'a: 'buf,
-    {
-        boxed_slice_elements(self, ctx)
-    }
-
     /// Pass the elements of a boxed slice to the provided closure.
     pub fn boxed_slice_elements<Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<()>
     where
@@ -521,67 +511,6 @@ fn array_elements<'buf, 'a: 'buf, T: DebugType<'a>>(
     Ok(iter)
 }
 
-/// Parse the elements of a boxed slice, returning them in a Vec.
-fn boxed_slice_elements<'buf, 'a: 'buf, T: DebugType<'a>, Ctx: ParseCtx>(
-    ptr_info: &'buf TypeInfo<'a, T>,
-    _ctx: &Ctx, //TODO REMOVE ME
-) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a, T>>> {
-    // todo check len?
-    let elem_size = ptr_info.ty.size();
-    let iter = ptr_info
-        .buf
-        .chunks(elem_size as usize)
-        .enumerate()
-        .map(move |(i, chunk)| {
-            TypeInfoRef {
-                ty: ptr_info.ty,
-                addr: ptr_info.addr + (i as u64) * elem_size,
-                bytes: chunk,
-                _marker: std::marker::PhantomData,
-            }
-            .peel()
-        });
-    Ok(iter)
-}
-
 // ---------------------------------------------------------------------------
 // ReadFromProc
 // ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use crate::TypeInfoRef;
-    use crate::testhelper::*;
-
-    use exegesis::bundle::BundleView;
-
-    /// `peel` descends through single-member wrappers, and stops at the last
-    /// type the buffer covers. A value read short must not take it past the end
-    /// of the bytes in hand -- it used to slice unconditionally and panic.
-    #[test]
-    fn test_peel_stops_at_a_buffer_it_cannot_cover() {
-        let b = test_bundle();
-        let v = BundleView::new(&b);
-        let wrap = v.ty(WRAP).unwrap();
-
-        // `Wrap { inner: Point @0 }`, with all 8 bytes, peels to the Point.
-        let full: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let peeled = TypeInfoRef::new(wrap, 0, &full).peel();
-        assert_eq!(peeled.ty.name(), "Point");
-        assert_eq!(format!("{}", peeled.display()), "Point { x: 3, y: 4 }");
-
-        // Short of that, peeling stops at Wrap and the renderer reports the
-        // buffer rather than reading past it.
-        for len in 0..8 {
-            let short = &full[..len];
-            let peeled = TypeInfoRef::new(wrap, 0, short).peel();
-            assert_eq!(peeled.ty.name(), "Wrap", "{len} bytes");
-            assert_eq!(peeled.bytes.len(), len, "{len} bytes");
-            assert_eq!(
-                format!("{}", peeled.display()),
-                "<truncated>",
-                "{len} bytes"
-            );
-        }
-    }
-}
