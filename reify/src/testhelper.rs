@@ -109,6 +109,26 @@ impl crate::ReadFromProc for FakeMem {
     }
 }
 
+/// A [`ParseCtx`](crate::ParseCtx) over a [`FakeMem`], for the parsing and
+/// owned-`TypeInfo` paths that take a context rather than a bare reader.
+pub struct TestCtx {
+    pub mem: FakeMem,
+}
+
+impl TestCtx {
+    pub fn new(mem: FakeMem) -> Self {
+        Self { mem }
+    }
+}
+
+impl crate::ParseCtx for TestCtx {
+    type Target = FakeMem;
+
+    fn proc(&self) -> &FakeMem {
+        &self.mem
+    }
+}
+
 /// Bytes for a [`NODE`] value: `Node { value: u32 @0, next: *Node @8 }`.
 pub fn node_bytes(value: u32, next: u64) -> Vec<u8> {
     let mut bytes = vec![0u8; 16];

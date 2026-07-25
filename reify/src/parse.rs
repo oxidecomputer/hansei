@@ -1,11 +1,9 @@
 //! Parsing Rust values out of a typed buffer.
 
-use crate::debug_type::{DebugMember, DebugType, TypeKind};
+use crate::debug_type::{DebugType, TypeKind};
 use crate::target::ReadFromProc;
 use crate::value::TypeInfoRef;
 use crate::{Error, Result};
-
-use proc::Mappings;
 
 pub trait ParseCtx {
     /// The target being read: a live process or core on illumos, or a
@@ -13,7 +11,6 @@ pub trait ParseCtx {
     type Target: ReadFromProc;
 
     fn proc(&self) -> &Self::Target;
-    fn mappings(&self) -> &Mappings;
 }
 
 /// Parse a byte slice as a type using debug type information.
@@ -107,45 +104,6 @@ where
     }
 }
 
-impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithDbgInfo<'a, Ty, Ctx> for Vec<V>
-where
-    V: ParseWithDbgInfo<'a, Ty, Ctx>,
-    Ctx: ParseCtx,
-{
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
-        let proc = ctx.proc();
-
-        let len: u64 = info.member("len")?.parse(ctx)?;
-        if len == 0 {
-            return Ok(Vec::new());
-        }
-
-        let param_member = info.ty.member("__type_param_T").unwrap();
-        let param_ty = param_member.ty();
-        let param_size = param_ty.size();
-
-        let ptr = info.member("buf")?.member("ptr")?;
-
-        let p: u64 = ptr.parse(ctx)?;
-        let total_len = len * param_ty.size();
-
-        let raw = proc.read_bytes(p, total_len)?;
-        let mut out = Vec::with_capacity(len as usize);
-        for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
-            let item_info = TypeInfoRef {
-                ty: param_ty,
-                addr: info.addr + (i as u64) * param_size,
-                bytes: chunk,
-                _marker: std::marker::PhantomData,
-            };
-            let item = V::parse_with_dbg(ctx, &item_info)?;
-            out.push(item);
-        }
-
-        Ok(out)
-    }
-}
-
 impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithDbgInfo<'a, Ty, Ctx> for Box<[V]>
 where
     V: ParseWithDbgInfo<'a, Ty, Ctx>,
@@ -173,7 +131,7 @@ where
         for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
             let item_info = TypeInfoRef {
                 ty: param_ty,
-                addr: info.addr + (i as u64) * param_size,
+                addr: p + (i as u64) * param_size,
                 bytes: chunk,
                 _marker: std::marker::PhantomData,
             };
