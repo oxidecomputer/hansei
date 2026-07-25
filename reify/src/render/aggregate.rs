@@ -312,6 +312,13 @@ mod tests {
             format!("{}", value.display_from_target(&mem, 8)),
             "Opt::Some(\"hi\\nthere\")"
         );
+        // The payload is a value, not a record, so pretty mode has nothing to
+        // lay out and renders the same -- the parenthesised form is the
+        // variant's, not the payload's.
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&mem, 8)),
+            "Opt::Some(\"hi\\nthere\")"
+        );
     }
 
     #[test]
@@ -397,5 +404,22 @@ mod tests {
         let b_bytes = variant(1, &7u64.to_le_bytes());
         let b_val = TypeInfoRef::new(msg, 0, &b_bytes);
         assert_eq!(format!("{}", b_val.display()), "Msg::B");
+    }
+
+    /// An enum whose discriminant matches no variant cannot be decoded into a
+    /// payload, so it falls back to its name over the raw bytes rather than
+    /// picking a variant or rendering nothing. Pretty mode has no structure to
+    /// lay out, so both spellings agree.
+    #[test]
+    fn test_undecodable_enum_falls_back_to_name_and_bytes() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mut bytes = vec![0u8; 16];
+        bytes[0] = 99;
+        let value = TypeInfoRef::new(v.ty(MSG).unwrap(), 0, &bytes);
+        let expected = "Msg [0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]";
+        assert_eq!(format!("{}", value.display()), expected);
+        assert_eq!(format!("{:#}", value.display()), expected);
     }
 }

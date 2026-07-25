@@ -379,6 +379,8 @@ pub const U24: BundleTypeId = BundleTypeId(83);
 pub const COLOR: BundleTypeId = BundleTypeId(84);
 pub const VAL_UNION: BundleTypeId = BundleTypeId(85);
 pub const UNMODELLED: BundleTypeId = BundleTypeId(86);
+pub const U16: BundleTypeId = BundleTypeId(87);
+pub const U16_ARR: BundleTypeId = BundleTypeId(88);
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
 ///
@@ -409,7 +411,7 @@ pub fn test_bundle() -> Bundle {
     let (pairn, tuple1n) = (s("Pair"), s("__1"));
     let (f32n, f64n) = (s("f32"), s("f64"));
     let (i8n, i16n, i32n, i64n) = (s("i8"), s("i16"), s("i32"), s("i64"));
-    let (charn, u24n) = (s("char"), s("u24"));
+    let (charn, u24n, u16n) = (s("char"), s("u24"), s("u16"));
     let (colorn, redn, greenn) = (s("Color"), s("Red"), s("Green"));
     let (val_unionn, intn, floatn) = (s("Val"), s("int"), s("float"));
     let unmodelledn = s("Unmodelled");
@@ -1087,6 +1089,17 @@ pub fn test_bundle() -> Bundle {
         TypeDef::Opaque {
             name: unmodelledn,
             size: Some(4),
+        },
+        // u16 @87 and `[u16; 2]` @88 -- the one integer width the other
+        // fixture types leave without a case, plain and in an array.
+        TypeDef::Base {
+            name: u16n,
+            size: 2,
+            encoding: Encoding::Unsigned,
+        },
+        TypeDef::Array {
+            elem: U16,
+            count: 2,
         },
     ];
 
