@@ -777,7 +777,7 @@ mod tests {
             format!("{point}"),
             format!("{}", point.display_with_depth(16))
         );
-        assert_eq!(format!("{point:#}"), "Point {\n     x: 1,\n     y: 2,\n}");
+        assert_eq!(format!("{point:#}"), "Point {\n    x: 1,\n    y: 2,\n}");
 
         // The owned form renders identically, through the same impl.
         let owned = crate::TypeInfo::from(point.clone());
@@ -811,46 +811,49 @@ mod tests {
         );
     }
 
-    /// Nesting in pretty mode, and the one place it does not line up. A field
-    /// line is indented `4 * depth + 1` -- four spaces per level from
-    /// `write_indent`, plus the leading space in the `" name: "` prefix -- while
-    /// the closing brace is written at `4 * depth`. So a nested record's fields
-    /// sit one column right of where its closer suggests, and the mismatch
-    /// compounds with depth. Pinned as it stands; worth straightening when the
-    /// display logic is restructured.
+    /// Nesting in pretty mode. Every line sits on a four-space grid, and each
+    /// record's closing brace is one level left of the fields it closes --
+    /// which is what a named struct's field prefix used to break, indenting
+    /// fields to `4 * depth + 1` while the closer stayed at `4 * depth`.
     #[test]
-    fn test_pretty_nesting_indents_fields_one_past_their_closer() {
+    fn test_pretty_nesting_indents_on_a_four_space_grid() {
         let b = test_bundle();
         let v = BundleView::new(&b);
 
-        // A pointer followed in pretty mode: the pointee opens after the
-        // arrow, its fields indent from the pointee's depth, and its closer
-        // lands four columns left of them.
+        // A pointer followed in pretty mode: the pointee's fields indent from
+        // its own depth and its closer lands one level left of them.
         let mem = FakeMem::new().at(0x2000, u32s(&[3, 4]));
         let bytes = 0x2000u64.to_le_bytes();
         let ptr = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{:#}", ptr.display_from_target(&mem, 8)),
-            "0x2000 -> Point {\n         x: 3,\n         y: 4,\n    }"
+            "0x2000 -> Point {\n        x: 3,\n        y: 4,\n    }"
         );
 
-        // Two levels of record nesting, from the structural `ugly` view of a
-        // type whose own formatter would otherwise flatten it.
+        // Three levels of record nesting, from the structural view of a type
+        // whose own formatter would otherwise flatten it.
         let notify = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &[0u8; 32]);
         let shown = format!("{:#}", notify.display().ugly());
-        let indent = |needle: &str| {
+        for line in shown.lines() {
+            let indent = line.len() - line.trim_start().len();
+            assert_eq!(indent % 4, 0, "off the grid: {line:?}\nin {shown}");
+        }
+
+        let indent_of = |needle: &str| {
             shown
                 .lines()
                 .find(|l| l.trim_start().starts_with(needle))
                 .map(|l| l.len() - l.trim_start().len())
                 .unwrap_or_else(|| panic!("no line for {needle}: {shown}"))
         };
-        // Depth 1 fields at five, depth 2 at nine, depth 3 at thirteen.
-        assert_eq!(indent("state: 0,"), 5);
-        assert_eq!(indent("raw:"), 9);
-        assert_eq!(indent("head: null,"), 13);
-        // ...but each record closes four columns left of its own fields.
-        assert!(shown.contains("\n             head: null,\n             tail: null,\n        },"));
+        assert_eq!(indent_of("state: 0,"), 4);
+        assert_eq!(indent_of("raw:"), 8);
+        assert_eq!(indent_of("head: null,"), 12);
+        // The innermost record's fields are at twelve, so it closes at eight.
+        assert!(
+            shown.contains("\n            head: null,\n            tail: null,\n        },"),
+            "{shown}"
+        );
     }
 
     /// Suppressing custom formatters leaves the structural view, which lays out
@@ -864,7 +867,7 @@ mod tests {
         let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &fat);
         assert_eq!(
             format!("{:#}", value.display_from_target(&mem, 8).ugly()),
-            "alloc::vec::Vec<u32> {\n     ptr: 0x2000 -> 5,\n     len: 3,\n     capacity: 3,\n}"
+            "alloc::vec::Vec<u32> {\n    ptr: 0x2000 -> 5,\n    len: 3,\n    capacity: 3,\n}"
         );
     }
 }
