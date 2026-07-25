@@ -199,3 +199,158 @@ impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for Str
 
 // Split this into a free function to fix lifetime issues from calling
 // `TypeInfoRef` methods from `TypeInfo`.
+
+#[cfg(test)]
+mod tests {
+    use crate::TypeInfoRef;
+    use crate::testhelper::*;
+
+    use exegesis::bundle::BundleView;
+
+    /// Every scalar parses from its own bytes, little-endian, and a buffer of
+    /// the wrong width is an error rather than a silent misread.
+    #[test]
+    fn test_scalars_parse_from_their_own_bytes() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ctx = TestCtx::new(FakeMem::new());
+        let u8_ty = v.ty(U8).unwrap();
+        let u32_ty = v.ty(U32).unwrap();
+        let u64_ty = v.ty(U64).unwrap();
+        let bool_ty = v.ty(BOOL).unwrap();
+
+        assert_eq!(
+            TypeInfoRef::new(u8_ty, 0, &[7])
+                .parse::<u8, _>(&ctx)
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            TypeInfoRef::new(u8_ty, 0, &[0xff])
+                .parse::<i8, _>(&ctx)
+                .unwrap(),
+            -1
+        );
+        assert!(
+            TypeInfoRef::new(bool_ty, 0, &[1])
+                .parse::<bool, _>(&ctx)
+                .unwrap()
+        );
+        assert!(
+            !TypeInfoRef::new(bool_ty, 0, &[0])
+                .parse::<bool, _>(&ctx)
+                .unwrap()
+        );
+        assert_eq!(
+            TypeInfoRef::new(u32_ty, 0, &7u32.to_le_bytes())
+                .parse::<u32, _>(&ctx)
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            TypeInfoRef::new(u64_ty, 0, &(-2i64).to_le_bytes())
+                .parse::<i64, _>(&ctx)
+                .unwrap(),
+            -2
+        );
+        assert_eq!(
+            TypeInfoRef::new(u64_ty, 0, &1.5f64.to_le_bytes())
+                .parse::<f64, _>(&ctx)
+                .unwrap(),
+            1.5
+        );
+
+        // A width mismatch is reported, not truncated or padded.
+        assert!(
+            TypeInfoRef::new(u32_ty, 0, &7u64.to_le_bytes())
+                .parse::<u32, _>(&ctx)
+                .is_err()
+        );
+        assert!(
+            TypeInfoRef::new(u8_ty, 0, &[])
+                .parse::<u8, _>(&ctx)
+                .is_err()
+        );
+        assert!(
+            TypeInfoRef::new(u8_ty, 0, &[])
+                .parse::<i8, _>(&ctx)
+                .is_err()
+        );
+        assert!(
+            TypeInfoRef::new(bool_ty, 0, &[0, 0])
+                .parse::<bool, _>(&ctx)
+                .is_err()
+        );
+    }
+
+    /// `Option<V>` reads the active variant and parses the payload, and says so
+    /// when the enum is not an option at all.
+    #[test]
+    fn test_option_parses_through_its_variant() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ctx = TestCtx::new(FakeMem::new());
+        let opt = v.ty(OPT).unwrap();
+
+        // Opt is a niche enum: discriminant 0 is None, anything else is Some.
+        let none_bytes = 0u64.to_le_bytes();
+        let none = TypeInfoRef::new(opt, 0, &none_bytes);
+        assert_eq!(none.parse::<Option<u64>, _>(&ctx).unwrap(), None);
+        let some_bytes = 42u64.to_le_bytes();
+        let some = TypeInfoRef::new(opt, 0, &some_bytes);
+        assert_eq!(some.parse::<Option<u64>, _>(&ctx).unwrap(), Some(42));
+
+        // A two-variant enum whose variants are not None/Some is rejected by
+        // name rather than guessed at.
+        let msg = TypeInfoRef::new(v.ty(MSG).unwrap(), 0, &[1u8; 16]);
+        assert!(msg.parse::<Option<u64>, _>(&ctx).is_err());
+    }
+
+    /// A fixed-size array parses element by element from its own bytes.
+    #[test]
+    fn test_array_parses_each_element() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ctx = TestCtx::new(FakeMem::new());
+        let bytes = u32s(&[10, 20, 30]);
+        let arr = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &bytes);
+        assert_eq!(arr.parse::<[u32; 3], _>(&ctx).unwrap(), [10, 20, 30]);
+
+        // The buffer must be exactly the array; a short one is an error.
+        let short = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &bytes[..8]);
+        assert!(short.parse::<[u32; 3], _>(&ctx).is_err());
+    }
+
+    /// A boxed slice and a string both follow a `(data_ptr, length)` pair into
+    /// the target. The elements are addressed from the buffer they were read
+    /// from, not from the fat pointer's own address.
+    #[test]
+    fn test_boxed_slice_and_string_read_through_the_target() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ctx = TestCtx::new(
+            FakeMem::new()
+                .at(0x2000, vec![1u8, 2, 3, 4])
+                .at(0x3000, b"hello".to_vec()),
+        );
+
+        // `&[u32]` in the fixture is (data_ptr: *u8, length), so it parses as a
+        // boxed slice of bytes.
+        let fat = u64s(&[0x2000, 4]);
+        let slice = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0x9000, &fat);
+        assert_eq!(
+            slice.parse::<Box<[u8]>, _>(&ctx).unwrap().as_ref(),
+            &[1u8, 2, 3, 4]
+        );
+
+        let fat = u64s(&[0x3000, 5]);
+        let text = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0x9000, &fat);
+        assert_eq!(text.parse::<String, _>(&ctx).unwrap(), "hello");
+
+        // An unreadable buffer is an error, not an empty result.
+        let ctx = TestCtx::new(FakeMem::new().unreadable());
+        let fat = u64s(&[0x2000, 4]);
+        let slice = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0, &fat);
+        assert!(slice.parse::<Box<[u8]>, _>(&ctx).is_err());
+    }
+}
