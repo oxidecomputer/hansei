@@ -514,3 +514,102 @@ pub(crate) fn write_hex_bytes(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::
 // ---------------------------------------------------------------------------
 // ParseCtx & ParseWithDbgInfo
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use crate::testhelper::*;
+    use crate::{ReadFromProc, TypeInfoRef};
+
+    use exegesis::bundle::BundleView;
+
+    #[test]
+    fn test_ugly_suppresses_custom_formatters() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+
+        // A `Scalar` format (`RawMutex`) renders its decoded bits normally, but
+        // `--ugly` shows the underlying struct field.
+        let mutex = TypeInfoRef::new(v.ty(RAW_MUTEX).unwrap(), 0, &[1u8]);
+        assert_eq!(
+            format!("{}", mutex.display()),
+            "parking_lot::raw_mutex::RawMutex: locked=true, parked=false"
+        );
+        assert_eq!(
+            format!("{}", mutex.display().ugly()),
+            "parking_lot::raw_mutex::RawMutex { state: 1 }"
+        );
+
+        // A `Str` format renders as a quoted string normally; `--ugly` shows the
+        // pointer/length representation instead. (No target: the pointer prints
+        // as a bare address rather than being followed.)
+        let str_bytes: Vec<u8> = [0x3000u64, 8]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let s = TypeInfoRef::new(v.ty(STR).unwrap(), 0, &str_bytes);
+        assert_eq!(
+            format!("{}", s.display().ugly()),
+            "&str { data_ptr: 0x3000, length: 8 }"
+        );
+    }
+
+    #[test]
+    fn test_integer_arrays_display_as_zero_padded_hex() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+
+        let bytes: Vec<u8> = [1u32, 0xabcdef, u32::MAX]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let array = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", array.display()),
+            "[0x00000001, 0x00abcdef, 0xffffffff]"
+        );
+
+        let bytes: Vec<u8> = [1u64, 0xabcdef, u64::MAX]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let array = TypeInfoRef::new(v.ty(VTABLE_ARRAY).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", array.display()),
+            "[0x0000000000000001, 0x0000000000abcdef, 0xffffffffffffffff]"
+        );
+        assert_eq!(
+            format!("{:#}", array.display()),
+            "[\n    0x0000000000000001,\n    0x0000000000abcdef,\n    0xffffffffffffffff,\n]"
+        );
+    }
+
+    #[test]
+    fn test_target_display_recurses_through_pointers() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                let (value, next) = match addr {
+                    0x1000 => (1u32, 0x2000u64),
+                    0x2000 => (2u32, 0u64),
+                    _ => return Err(crate::Error::invalid_addr(addr)),
+                };
+                let mut bytes = vec![0; 16];
+                bytes[..4].copy_from_slice(&value.to_le_bytes());
+                bytes[8..].copy_from_slice(&next.to_le_bytes());
+                Ok(bytes)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = 0x1000u64.to_le_bytes();
+        let root = TypeInfoRef::new(v.ty(NODE_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", root.display_from_target(&Reader, 8));
+        assert!(shown.contains("value: 1"), "{shown}");
+        assert!(shown.contains("value: 2"), "{shown}");
+
+        let shallow = format!("{:#}", root.display_from_target(&Reader, 1));
+        assert_eq!(shallow, "0x1000 -> ...");
+    }
+}

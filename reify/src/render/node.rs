@@ -611,3 +611,633 @@ fn eval_struct<'a, T: DebugType<'a>>(
     }
     write!(f, "}}")
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::testhelper::*;
+    use crate::{ReadFromProc, TypeInfoRef};
+
+    use exegesis::bundle::{BundleView, DisplayNode as BundleNode};
+
+    #[test]
+    fn test_transparent_debug_format_elides_wrapper() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let value = TypeInfoRef::new(v.ty(WRAP).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_with_depth(2)),
+            "Point { x: 3, y: 4 }"
+        );
+    }
+
+    #[test]
+    fn test_atomic_debug_format_displays_stored_value() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = 42u32.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(ATOMIC).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display_with_depth(1)), "42");
+    }
+
+    #[test]
+    fn test_nested_transparent_formats_do_not_consume_depth() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+
+        let bytes = 42u32.to_le_bytes();
+        let atomic = TypeInfoRef::new(v.ty(LOOM_ATOMIC).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", atomic.display_with_depth(1)), "42");
+
+        let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let cell = TypeInfoRef::new(v.ty(LOOM_CELL).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", cell.display_with_depth(2)),
+            "Point { x: 3, y: 4 }"
+        );
+    }
+
+    #[test]
+    fn test_atomic_pointer_does_not_dereference_stored_address() {
+        struct NoReads;
+
+        impl ReadFromProc for NoReads {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                panic!("atomic pointer formatter unexpectedly read {addr:#x}")
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = 0x1000u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&NoReads, 8)),
+            "0x1000"
+        );
+    }
+
+    #[test]
+    fn test_following_alias_preserves_pointer_traversal() {
+        struct Reader;
+
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!((addr, len), (0x1000, 8));
+                Ok([3u32, 4].into_iter().flat_map(u32::to_le_bytes).collect())
+            }
+        }
+
+        let mut b = test_bundle();
+        b.types.debug_formats.insert(
+            ATOMIC_PTR,
+            BundleNode::Alias {
+                at: sel(&[0]),
+                follow_pointers: true,
+            },
+        );
+        b.validate().expect("following alias must validate");
+        let v = BundleView::new(&b);
+        let bytes = 0x1000u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "0x1000 -> Point { x: 3, y: 4 }"
+        );
+    }
+
+    #[test]
+    fn test_notify_renders_compact_state_mutex_and_waiters() {
+        // Two waiters live at 0x3000 and 0x3020: the first still parked (no
+        // notification), the second handed a `notify_one` notification.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                // Waiter { notification: usize @0, next: *Waiter @8 }.
+                let (notification, next) = match addr {
+                    0x3000 => (0u64, 0x3020u64),
+                    0x3020 => (1u64, 0u64),
+                    other => panic!("unexpected read at {other:#x}"),
+                };
+                let mut b = Vec::new();
+                b.extend_from_slice(&notification.to_le_bytes());
+                b.extend_from_slice(&next.to_le_bytes());
+                b.resize(32, 0);
+                b.truncate(len as usize);
+                Ok(b)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // Flat Notify buffer: state @0, mutex state byte @8, head @16, tail @24.
+        let notify = |state: u64, mutex: u8, head: u64| {
+            let mut buf = vec![0u8; 32];
+            buf[0..8].copy_from_slice(&state.to_le_bytes());
+            buf[8] = mutex;
+            buf[16..24].copy_from_slice(&head.to_le_bytes());
+            buf
+        };
+
+        // Idle, unlocked, two parked waiters.
+        let buf = notify(0, 0, 0x3000);
+        let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::notify::Notify { state: state=idle, generation=0, \
+             mutex: locked=false, parked=false, queue: [\
+             tokio::sync::notify::Waiter { notification: kind=none, order=fifo }, \
+             tokio::sync::notify::Waiter { notification: kind=one, order=fifo }] }"
+        );
+
+        // Notified with two notify_waiters calls, locked mutex, empty queue.
+        // 0b1010 = notified (state 2) with generation 2 (10 >> 2).
+        let buf = notify(0b1010, 0b01, 0);
+        let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::notify::Notify { state: state=notified, generation=2, \
+             mutex: locked=true, parked=false, queue: [] }"
+        );
+
+        // Without a target the queue cannot be walked, but state and mutex
+        // (read from the value's own bytes) still render.
+        let buf = notify(1, 0, 0x3000);
+        let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        let shown = format!("{}", value.display());
+        assert!(shown.contains("state: state=waiting"), "{shown}");
+        assert!(shown.contains("queue: <target unavailable>"), "{shown}");
+
+        // Pretty mode puts each field and waiter on its own indented line.
+        let buf = notify(0, 0, 0x3000);
+        let value = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::notify::Notify {\n\
+             \x20   state: state=idle, generation=0,\n\
+             \x20   mutex: locked=false, parked=false,\n\
+             \x20   queue: [\n\
+             \x20       tokio::sync::notify::Waiter { notification: kind=none, order=fifo },\n\
+             \x20       tokio::sync::notify::Waiter { notification: kind=one, order=fifo },\n\
+             \x20   ],\n\
+             }"
+        );
+    }
+
+    #[test]
+    fn test_semaphore_decodes_permits_field_in_place() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // 16-byte Semaphore: permits usize @0, waiters u32 @8.
+        let bytes = |permits: u64, waiters: u32| {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&permits.to_le_bytes());
+            buf.extend_from_slice(&waiters.to_le_bytes());
+            buf.extend_from_slice(&[0u8; 4]);
+            buf
+        };
+        let cases = [
+            // permits are stored shifted left by one; bit 0 is the closed flag.
+            (
+                64u64,
+                3u32,
+                "tokio::sync::batch_semaphore::Semaphore { permits: closed=false, permits=32, \
+                 waiters: 3 }",
+            ),
+            (
+                0,
+                0,
+                "tokio::sync::batch_semaphore::Semaphore { permits: closed=false, permits=0, \
+                 waiters: 0 }",
+            ),
+            // 65 = (32 << 1) | 1: 32 permits, closed.
+            (
+                65,
+                9,
+                "tokio::sync::batch_semaphore::Semaphore { permits: closed=true, permits=32, \
+                 waiters: 9 }",
+            ),
+        ];
+        for (permits, waiters, expected) in cases {
+            let buf = bytes(permits, waiters);
+            let value = TypeInfoRef::new(v.ty(SEMAPHORE).unwrap(), 0, &buf);
+            assert_eq!(
+                format!("{}", value.display()),
+                expected,
+                "permits={permits}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mpsc_block_elides_values_to_written_count() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // 24-byte Block: [u32; 4] value slots @0, ready-bitmap usize @16.
+        let block = |ready: u64| {
+            let mut buf = vec![0u8; 16];
+            buf.extend_from_slice(&ready.to_le_bytes());
+            buf
+        };
+        // Three bits set within the 4-slot capacity: three written slots.
+        let buf = block(0b1011);
+        let value = TypeInfoRef::new(v.ty(BLOCK).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display()),
+            "tokio::sync::mpsc::block::Block<u32> { values: [3 slots], header: BlockHeader { ready_slots: 11 } }"
+        );
+
+        // Bits outside the 4-slot capacity (released/closed flags) are ignored.
+        let buf = block(0b1_0000);
+        let value = TypeInfoRef::new(v.ty(BLOCK).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display()),
+            "tokio::sync::mpsc::block::Block<u32> { values: [0 slots], header: BlockHeader { ready_slots: 16 } }"
+        );
+    }
+
+    #[test]
+    fn test_mpsc_chan_shows_only_queued_messages() {
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                // Block at [0x1000, 0x1020): [u32; 4] values @0, start_index
+                // usize @16, next ptr @24 (null). The queued CustomList reads its
+                // fields and slots piecemeal, so serve any sub-read of it.
+                let mut block = Vec::new();
+                for v in [10u32, 20, 30, 40] {
+                    block.extend_from_slice(&v.to_le_bytes());
+                }
+                block.extend_from_slice(&0u64.to_le_bytes()); // start_index @16
+                block.extend_from_slice(&0u64.to_le_bytes()); // next @24 (null)
+                let start = addr.checked_sub(0x1000).expect("read below block") as usize;
+                Ok(block[start..start + len as usize].to_vec())
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // Chan: tail usize @0, index usize @8, head ptr @16.
+        let chan = |tail: u64, index: u64| {
+            let mut c = Vec::new();
+            c.extend_from_slice(&tail.to_le_bytes());
+            c.extend_from_slice(&index.to_le_bytes());
+            c.extend_from_slice(&0x1000u64.to_le_bytes());
+            c
+        };
+
+        // index=1, tail=3: slots 1 and 2 are still queued.
+        let bytes = chan(3, 1);
+        let value = TypeInfoRef::new(v.ty(CHAN).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert!(shown.contains("queued: [20, 30]"), "{shown}");
+
+        // Drained channel (index == tail): nothing queued, no stale slots shown.
+        let bytes = chan(3, 3);
+        let value = TypeInfoRef::new(v.ty(CHAN).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert!(shown.contains("queued: []"), "{shown}");
+    }
+
+    #[test]
+    fn test_custom_list_walks_mpsc_block_chain() {
+        // The shared `chan_queued_node` CustomList, installed as a top-level
+        // format, walks the block chain from the value language: seed
+        // cur/tail/block from the Chan, then loop reading each block's
+        // start_index (a Load), emit the in-window slots, and follow `next`.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                // One block at [0x1000, 0x1020): [u32; 4] values @0, start_index
+                // usize @16, next ptr @24 (null), served piecemeal.
+                let mut block = Vec::new();
+                for value in [10u32, 20, 30, 40] {
+                    block.extend_from_slice(&value.to_le_bytes());
+                }
+                block.extend_from_slice(&0u64.to_le_bytes()); // start_index @16
+                block.extend_from_slice(&0u64.to_le_bytes()); // next @24 (null)
+                let start = addr.checked_sub(0x1000).expect("read below block") as usize;
+                Ok(block[start..start + len as usize].to_vec())
+            }
+        }
+
+        let mut b = test_bundle();
+        b.types.debug_formats.insert(CHAN, chan_queued_node(U32));
+        b.validate().expect("CustomList bundle must validate");
+        let view = BundleView::new(&b);
+
+        // Chan: tail usize @0, index usize @8, head ptr @16.
+        let chan = |tail: u64, index: u64| {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&tail.to_le_bytes());
+            buf.extend_from_slice(&index.to_le_bytes());
+            buf.extend_from_slice(&0x1000u64.to_le_bytes());
+            buf
+        };
+
+        // index=1, tail=3: slots 1 and 2 are still queued — as MpscChan renders.
+        let bytes = chan(3, 1);
+        let value = TypeInfoRef::new(view.ty(CHAN).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert_eq!(shown, "[20, 30]", "{shown}");
+
+        // Drained (index == tail): empty, and no block is read at all.
+        let bytes = chan(3, 3);
+        let value = TypeInfoRef::new(view.ty(CHAN).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert_eq!(shown, "[]", "{shown}");
+    }
+
+    #[test]
+    fn test_mpsc_rx_renders_channel_with_capacity_and_free() {
+        // The receiver's Arc raw pointer is 0x2000; the Chan sits 16 bytes in,
+        // past the ArcInner strong/weak header, at 0x2010. Its head block is at
+        // 0x1000.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                // The head block lives at [0x1000, 0x1020) and is read piecemeal
+                // by the queued CustomList; the RxChan is read whole at 0x2010.
+                if (0x1000..0x1020).contains(&addr) {
+                    let mut block = Vec::new();
+                    for v in [10u32, 20, 30, 40] {
+                        block.extend_from_slice(&v.to_le_bytes());
+                    }
+                    block.extend_from_slice(&0u64.to_le_bytes()); // start_index @16
+                    block.extend_from_slice(&0u64.to_le_bytes()); // next @24 (null)
+                    let start = (addr - 0x1000) as usize;
+                    return Ok(block[start..start + len as usize].to_vec());
+                }
+                let mut b = Vec::new();
+                match addr {
+                    0x2010 => {
+                        // RxChan: tail @0, index @8, head @16, semaphore @24
+                        // (permits @24, bound @32).
+                        b.extend_from_slice(&3u64.to_le_bytes()); // tail
+                        b.extend_from_slice(&1u64.to_le_bytes()); // index
+                        b.extend_from_slice(&0x1000u64.to_le_bytes()); // head
+                        b.extend_from_slice(&6u64.to_le_bytes()); // permits -> free 3
+                        b.extend_from_slice(&16u64.to_le_bytes()); // bound -> capacity 16
+                    }
+                    other => panic!("unexpected read at {other:#x}"),
+                }
+                b.truncate(len as usize);
+                Ok(b)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // Receiver holds the Arc raw pointer.
+        let bytes = 0x2000u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert!(
+            shown.starts_with("tokio::sync::mpsc::bounded::Receiver<u32> {"),
+            "{shown}"
+        );
+        assert!(shown.contains("capacity: 16"), "{shown}");
+        assert!(shown.contains("free: closed=false, permits=3"), "{shown}");
+        assert!(shown.contains("queued: [20, 30]"), "{shown}");
+
+        // A null channel pointer is reported rather than dereferenced.
+        let bytes = 0u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&Reader, 8));
+        assert_eq!(
+            shown,
+            "tokio::sync::mpsc::bounded::Receiver<u32> { <null> }"
+        );
+    }
+
+    #[test]
+    fn test_bounded_semaphore_renders_compact_state_and_waiters() {
+        // Two waiters live at 0x3000 and 0x3020, blocked on 2 and 1 permits.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                // Waiter { state: usize @0, next: *Waiter @8 }.
+                let (state, next) = match addr {
+                    0x3000 => (2u64, 0x3020u64),
+                    0x3020 => (1u64, 0u64),
+                    other => panic!("unexpected read at {other:#x}"),
+                };
+                let mut b = Vec::new();
+                b.extend_from_slice(&state.to_le_bytes());
+                b.extend_from_slice(&next.to_le_bytes());
+                b.resize(32, 0);
+                b.truncate(len as usize);
+                Ok(b)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // Flat bounded::Semaphore buffer: mutex state @0, head @8, tail @16,
+        // closed @32, permits @40, bound @48.
+        let sem = |mutex: u8, head: u64, closed: u8, permits: u64, bound: u64| {
+            let mut buf = vec![0u8; 56];
+            buf[0] = mutex;
+            buf[8..16].copy_from_slice(&head.to_le_bytes());
+            buf[32] = closed;
+            buf[40..48].copy_from_slice(&permits.to_le_bytes());
+            buf[48..56].copy_from_slice(&bound.to_le_bytes());
+            buf
+        };
+
+        // Unlocked, open, 10 permits (stored << 1), capacity 16, two waiters.
+        let buf = sem(0, 0x3000, 0, 20, 16);
+        let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=false, parked=false, \
+             closed: false, permits: closed=false, permits=10, bound: 16, queue: [\
+             tokio::sync::batch_semaphore::Waiter { permits_needed: 2 }, \
+             tokio::sync::batch_semaphore::Waiter { permits_needed: 1 }] }"
+        );
+
+        // Locked, closed, no permits, empty queue (null head).
+        let buf = sem(0b01, 0, 1, 0, 16);
+        let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=true, parked=false, \
+             closed: true, permits: closed=false, permits=0, bound: 16, queue: [] }"
+        );
+
+        // Without a target the queue cannot be walked, but the inline fields
+        // (read from the value's own bytes) still render.
+        let buf = sem(0, 0x3000, 0, 20, 16);
+        let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        let shown = format!("{}", value.display());
+        assert!(
+            shown.contains("permits: closed=false, permits=10"),
+            "{shown}"
+        );
+        assert!(shown.contains("queue: <target unavailable>"), "{shown}");
+
+        // Pretty mode puts each field and waiter on its own indented line.
+        let buf = sem(0, 0x3000, 0, 20, 16);
+        let value = TypeInfoRef::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&Reader, 8)),
+            "tokio::sync::mpsc::bounded::Semaphore {\n\
+             \x20   mutex: locked=false, parked=false,\n\
+             \x20   closed: false,\n\
+             \x20   permits: closed=false, permits=10,\n\
+             \x20   bound: 16,\n\
+             \x20   queue: [\n\
+             \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 2 },\n\
+             \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 1 },\n\
+             \x20   ],\n\
+             }"
+        );
+    }
+
+    #[test]
+    fn test_watch_receiver_renders_unseen_value_and_closed_independently() {
+        struct Reader {
+            state: u64,
+            value: u32,
+        }
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                let bytes = match addr {
+                    // ArcInner::data is at 0x2010; Shared::state is at +0.
+                    0x2010 => self.state.to_le_bytes().to_vec(),
+                    // Shared::value is at +8.
+                    0x2018 => self.value.to_le_bytes().to_vec(),
+                    other => panic!("unexpected read at {other:#x}"),
+                };
+                assert_eq!(bytes.len(), len as usize);
+                Ok(bytes)
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let receiver = |observed: u64, pointer: u64| {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&pointer.to_le_bytes());
+            bytes.extend_from_slice(&observed.to_le_bytes());
+            bytes
+        };
+        let cases = [
+            (
+                2,
+                2,
+                "tokio::sync::watch::Receiver<u32> { unseen: None, closed: false }",
+            ),
+            (
+                0,
+                2,
+                "tokio::sync::watch::Receiver<u32> { unseen: Some(42), closed: false }",
+            ),
+            (
+                2,
+                3,
+                "tokio::sync::watch::Receiver<u32> { unseen: None, closed: true }",
+            ),
+            (
+                0,
+                3,
+                "tokio::sync::watch::Receiver<u32> { unseen: Some(42), closed: true }",
+            ),
+        ];
+        for (observed, state, expected) in cases {
+            let bytes = receiver(observed, 0x2000);
+            let value = TypeInfoRef::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
+            assert_eq!(
+                format!(
+                    "{}",
+                    value.display_from_target(&Reader { state, value: 42 }, 8)
+                ),
+                expected,
+                "observed={observed}, state={state}"
+            );
+        }
+
+        let bytes = receiver(0, 0x2000);
+        let value = TypeInfoRef::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!(
+                "{:#}",
+                value.display_from_target(
+                    &Reader {
+                        state: 2,
+                        value: 42,
+                    },
+                    8,
+                )
+            ),
+            "tokio::sync::watch::Receiver<u32> {\n\
+             \x20   unseen: Some(42),\n\
+             \x20   closed: false,\n\
+             }"
+        );
+
+        // Degradation is now per field (the cross-Arc reads fail independently
+        // in each Variant), rather than one whole-record marker.
+        assert_eq!(
+            format!("{}", value.display()),
+            "tokio::sync::watch::Receiver<u32> \
+             { unseen: <target unavailable>, closed: <target unavailable> }"
+        );
+        let bytes = receiver(0, 0);
+        let value = TypeInfoRef::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!(
+                "{}",
+                value.display_from_target(
+                    &Reader {
+                        state: 2,
+                        value: 42
+                    },
+                    8
+                )
+            ),
+            "tokio::sync::watch::Receiver<u32> { unseen: <null>, closed: <null> }"
+        );
+    }
+
+    #[test]
+    fn test_node_struct_renders_every_field_and_list_kind() {
+        // Two queued waiters at 0x100 → 0x200 → end.
+        struct Reader;
+        impl ReadFromProc for Reader {
+            fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+                assert_eq!(len, 16);
+                Ok(match addr {
+                    0x100 => waiter_bytes(1, 0x200), // kind=one, order=fifo
+                    0x200 => waiter_bytes(6, 0),     // kind=all(2), order=lifo(1): 0b110
+                    _ => panic!("unexpected waiter address 0x{addr:x}"),
+                })
+            }
+        }
+
+        let b = node_bundle();
+        let v = BundleView::new(&b);
+        // state word: waiting (1) with generation 3 → (3 << 2) | 1 = 13.
+        let bytes = thing_bytes(13, 1, 7, 9, 0x100);
+        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &bytes);
+
+        assert_eq!(
+            format!("{}", value.display_from_target(&Reader, 16)),
+            "Thing { state: state=waiting, generation=3, flag: 1, point: Point { x: 7, y: 9 }, \
+             queue: [Waiter { notification: kind=one, order=fifo }, \
+             Waiter { notification: kind=all, order=lifo }] }"
+        );
+
+        let pretty = format!("{:#}", value.display_from_target(&Reader, 16));
+        assert!(
+            pretty.contains("\n    state: state=waiting, generation=3,"),
+            "{pretty}"
+        );
+        assert!(pretty.contains("\n    point: Point {"), "{pretty}");
+        assert!(pretty.contains("\n    queue: ["), "{pretty}");
+        assert!(
+            pretty.contains("notification: kind=one, order=fifo"),
+            "{pretty}"
+        );
+    }
+}
