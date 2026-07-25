@@ -612,4 +612,201 @@ mod tests {
         let shallow = format!("{:#}", root.display_from_target(&Reader, 1));
         assert_eq!(shallow, "0x1000 -> ...");
     }
+
+    /// Every `TypeClass` arm that no other test reaches: the float, signed and
+    /// character encodings, the hex fallback for a width the integer branch has
+    /// no case for, and the union and opaque dumps.
+    #[test]
+    fn test_base_type_encodings_render_by_class() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let show = |id, bytes: &[u8]| {
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(id).unwrap(), 0, bytes).display()
+            )
+        };
+
+        assert_eq!(show(F32, &1.5f32.to_le_bytes()), "1.5");
+        assert_eq!(show(F64, &(-0.25f64).to_le_bytes()), "-0.25");
+
+        assert_eq!(show(I8, &(-1i8).to_le_bytes()), "-1");
+        assert_eq!(show(I16, &(-300i16).to_le_bytes()), "-300");
+        assert_eq!(show(I32, &(-70000i32).to_le_bytes()), "-70000");
+        assert_eq!(show(I64, &i64::MIN.to_le_bytes()), "-9223372036854775808");
+
+        // A width the signed/unsigned match has no case for dumps its bytes.
+        assert_eq!(show(U24, &[0x01, 0x02, 0x03]), "[0x01, 0x02, 0x03]");
+
+        // A union is dumped whole -- its members overlap, so there is no one
+        // reading to show.
+        assert_eq!(
+            show(VAL_UNION, &7u64.to_le_bytes()),
+            "Val { [0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00] }"
+        );
+
+        // An opaque the extractor could not model keeps its name over the dump.
+        assert_eq!(
+            show(UNMODELLED, &[0xde, 0xad, 0xbe, 0xef]),
+            "Unmodelled [0xde, 0xad, 0xbe, 0xef]"
+        );
+    }
+
+    /// A `char` renders quoted, escaping anything not printable ASCII. reify
+    /// reads only the low byte of the 4-byte scalar, so a non-ASCII code point
+    /// shows that byte escaped rather than the character it belongs to.
+    #[test]
+    fn test_char_renders_quoted_and_escapes_non_printable() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let show = |c: u32| {
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(CHAR).unwrap(), 0, &c.to_le_bytes()).display()
+            )
+        };
+        assert_eq!(show(u32::from('A')), "'A'");
+        assert_eq!(show(u32::from(' ')), "' '");
+        assert_eq!(show(0x07), "'\\x07'");
+        assert_eq!(show(u32::from('é')), "'\\xe9'");
+    }
+
+    /// A C enumeration dumps its bytes rather than naming the enumerator. The
+    /// `CEnum` arm asks `active_variant`, which is only implemented for a Rust
+    /// enum's `VariantShape` and returns `None` for every `TypeDef::CEnum`, so
+    /// the name lookup can never succeed through the current `DebugType`
+    /// interface.
+    #[test]
+    fn test_c_enum_falls_back_to_hex_bytes() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let color = v.ty(COLOR).unwrap();
+        assert!(color.active_variant(&1u32.to_le_bytes()).is_none());
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(color, 0, &1u32.to_le_bytes()).display()
+            ),
+            "[0x01, 0x00, 0x00, 0x00]"
+        );
+    }
+
+    /// A buffer shorter than the type is reported rather than read past. The
+    /// guard is at the top of the renderer, so it catches a short array before
+    /// the per-element slicing does -- a bundle array's size is defined as
+    /// element size times count, so the element branch's own `<truncated>` is
+    /// unreachable through this backend.
+    #[test]
+    fn test_short_buffer_renders_truncated() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+
+        // Point is 8 bytes; 4 is not enough to render it at all.
+        let short = TypeInfoRef::new(v.ty(POINT).unwrap(), 0, &[0u8; 4]);
+        assert_eq!(format!("{}", short.display()), "<truncated>");
+
+        // `[u32; 3]` is 12 bytes; two elements' worth does not render partially.
+        let arr = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &[1u8, 0, 0, 0, 2, 0, 0, 0]);
+        assert_eq!(format!("{}", arr.display()), "<truncated>");
+    }
+
+    /// The depth budget stops recursion with `...` rather than rendering an
+    /// unbounded tree, and one more level of budget renders one more level.
+    #[test]
+    fn test_depth_budget_truncates_with_ellipsis() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
+        let point = TypeInfoRef::new(v.ty(POINT).unwrap(), 0, &bytes);
+
+        // Depth 0 has no budget for the value itself.
+        assert_eq!(format!("{}", point.display_with_depth(0)), "...");
+        // Depth 1 renders the struct but not its fields.
+        assert_eq!(
+            format!("{}", point.display_with_depth(1)),
+            "Point { x: ..., y: ... }"
+        );
+        // Depth 2 reaches the leaves.
+        assert_eq!(
+            format!("{}", point.display_with_depth(2)),
+            "Point { x: 1, y: 2 }"
+        );
+    }
+
+    /// Following a pointer into the target degrades to a marker when the read
+    /// fails, and is guarded against a cycle -- while a value reached twice by
+    /// separate paths still renders twice, because the guard entry is removed
+    /// once a pointee is done.
+    #[test]
+    fn test_pointer_traversal_degrades_and_guards_cycles() {
+        // `Node { value: u32 @0, next: *Node @8 }`.
+        fn node(value: u32, next: u64) -> Vec<u8> {
+            let mut bytes = vec![0u8; 16];
+            bytes[..4].copy_from_slice(&value.to_le_bytes());
+            bytes[8..].copy_from_slice(&next.to_le_bytes());
+            bytes
+        }
+
+        struct Unreadable;
+        impl ReadFromProc for Unreadable {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                Err(crate::Error::invalid_addr(addr))
+            }
+        }
+
+        // 0x100 points at itself.
+        struct SelfCycle;
+        impl ReadFromProc for SelfCycle {
+            fn read_bytes(&self, _addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                Ok(node(1, 0x100))
+            }
+        }
+
+        // 0x100 and 0x200 both point at 0x300, which ends the chain.
+        struct Diamond;
+        impl ReadFromProc for Diamond {
+            fn read_bytes(&self, addr: u64, _len: u64) -> crate::Result<Vec<u8>> {
+                Ok(match addr {
+                    0x300 => node(9, 0),
+                    _ => node(1, 0x300),
+                })
+            }
+        }
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ptr = v.ty(NODE_PTR).unwrap();
+        let head = 0x100u64.to_le_bytes();
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(ptr, 0, &head).display_from_target(&Unreadable, 16)
+            ),
+            "0x100 -> <unreadable>"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(ptr, 0, &head).display_from_target(&SelfCycle, 16)
+            ),
+            "0x100 -> Node { value: 1, next: 0x100 -> <cycle> }"
+        );
+
+        // The same address twice in sequence is not a cycle: both pointers to
+        // 0x300 render it, because the guard entry is dropped on the way out.
+        let two = v.ty(NODE).unwrap();
+        let pair = {
+            let mut bytes = node(1, 0x100);
+            bytes[8..].copy_from_slice(&0x300u64.to_le_bytes());
+            bytes
+        };
+        let shown = format!(
+            "{}",
+            TypeInfoRef::new(two, 0, &pair).display_from_target(&Diamond, 16)
+        );
+        assert_eq!(
+            shown,
+            "Node { value: 1, next: 0x300 -> Node { value: 9, next: null } }"
+        );
+    }
 }
