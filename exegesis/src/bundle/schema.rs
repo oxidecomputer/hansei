@@ -521,6 +521,34 @@ impl TypeTable {
         self.types.get(id.0 as usize)
     }
 
+    /// The byte size of `id`, or `None` when it is not knowable: an `Opaque`
+    /// whose size DWARF did not record, an array whose element size is itself
+    /// unknown, or a cyclic element chain. Arrays are the one kind that has to
+    /// recurse, so the walk carries a seen-set and terminates on any input.
+    pub(crate) fn size_of(&self, id: BundleTypeId) -> Option<u64> {
+        fn go(table: &TypeTable, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> Option<u64> {
+            if seen.contains(&id) {
+                return None;
+            }
+            match table.get(id)? {
+                TypeDef::Base { size, .. }
+                | TypeDef::Struct { size, .. }
+                | TypeDef::Union { size, .. }
+                | TypeDef::Enum { size, .. }
+                | TypeDef::CEnum { size, .. } => Some(*size),
+                TypeDef::Pointer { .. } => Some(super::POINTER_SIZE),
+                TypeDef::Array { elem, count } => {
+                    seen.push(id);
+                    let size = go(table, *elem, seen)?.checked_mul(*count);
+                    seen.pop();
+                    size
+                }
+                TypeDef::Opaque { .. } => None,
+            }
+        }
+        go(self, id, &mut Vec::new())
+    }
+
     /// All type ids whose fully-qualified name is exactly `name`.
     ///
     /// `strings` must be the same table the ids were interned into.

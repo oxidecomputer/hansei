@@ -143,6 +143,10 @@ pub struct ExtractStats {
     pub types_emitted: usize,
     /// Emitted `Opaque` entries (placeholders included).
     pub opaque_types: usize,
+    /// Types replaced by an `Opaque` placeholder because a member reached
+    /// past the type's declared size (see
+    /// `demote_types_with_members_out_of_bounds`).
+    pub types_demoted_out_of_bounds: usize,
     /// Type references that resolved to no parsed DIE (each becomes the
     /// shared `<unresolved>` opaque).
     pub unresolved_refs: usize,
@@ -178,6 +182,11 @@ impl fmt::Display for ExtractStats {
         writeln!(f, "types:")?;
         writeln!(f, "  emitted:                {}", self.types_emitted)?;
         writeln!(f, "  opaque:                 {}", self.opaque_types)?;
+        writeln!(
+            f,
+            "  demoted (bad layout):   {}",
+            self.types_demoted_out_of_bounds
+        )?;
         writeln!(f, "  unresolved refs:        {}", self.unresolved_refs)?;
         writeln!(f, "  synthesized enum reprs: {}", self.cenum_synth_repr)?;
         writeln!(f, "vtable concrete types:")?;
@@ -1036,9 +1045,10 @@ fn extract_from_view_with_vtable_types(
 
     stats.unresolved_refs = em.unresolved_refs;
     stats.cenum_synth_repr = em.cenum_synth_repr;
-    let (types, strings, opaque_count) = em.finish();
+    let (types, strings, opaque_count, demoted_count) = em.finish();
     stats.types_emitted = types.types.len();
     stats.opaque_types = opaque_count;
+    stats.types_demoted_out_of_bounds = demoted_count;
 
     let task_normalized = normalized_value_index(&by_symbol);
     let dyn_normalized = normalized_value_index(&dyn_table);
@@ -4402,8 +4412,8 @@ impl<'a> Emitter<'a> {
     }
 
     /// Finish emission: build the sorted name index and the string table.
-    /// Returns `(types, strings, opaque_count)`.
-    fn finish(mut self) -> (TypeTable, crate::bundle::StringTable, usize) {
+    /// Returns `(types, strings, opaque_count, demoted_count)`.
+    fn finish(mut self) -> (TypeTable, crate::bundle::StringTable, usize, usize) {
         let mut index: Vec<(String, BundleTypeId)> = self
             .names
             .iter()
@@ -4416,30 +4426,105 @@ impl<'a> Emitter<'a> {
             .map(|(n, id)| (self.interner.intern(&n), id))
             .collect();
 
-        let opaque = self
-            .defs
+        let mut types = TypeTable {
+            types: self.defs,
+            debug_formats: self.debug_formats,
+            name_index,
+        };
+        let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);
+
+        let opaque = types
+            .types
             .iter()
             .filter(|d| matches!(d, TypeDef::Opaque { .. }))
             .count();
 
-        (
-            TypeTable {
-                types: self.defs,
-                debug_formats: self.debug_formats,
-                name_index,
-            },
-            self.interner.finish(),
-            opaque,
-        )
+        (types, self.interner.finish(), opaque, demoted)
     }
+}
+
+/// Demote any type whose own layout does not hold together to an `Opaque` of
+/// the same size, returning how many were replaced.
+///
+/// A member reaching past the end of its parent means the offsets and sizes
+/// DWARF gave us disagree, and anything navigating into such a type reads
+/// outside the value. Replacing it keeps its id and byte size -- so every type
+/// that embeds or points to it still lays out correctly -- while removing the
+/// members that cannot be trusted. The renderer then shows it as a name over
+/// its bytes rather than inventing fields, which is the same treatment a type
+/// the extractor could not model at all receives.
+///
+/// A declared size of zero means "unknown", not "empty": an unsized type such
+/// as `CStr` or a declaration-only DIE records no byte size. There is nothing
+/// to bound those against, so they are left alone.
+fn demote_types_with_members_out_of_bounds(
+    types: &mut TypeTable,
+    names: &[Option<String>],
+) -> usize {
+    let overflows = |size: u64, m: &MemberDef| {
+        types
+            .size_of(m.ty)
+            .is_some_and(|member_size| m.offset.saturating_add(member_size) > size)
+    };
+
+    // Collected first: demoting as we go would turn a type into an `Opaque` of
+    // unknown member size and change the verdict for whatever embeds it.
+    let mut demote = Vec::new();
+    for (i, def) in types.types.iter().enumerate() {
+        let (name, size, bad) = match def {
+            TypeDef::Struct {
+                name,
+                size,
+                members,
+            }
+            | TypeDef::Union {
+                name,
+                size,
+                members,
+            } => (*name, *size, members.iter().find(|m| overflows(*size, m))),
+            TypeDef::Enum { name, size, shape } => (
+                *name,
+                *size,
+                shape
+                    .variants
+                    .iter()
+                    .map(|v| &v.payload)
+                    .find(|m| overflows(*size, m)),
+            ),
+            _ => continue,
+        };
+        if size == 0 {
+            continue;
+        }
+        let Some(bad) = bad else { continue };
+        warn!(
+            "type {i} `{}` has size {size} but member at offset {} is {} bytes; \
+             emitting it as opaque",
+            names
+                .get(i)
+                .and_then(|n| n.as_deref())
+                .unwrap_or("<unnamed>"),
+            bad.offset,
+            types.size_of(bad.ty).unwrap_or(0),
+        );
+        demote.push((i, name, size));
+    }
+
+    for (i, name, size) in &demote {
+        types.types[*i] = TypeDef::Opaque {
+            name: *name,
+            size: Some(*size),
+        };
+    }
+    demote.len()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        StaticRole, VtableTypeHint, dyn_tail_offset, has_dyn_tail, loom_parking_lot_debug_format,
-        match_static_symbol, nonzero_debug_format, nonzero_inner_debug_format,
-        scalar_newtype_debug_format, scan_vtable_section,
+        StaticRole, VtableTypeHint, demote_types_with_members_out_of_bounds, dyn_tail_offset,
+        has_dyn_tail, loom_parking_lot_debug_format, match_static_symbol, nonzero_debug_format,
+        nonzero_inner_debug_format, scalar_newtype_debug_format, scan_vtable_section,
     };
     use crate::raw_types::{NsId, RawMember, RawStruct, RawType};
     use crate::{DwReader, TypeId};
@@ -4806,5 +4891,119 @@ mod tests {
     fn test_ignore_unrelated_symbols() {
         assert_eq!(match_static_symbol("main"), None);
         assert_eq!(match_static_symbol(""), None);
+    }
+
+    /// A member reaching past its parent means DWARF gave us offsets and sizes
+    /// that disagree, so the type is emitted as an opaque of the same size
+    /// rather than as fields nothing can safely read. Sound types, and types
+    /// whose size is unknown rather than zero, are left as they are.
+    #[test]
+    fn test_demote_types_with_members_out_of_bounds() {
+        use crate::bundle::{
+            BundleTypeId, DiscrDef, MemberDef, StringInterner, TypeDef, TypeTable, VariantDef,
+            VariantShape,
+        };
+        use std::collections::BTreeMap;
+
+        let mut strings = StringInterner::new();
+        let mut s = |n: &str| strings.intern(n);
+        let (u32n, soundn, oobn, unsizedn, enumn, varn) = (
+            s("u32"),
+            s("Sound"),
+            s("Oob"),
+            s("Unsized"),
+            s("Enum"),
+            s("V"),
+        );
+        let u32t = BundleTypeId(0);
+        let m = |name, ty, offset| MemberDef { name, ty, offset };
+
+        let mut types = TypeTable {
+            types: vec![
+                // 0: u32
+                TypeDef::Base {
+                    name: u32n,
+                    size: 4,
+                    encoding: crate::Encoding::Unsigned,
+                },
+                // 1: Sound { a: u32 @0, b: u32 @4 } -- fits exactly.
+                TypeDef::Struct {
+                    name: soundn,
+                    size: 8,
+                    members: vec![m(u32n, u32t, 0), m(u32n, u32t, 4)],
+                },
+                // 2: Oob { a: u32 @0, b: u32 @6 } -- b runs two bytes over.
+                TypeDef::Struct {
+                    name: oobn,
+                    size: 8,
+                    members: vec![m(u32n, u32t, 0), m(u32n, u32t, 6)],
+                },
+                // 3: Unsized { inner: u32 @0 } with no recorded size -- a DST
+                // or a declaration-only DIE, which there is nothing to bound.
+                TypeDef::Struct {
+                    name: unsizedn,
+                    size: 0,
+                    members: vec![m(u32n, u32t, 0)],
+                },
+                // 4: an enum whose variant payload runs past its size.
+                TypeDef::Enum {
+                    name: enumn,
+                    size: 4,
+                    shape: VariantShape {
+                        discr: Some(DiscrDef {
+                            offset: 0,
+                            ty: u32t,
+                        }),
+                        variants: vec![VariantDef {
+                            name: varn,
+                            discr_values: None,
+                            payload: m(varn, u32t, 2),
+                            decl: None,
+                        }],
+                    },
+                },
+            ],
+            debug_formats: BTreeMap::new(),
+            name_index: vec![],
+        };
+        let names = vec![
+            Some("u32".to_owned()),
+            Some("Sound".to_owned()),
+            Some("Oob".to_owned()),
+            Some("Unsized".to_owned()),
+            Some("Enum".to_owned()),
+        ];
+
+        assert_eq!(
+            demote_types_with_members_out_of_bounds(&mut types, &names),
+            2
+        );
+
+        // The sound struct and the sizeless one keep their members.
+        assert!(matches!(types.types[1], TypeDef::Struct { .. }));
+        assert!(matches!(types.types[3], TypeDef::Struct { .. }));
+
+        // The two bad ones become opaques that keep their name and byte size,
+        // so anything embedding or pointing at them still lays out correctly.
+        assert!(matches!(
+            types.types[2],
+            TypeDef::Opaque {
+                name,
+                size: Some(8)
+            } if name == oobn
+        ));
+        assert!(matches!(
+            types.types[4],
+            TypeDef::Opaque {
+                name,
+                size: Some(4)
+            } if name == enumn
+        ));
+
+        // Running again finds nothing left to demote.
+        assert_eq!(
+            demote_types_with_members_out_of_bounds(&mut types, &names),
+            0
+        );
     }
 }
