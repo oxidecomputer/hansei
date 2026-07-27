@@ -3,6 +3,9 @@ name = "proc"
 version = "0.1.0"
 edition = "2024"
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [dependencies]
 gimli = { workspace = true }
 postcard = { workspace = true }

@@ -6,6 +6,8 @@ use std::ops::Range;
 #[cfg(target_os = "illumos")]
 mod illumos;
 pub mod snapshot;
+#[cfg(test)]
+mod tests;
 #[cfg(target_os = "illumos")]
 pub use illumos::{Lwp, Proc};
 
