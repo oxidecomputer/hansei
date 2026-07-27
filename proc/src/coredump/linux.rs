@@ -1,12 +1,12 @@
-//! The ELF-core-backed [`Proc`] target: a Linux core dump, read
-//! straight out of the file. Linux-only; the rest of this crate is
-//! platform-independent.
+//! A Linux ELF core dump, read straight out of the file.
 //!
-//! Linux has no libproc, so where the illumos backend asks the system a
-//! question this one answers it from the file. A core is an `ET_CORE`
-//! ELF: one `PT_LOAD` per dumped memory region, and a single `PT_NOTE`
-//! carrying the register sets (`NT_PRSTATUS`, one per thread), the
-//! mapped-file table (`NT_FILE`), and the auxiliary vector (`NT_AUXV`).
+//! Nothing here asks the operating system anything, so it reads a Linux
+//! core on any host — which is the point: what a core needs to be
+//! interpreted is in the core, not in the machine looking at it. A core
+//! is an `ET_CORE` ELF: one `PT_LOAD` per dumped memory region, and a
+//! single `PT_NOTE` carrying the register sets (`NT_PRSTATUS`, one per
+//! thread), the mapped-file table (`NT_FILE`), and the auxiliary vector
+//! (`NT_AUXV`).
 //!
 //! Two things about a Linux core shape everything here. The default
 //! `coredump_filter` (`0x33`) omits private file-backed pages, so the
@@ -15,9 +15,8 @@
 //! be served from the file on disk that `NT_FILE` names. And symbols
 //! come from those same files rather than from the core, so every
 //! `st_value` has to be biased by where the object actually landed.
-//!
-//! Live processes (`/proc/pid/mem` + ptrace) are not implemented yet;
-//! [`Proc::open_core`] is the only way in.
+//! Reading a Linux core away from the machine that wrote it therefore
+//! wants those files to hand; what was dumped still reads without them.
 
 use crate::{
     Error, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs, Result, Status,
@@ -215,7 +214,7 @@ struct Symbols {
     objects: Vec<SymbolBuf>,
 }
 
-pub struct Proc {
+pub struct Core {
     core: Mmap,
     /// The core's `PT_LOAD` regions, sorted by address.
     segments: Vec<Segment>,
@@ -231,9 +230,9 @@ pub struct Proc {
     exec: Option<ExecInfo>,
 }
 
-impl std::fmt::Debug for Proc {
+impl std::fmt::Debug for Core {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Proc")
+        f.debug_struct("Core")
             .field("exec", &self.exec.as_ref().map(|e| &e.path))
             .field("segments", &self.segments.len())
             .field("files", &self.files.len())
@@ -253,11 +252,11 @@ struct ExecInfo {
     tls_block: u64,
 }
 
-impl Proc {
+impl Core {
     /// Open a core dump. The backing files it names are opened on
     /// demand, so a core whose libraries have moved still yields
     /// everything that was actually dumped.
-    pub fn open_core(core_path: &Path) -> Result<Self> {
+    pub fn open(core_path: &Path) -> Result<Self> {
         let file = File::open(core_path).map_err(Error::read)?;
         // SAFETY: as everywhere else in this workspace, we assume the
         // file is not modified while mapped.
@@ -306,7 +305,7 @@ impl Proc {
             .map(|f| (f.path.clone(), BackingFile::open(&f.path)))
             .collect();
 
-        let mut proc = Proc {
+        let mut core_file = Core {
             core,
             segments,
             files,
@@ -315,10 +314,10 @@ impl Proc {
             lwps,
             exec: None,
         };
-        proc.mappings = proc.build_mappings();
-        proc.exec = proc.find_exec(auxv.get(&AT_PHDR).copied());
-        proc.fill_stack_ranges();
-        Ok(proc)
+        core_file.mappings = core_file.build_mappings();
+        core_file.exec = core_file.find_exec(auxv.get(&AT_PHDR).copied());
+        core_file.fill_stack_ranges();
+        Ok(core_file)
     }
 
     /// Join the `PT_LOAD` regions against `NT_FILE` to produce the
@@ -801,8 +800,16 @@ fn parse_notes(
 }
 
 fn parse_prstatus(desc: &[u8]) -> Result<LwpInfo> {
-    if desc.len() < PRSTATUS_LEN {
-        return Err(Error::bad_core("NT_PRSTATUS is too short"));
+    // Exactly, not merely enough. `struct elf_prstatus` is fixed ABI, so
+    // a note of another size is another system's: illumos writes the
+    // SVR4 `prstatus_t`, which is 824 bytes and holds its thread id and
+    // registers somewhere else entirely. Reading it at these offsets
+    // succeeds and yields nonsense, which is worse than refusing it.
+    if desc.len() != PRSTATUS_LEN {
+        return Err(Error::bad_core(
+            "NT_PRSTATUS is not the size Linux writes; \
+             this core came from another system",
+        ));
     }
     let tid = u32::from_le_bytes(desc[PR_PID..PR_PID + 4].try_into().unwrap());
     let mut regs = [0u64; PR_REG_COUNT];
@@ -852,7 +859,7 @@ fn parse_nt_file(desc: &[u8], files: &mut Vec<FileMap>) -> Result<()> {
     Ok(())
 }
 
-impl Target for Proc {
+impl Target for Core {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; len as usize];
         self.pread_exact(&mut buf, addr)?;
@@ -860,31 +867,31 @@ impl Target for Proc {
     }
 
     fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {
-        Proc::lookup_symbol_by_addr(self, address)
+        Core::lookup_symbol_by_addr(self, address)
     }
 
     fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
-        Proc::lookup_symbol_by_name(self, name)
+        Core::lookup_symbol_by_name(self, name)
     }
 
     fn symbols(&self) -> Result<Vec<SymbolBuf>> {
-        Proc::symbols(self)
+        Core::symbols(self)
     }
 
     fn object_symbols(&self) -> Result<Vec<SymbolBuf>> {
-        Proc::object_symbols(self)
+        Core::object_symbols(self)
     }
 
     fn mappings(&self) -> Result<Mappings> {
-        Proc::mappings(self)
+        Core::mappings(self)
     }
 
     fn lwps(&self) -> Result<Vec<LwpInfo>> {
-        Proc::lwps(self)
+        Core::lwps(self)
     }
 
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
-        Proc::tls_var_addr(self, regs, sym)
+        Core::tls_var_addr(self, regs, sym)
     }
 }
 
@@ -1022,18 +1029,18 @@ mod tests {
         }
 
         /// Write the core to a file and open it, the way a caller does.
-        fn open(&self) -> (tempfile::TempDir, Result<Proc>) {
+        fn open(&self) -> (tempfile::TempDir, Result<Core>) {
             let dir = tempfile::tempdir().expect("failed to create a tempdir");
             let path = dir.path().join("core");
             let mut f = File::create(&path).expect("failed to create the core");
             f.write_all(&self.build())
                 .expect("failed to write the core");
             drop(f);
-            let proc = Proc::open_core(&path);
+            let proc = Core::open(&path);
             (dir, proc)
         }
 
-        fn proc(&self) -> (tempfile::TempDir, Proc) {
+        fn proc(&self) -> (tempfile::TempDir, Core) {
             let (dir, proc) = self.open();
             (dir, proc.expect("failed to open the core"))
         }
@@ -1433,7 +1440,7 @@ mod tests {
     /// Map the test binary — a real PIE with a real symtab — at a base
     /// of the test's choosing, and point `AT_PHDR` into it so it is
     /// taken for the executable.
-    fn with_test_binary(base: u64) -> (tempfile::TempDir, Proc, PathBuf) {
+    fn with_test_binary(base: u64) -> (tempfile::TempDir, Core, PathBuf) {
         let exe = std::env::current_exe().unwrap();
         let bytes = std::fs::read(&exe).unwrap();
         let elf = Elf::parse(&bytes).unwrap();
@@ -1475,11 +1482,24 @@ mod tests {
             .collect();
         assert!(!want.is_empty(), "the test binary has no function symbols");
 
+        // The bias is where the object landed less where it was linked,
+        // which is zero for a position-dependent executable and its
+        // whole base for a PIE. Worked out here rather than assumed, so
+        // this holds whichever kind the test binary happens to be.
+        let lowest = elf
+            .program_headers
+            .iter()
+            .filter(|ph| ph.p_type == PT_LOAD)
+            .map(|ph| ph.p_vaddr)
+            .min()
+            .unwrap();
+        let bias = BASE - lowest;
+
         for (name, link_value) in want {
             let sym = p
                 .lookup_symbol_by_name(&name)
                 .unwrap_or_else(|| panic!("{name} did not resolve"));
-            assert_eq!(sym.st_value, link_value + BASE, "{name} has the wrong bias");
+            assert_eq!(sym.st_value, link_value + bias, "{name} has the wrong bias");
             // And back again, from an address inside the function.
             assert_eq!(
                 p.lookup_symbol_by_addr(sym.st_value)
@@ -1496,6 +1516,14 @@ mod tests {
     /// A thread-local's `st_value` is an offset into a TLS block, so
     /// the load bias must not touch it — biasing would leave it neither
     /// an offset nor an address.
+    ///
+    /// Stands in the test binary for the object a Linux core names, so
+    /// it needs one built the way those are: with native ELF TLS. That
+    /// is what the toolchain produces here and not what it produces on
+    /// illumos, where std compiles a `thread_local!` to a pthread key
+    /// and emits no `STT_TLS` symbol at all. The reader's other tests
+    /// are platform-neutral and do run everywhere.
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_tls_symbols_keep_their_offsets() {
         const BASE: u64 = 0x5555_0000_0000;
@@ -1520,6 +1548,10 @@ mod tests {
     /// x86-64 puts the static TLS block below the thread pointer, so a
     /// thread-local is at `%fsbase - block + offset` — different in
     /// every thread, and never confused with the symbol's own value.
+    ///
+    /// Needs a binary with native ELF TLS; see
+    /// [`test_tls_symbols_keep_their_offsets`].
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_tls_var_addr_is_per_thread() {
         const BASE: u64 = 0x5555_0000_0000;
@@ -1583,9 +1615,9 @@ mod tests {
 
         let path = dir.path().join("garbage");
         std::fs::write(&path, b"not an elf file at all").unwrap();
-        assert!(Proc::open_core(&path).is_err());
+        assert!(Core::open(&path).is_err());
 
-        assert!(Proc::open_core(&dir.path().join("no-such-file")).is_err());
+        assert!(Core::open(&dir.path().join("no-such-file")).is_err());
 
         // A well-formed ELF that is not a core.
         let path = dir.path().join("exe");
@@ -1594,7 +1626,7 @@ mod tests {
             std::fs::read(std::env::current_exe().unwrap()).unwrap(),
         )
         .unwrap();
-        let err = Proc::open_core(&path).unwrap_err();
+        let err = Core::open(&path).unwrap_err();
         assert_eq!(err.to_string(), "malformed core file: not a core file");
     }
 
@@ -1623,8 +1655,70 @@ mod tests {
         builder.raw_notes = Some(note(NT_PRSTATUS, "CORE", &[0u8; 16]));
         assert_eq!(
             builder.open().1.unwrap_err().to_string(),
-            "malformed core file: NT_PRSTATUS is too short"
+            "malformed core file: NT_PRSTATUS is not the size Linux writes; \
+             this core came from another system"
         );
+    }
+
+    /// An illumos core reaching this reader is a dispatch failure, and
+    /// it must not be read anyway: illumos writes the SVR4 `prstatus_t`,
+    /// 824 bytes with its thread id and registers at other offsets, and
+    /// reading that at Linux's offsets yields a plausible core full of
+    /// zeroed threads rather than an error.
+    #[test]
+    fn test_open_rejects_a_foreign_core() {
+        const ILLUMOS_PRSTATUS_LEN: usize = 824;
+
+        let mut builder = CoreBuilder::default().dumped(0x9000, PF_R | PF_W, vec![0; 8]);
+        builder.raw_notes = Some(note(NT_PRSTATUS, "CORE", &vec![0u8; ILLUMOS_PRSTATUS_LEN]));
+        assert_eq!(
+            builder.open().1.unwrap_err().to_string(),
+            "malformed core file: NT_PRSTATUS is not the size Linux writes; \
+             this core came from another system"
+        );
+    }
+
+    /// Which system wrote a core, answered before anything commits to
+    /// reading it, from the notes each system writes and the other does
+    /// not.
+    #[test]
+    fn test_flavour_tells_the_two_apart() {
+        use crate::coredump::{Flavour, flavour_of};
+
+        /// `NT_PSINFO`: illumos writes it, Linux has no note of that
+        /// number.
+        const ILLUMOS_PSINFO: u32 = 13;
+        const ILLUMOS_PRSTATUS_LEN: usize = 824;
+
+        // NT_FILE marks the Linux core, whatever else it holds.
+        let linux = CoreBuilder::default()
+            .thread(1, regs_at(0x1000, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; 8])
+            .file(0x40_0000..0x40_1000, 0, "/bin/prog");
+        assert_eq!(flavour_of(&linux.build()).unwrap(), Flavour::Linux);
+
+        // An illumos core says so with its own status notes, and its
+        // NT_PRSTATUS is a different size besides.
+        let mut illumos = CoreBuilder::default().dumped(0x9000, PF_R | PF_W, vec![0; 8]);
+        let mut notes = note(NT_PRSTATUS, "CORE", &vec![0u8; ILLUMOS_PRSTATUS_LEN]);
+        notes.extend(note(ILLUMOS_PSINFO, "CORE", &[0u8; 16]));
+        illumos.raw_notes = Some(notes);
+        assert_eq!(flavour_of(&illumos.build()).unwrap(), Flavour::Illumos);
+
+        // With nothing distinctive left, the register-set size still
+        // answers: a Linux core of a process that mapped no files.
+        let mut bare = CoreBuilder::default()
+            .thread(1, regs_at(0x1000, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; 8]);
+        bare.raw_notes = Some(note(NT_PRSTATUS, "CORE", &prstatus(1, &regs_at(0, 0x9000))));
+        assert_eq!(flavour_of(&bare.build()).unwrap(), Flavour::Linux);
+
+        // A core with no notes at all names no system, and neither does
+        // something that is not a core.
+        let mut headless = CoreBuilder::default().dumped(0x9000, PF_R | PF_W, vec![0; 8]);
+        headless.raw_notes = Some(Vec::new());
+        assert!(flavour_of(&headless.build()).is_err());
+        assert!(flavour_of(b"not an elf").is_err());
     }
 
     /// A core with no `AT_PHDR`, or one pointing nowhere, has no

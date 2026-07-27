@@ -1,0 +1,234 @@
+//! [`Proc`]: whichever backend can read the target in hand.
+//!
+//! A core is identified by what wrote it, not by what is reading it, so
+//! [`Proc::open_core`] looks at the file and picks. A Linux core reads
+//! anywhere. An illumos core reads through libproc on illumos, which
+//! knows more about one than this crate does — it walks the link map for
+//! shared-object names, among other things — and elsewhere would need
+//! the portable reader that does not exist yet.
+//!
+//! Live processes are the operating system's business and stay with it:
+//! [`Proc::grab_pid`] exists only on illumos, where libproc provides it.
+
+use crate::coredump::{self, Flavour};
+use crate::{Error, LoadedObject, LwpInfo, Mappings, Regs, Result, Status, SymbolBuf, Target};
+
+use std::path::{Path, PathBuf};
+
+/// A target: a core dump of either system, or a live process.
+pub enum Proc {
+    /// A live process or an illumos core, through libproc.
+    #[cfg(target_os = "illumos")]
+    Libproc(crate::illumos::Proc),
+    /// A Linux core, read from the file.
+    LinuxCore(coredump::linux::Core),
+}
+
+impl Proc {
+    /// Open a core dump, whichever system wrote it.
+    pub fn open_core(path: &Path) -> Result<Self> {
+        match coredump::flavour(path)? {
+            Flavour::Linux => Ok(Proc::LinuxCore(coredump::linux::Core::open(path)?)),
+            #[cfg(target_os = "illumos")]
+            Flavour::Illumos => Ok(Proc::Libproc(crate::illumos::Proc::open_core(path)?)),
+            #[cfg(not(target_os = "illumos"))]
+            Flavour::Illumos => Err(Error::bad_core(
+                "this is an illumos core; reading one away from illumos is not \
+                 implemented yet",
+            )),
+        }
+    }
+
+    /// The core's format, for a caller that wants to say so.
+    pub fn flavour(&self) -> Flavour {
+        match self {
+            #[cfg(target_os = "illumos")]
+            Proc::Libproc(_) => Flavour::Illumos,
+            Proc::LinuxCore(_) => Flavour::Linux,
+        }
+    }
+}
+
+/// Forward an inherent method to whichever backend is in hand.
+macro_rules! dispatch {
+    ($self:ident, $method:ident($($arg:expr),*)) => {
+        match $self {
+            #[cfg(target_os = "illumos")]
+            Proc::Libproc(p) => p.$method($($arg),*),
+            Proc::LinuxCore(c) => c.$method($($arg),*),
+        }
+    };
+}
+
+impl Proc {
+    pub fn status(&self) -> Status {
+        dispatch!(self, status())
+    }
+
+    pub fn exec_name(&self) -> Result<PathBuf> {
+        dispatch!(self, exec_name())
+    }
+
+    pub fn lwps(&self) -> Result<Vec<LwpInfo>> {
+        dispatch!(self, lwps())
+    }
+
+    pub fn regs(&self, lwp: u32) -> Result<Regs> {
+        dispatch!(self, regs(lwp))
+    }
+
+    pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
+        dispatch!(self, pread(buf, address))
+    }
+
+    pub fn pread_exact(&self, buf: &mut [u8], address: u64) -> Result<()> {
+        dispatch!(self, pread_exact(buf, address))
+    }
+
+    pub fn read_u64(&self, address: u64) -> Result<u64> {
+        dispatch!(self, read_u64(address))
+    }
+
+    pub fn read_u32(&self, address: u64) -> Result<u32> {
+        dispatch!(self, read_u32(address))
+    }
+
+    pub fn read_u16(&self, address: u64) -> Result<u16> {
+        dispatch!(self, read_u16(address))
+    }
+
+    pub fn read_u8(&self, address: u64) -> Result<u8> {
+        dispatch!(self, read_u8(address))
+    }
+
+    pub fn mappings(&self) -> Result<Mappings> {
+        dispatch!(self, mappings())
+    }
+
+    pub fn addr_to_map(&self, address: u64) -> Option<LoadedObject> {
+        dispatch!(self, addr_to_map(address))
+    }
+
+    pub fn addr_is_mapped(&self, address: u64) -> bool {
+        dispatch!(self, addr_is_mapped(address))
+    }
+
+    pub fn symbols(&self) -> Result<Vec<SymbolBuf>> {
+        dispatch!(self, symbols())
+    }
+
+    pub fn object_symbols(&self) -> Result<Vec<SymbolBuf>> {
+        dispatch!(self, object_symbols())
+    }
+
+    pub fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {
+        dispatch!(self, lookup_symbol_by_addr(address))
+    }
+
+    pub fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
+        dispatch!(self, lookup_symbol_by_name(name))
+    }
+
+    pub fn lookup_symbol_name_by_addr(&self, address: u64) -> Option<String> {
+        dispatch!(self, lookup_symbol_name_by_addr(address))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// illumos-only
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "illumos")]
+impl Proc {
+    pub fn grab_pid(pid: u32) -> Result<Self> {
+        Ok(Proc::Libproc(crate::illumos::Proc::grab_pid(pid)?))
+    }
+
+    pub fn grab_pid_no_stop(pid: u32) -> Result<Self> {
+        Ok(Proc::Libproc(crate::illumos::Proc::grab_pid_no_stop(pid)?))
+    }
+
+    pub fn run(&self) -> Result<()> {
+        match self {
+            Proc::Libproc(p) => p.run(),
+            _ => Err(Error::not_a_live_process()),
+        }
+    }
+
+    pub fn stop(&self, wait_ms: u32) -> Result<()> {
+        match self {
+            Proc::Libproc(p) => p.stop(wait_ms),
+            _ => Err(Error::not_a_live_process()),
+        }
+    }
+
+    pub fn lwp_handle(&self, lwpid: u32) -> Result<crate::illumos::Lwp> {
+        match self {
+            Proc::Libproc(p) => p.lwp_handle(lwpid),
+            _ => Err(Error::not_a_live_process()),
+        }
+    }
+
+    pub fn lwp_name(&self, lwpid: u32) -> Result<String> {
+        match self {
+            Proc::Libproc(p) => p.lwp_name(lwpid),
+            _ => Err(Error::no_lwp_name()),
+        }
+    }
+
+    /// The LWP's fast-TSD slots. illumos stores a thread-local there, so
+    /// this asks for something a Linux core does not have; prefer
+    /// [`Target::tls_var_addr`], which both systems can answer.
+    pub fn lwp_tsd(&self, lwp: u32) -> Result<[u64; 9]> {
+        let regs = self.regs(lwp)?;
+        self.tsd_from_regs(&regs)
+    }
+
+    pub fn tsd_from_regs(&self, regs: &Regs) -> Result<[u64; 9]> {
+        crate::tsd_from_fsbase(self, regs)
+    }
+}
+
+impl std::fmt::Debug for Proc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            #[cfg(target_os = "illumos")]
+            Proc::Libproc(p) => p.fmt(f),
+            Proc::LinuxCore(c) => c.fmt(f),
+        }
+    }
+}
+
+impl Target for Proc {
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
+        dispatch!(self, read_bytes(addr, len))
+    }
+
+    fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
+        Proc::lookup_symbol_by_addr(self, addr)
+    }
+
+    fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
+        Proc::lookup_symbol_by_name(self, name)
+    }
+
+    fn symbols(&self) -> Result<Vec<SymbolBuf>> {
+        Proc::symbols(self)
+    }
+
+    fn object_symbols(&self) -> Result<Vec<SymbolBuf>> {
+        Proc::object_symbols(self)
+    }
+
+    fn mappings(&self) -> Result<Mappings> {
+        Proc::mappings(self)
+    }
+
+    fn lwps(&self) -> Result<Vec<LwpInfo>> {
+        Proc::lwps(self)
+    }
+
+    fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
+        dispatch!(self, tls_var_addr(regs, sym))
+    }
+}

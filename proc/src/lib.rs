@@ -3,17 +3,16 @@ use std::fmt;
 use std::io;
 use std::ops::Range;
 
+pub mod coredump;
 #[cfg(target_os = "illumos")]
 mod illumos;
-#[cfg(target_os = "linux")]
-mod linux;
 pub mod snapshot;
+mod target;
 #[cfg(test)]
 mod tests;
 #[cfg(target_os = "illumos")]
-pub use illumos::{Lwp, Proc};
-#[cfg(target_os = "linux")]
-pub use linux::Proc;
+pub use illumos::Lwp;
+pub use target::Proc;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -43,6 +42,8 @@ enum ErrorKind {
     NoLwpName,
     #[error("no nul byte in C string")]
     NoNul(#[from] FromBytesUntilNulError),
+    #[error("the target is a core dump, not a live process")]
+    NotALiveProcess,
     #[error(
         "{name} is not a thread-local symbol (ELF type {ty}), so it names no per-thread storage"
     )]
@@ -115,6 +116,10 @@ impl Error {
         Self::new(ErrorKind::NoNul(e))
     }
 
+    pub fn not_a_live_process() -> Self {
+        Self::new(ErrorKind::NotALiveProcess)
+    }
+
     pub fn not_thread_local(name: &str, ty: u8) -> Self {
         Self::new(ErrorKind::NotThreadLocal {
             name: name.to_string(),
@@ -174,10 +179,10 @@ impl std::error::Error for Error {}
 /// bytes, symbol lookups, mappings, LWP state, and where a thread-local
 /// lives in a given thread.
 ///
-/// Implemented by [`Proc`] — a live process or core dump through libproc
-/// on illumos, an ELF core read out of the file on Linux — and by
-/// snapshots captured from one, which replay on any platform. The layers
-/// interpreting a target run against whichever is to hand.
+/// Implemented by [`Proc`] — a core dump of either system, or a live
+/// process through libproc — and by snapshots captured from one, which
+/// replay on any platform. The layers interpreting a target run against
+/// whichever is to hand.
 pub trait Target {
     /// Read exactly `len` bytes at `addr`.
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>>;
