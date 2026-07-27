@@ -1,13 +1,26 @@
-use std::env;
-use std::path::PathBuf;
+//! Generate the libproc bindings, on the one system that has libproc.
+//!
+//! bindgen links libclang, so it is a build-dependency only where the
+//! bindings are actually generated. Everywhere else this crate cannot be
+//! built at all — `lib.rs` says so — and pulling libclang in just to
+//! reach that message costs the rest of the workspace its build: the
+//! script would need a `libclang.so` matching whatever clang-sys linked
+//! it against, which on a machine with more than one LLVM around is not
+//! the one the loader finds.
 
 fn main() {
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
-    if target_os != "illumos" {
-        eprintln!("ERROR: This crate requires illumos");
-        eprintln!("Current target OS: {target_os}");
-        std::process::exit(1);
-    }
+    #[cfg(target_os = "illumos")]
+    generate();
+}
+
+/// Cross-compiling to illumos was never possible here — the header is
+/// read from the building machine's `/usr/include` — so the host's
+/// `cfg` above and the target's `CARGO_CFG_TARGET_OS` agree in every
+/// case this crate supports.
+#[cfg(target_os = "illumos")]
+fn generate() {
+    use std::env;
+    use std::path::PathBuf;
 
     let bindings = bindgen::Builder::default()
         .header("/usr/include/libproc.h")
