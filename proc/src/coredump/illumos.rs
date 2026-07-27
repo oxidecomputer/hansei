@@ -33,9 +33,7 @@ use goblin::elf::dynamic::{DT_DEBUG, DT_NULL};
 use goblin::elf::header::ET_EXEC;
 use goblin::elf::header::header64::{Header, SIZEOF_EHDR};
 use goblin::elf::program_header::program_header64::SIZEOF_PHDR;
-use goblin::elf::program_header::{
-    PF_R, PF_W, PF_X, PT_DYNAMIC, PT_LOAD, PT_NOTE, PT_PHDR, ProgramHeader,
-};
+use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_DYNAMIC, PT_LOAD, PT_PHDR, ProgramHeader};
 use goblin::elf::section_header::SHT_SYMTAB;
 use goblin::elf::sym::sym64::SIZEOF_SYM;
 use goblin::elf::sym::{STB_LOCAL, STB_WEAK, STT_FUNC, STT_OBJECT, STT_TLS, Sym, st_bind, st_type};
@@ -116,9 +114,6 @@ const REG_ES: usize = 24;
 const REG_DS: usize = 25;
 const REG_FSBASE: usize = 26;
 const REG_GSBASE: usize = 27;
-
-/// illumos writes note padding to four bytes, as Linux does.
-const NOTE_ALIGN: usize = 4;
 
 /// Auxiliary-vector tags, from `<sys/auxv.h>`. Together these say where
 /// the executable's program headers are, which is the thread to pull on
@@ -321,20 +316,39 @@ impl Core {
         let mut lwp_names = BTreeMap::new();
         let mut auxv = BTreeMap::new();
         let mut exec = None;
-        for ph in elf.program_headers.iter().filter(|ph| ph.p_type == PT_NOTE) {
-            let start = ph.p_offset as usize;
-            let end = start
-                .checked_add(ph.p_filesz as usize)
-                .filter(|end| *end <= core.len())
-                .ok_or_else(|| Error::bad_core("PT_NOTE runs past the end of the file"))?;
-            parse_notes(
-                &core[start..end],
-                &mut lwps,
-                &mut ustacks,
-                &mut lwp_names,
-                &mut auxv,
-                &mut exec,
-            )?;
+        for note in elf.iter_note_headers(&core).into_iter().flatten() {
+            let note = note.map_err(|_| Error::bad_core("malformed note"))?;
+            let desc = note.desc;
+            match note.n_type {
+                NT_LWPSTATUS if desc.len() >= LWPSTATUS_LEN => {
+                    lwps.push(parse_lwpstatus(desc));
+                    ustacks.push(u64::from_le_bytes(
+                        desc[LWPSTATUS_PR_USTACK..LWPSTATUS_PR_USTACK + 8]
+                            .try_into()
+                            .unwrap(),
+                    ));
+                }
+                NT_LWPNAME if desc.len() >= LWPNAME_LEN => {
+                    let (tid, name) = parse_lwpname(desc);
+                    if !name.is_empty() {
+                        lwp_names.insert(tid, name);
+                    }
+                }
+                NT_PSINFO if desc.len() >= PSINFO_LEN && exec.is_none() => {
+                    exec = parse_psinfo_exec(desc);
+                }
+                NT_AUXV => {
+                    for pair in desc.chunks_exact(16) {
+                        let tag = u64::from_le_bytes(pair[0..8].try_into().unwrap());
+                        let val = u64::from_le_bytes(pair[8..16].try_into().unwrap());
+                        if tag == 0 {
+                            break;
+                        }
+                        auxv.insert(tag, val);
+                    }
+                }
+                _ => {}
+            }
         }
         if lwps.is_empty() {
             return Err(Error::bad_core("no NT_LWPSTATUS note"));
@@ -946,63 +960,6 @@ fn libproc_order(a: &SymbolBuf, b: &SymbolBuf) -> Ordering {
 
     // Prefer the smaller symbol, then take them in order.
     a.st_size.cmp(&b.st_size).then_with(|| a_name.cmp(b_name))
-}
-
-fn parse_notes(
-    bytes: &[u8],
-    lwps: &mut Vec<LwpInfo>,
-    ustacks: &mut Vec<u64>,
-    names: &mut BTreeMap<u32, String>,
-    auxv: &mut BTreeMap<u64, u64>,
-    exec: &mut Option<String>,
-) -> Result<()> {
-    let mut pos = 0usize;
-    while pos + 12 <= bytes.len() {
-        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-        let namesz = word(pos) as usize;
-        let descsz = word(pos + 4) as usize;
-        let ntype = word(pos + 8);
-
-        let desc_start = (pos + 12 + namesz).next_multiple_of(NOTE_ALIGN);
-        let desc_end = desc_start
-            .checked_add(descsz)
-            .filter(|end| *end <= bytes.len())
-            .ok_or_else(|| Error::bad_core("note ends mid-field"))?;
-        let desc = &bytes[desc_start..desc_end];
-
-        match ntype {
-            NT_LWPSTATUS if descsz >= LWPSTATUS_LEN => {
-                lwps.push(parse_lwpstatus(desc));
-                ustacks.push(u64::from_le_bytes(
-                    desc[LWPSTATUS_PR_USTACK..LWPSTATUS_PR_USTACK + 8]
-                        .try_into()
-                        .unwrap(),
-                ));
-            }
-            NT_LWPNAME if descsz >= LWPNAME_LEN => {
-                let (tid, name) = parse_lwpname(desc);
-                if !name.is_empty() {
-                    names.insert(tid, name);
-                }
-            }
-            NT_PSINFO if descsz >= PSINFO_LEN && exec.is_none() => {
-                *exec = parse_psinfo_exec(desc);
-            }
-            NT_AUXV => {
-                for pair in desc.chunks_exact(16) {
-                    let tag = u64::from_le_bytes(pair[0..8].try_into().unwrap());
-                    let val = u64::from_le_bytes(pair[8..16].try_into().unwrap());
-                    if tag == 0 {
-                        break;
-                    }
-                    auxv.insert(tag, val);
-                }
-            }
-            _ => {}
-        }
-        pos = desc_end.next_multiple_of(NOTE_ALIGN);
-    }
-    Ok(())
 }
 
 fn parse_lwpstatus(desc: &[u8]) -> LwpInfo {
