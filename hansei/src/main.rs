@@ -1,4 +1,6 @@
-use crate::tokio::{Lifecycle, bundle, find_thd_context, graph};
+#[cfg(target_os = "illumos")]
+use crate::tokio::find_thd_context;
+use crate::tokio::{Lifecycle, bundle, graph};
 
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
@@ -11,9 +13,6 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 pub mod tokio;
-
-#[cfg(not(target_os = "illumos"))]
-compile_error!("this crate only supports illumos");
 
 #[derive(clap::Parser)]
 struct Cli {
@@ -173,20 +172,35 @@ struct Source {
 impl Source {
     fn open_proc(&self, destructive: bool) -> Result<Proc> {
         match (self.pid, &self.core) {
-            (Some(pid), None) => {
-                anyhow::ensure!(
-                    destructive,
-                    "This command is potentially destructive when run against live \
-                processes. Pass the `-w` / `--destructive` flag to allow it."
-                );
-
-                Proc::grab_pid(pid).with_context(|| "failed to grab pid {pid}")
-            }
+            (Some(pid), None) => Self::grab_pid(pid, destructive),
             (None, Some(core)) => {
                 Proc::open_core(core).with_context(|| format!("failed to open {}", core.display()))
             }
             _ => unreachable!(),
         }
+    }
+
+    #[cfg(target_os = "illumos")]
+    fn grab_pid(pid: u32, destructive: bool) -> Result<Proc> {
+        anyhow::ensure!(
+            destructive,
+            "This command is potentially destructive when run against live \
+                processes. Pass the `-w` / `--destructive` flag to allow it."
+        );
+
+        Proc::grab_pid(pid).with_context(|| "failed to grab pid {pid}")
+    }
+
+    /// `--pid` stays in the interface everywhere so the command line
+    /// reads the same on every platform, but only illumos can honour it
+    /// so far: reading a live process there is libproc's job, and
+    /// nothing has taken it on elsewhere yet.
+    #[cfg(not(target_os = "illumos"))]
+    fn grab_pid(pid: u32, _destructive: bool) -> Result<Proc> {
+        anyhow::bail!(
+            "reading a live process is not supported on this platform yet; \
+             take a core of {pid} (`gcore {pid}`) and pass `--core` instead"
+        )
     }
 }
 
@@ -576,8 +590,8 @@ fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool)
     Ok(())
 }
 
-/// Find the LWPs holding a tokio `Context`: the pthread-key flow (§3.0),
-/// or the legacy byte-pattern heuristic on request.
+/// Find the LWPs holding a tokio `Context`: the thread-local flow
+/// (§3.0), or the legacy byte-pattern heuristic on request.
 fn discover_workers(
     proc: &Proc,
     ctx: &bundle::Context<'_, Proc>,
@@ -585,14 +599,7 @@ fn discover_workers(
 ) -> Result<Vec<bundle::Worker>> {
     let lwps = proc.lwps().context("failed to read lwps")?;
     let workers = if heuristic {
-        let brk_range = proc.status().brk_range;
-        let mut workers = Vec::new();
-        for lwp in &lwps {
-            if let Some(addr) = find_thd_context(&lwp.regs, &brk_range, proc)? {
-                workers.push(ctx.worker_at(lwp.tid, addr)?);
-            }
-        }
-        workers
+        heuristic_workers(proc, ctx, &lwps)?
     } else {
         ctx.find_workers(&lwps)?
     };
@@ -601,6 +608,39 @@ fn discover_workers(
         "no LWP has a tokio Context in thread-local storage; is this a tokio program?"
     );
     Ok(workers)
+}
+
+/// The legacy discovery path: scan each thread's fast-TSD slots for
+/// something shaped like a `Context`, rather than asking the bundle
+/// which symbol names it. Fast TSD is illumos's way of storing a
+/// thread-local, so this heuristic cannot be run anywhere else.
+#[cfg(target_os = "illumos")]
+fn heuristic_workers(
+    proc: &Proc,
+    ctx: &bundle::Context<'_, Proc>,
+    lwps: &[proc::LwpInfo],
+) -> Result<Vec<bundle::Worker>> {
+    let brk_range = proc.status().brk_range;
+    let mut workers = Vec::new();
+    for lwp in lwps {
+        if let Some(addr) = find_thd_context(&lwp.regs, &brk_range, proc)? {
+            workers.push(ctx.worker_at(lwp.tid, addr)?);
+        }
+    }
+    Ok(workers)
+}
+
+#[cfg(not(target_os = "illumos"))]
+fn heuristic_workers(
+    _proc: &Proc,
+    _ctx: &bundle::Context<'_, Proc>,
+    _lwps: &[proc::LwpInfo],
+) -> Result<Vec<bundle::Worker>> {
+    anyhow::bail!(
+        "the byte-pattern heuristic reads illumos fast-TSD slots and has no \
+         meaning on this platform; drop `--heuristic-discovery` to use the \
+         thread-local the bundle names"
+    )
 }
 
 /// Render every running frame's source-level locals through reify,
