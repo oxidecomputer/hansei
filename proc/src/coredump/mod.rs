@@ -65,7 +65,7 @@ mod note {
 
     /// Linux puts its architecture notes under this owner rather than
     /// `CORE`; illumos writes only `CORE`.
-    pub const LINUX_OWNER: &[u8] = b"LINUX\0";
+    pub const LINUX_OWNER: &str = "LINUX";
 }
 
 /// `struct elf_prstatus` as Linux writes it for x86-64, and `prstatus_t`
@@ -87,67 +87,31 @@ pub fn flavour(path: &Path) -> Result<Flavour> {
     flavour_of(&bytes)
 }
 
+/// The size of `NT_PRSTATUS` is a last resort, for a core carrying none
+/// of the distinctive notes — a Linux core of a process with no file
+/// mappings has no `NT_FILE`, which is hard to arrange but easy to
+/// synthesise. It is checked last because it is the one signal here
+/// that would have to be revisited on another architecture.
 pub(crate) fn flavour_of(bytes: &[u8]) -> Result<Flavour> {
     use goblin::elf::Elf;
-    use goblin::elf::program_header::PT_NOTE;
 
     let elf = Elf::parse(bytes).map_err(|_| Error::bad_core("not an ELF file"))?;
     if elf.header.e_type != goblin::elf::header::ET_CORE {
         return Err(Error::bad_core("not a core file"));
     }
 
-    for ph in elf.program_headers.iter().filter(|ph| ph.p_type == PT_NOTE) {
-        let start = ph.p_offset as usize;
-        let end = start
-            .checked_add(ph.p_filesz as usize)
-            .filter(|end| *end <= bytes.len())
-            .ok_or_else(|| Error::bad_core("PT_NOTE runs past the end of the file"))?;
-        if let Some(f) = flavour_from_notes(&bytes[start..end]) {
-            return Ok(f);
-        }
-    }
-    Err(Error::bad_core(
-        "no NT_PRSTATUS note, so the core names no threads and no system",
-    ))
-}
-
-/// Walk one `PT_NOTE`, looking for a note only one system writes.
-///
-/// Deliberately its own small walk rather than a reader's: the readers
-/// disagree about how to read a note's body, which is the thing being
-/// decided here, so this reads only the headers every ELF note shares.
-///
-/// The size of `NT_PRSTATUS` is a last resort, for a core carrying none
-/// of the distinctive notes — a Linux core of a process with no file
-/// mappings has no `NT_FILE`, which is hard to arrange but easy to
-/// synthesise. It is checked last because it is the one signal here
-/// that would have to be revisited on another architecture.
-fn flavour_from_notes(bytes: &[u8]) -> Option<Flavour> {
     let mut fallback = None;
-    let mut pos = 0usize;
-
-    while pos + 12 <= bytes.len() {
-        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-        let namesz = word(pos) as usize;
-        let descsz = word(pos + 4) as usize;
-        let ntype = word(pos + 8);
-
-        let name_start = pos + 12;
-        let name_end = name_start.checked_add(namesz)?;
-        let desc_start = name_end.next_multiple_of(4);
-        let desc_end = desc_start.checked_add(descsz)?;
-        if desc_end > bytes.len() {
-            return fallback;
-        }
-        let name = &bytes[name_start..name_end];
-
-        match ntype {
+    for note in elf.iter_note_headers(bytes).into_iter().flatten() {
+        let Ok(note) = note else {
+            break;
+        };
+        match note.n_type {
             note::PSTATUS | note::PSINFO | note::LWPSTATUS | note::LWPSINFO => {
-                return Some(Flavour::Illumos);
+                return Ok(Flavour::Illumos);
             }
-            note::FILE => return Some(Flavour::Linux),
+            note::FILE => return Ok(Flavour::Linux),
             NT_PRSTATUS if fallback.is_none() => {
-                fallback = match descsz {
+                fallback = match note.desc.len() {
                     LINUX_PRSTATUS_LEN => Some(Flavour::Linux),
                     ILLUMOS_PRSTATUS_LEN => Some(Flavour::Illumos),
                     _ => None,
@@ -155,11 +119,11 @@ fn flavour_from_notes(bytes: &[u8]) -> Option<Flavour> {
             }
             _ => {}
         }
-        if name == note::LINUX_OWNER {
-            return Some(Flavour::Linux);
+        if note.name == note::LINUX_OWNER {
+            return Ok(Flavour::Linux);
         }
-
-        pos = desc_end.next_multiple_of(4);
     }
-    fallback
+    fallback.ok_or_else(|| {
+        Error::bad_core("no NT_PRSTATUS note, so the core names no threads and no system")
+    })
 }

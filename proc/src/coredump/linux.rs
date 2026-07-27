@@ -24,7 +24,7 @@ use crate::{
 };
 
 use goblin::elf::Elf;
-use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_LOAD, PT_NOTE, PT_TLS};
+use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_LOAD, PT_TLS};
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT, STT_TLS};
 use memmap2::Mmap;
 
@@ -51,11 +51,6 @@ const PR_PID: usize = 32;
 const PR_REG: usize = 112;
 const PR_REG_COUNT: usize = 27;
 const PRSTATUS_LEN: usize = PR_REG + PR_REG_COUNT * 8 + 8;
-
-/// ELF notes are a header, a padded name and a padded descriptor. The
-/// ELF64 spec says eight-byte padding; Linux writes four and sets the
-/// `PT_NOTE` alignment to match, so four is what a core actually uses.
-const NOTE_ALIGN: usize = 4;
 
 impl Regs {
     /// Decode a `user_regs_struct` (x86-64), whose field order is fixed
@@ -127,17 +122,8 @@ impl<'a> Cursor<'a> {
         Ok(out)
     }
 
-    fn u32(&mut self) -> Result<u32> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
-    }
-
     fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
-    }
-
-    /// Advance to the next `align` boundary; note bodies are padded.
-    fn align_to(&mut self, align: usize) {
-        self.pos = self.pos.next_multiple_of(align).min(self.bytes.len());
     }
 
     /// A NUL-terminated string, consuming the terminator.
@@ -284,13 +270,24 @@ impl Core {
         let mut lwps = Vec::new();
         let mut files = Vec::new();
         let mut auxv = BTreeMap::new();
-        for ph in elf.program_headers.iter().filter(|ph| ph.p_type == PT_NOTE) {
-            let start = ph.p_offset as usize;
-            let end = start
-                .checked_add(ph.p_filesz as usize)
-                .filter(|end| *end <= core.len())
-                .ok_or_else(|| Error::bad_core("PT_NOTE runs past the end of the file"))?;
-            parse_notes(&core[start..end], &mut lwps, &mut files, &mut auxv)?;
+        for note in elf.iter_note_headers(&core).into_iter().flatten() {
+            let note = note.map_err(|_| Error::bad_core("malformed note"))?;
+            match note.n_type {
+                NT_PRSTATUS => lwps.push(parse_prstatus(note.desc)?),
+                NT_FILE => parse_nt_file(note.desc, &mut files)?,
+                NT_AUXV => {
+                    let mut c = Cursor::new(note.desc);
+                    while c.remaining() >= 16 {
+                        let tag = c.u64()?;
+                        let val = c.u64()?;
+                        if tag == AT_NULL {
+                            break;
+                        }
+                        auxv.insert(tag, val);
+                    }
+                }
+                _ => {}
+            }
         }
         if lwps.is_empty() {
             return Err(Error::bad_core("no NT_PRSTATUS note"));
@@ -758,47 +755,6 @@ impl Core {
     }
 }
 
-/// Walk one `PT_NOTE`, collecting the notes that describe the process.
-///
-/// Per-thread notes are grouped, each group opening with `NT_PRSTATUS`,
-/// so a new thread record starts on every one of those; the
-/// process-wide notes are keyed by type and can appear anywhere.
-fn parse_notes(
-    bytes: &[u8],
-    lwps: &mut Vec<LwpInfo>,
-    files: &mut Vec<FileMap>,
-    auxv: &mut BTreeMap<u64, u64>,
-) -> Result<()> {
-    let mut cur = Cursor::new(bytes);
-    while cur.remaining() > 12 {
-        let namesz = cur.u32()? as usize;
-        let descsz = cur.u32()? as usize;
-        let ntype = cur.u32()?;
-        cur.take(namesz)?;
-        cur.align_to(NOTE_ALIGN);
-        let desc = cur.take(descsz)?;
-        cur.align_to(NOTE_ALIGN);
-
-        match ntype {
-            NT_PRSTATUS => lwps.push(parse_prstatus(desc)?),
-            NT_FILE => parse_nt_file(desc, files)?,
-            NT_AUXV => {
-                let mut c = Cursor::new(desc);
-                while c.remaining() >= 16 {
-                    let tag = c.u64()?;
-                    let val = c.u64()?;
-                    if tag == AT_NULL {
-                        break;
-                    }
-                    auxv.insert(tag, val);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
 fn parse_prstatus(desc: &[u8]) -> Result<LwpInfo> {
     // Exactly, not merely enough. `struct elf_prstatus` is fixed ABI, so
     // a note of another size is another system's: illumos writes the
@@ -899,6 +855,7 @@ impl Target for Core {
 mod tests {
     use super::*;
 
+    use goblin::elf::program_header::PT_NOTE;
     use std::io::Write;
 
     /// Builds an `ET_CORE` file in memory, so the reader can be held to
@@ -930,6 +887,10 @@ mod tests {
     }
 
     const PAGE: u64 = 0x1000;
+
+    /// The builder pads its notes to four bytes, which is what a core
+    /// actually uses whatever its `PT_NOTE` alignment claims.
+    const NOTE_ALIGN: usize = 4;
 
     impl CoreBuilder {
         /// A region whose bytes are in the core.
