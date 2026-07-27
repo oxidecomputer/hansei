@@ -3,9 +3,9 @@
 > https://en.wikipedia.org/wiki/Hansei[Hansei] (反省; "self-reflection") is a central idea in Japanese culture, meaning
 to acknowledge one's own mistake and to pledge improvement.
 
-A tool to inspect where we have erred with `tokio`: it reads the state of a tokio multi-threaded runtime from an
-illumos core dump or live process, using debug information produced from a *separate* build of the same sources.
-Currently a proof-of-concept, expect bugs.
+A tool to inspect where we have erred with `tokio`: it reads the state of a tokio multi-threaded runtime from a
+core dump — written by illumos or by Linux, and read on either — or from a live illumos process, using debug
+information produced from a *separate* build of the same sources. Currently a proof-of-concept, expect bugs.
 
 WARNING: DO NOT RUN THIS AGAINST A PROCESS YOU CARE ABOUT. Live inspection stops the process while reading; the
 `-w`/`--destructive` flag acknowledges that.
@@ -17,7 +17,8 @@ await chains are recovered fully automatically.
 
 == Building
 
-Building `hansei` itself requires `bindgen`, which in turn uses `libclang`. Ensure that the following are set, adjusting the LLVM version as-needed:
+On illumos, `libproc-sys` generates its bindings with `bindgen`, which in turn uses `libclang`. Ensure that the
+following are set, adjusting the LLVM version as-needed:
 
 [source,shell]
 ----
@@ -27,12 +28,12 @@ export LD_LIBRARY_PATH=/opt/ooce/llvm-15/lib:$LD_LIBRARY_PATH
 
 == Usage
 
-Build a *debug binary*: the same commit, toolchain, and flags as the target binary, compiled with full debug
-information (an optimized profile with `debug = true`). Both compilations then contain the same struct layouts,
+Build the binary with the same target platform, commit, toolchain, and flags as the target binary, but with full
+debug information (an optimized profile with `debug = true`). Both compilations then contain the same struct layouts,
 though the build hash will be different in the mangled name. Stripping the hash, we can use that and the struct
 layout as the join key that lets layouts from one binary interpret memory from the other.
 
-Extract the bundle (cross-platform; run it wherever the debug build happens):
+Extract the bundle:
 
 [source,shell]
 ----
@@ -46,6 +47,9 @@ List the runtime's tasks, from a core dump or a live process:
 hansei tasks --bundle app.bundle --core ${PATH_TO_CORE}
 hansei tasks --bundle app.bundle --pid ${PID} -w
 ----
+
+Cores can be read cross-platform, e.g., read an illumos core on Linux, a Linux core on macOS. `--pid` is
+illumos-only.
 
 Each task is listed with its id, lifecycle state, concrete future type, spawn location, and where the future is
 defined. Trace one task's await chain:
@@ -77,8 +81,9 @@ queued for, a contended semaphore's permits. The diagnosis names the holding tas
 the abandoned future is parked in, and the tasks blocked behind it.
 
 At attach time the bundle's symbol fingerprint is resolved against the target's symtab; anything less than a
-100% match is refused (`--force` to override) so a wrong bundle can never silently misinterpret memory. Should
-the TLS-key runtime discovery fail, `--heuristic-discovery` falls back to the legacy byte-pattern scan.
+100% match is refused (`--force` to override) so a wrong bundle can never silently misinterpret memory.
+`--heuristic-discovery` falls back to the legacy byte-pattern scan; it reads illumos fast-TSD slots and so is
+illumos-only.
 
 `hansei snapshot` captures everything a bundle-backed analysis reads from a target into a small replayable file;
 together with a bundle extracted from a *separate* build it feeds the offline two-binary tests in
@@ -86,4 +91,8 @@ together with a bundle extracted from a *separate* build it feeds the offline tw
 
 == Testing
 
-* `cargo test` — cross-platform unit tests and the offline two-binary snapshot tests.
+* `cargo test` — cross-platform unit tests and the offline two-binary snapshot tests. On Linux this also runs
+  `tests/linux.rs`, which builds the `core-tokio` fixture, extracts a bundle from it, dumps a core with gdb's
+  `gcore`, and drives all three commands over the result.
+* `cargo test --features illumos-integration -- --ignored` (on illumos) — the on-box suite: fixtures built and
+  run for real, attached to live and cored, output compared against known-good renderings.

@@ -19,14 +19,15 @@ These are the workspace members that may be useful:
 * hansei-types: The tokio-introspection library behind hansei.
 * reify: Interpret a process's memory through a debug bundle, rendering values
   of the bundle's types for humans.
-* proc: Target access — minimal bindings for illumos `libproc`, an ELF
-  core-dump reader for Linux, and replayable target snapshots.
+* proc: Target access — readers for illumos and Linux core dumps, minimal
+  bindings for illumos `libproc`, and replayable target snapshots.
 * durin: Read and write CTF files.
 
-proc reads a live process or core through `libproc` on illumos, and a core dump
-on Linux; reading a *live* process on Linux is not implemented yet, so `--pid`
-is illumos-only and everything else works from a core on both. Bundle
-extraction (exegesis) and type/value work (reify) are portable.
+A core is read according to what wrote it rather than what is reading it, so an
+illumos core opens on Linux and a Linux core opens on illumos. Reading a *live*
+process is still the operating system's own business: `--pid` works on illumos,
+through `libproc`, and nowhere else yet. Bundle extraction (exegesis) and
+type/value work (reify) are portable.
 
 == Usage
 
@@ -57,9 +58,9 @@ isn't a tokio target.
 
 === 2. Inspect a target (hansei)
 
-hansei reads a core dump (`--core`) or, on illumos, a live process (`--pid`,
-which requires `-w`/`--destructive` since pausing the process is destructive),
-interpreting it through the bundle from step 1.
+hansei reads a core dump (`--core`) of either system, or on illumos a live
+process (`--pid`, which requires `-w`/`--destructive` since pausing the process
+is destructive), interpreting it through the bundle from step 1.
 
 List every task the runtime owns — id, lifecycle state, future type, and spawn
 location:
