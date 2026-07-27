@@ -236,10 +236,15 @@ impl<'b, T: Target> Context<'b, T> {
     // Runtime discovery (§3.0)
     // -----------------------------------------------------------------------
 
-    /// Read the pthread key under which each thread stores its
-    /// `tokio::runtime::context::Context`: the bundle names the TLS-key
-    /// static, the target's symtab locates it, and its u64 value is the key.
-    pub fn tls_context_key(&self) -> Result<u64> {
+    /// The symbol under which each thread stores its
+    /// `tokio::runtime::context::Context`: the bundle names the static and
+    /// the target's symtab locates it.
+    ///
+    /// What the symbol *means* is the target's business, not the bundle's —
+    /// a `pthread_key_t` on illumos, an offset into the thread's TLS block
+    /// on Linux — so this resolves the symbol and hands it straight to
+    /// [`Target::tls_var_addr`].
+    pub fn tls_context_symbol(&self) -> Result<SymbolBuf> {
         let def = self
             .view
             .bundle()
@@ -248,51 +253,56 @@ impl<'b, T: Target> Context<'b, T> {
             .get(&StaticRole::TlsContextKey)
             .ok_or_else(|| {
                 anyhow!(
-                    "bundle records no TLS context key static \
+                    "bundle records no TLS context static \
                      (was it extracted with --allow-missing-infra?)"
                 )
             })?;
-        let sym = self.object_symbol(&def.symbol)?.ok_or_else(|| {
+        self.object_symbol(&def.symbol)?.ok_or_else(|| {
             anyhow!(
-                "TLS key static {} ({}) not found in the target's symtab; \
+                "TLS context static {} ({}) not found in the target's symtab; \
                  wrong binary, or symtab stripped?",
                 def.display,
                 def.symbol
             )
-        })?;
-        let key = self
-            .proc
-            .read_u64(sym.st_value)
-            .with_context(|| format!("failed to read TLS key at {:#x}", sym.st_value))?;
-        // ul_ftsd has 9 slots; a key outside that range would need the slow
-        // TSD array, which no tokio process observed so far uses.
-        ensure!(
-            key < 9,
-            "TLS key {key} is outside the fast-TSD range; slow TSD is unsupported"
-        );
-        Ok(key)
+        })
     }
 
-    /// Probe every LWP's fast-TSD slot for a live `Context` (§13.3: all
-    /// LWPs, never thread names). LWPs without one are skipped; an LWP whose
-    /// `Context` fails to parse is an error, not a skip — the key told us it
-    /// is one.
+    /// Probe every LWP for a live `Context` (§13.3: all LWPs, never thread
+    /// names). LWPs holding none are skipped; an LWP whose `Context` fails
+    /// to parse is an error, not a skip — the target told us it has one.
     pub fn find_workers(&self, lwps: &[LwpInfo]) -> Result<Vec<Worker>> {
-        let key = self.tls_context_key()? as usize;
+        let sym = self.tls_context_symbol()?;
         let mut workers = Vec::new();
+        let mut failure = None;
         for lwp in lwps {
-            // Some LWPs (e.g. exiting ones) have no readable ulwp_t.
-            let Ok(ftsd) = self.proc.tsd_from_regs(&lwp.regs) else {
-                continue;
+            let addr = match self.proc.tls_var_addr(&lwp.regs, &sym) {
+                Ok(Some(addr)) => addr,
+                Ok(None) => continue,
+                // Some LWPs (e.g. exiting ones) cannot be reached through
+                // whatever the target's TLS model walks. That is ordinary
+                // enough to skip, but if it turns out that *no* LWP
+                // resolved, the first reason is worth reporting rather
+                // than claiming the process runs no tokio runtime.
+                Err(e) => {
+                    failure.get_or_insert((lwp.tid, e));
+                    continue;
+                }
             };
-            let addr = ftsd[key];
-            if addr == 0 || !self.mappings.contains_addr(addr) {
+            if !self.mappings.contains_addr(addr) {
                 continue;
             }
             let worker = self
                 .worker_at(lwp.tid, addr)
                 .with_context(|| format!("failed to parse Context of LWP {}", lwp.tid))?;
             workers.push(worker);
+        }
+        if workers.is_empty()
+            && let Some((tid, e)) = failure
+        {
+            return Err(anyhow::Error::new(e).context(format!(
+                "no LWP holds a tokio Context; reading {} of LWP {tid} failed",
+                sym.name
+            )));
         }
         Ok(workers)
     }

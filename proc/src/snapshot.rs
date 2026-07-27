@@ -12,7 +12,9 @@
 //! tool version writes and reads them, and the version check rejects
 //! everything else.
 
-use crate::{Error as TargetError, LwpInfo, Mappings, Result as TargetResult, SymbolBuf, Target};
+use crate::{
+    Error as TargetError, LwpInfo, Mappings, Regs, Result as TargetResult, SymbolBuf, Target,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"prosnap\0";
 
 /// Bumped freely on schema change; there is no cross-version
 /// compatibility requirement (same-tool-reads-it rule).
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -81,6 +83,12 @@ pub struct Snapshot {
     /// Authoritative for the same reason; notably the TLS-key static is
     /// an object symbol, which `functions` does not cover.
     by_name: BTreeMap<String, Option<SymbolBuf>>,
+    /// Thread-local addresses observed at capture time, keyed by the
+    /// thread's `%fsbase` and the symbol naming the variable. The answer
+    /// is recorded rather than the bytes behind it because how a symbol
+    /// reaches a thread-local is the capturing platform's business, and
+    /// replay must not have to know it.
+    tls: BTreeMap<(u64, String), Option<u64>>,
     mappings: Mappings,
     lwps: Vec<LwpInfo>,
 }
@@ -181,6 +189,17 @@ impl Target for Snapshot {
     fn lwps(&self) -> TargetResult<Vec<LwpInfo>> {
         Ok(self.lwps.clone())
     }
+
+    fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> TargetResult<Option<u64>> {
+        // There is no fallback: the capturing platform's TLS model is
+        // exactly what a snapshot does not carry, so an unrecorded pair
+        // is a hole in the capture rather than a thread without the
+        // variable.
+        self.tls
+            .get(&(regs.fsbase, sym.name.clone()))
+            .copied()
+            .ok_or_else(|| TargetError::tls_not_recorded(&sym.name, regs.fsbase))
+    }
 }
 
 /// A [`Target`] wrapper that records everything read through it, so a
@@ -192,6 +211,7 @@ pub struct Recorder<'a, T> {
     reads: RefCell<Vec<Segment>>,
     by_addr: RefCell<BTreeMap<u64, Option<SymbolBuf>>>,
     by_name: RefCell<BTreeMap<String, Option<SymbolBuf>>>,
+    tls: RefCell<BTreeMap<(u64, String), Option<u64>>>,
 }
 
 impl<'a, T: Target> Recorder<'a, T> {
@@ -201,6 +221,7 @@ impl<'a, T: Target> Recorder<'a, T> {
             reads: RefCell::new(Vec::new()),
             by_addr: RefCell::new(BTreeMap::new()),
             by_name: RefCell::new(BTreeMap::new()),
+            tls: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -218,6 +239,7 @@ impl<'a, T: Target> Recorder<'a, T> {
             objects,
             by_addr: self.by_addr.borrow().clone(),
             by_name: self.by_name.borrow().clone(),
+            tls: self.tls.borrow().clone(),
             mappings: self.target.mappings()?,
             lwps: self.target.lwps()?,
         })
@@ -303,8 +325,19 @@ impl<T: Target> Target for Recorder<'_, T> {
         self.target.lwps()
     }
 
-    // tsd_from_regs deliberately uses the default implementation: going
-    // through read_bytes records the TSD bytes like any other read.
+    fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> TargetResult<Option<u64>> {
+        // Only the answer is recorded. The wrapped target resolves this
+        // through itself, so whatever bytes its TLS model walks — a
+        // pthread key and the fast-TSD slots on illumos, nothing at all
+        // on Linux — stay out of the snapshot's memory, which is what
+        // lets a snapshot replay on a platform that models TLS
+        // differently.
+        let addr = self.target.tls_var_addr(regs, sym)?;
+        self.tls
+            .borrow_mut()
+            .insert((regs.fsbase, sym.name.clone()), addr);
+        Ok(addr)
+    }
 }
 
 #[cfg(test)]
@@ -391,6 +424,17 @@ mod tests {
         fn lwps(&self) -> TargetResult<Vec<LwpInfo>> {
             Ok(vec![])
         }
+
+        /// The fake's TLS model, standing in for a real platform's: the
+        /// variable sits a page above the thread pointer, so different
+        /// threads give different answers and a thread without one says
+        /// so.
+        fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> TargetResult<Option<u64>> {
+            if sym.name != "TLS_KEY" || regs.fsbase == 0 {
+                return Ok(None);
+            }
+            Ok(Some(regs.fsbase + 0x1000))
+        }
     }
 
     #[test]
@@ -466,6 +510,9 @@ mod tests {
             fn lwps(&self) -> TargetResult<Vec<LwpInfo>> {
                 Ok(vec![])
             }
+            fn tls_var_addr(&self, _: &Regs, _: &SymbolBuf) -> TargetResult<Option<u64>> {
+                Ok(None)
+            }
         }
 
         let target = Changing(RefCell::new(0));
@@ -521,17 +568,38 @@ mod tests {
         assert!(snap.lookup_symbol_by_addr(0x130).is_none());
     }
 
+    /// The recorder captures the answer, not the walk that produced it,
+    /// so replay never needs the capturing platform's TLS model. A pair
+    /// the capture never asked about is a hole in the snapshot, which is
+    /// not the same as a thread that has no such variable.
     #[test]
-    fn test_tsd_reads_are_recorded() {
-        let target = FakeTarget::new();
-        let rec = Recorder::new(&target);
-        let regs = Regs {
-            fsbase: 0x1200,
+    fn test_tls_lookups_replay() {
+        let regs = |fsbase| Regs {
+            fsbase,
             ..Regs::default()
         };
-        let want = rec.tsd_from_regs(&regs).unwrap();
+        let key = sym("TLS_KEY", 0x2000, 8);
+
+        let target = FakeTarget::new();
+        let rec = Recorder::new(&target);
+        let want = rec.tls_var_addr(&regs(0x7000), &key).unwrap();
+        let want_other = rec.tls_var_addr(&regs(0x9000), &key).unwrap();
+        // A thread with no thread pointer holds nothing, and that
+        // answer is recorded like any other.
+        assert_eq!(rec.tls_var_addr(&regs(0), &key).unwrap(), None);
+        assert!(want.is_some() && want != want_other);
         let snap = rec.snapshot().unwrap();
-        assert_eq!(snap.tsd_from_regs(&regs).unwrap(), want);
+
+        assert_eq!(snap.tls_var_addr(&regs(0x7000), &key).unwrap(), want);
+        assert_eq!(snap.tls_var_addr(&regs(0x9000), &key).unwrap(), want_other);
+        assert_eq!(snap.tls_var_addr(&regs(0), &key).unwrap(), None);
+
+        // An unseen thread, and an unseen variable in a seen thread.
+        assert!(snap.tls_var_addr(&regs(0x1), &key).is_err());
+        assert!(
+            snap.tls_var_addr(&regs(0x7000), &sym("OTHER", 0x3000, 8))
+                .is_err()
+        );
     }
 
     #[test]
@@ -542,6 +610,14 @@ mod tests {
         rec.read_bytes(0x2000, 64).unwrap();
         rec.lookup_symbol_by_name("TLS_KEY");
         rec.lookup_symbol_by_addr(0x120);
+        rec.tls_var_addr(
+            &Regs {
+                fsbase: 0x7000,
+                ..Regs::default()
+            },
+            &sym("TLS_KEY", 0x2000, 8),
+        )
+        .unwrap();
         let snap = rec.snapshot().unwrap();
 
         let mut buf = Vec::new();

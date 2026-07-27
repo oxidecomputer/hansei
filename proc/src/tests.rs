@@ -382,6 +382,10 @@ impl Target for MemTarget {
     fn lwps(&self) -> Result<Vec<LwpInfo>> {
         Ok(Vec::new())
     }
+
+    fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
+        tls_addr_from_pthread_key(self, regs, sym)
+    }
 }
 
 #[test]
@@ -421,7 +425,7 @@ fn test_tsd_reads_ul_ftsd_past_fsbase() {
         fsbase: FSBASE,
         ..Regs::default()
     };
-    assert_eq!(target.tsd_from_regs(&regs).unwrap(), slots);
+    assert_eq!(tsd_from_fsbase(&target, &regs).unwrap(), slots);
     assert_eq!(
         target.last_read.get(),
         Some((FSBASE + UL_FTSD_OFFSET, 9 * 8)),
@@ -437,13 +441,99 @@ fn test_tsd_fails_when_fsbase_is_not_readable() {
         ..Regs::default()
     };
     // The slots run past the end of the mapping.
-    assert!(target.tsd_from_regs(&regs).is_err());
+    assert!(tsd_from_fsbase(&target, &regs).is_err());
 
     let regs = Regs {
         fsbase: 0,
         ..Regs::default()
     };
-    assert!(target.tsd_from_regs(&regs).is_err());
+    assert!(tsd_from_fsbase(&target, &regs).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Thread-locals through a pthread key
+// ---------------------------------------------------------------------------
+
+/// A target laid out the way the illumos TLS model expects: the key
+/// static at `KEY_ADDR` holds `key`, and the fast-TSD slots sit past
+/// `%fsbase`, slot *n* holding `0xf00 + n` so a misindex is visible.
+fn keyed_target(key: u64) -> (MemTarget, Regs, SymbolBuf) {
+    const BASE: u64 = 0x7000;
+    const KEY_ADDR: u64 = 0x7000;
+    const UL_FTSD_OFFSET: u64 = 320;
+
+    let mut bytes = key.to_le_bytes().to_vec();
+    bytes.resize(UL_FTSD_OFFSET as usize, 0xaa);
+    // Slot 4 is null: a thread that never set that key.
+    for slot in 0..9u64 {
+        let value = if slot == 4 { 0 } else { 0xf00 + slot };
+        bytes.extend(value.to_le_bytes());
+    }
+
+    let regs = Regs {
+        fsbase: BASE,
+        ..Regs::default()
+    };
+    let sym = SymbolBuf {
+        name: "CONTEXT_KEY".to_string(),
+        st_name: 0,
+        st_info: 0,
+        st_other: 0,
+        st_shndx: 1,
+        st_value: KEY_ADDR,
+        st_size: 8,
+    };
+    (MemTarget::new(BASE, bytes), regs, sym)
+}
+
+#[test]
+fn test_pthread_key_indexes_the_tsd_slot() {
+    for key in [0, 3, 8] {
+        let (target, regs, sym) = keyed_target(key);
+        assert_eq!(
+            target.tls_var_addr(&regs, &sym).unwrap(),
+            Some(0xf00 + key),
+            "key {key} reached the wrong slot"
+        );
+    }
+}
+
+/// A null slot is an ordinary answer — most LWPs in a tokio process
+/// never set the key — and must not be confused with the address 0.
+#[test]
+fn test_unset_key_holds_nothing() {
+    let (target, regs, sym) = keyed_target(4);
+    assert_eq!(target.tls_var_addr(&regs, &sym).unwrap(), None);
+}
+
+/// A key past the ninth slot lives in the slow TSD array, which is not
+/// supported; it must say so rather than index out of bounds.
+#[test]
+fn test_key_past_the_fast_slots_is_rejected() {
+    for key in [9, 64, u64::MAX] {
+        let (target, regs, sym) = keyed_target(key);
+        let err = target.tls_var_addr(&regs, &sym).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("pthread key {key} is outside the fast-TSD range; slow TSD is unsupported")
+        );
+    }
+}
+
+/// The two reads it depends on fail independently: an unreadable key
+/// static, and an unreadable `ulwp_t`.
+#[test]
+fn test_key_resolution_needs_both_reads() {
+    let (target, regs, mut sym) = keyed_target(0);
+    sym.st_value = 0;
+    assert!(target.tls_var_addr(&regs, &sym).is_err());
+
+    let (target, _, sym) = keyed_target(0);
+    let regs = Regs {
+        fsbase: 0,
+        ..Regs::default()
+    };
+    assert!(target.tls_var_addr(&regs, &sym).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -472,6 +562,14 @@ fn test_error_messages() {
         (
             Error::symbol_iter_failed(),
             "failed to iterate over symbols",
+        ),
+        (
+            Error::tls_key_out_of_range(12),
+            "pthread key 12 is outside the fast-TSD range; slow TSD is unsupported",
+        ),
+        (
+            Error::tls_not_recorded("CONTEXT", 0x7000),
+            "the capture recorded no address for thread-local CONTEXT in the thread at 0x7000",
         ),
         (Error::unexpected_eof(), "failed to fill whole buffer"),
         (Error::start(2), "failed to start process: 2"),

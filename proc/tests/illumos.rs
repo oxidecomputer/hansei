@@ -37,6 +37,7 @@ const MARKER_FN: &str = "park_marker_fn";
 const MARKER_VALUE_SYM: &str = "PARK_MARKER_VALUE";
 const MARKER_VALUE: u64 = 0x0123_4567_89ab_cdef;
 const COUNTER_SYM: &str = "PARK_COUNTER";
+const TSD_KEY_SYM: &str = "PARK_TSD_KEY";
 
 /// The first page is never mapped in any process.
 const UNMAPPED: u64 = 0x1000;
@@ -269,7 +270,7 @@ fn test_symbol_lookups_round_trip() {
         let objects = p.object_symbols().unwrap();
         assert!(functions.iter().any(|s| s.name == MARKER_FN), "({who})");
         assert!(!objects.iter().any(|s| s.name == MARKER_FN), "({who})");
-        for name in [MARKER_VALUE_SYM, COUNTER_SYM] {
+        for name in [MARKER_VALUE_SYM, COUNTER_SYM, TSD_KEY_SYM] {
             assert!(
                 objects.iter().any(|s| s.name == name),
                 "({who}) {name} is not an object symbol"
@@ -387,6 +388,15 @@ fn test_lwps_match_procfs() {
         );
 
         let maps = p.mappings().unwrap();
+
+        // The fixture's exported slot index, read back out of the target
+        // rather than repeated here, so the suite pins the composition
+        // and not the constant.
+        let key_sym = p
+            .lookup_symbol_by_name(TSD_KEY_SYM)
+            .unwrap_or_else(|| panic!("({who}) {TSD_KEY_SYM} is not in the target's symtab"));
+        let key = p.read_u64(key_sym.st_value).unwrap() as usize;
+
         for lwp in &lwps {
             let tid = lwp.tid;
             assert_eq!(p.regs(tid).unwrap(), lwp.regs, "({who}) tid {tid}");
@@ -415,12 +425,34 @@ fn test_lwps_match_procfs() {
                 tsd,
                 "({who}) tid {tid}"
             );
+
+            // And a thread-local lands on the slot its key names: the
+            // whole walk, over a real ulwp_t, in one call. A null slot
+            // is no address rather than the address zero.
+            let want = (tsd[key] != 0).then_some(tsd[key]);
             assert_eq!(
-                Target::tsd_from_regs(p, &lwp.regs).unwrap(),
-                tsd,
+                p.tls_var_addr(&lwp.regs, &key_sym).unwrap(),
+                want,
                 "({who}) tid {tid}"
             );
         }
+
+        // A key past the ninth slot would need the slow TSD array:
+        // PARK_MARKER_VALUE is nobody's key, and says so rather than
+        // reading some other thread's memory.
+        let bogus = p.lookup_symbol_by_name(MARKER_VALUE_SYM).unwrap();
+        let err = match p.tls_var_addr(&lwps[0].regs, &bogus) {
+            Err(e) => e,
+            Ok(addr) => panic!("({who}) a bogus key resolved to {addr:?}"),
+        };
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "pthread key {MARKER_VALUE} is outside the fast-TSD range; \
+                 slow TSD is unsupported"
+            ),
+            "({who})"
+        );
 
         // The named threads kept their names.
         let names: Vec<String> = lwps
@@ -633,9 +665,17 @@ fn test_snapshot_replays_a_live_target() {
             .is_none()
     );
     let lwps = recorder.lwps().expect("failed to list the target's lwps");
-    let tsd = recorder
-        .tsd_from_regs(&lwps[0].regs)
-        .expect("failed to read the tsd");
+    let key_sym = live
+        .lookup_symbol_by_name(TSD_KEY_SYM)
+        .expect("the tsd key is in the symtab");
+    let tls: Vec<Option<u64>> = lwps
+        .iter()
+        .map(|l| {
+            recorder
+                .tls_var_addr(&l.regs, &key_sym)
+                .expect("failed to resolve the thread-local")
+        })
+        .collect();
     let snapshot = recorder.snapshot().expect("failed to build the snapshot");
 
     // Through a file, the way the capture tools write it.
@@ -655,8 +695,18 @@ fn test_snapshot_replays_a_live_target() {
             .is_none()
     );
     assert_eq!(replay.lwps().unwrap(), lwps);
-    assert_eq!(replay.tsd_from_regs(&lwps[0].regs).unwrap(), tsd);
     assert_eq!(replay.mappings().unwrap(), live.mappings().unwrap());
+
+    // Every thread-local the capture resolved replays, and one it never
+    // asked about is a hole in the snapshot rather than a null answer.
+    for (lwp, want) in lwps.iter().zip(&tls) {
+        assert_eq!(replay.tls_var_addr(&lwp.regs, &key_sym).unwrap(), *want);
+    }
+    let unseen = proc::Regs {
+        fsbase: 0xdead_0000,
+        ..lwps[0].regs.clone()
+    };
+    assert!(replay.tls_var_addr(&unseen, &key_sym).is_err());
 
     // The symtabs come over whole, sorted by address.
     let mut functions = live.symbols().unwrap();
