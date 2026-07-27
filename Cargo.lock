@@ -1289,7 +1289,9 @@ name = "proc"
 version = "0.1.0"
 dependencies = [
  "gimli 0.32.3",
+ "goblin 0.10.5",
  "libproc-sys",
+ "memmap2",
  "postcard",
  "scroll 0.13.0",
  "serde",
