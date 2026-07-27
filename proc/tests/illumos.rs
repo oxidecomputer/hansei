@@ -741,17 +741,16 @@ fn test_grab_failures() {
     );
     assert!(Proc::grab_pid_no_stop(reaped).is_err());
 
+    // A core is identified before a backend is chosen, so a file that
+    // is not one is turned away by the reader rather than by libproc.
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let junk = dir.path().join("junk");
     std::fs::write(&junk, b"ELF, honest").expect("failed to write the junk file");
     let err = Proc::open_core(&junk).expect_err("opened a file that is not a core");
-    assert!(
-        err.to_string().starts_with("failed to grab process: "),
-        "{err}"
-    );
-    assert!(Proc::open_core(&dir.path().join("missing")).is_err());
+    assert_eq!(err.to_string(), "malformed core file: not an ELF file");
 
-    // A path libproc can never even be told about.
-    let err = Proc::open_core(Path::new("core\0dump")).expect_err("opened a path with a nul");
-    assert_eq!(err.to_string(), "could not convert path to C string");
+    // Nor can a file that is not there be identified, nor a path the
+    // operating system will not accept at all.
+    assert!(Proc::open_core(&dir.path().join("missing")).is_err());
+    assert!(Proc::open_core(Path::new("core\0dump")).is_err());
 }

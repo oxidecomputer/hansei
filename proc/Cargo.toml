@@ -8,21 +8,15 @@ tempfile = { workspace = true }
 
 [dependencies]
 gimli = { workspace = true }
+# The core readers parse a file and call no operating system, so they
+# build wherever the crate does.
+goblin = { workspace = true }
+memmap2 = { workspace = true }
 postcard = { workspace = true }
 scroll = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 zstd = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-goblin = { workspace = true }
-memmap2 = { workspace = true }
-
-# The real-core suite works out for itself which of a core's regions
-# carry bytes, so that it checks the reader against the file rather than
-# against the reader.
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-goblin = { workspace = true }
 
 [target.'cfg(target_os = "illumos")'.dependencies]
 libproc-sys = { workspace = true }
