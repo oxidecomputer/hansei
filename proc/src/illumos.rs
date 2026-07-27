@@ -622,6 +622,10 @@ impl Target for Proc {
     fn lwps(&self) -> Result<Vec<LwpInfo>> {
         Proc::lwps(self)
     }
+
+    fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
+        crate::tls_addr_from_pthread_key(self, regs, sym)
+    }
 }
 
 impl Drop for Proc {

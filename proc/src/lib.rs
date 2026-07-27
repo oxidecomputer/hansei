@@ -45,6 +45,10 @@ enum ErrorKind {
     Stop(i32),
     #[error("failed to iterate over symbols")]
     SymbolIterFailed,
+    #[error("pthread key {key} is outside the fast-TSD range; slow TSD is unsupported")]
+    TlsKeyOutOfRange { key: u64 },
+    #[error("the capture recorded no address for thread-local {name} in the thread at {fsbase:#x}")]
+    TlsNotRecorded { name: String, fsbase: u64 },
     #[error("failed to fill whole buffer")]
     UnexpectedEof,
     #[error("address range {addr:#x}..+{len:#x} is not mapped in the target")]
@@ -113,6 +117,17 @@ impl Error {
         Self::new(ErrorKind::SymbolIterFailed)
     }
 
+    pub fn tls_key_out_of_range(key: u64) -> Self {
+        Self::new(ErrorKind::TlsKeyOutOfRange { key })
+    }
+
+    pub fn tls_not_recorded(name: &str, fsbase: u64) -> Self {
+        Self::new(ErrorKind::TlsNotRecorded {
+            name: name.to_string(),
+            fsbase,
+        })
+    }
+
     pub fn unexpected_eof() -> Self {
         Self::new(ErrorKind::UnexpectedEof)
     }
@@ -135,10 +150,11 @@ impl std::error::Error for Error {}
 // ---------------------------------------------------------------------------
 
 /// The narrow reading surface a debugger needs from a target: memory
-/// bytes, symbol lookups, mappings, and LWP state. Implemented by
-/// [`Proc`] (a live process or core dump, via libproc, illumos-only)
-/// and by snapshots captured from one (any platform), so the layers
-/// interpreting a target can run against either.
+/// bytes, symbol lookups, mappings, LWP state, and where a thread-local
+/// lives in a given thread. Implemented by [`Proc`] (a live process or
+/// core dump, via libproc, illumos-only) and by snapshots captured from
+/// one (any platform), so the layers interpreting a target can run
+/// against either.
 pub trait Target {
     /// Read exactly `len` bytes at `addr`.
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>>;
@@ -168,11 +184,49 @@ pub trait Target {
         Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
     }
 
-    /// The values of an LWP's `ul_ftsd` field from its `ulwp_t`, located
-    /// via `%fsbase`: the LWP's fast thread-specific data (TSD) slots.
-    fn tsd_from_regs(&self, regs: &Regs) -> Result<[u64; 9]> {
-        tsd_from_fsbase(self, regs)
-    }
+    /// The address of the thread-local variable named by `sym` in the
+    /// thread whose registers are `regs`, or `None` if that thread holds
+    /// no instance of it.
+    ///
+    /// How a symbol names a thread-local is the platform's business, and
+    /// the two disagree completely. On illumos, std's `thread_local!`
+    /// compiles to the `os` model: `sym` is an ordinary static holding a
+    /// `pthread_key_t`, and the thread's value for that key is a pointer
+    /// parked in its fast-TSD slots (see [`tls_addr_from_pthread_key`]).
+    /// On Linux it is native ELF TLS: `sym` is an `STT_TLS` symbol whose
+    /// `st_value` is an offset into the thread's own TLS block, and the
+    /// variable is stored there inline rather than behind a pointer.
+    ///
+    /// Callers hand over the symbol and take back an address, which is
+    /// the only part both models agree on.
+    fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>>;
+}
+
+/// Resolve a thread-local through a pthread key: the illumos model,
+/// where `sym` is a static holding a `pthread_key_t` and the thread's
+/// value for that key sits in its fast-TSD slots (see
+/// [`tsd_from_fsbase`]).
+///
+/// A zero slot means this thread never set the key, which is ordinary —
+/// most LWPs in a tokio process are not runtime workers.
+///
+/// Only [`Proc`] calls this, but the unit tests drive it over a fake
+/// target on every platform: the offsets and the decode are pinned
+/// nowhere else.
+#[cfg(any(target_os = "illumos", test))]
+pub(crate) fn tls_addr_from_pthread_key<T: Target + ?Sized>(
+    target: &T,
+    regs: &Regs,
+    sym: &SymbolBuf,
+) -> Result<Option<u64>> {
+    let key = target.read_u64(sym.st_value)?;
+    let slots = tsd_from_fsbase(target, regs)?;
+    // A key past the fast slots would live in the slow TSD array, which
+    // no tokio process observed so far uses.
+    let addr = *slots
+        .get(key as usize)
+        .ok_or_else(|| Error::tls_key_out_of_range(key))?;
+    Ok((addr != 0).then_some(addr))
 }
 
 /// Read a thread's `ulwp_t.ul_ftsd` through any [`Target`]'s memory.
@@ -184,6 +238,7 @@ pub trait Target {
 /// obviously not reliable, but it's been ten years since the last
 /// time `ulwp_t` changed format, so we can probably get away with this
 /// hack for a while.
+#[cfg(any(target_os = "illumos", test))]
 pub(crate) fn tsd_from_fsbase<T: Target + ?Sized>(target: &T, regs: &Regs) -> Result<[u64; 9]> {
     const UL_FTSD_OFFSET: u64 = 320;
     const UL_FTSD_LEN: usize = 9;
