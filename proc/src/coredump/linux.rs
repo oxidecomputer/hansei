@@ -24,6 +24,7 @@ use crate::{
 };
 
 use goblin::elf::Elf;
+use goblin::elf::note::{NT_FILE, NT_PRSTATUS};
 use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_LOAD, PT_TLS};
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT, STT_TLS};
 use memmap2::Mmap;
@@ -34,10 +35,9 @@ use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-/// Note types carried by a Linux core, from `<elf.h>`.
-const NT_PRSTATUS: u32 = 1;
+/// The one note type a Linux core carries that goblin does not name;
+/// `NT_PRSTATUS` and `NT_FILE` come from there.
 const NT_AUXV: u32 = 6;
-const NT_FILE: u32 = 0x4649_4c45;
 
 /// Auxiliary-vector tags, from `<elf.h>`. `AT_PHDR` is the runtime
 /// address of the executable's own program headers, which is how the
@@ -855,8 +855,18 @@ impl Target for Core {
 mod tests {
     use super::*;
 
-    use goblin::elf::program_header::PT_NOTE;
+    use goblin::container::{Container, Ctx};
+    use goblin::elf::header::header64::SIZEOF_EHDR;
+    use goblin::elf::header::{EM_X86_64, ET_CORE, Header};
+    use goblin::elf::program_header::program_header64::SIZEOF_PHDR;
+    use goblin::elf::program_header::{PT_NOTE, ProgramHeader};
+    use scroll::Pwrite;
     use std::io::Write;
+
+    /// A core is ELF64 and little-endian, as everything this builds is.
+    fn elf_ctx() -> Ctx {
+        Ctx::new(Container::Big, scroll::Endian::Little)
+    }
 
     /// Builds an `ET_CORE` file in memory, so the reader can be held to
     /// cores a real one is awkward to produce: a region dumped and
@@ -1007,41 +1017,49 @@ mod tests {
         }
     }
 
+    /// An `ET_CORE` header for `phnum` program headers following it.
+    ///
+    /// Written through goblin rather than by hand: a builder that lays
+    /// out its own fields can put one at the wrong offset and produce a
+    /// fixture that is merely malformed, which is a confusing way for a
+    /// test of a parser to fail.
     fn elf_header(phnum: u16) -> Vec<u8> {
-        let mut out = vec![0u8; 64];
-        out[..4].copy_from_slice(b"\x7fELF");
-        out[4] = 2; // ELFCLASS64
-        out[5] = 1; // ELFDATA2LSB
-        out[6] = 1; // EV_CURRENT
-        out[16..18].copy_from_slice(&4u16.to_le_bytes()); // ET_CORE
-        out[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
-        out[20..24].copy_from_slice(&1u32.to_le_bytes());
-        out[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
-        out[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
-        out[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
-        out[56..58].copy_from_slice(&phnum.to_le_bytes());
+        let mut header = Header::new(elf_ctx());
+        header.e_type = ET_CORE;
+        header.e_machine = EM_X86_64;
+        header.e_phoff = SIZEOF_EHDR as u64;
+        header.e_phentsize = SIZEOF_PHDR as u16;
+        header.e_phnum = phnum;
+
+        let mut out = vec![0u8; SIZEOF_EHDR];
+        out.pwrite_with(header, 0, scroll::Endian::Little)
+            .expect("failed to write the ELF header");
         out
     }
 
     #[allow(clippy::too_many_arguments)]
     fn phdr(
-        ptype: u32,
-        flags: u32,
-        offset: u64,
-        vaddr: u64,
-        filesz: u64,
-        memsz: u64,
-        align: u64,
+        p_type: u32,
+        p_flags: u32,
+        p_offset: u64,
+        p_vaddr: u64,
+        p_filesz: u64,
+        p_memsz: u64,
+        p_align: u64,
     ) -> Vec<u8> {
-        let mut out = Vec::with_capacity(56);
-        out.extend(ptype.to_le_bytes());
-        out.extend(flags.to_le_bytes());
-        out.extend(offset.to_le_bytes());
-        out.extend(vaddr.to_le_bytes());
-        out.extend(vaddr.to_le_bytes()); // p_paddr
-        out.extend(filesz.to_le_bytes());
-        out.extend(memsz.to_le_bytes());
-        out.extend(align.to_le_bytes());
+        let header = ProgramHeader {
+            p_type,
+            p_flags,
+            p_offset,
+            p_vaddr,
+            p_paddr: p_vaddr,
+            p_filesz,
+            p_memsz,
+            p_align,
+        };
+        let mut out = vec![0u8; SIZEOF_PHDR];
+        out.pwrite_with(header, 0, elf_ctx())
+            .expect("failed to write a program header");
         out
     }
 
