@@ -207,6 +207,20 @@ pub trait Target {
         Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
     }
 
+    fn read_u32(&self, addr: u64) -> Result<u32> {
+        let bytes = self.read_bytes(addr, size_of::<u32>() as u64)?;
+        Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn read_u16(&self, addr: u64) -> Result<u16> {
+        let bytes = self.read_bytes(addr, size_of::<u16>() as u64)?;
+        Ok(u16::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn read_u8(&self, addr: u64) -> Result<u8> {
+        Ok(self.read_bytes(addr, 1)?[0])
+    }
+
     /// The address of the thread-local variable named by `sym` in the
     /// thread whose registers are `regs`, or `None` if that thread holds
     /// no instance of it.

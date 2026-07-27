@@ -2010,6 +2010,7 @@ dependencies = [
  "goblin 0.10.5",
  "proc",
  "rustc-demangle",
+ "tempfile",
 ]
 
 [[package]]
