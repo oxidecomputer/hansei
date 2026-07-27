@@ -1,35 +1,41 @@
 //! The real-core suite for the ELF-backed [`Proc`] target: the half of
-//! the Linux backend that can only be checked against a core the kernel
-//! actually wrote. It compiles nowhere else.
+//! the Linux backend that can only be checked against a core something
+//! else wrote. It compiles nowhere else.
 //!
 //! The unit tests in `src/linux.rs` drive the reader with cores this
 //! suite could never produce — a region dumped and file-backed at once,
 //! a mapping whose file is gone, a truncated note — and they carry most
 //! of the coverage. What they cannot check is whether the layout this
-//! crate believes in is the layout Linux writes. That is this file's
-//! job, and it is why every assertion here is against something the
-//! target itself reported on stdout before it died.
+//! crate believes in is the layout a real dumper writes. That is this
+//! file's job, and it is why every assertion here is against something
+//! the target itself reported on stdout before it died.
 //!
 //! The target is `test-programs`' `core-target`, built by `regen.sh` the
 //! way every other suite gets its fixtures. It prints its thread ids and
 //! the thread-local each of them set, then aborts.
 //!
-//! Retrieving the core is the one part that depends on how the machine
-//! is configured: `core_pattern` is normally a pipe to
-//! `systemd-coredump`, so the core is fetched back with `coredumpctl`.
-//! Where that is not available the suite says so and stops rather than
-//! passing silently.
+//! The core comes from gdb's `gcore`, with gdb as the target's parent so
+//! that it dumps the target where it stopped. Nothing here touches
+//! `core_pattern`, which is global, often a pipe to a crash handler, and
+//! needs root to change; running gdb as the parent also sidesteps
+//! `ptrace_scope`, which on many distributions forbids tracing anything
+//! but a descendant. All the suite needs is gdb on `PATH`.
+//!
+//! gdb dumps more than the kernel would — it writes out file-backed text
+//! the kernel's default filter drops — so which regions land in the file
+//! is not something to assume. [`dumped_ranges`] reads that back out of
+//! the core's own program headers, and the tests use it to make sure
+//! they are exercising the path they mean to.
 
 #![cfg(target_os = "linux")]
 
 use proc::{Proc, Target};
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 /// The fixture program, and the markers it carries. Keep in step with
 /// `test-programs/src/bin/core-target.rs`.
@@ -46,12 +52,6 @@ const SLOT_SYM: &str = "CORE_SLOT";
 
 /// The first page is never mapped in any process.
 const UNMAPPED: u64 = 0x1000;
-
-/// How long to wait for `systemd-coredump` to finish storing the core.
-/// It runs asynchronously, so unlike the illumos suite there is no
-/// event to block on; this polls instead of guessing a single sleep.
-const CORE_WAIT: Duration = Duration::from_millis(250);
-const CORE_TRIES: usize = 40;
 
 fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
@@ -91,23 +91,47 @@ struct Slot {
     addr: u64,
 }
 
-/// Run the fixture to its abort, then fetch the core back.
+/// Run the fixture to its abort under gdb and dump it there.
 ///
-/// Produced once for the whole suite: a core is a few megabytes and
-/// every test here reads the same one.
+/// Produced once for the whole suite: every test here reads the same
+/// core, and the target has nothing to say that changes between runs.
 fn dumped() -> &'static Dumped {
     static DUMPED: OnceLock<Dumped> = OnceLock::new();
     DUMPED.get_or_init(|| {
-        let mut child = Command::new(fixture())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("failed to spawn the target");
+        let dir = tempfile::tempdir().expect("failed to create a tempdir");
+        let core = dir.path().join("core");
 
+        // gdb runs the target, stops when it aborts, and dumps it where
+        // it stands. One arena keeps glibc from reserving 64MiB per
+        // thread that gdb would then write out in full; the kernel
+        // skips those pages, gdb does not.
+        let out = Command::new("gdb")
+            .args(["-batch", "-nx", "-ex", "run", "-ex"])
+            .arg(format!("gcore {}", core.display()))
+            .args(["-ex", "kill", "--args"])
+            .arg(fixture())
+            .env("MALLOC_ARENA_MAX", "1")
+            .output()
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed to run gdb ({e}); this suite dumps the target with \
+                     gcore, so gdb has to be on PATH. The unit tests in \
+                     src/linux.rs cover the reader itself and need nothing."
+                )
+            });
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            core.exists(),
+            "gdb wrote no core to {}:\n{stdout}\n{}",
+            core.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // gdb passes the target's stdout through with its own; the
+        // target's lines are the ones that say whose they are.
         let mut slots = BTreeMap::new();
-        let mut pid = None;
-        let stdout = BufReader::new(child.stdout.take().expect("the target has a stdout"));
+        let mut ready = false;
         for line in stdout.lines() {
-            let line = line.expect("failed to read the target's stdout");
             if let Some(rest) = line.strip_prefix(SLOT_LINE) {
                 let fields: Vec<&str> = rest.split_whitespace().collect();
                 let [tid, value, addr] = fields[..] else {
@@ -120,18 +144,16 @@ fn dumped() -> &'static Dumped {
                         addr: hex(addr),
                     },
                 );
-            } else if let Some(rest) = line.strip_prefix(READY) {
-                pid = Some(rest.trim().to_string());
-                break;
+            } else if line.starts_with(READY) {
+                ready = true;
             }
         }
-        let pid = pid.expect("the target never reported ready");
-        assert_eq!(slots.len(), WORKERS + 1, "not every thread reported in");
-        child.wait().expect("failed to wait for the target");
-
-        let dir = tempfile::tempdir().expect("failed to create a tempdir");
-        let core = dir.path().join("core");
-        fetch_core(&pid, &core);
+        assert!(ready, "the target never reported ready:\n{stdout}");
+        assert_eq!(
+            slots.len(),
+            WORKERS + 1,
+            "not every thread reported in:\n{stdout}"
+        );
 
         Dumped {
             core,
@@ -141,43 +163,22 @@ fn dumped() -> &'static Dumped {
     })
 }
 
-/// Pull the core back out of `systemd-coredump`, which stores it
-/// asynchronously after the process dies.
-fn fetch_core(pid: &str, out: &Path) {
-    if Command::new("coredumpctl")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        panic!(
-            "coredumpctl is not installed, so the core of pid {pid} cannot be \
-             retrieved. This machine's core_pattern is {}, which is a pipe to \
-             systemd-coredump; the unit tests in src/linux.rs cover the reader \
-             itself and do not need one.",
-            core_pattern()
-        );
-    }
-
-    for _ in 0..CORE_TRIES {
-        let status = Command::new("coredumpctl")
-            .args(["dump", "--output"])
-            .arg(out)
-            .arg(pid)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("failed to run coredumpctl");
-        if status.success() && out.exists() {
-            return;
-        }
-        std::thread::sleep(CORE_WAIT);
-    }
-    panic!(
-        "no core for pid {pid} after {:?}; core_pattern is {}. Is storage \
-         disabled in coredump.conf, or the core size limit too low?",
-        CORE_WAIT * CORE_TRIES as u32,
-        core_pattern()
-    );
+/// The address ranges whose bytes the core file actually carries, read
+/// out of its program headers.
+///
+/// This is the one thing the tests cannot ask the reader, because it is
+/// what the reader is being checked on: which side of a read the bytes
+/// came from. How much a core holds depends on who wrote it — the
+/// kernel drops private file-backed pages, gdb keeps them — so the
+/// tests establish it rather than assume it.
+fn dumped_ranges(core: &Path) -> Vec<Range<u64>> {
+    let bytes = std::fs::read(core).expect("failed to read the core");
+    let elf = goblin::elf::Elf::parse(&bytes).expect("the core is an ELF file");
+    elf.program_headers
+        .iter()
+        .filter(|ph| ph.p_type == goblin::elf::program_header::PT_LOAD && ph.p_filesz > 0)
+        .map(|ph| ph.p_vaddr..ph.p_vaddr + ph.p_filesz)
+        .collect()
 }
 
 fn hex(field: &str) -> u64 {
@@ -185,12 +186,6 @@ fn hex(field: &str) -> u64 {
         .strip_prefix("0x")
         .unwrap_or_else(|| panic!("{field} is not hex"));
     u64::from_str_radix(digits, 16).unwrap_or_else(|_| panic!("{field} is not hex"))
-}
-
-fn core_pattern() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/core_pattern")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "<unreadable>".to_string())
 }
 
 fn target() -> Proc {
@@ -289,31 +284,111 @@ fn test_thread_locals_resolve_per_thread() {
 // Memory
 // ---------------------------------------------------------------------------
 
-/// Both halves of a read: `.rodata` is dropped by the default dump
-/// filter and has to come off the executable on disk, while a page the
-/// process wrote is in the core itself. Both hold the same value here,
-/// so only the path differs.
+/// A read served out of the core, and the precedence that makes it the
+/// right answer. `CORE_COUNTER` is zero in the executable on disk and
+/// holds the marker value only because the process wrote it, so reading
+/// the marker back proves the bytes came from the core — a reader that
+/// preferred the file would return zero.
 #[test]
-fn test_reads_reach_both_sources() {
+fn test_dumped_pages_come_from_the_core() {
     let p = target();
+    let dumped = dumped_ranges(&dumped().core);
 
-    let rodata = p
-        .lookup_symbol_by_name(MARKER_VALUE_SYM)
-        .expect("the marker value is in the symtab");
-    assert_eq!(p.read_u64(rodata.st_value).unwrap(), MARKER_VALUE);
-
-    let data = p
+    let counter = p
         .lookup_symbol_by_name(COUNTER_SYM)
         .expect("the counter is in the symtab");
-    assert_eq!(p.read_u64(data.st_value).unwrap(), MARKER_VALUE);
-
-    // The two live in different mappings, and the counter's was dumped.
-    let maps = p.mappings().unwrap();
-    assert!(maps.contains_addr(rodata.st_value));
-    assert!(maps.get(data.st_value).unwrap().is_data());
+    assert!(
+        dumped.iter().any(|r| r.contains(&counter.st_value)),
+        "{COUNTER_SYM} at {:#x} is not in the core; this test would prove nothing",
+        counter.st_value
+    );
+    assert_eq!(p.read_u64(counter.st_value).unwrap(), MARKER_VALUE);
+    assert!(
+        p.mappings()
+            .unwrap()
+            .get(counter.st_value)
+            .unwrap()
+            .is_data()
+    );
 
     assert!(p.read_bytes(UNMAPPED, 8).is_err());
     assert!(p.read_u64(UNMAPPED).is_err());
+}
+
+/// A read served off disk. Whoever wrote the core left some file-backed
+/// region out of it — the kernel drops all of the executable's text,
+/// gdb only some of libc's — and reads that land there have to come
+/// from the file the mapping names.
+///
+/// The expected bytes are worked out the way a debugger does it, from
+/// the mapping base and the object's own program headers, so that what
+/// the reader returns is checked against the file and not against a
+/// second copy of the reader.
+#[test]
+fn test_undumped_pages_come_from_disk() {
+    let p = target();
+    let dumped = dumped_ranges(&dumped().core);
+    let maps = p.mappings().unwrap();
+
+    let mut checked = 0;
+    for m in &maps {
+        let Some(path) = m.path.as_deref() else {
+            continue;
+        };
+        // Only wholly-absent regions: a partly dumped one would not say
+        // which side answered.
+        if dumped
+            .iter()
+            .any(|r| r.start < m.range().end && m.vaddr < r.end)
+        {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let Ok(elf) = goblin::elf::Elf::parse(&bytes) else {
+            continue;
+        };
+
+        // Where this object landed, and so where in the file this
+        // mapping's first byte came from.
+        let base = maps
+            .iter()
+            .filter(|o| o.path.as_deref() == Some(path))
+            .map(|o| o.vaddr)
+            .min()
+            .unwrap();
+        let lowest = elf
+            .program_headers
+            .iter()
+            .filter(|ph| ph.p_type == goblin::elf::program_header::PT_LOAD)
+            .map(|ph| ph.p_vaddr)
+            .min()
+            .unwrap();
+        let link_addr = m.vaddr - (base - lowest);
+        let Some(ph) = elf.program_headers.iter().find(|ph| {
+            ph.p_type == goblin::elf::program_header::PT_LOAD
+                && (ph.p_vaddr..ph.p_vaddr + ph.p_filesz).contains(&link_addr)
+        }) else {
+            continue;
+        };
+        let at = (ph.p_offset + (link_addr - ph.p_vaddr)) as usize;
+        let want = &bytes[at..at + 64];
+
+        assert_eq!(
+            p.read_bytes(m.vaddr, 64).unwrap(),
+            want,
+            "{path} at {:#x} did not come back off disk",
+            m.vaddr
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked > 0,
+        "no mapping was left out of the core, so the disk path went \
+         untested; mappings were {maps:#?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

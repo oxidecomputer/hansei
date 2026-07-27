@@ -18,6 +18,12 @@ zstd = { workspace = true }
 goblin = { workspace = true }
 memmap2 = { workspace = true }
 
+# The real-core suite works out for itself which of a core's regions
+# carry bytes, so that it checks the reader against the file rather than
+# against the reader.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+goblin = { workspace = true }
+
 [target.'cfg(target_os = "illumos")'.dependencies]
 libproc-sys = { workspace = true }
 # zstd-sys's vendored C fails to assemble with the illumos gcc/gas

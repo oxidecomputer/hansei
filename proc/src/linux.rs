@@ -343,6 +343,32 @@ impl Proc {
                 }
             })
             .collect();
+
+        // Not every mapping reaches the program headers. The kernel
+        // writes a PT_LOAD for each one, empty where the dump filter
+        // dropped it, but gdb's gcore leaves some out of the headers
+        // altogether and mentions them only in NT_FILE. Those are
+        // readable — the file they name still has them — so they belong
+        // in the address space rather than in a hole.
+        let mut inner: Vec<LoadedObjectWithPath> = inner;
+        for file in &self.files {
+            if self
+                .segments
+                .iter()
+                .any(|s| s.vaddr < file.range.end && file.range.start < s.range().end)
+            {
+                continue;
+            }
+            inner.push(LoadedObjectWithPath {
+                path: Some(file.path.clone()),
+                vaddr: file.range.start,
+                size: file.range.end - file.range.start,
+                // Readable and file-backed is all such an entry says;
+                // the permissions it was mapped with went unrecorded.
+                flags: MapFlags(PF_R),
+            });
+        }
+        inner.sort_unstable();
         Mappings { inner }
     }
 
@@ -1224,6 +1250,63 @@ mod tests {
         let got = p.read_bytes(BASE + PAGE - 4, 8).unwrap();
         assert_eq!(&got[..4], [0x5a; 4]);
         assert_eq!(&got[4..], &on_disk[PAGE as usize..PAGE as usize + 4]);
+    }
+
+    /// A mapping the core mentions only in `NT_FILE`, with no program
+    /// header of its own — which is how gdb's `gcore` writes the
+    /// regions it leaves out, unlike the kernel's empty `PT_LOAD`. The
+    /// file still has the bytes, so it is a mapping and not a hole.
+    #[test]
+    fn test_nt_file_only_regions_are_mapped() {
+        let exe = std::env::current_exe().unwrap();
+        let on_disk = std::fs::read(&exe).unwrap();
+        const BASE: u64 = 0x40_0000;
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .file(BASE..BASE + PAGE, 0, exe.to_str().unwrap())
+            .proc();
+
+        let maps = p.mappings().unwrap();
+        let m = maps
+            .get(BASE)
+            .expect("the NT_FILE-only region is not in the address space");
+        assert_eq!(m.path.as_deref(), exe.to_str());
+        assert_eq!(m.size, PAGE);
+        assert!(!m.flags.is_anon());
+        assert!(p.addr_is_mapped(BASE + PAGE - 1));
+        assert!(!p.addr_is_mapped(BASE + PAGE));
+
+        // And it reads, off the file.
+        assert_eq!(p.read_bytes(BASE, 4).unwrap(), b"\x7fELF");
+        assert_eq!(p.read_bytes(BASE + 0x40, 16).unwrap(), on_disk[0x40..0x50]);
+
+        // The mapping list stays in address order however the entries
+        // were reached.
+        let vaddrs: Vec<u64> = maps.iter().map(|m| m.vaddr).collect();
+        assert!(vaddrs.windows(2).all(|w| w[0] <= w[1]), "{vaddrs:#x?}");
+    }
+
+    /// A region with a program header is described by it, not by the
+    /// `NT_FILE` entry that also covers it.
+    #[test]
+    fn test_program_headers_win_over_the_file_table() {
+        let exe = std::env::current_exe().unwrap();
+        const BASE: u64 = 0x40_0000;
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .undumped(BASE, 2 * PAGE, PF_R | PF_X)
+            .file(BASE..BASE + PAGE, 0, exe.to_str().unwrap())
+            .proc();
+
+        let maps = p.mappings().unwrap();
+        assert_eq!(maps.iter().filter(|m| m.vaddr == BASE).count(), 1);
+        let m = maps.get(BASE).unwrap();
+        assert!(m.is_text(), "{m:?}");
+        assert_eq!(m.size, 2 * PAGE, "the header's size was overwritten");
     }
 
     /// A core routinely names files that have since moved. Reads that
