@@ -23,16 +23,15 @@ These are the workspace members that may be useful:
   core-dump reader for Linux, and replayable target snapshots.
 * durin: Read and write CTF files.
 
-Note that hansei is `#[cfg(target_os = "illumos")]` — it only builds and runs
-there. proc reads a live process or core through `libproc` on illumos, and a
-core dump on Linux (live processes there are not implemented yet); the layers
-above it are being moved onto that shared surface. Bundle extraction (exegesis)
-and type/value work (reify) are portable.
+proc reads a live process or core through `libproc` on illumos, and a core dump
+on Linux; reading a *live* process on Linux is not implemented yet, so `--pid`
+is illumos-only and everything else works from a core on both. Bundle
+extraction (exegesis) and type/value work (reify) are portable.
 
 == Usage
 
 The workflow has two stages: extract a bundle once from a debug binary
-(anywhere), then point hansei at a matching target on illumos.
+(anywhere), then point hansei at a matching target.
 
 === 1. Extract a bundle (exegesis)
 
@@ -58,9 +57,9 @@ isn't a tokio target.
 
 === 2. Inspect a target (hansei)
 
-hansei reads a core dump (`--core`) or a live process (`--pid`, which requires
-`-w`/`--destructive` since pausing the process is destructive), interpreting it
-through the bundle from step 1.
+hansei reads a core dump (`--core`) or, on illumos, a live process (`--pid`,
+which requires `-w`/`--destructive` since pausing the process is destructive),
+interpreting it through the bundle from step 1.
 
 List every task the runtime owns — id, lifecycle state, future type, and spawn
 location:

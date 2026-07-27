@@ -962,6 +962,16 @@ fn extract_from_view_with_vtable_types(
     let mut by_symbol: BTreeMap<String, TaskEntryId> = BTreeMap::new();
     let mut fingerprint: BTreeSet<String> = BTreeSet::new();
 
+    // The fingerprint is resolved against a target's symbol table, so it
+    // can only be made of names a symbol table carries. DWARF describes
+    // every instantiation the compiler emitted, including ones the
+    // linker then dropped for want of a caller — `poll` for tokio's
+    // blocking-pool tasks in a program that touches no files, say. Those
+    // are absent from this binary and from any target built the same
+    // way, so keeping them would fail every well-matched target rather
+    // than the mismatched ones the check is for.
+    let symtab: BTreeSet<&str> = symbols.iter().map(|s| strip(s)).collect();
+
     for task in &bound {
         let entry_id = TaskEntryId(entries.len() as u32);
         let future = em.emit(task.future);
@@ -996,7 +1006,12 @@ fn extract_from_view_with_vtable_types(
         for sym in &task.symbols {
             by_symbol.insert(sym.clone(), entry_id);
         }
-        fingerprint.extend(task.poll_symbols.iter().cloned());
+        fingerprint.extend(
+            task.poll_symbols
+                .iter()
+                .filter(|sym| symtab.contains(sym.as_str()))
+                .cloned(),
+        );
         stats.poll_instantiations += task.poll_symbols.len();
     }
     stats.task_entries = entries.len();
@@ -3501,23 +3516,32 @@ fn find_statics(
         }
     }
 
-    // Fall back to the symbol table for any static the DWARF sweep missed.
-    // On some targets (notably illumos release builds) rustc emits no
-    // `DW_TAG_variable` DIE for these tokio/std dependency statics, yet the
-    // symbol survives in `.symtab`/`.dynsym`; the mangled v0 name is all the
-    // bundle needs, since the consumer resolves the address by name anyway.
-    if out.len() < 2 {
-        for &sym in symbols {
-            let stripped = strip(sym);
-            if let Some(role) = match_static_symbol(stripped) {
-                out.entry(role).or_insert_with(|| {
-                    stats.statics_from_symtab += 1;
-                    StaticDef {
-                        symbol: stripped.to_owned(),
-                        display: format!("{:#}", rustc_demangle::demangle(sym)),
-                    }
-                });
-            }
+    // A DWARF sweep can name a symbol the binary does not have. The
+    // CONTEXT thread-local is emitted once per codegen unit, and the DIE
+    // that survives need not be the one whose symbol did: on Linux the
+    // DWARF names `CONTEXT::{K#0}::{closure#1}` while the symbol table
+    // keeps `{closure#0}`, and the two mangle differently. A name the
+    // symtab does not have is no use to a consumer that resolves it by
+    // name, so drop it here and let the symbol table answer instead.
+    let symtab: BTreeSet<&str> = symbols.iter().map(|s| strip(s)).collect();
+    out.retain(|_, def| symtab.contains(def.symbol.as_str()));
+
+    // Fall back to the symbol table for any static the DWARF sweep missed
+    // or named unusably. On some targets (notably illumos release builds)
+    // rustc emits no `DW_TAG_variable` DIE for these tokio/std dependency
+    // statics, yet the symbol survives in `.symtab`/`.dynsym`; the mangled
+    // v0 name is all the bundle needs, since the consumer resolves the
+    // address by name anyway.
+    for &sym in symbols {
+        let stripped = strip(sym);
+        if let Some(role) = match_static_symbol(stripped) {
+            out.entry(role).or_insert_with(|| {
+                stats.statics_from_symtab += 1;
+                StaticDef {
+                    symbol: stripped.to_owned(),
+                    display: format!("{:#}", rustc_demangle::demangle(sym)),
+                }
+            });
         }
     }
 
