@@ -165,6 +165,184 @@ fn for_each_target(check: impl Fn(&Proc, &Parked, &str)) {
     check(&live, &parked, "live");
 }
 
+/// The portable reader is held to libproc, on the same core, on the one
+/// machine that has both.
+///
+/// It is what a Linux host gets when handed an illumos core, and there
+/// is nothing there to check it against — so it is checked here, where
+/// the answer is known. Anything the two disagree about is the portable
+/// reader being wrong, since libproc is what this crate has always
+/// meant by reading a core.
+#[test]
+fn test_the_portable_reader_agrees_with_libproc() {
+    use proc::coredump::illumos::Core;
+
+    let parked = Parked::spawn();
+    let dir = tempfile::tempdir().expect("failed to create a tempdir");
+    let core_path = gcore(parked.pid(), dir.path());
+
+    let libproc = Proc::open_core(&core_path).expect("libproc failed to open the core");
+    let portable = Core::open(&core_path).expect("the portable reader failed to open the core");
+
+    // Threads, their registers, and the stacks they are running on.
+    let want = libproc.lwps().unwrap();
+    let got = portable.lwps().unwrap();
+    assert_eq!(
+        got.iter().map(|l| l.tid).collect::<Vec<_>>(),
+        want.iter().map(|l| l.tid).collect::<Vec<_>>()
+    );
+    for (a, b) in got.iter().zip(&want) {
+        assert_eq!(a.regs, b.regs, "tid {} registers", a.tid);
+        assert_eq!(a.stack_range, b.stack_range, "tid {} stack", a.tid);
+        assert_eq!(a.tstamp, b.tstamp, "tid {} timestamp", a.tid);
+    }
+    assert_eq!(portable.exec_name().unwrap(), libproc.exec_name().unwrap());
+
+    // Thread names, which the portable reader takes from the core's own
+    // NT_LWPNAME notes and libproc asks the same core for its way. The
+    // main thread was never given one, so both report nothing for it.
+    for lwp in &want {
+        assert_eq!(
+            portable.lwp_name(lwp.tid).unwrap_or_default(),
+            libproc.lwp_name(lwp.tid).unwrap_or_default(),
+            "tid {} name",
+            lwp.tid
+        );
+    }
+    let names: BTreeSet<String> = want
+        .iter()
+        .filter_map(|l| portable.lwp_name(l.tid).ok())
+        .collect();
+    for worker in WORKERS {
+        assert!(names.contains(worker), "{worker} missing from {names:?}");
+    }
+
+    // Symbols of the executable, by name and by address. The core
+    // carries its own symbol table, so this is the reader reading it
+    // rather than the binary on disk.
+    for name in [MARKER_FN, MARKER_VALUE_SYM, COUNTER_SYM, TSD_KEY_SYM] {
+        assert_eq!(
+            portable.lookup_symbol_by_name(name),
+            libproc.lookup_symbol_by_name(name),
+            "{name}"
+        );
+    }
+
+    // The whole table, not just the markers: a systematic error in
+    // reading the core's symbols — an offset, a bias, a filter — shows
+    // up here and in no single lookup. Compared as name to address,
+    // since the two arrive at their tables by different routes and need
+    // not agree about ordering or duplicates.
+    let table = |syms: Vec<proc::SymbolBuf>| -> BTreeMap<String, u64> {
+        syms.into_iter().map(|s| (s.name, s.st_value)).collect()
+    };
+    let want_fns = table(libproc.symbols().unwrap());
+    let got_fns = table(portable.symbols().unwrap());
+    assert!(!want_fns.is_empty(), "libproc found no function symbols");
+    compare_tables("function symbols", &got_fns, &want_fns);
+    compare_tables(
+        "object symbols",
+        &table(portable.object_symbols().unwrap()),
+        &table(libproc.object_symbols().unwrap()),
+    );
+
+    // Every function in that table resolves back by address, through
+    // both readers alike, to the same name. The linker folds identical
+    // code and leaves several names on one address, so this is also
+    // where the two have to agree about which alias to pick.
+    for (name, addr) in &want_fns {
+        assert_eq!(
+            portable.lookup_symbol_by_addr(*addr).map(|s| s.name),
+            libproc.lookup_symbol_by_addr(*addr).map(|s| s.name),
+            "{name} at {addr:#x}"
+        );
+    }
+    let marker = portable.lookup_symbol_by_name(MARKER_FN).unwrap();
+    assert_eq!(
+        portable
+            .lookup_symbol_by_addr(marker.st_value)
+            .map(|s| s.name),
+        Some(MARKER_FN.to_string())
+    );
+    // And in a shared object, where the core's tables hold offsets from
+    // where the object was loaded rather than addresses.
+    for lwp in &want {
+        assert_eq!(
+            portable.lookup_symbol_by_addr(lwp.regs.rip),
+            libproc.lookup_symbol_by_addr(lwp.regs.rip),
+            "tid {} pc {:#x}",
+            lwp.tid,
+            lwp.regs.rip
+        );
+    }
+
+    // Memory, at an address whose contents the fixture fixes.
+    let addr = marker_addr(&libproc, MARKER_VALUE_SYM);
+    assert_eq!(portable.read_u64(addr).unwrap(), MARKER_VALUE);
+    assert_eq!(
+        Target::read_bytes(&portable, addr, 64).unwrap(),
+        Target::read_bytes(&libproc, addr, 64).unwrap()
+    );
+    assert!(portable.read_bytes(UNMAPPED, 8).is_err());
+
+    // Thread-locals, walked through the core's own memory rather than
+    // through libproc's handle.
+    let key = portable.lookup_symbol_by_name(TSD_KEY_SYM).unwrap();
+    for lwp in &want {
+        assert_eq!(
+            portable.tls_var_addr(&lwp.regs, &key).unwrap(),
+            libproc.tls_var_addr(&lwp.regs, &key).unwrap(),
+            "tid {} thread-local",
+            lwp.tid
+        );
+    }
+
+    // Mappings: the ranges agree even though only libproc can name the
+    // objects behind them, which needs the link map the core does not
+    // carry and this reader does not yet walk.
+    let ranges = |m: &proc::Mappings| m.iter().map(|o| o.range()).collect::<Vec<_>>();
+    assert_eq!(
+        ranges(&portable.mappings().unwrap()),
+        ranges(&libproc.mappings().unwrap())
+    );
+}
+
+/// Compare two symbol tables and say how they differ, rather than
+/// printing both: these run to thousands of mangled names, and the
+/// interesting part is the handful that disagree.
+fn compare_tables(what: &str, got: &BTreeMap<String, u64>, want: &BTreeMap<String, u64>) {
+    let sample = |mut names: Vec<String>| {
+        names.truncate(5);
+        names
+    };
+    let missing = sample(
+        want.keys()
+            .filter(|k| !got.contains_key(*k))
+            .cloned()
+            .collect(),
+    );
+    let extra = sample(
+        got.keys()
+            .filter(|k| !want.contains_key(*k))
+            .cloned()
+            .collect(),
+    );
+    let moved: Vec<String> = sample(
+        want.iter()
+            .filter(|(k, v)| got.get(*k).is_some_and(|g| g != *v))
+            .map(|(k, v)| format!("{k} want {v:#x} got {:#x}", got[k]))
+            .collect(),
+    );
+
+    assert!(
+        missing.is_empty() && extra.is_empty() && moved.is_empty(),
+        "{what}: {} in libproc, {} in the portable reader\n  \
+         missing {missing:#?}\n  extra {extra:#?}\n  moved {moved:#?}",
+        want.len(),
+        got.len()
+    );
+}
+
 /// The runtime address of one of the target's marker symbols.
 fn marker_addr(p: &Proc, name: &str) -> u64 {
     p.lookup_symbol_by_name(name)

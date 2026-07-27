@@ -10,6 +10,7 @@
 //! illumos, procfs and ptrace on Linux). Those backends stay beside
 //! this module and stay gated to the host that has them.
 
+pub mod illumos;
 pub mod linux;
 
 use crate::{Error, Result};

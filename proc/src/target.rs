@@ -11,7 +11,7 @@
 //! [`Proc::grab_pid`] exists only on illumos, where libproc provides it.
 
 use crate::coredump::{self, Flavour};
-use crate::{Error, LoadedObject, LwpInfo, Mappings, Regs, Result, Status, SymbolBuf, Target};
+use crate::{LoadedObject, LwpInfo, Mappings, Regs, Result, Status, SymbolBuf, Target};
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +22,10 @@ pub enum Proc {
     Libproc(crate::illumos::Proc),
     /// A Linux core, read from the file.
     LinuxCore(coredump::linux::Core),
+    /// An illumos core, read from the file. Only reached off illumos;
+    /// there libproc knows more about one than this reader does.
+    #[cfg(not(target_os = "illumos"))]
+    IllumosCore(coredump::illumos::Core),
 }
 
 impl Proc {
@@ -32,10 +36,7 @@ impl Proc {
             #[cfg(target_os = "illumos")]
             Flavour::Illumos => Ok(Proc::Libproc(crate::illumos::Proc::open_core(path)?)),
             #[cfg(not(target_os = "illumos"))]
-            Flavour::Illumos => Err(Error::bad_core(
-                "this is an illumos core; reading one away from illumos is not \
-                 implemented yet",
-            )),
+            Flavour::Illumos => Ok(Proc::IllumosCore(coredump::illumos::Core::open(path)?)),
         }
     }
 
@@ -45,6 +46,8 @@ impl Proc {
             #[cfg(target_os = "illumos")]
             Proc::Libproc(_) => Flavour::Illumos,
             Proc::LinuxCore(_) => Flavour::Linux,
+            #[cfg(not(target_os = "illumos"))]
+            Proc::IllumosCore(_) => Flavour::Illumos,
         }
     }
 }
@@ -56,6 +59,8 @@ macro_rules! dispatch {
             #[cfg(target_os = "illumos")]
             Proc::Libproc(p) => p.$method($($arg),*),
             Proc::LinuxCore(c) => c.$method($($arg),*),
+            #[cfg(not(target_os = "illumos"))]
+            Proc::IllumosCore(c) => c.$method($($arg),*),
         }
     };
 }
@@ -151,28 +156,28 @@ impl Proc {
     pub fn run(&self) -> Result<()> {
         match self {
             Proc::Libproc(p) => p.run(),
-            _ => Err(Error::not_a_live_process()),
+            _ => Err(crate::Error::not_a_live_process()),
         }
     }
 
     pub fn stop(&self, wait_ms: u32) -> Result<()> {
         match self {
             Proc::Libproc(p) => p.stop(wait_ms),
-            _ => Err(Error::not_a_live_process()),
+            _ => Err(crate::Error::not_a_live_process()),
         }
     }
 
     pub fn lwp_handle(&self, lwpid: u32) -> Result<crate::illumos::Lwp> {
         match self {
             Proc::Libproc(p) => p.lwp_handle(lwpid),
-            _ => Err(Error::not_a_live_process()),
+            _ => Err(crate::Error::not_a_live_process()),
         }
     }
 
     pub fn lwp_name(&self, lwpid: u32) -> Result<String> {
         match self {
             Proc::Libproc(p) => p.lwp_name(lwpid),
-            _ => Err(Error::no_lwp_name()),
+            _ => Err(crate::Error::no_lwp_name()),
         }
     }
 
@@ -195,6 +200,8 @@ impl std::fmt::Debug for Proc {
             #[cfg(target_os = "illumos")]
             Proc::Libproc(p) => p.fmt(f),
             Proc::LinuxCore(c) => c.fmt(f),
+            #[cfg(not(target_os = "illumos"))]
+            Proc::IllumosCore(c) => c.fmt(f),
         }
     }
 }
