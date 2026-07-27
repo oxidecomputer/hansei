@@ -26,11 +26,22 @@ use crate::{
     SymbolBuf, Target, Timespec,
 };
 
+use goblin::container::{Container, Ctx};
 use goblin::elf::Elf;
-use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_LOAD, PT_NOTE};
+use goblin::elf::dynamic::dyn64::{Dyn, SIZEOF_DYN};
+use goblin::elf::dynamic::{DT_DEBUG, DT_NULL};
+use goblin::elf::header::ET_EXEC;
+use goblin::elf::header::header64::{Header, SIZEOF_EHDR};
+use goblin::elf::program_header::program_header64::SIZEOF_PHDR;
+use goblin::elf::program_header::{
+    PF_R, PF_W, PF_X, PT_DYNAMIC, PT_LOAD, PT_NOTE, PT_PHDR, ProgramHeader,
+};
 use goblin::elf::section_header::SHT_SYMTAB;
-use goblin::elf::sym::{STT_FUNC, STT_OBJECT, STT_TLS};
+use goblin::elf::sym::sym64::SIZEOF_SYM;
+use goblin::elf::sym::{STB_LOCAL, STB_WEAK, STT_FUNC, STT_OBJECT, STT_TLS, Sym, st_bind, st_type};
+use goblin::strtab::Strtab;
 use memmap2::Mmap;
+use scroll::Pread;
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -39,6 +50,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 /// Note types from `<sys/procfs.h>`.
+const NT_AUXV: u32 = 6;
 const NT_PSINFO: u32 = 13;
 const NT_LWPSTATUS: u32 = 16;
 const NT_LWPNAME: u32 = 25;
@@ -108,6 +120,32 @@ const REG_GSBASE: usize = 27;
 /// illumos writes note padding to four bytes, as Linux does.
 const NOTE_ALIGN: usize = 4;
 
+/// Auxiliary-vector tags, from `<sys/auxv.h>`. Together these say where
+/// the executable's program headers are, which is the thread to pull on
+/// to reach everything else the runtime linker knows.
+const AT_PHDR: u64 = 3;
+const AT_PHENT: u64 = 4;
+const AT_PHNUM: u64 = 5;
+
+/// `r_debug` and `Link_map` from `<sys/link.h>`, whose offsets the
+/// `libproc-sys` bindings assert.
+const R_DEBUG_R_MAP: u64 = 8;
+/// The runtime linker keeps itself off the list it publishes, on a
+/// second one of its own; without walking that too, `ld.so.1` is the one
+/// mapped object left unnamed.
+const R_DEBUG_R_LDSOMAP: u64 = 40;
+const LINK_MAP_L_ADDR: u64 = 0;
+const LINK_MAP_L_NAME: u64 = 8;
+const LINK_MAP_L_NEXT: u64 = 24;
+
+/// A mapped object is not going to have more than this many entries in
+/// its program header table, nor a process this many objects loaded. A
+/// core whose memory says otherwise is corrupt, and walking it forever
+/// is not the way to find that out.
+const MAX_PHDRS: u64 = 128;
+const MAX_OBJECTS: usize = 512;
+const MAX_PATH: u64 = 1024;
+
 impl Regs {
     /// Decode a `gregset_t`. Every field of [`Regs`] is one of these —
     /// the struct was modelled on this register set — so unlike the
@@ -164,6 +202,54 @@ impl Segment {
     fn range(&self) -> Range<u64> {
         self.vaddr..self.vaddr + self.memsz
     }
+}
+
+/// An illumos core is ELF64 and little-endian, which is what the ELF
+/// structures read out of its memory have to be decoded as.
+fn elf_ctx() -> Ctx {
+    Ctx::new(Container::Big, scroll::Endian::Little)
+}
+
+/// The path the link map records, resolved where that means anything.
+///
+/// The runtime linker keeps the path it opened the object by, which on
+/// illumos is routinely a symlink — `/lib/64` for `/lib/amd64`.
+/// `Pmapping_iter_resolved` earns its name by resolving that against the
+/// filesystem, so on illumos this does too and the two agree.
+///
+/// Anywhere else the filesystem to hand is not the one the core came
+/// from, and asking it would at best answer nothing and at worst answer
+/// about a different file that happens to share a path. The recorded
+/// path is what the core actually says, so elsewhere it stands.
+#[cfg(target_os = "illumos")]
+fn resolve_path(name: String) -> String {
+    std::fs::canonicalize(&name)
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or(name)
+}
+
+#[cfg(not(target_os = "illumos"))]
+fn resolve_path(name: String) -> String {
+    name
+}
+
+/// The addresses a set of program headers covers, once biased.
+///
+/// The arithmetic is checked because the headers came out of a core's
+/// memory rather than off disk: a damaged one can hold anything, and an
+/// address that wrapped would name a range the object does not occupy
+/// and take mappings away from the object that does.
+fn span_of(phdrs: &[ProgramHeader], bias: u64) -> Option<Range<u64>> {
+    let mut start = u64::MAX;
+    let mut end = 0u64;
+    for ph in phdrs.iter().filter(|ph| ph.p_type == PT_LOAD) {
+        let lo = ph.p_vaddr.checked_add(bias)?;
+        let hi = lo.checked_add(ph.p_memsz)?;
+        start = start.min(lo);
+        end = end.max(hi);
+    }
+    (start < end).then_some(start..end)
 }
 
 /// The symbols of one mapped object, taken from the core's own section
@@ -233,6 +319,7 @@ impl Core {
         let mut lwps = Vec::new();
         let mut ustacks = Vec::new();
         let mut lwp_names = BTreeMap::new();
+        let mut auxv = BTreeMap::new();
         let mut exec = None;
         for ph in elf.program_headers.iter().filter(|ph| ph.p_type == PT_NOTE) {
             let start = ph.p_offset as usize;
@@ -245,6 +332,7 @@ impl Core {
                 &mut lwps,
                 &mut ustacks,
                 &mut lwp_names,
+                &mut auxv,
                 &mut exec,
             )?;
         }
@@ -257,7 +345,6 @@ impl Core {
         let (lwps, ustacks): (Vec<_>, Vec<_>) = paired.into_iter().unzip();
 
         let symbols = parse_symbols(&elf, &core);
-        let mappings = build_mappings(&segments);
 
         let mut core_file = Core {
             core,
@@ -265,21 +352,35 @@ impl Core {
             lwps,
             lwp_names,
             ustacks,
-            mappings,
+            mappings: Mappings { inner: Vec::new() },
             exec,
             symbols,
             exec_base: None,
         };
-        core_file.exec_base = core_file.find_exec_base();
         core_file.fill_stack_ranges();
+
+        // The link map lives in the target's memory, so it can only be
+        // walked once the segments are readable.
+        let objects = core_file.link_map_objects(&auxv);
+        core_file.mappings = build_mappings(&core_file.segments, &objects);
+        core_file.exec_base = core_file.find_exec_base(&objects);
         Ok(core_file)
     }
 
-    /// The executable's object, which is the one loaded lowest: illumos
-    /// maps it below every shared object, at 0x400000 for a
-    /// position-dependent binary and low anyway for a PIE.
-    fn find_exec_base(&self) -> Option<u64> {
-        self.symbols.keys().next().copied()
+    /// Which of the core's symbol tables is the executable's: the one
+    /// whose object the link map names with the path the process was
+    /// started from. Failing that — a core with no link map to walk —
+    /// the lowest, since illumos maps the executable below every shared
+    /// object.
+    fn find_exec_base(&self, objects: &[(Range<u64>, String)]) -> Option<u64> {
+        let named = self.exec.as_ref().and_then(|exec| {
+            let (range, _) = objects.iter().find(|(_, name)| name == exec)?;
+            self.symbols
+                .keys()
+                .find(|base| range.contains(base))
+                .copied()
+        });
+        named.or_else(|| self.symbols.keys().next().copied())
     }
 
     /// Each thread's stack comes from the `stack_t` it was given, read
@@ -308,6 +409,150 @@ impl Core {
         for (lwp, range) in self.lwps.iter_mut().zip(ranges) {
             lwp.stack_range = range;
         }
+    }
+
+    /// Every object the runtime linker had loaded, and where.
+    ///
+    /// An illumos core has no equivalent of Linux's `NT_FILE`, so the
+    /// names of the mapped objects are not written down anywhere in it.
+    /// They are still *in* it, in the target's own memory: the auxiliary
+    /// vector says where the executable's program headers are, its
+    /// `PT_DYNAMIC` holds a `DT_DEBUG` pointing at the linker's
+    /// `r_debug`, and that heads a list of `Link_map` entries naming
+    /// every object and the address it was loaded at. This is the walk
+    /// libproc does, done here over the core's memory.
+    ///
+    /// Everything about it is best-effort. A core dumped without text
+    /// has no ELF headers to read, and one truncated before the link map
+    /// has nothing to walk; either way the objects come back unnamed
+    /// rather than wrong.
+    fn link_map_objects(&self, auxv: &BTreeMap<u64, u64>) -> Vec<(Range<u64>, String)> {
+        let Some(r_debug) = self.r_debug(auxv) else {
+            return Vec::new();
+        };
+
+        let mut objects = Vec::new();
+        for head in [R_DEBUG_R_MAP, R_DEBUG_R_LDSOMAP] {
+            let Ok(head) = self.read_u64(r_debug + head) else {
+                continue;
+            };
+            self.walk_link_map(head, &mut objects);
+        }
+        objects
+    }
+
+    fn walk_link_map(&self, head: u64, objects: &mut Vec<(Range<u64>, String)>) {
+        let mut entry = head;
+        let mut seen = 0;
+        while entry != 0 && seen < MAX_OBJECTS {
+            seen += 1;
+            let (Ok(l_addr), Ok(name_ptr), Ok(next)) = (
+                self.read_u64(entry + LINK_MAP_L_ADDR),
+                self.read_u64(entry + LINK_MAP_L_NAME),
+                self.read_u64(entry + LINK_MAP_L_NEXT),
+            ) else {
+                return;
+            };
+
+            let span = self.object_span(l_addr);
+            let name = self
+                .read_cstr(name_ptr)
+                .filter(|n| !n.is_empty())
+                .map(resolve_path);
+            if let (Some(span), Some(name)) = (span, name) {
+                objects.push((span, name));
+            }
+            entry = next;
+        }
+    }
+
+    /// The runtime linker's `r_debug`, reached through the executable's
+    /// `PT_DYNAMIC` and the `DT_DEBUG` entry in it. The auxiliary
+    /// vector says where the program headers are; they say where the
+    /// dynamic section is.
+    ///
+    /// `None` for a statically linked executable, which has neither a
+    /// dynamic section nor a link map.
+    fn r_debug(&self, auxv: &BTreeMap<u64, u64>) -> Option<u64> {
+        let at_phdr = *auxv.get(&AT_PHDR)?;
+        let phent = *auxv.get(&AT_PHENT)? as u16;
+        let phnum = *auxv.get(&AT_PHNUM)? as u16;
+        let phdrs = self.read_phdrs(at_phdr, phent, phnum)?;
+
+        // The table describes where it is itself, so comparing that to
+        // where it turned out to be gives the bias — zero for a
+        // position-dependent executable, its base for a PIE.
+        let bias = phdrs
+            .iter()
+            .find(|p| p.p_type == PT_PHDR)
+            .map_or(0, |p| at_phdr.wrapping_sub(p.p_vaddr));
+
+        let mut at = phdrs
+            .iter()
+            .find(|p| p.p_type == PT_DYNAMIC)
+            .map(|p| p.p_vaddr.wrapping_add(bias))?;
+        // `DT_DEBUG` is where the runtime linker leaves the address of
+        // its `r_debug`, which is how a debugger finds what is loaded.
+        loop {
+            let bytes = self.read_bytes(at, SIZEOF_DYN as u64).ok()?;
+            let entry: Dyn = bytes.pread_with(0, scroll::Endian::Little).ok()?;
+            match entry.d_tag {
+                DT_NULL => return None,
+                DT_DEBUG if entry.d_val != 0 => return Some(entry.d_val),
+                _ => at = at.checked_add(SIZEOF_DYN as u64)?,
+            }
+        }
+    }
+
+    /// The addresses one mapped object occupies, from the program
+    /// headers of the ELF image at `base`.
+    fn object_span(&self, base: u64) -> Option<Range<u64>> {
+        let header = self.read_bytes(base, SIZEOF_EHDR as u64).ok()?;
+        let header = Header::parse(&header).ok()?;
+
+        // An executable's program headers carry absolute addresses, so
+        // where it was mapped is not a bias to add to them; a shared
+        // object's are offsets from wherever it landed, so it is.
+        let bias = match header.e_type {
+            ET_EXEC => 0,
+            _ => base,
+        };
+
+        let at = base.checked_add(header.e_phoff)?;
+        let phdrs = self.read_phdrs(at, header.e_phentsize, header.e_phnum)?;
+        span_of(&phdrs, bias)
+    }
+
+    fn read_phdrs(&self, at: u64, phent: u16, phnum: u16) -> Option<Vec<ProgramHeader>> {
+        let phent = u64::from(phent);
+        let phnum = u64::from(phnum).min(MAX_PHDRS);
+        if phent < SIZEOF_PHDR as u64 || phnum == 0 {
+            return None;
+        }
+        // Read each header where its own table says it is, since
+        // `e_phentsize` is free to be larger than the structure.
+        let bytes: Vec<u8> = (0..phnum)
+            .map(|i| {
+                self.read_bytes(at.checked_add(i * phent)?, SIZEOF_PHDR as u64)
+                    .ok()
+            })
+            .collect::<Option<Vec<_>>>()?
+            .concat();
+        ProgramHeader::parse(&bytes, 0, phnum as usize, elf_ctx()).ok()
+    }
+
+    fn read_cstr(&self, at: u64) -> Option<String> {
+        if at == 0 {
+            return None;
+        }
+        let mut out = Vec::new();
+        for i in 0..MAX_PATH {
+            match self.read_u8(at + i).ok()? {
+                0 => return String::from_utf8(out).ok(),
+                b => out.push(b),
+            }
+        }
+        None
     }
 
     fn stack_from_ustack(&self, ustack: u64) -> Option<Range<u64>> {
@@ -502,20 +747,28 @@ impl Core {
     }
 }
 
-/// `PT_LOAD` is the whole of an illumos core's mapping table: unlike
-/// Linux there is no note naming the files behind them, and the names
-/// libproc reports come from walking the link map in the target's own
-/// memory. Until that is done here, a mapping is a range and its
-/// permissions.
-fn build_mappings(segments: &[Segment]) -> Mappings {
+/// The `PT_LOAD` regions, each named by whichever loaded object covers
+/// it. A region no object covers — a stack, the heap, an anonymous
+/// mapping — has no name to give, and says so.
+fn build_mappings(segments: &[Segment], objects: &[(Range<u64>, String)]) -> Mappings {
     Mappings {
         inner: segments
             .iter()
-            .map(|seg| LoadedObjectWithPath {
-                path: None,
-                vaddr: seg.vaddr,
-                size: seg.memsz,
-                flags: MapFlags(seg.flags & (PF_R | PF_W | PF_X)),
+            .map(|seg| {
+                let path = objects
+                    .iter()
+                    .find(|(range, _)| range.contains(&seg.vaddr))
+                    .map(|(_, name)| name.clone());
+                let mut flags = seg.flags & (PF_R | PF_W | PF_X);
+                if path.is_none() {
+                    flags |= 0x40; // MA_ANON
+                }
+                LoadedObjectWithPath {
+                    path,
+                    vaddr: seg.vaddr,
+                    size: seg.memsz,
+                    flags: MapFlags(flags),
+                }
             })
             .collect(),
     }
@@ -546,33 +799,42 @@ fn parse_symbols(elf: &Elf<'_>, bytes: &[u8]) -> BTreeMap<u64, Symbols> {
             continue;
         };
 
+        let count = syms.len() / SIZEOF_SYM;
+        let Ok(entries) = Sym::parse(syms, 0, count, elf_ctx()) else {
+            continue;
+        };
+        // `parse`, not `new`: the latter leaves the table unindexed
+        // and every lookup in it comes back empty.
+        let Ok(strs) = Strtab::parse(strs, 0, strs.len(), 0) else {
+            continue;
+        };
+
         // `sh_addr` is where the object was loaded, but whether its
         // symbols already account for that depends on what kind of
         // object it is: an executable's are absolute, a shared object's
         // are offsets from its base. Nothing in the core says which,
         // and the values themselves do — a table whose lowest symbol is
         // below the address the object was loaded at is one of offsets.
-        let bias = syms
-            .chunks_exact(24)
-            .map(|e| u64::from_le_bytes(e[8..16].try_into().unwrap()))
+        let bias = entries
+            .iter()
+            .map(|s| s.st_value)
             .filter(|v| *v != 0)
             .min()
             .filter(|lowest| *lowest < sh.sh_addr)
             .map_or(0, |_| sh.sh_addr);
 
         let object = out.entry(sh.sh_addr).or_default();
-        for entry in syms.chunks_exact(24) {
-            let st_name = u32::from_le_bytes(entry[0..4].try_into().unwrap()) as usize;
-            let st_info = entry[4];
-            let st_other = entry[5];
-            let st_shndx = u16::from_le_bytes(entry[6..8].try_into().unwrap()) as usize;
-            let st_value = u64::from_le_bytes(entry[8..16].try_into().unwrap());
-            let st_size = u64::from_le_bytes(entry[16..24].try_into().unwrap());
+        for entry in entries {
+            let Sym {
+                st_name,
+                st_info,
+                st_other,
+                st_shndx,
+                st_value,
+                st_size,
+            } = entry;
 
-            let Some(name) = strs.get(st_name..).and_then(|rest| {
-                let end = rest.iter().position(|b| *b == 0)?;
-                std::str::from_utf8(&rest[..end]).ok()
-            }) else {
+            let Some(name) = strs.get_at(st_name) else {
                 continue;
             };
             if name.is_empty() || st_value == 0 {
@@ -584,8 +846,7 @@ fn parse_symbols(elf: &Elf<'_>, bytes: &[u8]) -> BTreeMap<u64, Symbols> {
             // has to draw the line in the same place. Weak entries here
             // are aliases and undefined references — `_mcount`,
             // `pthread_setname_np` — that name nothing in this object.
-            const STB_WEAK: u8 = 2;
-            if st_info >> 4 == STB_WEAK {
+            if st_bind(st_info) == STB_WEAK {
                 continue;
             }
 
@@ -598,14 +859,14 @@ fn parse_symbols(elf: &Elf<'_>, bytes: &[u8]) -> BTreeMap<u64, Symbols> {
                 // A thread-local's value is an offset into a TLS block
                 // whichever kind of object it came from, so the bias
                 // must not touch it.
-                st_value: if st_info & 0xf == STT_TLS {
+                st_value: if st_type(st_info) == STT_TLS {
                     st_value
                 } else {
                     st_value.wrapping_add(bias)
                 },
                 st_size,
             };
-            match st_info & 0xf {
+            match st_type(st_info) {
                 STT_FUNC => object.functions.push(sym),
                 STT_OBJECT | STT_TLS => object.objects.push(sym),
                 _ => {}
@@ -634,14 +895,12 @@ fn parse_symbols(elf: &Elf<'_>, bytes: &[u8]) -> BTreeMap<u64, Symbols> {
 /// what is left of the names after their common underscores. A lookup
 /// takes the first of a tied run, which is the one libproc names.
 fn libproc_order(a: &SymbolBuf, b: &SymbolBuf) -> Ordering {
-    const STB_LOCAL: u8 = 0;
-
     if a.st_value != b.st_value {
         return a.st_value.cmp(&b.st_value);
     }
 
     // Prefer the function to the non-function.
-    let (a_type, b_type) = (a.st_info & 0xf, b.st_info & 0xf);
+    let (a_type, b_type) = (st_type(a.st_info), st_type(b.st_info));
     if a_type != b_type {
         if a_type == STT_FUNC {
             return Ordering::Less;
@@ -652,7 +911,7 @@ fn libproc_order(a: &SymbolBuf, b: &SymbolBuf) -> Ordering {
     }
 
     // Prefer the weak or strong global symbol to the local symbol.
-    let (a_bind, b_bind) = (a.st_info >> 4, b.st_info >> 4);
+    let (a_bind, b_bind) = (st_bind(a.st_info), st_bind(b.st_info));
     if a_bind != b_bind {
         if b_bind == STB_LOCAL {
             return Ordering::Less;
@@ -694,6 +953,7 @@ fn parse_notes(
     lwps: &mut Vec<LwpInfo>,
     ustacks: &mut Vec<u64>,
     names: &mut BTreeMap<u32, String>,
+    auxv: &mut BTreeMap<u64, u64>,
     exec: &mut Option<String>,
 ) -> Result<()> {
     let mut pos = 0usize;
@@ -727,6 +987,16 @@ fn parse_notes(
             }
             NT_PSINFO if descsz >= PSINFO_LEN && exec.is_none() => {
                 *exec = parse_psinfo_exec(desc);
+            }
+            NT_AUXV => {
+                for pair in desc.chunks_exact(16) {
+                    let tag = u64::from_le_bytes(pair[0..8].try_into().unwrap());
+                    let val = u64::from_le_bytes(pair[8..16].try_into().unwrap());
+                    if tag == 0 {
+                        break;
+                    }
+                    auxv.insert(tag, val);
+                }
             }
             _ => {}
         }

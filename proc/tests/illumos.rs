@@ -297,14 +297,20 @@ fn test_the_portable_reader_agrees_with_libproc() {
         );
     }
 
-    // Mappings: the ranges agree even though only libproc can name the
-    // objects behind them, which needs the link map the core does not
-    // carry and this reader does not yet walk.
-    let ranges = |m: &proc::Mappings| m.iter().map(|o| o.range()).collect::<Vec<_>>();
-    assert_eq!(
-        ranges(&portable.mappings().unwrap()),
-        ranges(&libproc.mappings().unwrap())
+    // Mappings, names included. An illumos core writes down no such
+    // names, so both readers arrive at them by walking the runtime
+    // linker's list in the target's memory.
+    let named = |m: &proc::Mappings| {
+        m.iter()
+            .map(|o| (o.range(), o.path.clone()))
+            .collect::<Vec<_>>()
+    };
+    let want_maps = named(&libproc.mappings().unwrap());
+    assert!(
+        want_maps.iter().filter(|(_, p)| p.is_some()).count() >= 3,
+        "libproc named too little for this to be a test: {want_maps:#?}"
     );
+    assert_eq!(named(&portable.mappings().unwrap()), want_maps);
 }
 
 /// Compare two symbol tables and say how they differ, rather than
