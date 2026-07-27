@@ -15,6 +15,8 @@ pub mod linux;
 
 use crate::{Error, Result};
 
+use goblin::elf::note::{NT_FILE, NT_PRSTATUS};
+
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -29,7 +31,8 @@ pub enum Flavour {
     Illumos,
 }
 
-/// Notes only one of the two systems writes.
+/// The notes only illumos writes. Linux's side of the question is
+/// `NT_FILE`, its mapped-file table, which goblin names for us.
 ///
 /// The shared SVR4 heritage is no help — both write `NT_PRSTATUS` (1),
 /// `NT_PRPSINFO` (3) and `NT_AUXV` (6), and both leave `EI_OSABI` at
@@ -59,18 +62,13 @@ mod note {
     pub const LWPSTATUS: u32 = 16;
     pub const LWPSINFO: u32 = 17;
 
-    /// Linux, from `<elf.h>`: the mapped-file table, spelled "FILE" in
-    /// ASCII. illumos has no equivalent and no note of this number.
-    pub const FILE: u32 = 0x4649_4c45;
-
     /// Linux puts its architecture notes under this owner rather than
     /// `CORE`; illumos writes only `CORE`.
     pub const LINUX_OWNER: &str = "LINUX";
 }
 
 /// `struct elf_prstatus` as Linux writes it for x86-64, and `prstatus_t`
-/// as illumos does. Only a fallback — see [`flavour_from_notes`].
-const NT_PRSTATUS: u32 = 1;
+/// as illumos does. Only a fallback — see [`flavour_of`].
 const LINUX_PRSTATUS_LEN: usize = 336;
 const ILLUMOS_PRSTATUS_LEN: usize = 824;
 
@@ -109,7 +107,7 @@ pub(crate) fn flavour_of(bytes: &[u8]) -> Result<Flavour> {
             note::PSTATUS | note::PSINFO | note::LWPSTATUS | note::LWPSINFO => {
                 return Ok(Flavour::Illumos);
             }
-            note::FILE => return Ok(Flavour::Linux),
+            NT_FILE => return Ok(Flavour::Linux),
             NT_PRSTATUS if fallback.is_none() => {
                 fallback = match note.desc.len() {
                     LINUX_PRSTATUS_LEN => Some(Flavour::Linux),
