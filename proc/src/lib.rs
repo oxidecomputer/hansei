@@ -252,10 +252,8 @@ pub trait Target {
 /// A zero slot means this thread never set the key, which is ordinary —
 /// most LWPs in a tokio process are not runtime workers.
 ///
-/// Only [`Proc`] calls this, but the unit tests drive it over a fake
-/// target on every platform: the offsets and the decode are pinned
-/// nowhere else.
-#[cfg(any(target_os = "illumos", test))]
+/// Both illumos backends use it — libproc's and the core reader's — so
+/// it is built everywhere the latter is, which is everywhere.
 pub(crate) fn tls_addr_from_pthread_key<T: Target + ?Sized>(
     target: &T,
     regs: &Regs,
@@ -280,7 +278,6 @@ pub(crate) fn tls_addr_from_pthread_key<T: Target + ?Sized>(
 /// obviously not reliable, but it's been ten years since the last
 /// time `ulwp_t` changed format, so we can probably get away with this
 /// hack for a while.
-#[cfg(any(target_os = "illumos", test))]
 pub(crate) fn tsd_from_fsbase<T: Target + ?Sized>(target: &T, regs: &Regs) -> Result<[u64; 9]> {
     const UL_FTSD_OFFSET: u64 = 320;
     const UL_FTSD_LEN: usize = 9;
