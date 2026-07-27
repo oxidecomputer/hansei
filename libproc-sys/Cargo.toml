@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 
-[build-dependencies]
+[target.'cfg(target_os = "illumos")'.build-dependencies]
 bindgen = { version = "0.72", default-features = false }
