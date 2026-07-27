@@ -2,7 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Stack unwinding for core dumps using DWARF `.eh_frame` CFI.
+//! Stack unwinding for a target using DWARF `.eh_frame` CFI.
+//!
+//! Everything here reads through [`proc::Target`], so a backtrace comes
+//! out of a live process, a core dump or a snapshot alike. What it needs
+//! from the target is the unwind information of whichever object the
+//! program counter is in, which means every mapped object that carries
+//! any — not just the executable and libc, since a thread parked in the
+//! kernel has libc frames below it and the loader and libgcc turn up in
+//! their own right.
 
 use anyhow::{Context as _, Result};
 use gimli::{
@@ -12,7 +20,7 @@ use gimli::{
 use goblin::elf::Elf;
 use goblin::elf::header::{EI_CLASS, ELFCLASS64};
 use goblin::elf::program_header::PT_LOAD;
-use proc::{Proc, Reg, Regs, SymbolBuf, x86_64::*};
+use proc::{Mappings, Reg, Regs, SymbolBuf, Target, x86_64::*};
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -20,7 +28,11 @@ use std::ops::Range;
 type Endian = LittleEndian;
 type Slice<'a> = EndianSlice<'a, Endian>;
 
+/// The segment holding `.eh_frame_hdr`, under each platform's name for
+/// it. The two are different values, and an object carries one or the
+/// other, so both are accepted rather than chosen between.
 const PT_SUNW_UNWIND: u32 = 0x6464e550;
+const PT_GNU_EH_FRAME: u32 = 0x6474e550;
 
 // TODO - does this actually matter?
 const _: () = assert!(usize::BITS == 64, "host system must be 64-bit");
@@ -62,45 +74,102 @@ pub struct Frame {
     pub symbol: Option<SymbolBuf>,
 }
 
-pub fn load_frames(core: &Proc) -> Result<BTreeMap<u32, Backtrace>> {
-    let addrs = AddrRanges::parse(core).context("could not parse address mappings")?;
+pub fn load_frames<T: Target>(target: &T) -> Result<BTreeMap<u32, Backtrace>> {
+    let mappings = target
+        .mappings()
+        .context("failed to retrieve memory mappings from the target")?;
+    let images = load_images(target, &mappings);
+    let objects: Vec<ObjectInfo<'_>> = images
+        .iter()
+        .filter_map(|image| ObjectInfo::parse(&image.bytes, image.range.clone()).ok())
+        .collect();
+    anyhow::ensure!(
+        !objects.is_empty(),
+        "no mapped object in the target carries unwind information"
+    );
 
-    let exec_bytes = load_object(&addrs.exec_text, core).context("failed to load executable")?;
-    let exec = ObjectInfo::parse(&exec_bytes, addrs.exec_text.start)
-        .context("could not parse object info for executable")?;
-
-    let libc_bytes = load_object(&addrs.libc_text, core).context("failed to load libc")?;
-    let libc = ObjectInfo::parse(&libc_bytes, addrs.libc_text.start)
-        .context("could not parse object info for libc")?;
+    let unwinder = Unwinder {
+        target,
+        objects: &objects,
+        mappings: &mappings,
+    };
 
     let mut frame_map = BTreeMap::new();
-    let lwps = core.lwps()?;
-    for lwp in lwps {
-        let initial_regs = core
-            .regs(lwp.tid)
-            .context("failed to get thread registers")?;
-
-        let unwinder = Unwinder {
-            core,
-            exec: &exec,
-            libc: &libc,
-        };
+    for lwp in target.lwps()? {
         let frames = unwinder
-            .unwind_stack(&initial_regs, &mut UnwindContext::new(), 64)
+            .unwind_stack(&lwp.regs, &mut UnwindContext::new(), 64)
             .with_context(|| format!("failed to unwind stack for tid {}", lwp.tid))?;
         frame_map.insert(lwp.tid, Backtrace::new(frames));
     }
     Ok(frame_map)
 }
 
-#[derive(Debug)]
-struct Unwinder<'a> {
-    core: &'a Proc,
-    exec: &'a ObjectInfo<'a>,
-    libc: &'a ObjectInfo<'a>,
+/// The mapped image of every file-backed object in the target, read
+/// through the target so that it works the same whether the bytes are
+/// in a core, in a live process, or on disk behind it.
+///
+/// An object's mappings are read one at a time and laid out at their
+/// own offsets, leaving anything unreadable — an alignment gap between
+/// two segments, say — zeroed rather than failing the whole object.
+fn load_images<T: Target>(target: &T, mappings: &Mappings) -> Vec<Image> {
+    let mut paths: Vec<&str> = mappings.iter().filter_map(|m| m.path.as_deref()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+
+    let mut images = Vec::new();
+    for path in paths {
+        let parts: Vec<_> = mappings
+            .iter()
+            .filter(|m| m.path.as_deref() == Some(path))
+            .collect();
+        let (Some(base), Some(end)) = (
+            parts.iter().map(|m| m.vaddr).min(),
+            parts.iter().map(|m| m.range().end).max(),
+        ) else {
+            continue;
+        };
+        let Ok(len) = usize::try_from(end - base) else {
+            continue;
+        };
+
+        let mut bytes = vec![0u8; len];
+        let mut any = false;
+        for part in parts {
+            let Ok(chunk) = target.read_bytes(part.vaddr, part.size) else {
+                continue;
+            };
+            let at = (part.vaddr - base) as usize;
+            bytes[at..at + chunk.len()].copy_from_slice(&chunk);
+            any = true;
+        }
+        if any {
+            images.push(Image {
+                range: base..end,
+                bytes,
+            });
+        }
+    }
+    images
 }
 
-impl<'a> Unwinder<'a> {
+/// One object's mapped image, at the addresses it occupies.
+struct Image {
+    range: Range<u64>,
+    bytes: Vec<u8>,
+}
+
+struct Unwinder<'a, T> {
+    target: &'a T,
+    objects: &'a [ObjectInfo<'a>],
+    mappings: &'a Mappings,
+}
+
+impl<T: Target> Unwinder<'_, T> {
+    /// The object holding `pc`, if it is in one that carries unwind
+    /// information.
+    fn object_at(&self, pc: u64) -> Option<&ObjectInfo<'_>> {
+        self.objects.iter().find(|o| o.range.contains(&pc))
+    }
     fn unwind_stack(
         &self,
         initial_regs: &Regs,
@@ -114,39 +183,31 @@ impl<'a> Unwinder<'a> {
         let initial_frame = Frame {
             pc: regs.rip,
             regs: regs.clone(),
-            symbol: self.core.lookup_symbol_by_addr(regs.rip),
+            symbol: self.target.lookup_symbol_by_addr(regs.rip),
         };
         frames.push(initial_frame);
 
         for _ in 0..max_frames {
-            // Below minimum range of binary in address space.
-            if regs.rip < self.exec.map_addr {
+            // Out of the address space entirely: there is nothing below.
+            if !self.mappings.contains_addr(regs.rip) {
                 break;
             }
-
-            let mapping = match self.core.addr_to_map(pc) {
-                Some(l) => l,
-                None => {
-                    pc -= size_of::<u64>() as u64;
-                    self.core
-                        .addr_to_map(pc)
-                        .with_context(|| format!("no mapping found for PC {pc:#x}"))?
+            if !self.mappings.contains_addr(pc) {
+                pc -= size_of::<u64>() as u64;
+                if !self.mappings.contains_addr(pc) {
+                    break;
                 }
-            };
-            let object = if mapping.vaddr == self.exec.map_addr {
-                &self.exec
-            } else if mapping.vaddr == self.libc.map_addr {
-                &self.libc
-            } else {
-                // We only expect the executable and libc, all other mappings are unhandled.
-                //anyhow::bail!("unanticipated mapping at addr {pc:#x} - {mapping:?}")
-                &self.exec //TODO
-            };
+            }
 
             // PC will point to directly after function generally, or outside the function
             // entirely for functions without an epilogue. Adjust it to point to the
             // function.
             pc -= 1;
+
+            // No object with unwind information covers this pc — the
+            // vDSO, or a mapping whose file has gone. The frame pointer
+            // is all that is left to walk.
+            let object = self.object_at(pc);
 
             let Some(prev_frame) = self.unwind_frame_with_cfi(pc, &regs, object, ctx)? else {
                 break;
@@ -178,18 +239,50 @@ impl<'a> Unwinder<'a> {
 
         let return_addr_addr = regs.rbp + 8;
         regs.rip = self
-            .core
+            .target
             .read_u64(return_addr_addr)
             .context("failed to read return address")?;
 
         regs.rbp = self
-            .core
+            .target
             .read_u64(regs.rbp)
             .context("failed to read saved RBP")?;
 
         regs.rsp = regs.rbp + 16;
 
         Ok(Some(regs))
+    }
+
+    /// The frame below one no CFI describes, walked with the frame
+    /// pointer. `None` once there is nothing recognisable below.
+    fn pop_frame_without_cfi(&self, regs: &Regs) -> Result<Option<Frame>> {
+        let Some(prev_regs) = self
+            .pop_frame_with_frame_pointer(regs)
+            .context("failed to pop stack of function without FDE")?
+        else {
+            return Ok(None);
+        };
+
+        // Definitely unmapped, no frame to return.
+        if !self.mappings.contains_addr(prev_regs.rip) {
+            return Ok(None);
+        }
+
+        Ok(Some(Frame {
+            pc: prev_regs.rip,
+            symbol: self.symbol_at(prev_regs.rip),
+            regs: prev_regs,
+        }))
+    }
+
+    /// The symbol a return address belongs to. A return address points
+    /// *after* the call, which for a call in tail position can be the
+    /// first byte of the next function; stepping back one finds the
+    /// function that actually made the call.
+    fn symbol_at(&self, addr: u64) -> Option<SymbolBuf> {
+        self.target
+            .lookup_symbol_by_addr(addr)
+            .or_else(|| self.target.lookup_symbol_by_addr(addr - 1))
     }
 
     /// Attempt to pop the frame to the previous function based on .eh_frame unwind info.
@@ -199,9 +292,15 @@ impl<'a> Unwinder<'a> {
         &self,
         pc: u64,
         regs: &Regs,
-        object: &ObjectInfo,
+        object: Option<&ObjectInfo>,
         ctx: &mut UnwindContext<usize>,
     ) -> Result<Option<Frame>> {
+        // Nothing carries unwind information for this pc; the frame
+        // pointer is the only way down.
+        let Some(object) = object else {
+            return self.pop_frame_without_cfi(regs);
+        };
+
         // We confirmed in `parse` that the table is present.
         let table = object.eh_frame_hdr.table().unwrap();
 
@@ -212,29 +311,7 @@ impl<'a> Unwinder<'a> {
             gimli::EhFrame::cie_from_offset,
         ) {
             Ok(fde) => fde,
-            Err(gimli::Error::NoUnwindInfoForAddress) => {
-                let Some(prev_regs) = self
-                    .pop_frame_with_frame_pointer(regs)
-                    .context("failed to pop stack of function without FDE")?
-                else {
-                    return Ok(None);
-                };
-
-                // Definitely unmapped, no frame to return.
-                if prev_regs.rip < self.exec.map_addr {
-                    return Ok(None);
-                }
-
-                let prev_symbol = self
-                    .core
-                    .lookup_symbol_by_addr(prev_regs.rip)
-                    .or_else(|| self.core.lookup_symbol_by_addr(prev_regs.rip - 1));
-                return Ok(Some(Frame {
-                    pc: prev_regs.rip,
-                    regs: prev_regs,
-                    symbol: prev_symbol,
-                }));
-            }
+            Err(gimli::Error::NoUnwindInfoForAddress) => return self.pop_frame_without_cfi(regs),
             Err(e) => {
                 return Err(e.into());
             }
@@ -254,21 +331,20 @@ impl<'a> Unwinder<'a> {
             }
         }
 
-        let prev_pc = self
-            .restore_register(RIP, regs, cfa, row)?
-            .ok_or_else(|| anyhow::anyhow!("Cannot find return address"))?;
+        // An undefined return address is how the CFI says the stack ends
+        // — it is what glibc's thread entry and the program's own
+        // `_start` carry — so this is the bottom, not a failure.
+        let Some(prev_pc) = self.restore_register(RIP, regs, cfa, row)? else {
+            return Ok(None);
+        };
 
         prev_regs.rsp = cfa;
         prev_regs.rip = prev_pc;
 
-        let prev_symbol = self
-            .core
-            .lookup_symbol_by_addr(prev_regs.rip)
-            .or_else(|| self.core.lookup_symbol_by_addr(prev_regs.rip - 1));
         let prev_frame = Frame {
             pc: prev_pc,
+            symbol: self.symbol_at(prev_regs.rip),
             regs: prev_regs,
-            symbol: prev_symbol,
         };
 
         Ok(Some(prev_frame))
@@ -293,7 +369,7 @@ impl<'a> Unwinder<'a> {
             RegisterRule::SameValue => Ok(Some(regs[reg])),
             RegisterRule::Offset(offset) => {
                 let addr = (cfa as i64 + offset) as u64;
-                let val = self.core.read_u64(addr)?;
+                let val = self.target.read_u64(addr)?;
                 Ok(Some(val))
             }
             RegisterRule::Register(other_reg) => Ok(Some(regs[other_reg.into()])),
@@ -342,10 +418,10 @@ impl<'a> Unwinder<'a> {
                         // This happens if the CFA is stored on the stack of the *previous* frame
                         EvaluationResult::RequiresMemory { address, size, .. } => {
                             let val = match size {
-                                8 => self.core.read_u64(address)?,
-                                4 => self.core.read_u32(address)? as u64,
-                                2 => self.core.read_u16(address)? as u64,
-                                1 => self.core.read_u8(address)? as u64,
+                                8 => self.target.read_u64(address)?,
+                                4 => self.target.read_u32(address)? as u64,
+                                2 => self.target.read_u16(address)? as u64,
+                                1 => self.target.read_u8(address)? as u64,
                                 _ => anyhow::bail!("CFA had unexpected read size of {size}"),
                             };
                             result = eval
@@ -407,25 +483,19 @@ impl<'a> Unwinder<'a> {
     }
 }
 
-fn load_object(object_range: &Range<u64>, core: &Proc) -> Result<Vec<u8>> {
-    let object_len = object_range.end - object_range.start;
-    let mut buf = vec![0u8; object_len as usize];
-    core.pread_exact(&mut buf, object_range.start)
-        .context("failed to read libc mapping from core")?;
-
-    Ok(buf)
-}
-
 #[derive(Debug)]
 struct ObjectInfo<'a> {
-    map_addr: u64,
+    /// The addresses this object occupies, which is how the object for
+    /// a program counter is found.
+    range: Range<u64>,
     eh_frame_hdr: ParsedEhFrameHdr<Slice<'a>>,
     eh_frame: EhFrame<Slice<'a>>,
     bases: BaseAddresses,
 }
 
 impl<'a> ObjectInfo<'a> {
-    pub fn parse(bytes: &'a [u8], map_addr: u64) -> Result<Self> {
+    pub fn parse(bytes: &'a [u8], range: Range<u64>) -> Result<Self> {
+        let map_addr = range.start;
         let elf = Elf::parse_with_opts(bytes, &goblin::options::ParseOptions::permissive())
             .context("failed to parse data as ELF")?;
 
@@ -452,8 +522,8 @@ impl<'a> ObjectInfo<'a> {
         let eh_phdr = elf
             .program_headers
             .iter()
-            .find(|ph| ph.p_type == PT_SUNW_UNWIND)
-            .ok_or(anyhow::anyhow!("no PT_SUNW_UNWIND program header"))?;
+            .find(|ph| ph.p_type == PT_SUNW_UNWIND || ph.p_type == PT_GNU_EH_FRAME)
+            .ok_or(anyhow::anyhow!("no unwind-table program header"))?;
 
         let eh_frame_hdr_vaddr = eh_phdr.p_vaddr.wrapping_add(load_bias);
         let mut bases = BaseAddresses::default().set_eh_frame_hdr(eh_frame_hdr_vaddr);
@@ -491,45 +561,10 @@ impl<'a> ObjectInfo<'a> {
         let eh_frame = EhFrame::new(eh_frame_slice, LittleEndian);
 
         Ok(Self {
-            map_addr,
+            range,
             eh_frame_hdr,
             eh_frame,
             bases,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct AddrRanges {
-    exec_text: Range<u64>,
-    libc_text: Range<u64>,
-}
-
-impl AddrRanges {
-    pub fn parse(core: &Proc) -> Result<Self> {
-        let core_mappings = core
-            .mappings()
-            .context("failed to retrieve memory mappings from core")?;
-
-        let Some(exec_text) = core_mappings.first() else {
-            anyhow::bail!("no mappings in core");
-        };
-        if !exec_text.is_text() {
-            anyhow::bail!("first mapping is not .text");
-        }
-
-        let Some(libc_mapping) = core_mappings.iter().find(|o| {
-            o.path
-                .as_ref()
-                .map(|p| p.ends_with("libc.so.1"))
-                .unwrap_or_default()
-        }) else {
-            anyhow::bail!("no .text mapping found for libc");
-        };
-
-        Ok(AddrRanges {
-            exec_text: exec_text.range(),
-            libc_text: libc_mapping.range(),
         })
     }
 }
