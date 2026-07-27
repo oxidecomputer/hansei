@@ -5,11 +5,15 @@ use std::ops::Range;
 
 #[cfg(target_os = "illumos")]
 mod illumos;
+#[cfg(target_os = "linux")]
+mod linux;
 pub mod snapshot;
 #[cfg(test)]
 mod tests;
 #[cfg(target_os = "illumos")]
 pub use illumos::{Lwp, Proc};
+#[cfg(target_os = "linux")]
+pub use linux::Proc;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -21,6 +25,8 @@ pub struct Error {
 
 #[derive(thiserror::Error, Debug)]
 enum ErrorKind {
+    #[error("malformed core file: {0}")]
+    BadCore(&'static str),
     #[error("could not convert path to C string")]
     BadPath(#[from] NulError),
     #[error("failed to grab process: {0}")]
@@ -37,6 +43,10 @@ enum ErrorKind {
     NoLwpName,
     #[error("no nul byte in C string")]
     NoNul(#[from] FromBytesUntilNulError),
+    #[error(
+        "{name} is not a thread-local symbol (ELF type {ty}), so it names no per-thread storage"
+    )]
+    NotThreadLocal { name: String, ty: u8 },
     #[error("error: {0}")] // TODO better message
     Read(#[from] io::Error), // TODO fix name
     #[error("failed to start process: {0}")]
@@ -69,6 +79,10 @@ impl Error {
         &self.backtrace
     }
 
+    pub fn bad_core(what: &'static str) -> Self {
+        Self::new(ErrorKind::BadCore(what))
+    }
+
     pub fn bad_path(e: NulError) -> Self {
         Self::new(ErrorKind::BadPath(e))
     }
@@ -99,6 +113,13 @@ impl Error {
 
     pub fn no_nul(e: FromBytesUntilNulError) -> Self {
         Self::new(ErrorKind::NoNul(e))
+    }
+
+    pub fn not_thread_local(name: &str, ty: u8) -> Self {
+        Self::new(ErrorKind::NotThreadLocal {
+            name: name.to_string(),
+            ty,
+        })
     }
 
     pub fn read(e: io::Error) -> Self {
@@ -151,10 +172,12 @@ impl std::error::Error for Error {}
 
 /// The narrow reading surface a debugger needs from a target: memory
 /// bytes, symbol lookups, mappings, LWP state, and where a thread-local
-/// lives in a given thread. Implemented by [`Proc`] (a live process or
-/// core dump, via libproc, illumos-only) and by snapshots captured from
-/// one (any platform), so the layers interpreting a target can run
-/// against either.
+/// lives in a given thread.
+///
+/// Implemented by [`Proc`] — a live process or core dump through libproc
+/// on illumos, an ELF core read out of the file on Linux — and by
+/// snapshots captured from one, which replay on any platform. The layers
+/// interpreting a target run against whichever is to hand.
 pub trait Target {
     /// Read exactly `len` bytes at `addr`.
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>>;
