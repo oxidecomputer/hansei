@@ -1,8 +1,7 @@
-use crate::tokio::{Lifecycle, bundle, graph};
-
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use exegesis::bundle::{Bundle, BundleType, BundleView};
+use hansei_types::tokio::{Lifecycle, bundle, graph};
 use proc::Proc;
 #[cfg(feature = "snapshot")]
 use proc::snapshot::Recorder;
@@ -13,7 +12,6 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub mod repl;
-pub mod tokio;
 pub mod types;
 
 /// The command line names a target; what to ask of it comes from
