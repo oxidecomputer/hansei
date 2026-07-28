@@ -165,6 +165,17 @@ pub enum Command {
     Type {
         /// The fully-qualified name, as `find-types` lists it.
         name: String,
+
+        /// Follow what the layout names: open every type it reaches —
+        /// through members, pointees, array elements and enum payloads
+        /// — under the line that names it.
+        #[arg(long, short)]
+        recursive: bool,
+
+        /// How many types deep to follow. A line with more below it
+        /// than this shows is marked with a `…`.
+        #[arg(long, short, default_value_t = 4, requires = "recursive")]
+        depth: usize,
     },
 
     // Last rather than alphabetical: it is not a question to ask of a
@@ -256,7 +267,11 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             depth,
             ugly,
         } => exec_trace(session, task_id, verbose, depth, ugly, out)?,
-        Command::Type { name } => types::describe(&session.ctx.view, &name, out)?,
+        Command::Type {
+            name,
+            recursive,
+            depth,
+        } => types::describe(&session.ctx.view, &name, recursive, depth, out)?,
         Command::Quit | Command::Exit => return Ok(Flow::Quit),
     }
     Ok(Flow::Continue)
