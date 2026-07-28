@@ -8,22 +8,6 @@ regex.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-derive_more.workspace = true
 exegesis.workspace = true
-humantime.workspace = true
 proc.workspace = true
 reify.workspace = true
-
-# The debugdb-based DWARF path reads live targets through libproc; only
-# the bundle path compiles everywhere.
-[target.'cfg(target_os = "illumos")'.dependencies]
-camino.workspace = true
-debugdb.workspace = true
-memmap2.workspace = true
-# Pinned to match debugdb's object version; the workspace is on a newer one.
-object = "0.33"
-rangemap.workspace = true
-regex.workspace = true
-rustc-demangle.workspace = true
-semver.workspace = true
-unwind.workspace = true

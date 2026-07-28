@@ -13,6 +13,7 @@ edition = "2024"
 snapshot = []
 
 [dev-dependencies]
+regex = { workspace = true }
 tempfile = { workspace = true }
 
 [dependencies]
@@ -20,12 +21,9 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 exegesis = { workspace = true }
 hansei-types = { workspace = true }
-humantime = { workspace = true }
 proc = { workspace = true }
 reedline = { workspace = true }
-regex = { workspace = true }
 reify = { workspace = true }
 rustc-demangle = { workspace = true }
-semver = { workspace = true }
 subprocess = { workspace = true }
 unwind = { workspace = true }

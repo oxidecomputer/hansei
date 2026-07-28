@@ -14,13 +14,10 @@ members = [
 
 [workspace.dependencies]
 anyhow = "1.0"
-camino = "1.2"
 bindgen = { version = "0.72", default-features = false }
 blake3 = { version = "1", features = ["pure"] }
 clap = { version = "4.5.51", features = ["derive"] }
 console = "0.16"
-debugdb = { git = "https://github.com/andrewjstone/debugdb", branch = "spelunkio-2" }
-derive_more = { version = "2.1.1", features = ["from", "display"] }
 durin = { path = "durin", version = "0.1.0" }
 exegesis = { path = "exegesis", version = "0.1.0", default-features = false }
 fallible-iterator = "0.3.0"
@@ -29,7 +26,6 @@ foldhash = "0.2"
 gimli = { version = "0.32", features = ["fallible-iterator"] }
 goblin = "0.10.3"
 hansei-types = { path = "hansei-types" }
-humantime = "2.3"
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
 memmap2 = "0.9.9"
 mimalloc = { version = "*", features = ["v3"] }
@@ -37,7 +33,6 @@ object = "0.38"
 petgraph = "0.7"
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 proc = { path = "proc", version = "0.1.0" }
-rangemap = "1.7.0"
 reedline = "0.38"
 reify = { path = "reify", version = "0.1.0" }
 regex = "1.12"
