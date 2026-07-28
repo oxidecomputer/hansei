@@ -14,8 +14,8 @@ These are the workspace members that may be useful:
   bundle* describing its async runtime and types; also the bundle format's
   reader and type views.
 * hansei: Inspect the state of the `tokio` multi-threaded runtime in a core
-  dump or live process: task listings, automatic await-chain traces, and task
-  dependency graphs with futurelock detection.
+  dump: task listings, automatic await-chain traces, and task dependency
+  graphs with futurelock detection.
 * hansei-types: The tokio-introspection library behind hansei.
 * reify: Interpret a process's memory through a debug bundle, rendering values
   of the bundle's types for humans.
@@ -24,10 +24,9 @@ These are the workspace members that may be useful:
 * durin: Read and write CTF files.
 
 A core is read according to what wrote it rather than what is reading it, so an
-illumos core opens on Linux and a Linux core opens on illumos. Reading a *live*
-process is still the operating system's own business: `--pid` works on illumos,
-through `libproc`, and nowhere else yet. Bundle extraction (exegesis) and
-type/value work (reify) are portable.
+illumos core opens on Linux and a Linux core opens on illumos. hansei inspects
+cores only; take one with `gcore` and point hansei at it. Bundle extraction
+(exegesis) and type/value work (reify) are portable.
 
 == Usage
 
@@ -58,9 +57,8 @@ isn't a tokio target.
 
 === 2. Inspect a target (hansei)
 
-hansei reads a core dump (`--core`) of either system, or on illumos a live
-process (`--pid`, which requires `-w`/`--destructive` since pausing the process
-is destructive), interpreting it through the bundle from step 1.
+hansei reads a core dump (`--core`) written by either system, interpreting it
+through the bundle from step 1.
 
 List every task the runtime owns — id, lifecycle state, future type, and spawn
 location:

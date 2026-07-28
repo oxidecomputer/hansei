@@ -5,9 +5,8 @@
 //! `AT_PHDR` and the load bias, the ELF thread-local that finds the
 //! runtime, the task walk, and reify's rendering of a frame's locals —
 //! run against a core the kernel's own loader laid out. The illumos
-//! suite (`tests/illumos.rs`) does the same against a live process
-//! there; between them the two platforms' targets are held to the same
-//! output.
+//! suite (`tests/illumos.rs`) does the same against a core taken there;
+//! between them the two platforms' targets are held to the same output.
 //!
 //! The target is `test-programs`' `core-tokio`, which parks two tasks at
 //! known await points, prints `READY`, and aborts. gdb runs it and takes
@@ -110,25 +109,6 @@ fn hansei(args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// The command fails, and says why.
-fn hansei_err(args: &[&str]) -> String {
-    let (_dir, bundle, core) = target();
-    let out = Command::new(env!("CARGO_BIN_EXE_hansei"))
-        .args(args)
-        .arg("--bundle")
-        .arg(bundle)
-        .arg("--core")
-        .arg(core)
-        .output()
-        .expect("failed to run hansei");
-    assert!(
-        !out.status.success(),
-        "hansei {args:?} unexpectedly succeeded:\n{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
 /// Both parked tasks are found, named and located. That the command
 /// runs at all means the bundle's symbol fingerprint resolved in the
 /// target without `--force`, and that the runtime was found through the
@@ -177,27 +157,6 @@ fn test_graph_reports_no_futurelock() {
     let out = hansei(&["graph"]);
     assert!(out.contains("WAITING ON"), "{out}");
     assert!(out.contains("no futurelock detected"), "{out}");
-}
-
-/// The two illumos-only paths say so rather than misbehaving.
-#[test]
-fn test_unsupported_paths_explain_themselves() {
-    let err = hansei_err(&["tasks", "--heuristic-discovery"]);
-    assert!(
-        err.contains("fast-TSD") && err.contains("--heuristic-discovery"),
-        "{err}"
-    );
-
-    // `--pid` is in the interface everywhere; only illumos honours it.
-    let out = Command::new(env!("CARGO_BIN_EXE_hansei"))
-        .args(["tasks", "--pid", "1", "--bundle"])
-        .arg(&target().1)
-        .output()
-        .expect("failed to run hansei");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "{err}");
-    assert!(err.contains("not supported on this platform"), "{err}");
-    assert!(err.contains("--core"), "{err}");
 }
 
 /// The task id hansei assigned to a future, read out of `tasks`.

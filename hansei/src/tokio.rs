@@ -7,9 +7,3 @@ pub use hansei_types::tokio::{
     WorkerCore, WorkerMetrics, WorkerStats,
 };
 pub use hansei_types::tokio::{bundle, graph};
-
-// The runtime snapshot types and the fast-TSD heuristic belong to the
-// older debugdb path, which reads a target through libproc and so
-// exists only on illumos.
-#[cfg(target_os = "illumos")]
-pub use hansei_types::tokio::{TokioRuntime, WorkerState, find_thd_context};
