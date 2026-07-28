@@ -387,19 +387,59 @@ Defined at: simple-await.rs:16
         );
         assert_eq!(trace(&bundle, core, &task.id, false), expected);
 
+        // Exactly these, against a bundle extracted a moment ago: the
+        // extractor drops what rustc lists in a state that is not that
+        // state's own, and whether it dropped the right things is a
+        // question about `simple-await.rs` that only the source
+        // answers. Every name here is bound between lines 17 and 31
+        // and read again at 35..45, so each has to survive both awaits;
+        // `first` is bound *by* the line-32 await. The arguments
+        // `ready` and `park` are gone by line 34 — one consumed by
+        // `send()`, the other moved into the awaitee — and the offsets
+        // they left behind are not this state's to report.
+        //
+        // Asserted in full rather than by presence, because the way
+        // this breaks under a new toolchain is a live local quietly
+        // going missing, which no count in `--stats` would show.
         let verbose = trace(&bundle, core, &task.id, true);
-        assert_locals(&verbose, &["count", "first", "owned", "labels"]);
-
-        // `ready` and `park` are the fixture's arguments, which rustc
-        // lists in every coroutine state at the offsets they hold in
-        // `Unresumed`. Neither survives to this one — `ready.send(())`
-        // consumes one a line before the await, and the other moved
-        // into the awaitee — so what is at those offsets is whatever
-        // the coroutine left there, and the trace does not offer it.
-        for gone in ["ready:", "park:"] {
-            assert!(!verbose.contains(gone), "{gone} in:\n{verbose}");
-        }
+        assert_eq!(
+            locals_listed(&verbose),
+            [
+                "count", "labels", "values", "boxed", "slice", "ipv4", "ipv6", "borrowed", "owned",
+                "first"
+            ],
+            "in:\n{verbose}"
+        );
     });
+}
+
+/// The names under a verbose trace's first `locals:`, in the order the
+/// state lists them. Entries sit one indent in; anything deeper is the
+/// value of the entry above it.
+fn locals_listed(verbose_trace: &str) -> Vec<&str> {
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let mut lines = verbose_trace
+        .lines()
+        .skip_while(|line| line.trim() != "locals:");
+    let depth = match lines.next() {
+        Some(header) => indent(header),
+        None => panic!("no locals in:\n{verbose_trace}"),
+    };
+
+    let mut names = Vec::new();
+    let mut entries = None;
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if indent(line) <= depth {
+            break;
+        }
+        if indent(line) == *entries.get_or_insert(indent(line)) {
+            names.push(line.trim_start().split(':').next().unwrap_or_default());
+        }
+    }
+    names
 }
 
 /// The locals are read out of the target, not merely named: the
@@ -877,10 +917,20 @@ fn test_type_and_find_types() {
             assert!(!out.contains(gone), "{gone} still in {out}");
         }
 
-        // `Unresumed` is the state they do belong to, and keeps them.
-        let out = hansei_ok(&bundle, core, &format!("type {future}::Unresumed"));
-        for arg in ["ready", "park"] {
-            assert!(out.contains(arg), "{arg} missing from {out}");
+        // The states that do own them keep them, and this is the whole
+        // of the rule: the same two names, dead at one await and live
+        // at the other. `Unresumed` holds the arguments as passed;
+        // `Suspend0` is the await on line 32, before `ready.send(())`
+        // on 33 and before `park` moves into the awaitee on 34, so both
+        // are still live there and rustc has relocated them off the
+        // argument offsets. Asserting only their absence from Suspend1
+        // would pass just as well for an extractor that dropped every
+        // copy it found.
+        for state in ["Unresumed", "Suspend0"] {
+            let out = hansei_ok(&bundle, core, &format!("type {future}::{state}"));
+            for arg in ["ready", "park"] {
+                assert!(out.contains(arg), "{arg} missing from {state}:\n{out}");
+            }
         }
 
         let out = hansei_ok(&bundle, core, "find-types simple_await::");

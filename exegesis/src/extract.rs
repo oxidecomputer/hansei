@@ -152,9 +152,14 @@ pub struct ExtractStats {
     pub unresolved_refs: usize,
     /// C-style enums missing a repr type (one was synthesized).
     pub cenum_synth_repr: usize,
+    /// Coroutine enums seen by their state names, and how many of those
+    /// carried the `Unresumed` that `drop_members_of_other_states` compares
+    /// the rest against. Many seen against none matched means rustc's state
+    /// naming moved and the pass is no longer finding its footing.
+    pub coroutines_seen: usize,
+    pub coroutines_matched: usize,
     /// Coroutine-state members dropped as another state's storage, and
-    /// dropped as an exact repeat of one already listed (see
-    /// `drop_members_of_other_states`).
+    /// dropped as an exact repeat of one already listed.
     pub state_members_dropped: usize,
     pub state_members_deduplicated: usize,
     /// Task entries whose provenance carries declaration coordinates.
@@ -194,15 +199,17 @@ impl fmt::Display for ExtractStats {
         )?;
         writeln!(f, "  unresolved refs:        {}", self.unresolved_refs)?;
         writeln!(f, "  synthesized enum reprs: {}", self.cenum_synth_repr)?;
-        writeln!(f, "coroutine state members:")?;
+        writeln!(f, "coroutines:")?;
+        writeln!(f, "  seen:                   {}", self.coroutines_seen)?;
+        writeln!(f, "  matched:                {}", self.coroutines_matched)?;
         writeln!(
             f,
-            "  another state's:        {}",
+            "  members dropped:        {}",
             self.state_members_dropped
         )?;
         writeln!(
             f,
-            "  listed twice:           {}",
+            "  members deduplicated:   {}",
             self.state_members_deduplicated
         )?;
         writeln!(f, "vtable concrete types:")?;
@@ -1080,8 +1087,10 @@ fn extract_from_view_with_vtable_types(
     stats.types_emitted = types.types.len();
     stats.opaque_types = counts.opaque;
     stats.types_demoted_out_of_bounds = counts.demoted;
-    stats.state_members_dropped = counts.state_members_dropped;
-    stats.state_members_deduplicated = counts.state_members_deduplicated;
+    stats.coroutines_seen = counts.states.coroutines_seen;
+    stats.coroutines_matched = counts.states.coroutines_matched;
+    stats.state_members_dropped = counts.states.members_dropped;
+    stats.state_members_deduplicated = counts.states.members_deduplicated;
 
     let task_normalized = normalized_value_index(&by_symbol);
     let dyn_normalized = normalized_value_index(&dyn_table);
@@ -4473,7 +4482,7 @@ impl<'a> Emitter<'a> {
             name_index,
         };
         let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);
-        let (dropped, deduped) = drop_members_of_other_states(&mut types, &self.names);
+        let states = drop_members_of_other_states(&mut types, &self.names);
 
         let opaque = types
             .types
@@ -4484,8 +4493,7 @@ impl<'a> Emitter<'a> {
         let counts = Emitted {
             opaque,
             demoted,
-            state_members_dropped: dropped,
-            state_members_deduplicated: deduped,
+            states,
         };
         (types, self.interner.finish(), counts)
     }
@@ -4495,8 +4503,7 @@ impl<'a> Emitter<'a> {
 struct Emitted {
     opaque: usize,
     demoted: usize,
-    state_members_dropped: usize,
-    state_members_deduplicated: usize,
+    states: StatePass,
 }
 
 /// Drop from each of a coroutine's states the members that are not that
@@ -4521,10 +4528,22 @@ struct Emitted {
 /// line before the await, whose channel has since been freed: what is left
 /// at the offset is a dangling pointer into reused heap.
 ///
-/// This recognizes a rustc artifact by its shape, so the counts are reported
-/// under `--stats`: a toolchain that stops matching it should show up as a
-/// number moving rather than as a local quietly going missing.
-fn drop_members_of_other_states(types: &mut TypeTable, names: &[Option<String>]) -> (usize, usize) {
+/// This recognizes a rustc artifact by its shape, so what it found is
+/// reported under `--stats`. The member counts alone are a weak signal — they
+/// fall to zero both when rustc stops emitting the artifact and when it
+/// renames the states out from under the match — so the coroutines *seen* are
+/// counted beside the ones matched to an `Unresumed`. Many seen against none
+/// matched says the naming moved; both falling together says the debuginfo
+/// did.
+///
+/// Neither catches the failure that would cost something: an argument left at
+/// its `Unresumed` offset while still live would be dropped, and no count
+/// would move. Nothing in the bundle separates that case from a dead one —
+/// the liveness is in the source — so what guards it is the acceptance suite
+/// asserting a fixture's locals in full against a freshly extracted bundle.
+fn drop_members_of_other_states(types: &mut TypeTable, names: &[Option<String>]) -> StatePass {
+    let mut found = StatePass::default();
+
     // Every coroutine's `Unresumed` payload, against the other states of the
     // same coroutine. Collected first because the members are read from one
     // entry of the table and written to another.
@@ -4534,10 +4553,20 @@ fn drop_members_of_other_states(types: &mut TypeTable, names: &[Option<String>])
             continue;
         };
         let payloads = || shape.variants.iter().map(|v| v.payload.ty);
+        // Coroutine-shaped, by rustc's own names for the states — whether or
+        // not the one this pass needs is among them.
+        let coroutine = payloads()
+            .filter_map(|id| state_name(names, id))
+            .any(|n| n == "Returned" || n == "Panicked" || n.starts_with("Suspend"));
+        if !coroutine {
+            continue;
+        }
+        found.coroutines_seen += 1;
         let Some(unresumed) = payloads().find(|id| state_name(names, *id) == Some("Unresumed"))
         else {
             continue;
         };
+        found.coroutines_matched += 1;
         work.push((
             unresumed,
             payloads().filter(|id| *id != unresumed).collect(),
@@ -4570,7 +4599,18 @@ fn drop_members_of_other_states(types: &mut TypeTable, names: &[Option<String>])
             });
         }
     }
-    (dropped, deduplicated)
+    found.members_dropped = dropped;
+    found.members_deduplicated = deduplicated;
+    found
+}
+
+/// What [`drop_members_of_other_states`] found, reported under `--stats`.
+#[derive(Default, PartialEq, Eq, Debug)]
+struct StatePass {
+    coroutines_seen: usize,
+    coroutines_matched: usize,
+    members_dropped: usize,
+    members_deduplicated: usize,
 }
 
 fn key(m: &MemberDef) -> (StrRef, BundleTypeId, u64) {
@@ -4670,7 +4710,7 @@ fn demote_types_with_members_out_of_bounds(
 #[cfg(test)]
 mod tests {
     use super::{
-        StaticRole, VtableTypeHint, demote_types_with_members_out_of_bounds,
+        StatePass, StaticRole, VtableTypeHint, demote_types_with_members_out_of_bounds,
         drop_members_of_other_states, dyn_tail_offset, has_dyn_tail, loom_parking_lot_debug_format,
         match_static_symbol, nonzero_debug_format, nonzero_inner_debug_format,
         scalar_newtype_debug_format, scan_vtable_section,
@@ -5227,7 +5267,15 @@ mod tests {
             .chain([Some("E::Returned".to_owned()), Some("E".to_owned())])
             .collect();
 
-        assert_eq!(drop_members_of_other_states(&mut types, &names), (2, 1));
+        assert_eq!(
+            drop_members_of_other_states(&mut types, &names),
+            StatePass {
+                coroutines_seen: 1,
+                coroutines_matched: 1,
+                members_dropped: 2,
+                members_deduplicated: 1,
+            }
+        );
 
         let members = |i: usize| match &types.types[i] {
             TypeDef::Struct { members, .. } => members.clone(),
@@ -5241,7 +5289,25 @@ mod tests {
         assert_eq!(members(3), vec![m(localn, 8)]);
         assert_eq!(members(4), vec![]);
 
-        // Running again finds nothing left to drop.
-        assert_eq!(drop_members_of_other_states(&mut types, &names), (0, 0));
+        // Running again still recognizes the coroutine, and finds nothing
+        // left to drop in it.
+        assert_eq!(
+            drop_members_of_other_states(&mut types, &names),
+            StatePass {
+                coroutines_seen: 1,
+                coroutines_matched: 1,
+                ..Default::default()
+            }
+        );
+
+        // A coroutine rustc has renamed the states of is still counted as
+        // one, and reported as unmatched rather than passed over in silence.
+        let renamed: Vec<Option<String>> = names
+            .iter()
+            .map(|n| n.as_deref().map(|n| n.replace("Unresumed", "Start")))
+            .collect();
+        let found = drop_members_of_other_states(&mut types, &renamed);
+        assert_eq!(found.coroutines_seen, 1);
+        assert_eq!(found.coroutines_matched, 0);
     }
 }
