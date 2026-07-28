@@ -20,12 +20,33 @@ use super::{DisplayRecurse, RenderCtx, write_hex_bytes, write_indent};
 /// recognized even though the ZST is not displayed.
 fn is_tuple<'a, M: DebugMember<'a>>(members: &[M]) -> bool {
     !members.is_empty()
-        && members.iter().enumerate().all(|(i, m)| {
-            m.name()
-                .strip_prefix("__")
-                .and_then(|rest| rest.parse::<usize>().ok())
-                == Some(i)
-        })
+        && members
+            .iter()
+            .enumerate()
+            .all(|(i, m)| tuple_field_index(m.name()) == Some(i))
+}
+
+/// The position a synthetic tuple-field name encodes, if it is one:
+/// rustc names a tuple struct's and a tuple variant's fields `__0`,
+/// `__1`, … A field named anything else came from the source.
+fn tuple_field_index(name: &str) -> Option<usize> {
+    name.strip_prefix("__")
+        .and_then(|rest| rest.parse::<usize>().ok())
+}
+
+/// True when `ty` is a struct whose one sized member carries a
+/// source-level name. This is the shape peeling dissolves — a struct
+/// variant declared with a single field — and the name goes with it
+/// unless the body is written from the payload as declared.
+fn has_named_single_field<'a, T: DebugType<'a>>(ty: &T) -> bool {
+    if ty.kind() != TypeKind::Struct {
+        return false;
+    }
+    let mut sized = ty.members().filter(|m| m.ty().size() > 0);
+    match (sized.next(), sized.next()) {
+        (Some(member), None) => tuple_field_index(member.name()).is_none(),
+        _ => false,
+    }
 }
 
 /// Render one member's value (or `<truncated>`) at its offset, recursing with
@@ -191,6 +212,18 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
         return Ok(());
     }
 
+    // A struct variant declared with one field — tokio's
+    // `Entered { allow_block_in_place }` — is a single-member struct, so
+    // peeling dissolves it into that field's type and the label goes with
+    // it. Write its body from the payload as declared, where the name is
+    // still there; the members' own formats still apply, since the body
+    // renderer recurses per member. A payload carrying a format of its
+    // own is left to the delegation below, which is what a `String`-like
+    // wrapper needs, and a tuple variant's synthetic `__0` stays elided.
+    if (ctx.ugly || var_ty.debug_format().is_none()) && has_named_single_field(&var_ty) {
+        return write_aggregate_body(f, &var_ty, variant_bytes, variant_addr, ctx, pretty);
+    }
+
     if !ctx.ugly
         && let Some(node @ DisplayNode::DynPointer { .. }) = variant_info.ty.debug_format()
     {
@@ -267,7 +300,7 @@ mod tests {
     use crate::TypeInfoRef;
     use crate::testhelper::*;
 
-    use exegesis::bundle::{BundleView, DisplayNode as BundleNode, TypeDef};
+    use exegesis::bundle::{Bundle, BundleView, DisplayNode as BundleNode, TypeDef};
 
     #[test]
     fn test_ugly_suppresses_enum_payload_formatter() {
@@ -433,29 +466,64 @@ mod tests {
         assert_eq!(format!("{:#}", b_val.display()), "Msg::B(7)");
     }
 
-    /// The shape extracted DWARF actually produces: a tuple variant's
-    /// payload is a struct with one field, which peeling dissolves into
-    /// that field's own type before the body is written. The value has to
-    /// survive it — an `Option<u8>::Some(3)` that reads as a bare
-    /// `Some` drops the payload silently, which is the one thing a value
-    /// renderer must not do.
+    /// The shape extracted DWARF actually produces: a variant's payload
+    /// is a struct with one field, which peeling dissolves into that
+    /// field's own type before the body is written. Both what the field
+    /// holds and what it is called have to survive that — a
+    /// `Option<u8>::Some(3)` reading as a bare `Some` drops the payload
+    /// silently, and a named field reading as `Entered(true)` drops the
+    /// only thing that says what the `true` means.
     #[test]
     fn test_single_field_payload_survives_peeling() {
+        // `AtomicStorage<u32>` is a one-field struct over a scalar,
+        // carrying no display format of its own, so nothing but peeling
+        // stands between the variant and the value.
+        let named = single_field_payload(false);
+        let v = BundleView::new(&named);
+        let bytes = 7u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "Opt::Some { value: 7 }");
+        assert_eq!(
+            format!("{:#}", value.display()),
+            "Opt::Some {\n    value: 7,\n}"
+        );
+
+        // The same payload with the field named as rustc names a tuple
+        // variant's: the label is synthetic, so it is elided and the
+        // value reads positionally.
+        let tuple = single_field_payload(true);
+        let v = BundleView::new(&tuple);
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "Opt::Some(7)");
+    }
+
+    /// A copy of the fixture bundle whose `Opt::Some` payload is
+    /// `AtomicStorage<u32>` — a one-field struct over a scalar, with no
+    /// display format of its own — keeping the field's declared name or
+    /// giving it the `__0` rustc gives a tuple variant's.
+    fn single_field_payload(synthetic: bool) -> Bundle {
         let mut b = test_bundle();
+        if synthetic {
+            // `LoomUnsafeCell` is the fixture's one tuple-named member,
+            // and so its source of an interned `__0`.
+            let TypeDef::Struct { members, .. } = &b.types.types[LOOM_CELL.0 as usize] else {
+                panic!("LoomUnsafeCell is not a struct");
+            };
+            let name = members[0].name;
+            assert_eq!(b.strings.get(name), Some("__0"), "not a tuple field name");
+            let TypeDef::Struct { members, .. } = &mut b.types.types[ATOMIC_STORAGE.0 as usize]
+            else {
+                panic!("AtomicStorage is not a struct");
+            };
+            members[0].name = name;
+        }
         let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
             panic!("Opt is not an enum");
         };
         *size = 8;
-        // `AtomicStorage<u32>` is a one-field struct over a scalar and
-        // carries no display format of its own, so nothing but peeling
-        // stands between the variant and the value.
         shape.variants[1].payload.ty = ATOMIC_STORAGE;
         b.validate().expect("modified enum bundle must validate");
-
-        let v = BundleView::new(&b);
-        let bytes = 7u64.to_le_bytes();
-        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
-        assert_eq!(format!("{}", value.display()), "Opt::Some(7)");
+        b
     }
 
     /// An enum whose discriminant matches no variant cannot be decoded into a
