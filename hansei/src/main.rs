@@ -57,13 +57,79 @@ struct SessionArgs {
 /// grammar of a typed line rather than of an argv.
 #[derive(Subcommand)]
 pub enum Command {
+    /// Show the runtime's drivers: io, signal, time and the clock.
+    Drivers {
+        /// Maximum depth to recurse when formatting values.
+        #[arg(long, short, default_value_t = 3)]
+        depth: usize,
+
+        /// Disable every type's custom formatter and show the raw
+        /// structural view of values instead.
+        #[arg(long, short)]
+        ugly: bool,
+    },
+
+    /// List the types whose name contains a substring.
+    FindTypes {
+        /// The substring to look for.
+        needle: String,
+    },
+
+    /// Print the waker-based task dependency graph: what every task is
+    /// waiting on, and any futurelock — a lock future granted or queued
+    /// on a contended semaphore that its task stopped polling and so can
+    /// never complete or release (RFD 609).
+    Graph,
+
     /// Show the target, the bundle, and how far its symbols resolve.
     Info,
+
+    /// Show the scheduler state the workers share: the owned-task set,
+    /// the injection queue, the idle set and the per-worker remotes.
+    SharedState {
+        /// Maximum depth to recurse when formatting values.
+        #[arg(long, short, default_value_t = 3)]
+        depth: usize,
+
+        /// Disable every type's custom formatter and show the raw
+        /// structural view of values instead.
+        #[arg(long, short)]
+        ugly: bool,
+    },
+
+    /// Capture a replayable snapshot of everything the bundle-backed
+    /// analysis reads from the target: task enumeration and every task's
+    /// await chain are driven once with a recording wrapper in place,
+    /// and the memory, symbol, and LWP state they touched is written
+    /// out. Together with a bundle extracted from a *separate* build of
+    /// the same source, the snapshot feeds the offline two-binary tests.
+    #[command(hide = true)]
+    Snapshot {
+        /// Where to write the snapshot.
+        output: PathBuf,
+    },
 
     /// List every task owned by the runtime: id, lifecycle state,
     /// concrete future type, spawn location, and where the future is
     /// defined.
     Tasks,
+
+    /// Show every thread running the runtime: the task it is polling,
+    /// the worker core it holds, and its stack.
+    Threads {
+        /// Maximum stack frames to print per thread.
+        #[arg(long, short, default_value_t = 50)]
+        frames: usize,
+
+        /// Maximum depth to recurse when formatting the worker core.
+        #[arg(long, short, default_value_t = 3)]
+        depth: usize,
+
+        /// Disable every type's custom formatter and show the raw
+        /// structural view of values instead.
+        #[arg(long, short)]
+        ugly: bool,
+    },
 
     /// Print a task's await chain. Tasks are selected by id (see
     /// `tasks`) and the future type is resolved automatically via the
@@ -86,54 +152,6 @@ pub enum Command {
         ugly: bool,
     },
 
-    /// Print the waker-based task dependency graph: what every task is
-    /// waiting on, and any futurelock — a lock future granted or queued
-    /// on a contended semaphore that its task stopped polling and so can
-    /// never complete or release (RFD 609).
-    Graph,
-
-    /// Show every thread running the runtime: the task it is polling,
-    /// the worker core it holds, and its stack.
-    Threads {
-        /// Maximum stack frames to print per thread.
-        #[arg(long, short, default_value_t = 50)]
-        frames: usize,
-
-        /// Maximum depth to recurse when formatting the worker core.
-        #[arg(long, short, default_value_t = 3)]
-        depth: usize,
-
-        /// Disable every type's custom formatter and show the raw
-        /// structural view of values instead.
-        #[arg(long, short)]
-        ugly: bool,
-    },
-
-    /// Show the scheduler state the workers share: the owned-task set,
-    /// the injection queue, the idle set and the per-worker remotes.
-    SharedState {
-        /// Maximum depth to recurse when formatting values.
-        #[arg(long, short, default_value_t = 3)]
-        depth: usize,
-
-        /// Disable every type's custom formatter and show the raw
-        /// structural view of values instead.
-        #[arg(long, short)]
-        ugly: bool,
-    },
-
-    /// Show the runtime's drivers: io, signal, time and the clock.
-    Drivers {
-        /// Maximum depth to recurse when formatting values.
-        #[arg(long, short, default_value_t = 3)]
-        depth: usize,
-
-        /// Disable every type's custom formatter and show the raw
-        /// structural view of values instead.
-        #[arg(long, short)]
-        ugly: bool,
-    },
-
     /// Print the layout the bundle records for a type, by its exact
     /// fully-qualified name: members and their offsets, or an enum's
     /// variants and the discriminant that selects them.
@@ -142,27 +160,13 @@ pub enum Command {
         name: String,
     },
 
-    /// List the types whose name contains a substring.
-    FindTypes {
-        /// The substring to look for.
-        needle: String,
-    },
-
-    /// Capture a replayable snapshot of everything the bundle-backed
-    /// analysis reads from the target: task enumeration and every task's
-    /// await chain are driven once with a recording wrapper in place,
-    /// and the memory, symbol, and LWP state they touched is written
-    /// out. Together with a bundle extracted from a *separate* build of
-    /// the same source, the snapshot feeds the offline two-binary tests.
-    #[command(hide = true)]
-    Snapshot {
-        /// Where to write the snapshot.
-        output: PathBuf,
-    },
-
+    // Last rather than alphabetical: it is not a question to ask of a
+    // target, and a listing read to find one should not open with the
+    // way out.
     /// Leave the session.
     Quit,
 
+    // `quit` under the name a gdb habit reaches for.
     #[command(hide = true)]
     Exit,
 }
@@ -219,30 +223,30 @@ impl<'b> Session<'b> {
 /// Run one command against an attached session.
 pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write) -> Result<Flow> {
     match command {
-        Command::Quit | Command::Exit => return Ok(Flow::Quit),
-        Command::Info => exec_info(session, out)?,
-        Command::Tasks => exec_tasks(session, out)?,
+        Command::Drivers { depth, ugly } => {
+            exec_runtime_field(session, "driver", depth, ugly, out)?
+        }
+        Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
         Command::Graph => exec_graph(session, out)?,
+        Command::Info => exec_info(session, out)?,
+        Command::SharedState { depth, ugly } => {
+            exec_runtime_field(session, "shared", depth, ugly, out)?
+        }
+        Command::Snapshot { output } => exec_snapshot(session, &output, out)?,
+        Command::Tasks => exec_tasks(session, out)?,
         Command::Threads {
             frames,
             depth,
             ugly,
         } => exec_threads(session, frames, depth, ugly, out)?,
-        Command::SharedState { depth, ugly } => {
-            exec_runtime_field(session, "shared", depth, ugly, out)?
-        }
-        Command::Drivers { depth, ugly } => {
-            exec_runtime_field(session, "driver", depth, ugly, out)?
-        }
-        Command::Type { name } => types::describe(&session.ctx.view, &name, out)?,
-        Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
         Command::Trace {
             task_id,
             verbose,
             depth,
             ugly,
         } => exec_trace(session, task_id, verbose, depth, ugly, out)?,
-        Command::Snapshot { output } => exec_snapshot(session, &output, out)?,
+        Command::Type { name } => types::describe(&session.ctx.view, &name, out)?,
+        Command::Quit | Command::Exit => return Ok(Flow::Quit),
     }
     Ok(Flow::Continue)
 }
