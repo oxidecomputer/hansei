@@ -209,6 +209,31 @@ fn hansei(bundle: &Path, core: &Path, command: &str) -> Output {
     child.wait_with_output().expect("failed to wait for hansei")
 }
 
+/// Ask through `--exec` rather than stdin, one flag per element.
+///
+/// A command the session would refuse is written to stdin regardless,
+/// so a run that succeeds is also proof that `--exec` is what was read.
+fn hansei_exec(bundle: &Path, core: &Path, exec: &[&str]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hansei"));
+    command.arg("--bundle").arg(bundle).arg("--core").arg(core);
+    for commands in exec {
+        command.arg("--exec").arg(commands);
+    }
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run hansei");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(b"trace 99999\n")
+        .expect("failed to send the command");
+    child.wait_with_output().expect("failed to wait for hansei")
+}
+
 /// Run hansei expecting success and no warnings, returning stdout.
 fn hansei_ok(bundle: &Path, core: &Path, command: &str) -> String {
     let out = hansei(bundle, core, command);
@@ -840,6 +865,33 @@ fn test_type_and_find_types() {
         let out = hansei_ok(&bundle, core, "find-types simple_await::");
         assert!(out.contains(future), "{out}");
         assert!(out.trim_end().ends_with(" types"), "{out}");
+    });
+}
+
+/// `--exec` asks from the command line what a pipeline would ask on
+/// stdin, and the session exits with its answer.
+#[test]
+fn test_exec_asks_from_the_command_line() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        // Two commands in one flag, and a second flag after it: both
+        // spellings of "more than one question".
+        let out = hansei_exec(&bundle, core, &["info ; drivers -d 1", "tasks"]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "--exec failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout.contains("symbols resolved:"), "{stdout}");
+        assert!(stdout.contains("runtime::driver::Handle"), "{stdout}");
+        assert!(stdout.contains("1 tasks"), "{stdout}");
+
+        // A failure is fatal, as it is in a script.
+        let out = hansei_exec(&bundle, core, &["trace 99999"]);
+        assert!(!out.status.success(), "{stdout}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("owns no task with id 99999"), "{stderr}");
     });
 }
 

@@ -94,11 +94,14 @@ to any leading substring that fits it and no other, so `sh` runs
 `shared-state`. Every flag has a short form; `help` lists the rest.
 
 When stdin is not a terminal the same commands are read one per line, which is
-how scripts and pipelines drive it:
+how scripts and pipelines drive it; `--exec`/`-e` gives them on the command
+line instead, and the session exits when they are answered:
 
 [source,sh]
 ----
 echo 'trace 42 -v' | hansei --core core.sled-agent --bundle sled-agent.bundle
+
+hansei --core core.sled-agent --bundle sled-agent.bundle -e 'tasks; graph'
 
 hansei --core core.sled-agent --bundle sled-agent.bundle <<'EOF'
 # blank lines and comments are skipped
@@ -107,8 +110,8 @@ graph
 EOF
 ----
 
-A scripted session stops at the first command that fails and exits non-zero;
-`quit` ends it early.
+Either way the session stops at the first command that fails and exits
+non-zero; `quit` ends it early.
 
 The session takes `--force`/`-f` to proceed even when the bundle's symbols don't all
 resolve in the target (a bundle from a mismatched build otherwise refuses to
