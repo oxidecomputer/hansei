@@ -388,7 +388,17 @@ Defined at: simple-await.rs:16
         assert_eq!(trace(&bundle, core, &task.id, false), expected);
 
         let verbose = trace(&bundle, core, &task.id, true);
-        assert_locals(&verbose, &["count", "first", "ready", "park"]);
+        assert_locals(&verbose, &["count", "first", "owned", "labels"]);
+
+        // `ready` and `park` are the fixture's arguments, which rustc
+        // lists in every coroutine state at the offsets they hold in
+        // `Unresumed`. Neither survives to this one — `ready.send(())`
+        // consumes one a line before the await, and the other moved
+        // into the awaitee — so what is at those offsets is whatever
+        // the coroutine left there, and the trace does not offer it.
+        for gone in ["ready:", "park:"] {
+            assert!(!verbose.contains(gone), "{gone} in:\n{verbose}");
+        }
     });
 }
 
@@ -855,11 +865,22 @@ fn test_type_and_find_types() {
         assert!(out.contains("Suspend1"), "{out}");
         assert!(out.contains("simple-await.rs:34"), "{out}");
 
-        // The locals held across that await.
+        // The locals held across that await — and only those. The
+        // arguments rustc also lists here belong to `Unresumed`, whose
+        // offsets they still carry, so they are not part of this state.
         let out = hansei_ok(&bundle, core, &format!("type {future}::Suspend1"));
         assert!(out.starts_with("struct "), "{out}");
-        for local in ["count", "first", "ready", "park"] {
+        for local in ["count", "first", "owned", "labels"] {
             assert!(out.contains(local), "{local} missing from {out}");
+        }
+        for gone in ["ready", "park"] {
+            assert!(!out.contains(gone), "{gone} still in {out}");
+        }
+
+        // `Unresumed` is the state they do belong to, and keeps them.
+        let out = hansei_ok(&bundle, core, &format!("type {future}::Unresumed"));
+        for arg in ["ready", "park"] {
+            assert!(out.contains(arg), "{arg} missing from {out}");
         }
 
         let out = hansei_ok(&bundle, core, "find-types simple_await::");
@@ -885,10 +906,10 @@ fn test_type_recursive_nests_what_the_layout_names() {
 
         // Nothing but the recursion reaches a coroutine state's locals
         // — the enum above names only its variants — nor, past those,
-        // the channel a `park` local is one end of. Each arrives under
-        // the line that named it rather than in a listing of its own.
+        // the channel the task is parked on. Each arrives under the
+        // line that named it rather than in a listing of its own.
         assert!(!shallow.contains("oneshot::Receiver"), "{shallow}");
-        nested_under(&deep, "park", "tokio::sync::oneshot::Receiver<u32>");
+        nested_under(&deep, "owned", "alloc::string::String");
         nested_under(&deep, "data", "tokio::sync::oneshot::Inner<u32>");
 
         // Crossing a pointer starts a frame of its own, so what it

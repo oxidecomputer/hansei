@@ -37,7 +37,7 @@ use crate::{DwReader, Encoding, TypeId};
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 use tracing::{debug, warn};
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::path::Path;
 
@@ -152,6 +152,11 @@ pub struct ExtractStats {
     pub unresolved_refs: usize,
     /// C-style enums missing a repr type (one was synthesized).
     pub cenum_synth_repr: usize,
+    /// Coroutine-state members dropped as another state's storage, and
+    /// dropped as an exact repeat of one already listed (see
+    /// `drop_members_of_other_states`).
+    pub state_members_dropped: usize,
+    pub state_members_deduplicated: usize,
     /// Task entries whose provenance carries declaration coordinates.
     pub provenance_located: usize,
 }
@@ -189,6 +194,17 @@ impl fmt::Display for ExtractStats {
         )?;
         writeln!(f, "  unresolved refs:        {}", self.unresolved_refs)?;
         writeln!(f, "  synthesized enum reprs: {}", self.cenum_synth_repr)?;
+        writeln!(f, "coroutine state members:")?;
+        writeln!(
+            f,
+            "  another state's:        {}",
+            self.state_members_dropped
+        )?;
+        writeln!(
+            f,
+            "  listed twice:           {}",
+            self.state_members_deduplicated
+        )?;
         writeln!(f, "vtable concrete types:")?;
         writeln!(f, "  hints:                  {}", self.vtable_type_hints)?;
         writeln!(f, "  rooted:                 {}", self.vtable_type_roots)?;
@@ -1060,10 +1076,12 @@ fn extract_from_view_with_vtable_types(
 
     stats.unresolved_refs = em.unresolved_refs;
     stats.cenum_synth_repr = em.cenum_synth_repr;
-    let (types, strings, opaque_count, demoted_count) = em.finish();
+    let (types, strings, counts) = em.finish();
     stats.types_emitted = types.types.len();
-    stats.opaque_types = opaque_count;
-    stats.types_demoted_out_of_bounds = demoted_count;
+    stats.opaque_types = counts.opaque;
+    stats.types_demoted_out_of_bounds = counts.demoted;
+    stats.state_members_dropped = counts.state_members_dropped;
+    stats.state_members_deduplicated = counts.state_members_deduplicated;
 
     let task_normalized = normalized_value_index(&by_symbol);
     let dyn_normalized = normalized_value_index(&dyn_table);
@@ -4436,8 +4454,7 @@ impl<'a> Emitter<'a> {
     }
 
     /// Finish emission: build the sorted name index and the string table.
-    /// Returns `(types, strings, opaque_count, demoted_count)`.
-    fn finish(mut self) -> (TypeTable, crate::bundle::StringTable, usize, usize) {
+    fn finish(mut self) -> (TypeTable, crate::bundle::StringTable, Emitted) {
         let mut index: Vec<(String, BundleTypeId)> = self
             .names
             .iter()
@@ -4456,6 +4473,7 @@ impl<'a> Emitter<'a> {
             name_index,
         };
         let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);
+        let (dropped, deduped) = drop_members_of_other_states(&mut types, &self.names);
 
         let opaque = types
             .types
@@ -4463,8 +4481,114 @@ impl<'a> Emitter<'a> {
             .filter(|d| matches!(d, TypeDef::Opaque { .. }))
             .count();
 
-        (types, self.interner.finish(), opaque, demoted)
+        let counts = Emitted {
+            opaque,
+            demoted,
+            state_members_dropped: dropped,
+            state_members_deduplicated: deduped,
+        };
+        (types, self.interner.finish(), counts)
     }
+}
+
+/// What the closing passes over the emitted table found.
+struct Emitted {
+    opaque: usize,
+    demoted: usize,
+    state_members_dropped: usize,
+    state_members_deduplicated: usize,
+}
+
+/// Drop from each of a coroutine's states the members that are not that
+/// state's own, returning `(dropped, deduplicated)`.
+///
+/// Only the active state's storage means anything: which one that is comes
+/// from the discriminant, and the others hold whatever the coroutine last
+/// left there. rustc's own debuginfo does not hold to that. It lists an
+/// `async fn`'s arguments as members of *every* variant, at the offsets they
+/// occupy in `Unresumed`, however long ago the state being described stopped
+/// using them — `Returned` and `Panicked` carry them too, and there the
+/// arguments provably cannot exist.
+///
+/// The offset is what tells the two apart. An argument still live at a
+/// suspend point is a saved local with a slot of its own, and rustc relocates
+/// it there (and, separately, lists it twice); one that is dead is left
+/// pointing at the slot it had in `Unresumed`. So a member matching an
+/// `Unresumed` member exactly — name, type and offset — is `Unresumed`'s
+/// storage rather than this state's, and describing it means reading bytes
+/// whose meaning ended whenever the coroutine moved past them. In the
+/// `simple-await` fixture that is a `oneshot::Sender` consumed by `send()` a
+/// line before the await, whose channel has since been freed: what is left
+/// at the offset is a dangling pointer into reused heap.
+///
+/// This recognizes a rustc artifact by its shape, so the counts are reported
+/// under `--stats`: a toolchain that stops matching it should show up as a
+/// number moving rather than as a local quietly going missing.
+fn drop_members_of_other_states(types: &mut TypeTable, names: &[Option<String>]) -> (usize, usize) {
+    // Every coroutine's `Unresumed` payload, against the other states of the
+    // same coroutine. Collected first because the members are read from one
+    // entry of the table and written to another.
+    let mut work: Vec<(BundleTypeId, Vec<BundleTypeId>)> = Vec::new();
+    for def in &types.types {
+        let TypeDef::Enum { shape, .. } = def else {
+            continue;
+        };
+        let payloads = || shape.variants.iter().map(|v| v.payload.ty);
+        let Some(unresumed) = payloads().find(|id| state_name(names, *id) == Some("Unresumed"))
+        else {
+            continue;
+        };
+        work.push((
+            unresumed,
+            payloads().filter(|id| *id != unresumed).collect(),
+        ));
+    }
+
+    let (mut dropped, mut deduplicated) = (0, 0);
+    for (unresumed, states) in work {
+        let held_by_unresumed: HashSet<(StrRef, BundleTypeId, u64)> =
+            members_of(types, unresumed).iter().map(key).collect();
+        for state in states {
+            let members = match &mut types.types[state.0 as usize] {
+                TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
+                _ => continue,
+            };
+            let mut kept: HashSet<(StrRef, BundleTypeId, u64)> = HashSet::new();
+            members.retain(|m| {
+                if held_by_unresumed.contains(&key(m)) {
+                    dropped += 1;
+                    return false;
+                }
+                // The same member listed twice over, which is how rustc
+                // spells an argument that *is* live here: once as the
+                // argument, once as the saved local, both at the one slot.
+                if !kept.insert(key(m)) {
+                    deduplicated += 1;
+                    return false;
+                }
+                true
+            });
+        }
+    }
+    (dropped, deduplicated)
+}
+
+fn key(m: &MemberDef) -> (StrRef, BundleTypeId, u64) {
+    (m.name, m.ty, m.offset)
+}
+
+fn members_of(types: &TypeTable, id: BundleTypeId) -> &[MemberDef] {
+    match types.get(id) {
+        Some(TypeDef::Struct { members, .. }) | Some(TypeDef::Union { members, .. }) => members,
+        _ => &[],
+    }
+}
+
+/// The last path segment of a coroutine state's payload type, which is the
+/// state's own name: `Unresumed`, `Returned`, `Suspend0`, and so on.
+fn state_name(names: &[Option<String>], id: BundleTypeId) -> Option<&str> {
+    let name = names.get(id.0 as usize)?.as_deref()?;
+    Some(name.rsplit("::").next().unwrap_or(name))
 }
 
 /// Demote any type whose own layout does not hold together to an `Opaque` of
@@ -4546,9 +4670,10 @@ fn demote_types_with_members_out_of_bounds(
 #[cfg(test)]
 mod tests {
     use super::{
-        StaticRole, VtableTypeHint, demote_types_with_members_out_of_bounds, dyn_tail_offset,
-        has_dyn_tail, loom_parking_lot_debug_format, match_static_symbol, nonzero_debug_format,
-        nonzero_inner_debug_format, scalar_newtype_debug_format, scan_vtable_section,
+        StaticRole, VtableTypeHint, demote_types_with_members_out_of_bounds,
+        drop_members_of_other_states, dyn_tail_offset, has_dyn_tail, loom_parking_lot_debug_format,
+        match_static_symbol, nonzero_debug_format, nonzero_inner_debug_format,
+        scalar_newtype_debug_format, scan_vtable_section,
     };
     use crate::raw_types::{NsId, RawMember, RawStruct, RawType};
     use crate::{DwReader, TypeId};
@@ -5029,5 +5154,94 @@ mod tests {
             demote_types_with_members_out_of_bounds(&mut types, &names),
             0
         );
+    }
+
+    /// rustc lists an `async fn`'s arguments in every one of a coroutine's
+    /// states. Where the argument is still live the listing is relocated to
+    /// its saved-local slot (and doubled); where it is dead it is left at the
+    /// slot it had in `Unresumed`, which is another state's storage and reads
+    /// as whatever the coroutine last left there.
+    #[test]
+    fn test_drop_members_of_other_states() {
+        use crate::bundle::{
+            BundleTypeId, MemberDef, StringInterner, TypeDef, TypeTable, VariantDef, VariantShape,
+        };
+        use std::collections::BTreeMap;
+
+        let mut strings = StringInterner::new();
+        let mut s = |n: &str| strings.intern(n);
+        let (argn, localn, envn) = (s("ready"), s("count"), s("env"));
+        let u32t = BundleTypeId(0);
+        let m = |name, offset| MemberDef {
+            name,
+            ty: u32t,
+            offset,
+        };
+        let state = |name, members| TypeDef::Struct {
+            name,
+            size: 32,
+            members,
+        };
+        let variant = |ty| VariantDef {
+            name: envn,
+            discr_values: None,
+            payload: MemberDef {
+                name: envn,
+                ty,
+                offset: 0,
+            },
+            decl: None,
+        };
+
+        let mut types = TypeTable {
+            types: vec![
+                TypeDef::Base {
+                    name: s("u32"),
+                    size: 4,
+                    encoding: crate::Encoding::Unsigned,
+                },
+                // 1: Unresumed holds the argument at its own slot.
+                state(argn, vec![m(argn, 0)]),
+                // 2: Suspend0, where the argument is still live: relocated
+                // off slot 0, and listed twice over.
+                state(argn, vec![m(argn, 16), m(argn, 16), m(localn, 8)]),
+                // 3: Suspend1, where it is dead: left pointing at slot 0.
+                state(argn, vec![m(argn, 0), m(localn, 8)]),
+                // 4: Returned, a terminal state that cannot hold it at all.
+                state(argn, vec![m(argn, 0)]),
+                TypeDef::Enum {
+                    name: envn,
+                    size: 32,
+                    shape: VariantShape {
+                        discr: None,
+                        variants: (1..=4).map(|i| variant(BundleTypeId(i))).collect(),
+                    },
+                },
+            ],
+            debug_formats: BTreeMap::new(),
+            name_index: vec![],
+        };
+        let names: Vec<Option<String>> = ["u32", "E::Unresumed", "E::Suspend0", "E::Suspend1"]
+            .iter()
+            .map(|n| Some((*n).to_owned()))
+            .chain([Some("E::Returned".to_owned()), Some("E".to_owned())])
+            .collect();
+
+        assert_eq!(drop_members_of_other_states(&mut types, &names), (2, 1));
+
+        let members = |i: usize| match &types.types[i] {
+            TypeDef::Struct { members, .. } => members.clone(),
+            other => panic!("{other:?} is not a struct"),
+        };
+        // Unresumed is the state that owns them, and keeps them.
+        assert_eq!(members(1), vec![m(argn, 0)]);
+        // Suspend0's copy is live, so only the repeat goes.
+        assert_eq!(members(2), vec![m(argn, 16), m(localn, 8)]);
+        // Suspend1 and Returned keep only what is theirs.
+        assert_eq!(members(3), vec![m(localn, 8)]);
+        assert_eq!(members(4), vec![]);
+
+        // Running again finds nothing left to drop.
+        assert_eq!(drop_members_of_other_states(&mut types, &names), (0, 0));
     }
 }
