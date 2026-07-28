@@ -78,6 +78,7 @@ hansei〉shared-state             # the scheduler state the workers share
 hansei〉drivers                  # the io, signal and time drivers
 hansei〉find-types oxide         # bundle type names containing a substring
 hansei〉type sled_agent::Foo     # one type's recorded layout
+hansei〉type -r sled_agent::Foo  # that layout with everything it names in it
 hansei〉info                     # what is attached, and how well it matches
 hansei〉tasks ! grep sled_agent  # pipe a command's output into a shell command
 hansei〉tasks ; graph            # several commands, in order, on one line
@@ -89,9 +90,13 @@ graph flags any futurelock — a lock future granted or queued on a contended
 semaphore whose task stopped polling it (RFD 609). `threads`, `shared-state`
 and `drivers` read the runtime's own state out of the target and take the same
 `--depth`; `find-types` and `type` ask the bundle instead of the target, and
-report the layouts every other command decodes memory with. A command answers
-to any leading substring that fits it and no other, so `sh` runs
-`shared-state`. Every flag has a short form; `help` lists the rest.
+report the layouts every other command decodes memory with — `type` stops at
+the names a layout mentions, `type --recursive`/`-r` opens each of them under
+the line that names it, and whatever they name in turn, four deep unless
+`--depth` says otherwise, marking with a `…` every line it had more to say
+below. A command answers to any leading substring that fits it and no other,
+so `sh` runs `shared-state`. Every flag has a short form; `help` lists the
+rest.
 
 When stdin is not a terminal the same commands are read one per line, which is
 how scripts and pipelines drive it; `--exec`/`-e` gives them on the command

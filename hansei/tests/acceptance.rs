@@ -868,6 +868,82 @@ fn test_type_and_find_types() {
     });
 }
 
+/// A member line names its type and stops there, so reading a nested
+/// layout otherwise means asking again for every name it mentions.
+/// `-r` asks once, and opens each type under the line that named it.
+#[test]
+fn test_type_recursive_nests_what_the_layout_names() {
+    let bundle = fixtures().bundle("simple-await");
+    let future = "simple_await::work::{async_fn_env#0}";
+    with_core("simple-await", |core| {
+        let shallow = hansei_ok(&bundle, core, &format!("type {future}"));
+        let deep = hansei_ok(&bundle, core, &format!("type -r -d 99 {future}"));
+
+        // The same target described either way; only what hangs off it
+        // differs, so the two agree down to the first member line.
+        assert_eq!(deep.lines().next(), shallow.lines().next(), "{deep}");
+
+        // Nothing but the recursion reaches a coroutine state's locals
+        // — the enum above names only its variants — nor, past those,
+        // the channel a `park` local is one end of. Each arrives under
+        // the line that named it rather than in a listing of its own.
+        assert!(!shallow.contains("oneshot::Receiver"), "{shallow}");
+        nested_under(&deep, "park", "tokio::sync::oneshot::Receiver<u32>");
+        nested_under(&deep, "data", "tokio::sync::oneshot::Inner<u32>");
+
+        // Crossing a pointer starts a frame of its own, so what it
+        // addresses is named again on a line of its own.
+        assert!(
+            deep.contains("→ struct alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>>"),
+            "{deep}"
+        );
+
+        // A `labels` local is a BTreeMap, whose internal nodes hold a
+        // leaf node of the same type: the walk stops rather than nest
+        // for ever.
+        assert!(deep.contains("(described above)"), "{deep}");
+
+        // Base types are left to the lines that name them: `count  u32`
+        // says everything a definition of `u32` would.
+        assert!(!deep.contains("base u32"), "{deep}");
+
+        // Followed all the way there is nothing left over to mark, and
+        // `-d` is what leaves some: a bound rendering is shorter, and
+        // says on which lines it stopped short.
+        assert!(!deep.contains(" …"), "{deep}");
+        let bounded = hansei_ok(&bundle, core, &format!("type -r -d 1 {future}"));
+        assert!(bounded.contains(" …"), "{bounded}");
+        assert!(
+            bounded.lines().count() < deep.lines().count(),
+            "-d 1 is no shorter than -d 99:\n{bounded}"
+        );
+
+        // A depth with nothing to bound is a mistake worth naming, not
+        // a silent no-op.
+        let out = hansei(&bundle, core, &format!("type -d 2 {future}"));
+        assert!(!out.status.success(), "{bounded}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("--recursive"), "{stderr}");
+    });
+}
+
+/// Assert that a member line naming `member` at type `ty` is followed
+/// by that type's own layout, indented under it.
+fn nested_under(out: &str, member: &str, ty: &str) {
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let mut lines = out.lines();
+    while let Some(line) = lines.next() {
+        let mut fields = line.split_whitespace();
+        let names_it = fields.next().is_some_and(|f| f.starts_with('+'))
+            && fields.next() == Some(member)
+            && fields.next() == Some(ty);
+        if names_it && lines.next().is_some_and(|next| indent(next) > indent(line)) {
+            return;
+        }
+    }
+    panic!("nothing is nested under a `{member}` member of {ty}:\n{out}");
+}
+
 /// `--exec` asks from the command line what a pipeline would ask on
 /// stdin, and the session exits with its answer.
 #[test]
