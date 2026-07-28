@@ -49,8 +49,10 @@ REGEN_BIN_DIR="$FIXTURES/bin-a" REGEN_TARGET_DIR="$FIXTURES/target-a" \
 REGEN_BIN_DIR="$FIXTURES/bin-b" REGEN_TARGET_DIR="$FIXTURES/target-b" \
     ./regen.sh "${PROGRAMS[@]}"
 
-# The capture tools themselves come from the workspace as-is.
-(cd .. && cargo build -p exegesis -p hansei)
+# The capture tools themselves come from the workspace as-is, except
+# that `snapshot` is not in a default hansei: it makes test data rather
+# than answering anything about a target, so it is behind a feature.
+(cd .. && cargo build -p exegesis && cargo build -p hansei --features snapshot)
 EXEGESIS=../target/debug/exegesis
 HANSEI=../target/debug/hansei
 

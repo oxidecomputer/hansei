@@ -94,6 +94,27 @@ fn target() -> &'static (tempfile::TempDir, PathBuf, PathBuf) {
 /// Ask an attached session one command — hansei takes them on stdin,
 /// not as arguments — and hand back what it printed.
 fn hansei(command: &str) -> String {
+    let out = ask(command);
+    assert!(
+        out.status.success(),
+        "hansei {command:?} failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Ask a command that must be refused, and hand back the complaint.
+fn hansei_err(command: &str) -> String {
+    let out = ask(command);
+    assert!(
+        !out.status.success(),
+        "hansei {command:?} was expected to fail:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+fn ask(command: &str) -> std::process::Output {
     let (_dir, bundle, core) = target();
     let mut child = Command::new(env!("CARGO_BIN_EXE_hansei"))
         .arg("--bundle")
@@ -111,13 +132,7 @@ fn hansei(command: &str) -> String {
         .expect("stdin is piped")
         .write_all(command.as_bytes())
         .expect("failed to send the command");
-    let out = child.wait_with_output().expect("failed to wait for hansei");
-    assert!(
-        out.status.success(),
-        "hansei {command:?} failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    child.wait_with_output().expect("failed to wait for hansei")
 }
 
 /// Both parked tasks are found, named and located. That the command
@@ -248,6 +263,24 @@ fn test_find_types_lists_matching_names() {
     // A needle nothing matches is an empty listing, not a failure.
     let out = hansei("find-types no_such_crate::");
     assert!(out.contains("0 types"), "{out}");
+}
+
+/// A command answers to any leading substring that fits it and no
+/// other, which is what a prompt is for. A prefix that fits several
+/// names them rather than picking one.
+#[test]
+fn test_a_unique_prefix_names_a_command() {
+    assert!(hansei("i").contains("symbols resolved:"));
+    assert!(hansei("dr -d 1").contains("runtime::driver::Handle"));
+    assert!(hansei("thr -f 0").contains("LWP "));
+    // `snapshot` is not in a default build, so nothing else starts
+    // with an `s`.
+    assert!(hansei("s").contains("multi_thread::worker::Shared"));
+
+    let err = hansei_err("t");
+    for candidate in ["tasks", "threads", "trace", "type"] {
+        assert!(err.contains(candidate), "{candidate} missing from {err}");
+    }
 }
 
 /// The task id hansei assigned to a future, read out of `tasks`.
