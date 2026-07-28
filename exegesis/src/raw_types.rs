@@ -416,6 +416,29 @@ pub struct RawFunc<S> {
     ///
     /// In Rust, `noreturn` functions tend to have `!` as their return type.
     pub noreturn: bool,
+    /// The `__awaitee` locals of a coroutine's resume function, one per
+    /// suspend point, in the order the scopes nest. Empty for every other
+    /// kind of function — collecting them means descending through the
+    /// lexical blocks a resume body piles up, so it is done only where
+    /// they can exist.
+    pub awaitees: Box<[RawAwaitee<S>]>,
+}
+
+/// One `__awaitee` local of a coroutine's resume function: the value a
+/// suspend point awaits.
+///
+/// The coroutine type's variant member describes the same await, but
+/// rustc gives it the coordinates of the `.await` as written *after*
+/// macro expansion — a `tokio::select!` arm resolves to a line inside
+/// `select.rs`. The local is attributed to the expansion site instead,
+/// so it is the position in the code that actually wrote the await.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawAwaitee<S> {
+    /// Where the await is written.
+    pub source_loc: Option<Box<SourceLoc<S>>>,
+    /// The awaited value's type, which is what ties the local back to the
+    /// suspend variant whose payload holds it.
+    pub type_id: Option<TypeId>,
 }
 
 /// Parameter to a function.

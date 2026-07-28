@@ -644,8 +644,8 @@ Defined at: futurelock.rs:15
      ▸ Suspend1  futurelock.rs:25  1 local
        └─  1  async fn      futurelock::do_stuff::{{async_fn_env#0}}
           suspends:
-            Suspend0  src/macros/select.rs:741  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{{async_fn#0}}::{{closure_env#0}}>
-          ▸ Suspend1  futurelock.rs:64          3 locals
+            Suspend0  futurelock.rs:59  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{{async_fn#0}}::{{closure_env#0}}>
+          ▸ Suspend1  futurelock.rs:64  3 locals
             └─  2  async fn      futurelock::do_async_thing::{{async_fn_env#0}}
                suspends:
                ▸ Suspend0  futurelock.rs:72  2 locals

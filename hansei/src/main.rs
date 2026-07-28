@@ -694,7 +694,7 @@ fn suspend_rows<'b>(frame: &bundle::AwaitFrame<'b>) -> Vec<SuspendRow<'b>> {
             }
             Some(SuspendRow {
                 name,
-                loc: variant.decl,
+                loc: variant.await_loc(),
                 locals: state_locals(variant.ty).len(),
                 awaitee: variant.ty.member("__awaitee").map(|m| m.ty().name()),
                 active,
@@ -761,7 +761,8 @@ impl<'b> SuspendTable<'b> {
                 (loc, locals, awaitee)
             })
             .collect();
-        let width = |f: fn(&(String, String, &str)) -> usize| cells.iter().map(f).max().unwrap_or(0);
+        let width =
+            |f: fn(&(String, String, &str)) -> usize| cells.iter().map(f).max().unwrap_or(0);
         Self {
             name_width: rows.iter().map(|row| row.name.len()).max().unwrap_or(0),
             loc_width: width(|c| c.0.len()),
@@ -1529,7 +1530,11 @@ mod trace_render_tests {
     #[test]
     fn test_inventory_marks_the_active_state() {
         assert_eq!(
-            trace("simple-await", "simple_await::work::{async_fn_env#0}", false),
+            trace(
+                "simple-await",
+                "simple_await::work::{async_fn_env#0}",
+                false
+            ),
             "  0  async fn      simple_await::work::{async_fn_env#0}
      suspends:
        Suspend0  simple-await.rs:32  11 locals  simple_await::ready_value::{async_fn_env#0}
@@ -1557,8 +1562,8 @@ mod trace_render_tests {
      ▸ Suspend1  futurelock.rs:25  1 local
        └─  1  async fn      futurelock::do_stuff::{async_fn_env#0}
           suspends:
-            Suspend0  src/macros/select.rs:741  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}>
-          ▸ Suspend1  futurelock.rs:64          3 locals
+            Suspend0  futurelock.rs:59  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}>
+          ▸ Suspend1  futurelock.rs:64  3 locals
             └─  2  async fn      futurelock::do_async_thing::{async_fn_env#0}
                suspends:
                ▸ Suspend0  futurelock.rs:72  2 locals

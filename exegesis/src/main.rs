@@ -277,8 +277,15 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                         .decl
                         .map(|l| format!(" @ {}:{}", s(l.file), l.line))
                         .unwrap_or_default();
+                    // Only when it says something `decl` does not: an await
+                    // whose two descriptions agree needs no second line.
+                    let await_site = v
+                        .await_site
+                        .filter(|l| v.decl != Some(*l))
+                        .map(|l| format!(" (awaited at {}:{})", s(l.file), l.line))
+                        .unwrap_or_default();
                     println!(
-                        "      {} ({vals}) +{} : [{}]{decl}",
+                        "      {} ({vals}) +{} : [{}]{decl}{await_site}",
                         s(v.name),
                         v.payload.offset,
                         v.payload.ty.0

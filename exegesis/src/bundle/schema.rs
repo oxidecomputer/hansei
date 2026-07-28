@@ -654,6 +654,18 @@ pub struct VariantDef {
     /// `SuspendN` variant's `decl` is its await point's source line
     /// (§13.5).
     pub decl: Option<SourceLoc>,
+    /// Where a coroutine suspend point's await is *written*, when that is
+    /// known to differ from where `decl` puts it.
+    ///
+    /// An await produced by a macro is attributed by `decl` to the line
+    /// inside the macro that expanded to it — a `tokio::select!` arm
+    /// resolves into `select.rs` rather than into the code that wrote the
+    /// `select!`. The resume function's `__awaitee` local describes the
+    /// same await and is attributed to the expansion site instead, so
+    /// this carries that position where extraction could pair the two
+    /// unambiguously. `None` means no better answer than `decl` was
+    /// found, not that none exists.
+    pub await_site: Option<SourceLoc>,
 }
 
 /// The discriminant values selecting a variant.
