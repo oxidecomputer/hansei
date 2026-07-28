@@ -108,8 +108,12 @@ together with a bundle extracted from a *separate* build it feeds the offline tw
 
 == Testing
 
-* `cargo test` — cross-platform unit tests and the offline two-binary snapshot tests. On Linux this also runs
-  `tests/linux.rs`, which builds the `core-tokio` fixture, extracts a bundle from it, dumps a core with gdb's
-  `gcore`, and drives all three commands over the result.
-* `cargo test --features illumos-integration -- --ignored` (on illumos) — the on-box suite: fixtures built and
-  run for real, cored at their parked steady state, output compared against known-good renderings.
+* `cargo test` — the unit tests, the offline two-binary snapshot tests, and `tests/acceptance.rs`: the fixture
+  programs built twice, run for real, cored with `gcore` at their parked steady state, and their output compared
+  against known-good renderings. It runs the same way on illumos and on Linux, where the only difference is that
+  the core comes back through libproc on one and off the file on the other. What it needs is the pinned toolchain
+  and the right to core a process it owns (on Linux, a permissive enough `kernel.yama.ptrace_scope`).
+  Running that same `cargo test` on an illumos box is what exercises the libproc-backed target, the half of
+  `proc` no other system reaches.
+* `cargo test --features snapshot` additionally builds the hidden `snapshot` command, which
+  `test-programs/capture-snapshots.sh` uses to regenerate the offline fixtures.

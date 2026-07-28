@@ -84,6 +84,8 @@ fn claim_slot() -> (u32, u64, u64) {
 }
 
 fn main() {
+    test_programs::allow_any_tracer();
+
     // Every thread reports in before parking, so once they have all
     // been heard from the thread set below is final.
     let (tx, rx) = mpsc::channel();
