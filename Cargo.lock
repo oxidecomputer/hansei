@@ -1678,27 +1678,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spelunkio"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "camino",
- "clap",
- "debugdb",
- "derive_more 2.1.1",
- "gimli 0.32.3",
- "hansei-types",
- "memmap2",
- "object 0.33.0",
- "proc",
- "rangemap",
- "reedline",
- "subprocess",
- "swrite",
- "unwind",
-]
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1753,12 +1732,6 @@ dependencies = [
  "libc",
  "winapi",
 ]
-
-[[package]]
-name = "swrite"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f3fece30b2dc06d65ecbca97b602db15bf75f932711d60cc604534f1f8b7a03"
 
 [[package]]
 name = "syn"

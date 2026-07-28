@@ -7,10 +7,10 @@
 //!
 //! Layouts come only from the bundle; addresses and bytes come only from the
 //! target; the only thing that crosses between the two binaries is symbol
-//! names (§2). Runtime discovery is the pthread-key flow ported from
-//! spelunkio (§3.0): the bundle names the TLS-key static, the target's
-//! symtab locates it, and its value indexes each LWP's fast-TSD slots to
-//! find that thread's `tokio::runtime::context::Context`.
+//! names (§2). Runtime discovery is the pthread-key flow (§3.0): the
+//! bundle names the TLS-key static, the target's symtab locates it, and
+//! its value indexes each LWP's fast-TSD slots to find that thread's
+//! `tokio::runtime::context::Context`.
 
 use super::{Location, RawInstant, TaskAddr, TaskState};
 
