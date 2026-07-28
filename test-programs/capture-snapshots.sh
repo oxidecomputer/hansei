@@ -72,8 +72,9 @@ for p in "${PROGRAMS[@]}"; do
     cat "$fifo" >/dev/null &
 
     gcore -o "$coredir/core" "$pid"
-    "$HANSEI" snapshot --core "$coredir/core.$pid" \
-        --bundle "$OUT/$p.bundle" -o "$OUT/$p.snapshot"
+    # hansei takes its commands on stdin, not as arguments.
+    echo "snapshot $OUT/$p.snapshot" |
+        "$HANSEI" --core "$coredir/core.$pid" --bundle "$OUT/$p.bundle"
 
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true

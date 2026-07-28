@@ -20,7 +20,9 @@ exegesis = { workspace = true }
 hansei-types = { workspace = true }
 humantime = { workspace = true }
 proc = { workspace = true }
+reedline = { workspace = true }
 regex = { workspace = true }
 reify = { workspace = true }
 rustc-demangle = { workspace = true }
 semver = { workspace = true }
+subprocess = { workspace = true }

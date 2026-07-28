@@ -58,37 +58,52 @@ isn't a tokio target.
 === 2. Inspect a target (hansei)
 
 hansei reads a core dump (`--core`) written by either system, interpreting it
-through the bundle from step 1.
-
-List every task the runtime owns — id, lifecycle state, future type, and spawn
-location:
+through the bundle from step 1. Those two files are all the command line takes:
+they name a *session*, and what to ask of it is read from stdin.
 
 [source,sh]
 ----
-hansei tasks --bundle sled-agent.bundle --core core.sled-agent
+hansei --core core.sled-agent --bundle sled-agent.bundle
 ----
 
-Trace one task's await chain (select the id from `hansei tasks`); `-v` shows the
-live locals at each await point, `--value-depth` bounds how deep values are
-formatted:
+When stdin is a terminal that is a prompt, with history, tab completion, and
+errors that end the command rather than the session:
+
+----
+hansei〉tasks                    # every task: id, state, future type, spawn site
+hansei〉trace 42 -v              # one task's await chain, with its live locals
+hansei〉graph                    # the dependency graph, and any futurelock
+hansei〉info                     # what is attached, and how well it matches
+hansei〉tasks ! grep sled_agent  # pipe a command's output into a shell command
+hansei〉quit
+----
+
+`trace` takes `--depth`/`-d` to bound how deep values are formatted, and the
+graph flags any futurelock — a lock future granted or queued on a contended
+semaphore whose task stopped polling it (RFD 609). Every flag has a short form;
+`help` lists the rest.
+
+When stdin is not a terminal the same commands are read one per line, which is
+how scripts and pipelines drive it:
 
 [source,sh]
 ----
-hansei task-trace --task-id 42 --bundle sled-agent.bundle --core core.sled-agent -v
+echo 'trace 42 -v' | hansei --core core.sled-agent --bundle sled-agent.bundle
+
+hansei --core core.sled-agent --bundle sled-agent.bundle <<'EOF'
+# blank lines and comments are skipped
+tasks
+graph
+EOF
 ----
 
-Print the waker-based task dependency graph and flag any futurelock — a lock
-future granted or queued on a contended semaphore whose task stopped polling it
-(RFD 609):
+A scripted session stops at the first command that fails and exits non-zero;
+`quit` ends it early.
 
-[source,sh]
-----
-hansei graph --bundle sled-agent.bundle --core core.sled-agent
-----
-
-Pass `--force` to proceed even when the bundle's symbols don't all resolve in
-the target (a bundle from a mismatched build otherwise refuses to run), and
-`--ugly` to bypass the custom value formatters and show the raw structural view.
+The session takes `--force`/`-f` to proceed even when the bundle's symbols don't all
+resolve in the target (a bundle from a mismatched build otherwise refuses to
+attach); `trace` takes `--ugly`/`-u` to bypass the custom value formatters and
+show the raw structural view.
 
 == What's with the name?
 

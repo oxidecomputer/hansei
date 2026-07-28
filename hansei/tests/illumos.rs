@@ -25,7 +25,7 @@ use proc::Proc;
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::OnceLock;
@@ -181,23 +181,39 @@ fn with_core(program: &str, check: impl Fn(&Path)) {
     check(&core);
 }
 
-fn hansei(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_hansei"))
-        .args(args)
-        .output()
-        .expect("failed to run hansei")
+/// Attach a session to `core` through `bundle` and ask it one command.
+/// hansei reads commands from stdin, so the command is written there
+/// rather than passed as an argument.
+fn hansei(bundle: &Path, core: &Path, command: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hansei"))
+        .arg("--bundle")
+        .arg(bundle)
+        .arg("--core")
+        .arg(core)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run hansei");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(command.as_bytes())
+        .expect("failed to send the command");
+    child.wait_with_output().expect("failed to wait for hansei")
 }
 
 /// Run hansei expecting success and no warnings, returning stdout.
-fn hansei_ok(args: &[&str]) -> String {
-    let out = hansei(args);
+fn hansei_ok(bundle: &Path, core: &Path, command: &str) -> String {
+    let out = hansei(bundle, core, command);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
-        "hansei {args:?} failed:\n{stderr}\n{}",
+        "hansei {command:?} failed:\n{stderr}\n{}",
         String::from_utf8_lossy(&out.stdout)
     );
-    assert!(stderr.is_empty(), "hansei {args:?} warned:\n{stderr}");
+    assert!(stderr.is_empty(), "hansei {command:?} warned:\n{stderr}");
     String::from_utf8(out.stdout).expect("hansei output is UTF-8")
 }
 
@@ -219,15 +235,9 @@ fn split_columns(line: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Run `hansei tasks` and parse the listing.
+/// Run the `tasks` command and parse the listing.
 fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
-    let out = hansei_ok(&[
-        "tasks",
-        "--bundle",
-        bundle.to_str().unwrap(),
-        "--core",
-        core.to_str().unwrap(),
-    ]);
+    let out = hansei_ok(bundle, core, "tasks");
 
     let mut lines = out.lines();
     let header = lines.next().expect("tasks output has a header");
@@ -276,7 +286,7 @@ fn task_with_future<'a>(rows: &'a [TaskRow], future: &str) -> &'a TaskRow {
     row
 }
 
-/// Run `hansei task-trace --task-id` and return its output.
+/// Run the `trace` command and return its output.
 fn trace(bundle: &Path, core: &Path, task_id: &str, verbose: bool) -> String {
     trace_opts(bundle, core, task_id, verbose, false)
 }
@@ -284,22 +294,14 @@ fn trace(bundle: &Path, core: &Path, task_id: &str, verbose: bool) -> String {
 /// Like [`trace`], but also toggles `--ugly` (the raw structural view, with
 /// every type's custom formatter suppressed).
 fn trace_opts(bundle: &Path, core: &Path, task_id: &str, verbose: bool, ugly: bool) -> String {
-    let mut args = vec![
-        "task-trace",
-        "--bundle",
-        bundle.to_str().unwrap(),
-        "--core",
-        core.to_str().unwrap(),
-        "--task-id",
-        task_id,
-    ];
+    let mut command = format!("trace {task_id}");
     if verbose {
-        args.push("--verbose");
+        command.push_str(" --verbose");
     }
     if ugly {
-        args.push("--ugly");
+        command.push_str(" --ugly");
     }
-    hansei_ok(&args)
+    hansei_ok(bundle, core, &command)
 }
 
 /// Mask the run-varying values a trace can carry — heap addresses and
@@ -652,15 +654,9 @@ Defined at: sleep-join.rs:15
 // Dependency graph and futurelock diagnosis (§3.6, §10)
 // ---------------------------------------------------------------------------
 
-/// Run `hansei graph` and return its output.
+/// Run the `graph` command and return its output.
 fn graph(bundle: &Path, core: &Path) -> String {
-    hansei_ok(&[
-        "graph",
-        "--bundle",
-        bundle.to_str().unwrap(),
-        "--core",
-        core.to_str().unwrap(),
-    ])
+    hansei_ok(bundle, core, "graph")
 }
 
 /// Format rows the way the graph table does: two-space separated
@@ -783,13 +779,7 @@ fn test_mismatched_bundle_refused() {
     let core = gcore(parked.pid(), dir.path());
     let wrong_bundle = fixtures().bundle("futurelock");
 
-    let out = hansei(&[
-        "tasks",
-        "--bundle",
-        wrong_bundle.to_str().unwrap(),
-        "--core",
-        core.to_str().unwrap(),
-    ]);
+    let out = hansei(&wrong_bundle, &core, "tasks");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !out.status.success(),
