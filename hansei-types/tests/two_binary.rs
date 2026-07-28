@@ -17,6 +17,10 @@
 //! diff here is reviewable line by line. `fingerprint N/N` counts the
 //! symbols the *capturing* platform's linker kept, so it is a property
 //! of where the pair was made rather than of where the test runs.
+//!
+//! What the pairs were captured from is recorded in `fixtures/SOURCES`
+//! and checked by [`test_fixtures_record_the_current_programs`], since
+//! nothing else here would notice the programs moving on without them.
 
 use exegesis::bundle::{Bundle, BundleView};
 use hansei_types::tokio::bundle::{AwaitChain, ChainEnd, Context, FutureInfo, TaskStage};
@@ -28,10 +32,78 @@ use std::collections::HashSet;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
+/// Every program `capture-snapshots.sh` captures a fixture pair for.
+const PROGRAMS: &[&str] = &[
+    "simple-await",
+    "nested-await",
+    "dyn-future",
+    "futurelock",
+    "sleep-join",
+    "channels",
+];
+
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name)
+}
+
+/// What a fixture pair was captured from: the program's own source, and
+/// the crate every program calls into before it parks.
+fn source_digest(program: &str) -> String {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate is in a workspace")
+        .join("test-programs/src");
+    let mut hasher = blake3::Hasher::new();
+    for path in [
+        src.join("lib.rs"),
+        src.join("bin").join(format!("{program}.rs")),
+    ] {
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        hasher.update(&bytes);
+    }
+    hasher.finalize().to_hex()[..32].to_string()
+}
+
+/// The fixtures record programs that go on being edited underneath
+/// them.
+///
+/// A pair is captured once and checked in, and nothing else in the
+/// suite rebuilds it: the summaries below quote line numbers out of
+/// `test-programs/src`, but they are compared against a snapshot taken
+/// when those lines were somewhere else, so the two agree with each
+/// other however far the sources have moved on. That is how a golden
+/// here went on saying `simple-await.rs:65:21` long after the
+/// acceptance suite, which does rebuild, had moved to `:67:21` — both
+/// passing.
+///
+/// So the sources are hashed at capture and checked here. Nothing about
+/// a stale pair is wrong, exactly; it is a real recording of a real
+/// program. It is just no longer a recording of *this* one, which is
+/// what reading these goldens assumes.
+#[test]
+fn test_fixtures_record_the_current_programs() {
+    let manifest = fixture("SOURCES");
+    let digests: String = PROGRAMS
+        .iter()
+        .map(|p| format!("{p} {}\n", source_digest(p)))
+        .collect();
+
+    if std::env::var_os("FIXTURE_SOURCES_BLESS").is_some() {
+        std::fs::write(&manifest, &digests).expect("failed to write the source manifest");
+        return;
+    }
+
+    let recorded = std::fs::read_to_string(&manifest).unwrap_or_default();
+    assert_eq!(
+        digests, recorded,
+        "\nthe fixture programs have changed since these snapshots were captured, so \
+         the goldens in this file describe a program that is no longer in the tree. \
+         Recapture with test-programs/capture-snapshots.sh, then re-bless the \
+         goldens here and in value_render.rs.\n"
+    );
 }
 
 fn load(program: &str) -> (Bundle, Snapshot) {
