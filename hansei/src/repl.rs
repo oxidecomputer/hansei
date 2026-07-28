@@ -31,12 +31,15 @@ use std::path::PathBuf;
 // typed line: without it clap would take the first word for the
 // executable and drop it. `about` is set explicitly because clap would
 // otherwise lift this crate-internal note into the user's `help`.
+// `infer_subcommands` accepts any leading substring that names one
+// command and no other, so `dr` runs `drivers` — what a prompt is for.
 #[derive(Parser)]
 #[command(
     name = "",
     about = "Commands a hansei session accepts.",
     no_binary_name = true,
-    disable_help_flag = true
+    disable_help_flag = true,
+    infer_subcommands = true
 )]
 struct Line {
     #[command(subcommand)]

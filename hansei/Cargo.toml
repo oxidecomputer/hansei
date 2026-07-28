@@ -10,6 +10,14 @@ edition = "2024"
 # `cargo test -p hansei --features illumos-integration -- --ignored`).
 illumos-integration = []
 
+# The `snapshot` command, which captures the offline tests' fixtures
+# rather than answering anything about a target. Off by default: it is
+# a tool for producing test data, not part of what a session is for,
+# and its name would otherwise take a share of the command namespace
+# that prefixes resolve against. `test-programs/capture-snapshots.sh`
+# turns it on.
+snapshot = []
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

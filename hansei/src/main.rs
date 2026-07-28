@@ -4,6 +4,7 @@ use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use exegesis::bundle::{Bundle, BundleType, BundleView};
 use proc::Proc;
+#[cfg(feature = "snapshot")]
 use proc::snapshot::Recorder;
 use reify::{TypeInfo, TypeInfoRef};
 
@@ -103,6 +104,7 @@ pub enum Command {
     /// and the memory, symbol, and LWP state they touched is written
     /// out. Together with a bundle extracted from a *separate* build of
     /// the same source, the snapshot feeds the offline two-binary tests.
+    #[cfg(feature = "snapshot")]
     #[command(hide = true)]
     Snapshot {
         /// Where to write the snapshot.
@@ -184,6 +186,8 @@ pub enum Flow {
 pub struct Session<'b> {
     ctx: bundle::Context<'b, Proc>,
     proc: &'b Proc,
+    /// Read again under a recording target when a snapshot is captured.
+    #[cfg(feature = "snapshot")]
     bundle: &'b Bundle,
     core: &'b Path,
     bundle_path: &'b Path,
@@ -210,6 +214,7 @@ impl<'b> Session<'b> {
         Ok(Session {
             ctx,
             proc,
+            #[cfg(feature = "snapshot")]
             bundle,
             core: &args.core,
             bundle_path: &args.bundle,
@@ -232,6 +237,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         Command::SharedState { depth, ugly } => {
             exec_runtime_field(session, "shared", depth, ugly, out)?
         }
+        #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => exec_snapshot(session, &output, out)?,
         Command::Tasks => exec_tasks(session, out)?,
         Command::Threads {
@@ -690,6 +696,7 @@ fn discover_workers(proc: &Proc, ctx: &bundle::Context<'_, Proc>) -> Result<Vec<
 /// e.g. `bounded::Receiver`'s compact `MpscRx` form, which peeling would
 /// strip away). The two read slightly different page sets, so warming
 /// both keeps the snapshot faithful to either rendering path.
+#[cfg(feature = "snapshot")]
 fn warm_frame_values<T: proc::Target>(
     ctx: &bundle::Context<'_, T>,
     chain: &bundle::AwaitChain<'_>,
@@ -721,6 +728,7 @@ fn warm_frame_values<T: proc::Target>(
 /// and await chain is walked so the snapshot can answer the offline
 /// tests' whole question set; walk problems are warnings, not errors,
 /// since a partially-traceable target is still worth capturing.
+#[cfg(feature = "snapshot")]
 fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) -> Result<()> {
     // The recording wrapper has to sit under its own context: what makes
     // a snapshot is the reads going through `Recorder`, so the session's

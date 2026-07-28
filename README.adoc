@@ -88,8 +88,9 @@ graph flags any futurelock — a lock future granted or queued on a contended
 semaphore whose task stopped polling it (RFD 609). `threads`, `shared-state`
 and `drivers` read the runtime's own state out of the target and take the same
 `--depth`; `find-types` and `type` ask the bundle instead of the target, and
-report the layouts every other command decodes memory with. Every flag has a
-short form; `help` lists the rest.
+report the layouts every other command decodes memory with. A command answers
+to any leading substring that fits it and no other, so `sh` runs
+`shared-state`. Every flag has a short form; `help` lists the rest.
 
 When stdin is not a terminal the same commands are read one per line, which is
 how scripts and pipelines drive it:
