@@ -42,24 +42,35 @@ fn dwarf_path(program: &str) -> PathBuf {
     if dsym.exists() { dsym } else { bin }
 }
 
-/// Build a fixture if it is missing. Returns `false` (skip) when the
-/// pinned toolchain is not installed; panics on real build failures.
+/// Put the fixture in the state its sources describe. Returns `false`
+/// (skip) when the pinned toolchain is not installed; panics on real
+/// build failures.
+///
+/// The fixture is rebuilt every run rather than kept if it happens to
+/// exist. `test-programs/fixtures/` is gitignored, so a checkout that
+/// changes a fixture's source leaves the previous build sitting there,
+/// and a golden then describes a program that no longer exists — a
+/// stale binary reads as line-number drift and has twice been blessed
+/// into a golden as if it were the truth. `regen.sh` is a `cargo build`,
+/// which decides for itself whether anything has to be compiled, so
+/// asking every time costs nothing when nothing changed.
 fn ensure_fixture(program: &str) -> bool {
     // Serialize builds: parallel test threads would contend on the
     // fixture target dir.
     static BUILD_LOCK: Mutex<()> = Mutex::new(());
     let _guard = BUILD_LOCK.lock().unwrap();
 
-    if dwarf_path(program).exists() {
-        return true;
-    }
-
-    let toolchains = Command::new("rustup")
-        .args(["toolchain", "list"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    if !toolchains.lines().any(|l| l.starts_with(TOOLCHAIN)) {
+    if !toolchain_installed() {
+        // Nothing can be built, so whatever is on disk is all there is.
+        // It may be stale, which is still better than no coverage — the
+        // failure it can cause is a loud golden diff, not a wrong pass.
+        if dwarf_path(program).exists() {
+            eprintln!(
+                "warning: toolchain {TOOLCHAIN} not installed; testing against \
+                 the {program} fixture already built"
+            );
+            return true;
+        }
         eprintln!(
             "SKIP: fixture {program} missing and toolchain {TOOLCHAIN} not installed \
              (rustup toolchain install {TOOLCHAIN})"
@@ -77,6 +88,16 @@ fn ensure_fixture(program: &str) -> bool {
         "regen.sh succeeded but {program} fixture is still missing"
     );
     true
+}
+
+fn toolchain_installed() -> bool {
+    Command::new("rustup")
+        .args(["toolchain", "list"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+        .lines()
+        .any(|l| l.starts_with(TOOLCHAIN))
 }
 
 fn leaf_of(name: &str) -> &str {
