@@ -26,3 +26,4 @@ reify = { workspace = true }
 rustc-demangle = { workspace = true }
 semver = { workspace = true }
 subprocess = { workspace = true }
+unwind = { workspace = true }

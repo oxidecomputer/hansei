@@ -19,7 +19,7 @@ pub use schema::{
 pub use strings::{StrRef, StringInterner, StringTable};
 pub use view::{
     ActiveVariant, BundleMember, BundleMemberIter, BundleType, BundleView, DynPointer,
-    POINTER_SIZE, VariantError,
+    POINTER_SIZE, VariantError, variant_name,
 };
 
 #[cfg(test)]
