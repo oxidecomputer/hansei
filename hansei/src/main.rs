@@ -16,24 +16,31 @@ pub mod repl;
 pub mod tokio;
 pub mod types;
 
-/// The command line names a target and nothing else; what to ask of it
-/// is read from stdin, at a prompt or from a pipe.
+/// The command line names a target; what to ask of it comes from
+/// `--exec`, or failing that from stdin, at a prompt or from a pipe.
 #[derive(Parser)]
 #[command(
     about = "Inspect a tokio runtime in a core dump",
     long_about = "Inspect a tokio runtime in a core dump.\n\n\
-                  The command line names a target and nothing else. What to \
-                  ask of it is read from stdin: at a prompt when stdin is a \
-                  terminal, otherwise one command per line, stopping at the \
-                  first failure.",
+                  The command line names a target. What to ask of it is read \
+                  from stdin — at a prompt when stdin is a terminal, otherwise \
+                  one command per line, stopping at the first failure — or \
+                  given with --exec, which asks and exits.",
     after_help = "Examples:\n  \
                   hansei --core core.app --bundle app.bundle\n  \
+                  hansei --core core.app --bundle app.bundle -e 'tasks; graph'\n  \
                   echo 'trace 42 -v' | hansei --core core.app --bundle app.bundle\n\n\
                   Type `help` for the commands a session accepts."
 )]
 struct Cli {
     #[command(flatten)]
     session: SessionArgs,
+
+    /// Commands to run instead of reading stdin, `;` between them.
+    /// Repeat the flag to add more; the session exits when they are
+    /// answered, or at the first one that fails.
+    #[arg(long, short, value_name = "COMMANDS")]
+    exec: Vec<String>,
 }
 
 /// What it takes to attach: the pair of files, and how strictly they
@@ -260,7 +267,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
 fn main() {
     let args = Cli::parse();
 
-    let res = run(&args.session);
+    let res = run(&args.session, &args.exec);
     if let Err(e) = res {
         if let Some(io_err) = e.downcast_ref::<io::Error>()
             && io_err.kind() == io::ErrorKind::BrokenPipe
@@ -279,14 +286,14 @@ fn main() {
 /// the context borrows both, so keeping all three in one frame is what
 /// lets a session be held across many commands without a
 /// self-referential struct.
-fn run(args: &SessionArgs) -> Result<()> {
+fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
     let proc = Proc::open_core(&args.core)
         .with_context(|| format!("failed to open {}", args.core.display()))?;
     let bundle = Bundle::load(&args.bundle)
         .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
     let session = Session::attach(&proc, &bundle, args)?;
 
-    repl::run(&session)
+    repl::run(&session, exec)
 }
 
 /// The attach summary: what is being read, and how well the two files

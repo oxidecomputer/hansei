@@ -4,14 +4,16 @@
 //! analysis wants anyway — opening a core, loading a bundle, and walking
 //! the runtime's workers and tasks costs the same whether one command
 //! follows or twenty, and a core does not change underneath them. So
-//! there is no per-command form of hansei; commands are read from stdin
-//! either way, and only the reading differs:
+//! there is no per-command form of hansei: a session is attached once
+//! and then asked, and only the asking differs:
 //!
 //! - a terminal gets [`reedline`]: a prompt, history, completion, and
 //!   errors that end the command rather than the session;
 //! - a pipe gets a plain line reader, and the first failure is fatal, so
 //!   a script that asks for something impossible does not carry on and
-//!   exit 0.
+//!   exit 0;
+//! - `--exec` carries the commands on the command line under those same
+//!   rules, for a caller with one question to ask and no stdin to spare.
 
 use crate::{Command, Flow, Session, dispatch};
 
@@ -46,12 +48,29 @@ struct Line {
     command: Command,
 }
 
-pub fn run(session: &Session<'_>) -> Result<()> {
-    if io::stdin().is_terminal() {
+pub fn run(session: &Session<'_>, exec: &[String]) -> Result<()> {
+    if !exec.is_empty() {
+        from_command_line(session, exec)
+    } else if io::stdin().is_terminal() {
         interactive(session)
     } else {
         scripted(session)
     }
+}
+
+/// Answer what `--exec` asked for and stop, without reading stdin.
+///
+/// The rules are a script's: the commands run in order and the first
+/// failure is fatal, since a caller that put them on one command line
+/// meant them as one question.
+fn from_command_line(session: &Session<'_>, exec: &[String]) -> Result<()> {
+    for commands in exec {
+        match execute(session, commands).with_context(|| format!("--exec {commands:?}"))? {
+            Flow::Continue => continue,
+            Flow::Quit => break,
+        }
+    }
+    Ok(())
 }
 
 /// Read commands from a terminal until asked to stop. A command that

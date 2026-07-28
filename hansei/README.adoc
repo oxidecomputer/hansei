@@ -62,11 +62,14 @@ the first failure. `info` reports what is attached and how completely the bundle
 lists the commands. A command that fails ends the command, not the session.
 
 When stdin is not a terminal the same commands are read one per line — blank lines and `#` comments are
-skipped — which is how scripts and the test suites drive it:
+skipped — which is how scripts and the test suites drive it. `--exec`/`-e` gives the commands on the command
+line instead of on stdin, and the session exits once they are answered:
 
 [source,shell]
 ----
 echo "trace ${ID} -v" | hansei --core ${PATH_TO_CORE} --bundle app.bundle
+
+hansei --core ${PATH_TO_CORE} --bundle app.bundle -e "tasks; trace ${ID}"
 ----
 
 There a failing command is fatal: the session stops at it and exits non-zero, rather than running the rest of
