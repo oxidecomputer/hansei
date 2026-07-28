@@ -103,9 +103,35 @@ fn scripted(session: &Session<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Parse one line and answer it, sending the output to a shell pipeline
-/// if the line asked for one.
+/// Answer a line, which may hold several commands separated by `;`.
+///
+/// They run in order and stop at the first failure, so `tasks ; graph`
+/// asks two questions of one target and a failure part-way through does
+/// not go on to ask the rest. The separator binds looser than nothing
+/// else does: a `;` ends the command it follows even inside the shell
+/// text after a `!`, which is the price of not having a quoting
+/// grammar.
 fn execute(session: &Session<'_>, line: &str) -> Result<Flow> {
+    let commands: Vec<&str> = line.split(';').collect();
+    for command in &commands {
+        // Which command failed is only a question when the line held
+        // more than one; below, the line itself is the answer.
+        let flow = match commands.len() {
+            1 => execute_one(session, command)?,
+            _ => {
+                execute_one(session, command).with_context(|| format!("in `{}`", command.trim()))?
+            }
+        };
+        if let Flow::Quit = flow {
+            return Ok(Flow::Quit);
+        }
+    }
+    Ok(Flow::Continue)
+}
+
+/// Parse one command and answer it, sending the output to a shell
+/// pipeline if it asked for one.
+fn execute_one(session: &Session<'_>, line: &str) -> Result<Flow> {
     // Everything after the first `!` is a shell command to pipe into,
     // so `tasks ! grep foo` filters the listing.
     let (command, shell) = match line.split_once('!') {

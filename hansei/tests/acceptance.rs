@@ -843,6 +843,34 @@ fn test_type_and_find_types() {
     });
 }
 
+/// A line can hold several commands, separated by `;`: they are asked
+/// of the one attached target in order, and a failure part-way through
+/// stops the rest rather than carrying on past a question that could
+/// not be answered.
+#[test]
+fn test_a_line_can_hold_several_commands() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let out = hansei_ok(&bundle, core, "info ; drivers");
+        assert!(out.contains("symbols resolved:"), "{out}");
+        assert!(out.contains("runtime::driver::Handle"), "{out}");
+
+        let out = hansei(&bundle, core, "info ; trace 99999 ; drivers");
+        assert!(
+            !out.status.success(),
+            "a failing command must end the line:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        // The first command answered, the third never ran, and the
+        // complaint names the one in between.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("symbols resolved:"), "{stdout}");
+        assert!(!stdout.contains("runtime::driver::Handle"), "{stdout}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("in `trace 99999`"), "{stderr}");
+    });
+}
+
 /// A command answers to any leading substring that fits it and no
 /// other, which is what a prompt is for. A prefix that fits several
 /// names them rather than picking one.

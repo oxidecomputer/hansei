@@ -52,12 +52,14 @@ already in hand:
 hansei〉tasks
 hansei〉trace 3 -v
 hansei〉graph ! grep -A5 futurelock
+hansei〉tasks ; graph
 hansei〉quit
 ----
 
-Tab completes command names, `!` pipes a command's output into a shell command, `info` reports what is attached
-and how completely the bundle's symbols resolved, and `help` lists the commands. A command that fails ends the
-command, not the session.
+Tab completes command names, a leading substring that fits one command names it (`sh` for `shared-state`), `!`
+pipes a command's output into a shell command, and `;` separates commands, which then run in order and stop at
+the first failure. `info` reports what is attached and how completely the bundle's symbols resolved, and `help`
+lists the commands. A command that fails ends the command, not the session.
 
 When stdin is not a terminal the same commands are read one per line — blank lines and `#` comments are
 skipped — which is how scripts and the test suites drive it:
