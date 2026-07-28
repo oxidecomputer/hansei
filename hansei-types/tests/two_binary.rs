@@ -296,7 +296,7 @@ workers 3
 task 3 idle simple_await::work::{async_fn_env#0}
   spawned test-programs/src/bin/simple-await.rs:67:21
   defined simple-await.rs:16
-  await simple_await::work::{async_fn_env#0} Suspend1 @ simple-await.rs:34 locals [count, labels, values, boxed, slice, ipv4, ipv6, borrowed, owned, first, ready, park]
+  await simple_await::work::{async_fn_env#0} Suspend1 @ simple-await.rs:34 locals [count, labels, values, boxed, slice, ipv4, ipv6, borrowed, owned, first]
   await tokio::sync::oneshot::Receiver<u32>
   end leaf
 "#,
@@ -315,9 +315,9 @@ workers 3
 task 3 idle nested_await::outer::{async_fn_env#0}
   spawned test-programs/src/bin/nested-await.rs:32:21
   defined nested-await.rs:16
-  await nested_await::outer::{async_fn_env#0} Suspend0 @ nested-await.rs:18 locals [ready, park]
-  await nested_await::middle::{async_fn_env#0} Suspend0 @ nested-await.rs:12 locals [park]
-  await nested_await::leaf::{async_fn_env#0} Suspend0 @ nested-await.rs:8 locals [park]
+  await nested_await::outer::{async_fn_env#0} Suspend0 @ nested-await.rs:18
+  await nested_await::middle::{async_fn_env#0} Suspend0 @ nested-await.rs:12
+  await nested_await::leaf::{async_fn_env#0} Suspend0 @ nested-await.rs:8
   await tokio::sync::oneshot::Receiver<u32>
   end leaf
 "#,
@@ -338,14 +338,14 @@ workers 3
 task 3 idle dyn_future::driver::{async_fn_env#0}
   spawned test-programs/src/bin/dyn-future.rs:46:21
   defined dyn-future.rs:22
-  await dyn_future::driver::{async_fn_env#0} Suspend0 @ dyn-future.rs:29 locals [set, ready, park_boxed, park_set]
-  await dyn_future::boxed_leaf::{async_fn_env#0} [dyn] Suspend0 @ dyn-future.rs:11 locals [park]
+  await dyn_future::driver::{async_fn_env#0} Suspend0 @ dyn-future.rs:29 locals [set]
+  await dyn_future::boxed_leaf::{async_fn_env#0} [dyn] Suspend0 @ dyn-future.rs:11
   await tokio::sync::oneshot::Receiver<u32>
   end leaf
 task 4 idle dyn_future::set_member::{async_fn_env#0}
   spawned test-programs/src/bin/dyn-future.rs:26:9
   defined dyn-future.rs:14
-  await dyn_future::set_member::{async_fn_env#0} Suspend0 @ dyn-future.rs:15 locals [park]
+  await dyn_future::set_member::{async_fn_env#0} Suspend0 @ dyn-future.rs:15
   await tokio::sync::oneshot::Receiver<u32>
   end leaf
 "#,
@@ -369,9 +369,9 @@ task 5 idle futurelock::main::{async_block#0}::{async_block_env#0}
   await futurelock::main::{async_block#0}::{async_block_env#0} Suspend1 @ futurelock.rs:25 locals [lock]
   await futurelock::do_stuff::{async_fn_env#0} Suspend1 @ futurelock.rs:64 locals [lock, future1, disabled]
   await futurelock::do_async_thing::{async_fn_env#0} Suspend0 @ futurelock.rs:72 locals [label, lock]
-  await tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()> Suspend0 @ src/sync/mutex.rs:455 locals [self]
-  await tokio::sync::mutex::{impl#10}::lock::{async_fn#0}::{async_block_env#0}<()> Suspend0 @ src/sync/mutex.rs:436 locals [_ref__self]
-  await tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()> Suspend1 @ src/sync/mutex.rs:658 locals [self]
+  await tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()> Suspend0 @ src/sync/mutex.rs:455
+  await tokio::sync::mutex::{impl#10}::lock::{async_fn#0}::{async_block_env#0}<()> Suspend0 @ src/sync/mutex.rs:436
+  await tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()> Suspend1 @ src/sync/mutex.rs:658
   await tokio::sync::batch_semaphore::Acquire
   end leaf
   waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
@@ -396,14 +396,14 @@ workers 3
 task 3 idle sleep_join::sleeper::{async_fn_env#0}
   spawned test-programs/src/bin/sleep-join.rs:28:22
   defined sleep-join.rs:9
-  await sleep_join::sleeper::{async_fn_env#0} Suspend0 @ sleep-join.rs:11 locals [ready]
+  await sleep_join::sleeper::{async_fn_env#0} Suspend0 @ sleep-join.rs:11
   await tokio::time::sleep::Sleep
   end leaf
   waiting on the timer: deadline TS on the target's monotonic clock
 task 4 idle sleep_join::joiner::{async_fn_env#0}
   spawned test-programs/src/bin/sleep-join.rs:29:23
   defined sleep-join.rs:15
-  await sleep_join::joiner::{async_fn_env#0} Suspend0 @ sleep-join.rs:17 locals [ready, handle]
+  await sleep_join::joiner::{async_fn_env#0} Suspend0 @ sleep-join.rs:17
   await tokio::runtime::task::join::JoinHandle<u32>
   end leaf
   waiting on task 3 (JoinHandle)
