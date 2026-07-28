@@ -66,7 +66,7 @@ pub enum Command {
     /// Show the runtime's drivers: io, signal, time and the clock.
     Drivers {
         /// Maximum depth to recurse when formatting values.
-        #[arg(long, short, default_value_t = 3)]
+        #[arg(long, short, default_value_t = 4)]
         depth: usize,
 
         /// Disable every type's custom formatter and show the raw
@@ -94,7 +94,7 @@ pub enum Command {
     /// the injection queue, the idle set and the per-worker remotes.
     SharedState {
         /// Maximum depth to recurse when formatting values.
-        #[arg(long, short, default_value_t = 3)]
+        #[arg(long, short, default_value_t = 4)]
         depth: usize,
 
         /// Disable every type's custom formatter and show the raw
@@ -129,7 +129,7 @@ pub enum Command {
         frames: usize,
 
         /// Maximum depth to recurse when formatting the worker core.
-        #[arg(long, short, default_value_t = 3)]
+        #[arg(long, short, default_value_t = 4)]
         depth: usize,
 
         /// Disable every type's custom formatter and show the raw
@@ -150,7 +150,7 @@ pub enum Command {
         verbose: bool,
 
         /// Maximum depth to recurse when formatting variable values.
-        #[arg(long, short, default_value_t = 2, requires = "verbose")]
+        #[arg(long, short, default_value_t = 4, requires = "verbose")]
         depth: usize,
 
         /// Disable every type's custom formatter and show the raw
