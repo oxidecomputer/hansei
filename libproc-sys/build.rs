@@ -1,12 +1,12 @@
 //! Generate the libproc bindings, on the one system that has libproc.
 //!
 //! bindgen links libclang, so it is a build-dependency only where the
-//! bindings are actually generated. Everywhere else this crate cannot be
-//! built at all — `lib.rs` says so — and pulling libclang in just to
-//! reach that message costs the rest of the workspace its build: the
-//! script would need a `libclang.so` matching whatever clang-sys linked
-//! it against, which on a machine with more than one LLVM around is not
-//! the one the loader finds.
+//! bindings are actually generated. Everywhere else this crate builds
+//! to nothing, and pulling libclang in to reach that conclusion would
+//! cost the rest of the workspace its build: the script would need a
+//! `libclang.so` matching whatever clang-sys linked it against, which
+//! on a machine with more than one LLVM around is not the one the
+//! loader finds.
 
 fn main() {
     #[cfg(target_os = "illumos")]
