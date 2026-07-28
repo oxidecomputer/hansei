@@ -3,9 +3,9 @@
 //! core on purpose.
 //!
 //! It is `simple-await` with a different ending. That fixture parks
-//! forever, because the illumos suite attaches to it while it runs;
-//! nothing reads a live process on Linux yet, so this one aborts once
-//! its task is parked and the suite works from the core.
+//! forever so the illumos suite can `gcore` it and kill it afterwards;
+//! here gdb takes the core, and it needs somewhere to stop, so this one
+//! aborts once its task is parked.
 //!
 //! Two tasks, both idle at a known await point: one parked on a oneshot
 //! whose sender is leaked, and one on a channel nobody sends to. Their
@@ -61,9 +61,8 @@ fn main() {
             .expect("the receiving task signals readiness");
         println!("READY");
 
-        // Both tasks are parked at a known await point; take the core
-        // here rather than leaving the process running, since nothing
-        // reads a live process on this platform yet.
+        // Both tasks are parked at a known await point; abort here so
+        // gdb has a stop to take the core at.
         std::process::abort()
     })
 }

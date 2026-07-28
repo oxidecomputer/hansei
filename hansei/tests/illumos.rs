@@ -7,8 +7,8 @@
 //! Everything here runs on-box against freshly built two-binary fixture
 //! pairs: `test-programs/regen.sh` compiles the fixture programs twice
 //! with the pinned recipe into separate target dirs, bundles are
-//! extracted from build B, and the processes and cores under inspection
-//! come from build A. Each program is driven to a deterministic parked
+//! extracted from build B, and the cores under inspection come from
+//! build A. Each program is driven to a deterministic parked
 //! steady state by blocking on its stdout readiness marker — there are
 //! no timing sleeps anywhere. Cores are taken fresh into a tempdir and
 //! removed with it.
@@ -172,39 +172,13 @@ fn gcore(pid: u32, dir: &Path) -> PathBuf {
     core
 }
 
-/// A target for the hansei CLI: the same assertions run against a fresh
-/// core and against the still-live process.
-enum Source {
-    Core(PathBuf),
-    Live(u32),
-}
-
-impl Source {
-    fn args(&self) -> Vec<String> {
-        match self {
-            Source::Core(path) => vec!["--core".into(), path.to_str().unwrap().into()],
-            // Live attach stops the process while reading (-w
-            // acknowledges that).
-            Source::Live(pid) => vec!["--pid".into(), pid.to_string(), "-w".into()],
-        }
-    }
-
-    fn describe(&self) -> &'static str {
-        match self {
-            Source::Core(_) => "core",
-            Source::Live(_) => "live",
-        }
-    }
-}
-
 /// Drive a program to its steady state and run `check` against a fresh
-/// core of it, then against the live process.
-fn for_each_source(program: &str, check: impl Fn(&Source)) {
+/// core of it.
+fn with_core(program: &str, check: impl Fn(&Path)) {
     let parked = Parked::spawn(program);
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core = gcore(parked.pid(), dir.path());
-    check(&Source::Core(core));
-    check(&Source::Live(parked.pid()));
+    check(&core);
 }
 
 fn hansei(args: &[&str]) -> Output {
@@ -246,11 +220,14 @@ fn split_columns(line: &str) -> Vec<&str> {
 }
 
 /// Run `hansei tasks` and parse the listing.
-fn list_tasks(bundle: &Path, source: &Source) -> Vec<TaskRow> {
-    let mut args = vec!["tasks", "--bundle", bundle.to_str().unwrap()];
-    let source_args = source.args();
-    args.extend(source_args.iter().map(String::as_str));
-    let out = hansei_ok(&args);
+fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
+    let out = hansei_ok(&[
+        "tasks",
+        "--bundle",
+        bundle.to_str().unwrap(),
+        "--core",
+        core.to_str().unwrap(),
+    ]);
 
     let mut lines = out.lines();
     let header = lines.next().expect("tasks output has a header");
@@ -300,17 +277,19 @@ fn task_with_future<'a>(rows: &'a [TaskRow], future: &str) -> &'a TaskRow {
 }
 
 /// Run `hansei task-trace --task-id` and return its output.
-fn trace(bundle: &Path, source: &Source, task_id: &str, verbose: bool) -> String {
-    trace_opts(bundle, source, task_id, verbose, false)
+fn trace(bundle: &Path, core: &Path, task_id: &str, verbose: bool) -> String {
+    trace_opts(bundle, core, task_id, verbose, false)
 }
 
 /// Like [`trace`], but also toggles `--ugly` (the raw structural view, with
 /// every type's custom formatter suppressed).
-fn trace_opts(bundle: &Path, source: &Source, task_id: &str, verbose: bool, ugly: bool) -> String {
+fn trace_opts(bundle: &Path, core: &Path, task_id: &str, verbose: bool, ugly: bool) -> String {
     let mut args = vec![
         "task-trace",
         "--bundle",
         bundle.to_str().unwrap(),
+        "--core",
+        core.to_str().unwrap(),
         "--task-id",
         task_id,
     ];
@@ -320,8 +299,6 @@ fn trace_opts(bundle: &Path, source: &Source, task_id: &str, verbose: bool, ugly
     if ugly {
         args.push("--ugly");
     }
-    let source_args = source.args();
-    args.extend(source_args.iter().map(String::as_str));
     hansei_ok(&args)
 }
 
@@ -351,16 +328,16 @@ fn assert_locals(verbose_trace: &str, names: &[&str]) {
 // ---------------------------------------------------------------------------
 
 /// One spawned async fn parked on a leaked oneshot: the baseline listing
-/// and two-frame chain, against a core and the live process.
+/// and two-frame chain.
 #[test]
 #[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_simple_await_acceptance() {
     let bundle = fixtures().bundle("simple-await");
-    for_each_source("simple-await", |source| {
-        let rows = list_tasks(&bundle, source);
-        assert_eq!(rows.len(), 1, "({}) {rows:#?}", source.describe());
+    with_core("simple-await", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
-        assert_eq!(task.state, "idle", "({})", source.describe());
+        assert_eq!(task.state, "idle");
         assert_eq!(task.spawned, "test-programs/src/bin/simple-await.rs:65:21");
         assert_eq!(task.defined, "simple-await.rs:16");
 
@@ -377,14 +354,9 @@ Defined at: simple-await.rs:16
 ",
             id = task.id
         );
-        assert_eq!(
-            trace(&bundle, source, &task.id, false),
-            expected,
-            "({})",
-            source.describe()
-        );
+        assert_eq!(trace(&bundle, core, &task.id, false), expected);
 
-        let verbose = trace(&bundle, source, &task.id, true);
+        let verbose = trace(&bundle, core, &task.id, true);
         assert_locals(&verbose, &["count", "first", "ready", "park"]);
     });
 }
@@ -398,46 +370,38 @@ Defined at: simple-await.rs:16
 #[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_ugly_locals_acceptance() {
     let bundle = fixtures().bundle("simple-await");
-    for_each_source("simple-await", |source| {
-        let rows = list_tasks(&bundle, source);
+    with_core("simple-await", |core| {
+        let rows = list_tasks(&bundle, core);
         let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
-        let who = source.describe();
-
         // Normal verbose rendering: each local reads as its decoded value,
         // through its own formatter.
-        let pretty = trace_opts(&bundle, source, &task.id, true, false);
-        assert!(pretty.contains("ipv4: 192.0.2.1"), "({who})\n{pretty}");
-        assert!(
-            pretty.contains(r#"borrowed: "borrowed\ntext""#),
-            "({who})\n{pretty}"
-        );
-        assert!(
-            pretty.contains(r#"owned: "owned\ttext""#),
-            "({who})\n{pretty}"
-        );
+        let pretty = trace_opts(&bundle, core, &task.id, true, false);
+        assert!(pretty.contains("ipv4: 192.0.2.1"), "{pretty}");
+        assert!(pretty.contains(r#"borrowed: "borrowed\ntext""#), "{pretty}");
+        assert!(pretty.contains(r#"owned: "owned\ttext""#), "{pretty}");
 
         // --ugly: the very same locals render through their structure, and the
         // formatted forms are gone entirely.
-        let ugly = trace_opts(&bundle, source, &task.id, true, true);
+        let ugly = trace_opts(&bundle, core, &task.id, true, true);
         assert!(
             !ugly.contains("192.0.2.1"),
-            "({who}) --ugly still formatted the IP:\n{ugly}"
+            "--ugly still formatted the IP:\n{ugly}"
         );
         assert!(
             !ugly.contains(r#""borrowed\ntext""#),
-            "({who}) --ugly still formatted the &str:\n{ugly}"
+            "--ugly still formatted the &str:\n{ugly}"
         );
         assert!(
             ugly.contains("core::net::ip_addr::Ipv4Addr {"),
-            "({who}) --ugly IP is not structural:\n{ugly}"
+            "--ugly IP is not structural:\n{ugly}"
         );
         assert!(
             ugly.contains("&str {") && ugly.contains("length: 13"),
-            "({who}) --ugly &str is not structural:\n{ugly}"
+            "--ugly &str is not structural:\n{ugly}"
         );
         assert!(
             ugly.contains("alloc::string::String {"),
-            "({who}) --ugly String is not structural:\n{ugly}"
+            "--ugly String is not structural:\n{ugly}"
         );
     });
 }
@@ -448,11 +412,11 @@ fn test_ugly_locals_acceptance() {
 #[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_nested_await_acceptance() {
     let bundle = fixtures().bundle("nested-await");
-    for_each_source("nested-await", |source| {
-        let rows = list_tasks(&bundle, source);
-        assert_eq!(rows.len(), 1, "({}) {rows:#?}", source.describe());
+    with_core("nested-await", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "nested_await::outer::{async_fn_env#0}");
-        assert_eq!(task.state, "idle", "({})", source.describe());
+        assert_eq!(task.state, "idle");
         assert_eq!(task.spawned, "test-programs/src/bin/nested-await.rs:30:21");
         assert_eq!(task.defined, "nested-await.rs:16");
 
@@ -475,12 +439,7 @@ Defined at: nested-await.rs:16
 ",
             id = task.id
         );
-        assert_eq!(
-            trace(&bundle, source, &task.id, false),
-            expected,
-            "({})",
-            source.describe()
-        );
+        assert_eq!(trace(&bundle, core, &task.id, false), expected);
     });
 }
 
@@ -492,12 +451,12 @@ Defined at: nested-await.rs:16
 #[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_dyn_future_acceptance() {
     let bundle = fixtures().bundle("dyn-future");
-    for_each_source("dyn-future", |source| {
-        let rows = list_tasks(&bundle, source);
-        assert_eq!(rows.len(), 2, "({}) {rows:#?}", source.describe());
+    with_core("dyn-future", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 2, "{rows:#?}");
 
         let driver = task_with_future(&rows, "dyn_future::driver::{async_fn_env#0}");
-        assert_eq!(driver.state, "idle", "({})", source.describe());
+        assert_eq!(driver.state, "idle");
         assert_eq!(driver.spawned, "test-programs/src/bin/dyn-future.rs:44:21");
         assert_eq!(driver.defined, "dyn-future.rs:22");
         let expected = format!(
@@ -516,15 +475,10 @@ Defined at: dyn-future.rs:22
 ",
             id = driver.id
         );
-        assert_eq!(
-            trace(&bundle, source, &driver.id, false),
-            expected,
-            "({})",
-            source.describe()
-        );
+        assert_eq!(trace(&bundle, core, &driver.id, false), expected);
 
         let member = task_with_future(&rows, "dyn_future::set_member::{async_fn_env#0}");
-        assert_eq!(member.state, "idle", "({})", source.describe());
+        assert_eq!(member.state, "idle");
         assert_eq!(member.spawned, "test-programs/src/bin/dyn-future.rs:26:9");
         assert_eq!(member.defined, "dyn-future.rs:14");
         let expected = format!(
@@ -540,12 +494,7 @@ Defined at: dyn-future.rs:14
 ",
             id = member.id
         );
-        assert_eq!(
-            trace(&bundle, source, &member.id, false),
-            expected,
-            "({})",
-            source.describe()
-        );
+        assert_eq!(trace(&bundle, core, &member.id, false), expected);
     });
 }
 
@@ -557,16 +506,16 @@ Defined at: dyn-future.rs:14
 #[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_futurelock_acceptance() {
     let bundle = fixtures().bundle("futurelock");
-    for_each_source("futurelock", |source| {
-        let rows = list_tasks(&bundle, source);
+    with_core("futurelock", |core| {
+        let rows = list_tasks(&bundle, core);
         // The background task completed and left OwnedTasks; only the
         // deadlocked main task remains.
-        assert_eq!(rows.len(), 1, "({}) {rows:#?}", source.describe());
+        assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(
             &rows,
             "futurelock::main::{async_block#0}::{async_block_env#0}",
         );
-        assert_eq!(task.state, "idle", "({})", source.describe());
+        assert_eq!(task.state, "idle");
         assert_eq!(task.spawned, "test-programs/src/bin/futurelock.rs:13:17");
         assert_eq!(task.defined, "futurelock.rs:13");
 
@@ -599,16 +548,11 @@ Defined at: futurelock.rs:13
 ",
             id = task.id
         );
-        assert_eq!(
-            normalize(&trace(&bundle, source, &task.id, false)),
-            expected,
-            "({})",
-            source.describe()
-        );
+        assert_eq!(normalize(&trace(&bundle, core, &task.id, false)), expected);
 
         // The boxed, never-again-polled future1 is still held across
         // do_stuff's suspension — the futurelock signature.
-        let verbose = trace(&bundle, source, &task.id, true);
+        let verbose = trace(&bundle, core, &task.id, true);
         assert_locals(&verbose, &["lock", "future1", "disabled", "label"]);
     });
 }
@@ -620,11 +564,11 @@ Defined at: futurelock.rs:13
 #[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_many_tasks_acceptance() {
     let bundle = fixtures().bundle("many-tasks");
-    for_each_source("many-tasks", |source| {
-        let rows = list_tasks(&bundle, source);
-        assert_eq!(rows.len(), 32, "({}) {rows:#?}", source.describe());
+    with_core("many-tasks", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 32, "{rows:#?}");
         for row in &rows {
-            assert_eq!(row.state, "idle", "({}) {row:#?}", source.describe());
+            assert_eq!(row.state, "idle", "{row:#?}");
             assert_eq!(row.future, "many_tasks::park_task::{async_fn_env#0}");
             assert_eq!(row.spawned, "test-programs/src/bin/many-tasks.rs:25:13");
             assert_eq!(row.defined, "many-tasks.rs:9");
@@ -646,12 +590,7 @@ Defined at: many-tasks.rs:9
 ",
             id = task.id
         );
-        assert_eq!(
-            trace(&bundle, source, &task.id, false),
-            expected,
-            "({})",
-            source.describe()
-        );
+        assert_eq!(trace(&bundle, core, &task.id, false), expected);
     });
 }
 
@@ -663,13 +602,13 @@ Defined at: many-tasks.rs:9
 #[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_sleep_join_acceptance() {
     let bundle = fixtures().bundle("sleep-join");
-    for_each_source("sleep-join", |source| {
-        let rows = list_tasks(&bundle, source);
-        assert_eq!(rows.len(), 2, "({}) {rows:#?}", source.describe());
+    with_core("sleep-join", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 2, "{rows:#?}");
         let sleeper = task_with_future(&rows, "sleep_join::sleeper::{async_fn_env#0}");
         let joiner = task_with_future(&rows, "sleep_join::joiner::{async_fn_env#0}");
-        assert_eq!(sleeper.state, "idle", "({})", source.describe());
-        assert_eq!(joiner.state, "idle", "({})", source.describe());
+        assert_eq!(sleeper.state, "idle");
+        assert_eq!(joiner.state, "idle");
 
         let expected = format!(
             "\
@@ -686,10 +625,8 @@ Defined at: sleep-join.rs:9
             id = sleeper.id
         );
         assert_eq!(
-            normalize(&trace(&bundle, source, &sleeper.id, false)),
-            expected,
-            "({})",
-            source.describe()
+            normalize(&trace(&bundle, core, &sleeper.id, false)),
+            expected
         );
 
         let expected = format!(
@@ -707,12 +644,7 @@ Defined at: sleep-join.rs:15
             id = joiner.id,
             sleeper_id = sleeper.id
         );
-        assert_eq!(
-            trace(&bundle, source, &joiner.id, false),
-            expected,
-            "({})",
-            source.describe()
-        );
+        assert_eq!(trace(&bundle, core, &joiner.id, false), expected);
     });
 }
 
@@ -721,11 +653,14 @@ Defined at: sleep-join.rs:15
 // ---------------------------------------------------------------------------
 
 /// Run `hansei graph` and return its output.
-fn graph(bundle: &Path, source: &Source) -> String {
-    let mut args = vec!["graph", "--bundle", bundle.to_str().unwrap()];
-    let source_args = source.args();
-    args.extend(source_args.iter().map(String::as_str));
-    hansei_ok(&args)
+fn graph(bundle: &Path, core: &Path) -> String {
+    hansei_ok(&[
+        "graph",
+        "--bundle",
+        bundle.to_str().unwrap(),
+        "--core",
+        core.to_str().unwrap(),
+    ])
 }
 
 /// Format rows the way the graph table does: two-space separated
@@ -756,8 +691,8 @@ fn graph_table(rows: &[[&str; 3]]) -> String {
 #[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_futurelock_graph() {
     let bundle = fixtures().bundle("futurelock");
-    for_each_source("futurelock", |source| {
-        let rows = list_tasks(&bundle, source);
+    with_core("futurelock", |core| {
+        let rows = list_tasks(&bundle, core);
         let task = task_with_future(
             &rows,
             "futurelock::main::{async_block#0}::{async_block_env#0}",
@@ -777,12 +712,7 @@ fn test_futurelock_graph() {
              — futurelock.rs:62\n  \
              blocked behind it: task {id}\n"
         ));
-        assert_eq!(
-            normalize(&graph(&bundle, source)),
-            expected,
-            "({})",
-            source.describe()
-        );
+        assert_eq!(normalize(&graph(&bundle, core)), expected);
     });
 }
 
@@ -793,8 +723,8 @@ fn test_futurelock_graph() {
 #[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_sleep_join_graph() {
     let bundle = fixtures().bundle("sleep-join");
-    for_each_source("sleep-join", |source| {
-        let rows = list_tasks(&bundle, source);
+    with_core("sleep-join", |core| {
+        let rows = list_tasks(&bundle, core);
         let sleeper = task_with_future(&rows, "sleep_join::sleeper::{async_fn_env#0}");
         let joiner = task_with_future(&rows, "sleep_join::joiner::{async_fn_env#0}");
 
@@ -809,12 +739,7 @@ fn test_sleep_join_graph() {
             [&joiner.id, "idle", &join_edge],
         ]);
         expected.push_str("\nno futurelock detected\n");
-        assert_eq!(
-            normalize(&graph(&bundle, source)),
-            expected,
-            "({})",
-            source.describe()
-        );
+        assert_eq!(normalize(&graph(&bundle, core)), expected);
     });
 }
 

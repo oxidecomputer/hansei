@@ -1,5 +1,3 @@
-#[cfg(target_os = "illumos")]
-use crate::tokio::find_thd_context;
 use crate::tokio::{Lifecycle, bundle, graph};
 
 use anyhow::{Context as _, Result};
@@ -46,16 +44,6 @@ struct Graph {
     /// Proceed even if the bundle's symbols don't all resolve in the target.
     #[arg(long)]
     force: bool,
-
-    /// Find worker threads with the legacy TSD byte-pattern heuristic
-    /// instead of the TLS key named by the bundle.
-    #[arg(long)]
-    heuristic_discovery: bool,
-
-    /// Pausing a live process is potentially destructive.
-    /// Required if --pid is passed.
-    #[arg(long, short = 'w')]
-    destructive: bool,
 }
 
 /// Capture a replayable snapshot of everything the bundle-backed
@@ -80,11 +68,6 @@ struct SnapshotCmd {
     /// Proceed even if the bundle's symbols don't all resolve in the target.
     #[arg(long)]
     force: bool,
-
-    /// Pausing a live process is potentially destructive.
-    /// Required if --pid is passed.
-    #[arg(long, short = 'w')]
-    destructive: bool,
 }
 
 /// List every task owned by the runtime: id, lifecycle state, concrete
@@ -101,16 +84,6 @@ struct Tasks {
     /// Proceed even if the bundle's symbols don't all resolve in the target.
     #[arg(long)]
     force: bool,
-
-    /// Find worker threads with the legacy TSD byte-pattern heuristic
-    /// instead of the TLS key named by the bundle.
-    #[arg(long)]
-    heuristic_discovery: bool,
-
-    /// Pausing a live process is potentially destructive.
-    /// Required if --pid is passed.
-    #[arg(long, short = 'w')]
-    destructive: bool,
 }
 
 /// Print a task's await chain. Tasks are selected by id (see `hansei
@@ -133,16 +106,6 @@ struct TaskTrace {
     #[arg(long)]
     force: bool,
 
-    /// Find worker threads with the legacy TSD byte-pattern heuristic
-    /// instead of the TLS key named by the bundle.
-    #[arg(long)]
-    heuristic_discovery: bool,
-
-    /// Pausing a live process is potentially destructive.
-    /// Required if --pid is passed.
-    #[arg(long, short = 'w')]
-    destructive: bool,
-
     /// Show the variables present at each await point.
     #[clap(long, short)]
     verbose: bool,
@@ -158,49 +121,16 @@ struct TaskTrace {
 }
 
 #[derive(Args)]
-#[group(required = true, multiple = false)]
 struct Source {
-    /// The pid of the process to inspect.
-    #[arg(long)]
-    pid: Option<u32>,
-
     /// The core dump to open.
     #[arg(long)]
-    core: Option<PathBuf>,
+    core: PathBuf,
 }
 
 impl Source {
-    fn open_proc(&self, destructive: bool) -> Result<Proc> {
-        match (self.pid, &self.core) {
-            (Some(pid), None) => Self::grab_pid(pid, destructive),
-            (None, Some(core)) => {
-                Proc::open_core(core).with_context(|| format!("failed to open {}", core.display()))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[cfg(target_os = "illumos")]
-    fn grab_pid(pid: u32, destructive: bool) -> Result<Proc> {
-        anyhow::ensure!(
-            destructive,
-            "This command is potentially destructive when run against live \
-                processes. Pass the `-w` / `--destructive` flag to allow it."
-        );
-
-        Proc::grab_pid(pid).with_context(|| "failed to grab pid {pid}")
-    }
-
-    /// `--pid` stays in the interface everywhere so the command line
-    /// reads the same on every platform, but only illumos can honour it
-    /// so far: reading a live process there is libproc's job, and
-    /// nothing has taken it on elsewhere yet.
-    #[cfg(not(target_os = "illumos"))]
-    fn grab_pid(pid: u32, _destructive: bool) -> Result<Proc> {
-        anyhow::bail!(
-            "reading a live process is not supported on this platform yet; \
-             take a core of {pid} (`gcore {pid}`) and pass `--core` instead"
-        )
+    fn open_proc(&self) -> Result<Proc> {
+        Proc::open_core(&self.core)
+            .with_context(|| format!("failed to open {}", self.core.display()))
     }
 }
 
@@ -229,14 +159,14 @@ fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
     let task_id = args.task_id;
     let bundle_path = &args.bundle;
 
-    let proc = args.source.open_proc(args.destructive)?;
+    let proc = args.source.open_proc()?;
     let bundle = Bundle::load(bundle_path)
         .with_context(|| format!("failed to load bundle {}", bundle_path.display()))?;
     let view = BundleView::new(&bundle);
     let ctx = bundle::Context::new(&proc, view)?;
     check_fingerprint(&ctx, args.force)?;
 
-    let workers = discover_workers(&proc, &ctx, args.heuristic_discovery)?;
+    let workers = discover_workers(&proc, &ctx)?;
     let shared = ctx.find_shared(&workers)?;
     let list = ctx.enumerate_tasks(&shared)?;
     for err in &list.errors {
@@ -590,57 +520,16 @@ fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool)
     Ok(())
 }
 
-/// Find the LWPs holding a tokio `Context`: the thread-local flow
-/// (§3.0), or the legacy byte-pattern heuristic on request.
-fn discover_workers(
-    proc: &Proc,
-    ctx: &bundle::Context<'_, Proc>,
-    heuristic: bool,
-) -> Result<Vec<bundle::Worker>> {
+/// Find the LWPs holding a tokio `Context`, through the thread-local
+/// the bundle names (§3.0).
+fn discover_workers(proc: &Proc, ctx: &bundle::Context<'_, Proc>) -> Result<Vec<bundle::Worker>> {
     let lwps = proc.lwps().context("failed to read lwps")?;
-    let workers = if heuristic {
-        heuristic_workers(proc, ctx, &lwps)?
-    } else {
-        ctx.find_workers(&lwps)?
-    };
+    let workers = ctx.find_workers(&lwps)?;
     anyhow::ensure!(
         !workers.is_empty(),
         "no LWP has a tokio Context in thread-local storage; is this a tokio program?"
     );
     Ok(workers)
-}
-
-/// The legacy discovery path: scan each thread's fast-TSD slots for
-/// something shaped like a `Context`, rather than asking the bundle
-/// which symbol names it. Fast TSD is illumos's way of storing a
-/// thread-local, so this heuristic cannot be run anywhere else.
-#[cfg(target_os = "illumos")]
-fn heuristic_workers(
-    proc: &Proc,
-    ctx: &bundle::Context<'_, Proc>,
-    lwps: &[proc::LwpInfo],
-) -> Result<Vec<bundle::Worker>> {
-    let brk_range = proc.status().brk_range;
-    let mut workers = Vec::new();
-    for lwp in lwps {
-        if let Some(addr) = find_thd_context(&lwp.regs, &brk_range, proc)? {
-            workers.push(ctx.worker_at(lwp.tid, addr)?);
-        }
-    }
-    Ok(workers)
-}
-
-#[cfg(not(target_os = "illumos"))]
-fn heuristic_workers(
-    _proc: &Proc,
-    _ctx: &bundle::Context<'_, Proc>,
-    _lwps: &[proc::LwpInfo],
-) -> Result<Vec<bundle::Worker>> {
-    anyhow::bail!(
-        "the byte-pattern heuristic reads illumos fast-TSD slots and has no \
-         meaning on this platform; drop `--heuristic-discovery` to use the \
-         thread-local the bundle names"
-    )
 }
 
 /// Render every running frame's source-level locals through reify,
@@ -688,7 +577,7 @@ fn warm_frame_values<T: proc::Target>(
 /// tests' whole question set; walk problems are warnings, not errors,
 /// since a partially-traceable target is still worth capturing.
 fn exec_snapshot(args: SnapshotCmd, out: &mut dyn io::Write) -> Result<()> {
-    let proc = args.source.open_proc(args.destructive)?;
+    let proc = args.source.open_proc()?;
     let bundle = Bundle::load(&args.bundle)
         .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
     let view = BundleView::new(&bundle);
@@ -770,7 +659,7 @@ fn exec_snapshot(args: SnapshotCmd, out: &mut dyn io::Write) -> Result<()> {
 }
 
 fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
-    let proc = args.source.open_proc(args.destructive)?;
+    let proc = args.source.open_proc()?;
 
     let bundle = Bundle::load(&args.bundle)
         .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
@@ -778,7 +667,7 @@ fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
     let ctx = bundle::Context::new(&proc, view)?;
     check_fingerprint(&ctx, args.force)?;
 
-    let workers = discover_workers(&proc, &ctx, args.heuristic_discovery)?;
+    let workers = discover_workers(&proc, &ctx)?;
     let shared = ctx.find_shared(&workers)?;
     let list = ctx.enumerate_tasks(&shared)?;
 
@@ -864,14 +753,14 @@ fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
 }
 
 fn exec_graph(args: Graph, out: &mut dyn io::Write) -> Result<()> {
-    let proc = args.source.open_proc(args.destructive)?;
+    let proc = args.source.open_proc()?;
     let bundle = Bundle::load(&args.bundle)
         .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
     let view = BundleView::new(&bundle);
     let ctx = bundle::Context::new(&proc, view)?;
     check_fingerprint(&ctx, args.force)?;
 
-    let workers = discover_workers(&proc, &ctx, args.heuristic_discovery)?;
+    let workers = discover_workers(&proc, &ctx)?;
     let shared = ctx.find_shared(&workers)?;
     let list = ctx.enumerate_tasks(&shared)?;
     for err in &list.errors {

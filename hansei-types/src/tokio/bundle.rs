@@ -307,8 +307,8 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(workers)
     }
 
-    /// Parse the thread-local `Context` at `context_addr` (e.g. found via
-    /// the TSD key, or by the legacy byte-pattern heuristic).
+    /// Parse the thread-local `Context` at `context_addr`, as found via
+    /// the thread-local the bundle names.
     pub fn worker_at(&self, tid: u32, context_addr: u64) -> Result<Worker> {
         let info = self.context_info(context_addr)?;
         let current_task_id = info

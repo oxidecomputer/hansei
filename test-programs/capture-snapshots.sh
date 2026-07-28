@@ -7,7 +7,8 @@
 # join B's bundle against A's snapshot — the two-binary constraint,
 # exercised in plain `cargo test` on any platform.
 #
-# illumos-only: capture reads a live process through libproc. Fixtures
+# illumos-only: each program is driven to its steady state and cored
+# with gcore(1), and the snapshot is captured from that core. Fixtures
 # land in hansei-types/tests/fixtures (override with $1) and are small
 # enough to check in; this script makes them regenerable either way.
 #
@@ -58,9 +59,10 @@ for p in "${PROGRAMS[@]}"; do
 
     fifo="$(mktemp -u)"
     mkfifo "$fifo"
+    coredir="$(mktemp -d)"
     "$FIXTURES/bin-a/$p" >"$fifo" 2>&1 &
     pid=$!
-    trap 'kill $pid 2>/dev/null || true; rm -f "$fifo"' EXIT
+    trap 'kill $pid 2>/dev/null || true; rm -f "$fifo"; rm -rf "$coredir"' EXIT
 
     want="$(marker "$p")"
     while IFS= read -r line; do
@@ -69,11 +71,13 @@ for p in "${PROGRAMS[@]}"; do
     # Keep draining stdout so the child never blocks on a full pipe.
     cat "$fifo" >/dev/null &
 
-    "$HANSEI" snapshot --pid "$pid" -w \
+    gcore -o "$coredir/core" "$pid"
+    "$HANSEI" snapshot --core "$coredir/core.$pid" \
         --bundle "$OUT/$p.bundle" -o "$OUT/$p.snapshot"
 
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
+    rm -rf "$coredir"
     rm -f "$fifo"
     trap - EXIT
 

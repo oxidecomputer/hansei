@@ -4,11 +4,8 @@
 to acknowledge one's own mistake and to pledge improvement.
 
 A tool to inspect where we have erred with `tokio`: it reads the state of a tokio multi-threaded runtime from a
-core dump — written by illumos or by Linux, and read on either — or from a live illumos process, using debug
-information produced from a *separate* build of the same sources. Currently a proof-of-concept, expect bugs.
-
-WARNING: DO NOT RUN THIS AGAINST A PROCESS YOU CARE ABOUT. Live inspection stops the process while reading; the
-`-w`/`--destructive` flag acknowledges that.
+core dump — written by illumos or by Linux, and read on either — using debug information produced from a
+*separate* build of the same sources. Currently a proof-of-concept, expect bugs.
 
 hansei reads a debug *bundle* produced by `exegesis extract` (targets built with rustc ≥ 1.97): `exegesis`
 reads a debug binary's DWARF and writes a compact bundle describing the async runtime. Task futures are joined
@@ -40,16 +37,14 @@ Extract the bundle:
 cargo run --release -p exegesis -- extract ${PATH_TO_DEBUG_BINARY} -o app.bundle
 ----
 
-List the runtime's tasks, from a core dump or a live process:
+List the runtime's tasks:
 
 [source,shell]
 ----
 hansei tasks --bundle app.bundle --core ${PATH_TO_CORE}
-hansei tasks --bundle app.bundle --pid ${PID} -w
 ----
 
-Cores can be read cross-platform, e.g., read an illumos core on Linux, a Linux core on macOS. `--pid` is
-illumos-only.
+Cores can be read cross-platform, e.g., read an illumos core on Linux, a Linux core on macOS.
 
 Each task is listed with its id, lifecycle state, concrete future type, spawn location, and where the future is
 defined. Trace one task's await chain:
@@ -82,8 +77,6 @@ the abandoned future is parked in, and the tasks blocked behind it.
 
 At attach time the bundle's symbol fingerprint is resolved against the target's symtab; anything less than a
 100% match is refused (`--force` to override) so a wrong bundle can never silently misinterpret memory.
-`--heuristic-discovery` falls back to the legacy byte-pattern scan; it reads illumos fast-TSD slots and so is
-illumos-only.
 
 `hansei snapshot` captures everything a bundle-backed analysis reads from a target into a small replayable file;
 together with a bundle extracted from a *separate* build it feeds the offline two-binary tests in

@@ -13,17 +13,10 @@ pub mod dwarf;
 pub mod graph;
 
 #[cfg(target_os = "illumos")]
-use anyhow::Context as _;
-#[cfg(target_os = "illumos")]
-use proc::{Proc, Regs};
-
-#[cfg(target_os = "illumos")]
 use std::collections::BTreeMap;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::mem;
-#[cfg(target_os = "illumos")]
-use std::ops::Range;
 use std::time::{Duration, Instant};
 #[cfg(target_os = "illumos")]
 use unwind::Backtrace;
@@ -534,63 +527,6 @@ impl fmt::Debug for TaskHeader {
             .field("is_join_waker_set", &self.is_join_waker_set())
             .finish()
     }
-}
-
-/// Find the address of the thread-local `tokio::runtime::context::Context` for
-/// this LWP, if present. The first three u64s of this type form a
-/// recognizeable pattern unlikely to be replicated by other types.
-#[cfg(target_os = "illumos")]
-pub fn find_thd_context(
-    regs: &Regs,
-    brk_range: &Range<u64>,
-    proc: &Proc,
-) -> anyhow::Result<Option<u64>> {
-    let tls = proc
-        .tsd_from_regs(regs)
-        .context("failed to get thread-local data")?;
-    for addr in tls {
-        // The `tokio::runtime::context::Context` is heap allocated.
-        // So far I haven't observed this being located in an anonymous mmap.
-        //if !brk_range.contains(&addr) {
-        //    continue;
-        //}
-        const CONTEXT_SIZE: u64 = 3 * size_of::<u64>() as u64;
-        let mut buf = [0u8; CONTEXT_SIZE as usize];
-
-        // The value may be unmapped.
-        if proc.pread_exact(&mut buf, addr).is_err() {
-            continue;
-        }
-        let buf: [u64; 3] = unsafe { mem::transmute(buf) };
-
-        // The first item is a refcell's `BorrowCounter` isize. In well-behaved
-        // code this is always -1, 0, or 1. Values outside of this will trigger
-        // a panic.
-        let borrow_counter = buf[0] as i64;
-        if !(-1..=1).contains(&borrow_counter) {
-            continue;
-        }
-
-        // The next is the discriminant for the
-        // Option<tokio::runtime::scheduler::Handle>. This may be 0, 1, or 2, as
-        // CurrentThread, MultiThread, and None, respectively. We only care
-        // about MultiThread.
-        let discrim = buf[1];
-        if discrim != 1 {
-            continue;
-        }
-
-        // The third item is the pointer to the
-        // tokio::runtime::scheduler::Handle, which is heap allocated.
-        let handle = buf[2];
-        if !brk_range.contains(&handle) {
-            continue;
-        }
-
-        return Ok(Some(addr));
-    }
-
-    Ok(None)
 }
 
 /// The raw `Header.state` bitfield of a task, with the derived lifecycle
