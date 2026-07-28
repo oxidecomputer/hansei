@@ -1,9 +1,9 @@
 //! Unwinding a real core, on the one platform where this workspace can
 //! make one without a second machine.
 //!
-//! The unwinder had no tests at all before: its only caller is
-//! spelunkio's DWARF path, whose suite needs a core nobody checks in.
-//! What it exercises here is the part that used to be hardcoded — a
+//! The unwinder had no tests at all before, its only caller then being
+//! a DWARF path whose own suite needed a core nobody checks in. What it
+//! exercises here is the part that used to be hardcoded — a
 //! backtrace that starts in libc and ends in the executable crosses two
 //! objects, and reaching the fixture's own frames from a thread parked
 //! in the kernel means the loader's and libc's unwind tables were found
