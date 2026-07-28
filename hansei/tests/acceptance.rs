@@ -2,21 +2,26 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The illumos integration suite (plan §11.4).
+//! The acceptance suite: hansei driven end to end against a core of a
+//! fixture program, on whatever system is running the tests.
 //!
-//! Everything here runs on-box against freshly built two-binary fixture
-//! pairs: `test-programs/regen.sh` compiles the fixture programs twice
-//! with the pinned recipe into separate target dirs, bundles are
-//! extracted from build B, and the cores under inspection come from
-//! build A. Each program is driven to a deterministic parked
-//! steady state by blocking on its stdout readiness marker — there are
-//! no timing sleeps anywhere. Cores are taken fresh into a tempdir and
-//! removed with it.
+//! Everything here runs against freshly built two-binary fixture pairs:
+//! `test-programs/regen.sh` compiles the fixture programs twice with the
+//! pinned recipe into separate target dirs, bundles are extracted from
+//! build B, and the cores under inspection come from build A. Joining
+//! B's layouts against A's memory by mangled symbol name is the
+//! two-binary constraint the whole design rests on. Each program is
+//! driven to a deterministic parked steady state by blocking on its
+//! stdout readiness marker — there are no timing sleeps anywhere. Cores
+//! are taken fresh into a tempdir and removed with it.
 //!
-//! Run via `tests/illumos/run.sh`, or on-box with
-//! `cargo test -p hansei --features illumos-integration -- --ignored`.
-
-#![cfg(feature = "illumos-integration")]
+//! None of it is platform-specific. `gcore(1)` takes a core of a running
+//! process under the same spelling on both systems, and hansei reads
+//! either format, so the same goldens hold on illumos — where the core
+//! comes back through libproc — and on Linux, where it is read from the
+//! file. What a system has to provide is the pinned toolchain and the
+//! right to core a process it owns; on Linux that means a
+//! `kernel.yama.ptrace_scope` permissive enough to attach.
 
 use exegesis::bundle::{Bundle, BundleView};
 use exegesis::extract::{ExtractOptions, extract_file};
@@ -85,7 +90,7 @@ fn fixtures() -> &'static Fixtures {
         fs::create_dir_all(&bundles).expect("failed to create the bundle dir");
         for program in PROGRAMS {
             let opts = ExtractOptions {
-                extract_args: format!("illumos integration extraction of {program}"),
+                extract_args: format!("acceptance-suite extraction of {program}"),
                 ..Default::default()
             };
             let (bundle, _stats) = extract_file(&fixture_dir.join("bin-b").join(program), &opts)
@@ -332,7 +337,6 @@ fn assert_locals(verbose_trace: &str, names: &[&str]) {
 /// One spawned async fn parked on a leaked oneshot: the baseline listing
 /// and two-frame chain.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_simple_await_acceptance() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
@@ -340,13 +344,13 @@ fn test_simple_await_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, "test-programs/src/bin/simple-await.rs:65:21");
+        assert_eq!(task.spawned, "test-programs/src/bin/simple-await.rs:67:21");
         assert_eq!(task.defined, "simple-await.rs:16");
 
         let expected = format!(
             "\
 Task {id}: simple_await::work::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/simple-await.rs:65:21
+Spawned at: test-programs/src/bin/simple-await.rs:67:21
 Defined at: simple-await.rs:16
 
   0  async fn      simple_await::work::{{async_fn_env#0}}
@@ -363,13 +367,46 @@ Defined at: simple-await.rs:16
     });
 }
 
+/// The locals are read out of the target, not merely named: the
+/// fixture's own numbers come back through the bundle's layouts, and the
+/// containers among them — a `BTreeMap`, a `Vec`, a boxed slice and a
+/// borrowed one — are walked into the target's memory to reach their
+/// elements.
+#[test]
+fn test_local_values_come_back_from_the_target() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let rows = list_tasks(&bundle, core);
+        let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
+        let verbose = trace(&bundle, core, &task.id, true);
+
+        // Scalars, including one the task computed after its first
+        // await rather than one it was handed.
+        assert!(verbose.contains("count: 3"), "{verbose}");
+        assert!(verbose.contains("first: 41"), "{verbose}");
+
+        // The map's entries, in key order.
+        for entry in ["1: 10", "2: 20", "3: 30"] {
+            assert!(verbose.contains(entry), "{entry} missing from {verbose}");
+        }
+
+        // `values`, `boxed` and `slice` hold 3, 2 and 3 elements; every
+        // one of them is read through a pointer into the target.
+        for element in ["5,", "8,", "13,", "21,", "34,"] {
+            assert!(
+                verbose.contains(element),
+                "element {element} missing from {verbose}"
+            );
+        }
+    });
+}
+
 /// `--ugly` suppresses every type's custom formatter and falls back to the
 /// raw structural view. The simple-await task keeps a spread of
 /// custom-formatted locals live across its park — an IP address, a borrowed
 /// `&str`, an owned `String` — each of which reads as its decoded value
 /// normally and as its underlying representation under `--ugly`.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_ugly_locals_acceptance() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
@@ -411,7 +448,6 @@ fn test_ugly_locals_acceptance() {
 /// async fn awaiting async fn awaiting a leaf: the exact three-deep
 /// chain, every await point mapped to its source line.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_nested_await_acceptance() {
     let bundle = fixtures().bundle("nested-await");
     with_core("nested-await", |core| {
@@ -419,13 +455,13 @@ fn test_nested_await_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "nested_await::outer::{async_fn_env#0}");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, "test-programs/src/bin/nested-await.rs:30:21");
+        assert_eq!(task.spawned, "test-programs/src/bin/nested-await.rs:32:21");
         assert_eq!(task.defined, "nested-await.rs:16");
 
         let expected = format!(
             "\
 Task {id}: nested_await::outer::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/nested-await.rs:30:21
+Spawned at: test-programs/src/bin/nested-await.rs:32:21
 Defined at: nested-await.rs:16
 
   0  async fn      nested_await::outer::{{async_fn_env#0}}
@@ -450,7 +486,6 @@ Defined at: nested-await.rs:16
 /// dyn-future table (the [dyn] frame). The JoinSet member is its own
 /// task.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_dyn_future_acceptance() {
     let bundle = fixtures().bundle("dyn-future");
     with_core("dyn-future", |core| {
@@ -459,12 +494,12 @@ fn test_dyn_future_acceptance() {
 
         let driver = task_with_future(&rows, "dyn_future::driver::{async_fn_env#0}");
         assert_eq!(driver.state, "idle");
-        assert_eq!(driver.spawned, "test-programs/src/bin/dyn-future.rs:44:21");
+        assert_eq!(driver.spawned, "test-programs/src/bin/dyn-future.rs:46:21");
         assert_eq!(driver.defined, "dyn-future.rs:22");
         let expected = format!(
             "\
 Task {id}: dyn_future::driver::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/dyn-future.rs:44:21
+Spawned at: test-programs/src/bin/dyn-future.rs:46:21
 Defined at: dyn-future.rs:22
 
   0  async fn      dyn_future::driver::{{async_fn_env#0}}
@@ -505,7 +540,6 @@ Defined at: dyn-future.rs:14
 /// (visible in its locals), blocked down the Mutex lock/acquire chain on
 /// the semaphore leaf — found fully automatically.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_futurelock_acceptance() {
     let bundle = fixtures().bundle("futurelock");
     with_core("futurelock", |core| {
@@ -518,23 +552,23 @@ fn test_futurelock_acceptance() {
             "futurelock::main::{async_block#0}::{async_block_env#0}",
         );
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, "test-programs/src/bin/futurelock.rs:13:17");
-        assert_eq!(task.defined, "futurelock.rs:13");
+        assert_eq!(task.spawned, "test-programs/src/bin/futurelock.rs:15:17");
+        assert_eq!(task.defined, "futurelock.rs:15");
 
         let expected = format!(
             "\
 Task {id}: futurelock::main::{{async_block#0}}::{{async_block_env#0}} (idle)
-Spawned at: test-programs/src/bin/futurelock.rs:13:17
-Defined at: futurelock.rs:13
+Spawned at: test-programs/src/bin/futurelock.rs:15:17
+Defined at: futurelock.rs:15
 
   0  async block   futurelock::main::{{async_block#0}}::{{async_block_env#0}}
-     state         Suspend1 — futurelock.rs:23
+     state         Suspend1 — futurelock.rs:25
      awaits:
      └─  1  async fn      futurelock::do_stuff::{{async_fn_env#0}}
-         state            Suspend1 — futurelock.rs:62
+         state            Suspend1 — futurelock.rs:64
          awaits:
          └─  2  async fn      futurelock::do_async_thing::{{async_fn_env#0}}
-             state            Suspend0 — futurelock.rs:70
+             state            Suspend0 — futurelock.rs:72
              awaits:
              └─  3  async fn      tokio::sync::mutex::{{impl#10}}::lock::{{async_fn_env#0}}<()>
                  state            Suspend0 — src/sync/mutex.rs:455
@@ -563,7 +597,6 @@ Defined at: futurelock.rs:13
 /// shards more than one task each, so the listing exercises the
 /// intrusive-list walk beyond the shard heads.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_many_tasks_acceptance() {
     let bundle = fixtures().bundle("many-tasks");
     with_core("many-tasks", |core| {
@@ -572,7 +605,7 @@ fn test_many_tasks_acceptance() {
         for row in &rows {
             assert_eq!(row.state, "idle", "{row:#?}");
             assert_eq!(row.future, "many_tasks::park_task::{async_fn_env#0}");
-            assert_eq!(row.spawned, "test-programs/src/bin/many-tasks.rs:25:13");
+            assert_eq!(row.spawned, "test-programs/src/bin/many-tasks.rs:27:13");
             assert_eq!(row.defined, "many-tasks.rs:9");
         }
         let ids: HashSet<&str> = rows.iter().map(|row| row.id.as_str()).collect();
@@ -582,7 +615,7 @@ fn test_many_tasks_acceptance() {
         let expected = format!(
             "\
 Task {id}: many_tasks::park_task::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/many-tasks.rs:25:13
+Spawned at: test-programs/src/bin/many-tasks.rs:27:13
 Defined at: many-tasks.rs:9
 
   0  async fn      many_tasks::park_task::{{async_fn_env#0}}
@@ -601,7 +634,6 @@ Defined at: many-tasks.rs:9
 /// task it waits for — the dependency edge, joined across the two
 /// binaries by nothing but the leaf's type name.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_sleep_join_acceptance() {
     let bundle = fixtures().bundle("sleep-join");
     with_core("sleep-join", |core| {
@@ -615,7 +647,7 @@ fn test_sleep_join_acceptance() {
         let expected = format!(
             "\
 Task {id}: sleep_join::sleeper::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/sleep-join.rs:26:22
+Spawned at: test-programs/src/bin/sleep-join.rs:28:22
 Defined at: sleep-join.rs:9
 
   0  async fn      sleep_join::sleeper::{{async_fn_env#0}}
@@ -634,7 +666,7 @@ Defined at: sleep-join.rs:9
         let expected = format!(
             "\
 Task {id}: sleep_join::joiner::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/sleep-join.rs:27:23
+Spawned at: test-programs/src/bin/sleep-join.rs:29:23
 Defined at: sleep-join.rs:15
 
   0  async fn      sleep_join::joiner::{{async_fn_env#0}}
@@ -684,7 +716,6 @@ fn graph_table(rows: &[[&str; 3]]) -> String {
 /// `future1` is found in do_stuff's locals holding the granted permit
 /// it can never release.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_futurelock_graph() {
     let bundle = fixtures().bundle("futurelock");
     with_core("futurelock", |core| {
@@ -705,7 +736,7 @@ fn test_futurelock_graph() {
              (semaphore 0xADDR) in a future it stopped polling:\n  \
              `future1` (futurelock::do_async_thing::{{async_fn_env#0}})\n  \
              held across futurelock::do_stuff::{{async_fn_env#0}} state Suspend1 \
-             — futurelock.rs:62\n  \
+             — futurelock.rs:64\n  \
              blocked behind it: task {id}\n"
         ));
         assert_eq!(normalize(&graph(&bundle, core)), expected);
@@ -716,7 +747,6 @@ fn test_futurelock_graph() {
 /// at the sleeper, the sleeper waits on the timer, and a healthy
 /// runtime reports no futurelock.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_sleep_join_graph() {
     let bundle = fixtures().bundle("sleep-join");
     with_core("sleep-join", |core| {
@@ -748,7 +778,6 @@ fn test_sleep_join_graph() {
 /// core. Worker counts follow the box's CPU count, so what is asserted
 /// is the shape of a worker, not how many there are.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_threads_shows_workers_and_stacks() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
@@ -768,7 +797,6 @@ fn test_threads_shows_workers_and_stacks() {
 /// The scheduler state and the drivers, both read out of the target
 /// through the bundle's layouts rather than a mirror of tokio's structs.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_shared_state_and_drivers() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
@@ -789,7 +817,6 @@ fn test_shared_state_and_drivers() {
 /// states, the await point recorded for each, and the substring search
 /// that finds the name in the first place.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_type_and_find_types() {
     let bundle = fixtures().bundle("simple-await");
     let future = "simple_await::work::{async_fn_env#0}";
@@ -816,13 +843,39 @@ fn test_type_and_find_types() {
     });
 }
 
+/// A command answers to any leading substring that fits it and no
+/// other, which is what a prompt is for. A prefix that fits several
+/// names them rather than picking one.
+#[test]
+fn test_a_unique_prefix_names_a_command() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        assert!(hansei_ok(&bundle, core, "i").contains("symbols resolved:"));
+        assert!(hansei_ok(&bundle, core, "dr -d 1").contains("runtime::driver::Handle"));
+        assert!(hansei_ok(&bundle, core, "thr -f 0").contains("LWP "));
+        // `snapshot` is not in a default build, so nothing else starts
+        // with an `s`.
+        assert!(hansei_ok(&bundle, core, "s").contains("multi_thread::worker::Shared"));
+
+        let out = hansei(&bundle, core, "t");
+        assert!(
+            !out.status.success(),
+            "an ambiguous prefix must be refused:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        for candidate in ["tasks", "threads", "trace", "type"] {
+            assert!(err.contains(candidate), "{candidate} missing from {err}");
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
-// Symbol match-rate tests (§11.4 item 4)
+// Symbol match-rate tests
 // ---------------------------------------------------------------------------
 
 /// A same-recipe pair fingerprints at exactly 100%.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_fingerprint_complete_on_matched_pair() {
     let parked = Parked::spawn("simple-await");
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
@@ -849,7 +902,6 @@ fn test_fingerprint_complete_on_matched_pair() {
 /// the fingerprint lands strictly between zero and complete, and the
 /// default <100% policy refuses it with a pointed diagnostic.
 #[test]
-#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
 fn test_mismatched_bundle_refused() {
     let parked = Parked::spawn("simple-await");
     let dir = tempfile::tempdir().expect("failed to create a tempdir");

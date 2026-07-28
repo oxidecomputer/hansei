@@ -52,6 +52,8 @@ pub static PARK_TSD_KEY: u64 = 1;
 const WORKERS: [&str; 3] = ["park-worker-0", "park-worker-1", "park-worker-2"];
 
 fn main() {
+    test_programs::allow_any_tracer();
+
     let spin = std::env::args().any(|arg| arg == "--spin");
 
     // Every thread reports in before parking, so once they have all been

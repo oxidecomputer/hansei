@@ -8,5 +8,10 @@ futures = "0.3.32"
 oxide-tokio-rt = "0.1.2"
 tokio = { version = "1.49.0", features = [ "full", "test-util" ] }
 
+# For the `prctl` that lets a test harness core a fixture by pid; see
+# `allow_any_tracer`.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [[bin]]
 name = "futurelock"

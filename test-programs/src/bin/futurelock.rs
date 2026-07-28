@@ -7,6 +7,8 @@ use tokio::time::sleep;
 
 /// This is the demo program from RFD 609, but using oxide-tokio-rt
 fn main() {
+    test_programs::allow_any_tracer();
+
     let mut builder = oxide_tokio_rt::Builder::new_multi_thread();
     builder.worker_threads(4);
     oxide_tokio_rt::run_builder(&mut builder, async {
