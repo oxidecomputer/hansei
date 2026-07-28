@@ -80,6 +80,7 @@ hansei〉find-types oxide         # bundle type names containing a substring
 hansei〉type sled_agent::Foo     # one type's recorded layout
 hansei〉info                     # what is attached, and how well it matches
 hansei〉tasks ! grep sled_agent  # pipe a command's output into a shell command
+hansei〉tasks ; graph            # several commands, in order, on one line
 hansei〉quit
 ----
 
