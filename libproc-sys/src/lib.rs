@@ -1,10 +1,18 @@
-#[cfg(not(target_os = "illumos"))]
-compile_error!("this crate only supports illumos");
+//! Bindings to illumos' `libproc`, generated at build time from the
+//! header on the building machine.
+//!
+//! Off illumos there is no libproc to bind and this crate is empty: the
+//! build script generates nothing, and the module below is gated out so
+//! that an `include!` of bindings which were never written cannot fail.
+//! Empty rather than refusing to compile is what lets the workspace
+//! build anywhere — a member that fails on sight fails
+//! `cargo check --workspace` on every host, whether or not anything
+//! asked for it.
+//!
+//! What keeps the emptiness from being a trap is the consumer: `proc`
+//! names this crate only under `cfg(target_os = "illumos")`, so nothing
+//! can reach for a binding that is not there.
 
-// Gated so that elsewhere the line above is the whole story: the
-// bindings are written by the build script, which does not run off
-// illumos, so an ungated `include!` of them would bury it in errors
-// about a file that was never going to exist.
 #[cfg(target_os = "illumos")]
 mod bindings;
 
