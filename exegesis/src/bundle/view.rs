@@ -52,6 +52,20 @@ impl<'a> BundleView<'a> {
             .map(move |id| BundleType { bundle, id })
     }
 
+    /// Every named type in the bundle, in name order.
+    ///
+    /// The index carries one entry per id, so a name recorded under
+    /// several ids — identical instantiations from different CUs — is
+    /// yielded once per id.
+    pub fn named_types(&self) -> impl Iterator<Item = (&'a str, BundleType<'a>)> + 'a {
+        let bundle = self.bundle;
+        bundle
+            .types
+            .name_index
+            .iter()
+            .filter_map(move |&(r, id)| Some((bundle.strings.get(r)?, BundleType { bundle, id })))
+    }
+
     /// Look up a task vtable-fn symbol (as read from the target's symtab)
     /// in the task join table.
     pub fn task_for_symbol(&self, symbol: &str) -> Option<&'a TaskFutureEntry> {
@@ -436,20 +450,25 @@ pub struct ActiveVariant<'a> {
 
 impl<'a> ActiveVariant<'a> {
     /// The variant's human-readable name.
-    ///
-    /// Coroutine state machines number their variant members ("0", "1",
-    /// …) and carry the state name (`Unresumed`, `SuspendN`, …) on the
-    /// payload struct instead (§5.5); ordinary enums name the variant
-    /// member itself. Numbered variants resolve to the payload name's
-    /// trailing path segment.
     pub fn state_name(&self) -> &'a str {
-        if !self.name.is_empty() && !self.name.bytes().all(|b| b.is_ascii_digit()) {
-            return self.name;
-        }
-        match self.ty.name().rsplit("::").next() {
-            Some(seg) if !seg.is_empty() && seg != ANON => seg,
-            _ => self.name,
-        }
+        variant_name(self.name, self.ty)
+    }
+}
+
+/// The human-readable name of the variant a `(member name, payload type)`
+/// pair describes.
+///
+/// Coroutine state machines number their variant members ("0", "1", …) and
+/// carry the state name (`Unresumed`, `SuspendN`, …) on the payload struct
+/// instead; ordinary enums name the variant member itself. Numbered
+/// variants resolve to the payload name's trailing path segment.
+pub fn variant_name<'a>(member: &'a str, payload: BundleType<'a>) -> &'a str {
+    if !member.is_empty() && !member.bytes().all(|b| b.is_ascii_digit()) {
+        return member;
+    }
+    match payload.name().rsplit("::").next() {
+        Some(seg) if !seg.is_empty() && seg != ANON => seg,
+        _ => member,
     }
 }
 

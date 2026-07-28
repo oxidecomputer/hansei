@@ -740,6 +740,83 @@ fn test_sleep_join_graph() {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime state and bundle layouts
+// ---------------------------------------------------------------------------
+
+/// The runtime as its own threads hold it: each worker's index and the
+/// `Core` it is carrying, plus the stack the unwinder walks out of the
+/// core. Worker counts follow the box's CPU count, so what is asserted
+/// is the shape of a worker, not how many there are.
+#[test]
+#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
+fn test_threads_shows_workers_and_stacks() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let out = hansei_ok(&bundle, core, "threads");
+        assert!(out.contains("LWP "), "{out}");
+        assert!(out.contains("worker 0"), "{out}");
+        assert!(out.contains("multi_thread::worker::Core"), "{out}");
+        assert!(out.contains("is_searching:"), "{out}");
+        // The blocking thread holds a runtime context without running
+        // the worker loop.
+        assert!(out.contains("not in the scheduler's run loop"), "{out}");
+        assert!(out.contains("stack:"), "{out}");
+        assert!(out.contains("simple_await::main"), "{out}");
+    });
+}
+
+/// The scheduler state and the drivers, both read out of the target
+/// through the bundle's layouts rather than a mirror of tokio's structs.
+#[test]
+#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
+fn test_shared_state_and_drivers() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let shared = hansei_ok(&bundle, core, "shared-state");
+        assert!(shared.contains("multi_thread::worker::Shared"), "{shared}");
+        assert!(shared.contains("owned:"), "{shared}");
+        assert!(shared.contains("inject:"), "{shared}");
+        assert!(shared.contains("num_workers:"), "{shared}");
+
+        let drivers = hansei_ok(&bundle, core, "drivers");
+        assert!(drivers.contains("runtime::driver::Handle"), "{drivers}");
+        assert!(drivers.contains("io:"), "{drivers}");
+        assert!(drivers.contains("time:"), "{drivers}");
+    });
+}
+
+/// The layouts behind those readings: the parked task's coroutine
+/// states, the await point recorded for each, and the substring search
+/// that finds the name in the first place.
+#[test]
+#[ignore = "illumos integration suite; run via tests/illumos/run.sh"]
+fn test_type_and_find_types() {
+    let bundle = fixtures().bundle("simple-await");
+    let future = "simple_await::work::{async_fn_env#0}";
+    with_core("simple-await", |core| {
+        let out = hansei_ok(&bundle, core, &format!("type {future}"));
+        assert!(out.starts_with("enum "), "{out}");
+        assert!(out.contains("discriminant"), "{out}");
+        assert!(out.contains("Unresumed"), "{out}");
+        // The state the task is parked in, at the await point rustc
+        // recorded for it — the same line the trace prints.
+        assert!(out.contains("Suspend1"), "{out}");
+        assert!(out.contains("simple-await.rs:34"), "{out}");
+
+        // The locals held across that await.
+        let out = hansei_ok(&bundle, core, &format!("type {future}::Suspend1"));
+        assert!(out.starts_with("struct "), "{out}");
+        for local in ["count", "first", "ready", "park"] {
+            assert!(out.contains(local), "{local} missing from {out}");
+        }
+
+        let out = hansei_ok(&bundle, core, "find-types simple_await::");
+        assert!(out.contains(future), "{out}");
+        assert!(out.trim_end().ends_with(" types"), "{out}");
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Symbol match-rate tests (§11.4 item 4)
 // ---------------------------------------------------------------------------
 

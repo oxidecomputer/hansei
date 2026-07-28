@@ -322,7 +322,9 @@ impl<'b, T: Target> Context<'b, T> {
         })
     }
 
-    fn context_info(&self, addr: u64) -> Result<TypeInfo<'b, BundleType<'b>>> {
+    /// The thread-local `tokio::runtime::context::Context` at `addr`, as
+    /// [`Context::find_workers`] located it.
+    pub fn context_info(&self, addr: u64) -> Result<TypeInfo<'b, BundleType<'b>>> {
         let ty = self.infra_ty(
             self.view.bundle().infra.context,
             "tokio::runtime::context::Context",
@@ -331,10 +333,15 @@ impl<'b, T: Target> Context<'b, T> {
             .with_context(|| format!("failed to read Context at {addr:#x}"))
     }
 
-    /// Navigate from the workers' `Context`s to the multi_thread scheduler's
-    /// `Shared` (`Context.current.handle` → `Option<scheduler::Handle>` →
-    /// `MultiThread(Arc<Handle>)` → deref → `.shared`).
-    pub fn find_shared(&self, workers: &[Worker]) -> Result<TypeInfo<'b, BundleType<'b>>> {
+    /// Navigate from the workers' `Context`s to the multi_thread
+    /// scheduler's `Handle` (`Context.current.handle` →
+    /// `Option<scheduler::Handle>` → `MultiThread(Arc<Handle>)` → deref →
+    /// `.data`).
+    ///
+    /// The handle is the root of everything the runtime shares: the
+    /// scheduler state under `shared`, the io/time/signal drivers under
+    /// `driver`.
+    pub fn find_handle(&self, workers: &[Worker]) -> Result<TypeInfo<'b, BundleType<'b>>> {
         let mut saw_other_scheduler = false;
         for worker in workers {
             let info = self.context_info(worker.context_addr)?;
@@ -348,13 +355,46 @@ impl<'b, T: Target> Context<'b, T> {
                 continue;
             };
             let inner = mt.deref_ptr(self)?; // ArcInner<multi_thread::Handle>
-            let shared = inner.member("data")?.member("shared")?.to_owned();
-            return Ok(shared);
+            return Ok(inner.member("data")?.to_owned());
         }
         if saw_other_scheduler {
             bail!("only MultiThread runtimes are supported, and none was found");
         }
         bail!("no worker thread has a runtime handle in its Context");
+    }
+
+    /// The scheduler state the workers share, from the runtime handle
+    /// [`Context::find_handle`] reaches.
+    pub fn find_shared(&self, workers: &[Worker]) -> Result<TypeInfo<'b, BundleType<'b>>> {
+        let handle = self.find_handle(workers)?;
+        let shared = handle.member("shared")?.to_owned();
+        Ok(shared)
+    }
+
+    /// The scheduler context a worker thread is running under: the
+    /// `multi_thread::worker::Context` its stack holds, reached through
+    /// the scoped pointer in its thread-local `Context`.
+    ///
+    /// `None` when the thread is in the runtime without being inside the
+    /// scheduler — the pointer is set only for the duration of a
+    /// worker's run loop — or when it runs a scheduler hansei does not
+    /// read.
+    pub fn worker_context(&self, worker: &Worker) -> Result<Option<TypeInfo<'b, BundleType<'b>>>> {
+        let info = self.context_info(worker.context_addr)?;
+        // `Scoped` and the `Cell` inside it are single-member wrappers,
+        // so the member lands straight on the pointer they hold. It is
+        // null outside the run loop; anything else has to be readable,
+        // so the deref is the strict one — an unreadable pointer is a
+        // failure to report, not a thread to pass over.
+        let scoped = info.member("scheduler")?;
+        if scoped.parse::<u64, _>(self)? == 0 {
+            return Ok(None);
+        }
+        let sched = scoped.deref_ptr(self)?;
+        let Some(mt) = sched.as_ref().try_select_variant("MultiThread")? else {
+            return Ok(None);
+        };
+        Ok(Some(mt.to_owned()))
     }
 
     // -----------------------------------------------------------------------

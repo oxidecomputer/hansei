@@ -2,16 +2,18 @@ use crate::tokio::{Lifecycle, bundle, graph};
 
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
-use exegesis::bundle::{Bundle, BundleView};
+use exegesis::bundle::{Bundle, BundleType, BundleView};
 use proc::Proc;
 use proc::snapshot::Recorder;
+use reify::{TypeInfo, TypeInfoRef};
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub mod repl;
 pub mod tokio;
+pub mod types;
 
 /// The command line names a target and nothing else; what to ask of it
 /// is read from stdin, at a prompt or from a pipe.
@@ -90,6 +92,62 @@ pub enum Command {
     /// never complete or release (RFD 609).
     Graph,
 
+    /// Show every thread running the runtime: the task it is polling,
+    /// the worker core it holds, and its stack.
+    Threads {
+        /// Maximum stack frames to print per thread.
+        #[arg(long, short, default_value_t = 50)]
+        frames: usize,
+
+        /// Maximum depth to recurse when formatting the worker core.
+        #[arg(long, short, default_value_t = 3)]
+        depth: usize,
+
+        /// Disable every type's custom formatter and show the raw
+        /// structural view of values instead.
+        #[arg(long, short)]
+        ugly: bool,
+    },
+
+    /// Show the scheduler state the workers share: the owned-task set,
+    /// the injection queue, the idle set and the per-worker remotes.
+    SharedState {
+        /// Maximum depth to recurse when formatting values.
+        #[arg(long, short, default_value_t = 3)]
+        depth: usize,
+
+        /// Disable every type's custom formatter and show the raw
+        /// structural view of values instead.
+        #[arg(long, short)]
+        ugly: bool,
+    },
+
+    /// Show the runtime's drivers: io, signal, time and the clock.
+    Drivers {
+        /// Maximum depth to recurse when formatting values.
+        #[arg(long, short, default_value_t = 3)]
+        depth: usize,
+
+        /// Disable every type's custom formatter and show the raw
+        /// structural view of values instead.
+        #[arg(long, short)]
+        ugly: bool,
+    },
+
+    /// Print the layout the bundle records for a type, by its exact
+    /// fully-qualified name: members and their offsets, or an enum's
+    /// variants and the discriminant that selects them.
+    Type {
+        /// The fully-qualified name, as `find-types` lists it.
+        name: String,
+    },
+
+    /// List the types whose name contains a substring.
+    FindTypes {
+        /// The substring to look for.
+        needle: String,
+    },
+
     /// Capture a replayable snapshot of everything the bundle-backed
     /// analysis reads from the target: task enumeration and every task's
     /// await chain are driven once with a recording wrapper in place,
@@ -126,6 +184,9 @@ pub struct Session<'b> {
     core: &'b Path,
     bundle_path: &'b Path,
     workers: Vec<bundle::Worker>,
+    /// The multi_thread scheduler's `Handle`: the scheduler state and
+    /// the drivers both hang off it.
+    handle: TypeInfo<'b, BundleType<'b>>,
     tasks: bundle::TaskList,
 }
 
@@ -135,7 +196,8 @@ impl<'b> Session<'b> {
         check_fingerprint(&ctx, args.force)?;
 
         let workers = discover_workers(proc, &ctx)?;
-        let shared = ctx.find_shared(&workers)?;
+        let handle = ctx.find_handle(&workers)?;
+        let shared = handle.member("shared")?.to_owned();
         let tasks = ctx.enumerate_tasks(&shared)?;
         for err in &tasks.errors {
             writeln!(io::stderr(), "warning: {err:#}")?;
@@ -148,6 +210,7 @@ impl<'b> Session<'b> {
             core: &args.core,
             bundle_path: &args.bundle,
             workers,
+            handle,
             tasks,
         })
     }
@@ -160,6 +223,19 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         Command::Info => exec_info(session, out)?,
         Command::Tasks => exec_tasks(session, out)?,
         Command::Graph => exec_graph(session, out)?,
+        Command::Threads {
+            frames,
+            depth,
+            ugly,
+        } => exec_threads(session, frames, depth, ugly, out)?,
+        Command::SharedState { depth, ugly } => {
+            exec_runtime_field(session, "shared", depth, ugly, out)?
+        }
+        Command::Drivers { depth, ugly } => {
+            exec_runtime_field(session, "driver", depth, ugly, out)?
+        }
+        Command::Type { name } => types::describe(&session.ctx.view, &name, out)?,
+        Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
         Command::Trace {
             task_id,
             verbose,
@@ -861,6 +937,173 @@ fn exec_graph(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         writeln!(out, "\nno futurelock detected")?;
     }
     Ok(())
+}
+
+/// Every thread the runtime is running on, as the runtime sees it and
+/// as the stack sees it: the task it is polling, the worker core it
+/// holds while it runs, and the frames it is parked in.
+fn exec_threads(
+    session: &Session<'_>,
+    frames: usize,
+    depth: usize,
+    ugly: bool,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    // Unwinding reads the CFI of every mapped object, so it is done once
+    // for the whole target and only when a command asks for it. A target
+    // it cannot walk still has runtime state worth printing, so a failure
+    // costs the stacks and nothing else.
+    let stacks = match unwind::load_frames(session.proc) {
+        Ok(stacks) => stacks,
+        Err(e) => {
+            writeln!(
+                io::stderr(),
+                "warning: cannot unwind the target's threads: {e:#}"
+            )?;
+            BTreeMap::new()
+        }
+    };
+
+    for (i, worker) in session.workers.iter().enumerate() {
+        if i > 0 {
+            writeln!(out)?;
+        }
+        writeln!(out, "LWP {}  {}", worker.tid, polling(session, worker))?;
+
+        if let Err(e) = print_thread_context(session, worker, depth, ugly, out) {
+            writeln!(out, "  thread context unreadable: {e:#}")?;
+        }
+
+        match session.ctx.worker_context(worker) {
+            Ok(Some(worker_ctx)) => print_worker_state(session, &worker_ctx, depth, ugly, out)?,
+            // A thread inside the runtime without a scheduler context is
+            // ordinary: `block_on` enters the runtime from a thread that
+            // never runs the worker loop.
+            Ok(None) => writeln!(out, "  not in the scheduler's run loop")?,
+            Err(e) => writeln!(out, "  scheduler context unreadable: {e:#}")?,
+        }
+
+        match stacks.get(&worker.tid) {
+            Some(backtrace) => {
+                writeln!(out, "  stack:")?;
+                for line in backtrace.stack_trace(frames) {
+                    writeln!(out, "    {line}")?;
+                }
+            }
+            None => writeln!(out, "  stack: unavailable")?,
+        }
+    }
+    Ok(())
+}
+
+/// What a thread is doing with the task it last entered. tokio restores
+/// the thread-local task id after a poll returns, but a thread that was
+/// interrupted mid-poll — and any thread whose id belongs to a task that
+/// has since finished — leaves a stale one behind, so the claim is only
+/// made for a task the runtime still owns and still calls running.
+fn polling(session: &Session<'_>, worker: &bundle::Worker) -> String {
+    let Some(id) = worker.current_task_id else {
+        return "polling no task".to_string();
+    };
+    let running = session
+        .tasks
+        .tasks
+        .iter()
+        .any(|t| t.task_id == Some(id) && t.state.lifecycle() == Lifecycle::Running);
+    if running {
+        format!("polling task {id}")
+    } else {
+        format!("last polled task {id}")
+    }
+}
+
+/// The tokio state a thread carries in its own thread-local `Context`:
+/// which thread the runtime takes it for, whether it has entered a
+/// runtime, and what is left of the task's cooperative budget.
+fn print_thread_context(
+    session: &Session<'_>,
+    worker: &bundle::Worker,
+    depth: usize,
+    ugly: bool,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let info = session.ctx.context_info(worker.context_addr)?;
+    for field in ["thread_id", "runtime", "budget"] {
+        let value = info.member(field)?;
+        print_variable(out, "  ", field, &render(session, &value, depth, ugly))?;
+    }
+    Ok(())
+}
+
+/// A worker thread's own state: which worker it is, the `Core` it holds
+/// while it runs — the run queue, the LIFO slot, the park state and the
+/// counters the scheduler keeps per worker — and the wakers it has
+/// deferred until the current poll returns.
+fn print_worker_state<'b>(
+    session: &Session<'_>,
+    worker_ctx: &TypeInfo<'b, BundleType<'b>>,
+    depth: usize,
+    ugly: bool,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let ctx = &session.ctx;
+    let worker = worker_ctx.member("worker")?.deref_ptr(ctx)?;
+    let index: u64 = worker.member("data")?.member("index")?.parse(ctx)?;
+    writeln!(out, "  worker {index}")?;
+
+    let defer = worker_ctx.member("defer")?;
+    print_variable(out, "  ", "defer", &render(session, &defer, depth, ugly))?;
+
+    // The core is moved out of the thread's context while the scheduler
+    // parks or hands it to another thread, so its absence is a state
+    // worth naming rather than an error.
+    let core = worker_ctx.member("core")?.member("value")?;
+    let Some(boxed) = core.try_select_variant("Some")? else {
+        writeln!(out, "  core: not held by this thread")?;
+        return Ok(());
+    };
+    let core = boxed.deref_ptr(ctx)?;
+    print_variable(
+        out,
+        "  ",
+        "core",
+        &render(session, &core.as_ref(), depth, ugly),
+    )?;
+    Ok(())
+}
+
+/// Render one of the runtime handle's fields out of the target: the
+/// scheduler state the workers share, or the drivers they park on.
+///
+/// Both are read straight through the bundle's layouts rather than into
+/// a hand-written mirror of tokio's structs, so a field tokio adds shows
+/// up without hansei being taught about it.
+fn exec_runtime_field(
+    session: &Session<'_>,
+    field: &str,
+    depth: usize,
+    ugly: bool,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let value = session.handle.member(field)?;
+    writeln!(out, "{}", render(session, &value, depth, ugly))?;
+    Ok(())
+}
+
+/// Format a value read from the target, honouring the custom formatters
+/// unless asked for the raw structural view.
+fn render<'b>(
+    session: &Session<'_>,
+    value: &TypeInfoRef<'_, 'b, BundleType<'b>>,
+    depth: usize,
+    ugly: bool,
+) -> String {
+    let display = value.display_from_target(session.ctx.proc, depth);
+    if ugly {
+        format!("{:#}", display.ugly())
+    } else {
+        format!("{display:#}")
+    }
 }
 
 /// Render one futurelock diagnosis: who holds what, where the

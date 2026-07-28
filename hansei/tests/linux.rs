@@ -170,6 +170,86 @@ fn test_graph_reports_no_futurelock() {
     assert!(out.contains("no futurelock detected"), "{out}");
 }
 
+/// Every thread the runtime runs on, from both sides: the scheduler's
+/// own view of the worker (its index and the core it holds) and the
+/// stack the unwinder walks out of the core.
+#[test]
+fn test_threads_shows_workers_and_stacks() {
+    let out = hansei("threads");
+
+    // The fixture's runtime has two workers, plus the thread blocked in
+    // `block_on`, which holds a runtime context without running the
+    // worker loop.
+    assert_eq!(out.matches("LWP ").count(), 3, "{out}");
+    assert!(out.contains("worker 0"), "{out}");
+    assert!(out.contains("worker 1"), "{out}");
+    assert!(out.contains("not in the scheduler's run loop"), "{out}");
+
+    // The worker core, read through the bundle's layout: values, not
+    // just field names.
+    assert!(out.contains("multi_thread::worker::Core"), "{out}");
+    assert!(out.contains("is_searching: false"), "{out}");
+    // And the stacks, which is what needs the target's unwind info.
+    assert!(out.contains("stack:"), "{out}");
+    assert!(out.contains("core_tokio::main"), "{out}");
+}
+
+/// The scheduler state the workers share, read out of the target
+/// through the bundle rather than through a mirror of tokio's structs.
+#[test]
+fn test_shared_state_reads_the_scheduler() {
+    let out = hansei("shared-state");
+    assert!(out.contains("multi_thread::worker::Shared"), "{out}");
+    assert!(out.contains("owned:"), "{out}");
+    assert!(out.contains("inject:"), "{out}");
+    // The runtime the fixture builds, in its own numbers.
+    assert!(out.contains("num_workers: 2"), "{out}");
+}
+
+/// The drivers hanging off the same runtime handle.
+#[test]
+fn test_drivers_reads_the_driver_handle() {
+    let out = hansei("drivers");
+    assert!(out.contains("runtime::driver::Handle"), "{out}");
+    assert!(out.contains("io:"), "{out}");
+    assert!(out.contains("time:"), "{out}");
+}
+
+/// A type's recorded layout, for the future `trace` walks: the
+/// coroutine's states, the await point each was suspended at, and the
+/// locals held across it.
+#[test]
+fn test_type_prints_a_recorded_layout() {
+    let out = hansei(&format!("type {PARKED_TASK}"));
+    assert!(out.starts_with("enum "), "{out}");
+    assert!(out.contains("discriminant"), "{out}");
+    assert!(out.contains("Unresumed"), "{out}");
+    assert!(out.contains("Suspend0"), "{out}");
+    // The await point rustc recorded for the suspend state.
+    assert!(out.contains("core-tokio.rs:"), "{out}");
+
+    // The state's payload holds the locals the trace renders.
+    let out = hansei(&format!("type {PARKED_TASK}::Suspend0"));
+    assert!(out.starts_with("struct "), "{out}");
+    for local in ["marker", "counts", "values"] {
+        assert!(out.contains(local), "{local} missing from {out}");
+    }
+}
+
+/// Substring search over the same type names, which is how a name long
+/// enough to need `type` is found in the first place.
+#[test]
+fn test_find_types_lists_matching_names() {
+    let out = hansei("find-types core_tokio::");
+    assert!(out.contains(PARKED_TASK), "{out}");
+    assert!(out.contains(RECEIVING_TASK), "{out}");
+    assert!(out.trim_end().ends_with(" types"), "{out}");
+
+    // A needle nothing matches is an empty listing, not a failure.
+    let out = hansei("find-types no_such_crate::");
+    assert!(out.contains("0 types"), "{out}");
+}
+
 /// The task id hansei assigned to a future, read out of `tasks`.
 fn task_id(future: &str) -> String {
     let out = hansei("tasks");
