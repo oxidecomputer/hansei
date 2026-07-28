@@ -7,19 +7,23 @@
 # join B's bundle against A's snapshot — the two-binary constraint,
 # exercised in plain `cargo test` on any platform.
 #
-# illumos-only: each program is driven to its steady state and cored
-# with gcore(1), and the snapshot is captured from that core. Fixtures
-# land in hansei-types/tests/fixtures (override with $1) and are small
-# enough to check in; this script makes them regenerable either way.
+# Each program is driven to its steady state and cored with gcore(1),
+# and the snapshot is captured from that core. Neither step is
+# platform-specific: gcore takes a core under the same spelling on
+# illumos and Linux, and hansei reads either format. Fixtures land in
+# hansei-types/tests/fixtures (override with $1) and are small enough to
+# check in; this script makes them regenerable either way.
+#
+# What a capture is worth does vary by platform, though. The bundle's
+# symbol fingerprint is built from the tokio `poll` instantiations that
+# survive into the binary's own symbol table, and illumos keeps far more
+# of them than Linux does — 15 against 3 for simple-await. Both resolve
+# complete, so both reject a mismatched pair, but a capture taken on
+# illumos checks a pair against more names.
 #
 # Usage: capture-snapshots.sh [OUT_DIR]
 
 set -euo pipefail
-
-if [[ "$(uname -s)" != "SunOS" ]]; then
-    echo "capture-snapshots.sh: snapshots can only be captured on illumos" >&2
-    exit 2
-fi
 
 cd "$(dirname "$0")"
 OUT="$(cd "${1:-../hansei-types/tests/fixtures}" 2>/dev/null && pwd || true)"
@@ -86,3 +90,4 @@ for p in "${PROGRAMS[@]}"; do
 
     echo "capture-snapshots.sh: $p -> $OUT/$p.{bundle,snapshot}"
 done
+
