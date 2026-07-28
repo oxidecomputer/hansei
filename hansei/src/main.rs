@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
-use exegesis::bundle::{Bundle, BundleType, BundleView};
+use exegesis::bundle::{Bundle, BundleMember, BundleType, BundleView};
 use hansei_types::tokio::{Lifecycle, bundle, graph};
 use proc::Proc;
 #[cfg(feature = "snapshot")]
@@ -391,19 +391,6 @@ fn exec_trace(
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
             print_await_chain(ctx, &chain, verbose, depth, ugly, out)?;
-            // The leaf-future knowledge base (§3.6): name what the task
-            // is actually waiting on when the leaf is a known primitive.
-            match ctx.wait_target(&chain) {
-                Some(Ok(target)) => {
-                    let indent = frame_detail_indent(chain.frames.len().saturating_sub(1));
-                    writeln!(out, "{indent}waiting on {target}")?;
-                }
-                Some(Err(e)) => writeln!(
-                    io::stderr(),
-                    "warning: failed to read what the leaf future waits on: {e:#}"
-                )?,
-                None => {}
-            }
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
@@ -426,8 +413,14 @@ fn exec_trace(
     Ok(())
 }
 
-/// Render an await chain, one line per future, with the coroutine state
-/// and awaited expression where known, and the live locals when verbose.
+/// Render an await chain, one line per future, each coroutine frame
+/// followed by every place it can park with the one it is parked at
+/// marked, and the live locals of that state when verbose.
+///
+/// A frame's child hangs from its active suspend row, so how far each
+/// frame indents follows from its predecessors' inventories rather than
+/// from its depth alone, and a state listed after the active one is
+/// printed once the subtree that grew out of the active one is closed.
 fn print_await_chain<'b, T: proc::Target>(
     ctx: &bundle::Context<'b, T>,
     chain: &bundle::AwaitChain<'b>,
@@ -437,6 +430,12 @@ fn print_await_chain<'b, T: proc::Target>(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let active_frame = chain.frames.len().checked_sub(1);
+    let mut node_indent = FRAME_ROOT_INDENT;
+    let mut detail_indent = frame_detail_indent(node_indent);
+    // One per frame, kept so the states listed after each active row can
+    // be printed — in the columns their whole inventory was laid out
+    // in — once the chain below them is done.
+    let mut tables: Vec<SuspendTable<'b>> = Vec::new();
     for (i, frame) in chain.frames.iter().enumerate() {
         let active = Some(i) == active_frame;
         let marker = if active { '*' } else { ' ' };
@@ -456,7 +455,7 @@ fn print_await_chain<'b, T: proc::Target>(
                 frame.future.ty.name()
             )?;
         } else {
-            let indent = frame_node_indent(i);
+            let indent = " ".repeat(node_indent);
             writeln!(
                 out,
                 "{indent}└─{marker} {i}  {kind:<13} {}{dyn_marker}",
@@ -464,22 +463,33 @@ fn print_await_chain<'b, T: proc::Target>(
             )?;
         }
 
-        let detail_indent = frame_detail_indent(i);
+        detail_indent = frame_detail_indent(node_indent);
+        let table = SuspendTable::new(suspend_rows(frame), verbose, detail_indent.clone());
+        let rows_empty = table.is_empty();
+        tables.push(table);
 
-        if let Some(state) = &frame.state {
-            let loc = state
-                .await_loc
-                .map(|(file, line)| format!(" — {file}:{line}"))
-                .unwrap_or_default();
-            // Align the state value with the type name above it. Child
-            // nodes have a frame-number column between the tree branch
-            // and the kind label; the state line must account for it.
-            let label_width = state_label_width(i);
-            writeln!(
-                out,
-                "{detail_indent}{:<label_width$} {}{loc}",
-                "state", state.name
-            )?;
+        if rows_empty {
+            // Not a coroutine: a leaf future has no states at all, and an
+            // ordinary enum's variants are not suspend points, so the one
+            // it decoded to is reported on its own.
+            if let Some(state) = &frame.state {
+                let loc = state
+                    .await_loc
+                    .map(|(file, line)| format!(" — {file}:{line}"))
+                    .unwrap_or_default();
+                // Align the state value with the type name above it. Child
+                // nodes have a frame-number column between the tree branch
+                // and the kind label; the state line must account for it.
+                let label_width = state_label_width(i);
+                writeln!(
+                    out,
+                    "{detail_indent}{:<label_width$} {}{loc}",
+                    "state", state.name
+                )?;
+            }
+        } else {
+            writeln!(out, "{detail_indent}suspends:")?;
+            tables.last().expect("just pushed").print_to_active(out)?;
         }
 
         if verbose && (frame.state.is_some() || active) {
@@ -487,30 +497,24 @@ fn print_await_chain<'b, T: proc::Target>(
                 Some(state) => state.payload.as_ref(),
                 None => frame.future.as_ref(),
             };
-            // `__…` members are compiler-generated (the awaitee itself
-            // and liveness slots), not source-level locals. A coroutine
-            // state may hold the same name twice (a captured upvar and a
-            // saved local), so members are sliced positionally, never
-            // looked up by name.
-            let mut seen = std::collections::HashSet::new();
-            let locals: Vec<_> = payload
-                .ty
-                .members()
-                .filter(|m| {
-                    m.ty().size() > 0
-                        && !m.name().starts_with("__")
-                        && seen.insert((m.name(), m.offset()))
-                })
-                .collect();
+            let locals = state_locals(payload.ty);
+            // The locals belong to the marked row, so they hang from it
+            // rather than from the frame; a frame with no inventory keeps
+            // them against its own detail column.
+            let heading_indent = if rows_empty {
+                detail_indent.clone()
+            } else {
+                format!("{detail_indent}  ")
+            };
             if !locals.is_empty() {
                 let heading = if frame.state.is_some() {
                     "locals:"
                 } else {
                     "fields:"
                 };
-                writeln!(out, "{detail_indent}{heading}")?;
+                writeln!(out, "{heading_indent}{heading}")?;
             }
-            let value_indent = format!("{detail_indent}  ");
+            let value_indent = format!("{heading_indent}  ");
             for m in locals {
                 let start = m.offset() as usize;
                 let end = start + m.ty().size() as usize;
@@ -530,8 +534,15 @@ fn print_await_chain<'b, T: proc::Target>(
             }
         }
 
-        if !active {
-            writeln!(out, "{detail_indent}awaits:")?;
+        // An inventory introduces the child itself: the marked row *is*
+        // the await that produced it, and the branch descends from there.
+        if rows_empty {
+            if !active {
+                writeln!(out, "{detail_indent}awaits:")?;
+            }
+            node_indent += FRAME_DETAIL_STEP;
+        } else {
+            node_indent += FRAME_DETAIL_STEP + SUSPEND_ROW_STEP;
         }
     }
 
@@ -584,22 +595,228 @@ fn print_await_chain<'b, T: proc::Target>(
             writeln!(out, "await chain truncated: {e:#}")?;
         }
     }
+
+    // Name what the task is actually waiting on when the leaf is a
+    // known primitive. It belongs to the deepest frame, so it goes out
+    // before any inventory closes back over it.
+    match ctx.wait_target(chain) {
+        Some(Ok(target)) => writeln!(out, "{detail_indent}waiting on {target}")?,
+        Some(Err(e)) => writeln!(
+            io::stderr(),
+            "warning: failed to read what the leaf future waits on: {e:#}"
+        )?,
+        None => {}
+    }
+
+    // The states each frame lists after the one it is parked in. They
+    // are printed here, innermost frame first, because the subtree that
+    // grew out of the active row sits between them and their own block.
+    for table in tables.iter().rev() {
+        table.print_after_active(out)?;
+    }
     Ok(())
 }
 
-fn frame_node_indent(depth: usize) -> String {
-    format!("{} ", "    ".repeat(depth))
-}
+/// The column the outermost future's node line starts at.
+const FRAME_ROOT_INDENT: usize = 2;
 
-fn frame_detail_indent(depth: usize) -> String {
-    format!("{} ", "    ".repeat(depth + 1))
+/// How far a frame's detail sits inside its node line.
+const FRAME_DETAIL_STEP: usize = 3;
+
+/// How far a suspend row's text sits inside the detail column, leaving
+/// room for the marker in front of it.
+const SUSPEND_ROW_STEP: usize = 2;
+
+/// Marks the state a coroutine is parked in. Distinct from the `*` the
+/// tree puts on the leaf frame, which says where the chain ends rather
+/// than which of a frame's suspend points is live.
+const SUSPEND_MARKER: char = '▸';
+
+fn frame_detail_indent(node_indent: usize) -> String {
+    " ".repeat(node_indent + FRAME_DETAIL_STEP)
 }
 
 fn state_label_width(frame: usize) -> usize {
     if frame == 0 {
         13
     } else {
-        frame.to_string().len() + 15
+        frame.to_string().len() + 16
+    }
+}
+
+/// One row of a coroutine frame's suspend-point inventory: somewhere the
+/// future can park, read from its type rather than from the target.
+struct SuspendRow<'b> {
+    /// `Suspend0`, `Suspend1`, …, or a terminal state (`Unresumed`,
+    /// `Returned`, `Panicked`) when that is the one the frame is in.
+    name: &'b str,
+    /// The awaited expression's source coordinates.
+    loc: Option<(&'b str, u32)>,
+    /// How many source-level locals the state holds live. Every variant
+    /// of a coroutine shares the same storage, so only the active
+    /// state's *values* can be read; for the rest a count is the most
+    /// the type alone can say.
+    locals: usize,
+    /// What the state awaits, from its `__awaitee` member.
+    awaitee: Option<&'b str>,
+    /// Whether this is the state the frame is parked in.
+    active: bool,
+}
+
+/// A coroutine frame's suspend points, in the order the debug info lists
+/// its variants.
+///
+/// Empty for a frame that is not a coroutine — a plain leaf future, or
+/// an ordinary enum whose variants are alternatives rather than parking
+/// spots — and for one whose state did not decode: with nothing to mark,
+/// an inventory would say where the future *could* be without saying
+/// where it is.
+fn suspend_rows<'b>(frame: &bundle::AwaitFrame<'b>) -> Vec<SuspendRow<'b>> {
+    let Some(state) = &frame.state else {
+        return Vec::new();
+    };
+    if !frame.future.ty.is_coroutine() {
+        return Vec::new();
+    }
+    frame
+        .future
+        .ty
+        .variants()
+        .filter_map(|variant| {
+            let name = variant.state_name();
+            let active = name == state.name;
+            // A terminal state is not a suspend point; it earns a row
+            // only by being the one the frame is actually in, which it
+            // is for a task parked before its first poll or holding an
+            // unconsumed result.
+            if !active && !name.starts_with("Suspend") {
+                return None;
+            }
+            Some(SuspendRow {
+                name,
+                loc: variant.decl,
+                locals: state_locals(variant.ty).len(),
+                awaitee: variant.ty.member("__awaitee").map(|m| m.ty().name()),
+                active,
+            })
+        })
+        .collect()
+}
+
+/// The source-level locals a coroutine state holds live.
+///
+/// `__…` members are compiler-generated (the awaitee itself and
+/// liveness slots), not source-level locals. A coroutine state may hold
+/// the same name twice (a captured upvar and a saved local), so members
+/// are sliced positionally, never looked up by name.
+fn state_locals(ty: BundleType<'_>) -> Vec<BundleMember<'_>> {
+    let mut seen = std::collections::HashSet::new();
+    ty.members()
+        .filter(|m| {
+            m.ty().size() > 0 && !m.name().starts_with("__") && seen.insert((m.name(), m.offset()))
+        })
+        .collect()
+}
+
+/// A frame's suspend rows laid out in columns, printable in two pieces.
+///
+/// The child frame is printed between them — it hangs from the marked
+/// row — so the widths are settled once, over the whole inventory, and
+/// both pieces are written against them. An empty column is omitted
+/// rather than padded, so a frame whose states hold nothing does not
+/// carry a blank gutter down the trace.
+struct SuspendTable<'b> {
+    rows: Vec<SuspendRow<'b>>,
+    /// `(location, locals, awaitee)`, already reduced to what each row
+    /// shows: the marked row drops its awaitee, which the child frame
+    /// beneath it names anyway, and under `verbose` drops its locals
+    /// count, since those values are about to be listed in full.
+    cells: Vec<(String, String, &'b str)>,
+    detail_indent: String,
+    name_width: usize,
+    loc_width: usize,
+    locals_width: usize,
+}
+
+impl<'b> SuspendTable<'b> {
+    fn new(rows: Vec<SuspendRow<'b>>, verbose: bool, detail_indent: String) -> Self {
+        let cells: Vec<(String, String, &'b str)> = rows
+            .iter()
+            .map(|row| {
+                let loc = row
+                    .loc
+                    .map(|(file, line)| format!("{file}:{line}"))
+                    .unwrap_or_default();
+                let locals = match row.locals {
+                    0 => String::new(),
+                    _ if row.active && verbose => String::new(),
+                    1 => "1 local".to_string(),
+                    n => format!("{n} locals"),
+                };
+                let awaitee = if row.active {
+                    ""
+                } else {
+                    row.awaitee.unwrap_or_default()
+                };
+                (loc, locals, awaitee)
+            })
+            .collect();
+        let width = |f: fn(&(String, String, &str)) -> usize| cells.iter().map(f).max().unwrap_or(0);
+        Self {
+            name_width: rows.iter().map(|row| row.name.len()).max().unwrap_or(0),
+            loc_width: width(|c| c.0.len()),
+            locals_width: width(|c| c.1.len()),
+            rows,
+            cells,
+            detail_indent,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Where the marked row sits, or the end of the table when no row is
+    /// marked — a state that matched no variant, which leaves nothing to
+    /// hang a child from.
+    fn active(&self) -> usize {
+        self.rows
+            .iter()
+            .position(|row| row.active)
+            .unwrap_or(self.rows.len().saturating_sub(1))
+    }
+
+    /// The states up to and including the one the frame is parked in.
+    fn print_to_active(&self, out: &mut dyn io::Write) -> Result<()> {
+        self.print_range(0, self.active() + 1, out)
+    }
+
+    /// The states the frame lists after the one it is parked in.
+    fn print_after_active(&self, out: &mut dyn io::Write) -> Result<()> {
+        if self.is_empty() {
+            return Ok(());
+        }
+        self.print_range(self.active() + 1, self.rows.len(), out)
+    }
+
+    fn print_range(&self, from: usize, to: usize, out: &mut dyn io::Write) -> Result<()> {
+        let (name_width, loc_width, locals_width) =
+            (self.name_width, self.loc_width, self.locals_width);
+        for (row, (loc, locals, awaitee)) in self.rows[from..to].iter().zip(&self.cells[from..to]) {
+            let marker = if row.active { SUSPEND_MARKER } else { ' ' };
+            let mut line = format!("{}{marker} {:<name_width$}", self.detail_indent, row.name);
+            if loc_width > 0 {
+                line.push_str(&format!("  {loc:<loc_width$}"));
+            }
+            if locals_width > 0 {
+                line.push_str(&format!("  {locals:<locals_width$}"));
+            }
+            if !awaitee.is_empty() {
+                line.push_str(&format!("  {awaitee}"));
+            }
+            writeln!(out, "{}", line.trim_end())?;
+        }
+        Ok(())
     }
 }
 
@@ -1235,7 +1452,167 @@ mod variable_format_tests {
     #[test]
     fn state_alignment_accounts_for_frame_number_width() {
         assert_eq!(state_label_width(0), 13);
-        assert_eq!(state_label_width(1), 16);
-        assert_eq!(state_label_width(10), 17);
+        assert_eq!(state_label_width(1), 17);
+        assert_eq!(state_label_width(10), 18);
+    }
+}
+
+/// Offline trace-rendering tests: the await tree as `trace` prints it,
+/// driven from a real extracted bundle joined against a real captured
+/// snapshot.
+///
+/// The acceptance suite covers the same rendering end to end, but only
+/// where a process can be cored; these run in plain `cargo test` on any
+/// platform, which is what keeps the tree's shape — the suspend
+/// inventories and the indent that accumulates through them — under test
+/// while it is being changed.
+#[cfg(test)]
+mod trace_render_tests {
+    use super::print_await_chain;
+    use exegesis::bundle::{Bundle, BundleView};
+    use hansei_types::tokio::bundle::{Context, TaskStage};
+    use proc::Target;
+    use proc::snapshot::Snapshot;
+
+    use std::path::PathBuf;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("hansei-types/tests/fixtures")
+            .join(name)
+    }
+
+    /// Render task `task_id`'s await chain from the named fixture pair,
+    /// with heap addresses masked so the expectation compares exactly.
+    fn trace(program: &str, future: &str, verbose: bool) -> String {
+        let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
+            .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
+        let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
+            .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
+        let ctx = Context::new(&snapshot, BundleView::new(&bundle)).expect("snapshot has mappings");
+
+        let lwps = snapshot.lwps().unwrap();
+        let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+        let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
+        let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+
+        let task = list
+            .tasks
+            .iter()
+            .find(|t| match &t.future {
+                hansei_types::tokio::bundle::FutureInfo::Known(known) => {
+                    known.display_name == future
+                }
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("no task running {future}"));
+        let TaskStage::Running(root) = ctx.task_stage(task).expect("the task's stage decodes")
+        else {
+            panic!("{future} is not running");
+        };
+
+        let chain = ctx.await_chain(root);
+        let mut out = Vec::new();
+        print_await_chain(&ctx, &chain, verbose, 4, false, &mut out).expect("the chain renders");
+        let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
+        regex::Regex::new(r"0x[0-9a-f]+")
+            .unwrap()
+            .replace_all(&rendered, "0xADDR")
+            .into_owned()
+    }
+
+    /// Two suspend points, parked at the second: the row order is the
+    /// enum's, the marked row drops the awaitee its child already names,
+    /// and the child hangs from it.
+    #[test]
+    fn test_inventory_marks_the_active_state() {
+        assert_eq!(
+            trace("simple-await", "simple_await::work::{async_fn_env#0}", false),
+            "  0  async fn      simple_await::work::{async_fn_env#0}
+     suspends:
+       Suspend0  simple-await.rs:32  11 locals  simple_await::ready_value::{async_fn_env#0}
+     ▸ Suspend1  simple-await.rs:34  10 locals
+       └─* 1  future        tokio::sync::oneshot::Receiver<u32>
+"
+        );
+    }
+
+    /// A frame whose states hold nothing carries no locals column, and
+    /// the indent accumulates through each frame's inventory rather than
+    /// by a fixed step per level.
+    #[test]
+    fn test_deep_chain_indents_through_its_inventories() {
+        let rendered = trace(
+            "futurelock",
+            "futurelock::main::{async_block#0}::{async_block_env#0}",
+            false,
+        );
+        assert_eq!(
+            rendered,
+            "  0  async block   futurelock::main::{async_block#0}::{async_block_env#0}
+     suspends:
+       Suspend0  futurelock.rs:22  1 local  futurelock::start_background_task::{async_fn_env#0}
+     ▸ Suspend1  futurelock.rs:25  1 local
+       └─  1  async fn      futurelock::do_stuff::{async_fn_env#0}
+          suspends:
+            Suspend0  src/macros/select.rs:741  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}>
+          ▸ Suspend1  futurelock.rs:64          3 locals
+            └─  2  async fn      futurelock::do_async_thing::{async_fn_env#0}
+               suspends:
+               ▸ Suspend0  futurelock.rs:72  2 locals
+                 └─  3  async fn      tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()>
+                    suspends:
+                    ▸ Suspend0  src/sync/mutex.rs:455
+                      └─  4  async block   tokio::sync::mutex::{impl#10}::lock::{async_fn#0}::{async_block_env#0}<()>
+                         suspends:
+                         ▸ Suspend0  src/sync/mutex.rs:436
+                           └─  5  async fn      tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()>
+                              suspends:
+                                Suspend0  src/sync/mutex.rs:656  1 local  tokio::trace::async_trace_leaf::{async_fn_env#0}
+                              ▸ Suspend1  src/sync/mutex.rs:658
+                                └─* 6  future        tokio::sync::batch_semaphore::Acquire
+                                   waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+"
+        );
+    }
+
+    /// A frame parked at a state its inventory lists others after: the
+    /// rows keep the enum's order, so the one below the active row is
+    /// printed once the subtree hanging off the active row is closed.
+    #[test]
+    fn test_states_after_the_active_one_close_over_the_subtree() {
+        assert_eq!(
+            trace("dyn-future", "dyn_future::driver::{async_fn_env#0}", false),
+            "  0  async fn      dyn_future::driver::{async_fn_env#0}
+     suspends:
+     ▸ Suspend0  dyn-future.rs:29  1 local
+       └─  1  async fn      dyn_future::boxed_leaf::{async_fn_env#0} [dyn]
+          suspends:
+          ▸ Suspend0  dyn-future.rs:11
+            └─* 2  future        tokio::sync::oneshot::Receiver<u32>
+       Suspend1  dyn-future.rs:30  2 locals  tokio::task::join_set::{impl#1}::join_next::{async_fn_env#0}<u32>
+"
+        );
+    }
+
+    /// Under `--verbose` the marked row drops its count — the values it
+    /// counted are listed right below it — and the listing hangs from
+    /// the row rather than from the frame.
+    #[test]
+    fn test_verbose_lists_the_active_states_locals_under_its_row() {
+        let rendered = trace("simple-await", "simple_await::work::{async_fn_env#0}", true);
+        assert!(
+            rendered.contains("     ▸ Suspend1  simple-await.rs:34\n       locals:\n"),
+            "{rendered}"
+        );
+        // The inactive row keeps its count: every variant shares the
+        // enum's storage, so its locals cannot be read at all.
+        assert!(
+            rendered.contains("       Suspend0  simple-await.rs:32  11 locals  "),
+            "{rendered}"
+        );
+        assert!(rendered.contains("\n         count: 3\n"), "{rendered}");
     }
 }

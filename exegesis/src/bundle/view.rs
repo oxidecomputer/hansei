@@ -309,6 +309,53 @@ impl<'a> BundleType<'a> {
         }
     }
 
+    /// Every variant of a Rust enum, in the order the debug info lists
+    /// them; empty for other kinds.
+    ///
+    /// This reads the *type*, so no value is needed: for a coroutine
+    /// state machine the variants are the future's suspend points, and
+    /// this is how a caller enumerates every place it can park rather
+    /// than only the one it is parked at. Note that a variant's payload
+    /// can only be *read* when it is the active one — every variant
+    /// shares the same storage.
+    pub fn variants(&self) -> impl Iterator<Item = BundleVariant<'a>> + 'a {
+        let me = *self;
+        let variants: &'a [VariantDef] = match self.def() {
+            TypeDef::Enum { shape, .. } => &shape.variants,
+            _ => &[],
+        };
+        variants.iter().map(move |v| me.variant_of(v))
+    }
+
+    /// Whether this type is a coroutine state machine — an `async fn` or
+    /// `async block` environment.
+    ///
+    /// rustc numbers a coroutine's variant members ("0", "1", …) and
+    /// carries the state name on the payload struct, which is what tells
+    /// them apart from an ordinary Rust enum whose variants are named in
+    /// place. Only for these are [`BundleType::variants`] suspend points.
+    pub fn is_coroutine(&self) -> bool {
+        let Some(shape) = self.variant_shape() else {
+            return false;
+        };
+        !shape.variants.is_empty()
+            && shape.variants.iter().all(|v| {
+                let name = self.str(v.name);
+                !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
+            })
+    }
+
+    fn variant_of(&self, def: &'a VariantDef) -> BundleVariant<'a> {
+        BundleVariant {
+            name: self.str(def.name),
+            ty: self.at(def.payload.ty),
+            offset: def.payload.offset,
+            decl: def
+                .decl
+                .and_then(|loc| Some((self.bundle.strings.get(loc.file)?, loc.line))),
+        }
+    }
+
     /// If this is a Rust enum, decode which variant `bytes` holds.
     ///
     /// This is a direct decode of the explicit [`VariantShape`]: read the
@@ -413,14 +460,7 @@ impl<'a> BundleType<'a> {
             }
         };
 
-        Ok(ActiveVariant {
-            name: self.str(selected.name),
-            ty: self.at(selected.payload.ty),
-            offset: selected.payload.offset,
-            decl: selected
-                .decl
-                .and_then(|loc| Some((self.bundle.strings.get(loc.file)?, loc.line))),
-        })
+        Ok(self.variant_of(selected))
     }
 }
 
@@ -433,10 +473,10 @@ impl fmt::Debug for BundleType<'_> {
     }
 }
 
-/// The result of decoding a Rust enum's discriminant.
+/// One variant of a Rust enum, resolved against the bundle.
 #[derive(Copy, Clone, Debug)]
-pub struct ActiveVariant<'a> {
-    /// The active variant's name.
+pub struct BundleVariant<'a> {
+    /// The variant's name.
     pub name: &'a str,
     /// The variant's payload type.
     pub ty: BundleType<'a>,
@@ -448,7 +488,12 @@ pub struct ActiveVariant<'a> {
     pub decl: Option<(&'a str, u32)>,
 }
 
-impl<'a> ActiveVariant<'a> {
+/// The result of decoding a Rust enum's discriminant: the one variant of
+/// [`BundleType::variants`] that a value actually holds, and so the only
+/// one whose payload bytes mean anything.
+pub type ActiveVariant<'a> = BundleVariant<'a>;
+
+impl<'a> BundleVariant<'a> {
     /// The variant's human-readable name.
     pub fn state_name(&self) -> &'a str {
         variant_name(self.name, self.ty)
