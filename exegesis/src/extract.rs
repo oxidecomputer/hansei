@@ -523,10 +523,23 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
             // `DW_TAG_variable` DIE for tokio/std dependency statics such as
             // `WAKER_VTABLE`, but keep the symbol in `.symtab`/`.dynsym`. Gather
             // both tables so `find_statics` can fall back to a mangled-name match.
+            // Mach-O's linker prefixes every global symbol with an
+            // underscore, so its tables spell a Rust v0 name `__RNv…`
+            // where the DWARF linkage name — and the symbol table of any
+            // target the bundle is later resolved against — has `_RNv…`.
+            // Undo it here, at the one place symbols enter, so every
+            // lookup downstream compares like with like. Left alone, a
+            // bundle extracted on macOS carries an empty fingerprint and
+            // statics under names no target answers to.
+            let underscore_prefixed = obj.format() == object::BinaryFormat::MachO;
             let symbols: Vec<&str> = obj
                 .symbols()
                 .chain(obj.dynamic_symbols())
                 .filter_map(|s| s.name().ok())
+                .map(|name| match underscore_prefixed {
+                    true => name.strip_prefix('_').unwrap_or(name),
+                    false => name,
+                })
                 .collect();
             let vtable_types = discover_vtable_types(&obj);
             (symbols, vtable_types)
