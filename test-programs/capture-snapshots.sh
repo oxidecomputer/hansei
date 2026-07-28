@@ -91,3 +91,17 @@ for p in "${PROGRAMS[@]}"; do
     echo "capture-snapshots.sh: $p -> $OUT/$p.{bundle,snapshot}"
 done
 
+# What the pairs were captured from. A snapshot is frozen but the
+# programs are not, and nothing else compares the two — the offline
+# goldens quote line numbers out of sources they are never rebuilt
+# against — so the offline suite checks this manifest and says to come
+# back here when it no longer matches.
+DEFAULT_OUT="$(cd ../hansei-types/tests/fixtures 2>/dev/null && pwd || true)"
+if [[ "$OUT" == "$DEFAULT_OUT" ]]; then
+    (cd .. && FIXTURE_SOURCES_BLESS=1 \
+        cargo test -q -p hansei-types --test two_binary fixtures_record >/dev/null)
+    echo "capture-snapshots.sh: recorded the fixture sources in $OUT/SOURCES"
+else
+    echo "capture-snapshots.sh: $OUT is not the checked-in fixture dir;" \
+         "SOURCES not written" >&2
+fi

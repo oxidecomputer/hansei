@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dev-dependencies]
+blake3.workspace = true
 regex.workspace = true
 
 [dependencies]
