@@ -771,10 +771,12 @@ dependencies = [
  "hansei-types",
  "humantime",
  "proc",
+ "reedline",
  "regex",
  "reify",
  "rustc-demangle",
  "semver",
+ "subprocess",
  "tempfile",
 ]
 

@@ -8,141 +8,173 @@ use proc::snapshot::Recorder;
 
 use std::collections::HashMap;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+pub mod repl;
 pub mod tokio;
 
-#[derive(clap::Parser)]
+/// The command line names a target and nothing else; what to ask of it
+/// is read from stdin, at a prompt or from a pipe.
+#[derive(Parser)]
+#[command(
+    about = "Inspect a tokio runtime in a core dump",
+    long_about = "Inspect a tokio runtime in a core dump.\n\n\
+                  The command line names a target and nothing else. What to \
+                  ask of it is read from stdin: at a prompt when stdin is a \
+                  terminal, otherwise one command per line, stopping at the \
+                  first failure.",
+    after_help = "Examples:\n  \
+                  hansei --core core.app --bundle app.bundle\n  \
+                  echo 'trace 42 -v' | hansei --core core.app --bundle app.bundle\n\n\
+                  Type `help` for the commands a session accepts."
+)]
 struct Cli {
-    #[command(subcommand)]
-    action: Action,
-}
-
-#[derive(Subcommand)]
-enum Action {
-    #[command(visible_alias = "trace")]
-    TaskTrace(TaskTrace),
-    Tasks(Tasks),
-    Graph(Graph),
-    #[command(hide = true)]
-    Snapshot(SnapshotCmd),
-}
-
-/// Print the waker-based task dependency graph: what every task is
-/// waiting on, and any futurelock — a lock future granted or queued on
-/// a contended semaphore that its task stopped polling and so can
-/// never complete or release (RFD 609).
-#[derive(Args)]
-struct Graph {
     #[command(flatten)]
-    source: Source,
-
-    /// The debug bundle to read (produced by `exegesis extract`).
-    #[clap(long, short)]
-    bundle: PathBuf,
-
-    /// Proceed even if the bundle's symbols don't all resolve in the target.
-    #[arg(long)]
-    force: bool,
+    session: SessionArgs,
 }
 
-/// Capture a replayable snapshot of everything the bundle-backed
-/// analysis reads from the target: task enumeration and every task's
-/// await chain are driven once with a recording wrapper in place, and
-/// the memory, symbol, and LWP state they touched is written out.
-/// Together with a bundle extracted from a *separate* build of the
-/// same source, the snapshot feeds the offline two-binary tests.
+/// What it takes to attach: the pair of files, and how strictly they
+/// have to agree.
 #[derive(Args)]
-struct SnapshotCmd {
-    #[command(flatten)]
-    source: Source,
-
-    /// The debug bundle to read (produced by `exegesis extract`).
-    #[clap(long, short)]
-    bundle: PathBuf,
-
-    /// Where to write the snapshot.
-    #[clap(long, short)]
-    output: PathBuf,
-
-    /// Proceed even if the bundle's symbols don't all resolve in the target.
-    #[arg(long)]
-    force: bool,
-}
-
-/// List every task owned by the runtime: id, lifecycle state, concrete
-/// future type, spawn location, and where the future is defined.
-#[derive(Args)]
-struct Tasks {
-    #[command(flatten)]
-    source: Source,
-
-    /// The debug bundle to read (produced by `exegesis extract`).
-    #[clap(long, short)]
-    bundle: PathBuf,
-
-    /// Proceed even if the bundle's symbols don't all resolve in the target.
-    #[arg(long)]
-    force: bool,
-}
-
-/// Print a task's await chain. Tasks are selected by id (see `hansei
-/// tasks`) and the future type is resolved automatically via the symbol
-/// join.
-#[derive(Args)]
-struct TaskTrace {
-    #[command(flatten)]
-    source: Source,
-
-    /// The id of the task to trace, from `hansei tasks`.
-    #[clap(long)]
-    task_id: u64,
-
-    /// The debug bundle to read (produced by `exegesis extract`).
-    #[clap(long, short)]
-    bundle: PathBuf,
-
-    /// Proceed even if the bundle's symbols don't all resolve in the target.
-    #[arg(long)]
-    force: bool,
-
-    /// Show the variables present at each await point.
-    #[clap(long, short)]
-    verbose: bool,
-
-    /// Maximum depth to recurse when formatting variable values.
-    #[arg(long, default_value_t = 2, requires = "verbose")]
-    value_depth: usize,
-
-    /// Disable every type's custom formatter and show the raw structural
-    /// view of values instead.
-    #[arg(long)]
-    ugly: bool,
-}
-
-#[derive(Args)]
-struct Source {
+struct SessionArgs {
     /// The core dump to open.
-    #[arg(long)]
+    #[arg(long, short)]
     core: PathBuf,
+
+    /// The debug bundle to read (produced by `exegesis extract`).
+    #[arg(long, short)]
+    bundle: PathBuf,
+
+    /// Proceed even if the bundle's symbols don't all resolve in the target.
+    #[arg(long, short)]
+    force: bool,
 }
 
-impl Source {
-    fn open_proc(&self) -> Result<Proc> {
-        Proc::open_core(&self.core)
-            .with_context(|| format!("failed to open {}", self.core.display()))
+/// Everything a session can be asked. These are read from stdin, never
+/// from the command line, so a `Subcommand` derive here defines the
+/// grammar of a typed line rather than of an argv.
+#[derive(Subcommand)]
+pub enum Command {
+    /// Show the target, the bundle, and how far its symbols resolve.
+    Info,
+
+    /// List every task owned by the runtime: id, lifecycle state,
+    /// concrete future type, spawn location, and where the future is
+    /// defined.
+    Tasks,
+
+    /// Print a task's await chain. Tasks are selected by id (see
+    /// `tasks`) and the future type is resolved automatically via the
+    /// symbol join.
+    Trace {
+        /// The id of the task to trace, from `tasks`.
+        task_id: u64,
+
+        /// Show the variables present at each await point.
+        #[arg(long, short)]
+        verbose: bool,
+
+        /// Maximum depth to recurse when formatting variable values.
+        #[arg(long, short, default_value_t = 2, requires = "verbose")]
+        depth: usize,
+
+        /// Disable every type's custom formatter and show the raw
+        /// structural view of values instead.
+        #[arg(long, short)]
+        ugly: bool,
+    },
+
+    /// Print the waker-based task dependency graph: what every task is
+    /// waiting on, and any futurelock — a lock future granted or queued
+    /// on a contended semaphore that its task stopped polling and so can
+    /// never complete or release (RFD 609).
+    Graph,
+
+    /// Capture a replayable snapshot of everything the bundle-backed
+    /// analysis reads from the target: task enumeration and every task's
+    /// await chain are driven once with a recording wrapper in place,
+    /// and the memory, symbol, and LWP state they touched is written
+    /// out. Together with a bundle extracted from a *separate* build of
+    /// the same source, the snapshot feeds the offline two-binary tests.
+    #[command(hide = true)]
+    Snapshot {
+        /// Where to write the snapshot.
+        output: PathBuf,
+    },
+
+    /// Leave the session.
+    Quit,
+
+    #[command(hide = true)]
+    Exit,
+}
+
+/// Whether the session carries on after a command.
+pub enum Flow {
+    Continue,
+    Quit,
+}
+
+/// One target, opened once. A core does not change while we read it, so
+/// the attach-time walks — worker discovery and task enumeration — are
+/// done here and reused by every command, rather than repeated per
+/// command as they were when each invocation opened its own target.
+pub struct Session<'b> {
+    ctx: bundle::Context<'b, Proc>,
+    proc: &'b Proc,
+    bundle: &'b Bundle,
+    core: &'b Path,
+    bundle_path: &'b Path,
+    workers: Vec<bundle::Worker>,
+    tasks: bundle::TaskList,
+}
+
+impl<'b> Session<'b> {
+    fn attach(proc: &'b Proc, bundle: &'b Bundle, args: &'b SessionArgs) -> Result<Self> {
+        let ctx = bundle::Context::new(proc, BundleView::new(bundle))?;
+        check_fingerprint(&ctx, args.force)?;
+
+        let workers = discover_workers(proc, &ctx)?;
+        let shared = ctx.find_shared(&workers)?;
+        let tasks = ctx.enumerate_tasks(&shared)?;
+        for err in &tasks.errors {
+            writeln!(io::stderr(), "warning: {err:#}")?;
+        }
+
+        Ok(Session {
+            ctx,
+            proc,
+            bundle,
+            core: &args.core,
+            bundle_path: &args.bundle,
+            workers,
+            tasks,
+        })
     }
+}
+
+/// Run one command against an attached session.
+pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write) -> Result<Flow> {
+    match command {
+        Command::Quit | Command::Exit => return Ok(Flow::Quit),
+        Command::Info => exec_info(session, out)?,
+        Command::Tasks => exec_tasks(session, out)?,
+        Command::Graph => exec_graph(session, out)?,
+        Command::Trace {
+            task_id,
+            verbose,
+            depth,
+            ugly,
+        } => exec_trace(session, task_id, verbose, depth, ugly, out)?,
+        Command::Snapshot { output } => exec_snapshot(session, &output, out)?,
+    }
+    Ok(Flow::Continue)
 }
 
 fn main() {
     let args = Cli::parse();
 
-    let res = match args.action {
-        Action::TaskTrace(dump) => exec_trace(dump, &mut io::stdout().lock()),
-        Action::Tasks(tasks) => exec_tasks(tasks, &mut io::stdout().lock()),
-        Action::Graph(graph) => exec_graph(graph, &mut io::stdout().lock()),
-        Action::Snapshot(snap) => exec_snapshot(snap, &mut io::stdout().lock()),
-    };
+    let res = run(&args.session);
     if let Err(e) = res {
         if let Some(io_err) = e.downcast_ref::<io::Error>()
             && io_err.kind() == io::ErrorKind::BrokenPipe
@@ -155,23 +187,55 @@ fn main() {
     }
 }
 
-fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
-    let task_id = args.task_id;
-    let bundle_path = &args.bundle;
+/// Open the target and hand the session to the command reader.
+///
+/// The proc and the bundle are owned here rather than by [`Session`]:
+/// the context borrows both, so keeping all three in one frame is what
+/// lets a session be held across many commands without a
+/// self-referential struct.
+fn run(args: &SessionArgs) -> Result<()> {
+    let proc = Proc::open_core(&args.core)
+        .with_context(|| format!("failed to open {}", args.core.display()))?;
+    let bundle = Bundle::load(&args.bundle)
+        .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
+    let session = Session::attach(&proc, &bundle, args)?;
 
-    let proc = args.source.open_proc()?;
-    let bundle = Bundle::load(bundle_path)
-        .with_context(|| format!("failed to load bundle {}", bundle_path.display()))?;
-    let view = BundleView::new(&bundle);
-    let ctx = bundle::Context::new(&proc, view)?;
-    check_fingerprint(&ctx, args.force)?;
+    repl::run(&session)
+}
 
-    let workers = discover_workers(&proc, &ctx)?;
-    let shared = ctx.find_shared(&workers)?;
-    let list = ctx.enumerate_tasks(&shared)?;
-    for err in &list.errors {
-        writeln!(io::stderr(), "warning: {err:#}")?;
-    }
+/// The attach summary: what is being read, and how well the two files
+/// agree. A partial fingerprint is what `--force` waves through, so it
+/// is worth being able to ask after the fact.
+fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
+    let fp = session.ctx.validate_fingerprint();
+    writeln!(out, "core:   {}", session.core.display())?;
+    writeln!(out, "bundle: {}", session.bundle_path.display())?;
+    writeln!(
+        out,
+        "symbols resolved: {}/{}{}",
+        fp.matched,
+        fp.total,
+        if fp.is_complete() { "" } else { " (forced)" }
+    )?;
+    writeln!(
+        out,
+        "{} worker thread(s), {} task(s)",
+        session.workers.len(),
+        session.tasks.tasks.len()
+    )?;
+    Ok(())
+}
+
+fn exec_trace(
+    session: &Session<'_>,
+    task_id: u64,
+    verbose: bool,
+    depth: usize,
+    ugly: bool,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let ctx = &session.ctx;
+    let list = &session.tasks;
 
     let Some(task) = list.tasks.iter().find(|t| t.task_id == Some(task_id)) else {
         let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
@@ -204,7 +268,8 @@ fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
     // A mid-poll task is being mutated while we read it; anything below
     // may be torn.
     if task.state.lifecycle() == Lifecycle::Running {
-        let lwp = workers
+        let lwp = session
+            .workers
             .iter()
             .find(|w| w.current_task_id == Some(task_id))
             .map(|w| format!(" on LWP {}", w.tid))
@@ -219,7 +284,7 @@ fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
     match ctx.task_stage(task)? {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
-            print_await_chain(&ctx, &chain, args.verbose, args.value_depth, args.ugly, out)?;
+            print_await_chain(ctx, &chain, verbose, depth, ugly, out)?;
             // The leaf-future knowledge base (§3.6): name what the task
             // is actually waiting on when the leaf is a known primitive.
             match ctx.wait_target(&chain) {
@@ -243,7 +308,7 @@ fn exec_trace(args: TaskTrace, out: &mut dyn io::Write) -> Result<()> {
             )?;
             let output = result.as_ref();
             let mut value = output.display_with_depth(4);
-            if args.ugly {
+            if ugly {
                 value = value.ugly();
             }
             writeln!(out, "  {:#}", value)?;
@@ -261,7 +326,7 @@ fn print_await_chain<'b, T: proc::Target>(
     ctx: &bundle::Context<'b, T>,
     chain: &bundle::AwaitChain<'b>,
     verbose: bool,
-    value_depth: usize,
+    depth: usize,
     ugly: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -347,7 +412,7 @@ fn print_await_chain<'b, T: proc::Target>(
                     Some(bytes) => {
                         let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes)
                             .peel();
-                        let mut disp = v.display_from_target(ctx.proc, value_depth);
+                        let mut disp = v.display_from_target(ctx.proc, depth);
                         if ugly {
                             disp = disp.ugly();
                         }
@@ -540,7 +605,7 @@ fn discover_workers(proc: &Proc, ctx: &bundle::Context<'_, Proc>) -> Result<Vec<
 /// offline render tests replay the same reads. The depth is generous so
 /// the recorded reads are a superset of any the tests perform.
 ///
-/// Each local is rendered twice: peeled (how `task-trace` displays it)
+/// Each local is rendered twice: peeled (how `trace` displays it)
 /// and unpeeled (which dispatches the local's own top-level formatter —
 /// e.g. `bounded::Receiver`'s compact `MpscRx` form, which peeling would
 /// strip away). The two read slightly different page sets, so warming
@@ -576,15 +641,18 @@ fn warm_frame_values<T: proc::Target>(
 /// and await chain is walked so the snapshot can answer the offline
 /// tests' whole question set; walk problems are warnings, not errors,
 /// since a partially-traceable target is still worth capturing.
-fn exec_snapshot(args: SnapshotCmd, out: &mut dyn io::Write) -> Result<()> {
-    let proc = args.source.open_proc()?;
-    let bundle = Bundle::load(&args.bundle)
-        .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
-    let view = BundleView::new(&bundle);
-
-    let recorder = Recorder::new(&proc);
-    let ctx = bundle::Context::new(&recorder, view)?;
-    check_fingerprint(&ctx, args.force)?;
+fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) -> Result<()> {
+    // The recording wrapper has to sit under its own context: what makes
+    // a snapshot is the reads going through `Recorder`, so the session's
+    // context — which reads the target directly — cannot serve here. The
+    // whole analysis is therefore driven a second time.
+    let proc = session.proc;
+    let recorder = Recorder::new(proc);
+    let ctx = bundle::Context::new(&recorder, BundleView::new(session.bundle))?;
+    // Not a policy check — the session already made it, and refused if it
+    // failed. This is for the reads it makes, which belong in the
+    // snapshot like any other.
+    let _ = ctx.validate_fingerprint();
 
     let lwps = proc.lwps().context("failed to read lwps")?;
     let workers = ctx.find_workers(&lwps)?;
@@ -646,33 +714,24 @@ fn exec_snapshot(args: SnapshotCmd, out: &mut dyn io::Write) -> Result<()> {
 
     let snapshot = recorder.snapshot().context("failed to assemble snapshot")?;
     snapshot
-        .save(&args.output)
-        .with_context(|| format!("failed to write {}", args.output.display()))?;
+        .save(output)
+        .with_context(|| format!("failed to write {}", output.display()))?;
     writeln!(
         out,
         "captured {} tasks ({chains} await chains, {} futurelocks) to {}",
         list.tasks.len(),
         analysis.futurelocks.len(),
-        args.output.display()
+        output.display()
     )?;
     Ok(())
 }
 
-fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
-    let proc = args.source.open_proc()?;
-
-    let bundle = Bundle::load(&args.bundle)
-        .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
-    let view = BundleView::new(&bundle);
-    let ctx = bundle::Context::new(&proc, view)?;
-    check_fingerprint(&ctx, args.force)?;
-
-    let workers = discover_workers(&proc, &ctx)?;
-    let shared = ctx.find_shared(&workers)?;
-    let list = ctx.enumerate_tasks(&shared)?;
+fn exec_tasks(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
+    let list = &session.tasks;
 
     // Which LWP is polling which task right now (§3.2).
-    let polling: HashMap<u64, u32> = workers
+    let polling: HashMap<u64, u32> = session
+        .workers
         .iter()
         .filter_map(|w| w.current_task_id.map(|id| (id, w.tid)))
         .collect();
@@ -752,22 +811,9 @@ fn exec_tasks(args: Tasks, out: &mut dyn io::Write) -> Result<()> {
     Ok(())
 }
 
-fn exec_graph(args: Graph, out: &mut dyn io::Write) -> Result<()> {
-    let proc = args.source.open_proc()?;
-    let bundle = Bundle::load(&args.bundle)
-        .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
-    let view = BundleView::new(&bundle);
-    let ctx = bundle::Context::new(&proc, view)?;
-    check_fingerprint(&ctx, args.force)?;
-
-    let workers = discover_workers(&proc, &ctx)?;
-    let shared = ctx.find_shared(&workers)?;
-    let list = ctx.enumerate_tasks(&shared)?;
-    for err in &list.errors {
-        writeln!(io::stderr(), "warning: {err:#}")?;
-    }
-
-    let analysis = graph::analyze(&ctx, &list);
+fn exec_graph(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
+    let list = &session.tasks;
+    let analysis = graph::analyze(&session.ctx, list);
     for err in &analysis.errors {
         writeln!(io::stderr(), "warning: {err:#}")?;
     }

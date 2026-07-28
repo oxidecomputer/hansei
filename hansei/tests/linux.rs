@@ -15,8 +15,9 @@
 
 #![cfg(target_os = "linux")]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 /// The fixture, and what it parks. Keep in step with
@@ -90,20 +91,30 @@ fn target() -> &'static (tempfile::TempDir, PathBuf, PathBuf) {
     })
 }
 
-/// Run hansei against the fixture, and hand back what it printed.
-fn hansei(args: &[&str]) -> String {
+/// Ask an attached session one command — hansei takes them on stdin,
+/// not as arguments — and hand back what it printed.
+fn hansei(command: &str) -> String {
     let (_dir, bundle, core) = target();
-    let out = Command::new(env!("CARGO_BIN_EXE_hansei"))
-        .args(args)
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hansei"))
         .arg("--bundle")
         .arg(bundle)
         .arg("--core")
         .arg(core)
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("failed to run hansei");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(command.as_bytes())
+        .expect("failed to send the command");
+    let out = child.wait_with_output().expect("failed to wait for hansei");
     assert!(
         out.status.success(),
-        "hansei {args:?} failed:\n{}",
+        "hansei {command:?} failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
@@ -115,7 +126,7 @@ fn hansei(args: &[&str]) -> String {
 /// thread-local the bundle names.
 #[test]
 fn test_tasks_lists_what_the_fixture_parked() {
-    let out = hansei(&["tasks"]);
+    let out = hansei("tasks");
     assert!(out.contains("TASK"), "{out}");
     assert!(out.contains(PARKED_TASK), "{out}");
     assert!(out.contains(RECEIVING_TASK), "{out}");
@@ -134,7 +145,7 @@ fn test_tasks_lists_what_the_fixture_parked() {
 #[test]
 fn test_task_trace_reads_the_frame_locals() {
     let id = task_id(PARKED_TASK);
-    let out = hansei(&["task-trace", "--task-id", &id, "-v"]);
+    let out = hansei(&format!("trace {id} -v"));
 
     assert!(out.contains(PARKED_TASK), "{out}");
     assert!(out.contains("locals:"), "{out}");
@@ -154,14 +165,14 @@ fn test_task_trace_reads_the_frame_locals() {
 /// right answer for two independently parked tasks.
 #[test]
 fn test_graph_reports_no_futurelock() {
-    let out = hansei(&["graph"]);
+    let out = hansei("graph");
     assert!(out.contains("WAITING ON"), "{out}");
     assert!(out.contains("no futurelock detected"), "{out}");
 }
 
 /// The task id hansei assigned to a future, read out of `tasks`.
 fn task_id(future: &str) -> String {
-    let out = hansei(&["tasks"]);
+    let out = hansei("tasks");
     out.lines()
         .find(|l| l.contains(future))
         .and_then(|l| l.split_whitespace().next())

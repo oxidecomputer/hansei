@@ -37,21 +37,46 @@ Extract the bundle:
 cargo run --release -p exegesis -- extract ${PATH_TO_DEBUG_BINARY} -o app.bundle
 ----
 
-List the runtime's tasks:
+Then attach to a target. The core and the bundle name the *session*, and are the only things the command line
+takes; commands are read from stdin:
 
 [source,shell]
 ----
-hansei tasks --bundle app.bundle --core ${PATH_TO_CORE}
+hansei --core ${PATH_TO_CORE} --bundle app.bundle
 ----
+
+When stdin is a terminal this is a prompt, and the session stays attached so each command reads the target
+already in hand:
+
+----
+hansei〉tasks
+hansei〉trace 3 -v
+hansei〉graph ! grep -A5 futurelock
+hansei〉quit
+----
+
+Tab completes command names, `!` pipes a command's output into a shell command, `info` reports what is attached
+and how completely the bundle's symbols resolved, and `help` lists the commands. A command that fails ends the
+command, not the session.
+
+When stdin is not a terminal the same commands are read one per line — blank lines and `#` comments are
+skipped — which is how scripts and the test suites drive it:
+
+[source,shell]
+----
+echo "trace ${ID} -v" | hansei --core ${PATH_TO_CORE} --bundle app.bundle
+----
+
+There a failing command is fatal: the session stops at it and exits non-zero, rather than running the rest of
+the script against a question it could not answer.
 
 Cores can be read cross-platform, e.g., read an illumos core on Linux, a Linux core on macOS.
 
 Each task is listed with its id, lifecycle state, concrete future type, spawn location, and where the future is
-defined. Trace one task's await chain:
+defined. `trace` prints one task's await chain, selecting it by the id from `tasks`:
 
-[source,shell]
 ----
-hansei task-trace --bundle app.bundle --core ${PATH_TO_CORE} --task-id ${ID} -v
+hansei〉trace ${ID} -v
 ----
 
 This prints every future in the chain with its suspend state and the source line of the awaited expression;
@@ -65,20 +90,19 @@ also reports what the task is actually waiting on:
 
 Those edges assemble into the runtime-wide dependency graph:
 
-[source,shell]
 ----
-hansei graph --bundle app.bundle --core ${PATH_TO_CORE}
+hansei〉graph
 ----
 
-prints one wait edge per task and diagnoses any *futurelock* (RFD 609): a lock future found in a
+which prints one wait edge per task and diagnoses any *futurelock* (RFD 609): a lock future found in a
 suspended frame's locals — off its task's poll path, so it will never be polled again — while granted, or
 queued for, a contended semaphore's permits. The diagnosis names the holding task, the local and frame
 the abandoned future is parked in, and the tasks blocked behind it.
 
 At attach time the bundle's symbol fingerprint is resolved against the target's symtab; anything less than a
-100% match is refused (`--force` to override) so a wrong bundle can never silently misinterpret memory.
+100% match is refused (`--force`/`-f` to override) so a wrong bundle can never silently misinterpret memory.
 
-`hansei snapshot` captures everything a bundle-backed analysis reads from a target into a small replayable file;
+The `snapshot` command captures everything a bundle-backed analysis reads from a target into a small replayable file;
 together with a bundle extracted from a *separate* build it feeds the offline two-binary tests in
 `hansei-types/tests`.
 
@@ -88,4 +112,4 @@ together with a bundle extracted from a *separate* build it feeds the offline tw
   `tests/linux.rs`, which builds the `core-tokio` fixture, extracts a bundle from it, dumps a core with gdb's
   `gcore`, and drives all three commands over the result.
 * `cargo test --features illumos-integration -- --ignored` (on illumos) — the on-box suite: fixtures built and
-  run for real, attached to live and cored, output compared against known-good renderings.
+  run for real, cored at their parked steady state, output compared against known-good renderings.
