@@ -291,7 +291,7 @@ fn test_simple_await_offline() {
     assert_summary(
         "simple-await",
         r#"
-fingerprint 3/3
+fingerprint 15/15
 workers 3
 task 3 idle simple_await::work::{async_fn_env#0}
   spawned test-programs/src/bin/simple-await.rs:67:21
@@ -310,7 +310,7 @@ fn test_nested_await_offline() {
     assert_summary(
         "nested-await",
         r#"
-fingerprint 3/3
+fingerprint 15/15
 workers 3
 task 3 idle nested_await::outer::{async_fn_env#0}
   spawned test-programs/src/bin/nested-await.rs:32:21
@@ -333,7 +333,7 @@ fn test_dyn_future_offline() {
     assert_summary(
         "dyn-future",
         r#"
-fingerprint 5/5
+fingerprint 17/17
 workers 3
 task 3 idle dyn_future::driver::{async_fn_env#0}
   spawned test-programs/src/bin/dyn-future.rs:46:21
@@ -361,7 +361,7 @@ fn test_futurelock_offline() {
     assert_summary(
         "futurelock",
         r#"
-fingerprint 5/5
+fingerprint 17/17
 workers 5
 task 5 idle futurelock::main::{async_block#0}::{async_block_env#0}
   spawned test-programs/src/bin/futurelock.rs:15:17
@@ -391,7 +391,7 @@ fn test_sleep_join_offline() {
     assert_summary(
         "sleep-join",
         r#"
-fingerprint 5/5
+fingerprint 17/17
 workers 3
 task 3 idle sleep_join::sleeper::{async_fn_env#0}
   spawned test-programs/src/bin/sleep-join.rs:28:22

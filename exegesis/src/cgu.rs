@@ -1,7 +1,8 @@
 use crate::raw_types::{
-    CommonAttrs, Encoding, NamespaceTable, NsId, RawArray, RawBase, RawEnum, RawEnumerator,
-    RawFunc, RawGenericParameter, RawInlinedSubroutine, RawMember, RawPointer, RawStaticVariable,
-    RawStruct, RawSubParameter, RawType, RawUnion, RawVariant, SourceLoc, VariantShape,
+    CommonAttrs, Encoding, NamespaceTable, NsId, RawArray, RawAwaitee, RawBase, RawEnum,
+    RawEnumerator, RawFunc, RawGenericParameter, RawInlinedSubroutine, RawMember, RawPointer,
+    RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion, RawVariant, SourceLoc,
+    VariantShape,
 };
 use crate::{Error, FuncId, Result, Slice, TypeId, VarId};
 
@@ -688,8 +689,18 @@ impl<'dw> CodegenUnit<'dw> {
             Ok(())
         })?;
 
+        // A coroutine's resume function is the only place `__awaitee`
+        // locals exist, and reaching them means walking into the lexical
+        // blocks the body nests one per suspend point. Every other
+        // function's blocks stay unvisited: on a large binary that walk
+        // would cost far more than the handful of awaits it would find.
+        let resume_fn = common
+            .name
+            .is_some_and(|n| n.starts_with("{async_fn#") || n.starts_with("{async_block#"));
+
         let mut formal_parameters = vec![];
         let mut template_params = vec![];
+        let mut awaitees = vec![];
         if entry.has_children() {
             while let Some(()) = cursor.next_entry()? {
                 if let Some(child) = cursor.current() {
@@ -703,8 +714,14 @@ impl<'dw> CodegenUnit<'dw> {
                         // gimli::DW_TAG_inlined_subroutine => {
                         //     inlines.push(process_inlined_subroutine(unit, cursor)?);
                         // }
-                        // variable
-                        // lexical_block
+                        gimli::DW_TAG_lexical_block if resume_fn => {
+                            collect_awaitees(unit, cursor, &mut awaitees)?;
+                        }
+                        gimli::DW_TAG_variable if resume_fn => {
+                            if let Some(awaitee) = process_awaitee(unit, cursor)? {
+                                awaitees.push(awaitee);
+                            }
+                        }
                         _ => {
                             //println!("skipping function content: {:x?}", child.tag());
                             cursor.consume_entry()?;
@@ -735,11 +752,69 @@ impl<'dw> CodegenUnit<'dw> {
                 linkage_name,
                 template_params: template_params.into_boxed_slice(),
                 noreturn,
+                awaitees: awaitees.into_boxed_slice(),
             },
         );
 
         Ok(())
     }
+}
+
+/// Walk a lexical block and everything under it, gathering `__awaitee`
+/// locals. A resume body nests one block per suspend point, so the
+/// awaits of a coroutine with several of them sit at different depths.
+fn collect_awaitees<'dw>(
+    unit: &UnitRef<Slice<'dw>>,
+    cursor: &mut EntriesCursor<Slice<'dw>>,
+    out: &mut Vec<RawAwaitee<&'dw str>>,
+) -> Result<()> {
+    debug_assert!(cursor.current().unwrap().tag() == gimli::DW_TAG_lexical_block);
+    if !cursor.current().unwrap().has_children() {
+        cursor.consume_entry()?;
+        return Ok(());
+    }
+    // Blocks left open, closed one at a time by the null entry that ends
+    // each one's children. Leaving a block unconsumed is what makes the
+    // next step descend into it.
+    let mut depth = 1usize;
+    while depth > 0 {
+        let Some(()) = cursor.next_entry()? else {
+            break;
+        };
+        match cursor.current() {
+            None => depth -= 1,
+            Some(child) => match child.tag() {
+                gimli::DW_TAG_lexical_block if child.has_children() => depth += 1,
+                gimli::DW_TAG_variable => {
+                    if let Some(awaitee) = process_awaitee(unit, cursor)? {
+                        out.push(awaitee);
+                    }
+                }
+                _ => cursor.consume_entry()?,
+            },
+        }
+    }
+    Ok(())
+}
+
+/// Read a `DW_TAG_variable` if it is an `__awaitee`, else skip it.
+fn process_awaitee<'dw>(
+    unit: &UnitRef<Slice<'dw>>,
+    cursor: &mut EntriesCursor<Slice<'dw>>,
+) -> Result<Option<RawAwaitee<&'dw str>>> {
+    let entry = cursor.current().unwrap();
+    debug_assert!(entry.tag() == gimli::DW_TAG_variable);
+    let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
+    if common.name != Some("__awaitee") {
+        cursor.consume_entry()?;
+        return Ok(None);
+    }
+    let awaitee = RawAwaitee {
+        source_loc: boxed_source_loc(common.source_loc),
+        type_id: common.type_id.map(TypeId),
+    };
+    cursor.consume_entry()?;
+    Ok(Some(awaitee))
 }
 
 /// Box a [`SourceLoc`] for storage, or `None` if it carries no information.

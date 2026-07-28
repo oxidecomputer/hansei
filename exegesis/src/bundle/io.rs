@@ -24,7 +24,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 21;
+pub const FORMAT_VERSION: u32 = 22;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -940,6 +940,9 @@ impl Bundle {
                         check_str(what, v.name)?;
                         check_member(what, &v.payload)?;
                         if let Some(loc) = &v.decl {
+                            check_str(what, loc.file)?;
+                        }
+                        if let Some(loc) = &v.await_site {
                             check_str(what, loc.file)?;
                         }
                     }

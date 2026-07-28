@@ -353,6 +353,9 @@ impl<'a> BundleType<'a> {
             decl: def
                 .decl
                 .and_then(|loc| Some((self.bundle.strings.get(loc.file)?, loc.line))),
+            await_site: def
+                .await_site
+                .and_then(|loc| Some((self.bundle.strings.get(loc.file)?, loc.line))),
         }
     }
 
@@ -486,6 +489,9 @@ pub struct BundleVariant<'a> {
     /// suspend states, the awaited expression's source file and line
     /// (§13.5).
     pub decl: Option<(&'a str, u32)>,
+    /// Where a suspend point's await is written, when extraction found
+    /// that `decl` names the macro it expanded from instead.
+    pub await_site: Option<(&'a str, u32)>,
 }
 
 /// The result of decoding a Rust enum's discriminant: the one variant of
@@ -497,6 +503,13 @@ impl<'a> BundleVariant<'a> {
     /// The variant's human-readable name.
     pub fn state_name(&self) -> &'a str {
         variant_name(self.name, self.ty)
+    }
+
+    /// Where a coroutine suspend point's await sits in source: the place
+    /// it is written, falling back to the coordinates the variant member
+    /// carries when nothing better was recovered.
+    pub fn await_loc(&self) -> Option<(&'a str, u32)> {
+        self.await_site.or(self.decl)
     }
 }
 

@@ -601,16 +601,24 @@ fn summarize(program: &str, crate_str: &str, bundle: &Bundle) -> String {
             writeln!(out, "  variants:").unwrap();
             for v in &shape.variants {
                 let payload = type_name(v.payload.ty);
+                // The await site only when it says something the variant's
+                // own coordinates do not — i.e. where the await came from a
+                // macro and `decl` names the macro's own line.
+                let awaited = v
+                    .await_site
+                    .filter(|loc| v.decl != Some(*loc))
+                    .map(|loc| format!(" (awaited at {}:{})", basename(s(loc.file)), loc.line))
+                    .unwrap_or_default();
                 match &v.decl {
                     Some(loc) => writeln!(
                         out,
-                        "    {} @ {}:{}",
+                        "    {} @ {}:{}{awaited}",
                         leaf_of(&payload),
                         basename(s(loc.file)),
                         loc.line
                     )
                     .unwrap(),
-                    None => writeln!(out, "    {}", leaf_of(&payload)).unwrap(),
+                    None => writeln!(out, "    {}{awaited}", leaf_of(&payload)).unwrap(),
                 }
             }
         }

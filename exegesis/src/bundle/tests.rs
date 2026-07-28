@@ -141,6 +141,14 @@ fn random_bundle(seed: u64) -> Bundle {
                             } else {
                                 None
                             },
+                            await_site: if rng.below(4) == 0 {
+                                Some(SourceLoc {
+                                    file: strings.intern("src/main.rs"),
+                                    line: (rng.next() % 10_000) as u32,
+                                })
+                            } else {
+                                None
+                            },
                         })
                         .collect(),
                 },
@@ -867,6 +875,7 @@ mod view_tests {
                     offset,
                 },
                 decl: None,
+                await_site: None,
             })
             .collect();
 
@@ -1177,6 +1186,7 @@ mod view_tests {
                                     offset: 0,
                                 },
                                 decl: None,
+                                await_site: None,
                             },
                             VariantDef {
                                 name: v3,
@@ -1187,6 +1197,7 @@ mod view_tests {
                                     offset: 0,
                                 },
                                 decl: Some(SourceLoc { file, line: 18 }),
+                                await_site: None,
                             },
                         ],
                     },

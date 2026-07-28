@@ -842,7 +842,7 @@ impl<'b, T: Target> Context<'b, T> {
                 future: cur,
                 state: Some(FrameState {
                     name: decoded.state_name(),
-                    await_loc: decoded.decl,
+                    await_loc: decoded.await_loc(),
                     payload,
                 }),
                 dyn_symbol: dyn_symbol.take(),

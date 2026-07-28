@@ -1,9 +1,9 @@
 use crate::cgu::CodegenUnit;
 use crate::parallel_fold::BoundedParallelFold;
 use crate::raw_types::{
-    NamespaceTable, NsId, RawBase, RawEnum, RawEnumerator, RawFunc, RawGenericParameter, RawMember,
-    RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion, RawVariant,
-    SourceLoc, VariantShape,
+    NamespaceTable, NsId, RawAwaitee, RawBase, RawEnum, RawEnumerator, RawFunc,
+    RawGenericParameter, RawMember, RawPointer, RawStaticVariable, RawStruct, RawSubParameter,
+    RawType, RawUnion, RawVariant, SourceLoc, VariantShape,
 };
 use crate::string_table::{FrozenStrings, ShardedInterner, StrId};
 use crate::{Error, FuncId, Result, Slice};
@@ -1108,6 +1108,17 @@ fn intern_func<'dw>(strings: &CguInterner<'_, 'dw>, func: RawFunc<&'dw str>) -> 
         linkage_name: intern_opt(strings, func.linkage_name),
         template_params: intern_generic_params(strings, func.template_params),
         noreturn: func.noreturn,
+        awaitees: func
+            .awaitees
+            .into_vec()
+            .into_iter()
+            .map(|a| RawAwaitee {
+                source_loc: a
+                    .source_loc
+                    .map(|loc| Box::new(intern_source_loc(strings, *loc))),
+                type_id: a.type_id,
+            })
+            .collect(),
     }
 }
 

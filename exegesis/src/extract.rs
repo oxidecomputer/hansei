@@ -596,6 +596,10 @@ struct Sweep {
     glue_by_name: BTreeMap<String, BTreeSet<String>>,
     /// Coroutine env → its resume fn's declaration coordinates.
     resume_locs: BTreeMap<TypeId, OwnedLoc>,
+    /// Coroutine env → the `__awaitee` locals of its resume fn: where each
+    /// of its awaits is *written*, which for an await produced by a macro
+    /// is not where the coroutine type says it is.
+    resume_awaitees: BTreeMap<TypeId, Vec<(Option<TypeId>, OwnedLoc)>>,
     vtable_missing_linkage: usize,
     dyn_decl_only_self: usize,
     dyn_unresolved_self: usize,
@@ -627,6 +631,9 @@ impl Sweep {
         }
         for (t, loc) in other.resume_locs {
             self.resume_locs.entry(t).or_insert(loc);
+        }
+        for (t, awaitees) in other.resume_awaitees {
+            self.resume_awaitees.entry(t).or_insert(awaitees);
         }
         self.vtable_missing_linkage += other.vtable_missing_linkage;
         self.dyn_decl_only_self += other.dyn_decl_only_self;
@@ -766,6 +773,29 @@ fn sweep_function(
                 if let Some(loc) = func.source_loc() {
                     out.resume_locs.entry(t).or_insert_with(|| owned_loc(&loc));
                 }
+                let awaitees = func.raw().awaitees.as_ref();
+                if !awaitees.is_empty() {
+                    out.resume_awaitees.entry(t).or_insert_with(|| {
+                        awaitees
+                            .iter()
+                            .map(|a| {
+                                let loc = a.source_loc.as_deref();
+                                (
+                                    a.type_id,
+                                    OwnedLoc {
+                                        file: loc
+                                            .and_then(|l| l.file)
+                                            .map(|f| reader.strings.get(f).to_owned()),
+                                        dir: loc
+                                            .and_then(|l| l.dir)
+                                            .map(|d| reader.strings.get(d).to_owned()),
+                                        line: loc.and_then(|l| l.line).map(|n| n.get()),
+                                    },
+                                )
+                            })
+                            .collect()
+                    });
+                }
             }
             _ => {}
         }
@@ -824,6 +854,7 @@ fn extract_from_view_with_vtable_types(
         drop_glues,
         glue_by_name,
         resume_locs,
+        resume_awaitees,
         vtable_missing_linkage,
         dyn_decl_only_self,
         dyn_unresolved_self,
@@ -991,7 +1022,7 @@ fn extract_from_view_with_vtable_types(
 
     // --- Phase 3: transitive closure and emission (§7.3). ---
 
-    let mut em = Emitter::new(reader);
+    let mut em = Emitter::new(reader, resume_awaitees);
 
     let mut entries: Vec<TaskFutureEntry> = Vec::new();
     let mut provenance: Vec<Provenance> = Vec::new();
@@ -3756,6 +3787,10 @@ fn tokio_version_of(loc: &OwnedLoc) -> Option<semver::Version> {
 /// overflow the stack.
 struct Emitter<'a> {
     reader: &'a DwReader<'a>,
+    /// Coroutine env → the `__awaitee` locals of its resume fn, used to
+    /// report an await at the place it is written rather than the place a
+    /// macro expanded it.
+    resume_awaitees: BTreeMap<TypeId, Vec<(Option<TypeId>, OwnedLoc)>>,
     interner: StringInterner,
     ids: BTreeMap<TypeId, BundleTypeId>,
     defs: Vec<TypeDef>,
@@ -3769,9 +3804,13 @@ struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
-    fn new(reader: &'a DwReader<'a>) -> Self {
+    fn new(
+        reader: &'a DwReader<'a>,
+        resume_awaitees: BTreeMap<TypeId, Vec<(Option<TypeId>, OwnedLoc)>>,
+    ) -> Self {
         Self {
             reader,
+            resume_awaitees,
             interner: StringInterner::new(),
             ids: BTreeMap::new(),
             defs: Vec::new(),
@@ -4354,6 +4393,126 @@ impl<'a> Emitter<'a> {
         })
     }
 
+    /// The type a coroutine suspend variant awaits, from the `__awaitee`
+    /// member of its payload.
+    fn awaited_type(&self, payload: TypeId) -> Option<TypeId> {
+        let RawType::Struct(s) = self.reader.canonical_type(payload)? else {
+            return None;
+        };
+        s.members
+            .iter()
+            .find(|m| {
+                m.name
+                    .is_some_and(|n| self.reader.strings.get(n) == "__awaitee")
+            })
+            .map(|m| self.reader.canonicalize(m.type_id))
+    }
+
+    /// Pair a coroutine's suspend variants with the `__awaitee` locals of
+    /// its resume function, so each await can say where it is written
+    /// rather than where it expanded.
+    ///
+    /// The two sides describe the same awaits in different orders, and
+    /// the awaited type is what they share — but a coroutine may await
+    /// the same type at several points, so type alone does not decide.
+    /// Take the unambiguous evidence first: pairs whose coordinates
+    /// already agree are the awaits rustc attributed to the code that
+    /// wrote them, and matching those removes them from contention.
+    /// Among what is left, pair only where a type picks out exactly one
+    /// variant and one local.
+    ///
+    /// Anything still ambiguous stays unmatched. A suspend point
+    /// reporting some other await's line would be worse than one
+    /// reporting the macro's, which is at least true.
+    fn await_sites(
+        &mut self,
+        coroutine: TypeId,
+        members: &[&crate::raw_types::RawMember<crate::StrId>],
+    ) -> Vec<Option<SourceLoc>> {
+        let mut out = vec![None; members.len()];
+        let Some(locals) = self
+            .resume_awaitees
+            .get(&self.reader.canonicalize(coroutine))
+        else {
+            return out;
+        };
+        let locals: Vec<(Option<TypeId>, &OwnedLoc)> = locals
+            .iter()
+            .map(|(t, loc)| (t.map(|t| self.reader.canonicalize(t)), loc))
+            .collect();
+        let awaited: Vec<Option<TypeId>> = members
+            .iter()
+            .map(|m| self.awaited_type(m.type_id))
+            .collect();
+
+        let mut taken = vec![false; locals.len()];
+        let mut matched: Vec<Option<usize>> = vec![None; members.len()];
+
+        // Pass one: the awaits whose two descriptions already agree.
+        for (v, want) in awaited.iter().enumerate() {
+            let Some(want) = want else { continue };
+            let decl = self.member_loc(members[v]);
+            for (l, (ty, loc)) in locals.iter().enumerate() {
+                if taken[l] || *ty != Some(*want) {
+                    continue;
+                }
+                if decl.as_ref().is_some_and(|(f, n)| {
+                    loc.line == Some(*n as u64) && loc.file.as_deref() == Some(f.as_str())
+                }) {
+                    taken[l] = true;
+                    matched[v] = Some(l);
+                    break;
+                }
+            }
+        }
+
+        // Pass two: of what remains, only where the type is decisive on
+        // both sides.
+        for (v, want) in awaited.iter().enumerate() {
+            let Some(want) = want else { continue };
+            if matched[v].is_some() {
+                continue;
+            }
+            if awaited
+                .iter()
+                .enumerate()
+                .any(|(o, t)| o != v && matched[o].is_none() && *t == Some(*want))
+            {
+                continue;
+            }
+            let mut candidates = locals
+                .iter()
+                .enumerate()
+                .filter(|(l, (ty, _))| !taken[*l] && *ty == Some(*want));
+            if let (Some((l, _)), None) = (candidates.next(), candidates.next()) {
+                taken[l] = true;
+                matched[v] = Some(l);
+            }
+        }
+
+        for (v, m) in matched.into_iter().enumerate() {
+            let Some(l) = m else { continue };
+            let (_, loc) = locals[l];
+            let (Some(file), Some(line)) = (loc.file.as_deref(), loc.line) else {
+                continue;
+            };
+            let file = self.interner.intern(file);
+            out[v] = Some(SourceLoc {
+                file,
+                line: line as u32,
+            });
+        }
+        out
+    }
+
+    /// A variant member's declaration coordinates as plain strings, for
+    /// comparing against a resume-function local's.
+    fn member_loc(&self, m: &crate::raw_types::RawMember<crate::StrId>) -> Option<(String, u32)> {
+        let loc = m.source_loc.as_deref()?;
+        let file = loc.file.map(|f| self.reader.strings.get(f))?;
+        Some((file.to_owned(), loc.line?.get() as u32))
+    }
+
     fn convert(&mut self, id: TypeId) -> TypeDef {
         // `reserve` only queues ids present in the reader.
         let raw = self.reader.types.get(&id).expect("queued type must exist");
@@ -4437,39 +4596,49 @@ impl<'a> Emitter<'a> {
                             variants: Vec::new(),
                         },
                     },
-                    RawVariantShape::One(v) => TypeDef::Enum {
-                        name,
-                        size: e.size,
-                        shape: VariantShape {
-                            discr: None,
-                            variants: vec![VariantDef {
-                                name: self.intern_opt(v.member.name),
-                                discr_values: None,
-                                payload: self.convert_member(&v.member),
-                                decl: self.member_decl(&v.member),
-                            }],
-                        },
-                    },
-                    RawVariantShape::Many { discr, variants } => TypeDef::Enum {
-                        name,
-                        size: e.size,
-                        shape: VariantShape {
-                            discr: discr.as_ref().map(|d| DiscrDef {
-                                offset: d.offset,
-                                ty: self.reserve(d.type_id),
-                            }),
-                            variants: variants
-                                .iter()
-                                .map(|(value, v)| VariantDef {
+                    RawVariantShape::One(v) => {
+                        let sites = self.await_sites(id, &[&v.member]);
+                        TypeDef::Enum {
+                            name,
+                            size: e.size,
+                            shape: VariantShape {
+                                discr: None,
+                                variants: vec![VariantDef {
                                     name: self.intern_opt(v.member.name),
-                                    discr_values: value
-                                        .map(|x| DiscrValues(vec![DiscrValue::Value(x)])),
+                                    discr_values: None,
                                     payload: self.convert_member(&v.member),
                                     decl: self.member_decl(&v.member),
-                                })
-                                .collect(),
-                        },
-                    },
+                                    await_site: sites[0],
+                                }],
+                            },
+                        }
+                    }
+                    RawVariantShape::Many { discr, variants } => {
+                        let members: Vec<_> = variants.iter().map(|(_, v)| &v.member).collect();
+                        let sites = self.await_sites(id, &members);
+                        TypeDef::Enum {
+                            name,
+                            size: e.size,
+                            shape: VariantShape {
+                                discr: discr.as_ref().map(|d| DiscrDef {
+                                    offset: d.offset,
+                                    ty: self.reserve(d.type_id),
+                                }),
+                                variants: variants
+                                    .iter()
+                                    .zip(sites)
+                                    .map(|((value, v), await_site)| VariantDef {
+                                        name: self.intern_opt(v.member.name),
+                                        discr_values: value
+                                            .map(|x| DiscrValues(vec![DiscrValue::Value(x)])),
+                                        payload: self.convert_member(&v.member),
+                                        decl: self.member_decl(&v.member),
+                                        await_site,
+                                    })
+                                    .collect(),
+                            },
+                        }
+                    }
                 }
             }
         }
@@ -5161,6 +5330,7 @@ mod tests {
                             discr_values: None,
                             payload: m(varn, u32t, 2),
                             decl: None,
+                            await_site: None,
                         }],
                     },
                 },
@@ -5244,6 +5414,7 @@ mod tests {
                 offset: 0,
             },
             decl: None,
+            await_site: None,
         };
 
         let mut types = TypeTable {
