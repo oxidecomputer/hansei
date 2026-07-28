@@ -3,7 +3,7 @@
 //! `Name(v0, v1)` rather than `Name { __0: v0, __1: v1 }`.
 
 use crate::Error;
-use crate::debug_type::{DebugMember, DebugType, DisplayNode};
+use crate::debug_type::{DebugMember, DebugType, DisplayNode, TypeKind};
 use crate::value::TypeInfoRef;
 
 use std::fmt;
@@ -220,6 +220,35 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
         return write!(f, ")");
     }
 
+    // A payload that peels to a value rather than an aggregate — the `u8`
+    // behind `Option<u8>::Some`, the pointer behind a newtype variant —
+    // has no members for the body renderer to walk, so it is written
+    // positionally here instead. Without this the payload is dropped
+    // silently and the variant reads as a unit, which is the one thing a
+    // value renderer must never do. It costs a level of depth, as the
+    // same value would inside a tuple variant of two.
+    //
+    // The test is the payload's kind, not whether it has members: a
+    // niche-encoded unit variant (`Option<Waker>::None`) is a struct
+    // that declares none while covering the whole enum, and it must
+    // stay a unit rather than gain a body.
+    if !matches!(
+        variant_info.ty.kind(),
+        TypeKind::Struct | TypeKind::Union | TypeKind::Other
+    ) {
+        let child = DisplayRecurse {
+            info: variant_info,
+            ctx: ctx.deeper(),
+        };
+        write!(f, "(")?;
+        if pretty {
+            write!(f, "{child:#}")?;
+        } else {
+            write!(f, "{child}")?;
+        }
+        return write!(f, ")");
+    }
+
     // A tuple variant (`Some(x)`, `Ok(x)`) renders positionally; a struct
     // variant (`Variant { field: x }`) keeps its labels. Both share the
     // aggregate body renderer, so the `__N` elision is applied in one place.
@@ -394,16 +423,39 @@ mod tests {
         assert_eq!(format!("{}", c.display()), "Msg::C");
         assert_eq!(format!("{:#}", c.display()), "Msg::C");
 
-        // B(u64): the payload type is a bare scalar, so the aggregate body
-        // finds no members and prints nothing -- the 7 is dropped. This cannot
-        // happen against extracted DWARF, where a variant payload is always a
-        // struct (892 of 892 in the channels fixture bundle); it is reachable
-        // only because this fixture points the payload straight at a base
-        // type. Pinned so the renderer's behaviour on a non-aggregate payload
-        // is written down, not because the output is right.
+        // B(u64): the payload type is a bare scalar, with no members for
+        // the aggregate body to walk, so it is written positionally --
+        // like the one-field tuple variant it stands for. Pretty mode has
+        // no structure to lay out, so both spellings agree.
         let b_bytes = variant(1, &7u64.to_le_bytes());
         let b_val = TypeInfoRef::new(msg, 0, &b_bytes);
-        assert_eq!(format!("{}", b_val.display()), "Msg::B");
+        assert_eq!(format!("{}", b_val.display()), "Msg::B(7)");
+        assert_eq!(format!("{:#}", b_val.display()), "Msg::B(7)");
+    }
+
+    /// The shape extracted DWARF actually produces: a tuple variant's
+    /// payload is a struct with one field, which peeling dissolves into
+    /// that field's own type before the body is written. The value has to
+    /// survive it — an `Option<u8>::Some(3)` that reads as a bare
+    /// `Some` drops the payload silently, which is the one thing a value
+    /// renderer must not do.
+    #[test]
+    fn test_single_field_payload_survives_peeling() {
+        let mut b = test_bundle();
+        let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+            panic!("Opt is not an enum");
+        };
+        *size = 8;
+        // `AtomicStorage<u32>` is a one-field struct over a scalar and
+        // carries no display format of its own, so nothing but peeling
+        // stands between the variant and the value.
+        shape.variants[1].payload.ty = ATOMIC_STORAGE;
+        b.validate().expect("modified enum bundle must validate");
+
+        let v = BundleView::new(&b);
+        let bytes = 7u64.to_le_bytes();
+        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "Opt::Some(7)");
     }
 
     /// An enum whose discriminant matches no variant cannot be decoded into a
