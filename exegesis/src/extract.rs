@@ -1523,6 +1523,7 @@ static BY_NAME: &[(&str, Detector)] = &[
     ("tokio::sync::mpsc::chan::Chan", mpsc_chan_node),
     ("tokio::sync::notify::Notify", notify_node),
     ("tokio::sync::watch::Receiver", watch_receiver_node),
+    ("tokio::sync::watch::Sender", watch_sender_node),
     ("tokio::sync::watch::Shared", watch_shared_node),
     ("tokio::sync::watch::state::AtomicState", watch_state_node),
     ("tokio::util::cacheline::CachePadded", cache_padded_node),
@@ -2320,6 +2321,14 @@ enum Pat<'a> {
         at: PatPath<'a>,
         follow_pointers: bool,
     },
+    /// One pointer hop: `at` reaches the pointer, `via` crosses its pointee to
+    /// the value actually rendered, and `then` is rooted there. How a handle on
+    /// a shared allocation renders as the thing it is a handle on.
+    Pointer {
+        at: PatPath<'a>,
+        via: PatPath<'a>,
+        then: Box<Pat<'a>>,
+    },
     Str {
         pointer: PatPath<'a>,
         length: PatPath<'a>,
@@ -2366,6 +2375,23 @@ impl Emitter<'_> {
                 at: self.walk(root, &at)?.0,
                 follow_pointers,
             },
+            Pat::Pointer { at, via, then } => {
+                let (at, ptr) = self.walk(root, &at)?;
+                let Some(RawType::Pointer(pointer)) = self.reader.canonical_type(ptr) else {
+                    explain!(
+                        "  a pointer hop reaches {}, which is not a pointer",
+                        type_label(self.reader, ptr),
+                    );
+                    return None;
+                };
+                let pointee = self.reader.canonicalize(pointer.target_type_id);
+                let (via, target) = self.walk(pointee, &via)?;
+                DisplayNode::Pointer {
+                    at,
+                    via,
+                    then: Box::new(self.compile(target, *then)?),
+                }
+            }
             Pat::Str {
                 pointer,
                 length,
@@ -3001,21 +3027,44 @@ fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
 /// of them, and a watch channel's waiters are reported by the tasks parked on
 /// it rather than by the channel they are parked on.
 fn watch_shared_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    emitter.compile(id, watch_shared_record())
+}
+
+/// The record a watch channel's shared state renders as. Shared by
+/// [`watch_shared_node`], which is rooted at the allocation, and
+/// [`watch_sender_node`], which reaches the same allocation across an `Arc` —
+/// so the two cannot drift into showing different things.
+fn watch_shared_record() -> Pat<'static> {
+    Pat::Struct {
+        fields: PatFields::Only(vec![
+            PatField::Computed(
+                "value",
+                Pat::Alias {
+                    at: path![Named("value"), FindParam],
+                    follow_pointers: true,
+                },
+            ),
+            PatField::Member("state"),
+            PatField::Member("ref_count_rx"),
+            PatField::Member("ref_count_tx"),
+        ]),
+    }
+}
+
+/// Render a `tokio::sync::watch::Sender<T>` as the shared state it publishes
+/// to. A sender is one member — an `Arc` of that state — so showing the `Arc`,
+/// its `ArcInner` and the strong/weak header before anything useful costs three
+/// levels of nesting for no information. Hop the pointer instead and render the
+/// state itself.
+fn watch_sender_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    // A sized `Arc<T>` points at `ArcInner<T> { strong, weak, data: T }`, so the
+    // hop is the `NonNull`'s raw pointer and the step past the header is `data`.
     emitter.compile(
         id,
-        Pat::Struct {
-            fields: PatFields::Only(vec![
-                PatField::Computed(
-                    "value",
-                    Pat::Alias {
-                        at: path![Named("value"), FindParam],
-                        follow_pointers: true,
-                    },
-                ),
-                PatField::Member("state"),
-                PatField::Member("ref_count_rx"),
-                PatField::Member("ref_count_tx"),
-            ]),
+        Pat::Pointer {
+            at: path![Named("shared"), Named("ptr"), Named("pointer")],
+            via: path![Named("data")],
+            then: Box::new(watch_shared_record()),
         },
     )
 }
