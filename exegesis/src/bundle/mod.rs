@@ -5,6 +5,7 @@
 
 mod io;
 mod schema;
+mod shape;
 mod strings;
 mod view;
 
@@ -16,6 +17,7 @@ pub use schema::{
     StaticsTable, Step, Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef,
     TypeTable, ValueExpr, VariantDef, VariantShape, strip_llvm_suffix,
 };
+pub use shape::{Addressed, Shape};
 pub use strings::{StrRef, StringInterner, StringTable};
 pub use view::{
     ActiveVariant, BundleMember, BundleMemberIter, BundleType, BundleVariant, BundleView,
