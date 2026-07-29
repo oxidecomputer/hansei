@@ -875,7 +875,9 @@ mod tests {
     ///
     /// Where a test needs a real ELF object to resolve against, it uses
     /// the test binary itself — a genuine PIE with a symtab, a `PT_TLS`
-    /// and program headers, mapped at whatever base the test picks.
+    /// and program headers, mapped at whatever base the test picks. That
+    /// only holds where the host links ELF, so those tests are gated to
+    /// Linux and illumos; see [`with_test_binary`].
     #[derive(Default)]
     struct CoreBuilder {
         loads: Vec<Load>,
@@ -936,6 +938,9 @@ mod tests {
             self
         }
 
+        /// Only [`with_test_binary`] names an auxv tag, so this goes
+        /// unused where that is gated out.
+        #[cfg(any(target_os = "linux", target_os = "illumos"))]
         fn auxv(mut self, tag: u64, val: u64) -> Self {
             self.auxv.push((tag, val));
             self
@@ -1184,6 +1189,10 @@ mod tests {
     /// The pages the dump filter drops — text and rodata, under the
     /// default `coredump_filter` — are still readable, because the file
     /// they came from has them unchanged.
+    ///
+    /// Reads the backing file's own ELF magic back out, so it needs the
+    /// test binary to be an ELF; see [`with_test_binary`].
+    #[cfg(any(target_os = "linux", target_os = "illumos"))]
     #[test]
     fn test_undumped_pages_come_from_disk() {
         let exe = std::env::current_exe().expect("the test binary has a path");
@@ -1242,6 +1251,10 @@ mod tests {
     /// header of its own — which is how gdb's `gcore` writes the
     /// regions it leaves out, unlike the kernel's empty `PT_LOAD`. The
     /// file still has the bytes, so it is a mapping and not a hole.
+    ///
+    /// Reads the backing file's own ELF magic back out, so it needs the
+    /// test binary to be an ELF; see [`with_test_binary`].
+    #[cfg(any(target_os = "linux", target_os = "illumos"))]
     #[test]
     fn test_nt_file_only_regions_are_mapped() {
         let exe = std::env::current_exe().unwrap();
@@ -1419,6 +1432,16 @@ mod tests {
     /// Map the test binary — a real PIE with a real symtab — at a base
     /// of the test's choosing, and point `AT_PHDR` into it so it is
     /// taken for the executable.
+    ///
+    /// This is the one thing the reader's tests cannot synthesize: the
+    /// fixtures elsewhere in this module are ELF files this builder
+    /// writes byte by byte, but an object to *resolve symbols against*
+    /// needs a symtab, a strtab and program headers that agree, and the
+    /// nearest one to hand is the test binary. That makes every test
+    /// built on it require an ELF host, so they are gated to Linux and
+    /// illumos. Everything else here runs on any host, macOS included,
+    /// since a Linux core is just a file.
+    #[cfg(any(target_os = "linux", target_os = "illumos"))]
     fn with_test_binary(base: u64) -> (tempfile::TempDir, Core, PathBuf) {
         let exe = std::env::current_exe().unwrap();
         let bytes = std::fs::read(&exe).unwrap();
@@ -1444,6 +1467,7 @@ mod tests {
 
     /// A PIE's symbols are link-time addresses; what a caller wants is
     /// where they actually landed.
+    #[cfg(any(target_os = "linux", target_os = "illumos"))]
     #[test]
     fn test_symbols_are_biased_to_where_the_object_landed() {
         const BASE: u64 = 0x5555_0000_0000;
@@ -1500,8 +1524,8 @@ mod tests {
     /// it needs one built the way those are: with native ELF TLS. That
     /// is what the toolchain produces here and not what it produces on
     /// illumos, where std compiles a `thread_local!` to a pthread key
-    /// and emits no `STT_TLS` symbol at all. The reader's other tests
-    /// are platform-neutral and do run everywhere.
+    /// and emits no `STT_TLS` symbol at all — so this one is narrower
+    /// than the ELF-host gate its neighbours use.
     #[cfg(target_os = "linux")]
     #[test]
     fn test_tls_symbols_keep_their_offsets() {
@@ -1598,15 +1622,20 @@ mod tests {
 
         assert!(Core::open(&dir.path().join("no-such-file")).is_err());
 
-        // A well-formed ELF that is not a core.
-        let path = dir.path().join("exe");
-        std::fs::write(
-            &path,
-            std::fs::read(std::env::current_exe().unwrap()).unwrap(),
-        )
-        .unwrap();
-        let err = Core::open(&path).unwrap_err();
-        assert_eq!(err.to_string(), "malformed core file: not a core file");
+        // A well-formed ELF that is not a core — the test binary, so an
+        // ELF host only; elsewhere the case above covers the rejection
+        // and this one would fail at "not an ELF file" instead.
+        #[cfg(any(target_os = "linux", target_os = "illumos"))]
+        {
+            let path = dir.path().join("exe");
+            std::fs::write(
+                &path,
+                std::fs::read(std::env::current_exe().unwrap()).unwrap(),
+            )
+            .unwrap();
+            let err = Core::open(&path).unwrap_err();
+            assert_eq!(err.to_string(), "malformed core file: not a core file");
+        }
     }
 
     #[test]
