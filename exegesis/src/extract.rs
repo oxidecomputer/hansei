@@ -1468,26 +1468,54 @@ fn node_label(node: &DisplayNode) -> &'static str {
     }
 }
 
-/// A detector that needs the [`Emitter`], because it interns a string (a record
-/// label or a [`ScalarDecode`] table) or reserves a related type that must be
-/// emitted alongside (an `element`, a key/value, a list's node type). Returns
-/// the type's display program, or `None` when the type does not have the shape
-/// the detector expects — the type then renders structurally.
+/// Recognize a type whose source-level Debug representation is simpler than its
+/// private storage layout, and return the display program that renders it —
+/// or `None` when the type does not have the shape the detector expects, in
+/// which case the type renders structurally.
+///
+/// Every detector has this one signature, whether or not it uses the
+/// [`Emitter`]: a detector that interns a string (a record label, a
+/// [`ScalarDecode`] table) or reserves a related type that must be emitted
+/// alongside (an `element`, a key/value, a list's node type) needs it, and one
+/// that only navigates DWARF opens with `let reader = emitter.reader;`. Keeping
+/// the signature uniform is what lets [`BY_NAME`], [`BY_PREFIX`] and
+/// [`STRUCTURAL`] be one kind of table, so a detector that later grows a label
+/// does not have to move.
 type Detector = fn(&mut Emitter<'_>, TypeId) -> Option<DisplayNode>;
 
-/// Emitter-side detectors keyed by fully-qualified type name with generic
-/// arguments stripped. Screening on the name means only the one matching
-/// detector runs, rather than trying each in turn; a type named by neither this
-/// table nor [`BY_PREFIX`] falls through to [`known_debug_format`].
+/// Detectors keyed by fully-qualified type name with generic arguments
+/// stripped. Screening on the name means only the one matching detector runs
+/// rather than each in turn, and it is what `--explain-format` reports as the
+/// detector it selected — so a detector belongs here whenever a name selects
+/// it, and its body then validates only the *structure*. A type named by
+/// neither this table nor [`BY_PREFIX`] falls through to [`STRUCTURAL`].
 static BY_NAME: &[(&str, Detector)] = &[
+    ("&camino::Utf8Path", utf8_path_node),
+    ("&str", str_node),
     ("alloc::collections::btree::map::BTreeMap", btree_map_node),
+    ("alloc::string::String", string_node),
     ("alloc::vec::Vec", vec_node),
     ("allocator_api2::stable::vec::Vec", vec_node),
+    ("camino::Utf8PathBuf", utf8_path_buf_node),
+    ("core::cell::UnsafeCell", unsafe_cell_node),
+    ("core::net::ip_addr::Ipv4Addr", ip_address_node),
+    ("core::net::ip_addr::Ipv6Addr", ip_address_node),
+    ("core::num::niche_types::UsizeNoHighBit", usize_no_high_bit_node),
+    ("core::num::nonzero::NonZero", nonzero_node),
+    ("core::ptr::non_null::NonNull", non_null_node),
+    ("core::ptr::unique::Unique", unique_node),
+    ("core::sync::atomic::Atomic", atomic_node),
+    ("core::task::wake::RawWakerVTable", raw_waker_vtable_node),
     ("parking_lot::raw_mutex::RawMutex", raw_mutex_node),
+    (
+        "tokio::loom::std::unsafe_cell::UnsafeCell",
+        loom_unsafe_cell_node,
+    ),
     (
         "tokio::sync::batch_semaphore::Semaphore",
         batch_semaphore_node,
     ),
+    ("tokio::sync::mpsc::block::Block", mpsc_block_node),
     ("tokio::sync::mpsc::bounded::Receiver", mpsc_rx_node),
     (
         "tokio::sync::mpsc::bounded::Semaphore",
@@ -1499,51 +1527,51 @@ static BY_NAME: &[(&str, Detector)] = &[
     ("tokio::sync::watch::state::AtomicState", watch_state_node),
 ];
 
-/// Emitter-side detectors keyed by a prefix of the *full* name, for spellings no
-/// base name distinguishes: a slice carries its element inside the brackets
-/// (`&[T]`, `Box<[T]>`), and the `Box<[` prefix is what separates a boxed slice
-/// from a thin `Box<T>`.
-static BY_PREFIX: &[(&str, Detector)] = &[("&[", slice_node), ("alloc::boxed::Box<[", slice_node)];
+/// Detectors keyed by a prefix of the *full* name, for a family no single base
+/// name spans: a slice carries its element inside the brackets (`&[T]`,
+/// `Box<[T]>`, where the `Box<[` prefix is what separates a boxed slice from a
+/// thin `Box<T>`), the niche-typed `NonZero` inners are one type per width, and
+/// the loom shims live one module per atomic width. A prefix is a looser screen
+/// than a name, so these detectors keep the residual check the key cannot
+/// express — `NonZeroU32Inner` ends in `Inner`, a loom atomic module has a
+/// single segment.
+static BY_PREFIX: &[(&str, Detector)] = &[
+    ("&[", slice_node),
+    ("alloc::boxed::Box<[", slice_node),
+    ("core::num::niche_types::NonZero", nonzero_inner_node),
+    ("tokio::loom::std::atomic_", loom_atomic_node),
+    ("tokio::loom::std::parking_lot::", loom_parking_lot_node),
+];
 
-/// Recognize types whose source-level Debug representation is simpler than
-/// their private storage layout. Matching happens here, while structured
-/// generic parameters are still available; the bundle records only resolved
-/// member indices.
-///
-/// These detectors need nothing but the reader, so they are tried in order, most
-/// specific first. A formatter that interns a string or reserves a type belongs
-/// in [`BY_NAME`]/[`BY_PREFIX`] instead, where it is dispatched by name.
-fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
-    dyn_pointer_debug_format(reader, id)
-        .or_else(|| raw_waker_vtable_debug_format(reader, id))
-        .or_else(|| function_pointer_debug_format(reader, id))
-        .or_else(|| ip_address_debug_format(reader, id))
-        .or_else(|| str_debug_format(reader, id))
-        .or_else(|| string_debug_format(reader, id))
-        .or_else(|| utf8_path_debug_format(reader, id))
-        .or_else(|| utf8_path_buf_debug_format(reader, id))
-        .or_else(|| mpsc_block_debug_format(reader, id))
-        .or_else(|| unsafe_cell_debug_format(reader, id))
-        .or_else(|| loom_unsafe_cell_debug_format(reader, id))
-        .or_else(|| loom_atomic_debug_format(reader, id))
-        .or_else(|| loom_parking_lot_debug_format(reader, id))
-        .or_else(|| unique_debug_format(reader, id))
-        .or_else(|| non_null_debug_format(reader, id))
-        .or_else(|| usize_no_high_bit_debug_format(reader, id))
-        .or_else(|| nonzero_debug_format(reader, id))
-        .or_else(|| nonzero_inner_debug_format(reader, id))
-        .or_else(|| atomic_debug_format(reader, id))
-        // Least specific: a bare scalar newtype falls through to here only if
-        // no semantic formatter above claimed it.
-        .or_else(|| scalar_newtype_debug_format(reader, id))
+/// Detectors that recognize a type by *shape* alone, tried in order from most
+/// to least specific because nothing else separates them. This is the short
+/// list on purpose: a detector a name can select belongs in [`BY_NAME`] or
+/// [`BY_PREFIX`], where the dispatch is a lookup and `--explain-format` can say
+/// which detector ran.
+static STRUCTURAL: &[Detector] = &[
+    // A `{ pointer, vtable }` pair, then a pointer to a subroutine type.
+    dyn_pointer_node,
+    function_pointer_node,
+    // Least specific: a bare scalar newtype claims a type only if no semantic
+    // formatter above it did.
+    scalar_newtype_node,
+];
+
+/// Try the shape-keyed detectors in order.
+fn structural_debug_format(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    STRUCTURAL
+        .iter()
+        .find_map(|detector| detector(emitter, id))
 }
 
 /// A tuple newtype wrapping a single scalar (`Version(usize)`, `Epoch(u64)`,
 /// an id, …) is displayed as that inner value. The scalar must fill the whole
 /// struct (any other members are zero-sized), so this only ever collapses a
 /// genuine wrapper, never a struct that also carries data. Semantic wrappers
-/// (atomics, `NonZero`, …) are matched by earlier, more specific formatters.
-fn scalar_newtype_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+/// (atomics, `NonZero`, …) are claimed by their name-keyed detector first, so
+/// this only sees a type no table named.
+fn scalar_newtype_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2112,7 +2140,8 @@ fn find_stored_pointer(reader: &DwReader<'_>, root: TypeId) -> Option<Selector> 
     Some(path)
 }
 
-fn function_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+fn function_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Pointer(pointer) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2123,10 +2152,8 @@ fn function_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Di
         })
 }
 
-fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
-    if fq_name(reader, id).as_deref() != Some("core::task::wake::RawWakerVTable") {
-        return None;
-    }
+fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2161,7 +2188,9 @@ fn raw_waker_vtable_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Di
     })
 }
 
-fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    // Both addresses reach this detector; the name says how wide the array is.
     let expected_octets = match fq_name(reader, id).as_deref()? {
         "core::net::ip_addr::Ipv4Addr" => 4,
         "core::net::ip_addr::Ipv6Addr" => 16,
@@ -2185,10 +2214,8 @@ fn ip_address_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayN
     })
 }
 
-fn str_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
-    if fq_name(reader, id).as_deref() != Some("&str") {
-        return None;
-    }
+fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2239,10 +2266,8 @@ fn slice_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     })
 }
 
-fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
-    if fq_name(reader, id).as_deref() != Some("alloc::string::String") {
-        return None;
-    }
+fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2267,10 +2292,8 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode>
 /// guaranteed-UTF-8 byte buffer, laid out exactly like `&str` — only the data
 /// pointer is typed `*Utf8Path` rather than `*u8`. It renders through the same
 /// `Str` node with no capacity.
-fn utf8_path_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
-    if fq_name(reader, id).as_deref() != Some("&camino::Utf8Path") {
-        return None;
-    }
+fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2294,10 +2317,8 @@ fn utf8_path_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNo
 /// wrappers (`__0` → `inner` → `inner` → `inner`). Like `String` it is a
 /// guaranteed-UTF-8 `Vec<u8>`, so it reuses the same `Str` node with the
 /// capacity checked, prefixing the Vec's own paths with the wrapper chain.
-fn utf8_path_buf_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
-    if fq_name(reader, id).as_deref() != Some("camino::Utf8PathBuf") {
-        return None;
-    }
+fn utf8_path_buf_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let (prefix, vec_type) = field_path(reader, id, &["__0", "inner", "inner", "inner"])?;
     let shape = vec_shape(reader, vec_type)?;
     if !is_unsigned_integer(reader, shape.element, 1) {
@@ -2319,13 +2340,9 @@ fn raw_mutex_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         return None;
     };
     let (state_index, state_member) = unique_member(reader, &st.members, "state")?;
-    // The state is a single-byte atomic (`AtomicU8`). Reuse the atomic
-    // detector for the path to the stored byte, then anchor it at `state`.
-    let Some(DisplayNode::Alias { at: value, .. }) =
-        atomic_debug_format(reader, state_member.type_id)
-    else {
-        return None;
-    };
+    // The state is a single-byte atomic. Reuse the atomic detector's own walk
+    // for the path to the stored byte, then anchor it at `state`.
+    let value = atomic_value_path(reader, state_member.type_id)?;
     let RawType::Struct(atomic) = reader.canonical_type(state_member.type_id)? else {
         return None;
     };
@@ -2485,13 +2502,8 @@ fn watch_state_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode
     })
 }
 
-fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
-    if !fq_name(reader, id)
-        .as_deref()
-        .is_some_and(|name| name.starts_with("tokio::sync::mpsc::block::Block<"))
-    {
-        return None;
-    }
+fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -3116,7 +3128,8 @@ fn mpsc_queued_node(
 /// pointer. The bundle records both member indices and the vtable header
 /// ordering so reify never guesses from the private field name or bakes in
 /// rustc's slot numbers independently.
-fn dyn_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+fn dyn_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -3206,8 +3219,8 @@ fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bo
     dyn_tail_offset(reader, id, seen).is_some()
 }
 
-fn unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
-    let (member, _) = unsafe_cell_layout(reader, id)?;
+fn unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let (member, _) = unsafe_cell_layout(emitter.reader, id)?;
     Some(DisplayNode::Alias {
         at: Selector::member(member),
         follow_pointers: true,
@@ -3243,19 +3256,11 @@ fn unsafe_cell_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)
     Some((index as u32, target))
 }
 
-fn loom_unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+fn loom_unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
-    let name = st.name.map(|name| reader.strings.get(name))?;
-    if namespace != "tokio::loom::std::unsafe_cell"
-        || !name.starts_with("UnsafeCell<")
-        || !name.ends_with('>')
-    {
-        return None;
-    }
-
     let [param] = st.template_params.as_ref() else {
         return None;
     };
@@ -3279,10 +3284,13 @@ fn loom_unsafe_cell_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Di
     })
 }
 
-fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+fn loom_atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
+    // The prefix key reaches every `atomic_<width>` module; require the single
+    // segment and the `Atomic*` type name it cannot express.
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let atomic_module = namespace.strip_prefix("tokio::loom::std::atomic_")?;
     if atomic_module.is_empty() || atomic_module.contains("::") {
@@ -3300,7 +3308,7 @@ fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Display
         let Some((_, atomic)) = unsafe_cell_layout(reader, member.type_id) else {
             return false;
         };
-        atomic_debug_format(reader, atomic).is_some()
+        atomic_value_path(reader, atomic).is_some()
     });
     let (index, _) = matches.next()?;
     if matches.next().is_some() {
@@ -3316,12 +3324,15 @@ fn loom_atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Display
 /// `PhantomData` marker with the real parking_lot lock (`Mutex`, `RwLock`,
 /// `Condvar`, and their guards). Display them as the inner lock so the
 /// loom scaffolding does not obscure it.
-fn loom_parking_lot_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+fn loom_parking_lot_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
-    if namespace != "tokio::loom::std::parking_lot" {
+    // The prefix key spans the whole shim module — which is the point, since
+    // every type in it is a wrapper — but it also admits a submodule the key
+    // cannot exclude, so require the module itself.
+    if st.namespace.map(|ns| ns_path(reader, ns))? != "tokio::loom::std::parking_lot" {
         return None;
     }
     // A single non-marker member sitting at offset zero is the wrapped lock.
@@ -3340,8 +3351,8 @@ fn loom_parking_lot_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Di
     })
 }
 
-fn non_null_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
-    let (member, _) = non_null_layout(reader, id)?;
+fn non_null_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let (member, _) = non_null_layout(emitter.reader, id)?;
     Some(DisplayNode::Alias {
         at: Selector::member(member),
         follow_pointers: true,
@@ -3382,16 +3393,11 @@ fn non_null_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
     Some((index as u32, target))
 }
 
-fn unique_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+fn unique_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
-    let name = st.name.map(|name| reader.strings.get(name))?;
-    if namespace != "core::ptr::unique" || !name.starts_with("Unique<") || !name.ends_with('>') {
-        return None;
-    }
-
     let [param] = st.template_params.as_ref() else {
         return None;
     };
@@ -3415,8 +3421,8 @@ fn unique_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode>
     })
 }
 
-fn usize_no_high_bit_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
-    let (member, _) = usize_no_high_bit_layout(reader, id)?;
+fn usize_no_high_bit_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let (member, _) = usize_no_high_bit_layout(emitter.reader, id)?;
     Some(DisplayNode::Alias {
         at: Selector::member(member),
         follow_pointers: true,
@@ -3451,17 +3457,13 @@ fn is_integer(reader: &DwReader<'_>, id: TypeId) -> bool {
 
 /// `core::num::nonzero::NonZero<T>` is a newtype over a niche-typed integer
 /// wrapper (`NonZero{U,I}<width>Inner`). Display it as the wrapped integer;
-/// paired with [`nonzero_inner_debug_format`] the two layers collapse to the
+/// paired with [`nonzero_inner_node`] the two layers collapse to the
 /// value. Handles every width and signedness.
-fn nonzero_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+fn nonzero_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
-    let name = st.name.map(|name| reader.strings.get(name))?;
-    if namespace != "core::num::nonzero" || !name.starts_with("NonZero<") || !name.ends_with('>') {
-        return None;
-    }
     let member = single_zero_offset_field(reader, &st.members, |_| true)?;
     Some(DisplayNode::Alias {
         at: Selector::member(member),
@@ -3472,16 +3474,15 @@ fn nonzero_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode
 /// The niche-typed inner of a `NonZero<T>`
 /// (`core::num::niche_types::NonZero{U,I}<width>Inner`), transparent over its
 /// integer field.
-fn nonzero_inner_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+fn nonzero_inner_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
+    // The prefix key admits any `niche_types::NonZero*`; only the `*Inner`
+    // wrappers are transparent over an integer.
     let name = st.name.map(|name| reader.strings.get(name))?;
-    if namespace != "core::num::niche_types"
-        || !name.starts_with("NonZero")
-        || !name.ends_with("Inner")
-    {
+    if !name.ends_with("Inner") {
         return None;
     }
     let member = single_zero_offset_field(reader, &st.members, |ty| is_integer(reader, ty))?;
@@ -3507,7 +3508,25 @@ fn single_zero_offset_field(
     matches.next().is_none().then_some(index as u32)
 }
 
-fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
+fn atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    // An atomic aliases its stored value but does not chase it: an `AtomicPtr`'s
+    // `Debug` reports the address it holds, so `follow_pointers` is false.
+    Some(DisplayNode::Alias {
+        at: atomic_value_path(emitter.reader, id)?,
+        follow_pointers: false,
+    })
+}
+
+/// The member path from a `core::sync::atomic::Atomic<T>` to the `T` it stores,
+/// or `None` if `id` is not that type. Detectors that reach an atomic as some
+/// other type's member call this rather than [`atomic_node`], so they get the
+/// path without a display node to unwrap — and the name check with it, since
+/// the dispatch table has not screened the member type for them.
+///
+/// This recognizes only the generic spelling. A binary also emits concrete
+/// `AtomicU8`/`AtomicUsize` types, which have no `T` parameter; reach the word
+/// those store with [`find_stored_uint`] instead.
+fn atomic_value_path(reader: &DwReader<'_>, id: TypeId) -> Option<Selector> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -3526,12 +3545,7 @@ fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode>
     let target = reader.canonicalize(param.type_id);
     let is_stored = |candidate| candidate == target;
     let (value, _) = find_unique(reader, id, Want::Type(&is_stored), Through::ZeroOffset)?;
-    // An atomic aliases its stored value but does not chase it: an `AtomicPtr`'s
-    // `Debug` reports the address it holds, so `follow_pointers` is false.
-    Some(DisplayNode::Alias {
-        at: value,
-        follow_pointers: false,
-    })
+    Some(value)
 }
 
 /// Locate the named statics (§5.4) by DWARF shape, not by hardcoded
@@ -4028,8 +4042,10 @@ impl<'a> Emitter<'a> {
     /// The display program for one type: its name-keyed detector if it has
     /// one, else the structural chain.
     fn debug_format_of(&mut self, tid: TypeId, name: Option<&str>) -> Option<DisplayNode> {
-        self.specific_debug_format(tid, name)
-            .or_else(|| known_debug_format(self.reader, tid))
+        if let Some(node) = self.specific_debug_format(tid, name) {
+            return Some(node);
+        }
+        structural_debug_format(self, tid)
     }
 
     /// The name to report this type under, when the caller asked for its
@@ -4043,7 +4059,7 @@ impl<'a> Emitter<'a> {
     /// Build the display program for a type whose fully-qualified name selects a
     /// specific detector: an exact base-name match in [`BY_NAME`], else a
     /// full-name prefix in [`BY_PREFIX`]. A type named by neither falls through
-    /// to the structural [`known_debug_format`] chain in [`Emitter::emit`].
+    /// to [`structural_debug_format`], the short shape-keyed chain.
     fn specific_debug_format(&mut self, tid: TypeId, full: Option<&str>) -> Option<DisplayNode> {
         let full = full?;
         // Strip generic arguments for the exact-keyed detectors; the prefix
@@ -4652,12 +4668,12 @@ fn demote_types_with_members_out_of_bounds(
 #[cfg(test)]
 mod tests {
     use super::{
-        StatePass, StaticRole, VtableTypeHint, demote_types_with_members_out_of_bounds,
-        drop_members_of_other_states, dyn_tail_offset, field_path, find_stored_uint, has_dyn_tail,
-        loom_parking_lot_debug_format, match_static_symbol, nonzero_debug_format,
-        nonzero_inner_debug_format, scalar_newtype_debug_format, scan_vtable_section,
+        Detector, Emitter, StatePass, StaticRole, VtableTypeHint,
+        demote_types_with_members_out_of_bounds, drop_members_of_other_states, dyn_tail_offset,
+        field_path, find_stored_uint, has_dyn_tail, match_static_symbol, scalar_newtype_node,
+        scan_vtable_section,
     };
-    use crate::bundle::POINTER_SIZE;
+    use crate::bundle::{DisplayNode, POINTER_SIZE};
     use crate::raw_types::{NsId, RawMember, RawStruct, RawType};
     use crate::{DwReader, TypeId};
     use gimli::{DebugInfoOffset, UnitSectionOffset};
@@ -4665,6 +4681,19 @@ mod tests {
 
     fn type_id(offset: usize) -> TypeId {
         TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    /// Run one detector directly. Every detector takes an `Emitter` whether or
+    /// not it uses one, so a test that only navigates DWARF still needs one.
+    fn detect(reader: &DwReader<'_>, detector: Detector, id: TypeId) -> Option<DisplayNode> {
+        detector(&mut Emitter::new(reader, BTreeMap::new(), None), id)
+    }
+
+    /// Dispatch `id` the way the emitter does, by the name it would carry. This
+    /// covers the [`super::BY_NAME`]/[`super::BY_PREFIX`] row as well as the
+    /// detector, which is where the name screening now lives.
+    fn detect_by_name(reader: &DwReader<'_>, id: TypeId, name: &str) -> Option<DisplayNode> {
+        Emitter::new(reader, BTreeMap::new(), None).specific_debug_format(id, Some(name))
     }
 
     fn empty_struct(name: crate::StrId) -> RawType<crate::StrId> {
@@ -4890,7 +4919,7 @@ mod tests {
 
     #[test]
     fn test_loom_parking_lot_mutex_is_transparent_over_inner_lock() {
-        use crate::bundle::{DisplayNode, Selector};
+        use crate::bundle::Selector;
 
         let mut reader = DwReader::default();
 
@@ -4941,19 +4970,27 @@ mod tests {
         // The PhantomData marker is skipped; the shim is transparent over the
         // real lock at member index 1.
         assert_eq!(
-            loom_parking_lot_debug_format(&reader, mutex_id),
+            detect_by_name(&reader, mutex_id, "tokio::loom::std::parking_lot::Mutex<T>"),
             Some(DisplayNode::Alias {
                 at: Selector::member(1),
                 follow_pointers: true,
             })
         );
-        // A bare struct outside the loom parking_lot namespace is untouched.
-        assert_eq!(loom_parking_lot_debug_format(&reader, inner_id), None);
+        // The namespace is the dispatch table's screen: the same layout under a
+        // name outside the loom shims reaches no detector.
+        assert_eq!(
+            detect_by_name(
+                &reader,
+                mutex_id,
+                "lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, T>"
+            ),
+            None
+        );
     }
 
     #[test]
     fn test_nonzero_layers_are_transparent_over_the_integer() {
-        use crate::bundle::{DisplayNode, Selector};
+        use crate::bundle::Selector;
         use crate::raw_types::{Encoding, RawBase};
 
         let mut reader = DwReader::default();
@@ -5007,28 +5044,37 @@ mod tests {
             ns_struct(Some(nonzero_ns), nonzero_name, 4, vec![member(inner_id)]),
         );
 
+        let transparent = Some(DisplayNode::Alias {
+            at: Selector::member(0),
+            follow_pointers: true,
+        });
         assert_eq!(
-            nonzero_debug_format(&reader, nonzero_id),
-            Some(DisplayNode::Alias {
-                at: Selector::member(0),
-                follow_pointers: true,
-            })
+            detect_by_name(&reader, nonzero_id, "core::num::nonzero::NonZero<i32>"),
+            transparent
         );
         assert_eq!(
-            nonzero_inner_debug_format(&reader, inner_id),
-            Some(DisplayNode::Alias {
-                at: Selector::member(0),
-                follow_pointers: true,
-            })
+            detect_by_name(&reader, inner_id, "core::num::niche_types::NonZeroI32Inner"),
+            transparent
         );
-        // The public wrapper detector does not fire on the inner, nor vice versa.
-        assert_eq!(nonzero_debug_format(&reader, inner_id), None);
-        assert_eq!(nonzero_inner_debug_format(&reader, nonzero_id), None);
+
+        // The niche-types row is keyed by prefix, so it is offered every
+        // `NonZero*` in that module; only the `*Inner` wrappers are transparent
+        // over an integer, and one that is not is left alone.
+        let bare_id = type_id(4);
+        let bare_name = reader.strings.intern("NonZeroU32");
+        reader.types.insert(
+            bare_id,
+            ns_struct(Some(niche_ns), bare_name, 4, vec![member(int_id)]),
+        );
+        assert_eq!(
+            detect_by_name(&reader, bare_id, "core::num::niche_types::NonZeroU32"),
+            None
+        );
     }
 
     #[test]
     fn test_scalar_newtype_is_transparent_over_its_value() {
-        use crate::bundle::{DisplayNode, Selector};
+        use crate::bundle::Selector;
         use crate::raw_types::{Encoding, RawBase};
 
         let mut reader = DwReader::default();
@@ -5061,7 +5107,7 @@ mod tests {
             ns_struct(None, epochn, 8, vec![member(m0, u64_id, 0)]),
         );
         assert_eq!(
-            scalar_newtype_debug_format(&reader, epoch_id),
+            detect(&reader, scalar_newtype_node, epoch_id),
             Some(DisplayNode::Alias {
                 at: Selector::member(0),
                 follow_pointers: true,
@@ -5080,7 +5126,7 @@ mod tests {
                 vec![member(m0, u64_id, 0), member(m1, u64_id, 8)],
             ),
         );
-        assert_eq!(scalar_newtype_debug_format(&reader, pair_id), None);
+        assert_eq!(detect(&reader, scalar_newtype_node, pair_id), None);
 
         // Wrapping a non-scalar (a struct) is left alone.
         let wrapn = reader.strings.intern("Wrap");
@@ -5089,7 +5135,7 @@ mod tests {
             wrap_id,
             ns_struct(None, wrapn, 8, vec![member(m0, epoch_id, 0)]),
         );
-        assert_eq!(scalar_newtype_debug_format(&reader, wrap_id), None);
+        assert_eq!(detect(&reader, scalar_newtype_node, wrap_id), None);
     }
 
     #[test]
