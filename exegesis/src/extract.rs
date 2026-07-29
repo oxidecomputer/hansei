@@ -2080,26 +2080,6 @@ fn find_unique(
     Some((Selector::members(path), *reported))
 }
 
-/// The path to the `size`-byte unsigned integer a wrapper chain stores.
-///
-/// tokio's atomics reach their word through a different chain of loom,
-/// `UnsafeCell` and atomic shims depending on how the compiler spelled the
-/// atomic, so the word is found by walking to the unique `uN` rather than by
-/// naming the wrappers.
-fn find_stored_uint(reader: &DwReader<'_>, root: TypeId, size: u64) -> Option<Selector> {
-    let is_uint = |id| is_unsigned_integer(reader, id, size);
-    let (path, _) = find_unique(reader, root, Want::Type(&is_uint), Through::ZeroOffset)?;
-    Some(path)
-}
-
-/// The path to the raw pointer a wrapper chain stores, as an `AtomicPtr`
-/// wraps the pointer a block chain is linked by.
-fn find_stored_pointer(reader: &DwReader<'_>, root: TypeId) -> Option<Selector> {
-    let is_pointer = |id| matches!(reader.canonical_type(id), Some(RawType::Pointer(_)));
-    let (path, _) = find_unique(reader, root, Want::Type(&is_pointer), Through::ZeroOffset)?;
-    Some(path)
-}
-
 /// The DWARF member a [`MemberRef`] addresses.
 ///
 /// A name in a display program is a [`StrRef`] into the bundle's own string
@@ -2792,6 +2772,20 @@ fn utf8_path_buf_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNo
     emitter.compile(id, buffer_pattern(&prefix, shape))
 }
 
+/// Whether `id` is parking_lot's raw mutex. A caller that reached one behind
+/// tokio's loom shim has had no dispatch key screen it.
+fn is_raw_mutex(reader: &DwReader<'_>, id: TypeId) -> bool {
+    fq_name(reader, id).as_deref() == Some("parking_lot::raw_mutex::RawMutex")
+}
+
+/// The raw mutex's single lock-state byte, reached under `prefix`. It sits in
+/// a one-byte atomic, which the compiler spells either generically or as a
+/// concrete `AtomicU8`, so the byte is peeled to rather than named.
+fn mutex_byte_path(mut prefix: PatPath<'_>) -> PatPath<'_> {
+    prefix.push(PeelTo(Shape::Uint(1)));
+    prefix
+}
+
 /// A `parking_lot::raw_mutex::RawMutex` is a single decoded lock-state byte
 /// (`LOCKED_BIT`/`PARKED_BIT`), shown in place of the whole value.
 fn raw_mutex_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -2801,7 +2795,7 @@ fn raw_mutex_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
     emitter.compile(
         id,
         Pat::Scalar {
-            at: path![Named("state"), PeelTo(Shape::Uint(1))],
+            at: mutex_byte_path(path![Named("state")]),
             decode,
         },
     )
@@ -2823,11 +2817,11 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // state byte through its atomic wrapper by walking to the zero-offset `u8`,
     // which works whether the compiler emitted the atomic as the generic
     // `Atomic<u8>` or the concrete `AtomicU8`.
-    let (raw_prefix, raw_ty) = field_path(reader, id, &["waiters", "__1", "raw"])?;
-    if fq_name(reader, raw_ty).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
+    let raw = path![Named("waiters"), Named("__1"), Named("raw")];
+    if !is_raw_mutex(reader, emitter.landed(id, &raw)?) {
         return None;
     }
-    let mutex = raw_prefix.then(find_stored_uint(reader, raw_ty, 1)?);
+    let mutex = emitter.walk(id, &mutex_byte_path(raw))?.0;
 
     let (head, _) = field_path(reader, id, &["waiters", "__1", "data", "value", "head"])?;
 
@@ -2950,7 +2944,7 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
     let element = reader.canonicalize(element_param.type_id);
 
     // Receiver::version is a transparent `Version(usize)` wrapper.
-    let observed = usize_field_path(reader, id, &["version"])?;
+    let observed = emitter.walk(id, &path![Named("version"), PeelTo(WORD)])?.0;
 
     // Receiver::shared is an Arc. Its NonNull raw pointer targets ArcInner,
     // whose `data` member is the actual Shared<T> allocation payload.
@@ -2972,7 +2966,9 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
     }
 
     // The packed state is an atomic usize behind Tokio's loom wrappers.
-    let state = usize_field_path(reader, shared_ty, &["state"])?;
+    let state = emitter
+        .walk(shared_ty, &path![Named("state"), PeelTo(WORD)])?
+        .0;
 
     // The value is behind the platform-selected RwLock implementation. Search
     // its concrete aggregate storage for the one T rather than baking in the
@@ -3101,7 +3097,7 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 
     // The channel behind the pointer renders exactly as a standalone `Chan`
     // would; reuse its navigation so the queued walk and member list are shared.
-    let chan_shape = mpsc_chan_shape(reader, &emitter.interner, chan_ty)?;
+    let chan_shape = mpsc_chan_shape(emitter, chan_ty)?;
 
     let permits_decode = emitter.semaphore_permits_decode();
     let capacity = emitter.named_scalar("capacity", bound, ScalarDecode::Raw);
@@ -3141,11 +3137,16 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     // the RawMutex's single state byte through its atomic wrapper by walking to
     // the zero-offset `u8`, which works whether the compiler emitted the atomic
     // as the generic `Atomic<u8>` or the concrete `AtomicU8`.
-    let (raw_prefix, raw_ty) = field_path(reader, id, &["semaphore", "waiters", "__1", "raw"])?;
-    if fq_name(reader, raw_ty).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
+    let raw = path![
+        Named("semaphore"),
+        Named("waiters"),
+        Named("__1"),
+        Named("raw")
+    ];
+    if !is_raw_mutex(reader, emitter.landed(id, &raw)?) {
         return None;
     }
-    let mutex = raw_prefix.then(find_stored_uint(reader, raw_ty, 1)?);
+    let mutex = emitter.walk(id, &mutex_byte_path(raw))?.0;
 
     let (closed, closed_ty) = field_path(
         reader,
@@ -3273,14 +3274,6 @@ fn path_offset(
     Some((offset, cur))
 }
 
-/// Navigate named members to a field, then walk any atomic/cell wrappers to
-/// the `usize` it stores, returning the full member path.
-fn usize_field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<Selector> {
-    let (head, field_ty) = field_path(reader, ty, names)?;
-    let tail = find_stored_uint(reader, field_ty, crate::bundle::POINTER_SIZE)?;
-    Some(head.then(tail))
-}
-
 /// Where a `tokio::sync::mpsc::chan::Chan` keeps the state its `queued` walk
 /// needs, plus the members it shows structurally. Shared by the standalone
 /// `Chan` formatter ([`mpsc_chan_node`]) and the `Receiver` ([`mpsc_rx_node`]),
@@ -3307,25 +3300,44 @@ struct ChanShape {
 /// A channel is a struct whose first field is the synthetic `queued` block-chain
 /// walk; the rest are its real members.
 fn mpsc_chan_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let shape = mpsc_chan_shape(emitter.reader, &emitter.interner, id)?;
+    let shape = mpsc_chan_shape(emitter, id)?;
     Some(DisplayNode::Struct {
         fields: emitter.chan_struct_fields(shape),
     })
 }
 
-fn mpsc_chan_shape(
-    reader: &DwReader<'_>,
-    strings: &StringInterner,
-    id: TypeId,
-) -> Option<ChanShape> {
+fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
+    let reader = emitter.reader;
     // Both callers screen by name; this validates only the structure.
     // Sender write position and receiver read position, plus the receiver's
     // head block pointer. The rx fields sit behind CachePadded/UnsafeCell
     // wrappers; navigate them by name.
     // `tail_position` is a (shared) atomic usize; `index` is a plain usize on
     // the single-consumer receiver. Walk to the stored word either way.
-    let tail = usize_field_path(reader, id, &["tx", "value", "tail_position"])?;
-    let index = usize_field_path(reader, id, &["rx_fields", "__0", "value", "list", "index"])?;
+    let tail = emitter
+        .walk(
+            id,
+            &path![
+                Named("tx"),
+                Named("value"),
+                Named("tail_position"),
+                PeelTo(WORD)
+            ],
+        )?
+        .0;
+    let index = emitter
+        .walk(
+            id,
+            &path![
+                Named("rx_fields"),
+                Named("__0"),
+                Named("value"),
+                Named("list"),
+                Named("index"),
+                PeelTo(WORD)
+            ],
+        )?
+        .0;
     let (head, head_ty) = field_path(
         reader,
         id,
@@ -3339,9 +3351,12 @@ fn mpsc_chan_shape(
     // Paths rooted at the block type.
     let (start_index, _) = field_path(reader, block, &["header", "start_index"])?;
     // `next` is an `AtomicPtr`; walk the atomic wrappers to the raw pointer.
-    let (next_head, next_ty) = field_path(reader, block, &["header", "next"])?;
-    let next_tail = find_stored_pointer(reader, next_ty)?;
-    let next = next_head.then(next_tail);
+    let next = emitter
+        .walk(
+            block,
+            &path![Named("header"), Named("next"), PeelTo(Shape::Pointer)],
+        )?
+        .0;
     let (values, values_ty) = field_path(reader, block, &["values", "__0"])?;
     let RawType::Array(values_arr) = reader.canonical_type(values_ty)? else {
         return None;
@@ -3350,9 +3365,9 @@ fn mpsc_chan_shape(
     // The block base is a runtime pointer, so its fields are reached by Load at
     // constant offsets rather than selectors; resolve those offsets and the
     // slot array's stride/count here.
-    let start_index_offset = path_offset(reader, strings, block, &start_index)?.0;
-    let next_offset = path_offset(reader, strings, block, &next)?.0;
-    let values_offset = path_offset(reader, strings, block, &values)?.0;
+    let start_index_offset = path_offset(reader, &emitter.interner, block, &start_index)?.0;
+    let next_offset = path_offset(reader, &emitter.interner, block, &next)?.0;
+    let values_offset = path_offset(reader, &emitter.interner, block, &values)?.0;
     let stride = raw_type_size(reader, values_arr.elem_type_id)?;
     let count = values_arr.count;
 
@@ -5010,10 +5025,11 @@ mod tests {
     use super::{
         Detector, Emitter, Named, Pat, StatePass, StaticRole, VtableTypeHint,
         demote_types_with_members_out_of_bounds, drop_members_of_other_states, dyn_tail_offset,
-        field_path, find_stored_uint, has_dyn_tail, match_static_symbol, scalar_newtype_node,
-        scan_vtable_section, str_node,
+        field_path, has_dyn_tail, match_static_symbol, scalar_newtype_node, scan_vtable_section,
+        str_node,
     };
-    use crate::bundle::{DisplayNode, MemberRef, POINTER_SIZE, Step};
+    use crate::bundle::{DisplayNode, MemberRef, POINTER_SIZE, Shape, Step};
+    use crate::extract::PatStep::PeelTo;
     use crate::raw_types::{NsId, RawBase, RawMember, RawPointer, RawStruct, RawType};
     use crate::{DwReader, Encoding, TypeId};
     use gimli::{DebugInfoOffset, UnitSectionOffset};
@@ -5294,17 +5310,34 @@ mod tests {
             ),
         );
 
-        let (got, trace) =
-            super::explain::capture(|| find_stored_uint(&reader, holder, POINTER_SIZE));
+        let peel = |shape| {
+            super::explain::capture(|| {
+                Emitter::new(&reader, BTreeMap::new(), None).compile(
+                    holder,
+                    Pat::Alias {
+                        at: path![PeelTo(shape)],
+                        follow_pointers: false,
+                    },
+                )
+            })
+        };
+        let (got, trace) = peel(Shape::Uint(POINTER_SIZE));
         assert!(got.is_none(), "two candidates must not resolve");
         assert!(
             trace[0].contains("candidates") && trace[0].contains("Holder"),
             "{}",
             trace[0]
         );
+        // The pattern says what it was after, since "nothing" and "several"
+        // read the same without it.
+        assert!(
+            trace[1].contains("no single a 8-byte unsigned integer"),
+            "{}",
+            trace[1]
+        );
 
         // Nothing of that width is there at all.
-        let (got, trace) = super::explain::capture(|| find_stored_uint(&reader, holder, 2));
+        let (got, trace) = peel(Shape::Uint(2));
         assert!(got.is_none());
         assert!(trace[0].contains("found nothing matching"), "{}", trace[0]);
     }
