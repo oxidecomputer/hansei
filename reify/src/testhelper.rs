@@ -193,10 +193,11 @@ pub fn u64s(values: &[u64]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-/// Build a member-only [`Selector`] from member indices — the shape every
-/// selector in these synthetic bundles has (Phase A emits no `Deref`).
+/// Shorthand for a member-only [`Selector`], which is what most selectors in
+/// these synthetic bundles are; one that crosses a pointer spells out
+/// `Selector::members(..).deref()`.
 pub fn sel(members: &[u32]) -> Selector {
-    Selector::from(members.to_vec())
+    Selector::members(members)
 }
 
 /// Build an enumerated bundle [`BundleBitField`] from pre-interned labels.

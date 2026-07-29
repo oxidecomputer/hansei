@@ -1511,21 +1511,11 @@ fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
     let (cap_index, cap_member) = unique_member(reader, &inner.members, "cap")?;
     let (cap_value, _) = usize_no_high_bit_layout(reader, cap_member.type_id)?;
 
-    let prefix = [buf_index as u32, inner_index as u32];
+    let buf = Selector::members(&[buf_index as u32, inner_index as u32]);
     Some(VecShape {
-        pointer: prefix
-            .iter()
-            .copied()
-            .chain(pointer_path.iter().copied())
-            .collect::<Vec<u32>>()
-            .into(),
+        pointer: buf.clone().then(pointer_path),
         length: Selector::member(len_index as u32),
-        capacity: prefix
-            .iter()
-            .copied()
-            .chain([cap_index as u32, cap_value])
-            .collect::<Vec<u32>>()
-            .into(),
+        capacity: buf.then(Selector::members(&[cap_index as u32, cap_value])),
         element,
     })
 }
@@ -1596,12 +1586,9 @@ fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShap
     }
 
     Some(VecShape {
-        pointer: std::iter::once(buf_index as u32)
-            .chain(pointer_path.iter().copied())
-            .collect::<Vec<u32>>()
-            .into(),
+        pointer: Selector::member(buf_index as u32).then(pointer_path),
         length: Selector::member(len_index as u32),
-        capacity: vec![buf_index as u32, cap_index as u32].into(),
+        capacity: Selector::members(&[buf_index as u32, cap_index as u32]),
         element,
     })
 }
@@ -1664,8 +1651,7 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         Want::PointerTo(&is_leaf_node),
         Through::ZeroOffset,
     )?;
-    let mut node = vec![node_member_index as u32];
-    node.extend_from_slice(&node_tail);
+    let node = Selector::member(node_member_index as u32).then(node_tail);
 
     let RawType::Struct(leaf_ty) = reader.canonical_type(leaf)? else {
         return None;
@@ -1730,9 +1716,9 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         value: emitter.reserve(value),
         entries: Box::new(MapEntries::BTree {
             root: Selector::member(root as u32),
-            root_node: root_node.into(),
+            root_node,
             height: Selector::member(height as u32),
-            node: node.into(),
+            node,
             leaf: emitter.reserve(leaf),
             leaf_len: Selector::member(leaf_len as u32),
             leaf_keys: Selector::member(leaf_keys as u32),
@@ -1740,7 +1726,7 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
             internal: emitter.reserve(internal),
             internal_data: Selector::member(internal_data as u32),
             internal_edges: Selector::member(internal_edges as u32),
-            edge: edge.into(),
+            edge,
         }),
     })
 }
@@ -1886,7 +1872,7 @@ fn find_unique(
     root: TypeId,
     want: Want<'_>,
     through: Through,
-) -> Option<(Vec<u32>, TypeId)> {
+) -> Option<(Selector, TypeId)> {
     fn walk(
         reader: &DwReader<'_>,
         current: TypeId,
@@ -1942,7 +1928,7 @@ fn find_unique(
     let [(path, reported)] = found.as_slice() else {
         return None;
     };
-    Some((path.clone(), *reported))
+    Some((Selector::members(path), *reported))
 }
 
 /// The path to the `size`-byte unsigned integer a wrapper chain stores.
@@ -1951,7 +1937,7 @@ fn find_unique(
 /// `UnsafeCell` and atomic shims depending on how the compiler spelled the
 /// atomic, so the word is found by walking to the unique `uN` rather than by
 /// naming the wrappers.
-fn find_stored_uint(reader: &DwReader<'_>, root: TypeId, size: u64) -> Option<Vec<u32>> {
+fn find_stored_uint(reader: &DwReader<'_>, root: TypeId, size: u64) -> Option<Selector> {
     let is_uint = |id| is_unsigned_integer(reader, id, size);
     let (path, _) = find_unique(reader, root, Want::Type(&is_uint), Through::ZeroOffset)?;
     Some(path)
@@ -1959,7 +1945,7 @@ fn find_stored_uint(reader: &DwReader<'_>, root: TypeId, size: u64) -> Option<Ve
 
 /// The path to the raw pointer a wrapper chain stores, as an `AtomicPtr`
 /// wraps the pointer a block chain is linked by.
-fn find_stored_pointer(reader: &DwReader<'_>, root: TypeId) -> Option<Vec<u32>> {
+fn find_stored_pointer(reader: &DwReader<'_>, root: TypeId) -> Option<Selector> {
     let is_pointer = |id| matches!(reader.canonical_type(id), Some(RawType::Pointer(_)));
     let (path, _) = find_unique(reader, root, Want::Type(&is_pointer), Through::ZeroOffset)?;
     Some(path)
@@ -2108,11 +2094,11 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode>
     // length, and capacity are the Vec's own selectors anchored at the `vec`
     // member. It renders exactly as a `&str` with the capacity checked, so it
     // reuses the `Str` node with the capacity selector supplied.
-    let vec_index = vec_index as u32;
+    let vec = Selector::member(vec_index as u32);
     Some(DisplayNode::Str {
-        pointer: shape.pointer.under_member(vec_index),
-        length: shape.length.under_member(vec_index),
-        capacity: Some(shape.capacity.under_member(vec_index)),
+        pointer: vec.clone().then(shape.pointer),
+        length: vec.clone().then(shape.length),
+        capacity: Some(vec.then(shape.capacity)),
     })
 }
 
@@ -2157,9 +2143,9 @@ fn utf8_path_buf_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Displ
         return None;
     }
     Some(DisplayNode::Str {
-        pointer: shape.pointer.under_members(&prefix),
-        length: shape.length.under_members(&prefix),
-        capacity: Some(shape.capacity.under_members(&prefix)),
+        pointer: prefix.clone().then(shape.pointer),
+        length: prefix.clone().then(shape.length),
+        capacity: Some(prefix.then(shape.capacity)),
     })
 }
 
@@ -2186,7 +2172,7 @@ fn raw_mutex_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         return None;
     }
     Some(DisplayNode::Scalar {
-        at: value.under_member(state_index as u32),
+        at: Selector::member(state_index as u32).then(value),
         decode: emitter.mutex_byte_decode(),
     })
 }
@@ -2201,7 +2187,7 @@ fn atomic_usize_field_path(
     id: TypeId,
     type_name: &str,
     field: &str,
-) -> Option<Vec<u32>> {
+) -> Option<Selector> {
     if fq_name(reader, id).as_deref() != Some(type_name) {
         return None;
     }
@@ -2210,7 +2196,7 @@ fn atomic_usize_field_path(
     };
     let (field_index, field_member) = unique_member(reader, &st.members, field)?;
     let inner = find_stored_uint(reader, field_member.type_id, crate::bundle::POINTER_SIZE)?;
-    Some(std::iter::once(field_index as u32).chain(inner).collect())
+    Some(Selector::member(field_index as u32).then(inner))
 }
 
 /// Render a `tokio::sync::notify::Notify` as a curated record: the notification
@@ -2235,8 +2221,7 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     if fq_name(reader, raw_ty).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
         return None;
     }
-    let state_tail = find_stored_uint(reader, raw_ty, 1)?;
-    let mutex = raw_prefix.into_iter().chain(state_tail).collect();
+    let mutex = raw_prefix.then(find_stored_uint(reader, raw_ty, 1)?);
 
     let (head, _) = field_path(reader, id, &["waiters", "__1", "data", "value", "head"])?;
 
@@ -2293,7 +2278,11 @@ fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Display
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let permits_member = permits[0];
+    // The permit word is reached through the `permits` member, so that first
+    // step names the member whose display is overridden.
+    let Some(&Step::Member(permits_member)) = permits.steps().first() else {
+        return None;
+    };
     let decode = emitter.semaphore_permits_decode();
     // Structural display skips zero-sized members; enumerate over the full list
     // so the surviving indices still address the concrete members.
@@ -2308,7 +2297,7 @@ fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Display
                 Field::Override {
                     index,
                     node: DisplayNode::Scalar {
-                        at: permits.clone().into(),
+                        at: permits.clone(),
                         decode: decode.clone(),
                     },
                 }
@@ -2330,7 +2319,7 @@ fn watch_state_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode
         "__0",
     )?;
     Some(DisplayNode::Scalar {
-        at: at.into(),
+        at,
         decode: emitter.watch_state_decode(),
     })
 }
@@ -2354,10 +2343,7 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayN
     };
     let (ready_index, ready_member) = unique_member(reader, &header.members, "ready_slots")?;
     let ready_tail = find_stored_uint(reader, ready_member.type_id, crate::bundle::POINTER_SIZE)?;
-    let ready_slots = [header_index as u32, ready_index as u32]
-        .into_iter()
-        .chain(ready_tail)
-        .collect::<Vec<u32>>();
+    let bitmap = Selector::members(&[header_index as u32, ready_index as u32]).then(ready_tail);
 
     // The slots are the inline array behind `values.__0`.
     let (values_index, values_member) = unique_member(reader, &st.members, "values")?;
@@ -2371,14 +2357,12 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayN
     ) {
         return None;
     }
-    let slots = vec![values_index as u32, array_index as u32];
+    let slots = Selector::members(&[values_index as u32, array_index as u32]);
 
     // Render the block structurally, but replace the `values` array with a
     // written-slot count derived from the readiness bitmap. Zero-sized members
     // are elided (structural display skips them); the survivors keep their
     // original indices so they still address the concrete members.
-    let bitmap: Selector = ready_slots.into();
-    let slots: Selector = slots.into();
     let fields = st
         .members
         .iter()
@@ -2460,9 +2444,7 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
         Want::Type(&is_element),
         Through::AnyOffset,
     )?;
-    let value: Vec<u32> = std::iter::once(value_index as u32)
-        .chain(value_tail)
-        .collect();
+    let value = Selector::member(value_index as u32).then(value_tail);
 
     // Reserve the element type so the `Some(T)` alias resolves even if nothing
     // else pulls it into the type graph.
@@ -2471,21 +2453,16 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
     // A selector from the receiver across its `Arc`: the `shared` pointer, a
     // `Deref` to the `ArcInner`, then `shared_data` (past the strong/weak
     // header) and the tail within the `Shared<T>`.
-    let cross_arc = |tail: &[u32]| -> Selector {
-        let mut steps: Vec<Step> = shared.iter().map(|&i| Step::Member(i)).collect();
-        steps.push(Step::Deref);
-        steps.extend(shared_data.iter().chain(tail).map(|&i| Step::Member(i)));
-        Selector(steps)
-    };
-    let state_sel = cross_arc(&state);
-    let value_sel = cross_arc(&value);
+    let cross_arc = |tail: Selector| shared.clone().deref().then(shared_data.clone()).then(tail);
+    let state_sel = cross_arc(state);
+    let value_sel = cross_arc(value);
     let closed_mask = 1u64;
 
     // unseen = observed != (state & !closed_mask), the published version; render
     // the newest value as `Some(T)` when it differs.
     let unseen = DisplayNode::Variant {
         discriminant: ValueExpr::Ne(
-            Box::new(ValueExpr::Read(observed.into())),
+            Box::new(ValueExpr::Read(observed)),
             Box::new(ValueExpr::And(
                 Box::new(ValueExpr::Read(state_sel.clone())),
                 Box::new(ValueExpr::Not(Box::new(ValueExpr::Const(closed_mask)))),
@@ -2582,10 +2559,7 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
         "tokio::sync::batch_semaphore::Semaphore",
         "permits",
     )?;
-    let permits = sem_prefix
-        .into_iter()
-        .chain(permits_tail)
-        .collect::<Vec<u32>>();
+    let permits = sem_prefix.then(permits_tail);
 
     // The channel behind the pointer renders exactly as a standalone `Chan`
     // would; reuse its navigation so the queued walk and member list are shared.
@@ -2597,8 +2571,8 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let mut fields = vec![capacity, free];
     fields.extend(emitter.chan_struct_fields(chan_shape));
     Some(DisplayNode::Pointer {
-        at: chan_pointer.into(),
-        via: chan.into(),
+        at: chan_pointer,
+        via: chan,
         then: Box::new(DisplayNode::Struct { fields }),
     })
 }
@@ -2623,7 +2597,7 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
         "tokio::sync::batch_semaphore::Semaphore",
         "permits",
     )?;
-    let permits = sem_prefix.iter().copied().chain(permits_tail).collect();
+    let permits = sem_prefix.then(permits_tail);
 
     // The waiter list lives behind the batch semaphore's `waiters` mutex. tokio
     // wraps it in a loom shim over parking_lot's `lock_api::Mutex`; navigate the
@@ -2636,8 +2610,7 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     if fq_name(reader, raw_ty).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
         return None;
     }
-    let state_tail = find_stored_uint(reader, raw_ty, 1)?;
-    let mutex = raw_prefix.into_iter().chain(state_tail).collect();
+    let mutex = raw_prefix.then(find_stored_uint(reader, raw_ty, 1)?);
 
     let (closed, closed_ty) = field_path(
         reader,
@@ -2710,7 +2683,7 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
 /// Walk a chain of named struct members, returning the member-index path and
 /// the type reached. Used to record navigation paths through transparent
 /// wrappers (CachePadded, UnsafeCell, NonNull) by name.
-fn field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<(Vec<u32>, TypeId)> {
+fn field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<(Selector, TypeId)> {
     let mut path = Vec::with_capacity(names.len());
     let mut cur = reader.canonicalize(ty);
     for name in names {
@@ -2723,23 +2696,29 @@ fn field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<(Vec<
         path.push(index as u32);
         cur = reader.canonicalize(member.type_id);
     }
-    Some((path, cur))
+    Some((Selector::members(&path), cur))
 }
 
-/// Sum the byte offsets of a member-index `path` within `ty`, returning the
-/// datum's total offset and the type it lands on. A [`DisplayNode::CustomList`]
-/// bakes block-relative offsets as `Const`s (the block base is a runtime word),
-/// so a member selector produced by [`field_path`] becomes a plain number here.
-fn path_offset(reader: &DwReader<'_>, ty: TypeId, path: &[u32]) -> Option<(u64, TypeId)> {
+/// Sum the byte offsets `selector` walks within `ty`, returning the datum's
+/// total offset and the type it lands on. A [`DisplayNode::CustomList`] bakes
+/// block-relative offsets as `Const`s (the block base is a runtime word), so a
+/// selector produced by [`field_path`] becomes a plain number here. Only member
+/// steps have an offset to sum: a [`Step::Deref`] leaves the value being
+/// rendered, so a selector containing one has no offset within `ty` and is
+/// rejected.
+fn path_offset(reader: &DwReader<'_>, ty: TypeId, selector: &Selector) -> Option<(u64, TypeId)> {
     let mut cur = reader.canonicalize(ty);
     let mut offset = 0u64;
-    for &index in path {
+    for step in selector.steps() {
+        let Step::Member(index) = step else {
+            return None;
+        };
         let members = match reader.canonical_type(cur)? {
             RawType::Struct(st) => &st.members,
             RawType::Union(u) => &u.members,
             _ => return None,
         };
-        let member = members.get(index as usize)?;
+        let member = members.get(*index as usize)?;
         offset = offset.checked_add(member.offset)?;
         cur = reader.canonicalize(member.type_id);
     }
@@ -2748,10 +2727,10 @@ fn path_offset(reader: &DwReader<'_>, ty: TypeId, path: &[u32]) -> Option<(u64, 
 
 /// Navigate named members to a field, then walk any atomic/cell wrappers to
 /// the `usize` it stores, returning the full member path.
-fn usize_field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<Vec<u32>> {
+fn usize_field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<Selector> {
     let (head, field_ty) = field_path(reader, ty, names)?;
     let tail = find_stored_uint(reader, field_ty, crate::bundle::POINTER_SIZE)?;
-    Some(head.into_iter().chain(tail).collect())
+    Some(head.then(tail))
 }
 
 /// Where a `tokio::sync::mpsc::chan::Chan` keeps the state its `queued` walk
@@ -2760,9 +2739,9 @@ fn usize_field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option
 /// which renders the same record behind a pointer hop.
 struct ChanShape {
     /// Value-anchored selectors seeding the walk's loop variables.
-    tail: Vec<u32>,
-    index: Vec<u32>,
-    head: Vec<u32>,
+    tail: Selector,
+    index: Selector,
+    head: Selector,
     /// Byte offsets of a block's fields, baked into the CustomList program as
     /// constants since the block base is a runtime pointer.
     start_index_offset: u64,
@@ -2810,7 +2789,7 @@ fn mpsc_chan_shape(reader: &DwReader<'_>, id: TypeId) -> Option<ChanShape> {
     // `next` is an `AtomicPtr`; walk the atomic wrappers to the raw pointer.
     let (next_head, next_ty) = field_path(reader, block, &["header", "next"])?;
     let next_tail = find_stored_pointer(reader, next_ty)?;
-    let next: Vec<u32> = next_head.into_iter().chain(next_tail).collect();
+    let next = next_head.then(next_tail);
     let (values, values_ty) = field_path(reader, block, &["values", "__0"])?;
     let RawType::Array(values_arr) = reader.canonical_type(values_ty)? else {
         return None;
@@ -3376,7 +3355,7 @@ fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode>
     // An atomic aliases its stored value but does not chase it: an `AtomicPtr`'s
     // `Debug` reports the address it holds, so `follow_pointers` is false.
     Some(DisplayNode::Alias {
-        at: value.into(),
+        at: value,
         follow_pointers: false,
     })
 }
@@ -3671,13 +3650,10 @@ impl<'a> Emitter<'a> {
     /// Build a [`DisplayNode::Struct`] field named `label` whose value is the
     /// decoded word at `at` — the shape every curated sync-primitive record is
     /// mostly made of.
-    fn named_scalar(&mut self, label: &str, at: Vec<u32>, decode: ScalarDecode) -> Field {
+    fn named_scalar(&mut self, label: &str, at: Selector, decode: ScalarDecode) -> Field {
         Field::Named {
             label: self.intern(label),
-            node: DisplayNode::Scalar {
-                at: at.into(),
-                decode,
-            },
+            node: DisplayNode::Scalar { at, decode },
         }
     }
 
@@ -3774,11 +3750,11 @@ impl<'a> Emitter<'a> {
     /// both rooted at `waiter`.
     fn waiter_queue_field(
         &mut self,
-        head: Vec<u32>,
+        head: Selector,
         waiter: TypeId,
-        waiter_next: Vec<u32>,
+        waiter_next: Selector,
         payload_label: &str,
-        payload: Vec<u32>,
+        payload: Selector,
         payload_decode: ScalarDecode,
     ) -> Field {
         let node_ty = self.reserve(waiter);
@@ -3787,13 +3763,13 @@ impl<'a> Emitter<'a> {
         Field::Named {
             label: queue,
             node: DisplayNode::List {
-                head: head.into(),
-                next: waiter_next.into(),
+                head,
+                next: waiter_next,
                 node: Box::new(DisplayNode::Struct {
                     fields: vec![Field::Named {
                         label: payload_label,
                         node: DisplayNode::Scalar {
-                            at: payload.into(),
+                            at: payload,
                             decode: payload_decode,
                         },
                     }],
@@ -3826,9 +3802,9 @@ impl<'a> Emitter<'a> {
         let queued = Field::Named {
             label: self.intern("queued"),
             node: mpsc_queued_node(
-                tail.into(),
-                index.into(),
-                head.into(),
+                tail,
+                index,
+                head,
                 start_index_offset,
                 next_offset,
                 values_offset,

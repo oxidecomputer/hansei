@@ -118,22 +118,25 @@ impl Selector {
         Selector(vec![Step::Member(index)])
     }
 
-    /// Prepend a leading [`Step::Member`]: the result descends `index` of a
-    /// new root, then continues with this selector's steps. Used by detectors
-    /// that anchor an inner path (e.g. an atomic's word) at an outer field.
-    pub fn under_member(self, index: u32) -> Self {
-        self.under_members(&[index])
+    /// A selector that descends a run of members, outermost first.
+    pub fn members(indices: &[u32]) -> Self {
+        Selector(indices.iter().copied().map(Step::Member).collect())
     }
 
-    /// Prepend a run of leading [`Step::Member`]s: the result walks `prefix`
-    /// from a new root, then continues with this selector's steps. Used by a
-    /// detector that reuses an inner type's selectors from an outer type that
-    /// reaches it through transparent wrappers.
-    pub fn under_members(self, prefix: &[u32]) -> Self {
-        let mut steps = Vec::with_capacity(self.0.len() + prefix.len());
-        steps.extend(prefix.iter().copied().map(Step::Member));
-        steps.extend(self.0);
-        Selector(steps)
+    /// Continue this selector with `rest`'s steps, so a detector can compose a
+    /// reach out of parts: the path to a field, then the path from that field
+    /// to the datum inside it. `rest` is resolved against whatever this
+    /// selector lands on, which is why the two compose at all.
+    pub fn then(mut self, rest: Selector) -> Self {
+        self.0.extend(rest.0);
+        self
+    }
+
+    /// Continue this selector by following the pointer it lands on. The steps
+    /// after this one are resolved against the pointee, from a fresh offset.
+    pub fn deref(mut self) -> Self {
+        self.0.push(Step::Deref);
+        self
     }
 
     /// Whether this selector has no steps (addresses the root itself).
@@ -144,13 +147,6 @@ impl Selector {
     /// The selector's steps.
     pub fn steps(&self) -> &[Step] {
         &self.0
-    }
-}
-
-/// Build a member-only selector from a legacy member-index path.
-impl From<Vec<u32>> for Selector {
-    fn from(path: Vec<u32>) -> Self {
-        Selector(path.into_iter().map(Step::Member).collect())
     }
 }
 
