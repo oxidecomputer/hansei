@@ -23,9 +23,9 @@
 use crate::bundle::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
-    Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, Shape, SourceLoc, StaticDef,
-    StaticRole, StaticsTable, Step, Stmt, StrRef, StringInterner, TaskEntryId, TaskFutureEntry,
-    TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape,
+    MemberRef, Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, Shape, SourceLoc,
+    StaticDef, StaticRole, StaticsTable, Step, Stmt, StrRef, StringInterner, TaskEntryId,
+    TaskFutureEntry, TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape,
 };
 use std::num::NonZeroU8;
 
@@ -2100,21 +2100,44 @@ fn find_stored_pointer(reader: &DwReader<'_>, root: TypeId) -> Option<Selector> 
     Some(path)
 }
 
+/// The DWARF member a [`MemberRef`] addresses.
+///
+/// A name in a display program is a [`StrRef`] into the bundle's own string
+/// table, so matching one against DWARF means reading it back out of the
+/// interner the detector put it in and comparing spellings. The uniqueness
+/// rule is [`MemberRef::resolve`]'s, the same one validation and reify apply.
+fn raw_member_at<'m>(
+    reader: &DwReader<'_>,
+    strings: &StringInterner,
+    members: &'m [crate::raw_types::RawMember<crate::StrId>],
+    at: &MemberRef,
+) -> Option<&'m crate::raw_types::RawMember<crate::StrId>> {
+    let index = at.resolve(members.len(), |index, name| {
+        members[index].name.map(|n| reader.strings.get(n)) == strings.get(name)
+    })?;
+    members.get(index)
+}
+
 /// Walk a [`Selector`] through DWARF from `root`, returning the type it lands
 /// on. The DWARF counterpart of the bundle's own `selector_target`; where that
 /// one validates a finished bundle, this one lets a detector be held to the
 /// same addressing contract while the node is still being built.
-fn selector_lands(reader: &DwReader<'_>, root: TypeId, sel: &Selector) -> Option<TypeId> {
+fn selector_lands(
+    reader: &DwReader<'_>,
+    strings: &StringInterner,
+    root: TypeId,
+    sel: &Selector,
+) -> Option<TypeId> {
     let mut cur = reader.canonicalize(root);
     for step in sel.steps() {
         cur = match step {
-            Step::Member(index) => {
+            Step::Member(at) => {
                 let members = match reader.canonical_type(cur)? {
                     RawType::Struct(st) => &st.members,
                     RawType::Union(union) => &union.members,
                     _ => return None,
                 };
-                reader.canonicalize(members.get(*index as usize)?.type_id)
+                reader.canonicalize(raw_member_at(reader, strings, members, at)?.type_id)
             }
             Step::Deref => {
                 let RawType::Pointer(pointer) = reader.canonical_type(cur)? else {
@@ -2153,14 +2176,19 @@ fn raw_shape_matches(reader: &DwReader<'_>, id: TypeId, shape: Shape) -> bool {
 /// pointer hop — is not walked, since its root is a bundle id the detector
 /// reserved rather than a `TypeId`; those are checked against the type table
 /// on save. Children rendered against this same value are walked.
-fn addressing_holds(reader: &DwReader<'_>, root: TypeId, node: &DisplayNode) -> bool {
+fn addressing_holds(
+    reader: &DwReader<'_>,
+    strings: &StringInterner,
+    root: TypeId,
+    node: &DisplayNode,
+) -> bool {
     for addressed in node.addressed() {
         let what = addressed.what;
         if addressed.sel.is_empty() && !addressed.root_allowed {
             explain!("  {what} addresses the value itself, which its node may not do");
             return false;
         }
-        let Some(landed) = selector_lands(reader, root, addressed.sel) else {
+        let Some(landed) = selector_lands(reader, strings, root, addressed.sel) else {
             explain!("  {what} does not resolve in {}", type_label(reader, root));
             return false;
         };
@@ -2175,19 +2203,20 @@ fn addressing_holds(reader: &DwReader<'_>, root: TypeId, node: &DisplayNode) -> 
     }
     match node {
         DisplayNode::Struct { fields } => fields.iter().all(|field| match field {
-            Field::Member(_) => true,
-            Field::Named { node, .. } | Field::Override { node, .. } => {
-                addressing_holds(reader, root, node)
+            Field::Member { node: None, .. } => true,
+            Field::Member {
+                node: Some(node), ..
             }
+            | Field::Synth { node, .. } => addressing_holds(reader, strings, root, node),
         }),
         DisplayNode::Variant { arms, default, .. } => {
             arms.iter().all(|arm| {
                 arm.payload
                     .as_ref()
-                    .is_none_or(|node| addressing_holds(reader, root, node))
+                    .is_none_or(|node| addressing_holds(reader, strings, root, node))
             }) && default
                 .as_ref()
-                .is_none_or(|node| addressing_holds(reader, root, node))
+                .is_none_or(|node| addressing_holds(reader, strings, root, node))
         }
         _ => true,
     }
@@ -2218,11 +2247,13 @@ fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     // node's own requirement, checked once the program is built. The fields are
     // emitted in RawWakerVTable's declared order (clone, wake, wake_by_ref,
     // drop) regardless of DWARF member order.
-    let symbol = |index: u32| Field::Override {
-        index,
-        node: DisplayNode::Symbol {
-            at: Selector::member(index),
-        },
+    let symbol = |index: u32| {
+        Field::computed(
+            MemberRef::Index(index),
+            DisplayNode::Symbol {
+                at: Selector::member(index),
+            },
+        )
     };
     Some(DisplayNode::Struct {
         fields: vec![
@@ -2489,16 +2520,17 @@ fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Display
         .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
         .map(|(index, _)| index as u32)
         .map(|index| {
-            if index == permits_member {
-                Field::Override {
-                    index,
-                    node: DisplayNode::Scalar {
+            let at = MemberRef::Index(index);
+            if at == permits_member {
+                Field::computed(
+                    at,
+                    DisplayNode::Scalar {
                         at: permits.clone(),
                         decode: decode.clone(),
                     },
-                }
+                )
             } else {
-                Field::Member(index)
+                Field::member(at)
             }
         })
         .collect();
@@ -2554,17 +2586,17 @@ fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
         .enumerate()
         .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
         .map(|(index, _)| {
-            let index = index as u32;
-            if index == values_index as u32 {
-                Field::Override {
-                    index,
-                    node: DisplayNode::SlotCount {
+            let at = MemberRef::Index(index as u32);
+            if index == values_index {
+                Field::computed(
+                    at,
+                    DisplayNode::SlotCount {
                         bitmap: bitmap.clone(),
                         slots: slots.clone(),
                     },
-                }
+                )
             } else {
-                Field::Member(index)
+                Field::member(at)
             }
         })
         .collect();
@@ -2688,11 +2720,11 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
     };
     Some(DisplayNode::Struct {
         fields: vec![
-            Field::Named {
+            Field::Synth {
                 label: emitter.intern("unseen"),
                 node: unseen,
             },
-            Field::Named {
+            Field::Synth {
                 label: emitter.intern("closed"),
                 node: closed,
             },
@@ -2744,7 +2776,7 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 
     // The channel behind the pointer renders exactly as a standalone `Chan`
     // would; reuse its navigation so the queued walk and member list are shared.
-    let chan_shape = mpsc_chan_shape(reader, chan_ty)?;
+    let chan_shape = mpsc_chan_shape(reader, &emitter.interner, chan_ty)?;
 
     let permits_decode = emitter.semaphore_permits_decode();
     let capacity = emitter.named_scalar("capacity", bound, ScalarDecode::Raw);
@@ -2898,11 +2930,16 @@ fn field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<(Sele
 /// steps have an offset to sum: a [`Step::Deref`] leaves the value being
 /// rendered, so a selector containing one has no offset within `ty` and is
 /// rejected.
-fn path_offset(reader: &DwReader<'_>, ty: TypeId, selector: &Selector) -> Option<(u64, TypeId)> {
+fn path_offset(
+    reader: &DwReader<'_>,
+    strings: &StringInterner,
+    ty: TypeId,
+    selector: &Selector,
+) -> Option<(u64, TypeId)> {
     let mut cur = reader.canonicalize(ty);
     let mut offset = 0u64;
     for step in selector.steps() {
-        let Step::Member(index) = step else {
+        let Step::Member(at) = step else {
             return None;
         };
         let members = match reader.canonical_type(cur)? {
@@ -2910,7 +2947,7 @@ fn path_offset(reader: &DwReader<'_>, ty: TypeId, selector: &Selector) -> Option
             RawType::Union(u) => &u.members,
             _ => return None,
         };
-        let member = members.get(*index as usize)?;
+        let member = raw_member_at(reader, strings, members, at)?;
         offset = offset.checked_add(member.offset)?;
         cur = reader.canonicalize(member.type_id);
     }
@@ -2951,13 +2988,17 @@ struct ChanShape {
 /// A channel is a struct whose first field is the synthetic `queued` block-chain
 /// walk; the rest are its real members.
 fn mpsc_chan_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let shape = mpsc_chan_shape(emitter.reader, id)?;
+    let shape = mpsc_chan_shape(emitter.reader, &emitter.interner, id)?;
     Some(DisplayNode::Struct {
         fields: emitter.chan_struct_fields(shape),
     })
 }
 
-fn mpsc_chan_shape(reader: &DwReader<'_>, id: TypeId) -> Option<ChanShape> {
+fn mpsc_chan_shape(
+    reader: &DwReader<'_>,
+    strings: &StringInterner,
+    id: TypeId,
+) -> Option<ChanShape> {
     // Both callers screen by name; this validates only the structure.
     // Sender write position and receiver read position, plus the receiver's
     // head block pointer. The rx fields sit behind CachePadded/UnsafeCell
@@ -2990,9 +3031,9 @@ fn mpsc_chan_shape(reader: &DwReader<'_>, id: TypeId) -> Option<ChanShape> {
     // The block base is a runtime pointer, so its fields are reached by Load at
     // constant offsets rather than selectors; resolve those offsets and the
     // slot array's stride/count here.
-    let start_index_offset = path_offset(reader, block, &start_index)?.0;
-    let next_offset = path_offset(reader, block, &next)?.0;
-    let values_offset = path_offset(reader, block, &values)?.0;
+    let start_index_offset = path_offset(reader, strings, block, &start_index)?.0;
+    let next_offset = path_offset(reader, strings, block, &next)?.0;
+    let values_offset = path_offset(reader, strings, block, &values)?.0;
     let stride = raw_type_size(reader, values_arr.elem_type_id)?;
     let count = values_arr.count;
 
@@ -3791,7 +3832,7 @@ impl<'a> Emitter<'a> {
     /// decoded word at `at` — the shape every curated sync-primitive record is
     /// mostly made of.
     fn named_scalar(&mut self, label: &str, at: Selector, decode: ScalarDecode) -> Field {
-        Field::Named {
+        Field::Synth {
             label: self.intern(label),
             node: DisplayNode::Scalar { at, decode },
         }
@@ -3900,13 +3941,13 @@ impl<'a> Emitter<'a> {
         let node_ty = self.reserve(waiter);
         let payload_label = self.interner.intern(payload_label);
         let queue = self.interner.intern("queue");
-        Field::Named {
+        Field::Synth {
             label: queue,
             node: DisplayNode::List {
                 head,
                 next: waiter_next,
                 node: Box::new(DisplayNode::Struct {
-                    fields: vec![Field::Named {
+                    fields: vec![Field::Synth {
                         label: payload_label,
                         node: DisplayNode::Scalar {
                             at: payload,
@@ -3939,7 +3980,7 @@ impl<'a> Emitter<'a> {
             members,
         } = shape;
         let element = self.reserve(element);
-        let queued = Field::Named {
+        let queued = Field::Synth {
             label: self.intern("queued"),
             node: mpsc_queued_node(
                 tail,
@@ -3954,7 +3995,11 @@ impl<'a> Emitter<'a> {
             ),
         };
         std::iter::once(queued)
-            .chain(members.into_iter().map(Field::Member))
+            .chain(
+                members
+                    .into_iter()
+                    .map(|index| Field::member(MemberRef::Index(index))),
+            )
             .collect()
     }
 
@@ -3991,12 +4036,12 @@ impl<'a> Emitter<'a> {
     /// declines the same way whether it noticed the mismatch itself or not.
     fn debug_format_of(&mut self, tid: TypeId, name: Option<&str>) -> Option<DisplayNode> {
         if let Some(node) = self.specific_debug_format(tid, name)
-            && addressing_holds(self.reader, tid, &node)
+            && addressing_holds(self.reader, &self.interner, tid, &node)
         {
             return Some(node);
         }
         let node = structural_debug_format(self, tid)?;
-        addressing_holds(self.reader, tid, &node).then_some(node)
+        addressing_holds(self.reader, &self.interner, tid, &node).then_some(node)
     }
 
     /// The name to report this type under, when the caller asked for its

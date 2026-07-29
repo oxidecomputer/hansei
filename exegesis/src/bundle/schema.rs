@@ -88,39 +88,101 @@ pub struct TypeTable {
     pub name_index: Vec<(StrRef, BundleTypeId)>,
 }
 
+/// Which member of an aggregate a [`Step`] or a [`Field`] addresses.
+///
+/// A name is the better address wherever one selects the member: a member list
+/// can be rewritten between a display program being attached and the bundle
+/// being finished (extraction drops the members belonging to a coroutine's
+/// other states), which shifts every index after the one removed but leaves
+/// names alone. Resolution by name also fails closed, so a renamed field
+/// declines instead of silently landing on its neighbour.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum MemberRef {
+    /// Position in the aggregate's member list. Addresses a member no name can
+    /// select: an unnamed one (they all intern as `<anon>`), or one of several
+    /// sharing a name.
+    Index(u32),
+    /// The uniquely-named member. A name that is absent, or borne by more than
+    /// one member, resolves to nothing.
+    Named(StrRef),
+}
+
 /// One step in a [`Selector`]: descend into an aggregate member, or follow a
 /// pointer to the value it points at.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Step {
-    /// Index into the current struct/union's member list; adds that member's
-    /// byte offset and continues in its type.
-    Member(u32),
+    /// Descend into a struct/union member; adds that member's byte offset and
+    /// continues in its type.
+    Member(MemberRef),
     /// Follow the current pointer to its pointee, restarting the byte offset
     /// within the target type.
     Deref,
 }
 
+impl MemberRef {
+    /// The position of the member this addresses in `members`, or `None` when
+    /// nothing there answers to it.
+    ///
+    /// This is the one place a member address is turned into a position, so
+    /// every consumer — validation, reify's resolution, the golden summary —
+    /// agrees on what "the member named `x`" means, including that two of them
+    /// mean no member at all. `count` is how many members the aggregate has and
+    /// `is_named` reports whether member `i` bears a given name; each consumer
+    /// supplies the latter for its own representation of a name.
+    pub fn resolve(&self, count: usize, is_named: impl Fn(usize, StrRef) -> bool) -> Option<usize> {
+        match *self {
+            MemberRef::Index(index) => ((index as usize) < count).then_some(index as usize),
+            MemberRef::Named(name) => {
+                let mut found = (0..count).filter(|&index| is_named(index, name));
+                let index = found.next()?;
+                found.next().is_none().then_some(index)
+            }
+        }
+    }
+}
+
 /// A path from a root type to a nested datum.
 ///
-/// [`Step::Member`] steps descend through struct/union members, accumulating
-/// byte offsets; a [`Step::Deref`] step crosses a pointer, restarting the
-/// offset inside the pointee. A `Selector` unifies what used to be recorded
-/// inconsistently as either a bare `u32` member index or a `Vec<u32>` member
-/// path, and subsumes the per-formatter "resolve a pointer, then continue
-/// against its target" special cases: a cross-pointer reach is just a
-/// selector containing a `Deref`.
+/// [`Step::Member`] steps descend through struct/union members (by name or by
+/// position — see [`MemberRef`]), accumulating byte offsets; a [`Step::Deref`]
+/// step crosses a pointer, restarting the offset inside the pointee. A
+/// `Selector` unifies what used to be recorded inconsistently as either a bare
+/// `u32` member index or a `Vec<u32>` member path, and subsumes the
+/// per-formatter "resolve a pointer, then continue against its target" special
+/// cases: a cross-pointer reach is just a selector containing a `Deref`.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct Selector(pub Vec<Step>);
 
 impl Selector {
-    /// A selector that descends a single member of the root aggregate.
+    /// A selector that descends a single member of the root aggregate, by
+    /// position.
     pub fn member(index: u32) -> Self {
-        Selector(vec![Step::Member(index)])
+        Selector(vec![Step::Member(MemberRef::Index(index))])
     }
 
-    /// A selector that descends a run of members, outermost first.
+    /// A selector that descends a run of members by position, outermost first.
     pub fn members(indices: &[u32]) -> Self {
-        Selector(indices.iter().copied().map(Step::Member).collect())
+        Selector(
+            indices
+                .iter()
+                .map(|&index| Step::Member(MemberRef::Index(index)))
+                .collect(),
+        )
+    }
+
+    /// A selector that descends a single member of the root aggregate, by name.
+    pub fn named(name: StrRef) -> Self {
+        Selector(vec![Step::Member(MemberRef::Named(name))])
+    }
+
+    /// A selector that descends a run of members by name, outermost first.
+    pub fn named_path(names: &[StrRef]) -> Self {
+        Selector(
+            names
+                .iter()
+                .map(|&name| Step::Member(MemberRef::Named(name)))
+                .collect(),
+        )
     }
 
     /// Continue this selector with `rest`'s steps, so a detector can compose a
@@ -504,19 +566,37 @@ pub enum MapEntries {
 /// One field of a [`DisplayNode::Struct`] record.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Field {
-    /// Include real member `index` of the rendered type, labeled with its
-    /// DWARF name and rendered with reify's ordinary structural display. This
-    /// is the one field kind that recurses into a member's own type.
-    Member(u32),
+    /// A real member of the rendered type, labeled with its DWARF name so the
+    /// label need not be duplicated as a string.
+    ///
+    /// `node` computes the value in place of the member's own (rooted at the
+    /// rendered type, the same root as the enclosing `Struct`), which is how
+    /// one field of a record is decoded while the rest stay as they are. With
+    /// no `node` the member is rendered by reify's ordinary structural
+    /// display, recursing into its type — the one field kind that does.
+    Member {
+        at: MemberRef,
+        node: Option<DisplayNode>,
+    },
     /// A synthesized field: an explicit `label` whose value is computed by
-    /// `node`. The node's selectors are rooted at the rendered type (the same
-    /// root as the enclosing `Struct`).
-    Named { label: StrRef, node: DisplayNode },
-    /// Real member `index`'s DWARF name, but with its value replaced by
-    /// `node` (rooted at the rendered type). Reuses the member's name so the
-    /// label need not be duplicated as a string; used to decode one field of a
-    /// struct in place while keeping its name.
-    Override { index: u32, node: DisplayNode },
+    /// `node`. The node's selectors are rooted at the rendered type.
+    Synth { label: StrRef, node: DisplayNode },
+}
+
+impl Field {
+    /// A real member, rendered structurally under its own name.
+    pub fn member(at: MemberRef) -> Self {
+        Field::Member { at, node: None }
+    }
+
+    /// A real member whose value `node` computes in place of its own, keeping
+    /// its own name as the label.
+    pub fn computed(at: MemberRef, node: DisplayNode) -> Self {
+        Field::Member {
+            at,
+            node: Some(node),
+        }
+    }
 }
 
 impl TypeTable {

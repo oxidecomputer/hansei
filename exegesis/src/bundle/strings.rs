@@ -99,6 +99,14 @@ impl StringInterner {
         r
     }
 
+    /// The string a [`StrRef`] this interner produced stands for. Needed to
+    /// read a name back out of a display program while it is still being
+    /// built — a member addressed by name is a `StrRef`, and matching it
+    /// against DWARF means resolving it first.
+    pub fn get(&self, r: StrRef) -> Option<&str> {
+        self.table.get(r)
+    }
+
     /// Consume the interner, returning the finished table.
     pub fn finish(self) -> StringTable {
         self.table
