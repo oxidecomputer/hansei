@@ -290,98 +290,79 @@ pub fn chan_queued_node(element: BundleTypeId) -> BundleNode {
     }
 }
 
-pub const U32: BundleTypeId = BundleTypeId(0);
-pub const U64: BundleTypeId = BundleTypeId(1);
-pub const BOOL: BundleTypeId = BundleTypeId(2);
-pub const U8: BundleTypeId = BundleTypeId(3);
-pub const UNIT: BundleTypeId = BundleTypeId(4);
-pub const POINT: BundleTypeId = BundleTypeId(5);
-pub const MSG: BundleTypeId = BundleTypeId(6);
-pub const OPT: BundleTypeId = BundleTypeId(7);
-pub const WRAP: BundleTypeId = BundleTypeId(8);
-pub const PTR: BundleTypeId = BundleTypeId(9);
-pub const ARR: BundleTypeId = BundleTypeId(10);
-pub const NODE: BundleTypeId = BundleTypeId(11);
-pub const NODE_PTR: BundleTypeId = BundleTypeId(12);
-pub const VTABLE_ARRAY: BundleTypeId = BundleTypeId(13);
-pub const VTABLE_PTR: BundleTypeId = BundleTypeId(14);
-pub const FAT_PTR: BundleTypeId = BundleTypeId(15);
-pub const ATOMIC: BundleTypeId = BundleTypeId(16);
-pub const ATOMIC_STORAGE: BundleTypeId = BundleTypeId(17);
-pub const ATOMIC_PTR: BundleTypeId = BundleTypeId(18);
-pub const LOOM_ATOMIC: BundleTypeId = BundleTypeId(19);
-pub const LOOM_CELL: BundleTypeId = BundleTypeId(20);
-pub const DYN_TRAIT: BundleTypeId = BundleTypeId(21);
-pub const DYN_TRAIT_PTR: BundleTypeId = BundleTypeId(22);
-pub const RAW_WAKER_VTABLE: BundleTypeId = BundleTypeId(23);
-pub const FUNCTION_TARGET: BundleTypeId = BundleTypeId(24);
-pub const FUNCTION_PTR: BundleTypeId = BundleTypeId(25);
-pub const BTREE_MAP: BundleTypeId = BundleTypeId(26);
-pub const BTREE_ROOT: BundleTypeId = BundleTypeId(27);
-pub const BTREE_NODE_REF: BundleTypeId = BundleTypeId(28);
-pub const BTREE_LEAF_PTR: BundleTypeId = BundleTypeId(29);
-pub const BTREE_LEAF: BundleTypeId = BundleTypeId(30);
-pub const MAYBE_U32: BundleTypeId = BundleTypeId(31);
-pub const BTREE_SLOTS: BundleTypeId = BundleTypeId(32);
-pub const BTREE_INTERNAL: BundleTypeId = BundleTypeId(33);
-pub const BTREE_EDGES: BundleTypeId = BundleTypeId(34);
-pub const IPV4_OCTETS: BundleTypeId = BundleTypeId(35);
-pub const IPV4: BundleTypeId = BundleTypeId(36);
-pub const IPV6_OCTETS: BundleTypeId = BundleTypeId(37);
-pub const IPV6: BundleTypeId = BundleTypeId(38);
-pub const U8_PTR: BundleTypeId = BundleTypeId(39);
-pub const VEC: BundleTypeId = BundleTypeId(40);
-pub const STR: BundleTypeId = BundleTypeId(41);
-pub const STRING: BundleTypeId = BundleTypeId(42);
-pub const RAW_MUTEX: BundleTypeId = BundleTypeId(43);
-pub const NOTIFY: BundleTypeId = BundleTypeId(44);
-pub const SEMAPHORE: BundleTypeId = BundleTypeId(45);
-pub const BLOCK: BundleTypeId = BundleTypeId(46);
-pub const BLOCK_VALUES: BundleTypeId = BundleTypeId(47);
-pub const BLOCK_HEADER: BundleTypeId = BundleTypeId(48);
-pub const WATCH_STATE: BundleTypeId = BundleTypeId(49);
-pub const CHAN: BundleTypeId = BundleTypeId(50);
-pub const CHAN_BLOCK: BundleTypeId = BundleTypeId(51);
-pub const CHAN_BLOCK_HEADER: BundleTypeId = BundleTypeId(52);
-pub const CHAN_BLOCK_PTR: BundleTypeId = BundleTypeId(53);
-pub const RX_CHAN: BundleTypeId = BundleTypeId(54);
-pub const RX_SEMAPHORE: BundleTypeId = BundleTypeId(55);
-pub const ARC_INNER: BundleTypeId = BundleTypeId(56);
-pub const ARC_INNER_PTR: BundleTypeId = BundleTypeId(57);
-pub const RECEIVER: BundleTypeId = BundleTypeId(58);
-pub const BOUNDED_SEM: BundleTypeId = BundleTypeId(59);
-pub const BSEM_INNER: BundleTypeId = BundleTypeId(60);
-pub const BSEM_MUTEX: BundleTypeId = BundleTypeId(61);
-pub const BSEM_WAITLIST: BundleTypeId = BundleTypeId(62);
-pub const BSEM_LIST: BundleTypeId = BundleTypeId(63);
-pub const WAITER: BundleTypeId = BundleTypeId(64);
-pub const WAITER_PTR: BundleTypeId = BundleTypeId(65);
-pub const NOTIFY_MUTEX: BundleTypeId = BundleTypeId(66);
-pub const NOTIFY_LIST: BundleTypeId = BundleTypeId(67);
-pub const NOTIFY_WAITER: BundleTypeId = BundleTypeId(68);
-pub const NOTIFY_WAITER_PTR: BundleTypeId = BundleTypeId(69);
-pub const SLICE: BundleTypeId = BundleTypeId(70);
-pub const WATCH_RECEIVER: BundleTypeId = BundleTypeId(71);
-pub const WATCH_ARC_INNER: BundleTypeId = BundleTypeId(72);
-pub const WATCH_ARC_INNER_PTR: BundleTypeId = BundleTypeId(73);
-pub const WATCH_SHARED: BundleTypeId = BundleTypeId(74);
-pub const PAIR: BundleTypeId = BundleTypeId(75);
-// Base and aggregate kinds that reach a `TypeClass` arm no other fixture type
-// does: the float, signed, character and odd-width integer encodings, plus a
-// C enumeration, a union and a sized opaque.
-pub const F32: BundleTypeId = BundleTypeId(76);
-pub const F64: BundleTypeId = BundleTypeId(77);
-pub const I8: BundleTypeId = BundleTypeId(78);
-pub const I16: BundleTypeId = BundleTypeId(79);
-pub const I32: BundleTypeId = BundleTypeId(80);
-pub const I64: BundleTypeId = BundleTypeId(81);
-pub const CHAR: BundleTypeId = BundleTypeId(82);
-pub const U24: BundleTypeId = BundleTypeId(83);
-pub const COLOR: BundleTypeId = BundleTypeId(84);
-pub const VAL_UNION: BundleTypeId = BundleTypeId(85);
-pub const UNMODELLED: BundleTypeId = BundleTypeId(86);
-pub const U16: BundleTypeId = BundleTypeId(87);
-pub const U16_ARR: BundleTypeId = BundleTypeId(88);
+/// Declare fixture type ids, numbered in declaration order.
+///
+/// The ids are positions in the fixture's type table, so they used to be
+/// written out by hand — a list of `BundleTypeId(37)` that had to be kept in
+/// step with the order the definitions were appended in. Declaring them here
+/// keeps the numbering implicit, and [`FixtureTypes::add`] checks each
+/// definition against the id it claims, so a type inserted in one place and
+/// not the other fails immediately instead of silently shifting every id
+/// after it.
+macro_rules! fixture_ids {
+    ($($name:ident),* $(,)?) => { fixture_ids!(@each [] $($name)*); };
+    (@each [$($prev:ident)*] $name:ident $($rest:ident)*) => {
+        pub const $name: BundleTypeId = {
+            // The id is how many names were declared before this one.
+            const PRECEDING: &[&str] = &[$(stringify!($prev)),*];
+            BundleTypeId(PRECEDING.len() as u32)
+        };
+        fixture_ids!(@each [$($prev)* $name] $($rest)*);
+    };
+    (@each [$($prev:ident)*]) => {};
+}
+
+/// A fixture's type table under construction.
+///
+/// Every definition is appended against the id it is meant to have, so the
+/// ids declared by [`fixture_ids!`] and the definitions here cannot drift
+/// apart unnoticed.
+#[derive(Default)]
+pub struct FixtureTypes {
+    types: Vec<TypeDef>,
+}
+
+impl FixtureTypes {
+    /// Append `def` as `claimed`, which must be the next id.
+    pub fn add(&mut self, claimed: BundleTypeId, def: TypeDef) {
+        assert_eq!(
+            BundleTypeId(self.types.len() as u32),
+            claimed,
+            "fixture type definitions are out of step with their ids: \
+             the definition appended here lands at {} but claims {}",
+            self.types.len(),
+            claimed.0,
+        );
+        self.types.push(def);
+    }
+
+    /// The finished table.
+    pub fn finish(self) -> Vec<TypeDef> {
+        self.types
+    }
+}
+
+fixture_ids! {
+    U32, U64, BOOL, U8, UNIT, POINT,
+    MSG, OPT, WRAP, PTR, ARR, NODE,
+    NODE_PTR, VTABLE_ARRAY, VTABLE_PTR, FAT_PTR, ATOMIC, ATOMIC_STORAGE,
+    ATOMIC_PTR, LOOM_ATOMIC, LOOM_CELL, DYN_TRAIT, DYN_TRAIT_PTR, RAW_WAKER_VTABLE,
+    FUNCTION_TARGET, FUNCTION_PTR, BTREE_MAP, BTREE_ROOT, BTREE_NODE_REF, BTREE_LEAF_PTR,
+    BTREE_LEAF, MAYBE_U32, BTREE_SLOTS, BTREE_INTERNAL, BTREE_EDGES, IPV4_OCTETS,
+    IPV4, IPV6_OCTETS, IPV6, U8_PTR, VEC, STR,
+    STRING, RAW_MUTEX, NOTIFY, SEMAPHORE, BLOCK, BLOCK_VALUES,
+    BLOCK_HEADER, WATCH_STATE, CHAN, CHAN_BLOCK, CHAN_BLOCK_HEADER, CHAN_BLOCK_PTR,
+    RX_CHAN, RX_SEMAPHORE, ARC_INNER, ARC_INNER_PTR, RECEIVER, BOUNDED_SEM,
+    BSEM_INNER, BSEM_MUTEX, BSEM_WAITLIST, BSEM_LIST, WAITER, WAITER_PTR,
+    NOTIFY_MUTEX, NOTIFY_LIST, NOTIFY_WAITER, NOTIFY_WAITER_PTR, SLICE, WATCH_RECEIVER,
+    WATCH_ARC_INNER, WATCH_ARC_INNER_PTR, WATCH_SHARED, PAIR,
+    // Base and aggregate kinds that reach a `TypeClass` arm no other fixture
+    // type does: the float, signed, character and odd-width integer
+    // encodings, plus a C enumeration, a union and a sized opaque.
+    F32, F64, I8, I16, I32, I64,
+    CHAR, U24, COLOR, VAL_UNION, UNMODELLED, U16,
+    U16_ARR,
+}
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
 ///
@@ -542,37 +523,57 @@ pub fn test_bundle() -> Bundle {
     let m = |name, ty, offset| MemberDef { name, ty, offset };
     let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
 
-    let types = vec![
+    let mut types = FixtureTypes::default();
+    types.add(
+        U32,
         TypeDef::Base {
             name: u32n,
             size: 4,
             encoding: Encoding::Unsigned,
         },
+    );
+    types.add(
+        U64,
         TypeDef::Base {
             name: u64n,
             size: 8,
             encoding: Encoding::Unsigned,
         },
+    );
+    types.add(
+        BOOL,
         TypeDef::Base {
             name: booln,
             size: 1,
             encoding: Encoding::Boolean,
         },
+    );
+    types.add(
+        U8,
         TypeDef::Base {
             name: u8n,
             size: 1,
             encoding: Encoding::Unsigned,
         },
+    );
+    types.add(
+        UNIT,
         TypeDef::Struct {
             name: unitn,
             size: 0,
             members: vec![],
         },
+    );
+    types.add(
+        POINT,
         TypeDef::Struct {
             name: pointn,
             size: 8,
             members: vec![m(xn, U32, 0), m(yn, U32, 4)],
         },
+    );
+    types.add(
+        MSG,
         TypeDef::Enum {
             name: msgn,
             size: 16,
@@ -603,6 +604,9 @@ pub fn test_bundle() -> Bundle {
                 ],
             },
         },
+    );
+    types.add(
+        OPT,
         TypeDef::Enum {
             name: optn,
             size: 8,
@@ -626,75 +630,123 @@ pub fn test_bundle() -> Bundle {
                 ],
             },
         },
+    );
+    types.add(
+        WRAP,
         TypeDef::Struct {
             name: wrapn,
             size: 8,
             members: vec![m(innern, POINT, 0)],
         },
+    );
+    types.add(
+        PTR,
         TypeDef::Pointer {
             name: None,
             target: POINT,
         },
+    );
+    types.add(
+        ARR,
         TypeDef::Array {
             elem: U32,
             count: 3,
         },
+    );
+    types.add(
+        NODE,
         TypeDef::Struct {
             name: noden,
             size: 16,
             members: vec![m(valuen, U32, 0), m(nextn, NODE_PTR, 8)],
         },
+    );
+    types.add(
+        NODE_PTR,
         TypeDef::Pointer {
             name: None,
             target: NODE,
         },
+    );
+    types.add(
+        VTABLE_ARRAY,
         TypeDef::Array {
             elem: U64,
             count: 3,
         },
+    );
+    types.add(
+        VTABLE_PTR,
         TypeDef::Pointer {
             name: None,
             target: VTABLE_ARRAY,
         },
+    );
+    types.add(
+        FAT_PTR,
         TypeDef::Struct {
             name: fatn,
             size: 16,
             members: vec![m(pointern, DYN_TRAIT_PTR, 0), m(vtablen, VTABLE_PTR, 8)],
         },
+    );
+    types.add(
+        ATOMIC,
         TypeDef::Struct {
             name: atomicn,
             size: 4,
             members: vec![m(vn, ATOMIC_STORAGE, 0)],
         },
+    );
+    types.add(
+        ATOMIC_STORAGE,
         TypeDef::Struct {
             name: storagen,
             size: 4,
             members: vec![m(valuen, U32, 0)],
         },
+    );
+    types.add(
+        ATOMIC_PTR,
         TypeDef::Struct {
             name: atomic_ptrn,
             size: 8,
             members: vec![m(vn, PTR, 0)],
         },
+    );
+    types.add(
+        LOOM_ATOMIC,
         TypeDef::Struct {
             name: loom_atomicn,
             size: 4,
             members: vec![m(innern, ATOMIC, 0)],
         },
+    );
+    types.add(
+        LOOM_CELL,
         TypeDef::Struct {
             name: loom_celln,
             size: 8,
             members: vec![m(tuple0n, WRAP, 0)],
         },
+    );
+    types.add(
+        DYN_TRAIT,
         TypeDef::Struct {
             name: dyn_traitn,
             size: 0,
             members: vec![],
         },
+    );
+    types.add(
+        DYN_TRAIT_PTR,
         TypeDef::Pointer {
             name: None,
             target: DYN_TRAIT,
         },
+    );
+    types.add(
+        RAW_WAKER_VTABLE,
         TypeDef::Struct {
             name: raw_waker_vtablen,
             size: 32,
@@ -705,19 +757,31 @@ pub fn test_bundle() -> Bundle {
                 m(dropn, PTR, 24),
             ],
         },
+    );
+    types.add(
+        FUNCTION_TARGET,
         TypeDef::Opaque {
             name: unresolvedn,
             size: None,
         },
+    );
+    types.add(
+        FUNCTION_PTR,
         TypeDef::Pointer {
             name: None,
             target: FUNCTION_TARGET,
         },
+    );
+    types.add(
+        BTREE_MAP,
         TypeDef::Struct {
             name: btree_mapn,
             size: 24,
             members: vec![m(rootn, BTREE_ROOT, 0), m(lengthn, U64, 16)],
         },
+    );
+    types.add(
+        BTREE_ROOT,
         TypeDef::Enum {
             name: btree_rootn,
             size: 16,
@@ -741,15 +805,24 @@ pub fn test_bundle() -> Bundle {
                 ],
             },
         },
+    );
+    types.add(
+        BTREE_NODE_REF,
         TypeDef::Struct {
             name: btree_node_refn,
             size: 16,
             members: vec![m(noden2, BTREE_LEAF_PTR, 0), m(heightn, U64, 8)],
         },
+    );
+    types.add(
+        BTREE_LEAF_PTR,
         TypeDef::Pointer {
             name: None,
             target: BTREE_LEAF,
         },
+    );
+    types.add(
+        BTREE_LEAF,
         TypeDef::Struct {
             name: btree_leafn,
             size: 20,
@@ -759,43 +832,70 @@ pub fn test_bundle() -> Bundle {
                 m(valsn, BTREE_SLOTS, 12),
             ],
         },
+    );
+    types.add(
+        MAYBE_U32,
         TypeDef::Union {
             name: maybe_u32n,
             size: 4,
             members: vec![m(uninitn, UNIT, 0), m(valuen, U32, 0)],
         },
+    );
+    types.add(
+        BTREE_SLOTS,
         TypeDef::Array {
             elem: MAYBE_U32,
             count: 2,
         },
+    );
+    types.add(
+        BTREE_INTERNAL,
         TypeDef::Struct {
             name: btree_internaln,
             size: 48,
             members: vec![m(datan, BTREE_LEAF, 0), m(edgesn, BTREE_EDGES, 24)],
         },
+    );
+    types.add(
+        BTREE_EDGES,
         TypeDef::Array {
             elem: BTREE_LEAF_PTR,
             count: 3,
         },
-        TypeDef::Array { elem: U8, count: 4 },
+    );
+    types.add(IPV4_OCTETS, TypeDef::Array { elem: U8, count: 4 });
+    types.add(
+        IPV4,
         TypeDef::Struct {
             name: ipv4n,
             size: 4,
             members: vec![m(octetsn, IPV4_OCTETS, 0)],
         },
+    );
+    types.add(
+        IPV6_OCTETS,
         TypeDef::Array {
             elem: U8,
             count: 16,
         },
+    );
+    types.add(
+        IPV6,
         TypeDef::Struct {
             name: ipv6n,
             size: 16,
             members: vec![m(octetsn, IPV6_OCTETS, 0)],
         },
+    );
+    types.add(
+        U8_PTR,
         TypeDef::Pointer {
             name: None,
             target: U8,
         },
+    );
+    types.add(
+        VEC,
         TypeDef::Struct {
             name: vecn,
             size: 24,
@@ -805,11 +905,17 @@ pub fn test_bundle() -> Bundle {
                 m(capacityn, U64, 16),
             ],
         },
+    );
+    types.add(
+        STR,
         TypeDef::Struct {
             name: strn,
             size: 16,
             members: vec![m(data_ptrn, U8_PTR, 0), m(length2n, U64, 8)],
         },
+    );
+    types.add(
+        STRING,
         TypeDef::Struct {
             name: stringn,
             size: 24,
@@ -819,24 +925,36 @@ pub fn test_bundle() -> Bundle {
                 m(capacityn, U64, 16),
             ],
         },
+    );
+    types.add(
+        RAW_MUTEX,
         TypeDef::Struct {
             name: raw_mutexn,
             size: 1,
             members: vec![m(staten, U8, 0)],
         },
-        // Notify { state: usize @0, waiters: Mutex<LinkedList<Waiter>> @8 }
-        // (the loom/UnsafeCell wrappers the detector navigates are collapsed
-        // here — reify only needs the resolved offsets).
+    );
+    // Notify { state: usize @0, waiters: Mutex<LinkedList<Waiter>> @8 }
+    // (the loom/UnsafeCell wrappers the detector navigates are collapsed
+    // here — reify only needs the resolved offsets).
+    types.add(
+        NOTIFY,
         TypeDef::Struct {
             name: notifyn,
             size: 32,
             members: vec![m(staten, U64, 0), m(waitersn, NOTIFY_MUTEX, 8)],
         },
+    );
+    types.add(
+        SEMAPHORE,
         TypeDef::Struct {
             name: semaphoren,
             size: 16,
             members: vec![m(permitsn, U64, 0), m(waitersn, U32, 8)],
         },
+    );
+    types.add(
+        BLOCK,
         TypeDef::Struct {
             name: blockn,
             size: 24,
@@ -845,21 +963,33 @@ pub fn test_bundle() -> Bundle {
                 m(headerfieldn, BLOCK_HEADER, 16),
             ],
         },
+    );
+    types.add(
+        BLOCK_VALUES,
         TypeDef::Array {
             elem: U32,
             count: 4,
         },
+    );
+    types.add(
+        BLOCK_HEADER,
         TypeDef::Struct {
             name: block_headern,
             size: 8,
             members: vec![m(ready_slotsn, U64, 0)],
         },
+    );
+    types.add(
+        WATCH_STATE,
         TypeDef::Struct {
             name: watch_staten,
             size: 8,
             members: vec![m(tuple0n, U64, 0)],
         },
-        // Chan { tail: usize @0, index: usize @8, head: *ChanBlock @16 }
+    );
+    // Chan { tail: usize @0, index: usize @8, head: *ChanBlock @16 }
+    types.add(
+        CHAN,
         TypeDef::Struct {
             name: chann,
             size: 24,
@@ -869,7 +999,10 @@ pub fn test_bundle() -> Bundle {
                 m(headn, CHAN_BLOCK_PTR, 16),
             ],
         },
-        // ChanBlock { values: [u32; 4] @0, header: ChanBlockHeader @16 }
+    );
+    // ChanBlock { values: [u32; 4] @0, header: ChanBlockHeader @16 }
+    types.add(
+        CHAN_BLOCK,
         TypeDef::Struct {
             name: chan_blockn,
             size: 32,
@@ -878,18 +1011,27 @@ pub fn test_bundle() -> Bundle {
                 m(headerfieldn, CHAN_BLOCK_HEADER, 16),
             ],
         },
-        // ChanBlockHeader { start_index: usize @0, next: *ChanBlock @8 }
+    );
+    // ChanBlockHeader { start_index: usize @0, next: *ChanBlock @8 }
+    types.add(
+        CHAN_BLOCK_HEADER,
         TypeDef::Struct {
             name: chan_block_headern,
             size: 16,
             members: vec![m(start_indexn, U64, 0), m(nextn, CHAN_BLOCK_PTR, 8)],
         },
+    );
+    types.add(
+        CHAN_BLOCK_PTR,
         TypeDef::Pointer {
             name: None,
             target: CHAN_BLOCK,
         },
-        // RxChan: tail @0, index @8, head @16, semaphore @24 (like Chan
-        // but with the bounded semaphore appended).
+    );
+    // RxChan: tail @0, index @8, head @16, semaphore @24 (like Chan
+    // but with the bounded semaphore appended).
+    types.add(
+        RX_CHAN,
         TypeDef::Struct {
             name: chann,
             size: 40,
@@ -900,80 +1042,119 @@ pub fn test_bundle() -> Bundle {
                 m(semfieldn, RX_SEMAPHORE, 24),
             ],
         },
-        // bounded::Semaphore { permits: usize @0, bound: usize @8 }.
+    );
+    // bounded::Semaphore { permits: usize @0, bound: usize @8 }.
+    types.add(
+        RX_SEMAPHORE,
         TypeDef::Struct {
             name: rx_semn,
             size: 16,
             members: vec![m(permitsn, U64, 0), m(boundn, U64, 8)],
         },
-        // ArcInner { strong: usize @0, weak: usize @8, data: RxChan @16 }.
+    );
+    // ArcInner { strong: usize @0, weak: usize @8, data: RxChan @16 }.
+    types.add(
+        ARC_INNER,
         TypeDef::Struct {
             name: arc_innern,
             size: 56,
             members: vec![m(strongn, U64, 0), m(weakn, U64, 8), m(datan, RX_CHAN, 16)],
         },
+    );
+    types.add(
+        ARC_INNER_PTR,
         TypeDef::Pointer {
             name: None,
             target: ARC_INNER,
         },
-        // Receiver { chan: *ArcInner @0 } (Rx/Arc/NonNull collapsed to the
-        // single raw pointer the format actually navigates to).
+    );
+    // Receiver { chan: *ArcInner @0 } (Rx/Arc/NonNull collapsed to the
+    // single raw pointer the format actually navigates to).
+    types.add(
+        RECEIVER,
         TypeDef::Struct {
             name: receivern,
             size: 8,
             members: vec![m(chanfieldn, ARC_INNER_PTR, 0)],
         },
-        // bounded::Semaphore { semaphore: batch Semaphore @0, bound @48 }.
+    );
+    // bounded::Semaphore { semaphore: batch Semaphore @0, bound @48 }.
+    types.add(
+        BOUNDED_SEM,
         TypeDef::Struct {
             name: rx_semn,
             size: 56,
             members: vec![m(semfieldn, BSEM_INNER, 0), m(boundn, U64, 48)],
         },
-        // batch_semaphore::Semaphore { waiters: Mutex @0, permits @40 }.
+    );
+    // batch_semaphore::Semaphore { waiters: Mutex @0, permits @40 }.
+    types.add(
+        BSEM_INNER,
         TypeDef::Struct {
             name: semaphoren,
             size: 48,
             members: vec![m(waitersn, BSEM_MUTEX, 0), m(permitsn, U64, 40)],
         },
-        // Mutex { raw: RawMutex @0, data: Waitlist @8 } (the loom/UnsafeCell
-        // wrappers the detector navigates are collapsed here — reify only
-        // needs the resolved offsets).
+    );
+    // Mutex { raw: RawMutex @0, data: Waitlist @8 } (the loom/UnsafeCell
+    // wrappers the detector navigates are collapsed here — reify only
+    // needs the resolved offsets).
+    types.add(
+        BSEM_MUTEX,
         TypeDef::Struct {
             name: bsem_mutexn,
             size: 40,
             members: vec![m(rawn, RAW_MUTEX, 0), m(datan, BSEM_WAITLIST, 8)],
         },
-        // Waitlist { queue: LinkedList @0, closed: bool @24 }.
+    );
+    // Waitlist { queue: LinkedList @0, closed: bool @24 }.
+    types.add(
+        BSEM_WAITLIST,
         TypeDef::Struct {
             name: bsem_waitlistn,
             size: 32,
             members: vec![m(queuen, BSEM_LIST, 0), m(closedn, BOOL, 24)],
         },
-        // LinkedList { head: *Waiter @0, tail: *Waiter @8 }.
+    );
+    // LinkedList { head: *Waiter @0, tail: *Waiter @8 }.
+    types.add(
+        BSEM_LIST,
         TypeDef::Struct {
             name: bsem_listn,
             size: 16,
             members: vec![m(headn, WAITER_PTR, 0), m(tailn, WAITER_PTR, 8)],
         },
-        // Waiter { state: usize @0 (permits needed), next: *Waiter @8 }.
+    );
+    // Waiter { state: usize @0 (permits needed), next: *Waiter @8 }.
+    types.add(
+        WAITER,
         TypeDef::Struct {
             name: waitern,
             size: 32,
             members: vec![m(staten, U64, 0), m(nextn, WAITER_PTR, 8)],
         },
+    );
+    types.add(
+        WAITER_PTR,
         TypeDef::Pointer {
             name: None,
             target: WAITER,
         },
-        // Notify's waiter mutex: Mutex { raw: RawMutex @0, data: LinkedList
-        // @8 } (loom/UnsafeCell wrappers collapsed; unlike the batch
-        // semaphore there is no Waitlist — the mutex guards the list directly).
+    );
+    // Notify's waiter mutex: Mutex { raw: RawMutex @0, data: LinkedList
+    // @8 } (loom/UnsafeCell wrappers collapsed; unlike the batch
+    // semaphore there is no Waitlist — the mutex guards the list directly).
+    types.add(
+        NOTIFY_MUTEX,
         TypeDef::Struct {
             name: notify_mutexn,
             size: 24,
             members: vec![m(rawn, RAW_MUTEX, 0), m(datan, NOTIFY_LIST, 8)],
         },
-        // LinkedList { head: *Waiter @0, tail: *Waiter @8 }.
+    );
+    // LinkedList { head: *Waiter @0, tail: *Waiter @8 }.
+    types.add(
+        NOTIFY_LIST,
         TypeDef::Struct {
             name: notify_listn,
             size: 16,
@@ -982,31 +1163,46 @@ pub fn test_bundle() -> Bundle {
                 m(tailn, NOTIFY_WAITER_PTR, 8),
             ],
         },
-        // Waiter { notification: usize @0, next: *Waiter @8 }.
+    );
+    // Waiter { notification: usize @0, next: *Waiter @8 }.
+    types.add(
+        NOTIFY_WAITER,
         TypeDef::Struct {
             name: notify_waitern,
             size: 32,
             members: vec![m(notificationn, U64, 0), m(nextn, NOTIFY_WAITER_PTR, 8)],
         },
+    );
+    types.add(
+        NOTIFY_WAITER_PTR,
         TypeDef::Pointer {
             name: None,
             target: NOTIFY_WAITER,
         },
-        // &[u32] { data_ptr: *u8 @0, length: usize @8 } — a `(ptr, len)`
-        // fat pointer with no capacity (the byte-erased pointer mirrors the
-        // `Vec` type above; reify reads the pointer word regardless).
+    );
+    // &[u32] { data_ptr: *u8 @0, length: usize @8 } — a `(ptr, len)`
+    // fat pointer with no capacity (the byte-erased pointer mirrors the
+    // `Vec` type above; reify reads the pointer word regardless).
+    types.add(
+        SLICE,
         TypeDef::Struct {
             name: slicen,
             size: 16,
             members: vec![m(data_ptrn, U8_PTR, 0), m(length2n, U64, 8)],
         },
-        // watch::Receiver { shared: *ArcInner @0, version: usize @8 }.
+    );
+    // watch::Receiver { shared: *ArcInner @0, version: usize @8 }.
+    types.add(
+        WATCH_RECEIVER,
         TypeDef::Struct {
             name: watch_receivern,
             size: 16,
             members: vec![m(sharedn, WATCH_ARC_INNER_PTR, 0), m(versionl, U64, 8)],
         },
-        // ArcInner { strong, weak, data: Shared<u32> }.
+    );
+    // ArcInner { strong, weak, data: Shared<u32> }.
+    types.add(
+        WATCH_ARC_INNER,
         TypeDef::Struct {
             name: watch_arc_innern,
             size: 32,
@@ -1016,100 +1212,149 @@ pub fn test_bundle() -> Bundle {
                 m(datan, WATCH_SHARED, 16),
             ],
         },
+    );
+    types.add(
+        WATCH_ARC_INNER_PTR,
         TypeDef::Pointer {
             name: None,
             target: WATCH_ARC_INNER,
         },
-        // The real Shared is much larger; only these two selector targets
-        // matter to the resolved WatchReceiver node.
+    );
+    // The real Shared is much larger; only these two selector targets
+    // matter to the resolved WatchReceiver node.
+    types.add(
+        WATCH_SHARED,
         TypeDef::Struct {
             name: watch_sharedn,
             size: 16,
             members: vec![m(staten, U64, 0), m(valuen, U32, 8)],
         },
-        // A two-field tuple struct: `Pair(u32, u32)`, fields `__0`/`__1`.
+    );
+    // A two-field tuple struct: `Pair(u32, u32)`, fields `__0`/`__1`.
+    types.add(
+        PAIR,
         TypeDef::Struct {
             name: pairn,
             size: 8,
             members: vec![m(tuple0n, U32, 0), m(tuple1n, U32, 4)],
         },
-        // f32 @76, f64 @77 — the only `Encoding::Float` types in the fixture.
+    );
+    // f32 @76, f64 @77 — the only `Encoding::Float` types in the fixture.
+    types.add(
+        F32,
         TypeDef::Base {
             name: f32n,
             size: 4,
             encoding: Encoding::Float,
         },
+    );
+    types.add(
+        F64,
         TypeDef::Base {
             name: f64n,
             size: 8,
             encoding: Encoding::Float,
         },
-        // i8 @78 .. i64 @81 — every width the signed branch has a case for.
+    );
+    // i8 @78 .. i64 @81 — every width the signed branch has a case for.
+    types.add(
+        I8,
         TypeDef::Base {
             name: i8n,
             size: 1,
             encoding: Encoding::Signed,
         },
+    );
+    types.add(
+        I16,
         TypeDef::Base {
             name: i16n,
             size: 2,
             encoding: Encoding::Signed,
         },
+    );
+    types.add(
+        I32,
         TypeDef::Base {
             name: i32n,
             size: 4,
             encoding: Encoding::Signed,
         },
+    );
+    types.add(
+        I64,
         TypeDef::Base {
             name: i64n,
             size: 8,
             encoding: Encoding::Signed,
         },
-        // char @82 — a 4-byte Rust `char`.
+    );
+    // char @82 — a 4-byte Rust `char`.
+    types.add(
+        CHAR,
         TypeDef::Base {
             name: charn,
             size: 4,
             encoding: Encoding::UtfChar,
         },
-        // u24 @83 — a width with no case in the integer branch, so it falls
-        // back to a hex dump.
+    );
+    // u24 @83 — a width with no case in the integer branch, so it falls
+    // back to a hex dump.
+    types.add(
+        U24,
         TypeDef::Base {
             name: u24n,
             size: 3,
             encoding: Encoding::Unsigned,
         },
-        // Color @84 — a C-style enumeration over u32.
+    );
+    // Color @84 — a C-style enumeration over u32.
+    types.add(
+        COLOR,
         TypeDef::CEnum {
             name: colorn,
             size: 4,
             repr: U32,
             enumerators: vec![(redn, 0), (greenn, 1)],
         },
-        // Val @85 — a union of the two 8-byte reads of one word.
+    );
+    // Val @85 — a union of the two 8-byte reads of one word.
+    types.add(
+        VAL_UNION,
         TypeDef::Union {
             name: val_unionn,
             size: 8,
             members: vec![m(intn, U64, 0), m(floatn, F64, 0)],
         },
-        // Unmodelled @86 — an opaque the extractor could not model, but whose
-        // size is known (the `<unresolved>` opaque above has none, so it is a
-        // zero-sized type and never reaches the opaque display arm).
+    );
+    // Unmodelled @86 — an opaque the extractor could not model, but whose
+    // size is known (the `<unresolved>` opaque above has none, so it is a
+    // zero-sized type and never reaches the opaque display arm).
+    types.add(
+        UNMODELLED,
         TypeDef::Opaque {
             name: unmodelledn,
             size: Some(4),
         },
-        // u16 @87 and `[u16; 2]` @88 -- the one integer width the other
-        // fixture types leave without a case, plain and in an array.
+    );
+    // u16 @87 and `[u16; 2]` @88 -- the one integer width the other
+    // fixture types leave without a case, plain and in an array.
+    types.add(
+        U16,
         TypeDef::Base {
             name: u16n,
             size: 2,
             encoding: Encoding::Unsigned,
         },
+    );
+    types.add(
+        U16_ARR,
         TypeDef::Array {
             elem: U16,
             count: 2,
         },
-    ];
+    );
+    let types = types.finish();
 
     // Field labels for the node-based `BoundedSemaphore` formatter (deduped
     // by the interner, so re-interning existing strings is harmless).
@@ -1580,17 +1825,14 @@ pub fn test_bundle() -> Bundle {
 // -----------------------------------------------------------------------
 
 // Type ids for [`node_bundle`], dense from zero into its own type table.
-pub const N_U32: BundleTypeId = BundleTypeId(0);
-pub const N_U64: BundleTypeId = BundleTypeId(1);
-pub const N_U8: BundleTypeId = BundleTypeId(2);
-pub const N_POINT: BundleTypeId = BundleTypeId(3);
-pub const N_WAITER: BundleTypeId = BundleTypeId(4);
-pub const N_WAITER_PTR: BundleTypeId = BundleTypeId(5);
-pub const N_THING: BundleTypeId = BundleTypeId(6);
-/// A one-byte struct whose whole format is a `Variant` with arms for 0 and 1
-/// and no default -- the only way to reach an unmatched discriminant, which
-/// every other `Variant` in these fixtures computes a boolean for.
-pub const N_CHOICE: BundleTypeId = BundleTypeId(7);
+fixture_ids! {
+    N_U32, N_U64, N_U8, N_POINT, N_WAITER, N_WAITER_PTR,
+    N_THING,
+    // A one-byte struct whose whole format is a `Variant` with arms for 0 and
+    // 1 and no default -- the only way to reach an unmatched discriminant,
+    // which every other `Variant` in these fixtures computes a boolean for.
+    N_CHOICE,
+}
 
 /// A self-contained bundle whose sole formatter is a [`BundleNode`] tree,
 /// exercising every scaffolded node kind and field kind at once:
@@ -1638,36 +1880,56 @@ pub fn node_bundle() -> Bundle {
 
     let m = |name, ty, offset| MemberDef { name, ty, offset };
 
-    let types = vec![
+    let mut types = FixtureTypes::default();
+    types.add(
+        N_U32,
         TypeDef::Base {
             name: u32n,
             size: 4,
             encoding: Encoding::Unsigned,
         },
+    );
+    types.add(
+        N_U64,
         TypeDef::Base {
             name: u64n,
             size: 8,
             encoding: Encoding::Unsigned,
         },
+    );
+    types.add(
+        N_U8,
         TypeDef::Base {
             name: u8n,
             size: 1,
             encoding: Encoding::Unsigned,
         },
+    );
+    types.add(
+        N_POINT,
         TypeDef::Struct {
             name: pointn,
             size: 8,
             members: vec![m(xn, N_U32, 0), m(yn, N_U32, 4)],
         },
+    );
+    types.add(
+        N_WAITER,
         TypeDef::Struct {
             name: waitern,
             size: 16,
             members: vec![m(notifn, N_U64, 0), m(nextn, N_WAITER_PTR, 8)],
         },
+    );
+    types.add(
+        N_WAITER_PTR,
         TypeDef::Pointer {
             name: None,
             target: N_WAITER,
         },
+    );
+    types.add(
+        N_THING,
         TypeDef::Struct {
             name: thingn,
             size: 28,
@@ -1678,13 +1940,17 @@ pub fn node_bundle() -> Bundle {
                 m(headn, N_WAITER_PTR, 20),
             ],
         },
-        // Choice { tag: u8 @0 } -- id 7.
+    );
+    // Choice { tag: u8 @0 } -- id 7.
+    types.add(
+        N_CHOICE,
         TypeDef::Struct {
             name: choicen,
             size: 1,
             members: vec![m(tagn, N_U8, 0)],
         },
-    ];
+    );
+    let types = types.finish();
 
     let state_decode = BundleScalarDecode::Bits(vec![
         ebf(
