@@ -1523,6 +1523,7 @@ static BY_NAME: &[(&str, Detector)] = &[
     ("tokio::sync::mpsc::chan::Chan", mpsc_chan_node),
     ("tokio::sync::notify::Notify", notify_node),
     ("tokio::sync::watch::Receiver", watch_receiver_node),
+    ("tokio::sync::watch::Shared", watch_shared_node),
     ("tokio::sync::watch::state::AtomicState", watch_state_node),
     ("tokio::util::cacheline::CachePadded", cache_padded_node),
 ];
@@ -2224,6 +2225,16 @@ enum PatStep<'a> {
     /// fixed shape — `AtomicPtr` stores a pointer, `AtomicUsize` a word — so
     /// the type the wrapper names is the only thing that identifies it.
     PeelToParam,
+    /// The same search for a declared `T`, but through *any* member rather
+    /// than the zero-offset chain.
+    ///
+    /// Where peeling unwraps transparent layers, this digs past a type's own
+    /// bookkeeping: a lock keeps its guarded `T` beside a raw lock word, so no
+    /// chain of wrappers leads to it. Which bookkeeping there is varies by
+    /// platform and lock implementation, so the `T` is searched for rather
+    /// than navigated to. Uniqueness still decides: two candidates decline
+    /// exactly as none do.
+    FindParam,
     /// Continue along a path something else already resolved — how a shape
     /// helper's selectors are anchored under the member that holds them.
     Resolved(Selector),
@@ -2234,7 +2245,7 @@ type PatPath<'a> = Vec<PatStep<'a>>;
 
 // A pattern is written far more often than it is matched on, so the steps are
 // spelled bare: `path![Named("head"), Deref]` reads as the path it describes.
-use PatStep::{Deref, Named, PeelTo, PeelToParam, Resolved};
+use PatStep::{Deref, FindParam, Named, PeelTo, PeelToParam, Resolved};
 
 /// The shape of a `usize`, which most of what a pattern peels to is.
 const WORD: Shape = Shape::Uint(crate::bundle::POINTER_SIZE);
@@ -2253,6 +2264,9 @@ enum PatType<'a> {
 
 /// One field of a [`Pat::Struct`] record.
 enum PatField<'a> {
+    /// A real member, rendered structurally under its own name — including any
+    /// formatter its own type has.
+    Member(&'a str),
     /// A real member whose value the pattern computes, keeping its own name.
     Computed(&'a str, Pat<'a>),
 }
@@ -2426,9 +2440,13 @@ impl Emitter<'_> {
     /// addressing it positionally, so the name has to resolve here too — a
     /// record cannot show a member that is not there.
     fn compile_field(&mut self, root: TypeId, field: PatField<'_>) -> Option<Field> {
-        let PatField::Computed(name, pat) = field;
-        let at = self.member_named(root, name)?;
-        Some(Field::computed(at, self.compile(root, pat)?))
+        Some(match field {
+            PatField::Member(name) => Field::member(self.member_named(root, name)?),
+            PatField::Computed(name, pat) => {
+                let at = self.member_named(root, name)?;
+                Field::computed(at, self.compile(root, pat)?)
+            }
+        })
     }
 
     /// Address the uniquely-named member `name` of `root`, checking it is
@@ -2486,23 +2504,18 @@ impl Emitter<'_> {
                 PatStep::PeelTo(shape) => {
                     let reader = self.reader;
                     let accepts = |id| raw_shape_matches(reader, id, *shape);
-                    let (found, landed) = self.peel(cur, &accepts, &shape.to_string())?;
+                    let (found, landed) =
+                        self.search(cur, &accepts, Through::ZeroOffset, &shape.to_string())?;
                     steps.extend(found.0);
                     cur = landed;
                 }
                 PatStep::PeelToParam => {
-                    let reader = self.reader;
-                    let Some(param) =
-                        struct_of(reader, cur).and_then(|st| sole_param_target(reader, st))
-                    else {
-                        explain!(
-                            "  {} does not declare a sole parameter `T` to peel to",
-                            type_label(reader, cur),
-                        );
-                        return None;
-                    };
-                    let accepts = |id| id == param;
-                    let (found, landed) = self.peel(cur, &accepts, &type_label(reader, param))?;
+                    let (found, landed) = self.search_param(cur, Through::ZeroOffset)?;
+                    steps.extend(found.0);
+                    cur = landed;
+                }
+                PatStep::FindParam => {
+                    let (found, landed) = self.search_param(cur, Through::AnyOffset)?;
                     steps.extend(found.0);
                     cur = landed;
                 }
@@ -2551,17 +2564,18 @@ impl Emitter<'_> {
         Some(self.reserve(found))
     }
 
-    /// Descend the zero-offset wrapper chain from `root` to the one value
-    /// `accepts` takes, name-addressed. `want` names what was looked for, for
-    /// the trace when nothing or several were found.
-    fn peel(
+    /// Descend from `root` to the one value `accepts` takes, name-addressed —
+    /// `through` decides whether that is the zero-offset wrapper chain or any
+    /// member. `want` names what was looked for, for the trace when nothing or
+    /// several were found.
+    fn search(
         &mut self,
         root: TypeId,
         accepts: &dyn Fn(TypeId) -> bool,
+        through: Through,
         want: &str,
     ) -> Option<(Selector, TypeId)> {
-        let Some((found, landed)) =
-            find_unique(self.reader, root, Want::Type(accepts), Through::ZeroOffset)
+        let Some((found, landed)) = find_unique(self.reader, root, Want::Type(accepts), through)
         else {
             explain!(
                 "  no single {want} is stored in {}",
@@ -2570,6 +2584,21 @@ impl Emitter<'_> {
             return None;
         };
         Some((self.readdress(root, &found)?, landed))
+    }
+
+    /// Search for the `T` the type at `root` declares, either way through.
+    fn search_param(&mut self, root: TypeId, through: Through) -> Option<(Selector, TypeId)> {
+        let reader = self.reader;
+        let Some(param) = struct_of(reader, root).and_then(|st| sole_param_target(reader, st))
+        else {
+            explain!(
+                "  {} does not declare a sole parameter `T`",
+                type_label(reader, root),
+            );
+            return None;
+        };
+        let accepts = |id| id == param;
+        self.search(root, &accepts, through, &type_label(reader, param))
     }
 
     /// Re-address a path that was found rather than declared, so it names what
@@ -2954,6 +2983,39 @@ fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
                     },
                 )],
             },
+        },
+    )
+}
+
+/// Render the `Arc`-backed payload of a watch channel as the four things worth
+/// knowing about it: the published value, the packed version-and-closed state,
+/// and the live receiver and sender counts.
+///
+/// The value is guarded by a `RwLock` whose bookkeeping differs by platform and
+/// lock implementation, so the `T` is searched for rather than navigated to.
+/// The other three members render through their own formatters — `AtomicState`
+/// decodes itself, and each reference count is an atomic that aliases its word
+/// — so the pattern only has to name them.
+///
+/// The two `Notify` members are deliberately absent: `notify_rx` alone is eight
+/// of them, and a watch channel's waiters are reported by the tasks parked on
+/// it rather than by the channel they are parked on.
+fn watch_shared_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    emitter.compile(
+        id,
+        Pat::Struct {
+            fields: PatFields::Only(vec![
+                PatField::Computed(
+                    "value",
+                    Pat::Alias {
+                        at: path![Named("value"), FindParam],
+                        follow_pointers: true,
+                    },
+                ),
+                PatField::Member("state"),
+                PatField::Member("ref_count_rx"),
+                PatField::Member("ref_count_tx"),
+            ]),
         },
     )
 }
