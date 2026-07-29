@@ -36,6 +36,19 @@ pub enum Shape {
     Any,
 }
 
+impl std::fmt::Display for Shape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Shape::Word => write!(f, "a machine word"),
+            Shape::Uint(size) => write!(f, "a {size}-byte unsigned integer"),
+            Shape::PointerSized => write!(f, "a pointer-sized value"),
+            Shape::Pointer => write!(f, "a pointer"),
+            Shape::Array => write!(f, "an array"),
+            Shape::Any => write!(f, "a resolvable type"),
+        }
+    }
+}
+
 /// One datum a [`DisplayNode`] addresses within the value it is rendered
 /// against, with the shape the datum's type must have.
 pub struct Addressed<'a> {

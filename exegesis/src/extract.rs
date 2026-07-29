@@ -23,9 +23,9 @@
 use crate::bundle::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
-    Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
-    StaticsTable, Step, Stmt, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TaskTable,
-    TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape,
+    Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, Shape, SourceLoc, StaticDef,
+    StaticRole, StaticsTable, Step, Stmt, StrRef, StringInterner, TaskEntryId, TaskFutureEntry,
+    TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape,
 };
 use std::num::NonZeroU8;
 
@@ -1618,10 +1618,7 @@ fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
     let alloc = reader.canonicalize(alloc_param.type_id);
 
     let (buf_index, buf_member) = unique_member(reader, &vec.members, "buf")?;
-    let (len_index, len_member) = unique_member(reader, &vec.members, "len")?;
-    if !is_unsigned_integer(reader, len_member.type_id, crate::bundle::POINTER_SIZE) {
-        return None;
-    }
+    let (len_index, _) = unique_member(reader, &vec.members, "len")?;
 
     let raw_vec = struct_of(reader, buf_member.type_id)?;
     if fq_name(reader, buf_member.type_id)?.split('<').next()? != "alloc::raw_vec::RawVec" {
@@ -1693,10 +1690,7 @@ fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShap
     let alloc = reader.canonicalize(alloc_param.type_id);
 
     let (buf_index, buf_member) = unique_member(reader, &vec.members, "buf")?;
-    let (len_index, len_member) = unique_member(reader, &vec.members, "len")?;
-    if !is_unsigned_integer(reader, len_member.type_id, crate::bundle::POINTER_SIZE) {
-        return None;
-    }
+    let (len_index, _) = unique_member(reader, &vec.members, "len")?;
 
     let raw_vec = struct_of(reader, buf_member.type_id)?;
     if fq_name(reader, buf_member.type_id)?.split('<').next()?
@@ -1724,10 +1718,7 @@ fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShap
         Through::ZeroOffset,
     )?;
 
-    let (cap_index, cap_member) = unique_member(reader, &raw_vec.members, "cap")?;
-    if !is_unsigned_integer(reader, cap_member.type_id, crate::bundle::POINTER_SIZE) {
-        return None;
-    }
+    let (cap_index, _) = unique_member(reader, &raw_vec.members, "cap")?;
 
     Some(VecShape {
         pointer: Selector::member(buf_index as u32).then(pointer_path),
@@ -2109,6 +2100,99 @@ fn find_stored_pointer(reader: &DwReader<'_>, root: TypeId) -> Option<Selector> 
     Some(path)
 }
 
+/// Walk a [`Selector`] through DWARF from `root`, returning the type it lands
+/// on. The DWARF counterpart of the bundle's own `selector_target`; where that
+/// one validates a finished bundle, this one lets a detector be held to the
+/// same addressing contract while the node is still being built.
+fn selector_lands(reader: &DwReader<'_>, root: TypeId, sel: &Selector) -> Option<TypeId> {
+    let mut cur = reader.canonicalize(root);
+    for step in sel.steps() {
+        cur = match step {
+            Step::Member(index) => {
+                let members = match reader.canonical_type(cur)? {
+                    RawType::Struct(st) => &st.members,
+                    RawType::Union(union) => &union.members,
+                    _ => return None,
+                };
+                reader.canonicalize(members.get(*index as usize)?.type_id)
+            }
+            Step::Deref => {
+                let RawType::Pointer(pointer) = reader.canonical_type(cur)? else {
+                    return None;
+                };
+                reader.canonicalize(pointer.target_type_id)
+            }
+        };
+    }
+    Some(cur)
+}
+
+/// Whether DWARF's `id` meets `shape`. This is the [`DwReader`] half of the
+/// shared shape table (`crate::bundle::shape`); the bundle's `shape_matches`
+/// is the other.
+fn raw_shape_matches(reader: &DwReader<'_>, id: TypeId, shape: Shape) -> bool {
+    match shape {
+        Shape::Word => matches!(raw_type_size(reader, id), Some(1..=8)),
+        Shape::Uint(size) => is_unsigned_integer(reader, id, size),
+        Shape::PointerSized => raw_type_size(reader, id) == Some(crate::bundle::POINTER_SIZE),
+        Shape::Pointer => matches!(reader.canonical_type(id), Some(RawType::Pointer(_))),
+        Shape::Array => matches!(reader.canonical_type(id), Some(RawType::Array(_))),
+        Shape::Any => true,
+    }
+}
+
+/// Whether every datum `node` addresses within a value of type `root` is
+/// reachable and has the shape its node kind requires.
+///
+/// This holds a detector to the schema's addressing contract without the
+/// detector having to restate it: a formatter that navigated to the wrong
+/// member declines here and the type renders structurally, rather than
+/// producing a node that only fails when the finished bundle is validated.
+///
+/// A child node rooted somewhere else — a list element, the target of a
+/// pointer hop — is not walked, since its root is a bundle id the detector
+/// reserved rather than a `TypeId`; those are checked against the type table
+/// on save. Children rendered against this same value are walked.
+fn addressing_holds(reader: &DwReader<'_>, root: TypeId, node: &DisplayNode) -> bool {
+    for addressed in node.addressed() {
+        let what = addressed.what;
+        if addressed.sel.is_empty() && !addressed.root_allowed {
+            explain!("  {what} addresses the value itself, which its node may not do");
+            return false;
+        }
+        let Some(landed) = selector_lands(reader, root, addressed.sel) else {
+            explain!("  {what} does not resolve in {}", type_label(reader, root));
+            return false;
+        };
+        if !raw_shape_matches(reader, landed, addressed.shape) {
+            explain!(
+                "  {what} lands on {}, which is not {}",
+                type_label(reader, landed),
+                addressed.shape,
+            );
+            return false;
+        }
+    }
+    match node {
+        DisplayNode::Struct { fields } => fields.iter().all(|field| match field {
+            Field::Member(_) => true,
+            Field::Named { node, .. } | Field::Override { node, .. } => {
+                addressing_holds(reader, root, node)
+            }
+        }),
+        DisplayNode::Variant { arms, default, .. } => {
+            arms.iter().all(|arm| {
+                arm.payload
+                    .as_ref()
+                    .is_none_or(|node| addressing_holds(reader, root, node))
+            }) && default
+                .as_ref()
+                .is_none_or(|node| addressing_holds(reader, root, node))
+        }
+        _ => true,
+    }
+}
+
 fn function_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     let RawType::Pointer(pointer) = reader.canonical_type(id)? else {
@@ -2125,20 +2209,15 @@ fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     let reader = emitter.reader;
     let st = struct_of(reader, id)?;
     let member = |expected: &str| {
-        let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
-            member.name.map(|name| reader.strings.get(name)) == Some(expected)
-                && matches!(
-                    reader.canonical_type(member.type_id),
-                    Some(RawType::Pointer(_))
-                )
-        });
-        let (index, _) = matches.next()?;
-        matches.next().is_none().then_some(index as u32)
+        let (index, _) = unique_member(reader, &st.members, expected)?;
+        Some(index as u32)
     };
     // Render the whole struct, replacing each function-pointer member's value
     // with a `Symbol` node (its address and resolved name) while keeping the
-    // member's own name. The fields are emitted in RawWakerVTable's declared
-    // order (clone, wake, wake_by_ref, drop) regardless of DWARF member order.
+    // member's own name. That each member really is a pointer is the `Symbol`
+    // node's own requirement, checked once the program is built. The fields are
+    // emitted in RawWakerVTable's declared order (clone, wake, wake_by_ref,
+    // drop) regardless of DWARF member order.
     let symbol = |index: u32| Field::Override {
         index,
         node: DisplayNode::Symbol {
@@ -2183,13 +2262,14 @@ fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     let st = struct_of(reader, id)?;
     let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
-    let (length, length_member) = unique_member(reader, &st.members, "length")?;
+    let (length, _) = unique_member(reader, &st.members, "length")?;
+    // The `Str` node accepts any data pointer, since camino's is typed; a `&str`
+    // is the byte-erased one, and screening for that here is what keeps this
+    // detector from claiming a fat pointer over something else.
     let RawType::Pointer(raw_pointer) = reader.canonical_type(pointer_member.type_id)? else {
         return None;
     };
-    if !is_unsigned_integer(reader, raw_pointer.target_type_id, 1)
-        || !is_unsigned_integer(reader, length_member.type_id, crate::bundle::POINTER_SIZE)
-    {
+    if !is_unsigned_integer(reader, raw_pointer.target_type_id, 1) {
         return None;
     }
     Some(DisplayNode::Str {
@@ -2211,13 +2291,10 @@ fn slice_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // here. This validates only the fat-pointer structure.
     let st = struct_of(reader, id)?;
     let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
-    let (length, length_member) = unique_member(reader, &st.members, "length")?;
+    let (length, _) = unique_member(reader, &st.members, "length")?;
     let RawType::Pointer(raw_pointer) = reader.canonical_type(pointer_member.type_id)? else {
         return None;
     };
-    if !is_unsigned_integer(reader, length_member.type_id, crate::bundle::POINTER_SIZE) {
-        return None;
-    }
     let element = reader.canonicalize(raw_pointer.target_type_id);
     Some(DisplayNode::Slice {
         pointer: Selector::member(pointer as u32),
@@ -2254,14 +2331,8 @@ fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     let st = struct_of(reader, id)?;
-    let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
-    let (length, length_member) = unique_member(reader, &st.members, "length")?;
-    let RawType::Pointer(_) = reader.canonical_type(pointer_member.type_id)? else {
-        return None;
-    };
-    if !is_unsigned_integer(reader, length_member.type_id, crate::bundle::POINTER_SIZE) {
-        return None;
-    }
+    let (pointer, _) = unique_member(reader, &st.members, "data_ptr")?;
+    let (length, _) = unique_member(reader, &st.members, "length")?;
     Some(DisplayNode::Str {
         pointer: Selector::member(pointer as u32),
         length: Selector::member(length as u32),
@@ -3914,11 +3985,18 @@ impl<'a> Emitter<'a> {
 
     /// The display program for one type: its name-keyed detector if it has
     /// one, else the structural chain.
+    ///
+    /// Whichever produced it, the node is held to the schema's addressing
+    /// contract ([`addressing_holds`]) before it is accepted, so a detector
+    /// declines the same way whether it noticed the mismatch itself or not.
     fn debug_format_of(&mut self, tid: TypeId, name: Option<&str>) -> Option<DisplayNode> {
-        if let Some(node) = self.specific_debug_format(tid, name) {
+        if let Some(node) = self.specific_debug_format(tid, name)
+            && addressing_holds(self.reader, tid, &node)
+        {
             return Some(node);
         }
-        structural_debug_format(self, tid)
+        let node = structural_debug_format(self, tid)?;
+        addressing_holds(self.reader, tid, &node).then_some(node)
     }
 
     /// The name to report this type under, when the caller asked for its
@@ -4544,11 +4622,11 @@ mod tests {
         Detector, Emitter, StatePass, StaticRole, VtableTypeHint,
         demote_types_with_members_out_of_bounds, drop_members_of_other_states, dyn_tail_offset,
         field_path, find_stored_uint, has_dyn_tail, match_static_symbol, scalar_newtype_node,
-        scan_vtable_section,
+        scan_vtable_section, str_node,
     };
     use crate::bundle::{DisplayNode, POINTER_SIZE};
-    use crate::raw_types::{NsId, RawMember, RawStruct, RawType};
-    use crate::{DwReader, TypeId};
+    use crate::raw_types::{NsId, RawBase, RawMember, RawPointer, RawStruct, RawType};
+    use crate::{DwReader, Encoding, TypeId};
     use gimli::{DebugInfoOffset, UnitSectionOffset};
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -4771,6 +4849,104 @@ mod tests {
         let (got, trace) = super::explain::capture(|| find_stored_uint(&reader, holder, 2));
         assert!(got.is_none());
         assert!(trace[0].contains("found nothing matching"), "{}", trace[0]);
+    }
+
+    /// A base type, for a test that cares what a member's shape is.
+    fn base(name: crate::StrId, size: u64, encoding: Encoding) -> RawType<crate::StrId> {
+        RawBase {
+            name: Some(name),
+            namespace: None,
+            size,
+            encoding,
+            alignment: None,
+        }
+        .into()
+    }
+
+    /// A fat pointer laid out like `&str`, with `length` given whatever type
+    /// the caller wants to test the addressing contract against.
+    fn fat_pointer(
+        name: crate::StrId,
+        data_ptr: crate::StrId,
+        pointer_id: TypeId,
+        length: crate::StrId,
+        length_id: TypeId,
+    ) -> RawType<crate::StrId> {
+        let member = |name, type_id, offset| RawMember {
+            name: Some(name),
+            offset,
+            type_id,
+            source_loc: None,
+        };
+        ns_struct(
+            None,
+            name,
+            16,
+            vec![
+                member(data_ptr, pointer_id, 0),
+                member(length, length_id, 8),
+            ],
+        )
+    }
+
+    #[test]
+    fn test_a_node_addressing_the_wrong_shape_declines() {
+        let mut reader = DwReader::default();
+        let (data_ptr, length) = (
+            reader.strings.intern("data_ptr"),
+            reader.strings.intern("length"),
+        );
+
+        let byte_id = type_id(1);
+        let pointer_id = type_id(2);
+        let usize_id = type_id(3);
+        let float_id = type_id(4);
+        let good_id = type_id(5);
+        let bad_id = type_id(6);
+        let byte_name = reader.strings.intern("u8");
+        let usize_name = reader.strings.intern("usize");
+        let float_name = reader.strings.intern("f64");
+        let good_name = reader.strings.intern("&str");
+        let bad_name = reader.strings.intern("&str");
+        reader
+            .types
+            .insert(byte_id, base(byte_name, 1, Encoding::Unsigned));
+        reader.types.insert(
+            pointer_id,
+            RawPointer {
+                name: None,
+                target_type_id: byte_id,
+            }
+            .into(),
+        );
+        reader
+            .types
+            .insert(usize_id, base(usize_name, POINTER_SIZE, Encoding::Unsigned));
+        reader
+            .types
+            .insert(float_id, base(float_name, 8, Encoding::Float));
+        reader.types.insert(
+            good_id,
+            fat_pointer(good_name, data_ptr, pointer_id, length, usize_id),
+        );
+        // Same layout, but the length is a float rather than a `usize`.
+        reader.types.insert(
+            bad_id,
+            fat_pointer(bad_name, data_ptr, pointer_id, length, float_id),
+        );
+
+        let format_of = |reader: &DwReader<'_>, id| {
+            Emitter::new(reader, BTreeMap::new(), None).debug_format_of(id, Some("&str"))
+        };
+        assert!(matches!(
+            format_of(&reader, good_id),
+            Some(DisplayNode::Str { .. })
+        ));
+        // `str_node` itself no longer looks at the length: the `Str` node
+        // requires a `usize` there, and the shared shape table is what holds
+        // the detector to it.
+        assert!(detect(&reader, str_node, bad_id).is_some());
+        assert_eq!(format_of(&reader, bad_id), None);
     }
 
     fn ns_struct(
