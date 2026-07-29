@@ -20,6 +20,7 @@ use exegesis::bundle::{
 };
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -54,12 +55,31 @@ fn dwarf_path(program: &str) -> PathBuf {
 /// into a golden as if it were the truth. `regen.sh` is a `cargo build`,
 /// which decides for itself whether anything has to be compiled, so
 /// asking every time costs nothing when nothing changed.
+///
+/// Once per run, though, not once per test: several tests share a fixture
+/// (`test_extraction_is_reproducible` and `test_golden_select_combinator`
+/// both read `select-combinator`), extraction *mmaps* the DWARF, and
+/// `regen.sh` reinstalls it. Rebuilding on every call let one test's
+/// rebuild land in the middle of another test's parse. Building each
+/// program at most once keeps the anti-staleness property — a run still
+/// rebuilds everything it reads — without rewriting a file some other
+/// test is holding open.
 fn ensure_fixture(program: &str) -> bool {
-    // Serialize builds: parallel test threads would contend on the
-    // fixture target dir.
-    static BUILD_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = BUILD_LOCK.lock().unwrap();
+    // Also serializes the builds themselves, which would otherwise
+    // contend on the fixture target dir.
+    static BUILT: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
+    let mut built = BUILT.lock().unwrap();
+    if let Some(&usable) = built.get(program) {
+        return usable;
+    }
+    let usable = build_fixture(program);
+    built.insert(program.to_string(), usable);
+    usable
+}
 
+/// Build one fixture, reporting whether it can be tested against. Call
+/// [`ensure_fixture`] instead, which does this once per program.
+fn build_fixture(program: &str) -> bool {
     if !toolchain_installed() {
         // Nothing can be built, so whatever is on disk is all there is.
         // It may be stale, which is still better than no coverage — the

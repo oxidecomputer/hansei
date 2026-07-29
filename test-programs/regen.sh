@@ -55,11 +55,35 @@ done
 cargo "+$TOOLCHAIN" build --release -p test-programs "${bins[@]}"
 
 mkdir -p "$BIN_DIR"
+
+# Install by rename, never by writing over a file in place. The extraction
+# tests mmap these, and several test binaries regenerate fixtures at once
+# under a workspace-wide `cargo test`; rewriting a file would change the
+# bytes under another process's live mapping, which reads as a corrupt
+# binary or a parse that disagrees with itself. A rename replaces the
+# directory entry instead, so a reader keeps the file it opened.
+install() {
+    local src="$1" dst="$2"
+    mkdir -p "$(dirname "$dst")"
+    cp -f "$src" "$dst.tmp$$"
+    mv -f "$dst.tmp$$" "$dst"
+}
+
+trap 'rm -rf "$BIN_DIR"/*.tmp$$ "$BIN_DIR"/*.dSYM.tmp$$' EXIT
+
 for p in "${PROGRAMS[@]}"; do
-    cp -f "$TARGET_DIR/release/$p" "$BIN_DIR/$p"
+    install "$TARGET_DIR/release/$p" "$BIN_DIR/$p"
     if [[ "$(uname)" == "Darwin" ]]; then
-        # Mach-O executables don't carry DWARF; link it into a dSYM.
-        dsymutil "$BIN_DIR/$p" -o "$BIN_DIR/$p.dSYM"
+        # Mach-O executables don't carry DWARF; link it into a dSYM. The
+        # bundle is built aside and its one file of interest — the linked
+        # DWARF the tests read — renamed in, since replacing a whole
+        # directory would leave a window with no dSYM at all, and a
+        # reader finding none falls back to the DWARF-less executable.
+        rm -rf "$BIN_DIR/$p.dSYM.tmp$$"
+        dsymutil "$BIN_DIR/$p" -o "$BIN_DIR/$p.dSYM.tmp$$"
+        dwarf="Contents/Resources/DWARF/$p"
+        install "$BIN_DIR/$p.dSYM.tmp$$/$dwarf" "$BIN_DIR/$p.dSYM/$dwarf"
+        rm -rf "$BIN_DIR/$p.dSYM.tmp$$"
     fi
     echo "regen.sh: built $BIN_DIR/$p"
 done
