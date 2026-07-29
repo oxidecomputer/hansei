@@ -120,5 +120,8 @@ together with a bundle extracted from a *separate* build it feeds the offline tw
   and the right to core a process it owns (on Linux, a permissive enough `kernel.yama.ptrace_scope`).
   Running that same `cargo test` on an illumos box is what exercises the libproc-backed target, the half of
   `proc` no other system reaches.
+  Those two systems are also the whole of where it compiles: what it asks for is a core of an ELF target, and the
+  ELF core formats they write are the only ones hansei reads. Elsewhere — macOS — it compiles away to nothing, and
+  the portable coverage of the same analysis is the offline snapshot suite above.
 * `cargo test --features snapshot` additionally builds the hidden `snapshot` command, which
   `test-programs/capture-snapshots.sh` uses to regenerate the offline fixtures.
