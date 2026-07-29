@@ -1329,10 +1329,51 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
     segs.join("::")
 }
 
+/// A detector that needs the [`Emitter`], because it interns a string (a record
+/// label or a [`ScalarDecode`] table) or reserves a related type that must be
+/// emitted alongside (an `element`, a key/value, a list's node type). Returns
+/// the type's display program, or `None` when the type does not have the shape
+/// the detector expects — the type then renders structurally.
+type Detector = fn(&mut Emitter<'_>, TypeId) -> Option<DisplayNode>;
+
+/// Emitter-side detectors keyed by fully-qualified type name with generic
+/// arguments stripped. Screening on the name means only the one matching
+/// detector runs, rather than trying each in turn; a type named by neither this
+/// table nor [`BY_PREFIX`] falls through to [`known_debug_format`].
+static BY_NAME: &[(&str, Detector)] = &[
+    ("alloc::collections::btree::map::BTreeMap", btree_map_node),
+    ("alloc::vec::Vec", vec_node),
+    ("allocator_api2::stable::vec::Vec", vec_node),
+    ("parking_lot::raw_mutex::RawMutex", raw_mutex_node),
+    (
+        "tokio::sync::batch_semaphore::Semaphore",
+        batch_semaphore_node,
+    ),
+    ("tokio::sync::mpsc::bounded::Receiver", mpsc_rx_node),
+    (
+        "tokio::sync::mpsc::bounded::Semaphore",
+        bounded_semaphore_node,
+    ),
+    ("tokio::sync::mpsc::chan::Chan", mpsc_chan_node),
+    ("tokio::sync::notify::Notify", notify_node),
+    ("tokio::sync::watch::Receiver", watch_receiver_node),
+    ("tokio::sync::watch::state::AtomicState", watch_state_node),
+];
+
+/// Emitter-side detectors keyed by a prefix of the *full* name, for spellings no
+/// base name distinguishes: a slice carries its element inside the brackets
+/// (`&[T]`, `Box<[T]>`), and the `Box<[` prefix is what separates a boxed slice
+/// from a thin `Box<T>`.
+static BY_PREFIX: &[(&str, Detector)] = &[("&[", slice_node), ("alloc::boxed::Box<[", slice_node)];
+
 /// Recognize types whose source-level Debug representation is simpler than
 /// their private storage layout. Matching happens here, while structured
 /// generic parameters are still available; the bundle records only resolved
 /// member indices.
+///
+/// These detectors need nothing but the reader, so they are tried in order, most
+/// specific first. A formatter that interns a string or reserves a type belongs
+/// in [`BY_NAME`]/[`BY_PREFIX`] instead, where it is dispatched by name.
 fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     dyn_pointer_debug_format(reader, id)
         .or_else(|| raw_waker_vtable_debug_format(reader, id))
@@ -1342,10 +1383,6 @@ fn known_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> 
         .or_else(|| string_debug_format(reader, id))
         .or_else(|| utf8_path_debug_format(reader, id))
         .or_else(|| utf8_path_buf_debug_format(reader, id))
-        // RawMutex, Semaphore, WatchState, and the mpsc channel/receiver carry
-        // a `ScalarDecode` (or a synthesized field label) whose strings must be
-        // interned; they are built in `Emitter::emit`, which holds the string
-        // interner, rather than in this chain.
         .or_else(|| mpsc_block_debug_format(reader, id))
         .or_else(|| unsafe_cell_debug_format(reader, id))
         .or_else(|| loom_unsafe_cell_debug_format(reader, id))
@@ -1386,34 +1423,31 @@ fn scalar_newtype_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Disp
     })
 }
 
+/// Where a `Vec`-shaped owned buffer keeps its data pointer, length, capacity,
+/// and element type. Shared by the two `Vec` spellings [`vec_node`] renders,
+/// whose buffers differ in shape but whose display program is identical.
 #[derive(Clone, Debug)]
-struct RawBTreeMapFormat {
-    root: u32,
-    length: u32,
-    root_node: Vec<u32>,
-    height: u32,
-    node: Vec<u32>,
-    key: TypeId,
-    value: TypeId,
-    leaf: TypeId,
-    leaf_len: u32,
-    leaf_keys: u32,
-    leaf_values: u32,
-    internal: TypeId,
-    internal_data: u32,
-    internal_edges: u32,
-    edge: Vec<u32>,
-}
-
-#[derive(Clone, Debug)]
-struct RawVecFormat {
-    pointer: Vec<u32>,
-    length: Vec<u32>,
-    capacity: Vec<u32>,
+struct VecShape {
+    pointer: Selector,
+    length: Selector,
+    capacity: Selector,
     element: TypeId,
 }
 
-fn vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawVecFormat> {
+/// A `Vec<T, A>`, in either spelling, renders through the `Slice` node: an owned
+/// buffer that supplies its capacity for the length check.
+fn vec_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    let shape = vec_shape(reader, id).or_else(|| allocator_api2_vec_shape(reader, id))?;
+    Some(DisplayNode::Slice {
+        pointer: shape.pointer,
+        length: shape.length,
+        capacity: Some(shape.capacity),
+        element: emitter.reserve(shape.element),
+    })
+}
+
+fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
     let RawType::Struct(vec) = reader.canonical_type(id)? else {
         return None;
     };
@@ -1483,31 +1517,33 @@ fn vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawVecFormat> {
     let (cap_value, _) = usize_no_high_bit_layout(reader, cap_member.type_id)?;
 
     let prefix = [buf_index as u32, inner_index as u32];
-    Some(RawVecFormat {
+    Some(VecShape {
         pointer: prefix
             .iter()
             .copied()
             .chain(pointer_path.iter().copied())
-            .collect(),
-        length: vec![len_index as u32],
+            .collect::<Vec<u32>>()
+            .into(),
+        length: Selector::member(len_index as u32),
         capacity: prefix
             .iter()
             .copied()
             .chain([cap_index as u32, cap_value])
-            .collect(),
+            .collect::<Vec<u32>>()
+            .into(),
         element,
     })
 }
 
 /// Recognize `allocator_api2::stable::vec::Vec<T, A>`, the `allocator-api2`
 /// crate's stable-channel reimplementation of `Vec`. It renders through the
-/// same `Slice` node as [`vec_debug_format`]'s `alloc::vec::Vec`, but its buffer
-/// has the pre-`RawVecInner` shape and so needs its own detector: `buf` is a
+/// same `Slice` node as [`vec_shape`]'s `alloc::vec::Vec`, but its buffer
+/// has the pre-`RawVecInner` shape and so needs its own navigation: `buf` is a
 /// `RawVec<T, A>` holding `ptr: NonNull<T>` and a plain `cap: usize` directly,
 /// with no type-erased `Unique<u8>` and no `Cap` niche newtype. Because the
 /// pointer is `NonNull<T>` over the real element (not a `u8` byte pointer), the
 /// buffer pointer is matched by its element target rather than by width.
-fn allocator_api2_vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawVecFormat> {
+fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
     let RawType::Struct(vec) = reader.canonical_type(id)? else {
         return None;
     };
@@ -1569,21 +1605,24 @@ fn allocator_api2_vec_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<
         return None;
     }
 
-    Some(RawVecFormat {
+    Some(VecShape {
         pointer: std::iter::once(buf_index as u32)
             .chain(pointer_path.iter().copied())
-            .collect(),
-        length: vec![len_index as u32],
-        capacity: vec![buf_index as u32, cap_index as u32],
+            .collect::<Vec<u32>>()
+            .into(),
+        length: Selector::member(len_index as u32),
+        capacity: vec![buf_index as u32, cap_index as u32].into(),
         element,
     })
 }
 
-/// Recognize the private node layout of `BTreeMap<K, V, A>`. Unlike the
-/// simpler known formats, this retains a few referenced types until emission
-/// so they can be translated to bundle ids.
-fn btree_map_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawBTreeMapFormat> {
-    // The caller screens by name; this validates only the structure.
+/// Recognize the private node layout of `BTreeMap<K, V, A>` and render it as a
+/// `Map` whose entries come from the B-tree walk. The key, value, leaf, and
+/// internal node types are all reserved, since the walk renders keys and values
+/// and reads both node shapes.
+fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    // The dispatch table screens by name; this validates only the structure.
     let RawType::Struct(map) = reader.canonical_type(id)? else {
         return None;
     };
@@ -1715,22 +1754,24 @@ fn btree_map_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawBTreeM
         return None;
     };
 
-    Some(RawBTreeMapFormat {
-        root: root as u32,
-        length: length as u32,
-        root_node: root_node.clone(),
-        height: height as u32,
-        node,
-        key,
-        value,
-        leaf: *leaf,
-        leaf_len: leaf_len as u32,
-        leaf_keys: leaf_keys as u32,
-        leaf_values: leaf_values as u32,
-        internal: *internal,
-        internal_data: internal_data as u32,
-        internal_edges: internal_edges as u32,
-        edge: edge.clone(),
+    Some(DisplayNode::Map {
+        length: Selector::member(length as u32),
+        key: emitter.reserve(key),
+        value: emitter.reserve(value),
+        entries: Box::new(MapEntries::BTree {
+            root: Selector::member(root as u32),
+            root_node: root_node.clone().into(),
+            height: Selector::member(height as u32),
+            node: node.into(),
+            leaf: emitter.reserve(*leaf),
+            leaf_len: Selector::member(leaf_len as u32),
+            leaf_keys: Selector::member(leaf_keys as u32),
+            leaf_values: Selector::member(leaf_values as u32),
+            internal: emitter.reserve(*internal),
+            internal_data: Selector::member(internal_data as u32),
+            internal_edges: Selector::member(internal_edges as u32),
+            edge: edge.clone().into(),
+        }),
     })
 }
 
@@ -2053,22 +2094,14 @@ fn str_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
     })
 }
 
-/// The member indices and element type of a slice-shaped fat pointer, for
-/// [`slice_debug_format`].
-#[derive(Clone, Debug)]
-struct RawSliceFormat {
-    pointer: usize,
-    length: usize,
-    element: TypeId,
-}
-
 /// A `&[T]` slice reference or a `Box<[T]>` boxed slice. Both are laid out as a
 /// `{ data_ptr: *T, length: usize }` fat pointer — identical to `&str` but with
 /// an arbitrary element type and no capacity — so both render through the
 /// `Slice` node with `capacity: None`, the borrowed counterpart to an owned
-/// `Vec`. Returns the pointer/length member indices and the element type.
-fn slice_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawSliceFormat> {
-    // The caller screens by name (`&[` / `alloc::boxed::Box<[`); a thin
+/// `Vec`.
+fn slice_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    // The dispatch table screens by name (`&[` / `alloc::boxed::Box<[`); a thin
     // `Box<T>` has no `[` and `&str`/`String` are UTF-8, so neither reaches
     // here. This validates only the fat-pointer structure.
     let RawType::Struct(st) = reader.canonical_type(id)? else {
@@ -2082,10 +2115,12 @@ fn slice_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawSliceForma
     if !is_unsigned_integer(reader, length_member.type_id, crate::bundle::POINTER_SIZE) {
         return None;
     }
-    Some(RawSliceFormat {
-        pointer,
-        length,
-        element: reader.canonicalize(raw_pointer.target_type_id),
+    let element = reader.canonicalize(raw_pointer.target_type_id);
+    Some(DisplayNode::Slice {
+        pointer: Selector::member(pointer as u32),
+        length: Selector::member(length as u32),
+        capacity: None,
+        element: emitter.reserve(element),
     })
 }
 
@@ -2097,27 +2132,19 @@ fn string_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode>
         return None;
     };
     let (vec_index, vec_member) = unique_member(reader, &st.members, "vec")?;
-    let layout = vec_debug_format(reader, vec_member.type_id)?;
-    if !is_unsigned_integer(reader, layout.element, 1) {
+    let shape = vec_shape(reader, vec_member.type_id)?;
+    if !is_unsigned_integer(reader, shape.element, 1) {
         return None;
     }
     // A `String` is a `Vec<u8>` behind a single member, so its data pointer,
-    // length, and capacity are the Vec's own paths prefixed with the `vec`
-    // member index. It renders exactly as a `&str` with the capacity checked,
-    // so it reuses the `Str` node with the capacity selector supplied.
-    let prefix = [vec_index as u32];
-    let path = |sub: Vec<u32>| -> Selector {
-        prefix
-            .iter()
-            .copied()
-            .chain(sub)
-            .collect::<Vec<u32>>()
-            .into()
-    };
+    // length, and capacity are the Vec's own selectors anchored at the `vec`
+    // member. It renders exactly as a `&str` with the capacity checked, so it
+    // reuses the `Str` node with the capacity selector supplied.
+    let vec_index = vec_index as u32;
     Some(DisplayNode::Str {
-        pointer: path(layout.pointer),
-        length: path(layout.length),
-        capacity: Some(path(layout.capacity)),
+        pointer: shape.pointer.under_member(vec_index),
+        length: shape.length.under_member(vec_index),
+        capacity: Some(shape.capacity.under_member(vec_index)),
     })
 }
 
@@ -2157,30 +2184,22 @@ fn utf8_path_buf_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Displ
         return None;
     }
     let (prefix, vec_type) = field_path(reader, id, &["__0", "inner", "inner", "inner"])?;
-    let layout = vec_debug_format(reader, vec_type)?;
-    if !is_unsigned_integer(reader, layout.element, 1) {
+    let shape = vec_shape(reader, vec_type)?;
+    if !is_unsigned_integer(reader, shape.element, 1) {
         return None;
     }
-    let path = |sub: Vec<u32>| -> Selector {
-        prefix
-            .iter()
-            .copied()
-            .chain(sub)
-            .collect::<Vec<u32>>()
-            .into()
-    };
     Some(DisplayNode::Str {
-        pointer: path(layout.pointer),
-        length: path(layout.length),
-        capacity: Some(path(layout.capacity)),
+        pointer: shape.pointer.under_members(&prefix),
+        length: shape.length.under_members(&prefix),
+        capacity: Some(shape.capacity.under_members(&prefix)),
     })
 }
 
-/// Recognize a `parking_lot::raw_mutex::RawMutex` and return the selector to its
-/// single state byte. The decode table (`LOCKED_BIT`/`PARKED_BIT`) is attached
-/// in [`Emitter::emit`], where the string interner is available.
-fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Selector> {
-    // The caller screens by name; this validates only the structure.
+/// A `parking_lot::raw_mutex::RawMutex` is a single decoded lock-state byte
+/// (`LOCKED_BIT`/`PARKED_BIT`), shown in place of the whole value.
+fn raw_mutex_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    // The dispatch table screens by name; this validates only the structure.
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2198,7 +2217,10 @@ fn parking_lot_raw_mutex_debug_format(reader: &DwReader<'_>, id: TypeId) -> Opti
     if atomic.size != 1 {
         return None;
     }
-    Some(value.under_member(state_index as u32))
+    Some(DisplayNode::Scalar {
+        at: value.under_member(state_index as u32),
+        decode: emitter.mutex_byte_decode(),
+    })
 }
 
 /// The member path from a struct named `type_name` to the atomic `usize`
@@ -2238,20 +2260,11 @@ fn atomic_usize_field_path(
     )
 }
 
-/// A `tokio::sync::notify::Notify` and the paths reify needs to render it
-/// compactly as a [`crate::bundle::DisplayNode`] record.
-struct RawNotifyFormat {
-    state: Vec<u32>,
-    mutex: Vec<u32>,
-    head: Vec<u32>,
-    waiter: TypeId,
-    waiter_notification: Vec<u32>,
-    waiter_next: Vec<u32>,
-}
-
-/// Recognize a `tokio::sync::notify::Notify` and record the paths to its
-/// notification state word, waiter-mutex state byte, and intrusive waiter queue.
-fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawNotifyFormat> {
+/// Render a `tokio::sync::notify::Notify` as a curated record: the notification
+/// state word, the waiter mutex byte, and the intrusive waiter queue as a list
+/// whose nodes each show whether that waiter has been handed a notification.
+fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     // The notification state word, an atomic `usize` behind tokio's loom shim.
     // `atomic_usize_field_path` validates the type name, so the caller's screen
     // is not re-checked here.
@@ -2310,29 +2323,29 @@ fn notify_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawNotifyFor
     )?;
     let (waiter_next, _) = field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
 
-    Some(RawNotifyFormat {
-        state,
-        mutex,
+    let state_decode = emitter.notify_state_decode();
+    let mutex_decode = emitter.mutex_byte_decode();
+    let notification_decode = emitter.notification_decode();
+    let queue = emitter.waiter_queue_field(
         head,
         waiter,
-        waiter_notification,
         waiter_next,
+        "notification",
+        waiter_notification,
+        notification_decode,
+    );
+    let state = emitter.named_scalar("state", state, state_decode);
+    let mutex = emitter.named_scalar("mutex", mutex, mutex_decode);
+    Some(DisplayNode::Struct {
+        fields: vec![state, mutex, queue],
     })
 }
 
-/// A `tokio::sync::batch_semaphore::Semaphore` and the paths reify needs to
-/// render it: the full member list (in DWARF order, zero-sized members elided
-/// to match structural display) and the path to the atomic permit word within
-/// the `permits` member.
-struct RawSemaphoreFormat {
-    permits: Vec<u32>,
-    members: Vec<u32>,
-}
-
-/// Recognize a `tokio::sync::batch_semaphore::Semaphore` and record its members
-/// plus the path to its atomic permit word; the decode table is attached in
-/// [`Emitter::emit`].
-fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawSemaphoreFormat> {
+/// Render a `tokio::sync::batch_semaphore::Semaphore` structurally, but decode
+/// its atomic permit word in place (available count plus closed flag); every
+/// other member shows as itself.
+fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
     let permits = atomic_usize_field_path(
         reader,
         id,
@@ -2342,24 +2355,46 @@ fn semaphore_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawSemaph
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
+    let permits_member = permits[0];
+    let decode = emitter.semaphore_permits_decode();
     // Structural display skips zero-sized members; enumerate over the full list
     // so the surviving indices still address the concrete members.
-    let members = st
+    let fields = st
         .members
         .iter()
         .enumerate()
         .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
         .map(|(index, _)| index as u32)
+        .map(|index| {
+            if index == permits_member {
+                Field::Override {
+                    index,
+                    node: DisplayNode::Scalar {
+                        at: permits.clone().into(),
+                        decode: decode.clone(),
+                    },
+                }
+            } else {
+                Field::Member(index)
+            }
+        })
         .collect();
-    Some(RawSemaphoreFormat { permits, members })
+    Some(DisplayNode::Struct { fields })
 }
 
-/// Recognize a `tokio::sync::watch::state::AtomicState` and return the selector
-/// to its atomic word; the decode table is attached in [`Emitter::emit`].
-fn watch_state_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<Selector> {
-    let state =
-        atomic_usize_field_path(reader, id, "tokio::sync::watch::state::AtomicState", "__0")?;
-    Some(state.into())
+/// A `tokio::sync::watch::state::AtomicState` is a single decoded atomic state
+/// word: the closed flag in bit 0 and the version counter above it.
+fn watch_state_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let at = atomic_usize_field_path(
+        emitter.reader,
+        id,
+        "tokio::sync::watch::state::AtomicState",
+        "__0",
+    )?;
+    Some(DisplayNode::Scalar {
+        at: at.into(),
+        decode: emitter.watch_state_decode(),
+    })
 }
 
 fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -2441,23 +2476,14 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayN
     Some(DisplayNode::Struct { fields })
 }
 
-/// The selectors needed to compare a watch receiver's last-observed version
-/// with its shared published version and, when they differ, render the newest
-/// protected value.
-struct RawWatchReceiverFormat {
-    observed: Vec<u32>,
-    shared: Vec<u32>,
-    shared_data: Vec<u32>,
-    state: Vec<u32>,
-    value: Vec<u32>,
-    element: TypeId,
-}
-
-fn watch_receiver_debug_format(
-    reader: &DwReader<'_>,
-    id: TypeId,
-) -> Option<RawWatchReceiverFormat> {
-    // The caller screens by name; this validates only the structure.
+/// Render a `tokio::sync::watch::Receiver<T>` as its one-slot inbox — an unseen
+/// value and an independent closed flag — computed by comparing the receiver's
+/// observed version with the `Arc`-backed published version. This composes from
+/// `Variant` + `ValueExpr` rather than a bespoke node: the state and value words
+/// are reached by selectors that cross the `Arc` via a `Deref` step.
+fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    // The dispatch table screens by name; this validates only the structure.
     let RawType::Struct(receiver) = reader.canonical_type(id)? else {
         return None;
     };
@@ -2512,43 +2538,95 @@ fn watch_receiver_debug_format(
     let [(value_tail, _)] = value_paths.as_slice() else {
         return None;
     };
-    let value = std::iter::once(value_index as u32)
+    let value: Vec<u32> = std::iter::once(value_index as u32)
         .chain(value_tail.iter().copied())
         .collect();
 
-    Some(RawWatchReceiverFormat {
-        observed,
-        shared,
-        shared_data,
-        state,
-        value,
-        element,
+    // Reserve the element type so the `Some(T)` alias resolves even if nothing
+    // else pulls it into the type graph.
+    emitter.reserve(element);
+
+    // A selector from the receiver across its `Arc`: the `shared` pointer, a
+    // `Deref` to the `ArcInner`, then `shared_data` (past the strong/weak
+    // header) and the tail within the `Shared<T>`.
+    let cross_arc = |tail: &[u32]| -> Selector {
+        let mut steps: Vec<Step> = shared.iter().map(|&i| Step::Member(i)).collect();
+        steps.push(Step::Deref);
+        steps.extend(shared_data.iter().chain(tail).map(|&i| Step::Member(i)));
+        Selector(steps)
+    };
+    let state_sel = cross_arc(&state);
+    let value_sel = cross_arc(&value);
+    let closed_mask = 1u64;
+
+    // unseen = observed != (state & !closed_mask), the published version; render
+    // the newest value as `Some(T)` when it differs.
+    let unseen = DisplayNode::Variant {
+        discriminant: ValueExpr::Ne(
+            Box::new(ValueExpr::Read(observed.into())),
+            Box::new(ValueExpr::And(
+                Box::new(ValueExpr::Read(state_sel.clone())),
+                Box::new(ValueExpr::Not(Box::new(ValueExpr::Const(closed_mask)))),
+            )),
+        ),
+        arms: vec![
+            Arm {
+                value: 0,
+                label: Some(emitter.intern("None")),
+                payload: None,
+            },
+            Arm {
+                value: 1,
+                label: Some(emitter.intern("Some")),
+                payload: Some(Box::new(DisplayNode::Alias {
+                    at: value_sel,
+                    follow_pointers: true,
+                })),
+            },
+        ],
+        default: None,
+    };
+    // closed is the low state bit, independent of the version.
+    let closed = DisplayNode::Variant {
+        discriminant: ValueExpr::And(
+            Box::new(ValueExpr::Read(state_sel)),
+            Box::new(ValueExpr::Const(closed_mask)),
+        ),
+        arms: vec![
+            Arm {
+                value: 0,
+                label: Some(emitter.intern("false")),
+                payload: None,
+            },
+            Arm {
+                value: 1,
+                label: Some(emitter.intern("true")),
+                payload: None,
+            },
+        ],
+        default: None,
+    };
+    Some(DisplayNode::Struct {
+        fields: vec![
+            Field::Named {
+                label: emitter.intern("unseen"),
+                node: unseen,
+            },
+            Field::Named {
+                label: emitter.intern("closed"),
+                node: closed,
+            },
+        ],
     })
 }
 
-/// Recognize a `tokio::sync::mpsc::bounded::Receiver<T>` and record the paths
-/// needed to render it as its underlying channel. A receiver wraps an
-/// `Arc<Chan<T, Semaphore>>`; navigate to the raw pointer inside the `Arc`,
-/// then across the allocation's sized header to the `Chan`, and record the
-/// bounded capacity (`semaphore.bound`) and available permit word
-/// (`semaphore.semaphore.permits`) as paths rooted at that `Chan`.
-/// A `tokio::sync::mpsc::bounded::Receiver<T>` and the selectors reify needs to
-/// render it as its channel: a [`crate::bundle::DisplayNode::Pointer`] hop
-/// (`chan_pointer` + `chan`) to the `Chan`, plus the `bound`/`permits` words
-/// decoded in front of the channel's own struct. The permit-word decode is
-/// attached in [`Emitter::emit`].
-struct RawMpscRxFormat {
-    chan_pointer: Vec<u32>,
-    chan: Vec<u32>,
-    bound: Vec<u32>,
-    permits: Vec<u32>,
-    /// The `Chan`'s own queued/members struct, reused verbatim behind the
-    /// pointer hop and prefixed with the decoded capacity/free fields.
-    chan_format: RawMpscChanFormat,
-}
-
-fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscRxFormat> {
-    // The caller screens by name; this validates only the structure.
+/// Render a `tokio::sync::mpsc::bounded::Receiver<T>` as the channel it drains,
+/// reached across its `Arc`: a [`DisplayNode::Pointer`] hop to the `Chan`, whose
+/// own record is prefixed with the decoded `capacity` (the bounded semaphore's
+/// `bound`) and `free` (the batch semaphore's permit word) fields.
+fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    // The dispatch table screens by name; this validates only the structure.
     // Receiver → Rx → Arc → the `NonNull` raw pointer at `ptr.pointer`, which
     // targets the `ArcInner<Chan>` allocation.
     let (chan_pointer, ptr_ty) = field_path(reader, id, &["chan", "inner", "ptr", "pointer"])?;
@@ -2588,38 +2666,27 @@ fn mpsc_rx_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscRxFo
         .collect::<Vec<u32>>();
 
     // The channel behind the pointer renders exactly as a standalone `Chan`
-    // would; reuse its detector so the queued walk and member list are shared.
-    let chan_format = mpsc_chan_debug_format(reader, chan_ty)?;
+    // would; reuse its navigation so the queued walk and member list are shared.
+    let chan_shape = mpsc_chan_shape(reader, chan_ty)?;
 
-    Some(RawMpscRxFormat {
-        chan_pointer,
-        chan,
-        bound,
-        permits,
-        chan_format,
+    let permits_decode = emitter.semaphore_permits_decode();
+    let capacity = emitter.named_scalar("capacity", bound, ScalarDecode::Raw);
+    let free = emitter.named_scalar("free", permits, permits_decode);
+    let mut fields = vec![capacity, free];
+    fields.extend(emitter.chan_struct_fields(chan_shape));
+    Some(DisplayNode::Pointer {
+        at: chan_pointer.into(),
+        via: chan.into(),
+        then: Box::new(DisplayNode::Struct { fields }),
     })
 }
 
-/// A `tokio::sync::mpsc::bounded::Semaphore` and the paths reify needs to render
-/// it compactly as a [`crate::bundle::DisplayNode`] record.
-struct RawBoundedSemaphoreFormat {
-    mutex: Vec<u32>,
-    closed: Vec<u32>,
-    permits: Vec<u32>,
-    bound: Vec<u32>,
-    head: Vec<u32>,
-    waiter: TypeId,
-    waiter_state: Vec<u32>,
-    waiter_next: Vec<u32>,
-}
-
-/// Recognize a `tokio::sync::mpsc::bounded::Semaphore` and record the paths to
-/// its mutex state, closed flag, permits, capacity, and intrusive waiter queue.
-fn bounded_semaphore_debug_format(
-    reader: &DwReader<'_>,
-    id: TypeId,
-) -> Option<RawBoundedSemaphoreFormat> {
-    // The caller screens by name; this validates only the structure.
+/// Render a `tokio::sync::mpsc::bounded::Semaphore` as a curated record: the
+/// mutex byte, closed flag, permit word, and capacity, plus the intrusive waiter
+/// queue as a list whose nodes each show the permits that waiter is blocked on.
+fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    // The dispatch table screens by name; this validates only the structure.
     // The capacity is the bounded semaphore's own `bound`, a plain `usize`.
     let (bound, bound_ty) = field_path(reader, id, &["bound"])?;
     if !is_unsigned_integer(reader, bound_ty, crate::bundle::POINTER_SIZE) {
@@ -2713,15 +2780,23 @@ fn bounded_semaphore_debug_format(
     )?;
     let (waiter_next, _) = field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
 
-    Some(RawBoundedSemaphoreFormat {
-        mutex,
-        closed,
-        permits,
-        bound,
+    let mutex_decode = emitter.mutex_byte_decode();
+    let bool_decode = emitter.bool_decode();
+    let permits_decode = emitter.semaphore_permits_decode();
+    let queue = emitter.waiter_queue_field(
         head,
         waiter,
-        waiter_state,
         waiter_next,
+        "permits_needed",
+        waiter_state,
+        ScalarDecode::Raw,
+    );
+    let mutex = emitter.named_scalar("mutex", mutex, mutex_decode);
+    let closed = emitter.named_scalar("closed", closed, bool_decode);
+    let permits = emitter.named_scalar("permits", permits, permits_decode);
+    let bound = emitter.named_scalar("bound", bound, ScalarDecode::Raw);
+    Some(DisplayNode::Struct {
+        fields: vec![mutex, closed, permits, bound, queue],
     })
 }
 
@@ -2783,7 +2858,11 @@ fn usize_field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option
     Some(head.into_iter().chain(tail.iter().copied()).collect())
 }
 
-struct RawMpscChanFormat {
+/// Where a `tokio::sync::mpsc::chan::Chan` keeps the state its `queued` walk
+/// needs, plus the members it shows structurally. Shared by the standalone
+/// `Chan` formatter ([`mpsc_chan_node`]) and the `Receiver` ([`mpsc_rx_node`]),
+/// which renders the same record behind a pointer hop.
+struct ChanShape {
     /// Value-anchored selectors seeding the walk's loop variables.
     tail: Vec<u32>,
     index: Vec<u32>,
@@ -2802,7 +2881,16 @@ struct RawMpscChanFormat {
     members: Vec<u32>,
 }
 
-fn mpsc_chan_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscChanFormat> {
+/// A channel is a struct whose first field is the synthetic `queued` block-chain
+/// walk; the rest are its real members.
+fn mpsc_chan_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let shape = mpsc_chan_shape(emitter.reader, id)?;
+    Some(DisplayNode::Struct {
+        fields: emitter.chan_struct_fields(shape),
+    })
+}
+
+fn mpsc_chan_shape(reader: &DwReader<'_>, id: TypeId) -> Option<ChanShape> {
     // Both callers screen by name; this validates only the structure.
     // Sender write position and receiver read position, plus the receiver's
     // head block pointer. The rx fields sit behind CachePadded/UnsafeCell
@@ -2881,7 +2969,7 @@ fn mpsc_chan_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<RawMpscCh
         .map(|(index, _)| index as u32)
         .collect();
 
-    Some(RawMpscChanFormat {
+    Some(ChanShape {
         tail,
         index,
         head,
@@ -3830,6 +3918,24 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Intern a string for the bundle's string table.
+    fn intern(&mut self, s: &str) -> StrRef {
+        self.interner.intern(s)
+    }
+
+    /// Build a [`DisplayNode::Struct`] field named `label` whose value is the
+    /// decoded word at `at` — the shape every curated sync-primitive record is
+    /// mostly made of.
+    fn named_scalar(&mut self, label: &str, at: Vec<u32>, decode: ScalarDecode) -> Field {
+        Field::Named {
+            label: self.intern(label),
+            node: DisplayNode::Scalar {
+                at: at.into(),
+                decode,
+            },
+        }
+    }
+
     /// Build an enumerated [`BitField`], interning its label and value labels.
     fn enum_field(&mut self, name: &str, shift: u8, width: u8, table: &[(u64, &str)]) -> BitField {
         let name = self.interner.intern(name);
@@ -3953,12 +4059,13 @@ impl<'a> Emitter<'a> {
     }
 
     /// Build the fields of a `tokio::sync::mpsc::chan::Chan` record: the
-    /// synthetic `queued` field (a [`DisplayNode::MpscChan`] block-chain walk)
-    /// followed by the channel's real members shown structurally. Shared by the
+    /// synthetic `queued` field (a [`DisplayNode::CustomList`] walk over the
+    /// block chain) followed by the channel's real members shown structurally.
+    /// Shared by the
     /// standalone `Chan` formatter and the `Receiver`, which prepends its
     /// decoded `capacity`/`free` fields to the same list.
-    fn chan_struct_fields(&mut self, format: RawMpscChanFormat) -> Vec<Field> {
-        let RawMpscChanFormat {
+    fn chan_struct_fields(&mut self, shape: ChanShape) -> Vec<Field> {
+        let ChanShape {
             tail,
             index,
             head,
@@ -3969,10 +4076,10 @@ impl<'a> Emitter<'a> {
             count,
             element,
             members,
-        } = format;
+        } = shape;
         let element = self.reserve(element);
         let queued = Field::Named {
-            label: self.interner.intern("queued"),
+            label: self.intern("queued"),
             node: mpsc_queued_node(
                 tail.into(),
                 index.into(),
@@ -4007,307 +4114,26 @@ impl<'a> Emitter<'a> {
         root
     }
 
-    /// Build the display format for a type whose fully-qualified name selects
-    /// a specific, name-keyed formatter. Screening on the name here means only
-    /// the one matching formatter runs, rather than trying each in turn; any
-    /// type without a name-keyed formatter falls through to the structural
-    /// `known_debug_format` in [`Emitter::emit`].
+    /// Build the display program for a type whose fully-qualified name selects a
+    /// specific detector: an exact base-name match in [`BY_NAME`], else a
+    /// full-name prefix in [`BY_PREFIX`]. A type named by neither falls through
+    /// to the structural [`known_debug_format`] chain in [`Emitter::emit`].
     fn specific_debug_format(&mut self, tid: TypeId, full: Option<&str>) -> Option<DisplayNode> {
-        // Strip generic arguments for the equality-keyed formatters; the slice
-        // guard below keeps the full name, since `&[T]`/`Box<[T]>` are not
+        let full = full?;
+        // Strip generic arguments for the exact-keyed detectors; the prefix
+        // table keeps the full name, since `&[T]`/`Box<[T]>` are not
         // distinguished by a leading path.
-        let base = full.map(|n| n.split_once('<').map_or(n, |(head, _)| head));
-        let node = match base {
-            Some("alloc::vec::Vec") | Some("allocator_api2::stable::vec::Vec") => {
-                // An owned `Vec` supplies its capacity for the length check; a
-                // borrowed or boxed slice would pass `capacity: None`. The
-                // `allocator-api2` stable `Vec` renders through this same node.
-                let format = vec_debug_format(self.reader, tid)
-                    .or_else(|| allocator_api2_vec_debug_format(self.reader, tid))?;
-                DisplayNode::Slice {
-                    pointer: format.pointer.into(),
-                    length: format.length.into(),
-                    capacity: Some(format.capacity.into()),
-                    element: self.reserve(format.element),
-                }
-            }
-            Some("alloc::collections::btree::map::BTreeMap") => {
-                let format = btree_map_debug_format(self.reader, tid)?;
-                DisplayNode::Map {
-                    length: Selector::member(format.length),
-                    key: self.reserve(format.key),
-                    value: self.reserve(format.value),
-                    entries: Box::new(MapEntries::BTree {
-                        root: Selector::member(format.root),
-                        root_node: format.root_node.into(),
-                        height: Selector::member(format.height),
-                        node: format.node.into(),
-                        leaf: self.reserve(format.leaf),
-                        leaf_len: Selector::member(format.leaf_len),
-                        leaf_keys: Selector::member(format.leaf_keys),
-                        leaf_values: Selector::member(format.leaf_values),
-                        internal: self.reserve(format.internal),
-                        internal_data: Selector::member(format.internal_data),
-                        internal_edges: Selector::member(format.internal_edges),
-                        edge: format.edge.into(),
-                    }),
-                }
-            }
-            Some("tokio::sync::mpsc::chan::Chan") => {
-                // A channel is a struct whose first field is the synthetic
-                // `queued` block-chain walk; the rest are its real members.
-                let format = mpsc_chan_debug_format(self.reader, tid)?;
-                DisplayNode::Struct {
-                    fields: self.chan_struct_fields(format),
-                }
-            }
-            Some("tokio::sync::mpsc::bounded::Semaphore") => {
-                // A curated record: the mutex byte, closed flag, permit word,
-                // and capacity, plus the intrusive waiter queue as a list whose
-                // nodes each show the permits that waiter is blocked on.
-                let format = bounded_semaphore_debug_format(self.reader, tid)?;
-                let mutex_decode = self.mutex_byte_decode();
-                let permits_decode = self.semaphore_permits_decode();
-                let bool_decode = self.bool_decode();
-                let queue = self.waiter_queue_field(
-                    format.head,
-                    format.waiter,
-                    format.waiter_next,
-                    "permits_needed",
-                    format.waiter_state,
-                    ScalarDecode::Raw,
-                );
-                let scalar = |at: Vec<u32>, decode| DisplayNode::Scalar {
-                    at: at.into(),
-                    decode,
-                };
-                let named = |label, node| Field::Named { label, node };
-                DisplayNode::Struct {
-                    fields: vec![
-                        named(
-                            self.interner.intern("mutex"),
-                            scalar(format.mutex, mutex_decode),
-                        ),
-                        named(
-                            self.interner.intern("closed"),
-                            scalar(format.closed, bool_decode),
-                        ),
-                        named(
-                            self.interner.intern("permits"),
-                            scalar(format.permits, permits_decode),
-                        ),
-                        named(
-                            self.interner.intern("bound"),
-                            scalar(format.bound, ScalarDecode::Raw),
-                        ),
-                        queue,
-                    ],
-                }
-            }
-            Some("tokio::sync::notify::Notify") => {
-                // A curated record: the notification state word, the waiter
-                // mutex byte, and the intrusive waiter queue as a list whose
-                // nodes each show whether that waiter has been notified.
-                let format = notify_debug_format(self.reader, tid)?;
-                let state_decode = self.notify_state_decode();
-                let mutex_decode = self.mutex_byte_decode();
-                let notification_decode = self.notification_decode();
-                let queue = self.waiter_queue_field(
-                    format.head,
-                    format.waiter,
-                    format.waiter_next,
-                    "notification",
-                    format.waiter_notification,
-                    notification_decode,
-                );
-                let scalar = |at: Vec<u32>, decode| DisplayNode::Scalar {
-                    at: at.into(),
-                    decode,
-                };
-                let named = |label, node| Field::Named { label, node };
-                DisplayNode::Struct {
-                    fields: vec![
-                        named(
-                            self.interner.intern("state"),
-                            scalar(format.state, state_decode),
-                        ),
-                        named(
-                            self.interner.intern("mutex"),
-                            scalar(format.mutex, mutex_decode),
-                        ),
-                        queue,
-                    ],
-                }
-            }
-            Some("parking_lot::raw_mutex::RawMutex") => {
-                // The whole value is a single decoded lock-state byte.
-                let state = parking_lot_raw_mutex_debug_format(self.reader, tid)?;
-                DisplayNode::Scalar {
-                    at: state,
-                    decode: self.mutex_byte_decode(),
-                }
-            }
-            Some("tokio::sync::batch_semaphore::Semaphore") => {
-                // Render the struct, but decode the atomic permit word in place
-                // (available count plus closed flag); every other member shows
-                // structurally.
-                let format = semaphore_debug_format(self.reader, tid)?;
-                let permits_member = format.permits[0];
-                let permits_decode = self.semaphore_permits_decode();
-                let fields = format
-                    .members
-                    .into_iter()
-                    .map(|index| {
-                        if index == permits_member {
-                            Field::Override {
-                                index,
-                                node: DisplayNode::Scalar {
-                                    at: format.permits.clone().into(),
-                                    decode: permits_decode.clone(),
-                                },
-                            }
-                        } else {
-                            Field::Member(index)
-                        }
-                    })
-                    .collect();
-                DisplayNode::Struct { fields }
-            }
-            Some("tokio::sync::watch::state::AtomicState") => {
-                // The whole value is a single decoded atomic state word: the
-                // closed flag in bit 0 and the version counter above it.
-                let state = watch_state_debug_format(self.reader, tid)?;
-                DisplayNode::Scalar {
-                    at: state,
-                    decode: self.watch_state_decode(),
-                }
-            }
-            Some("tokio::sync::watch::Receiver") => {
-                // The receiver renders as its one-slot inbox — an unseen value
-                // and an independent closed flag — computed by comparing the
-                // receiver's observed version with the Arc-backed published
-                // version. This composes from `Variant` + `ValueExpr` rather
-                // than a bespoke node: the state and value words are reached by
-                // selectors that cross the `Arc` via a `Deref` step.
-                //
-                // Reserve the element type so the `Some(T)` alias resolves even
-                // if nothing else pulls it into the type graph.
-                let format = watch_receiver_debug_format(self.reader, tid)?;
-                self.reserve(format.element);
-                let cross_arc = |mid: &[u32], tail: &[u32]| -> Selector {
-                    let mut steps: Vec<Step> =
-                        format.shared.iter().map(|&i| Step::Member(i)).collect();
-                    steps.push(Step::Deref);
-                    steps.extend(mid.iter().chain(tail).map(|&i| Step::Member(i)));
-                    Selector(steps)
-                };
-                let state_sel = cross_arc(&format.shared_data, &format.state);
-                let value_sel = cross_arc(&format.shared_data, &format.value);
-                let observed_sel: Selector = format.observed.clone().into();
-                let closed_mask = 1u64;
-                // unseen = observed != (state & !closed_mask), the published
-                // version; render the newest value as `Some(T)` when it differs.
-                let unseen = DisplayNode::Variant {
-                    discriminant: ValueExpr::Ne(
-                        Box::new(ValueExpr::Read(observed_sel)),
-                        Box::new(ValueExpr::And(
-                            Box::new(ValueExpr::Read(state_sel.clone())),
-                            Box::new(ValueExpr::Not(Box::new(ValueExpr::Const(closed_mask)))),
-                        )),
-                    ),
-                    arms: vec![
-                        Arm {
-                            value: 0,
-                            label: Some(self.interner.intern("None")),
-                            payload: None,
-                        },
-                        Arm {
-                            value: 1,
-                            label: Some(self.interner.intern("Some")),
-                            payload: Some(Box::new(DisplayNode::Alias {
-                                at: value_sel,
-                                follow_pointers: true,
-                            })),
-                        },
-                    ],
-                    default: None,
-                };
-                // closed is the low state bit, independent of the version.
-                let closed = DisplayNode::Variant {
-                    discriminant: ValueExpr::And(
-                        Box::new(ValueExpr::Read(state_sel)),
-                        Box::new(ValueExpr::Const(closed_mask)),
-                    ),
-                    arms: vec![
-                        Arm {
-                            value: 0,
-                            label: Some(self.interner.intern("false")),
-                            payload: None,
-                        },
-                        Arm {
-                            value: 1,
-                            label: Some(self.interner.intern("true")),
-                            payload: None,
-                        },
-                    ],
-                    default: None,
-                };
-                DisplayNode::Struct {
-                    fields: vec![
-                        Field::Named {
-                            label: self.interner.intern("unseen"),
-                            node: unseen,
-                        },
-                        Field::Named {
-                            label: self.interner.intern("closed"),
-                            node: closed,
-                        },
-                    ],
-                }
-            }
-            Some("tokio::sync::mpsc::bounded::Receiver") => {
-                // A receiver reads as the `Chan` it drains, reached across its
-                // `Arc` pointer: a `Pointer` hop whose target is the channel's
-                // own struct, prefixed with the decoded `capacity`/`free` words.
-                let format = mpsc_rx_debug_format(self.reader, tid)?;
-                let permits_decode = self.semaphore_permits_decode();
-                let scalar = |at: Vec<u32>, decode| DisplayNode::Scalar {
-                    at: at.into(),
-                    decode,
-                };
-                let mut fields = vec![
-                    Field::Named {
-                        label: self.interner.intern("capacity"),
-                        node: scalar(format.bound, ScalarDecode::Raw),
-                    },
-                    Field::Named {
-                        label: self.interner.intern("free"),
-                        node: scalar(format.permits, permits_decode),
-                    },
-                ];
-                fields.extend(self.chan_struct_fields(format.chan_format));
-                DisplayNode::Pointer {
-                    at: format.chan_pointer.into(),
-                    via: format.chan.into(),
-                    then: Box::new(DisplayNode::Struct { fields }),
-                }
-            }
-            _ if full
-                .is_some_and(|n| n.starts_with("&[") || n.starts_with("alloc::boxed::Box<[")) =>
-            {
-                // A `&[T]` or `Box<[T]>` fat pointer: the same buffer walk as a
-                // `Vec` but with only a pointer and length, no capacity word.
-                let format = slice_debug_format(self.reader, tid)?;
-                DisplayNode::Slice {
-                    pointer: Selector::member(format.pointer as u32),
-                    length: Selector::member(format.length as u32),
-                    capacity: None,
-                    element: self.reserve(format.element),
-                }
-            }
-            _ => return None,
-        };
-        Some(node)
+        let base = full.split_once('<').map_or(full, |(head, _)| head);
+        let detector = BY_NAME
+            .iter()
+            .find(|&&(name, _)| name == base)
+            .or_else(|| {
+                BY_PREFIX
+                    .iter()
+                    .find(|&&(prefix, _)| full.starts_with(prefix))
+            })
+            .map(|&(_, detector)| detector)?;
+        detector(self, tid)
     }
 
     /// Assign a bundle id for a type, queueing its conversion if new.
