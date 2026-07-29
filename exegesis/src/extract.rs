@@ -1574,7 +1574,7 @@ fn scalar_newtype_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
         matches!(reader.canonical_type(ty), Some(RawType::Base(base))
             if base.size != 0 && base.size == st.size)
     })?;
-    transparent(scalar)
+    transparent(emitter, &st.members, scalar)
 }
 
 /// Where a `Vec`-shaped owned buffer keeps its data pointer, length, capacity,
@@ -3489,7 +3489,9 @@ fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bo
 }
 
 fn unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    transparent(unsafe_cell_layout(emitter.reader, id)?.0)
+    let st = struct_of(emitter.reader, id)?;
+    let (member, _) = unsafe_cell_layout(emitter.reader, id)?;
+    transparent(emitter, &st.members, member)
 }
 
 /// The member index and `T` of a `core::cell::UnsafeCell<T>`, or `None` if `id`
@@ -3518,7 +3520,7 @@ fn loom_unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     let cell = zero_offset_member(reader, &st.members, Some("__0"), |ty| {
         unsafe_cell_layout(reader, ty).is_some_and(|(_, inner)| inner == target)
     })?;
-    transparent(cell)
+    transparent(emitter, &st.members, cell)
 }
 
 fn loom_atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -3537,15 +3539,11 @@ fn loom_atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode
     }
     // The shim holds the real atomic in an `UnsafeCell`, so accept a member
     // only when a `core::sync::atomic::Atomic<_>` is what the cell contains.
-    transparent(zero_offset_member(
-        reader,
-        &st.members,
-        Some("inner"),
-        |ty| {
-            unsafe_cell_layout(reader, ty)
-                .is_some_and(|(_, atomic)| atomic_value_path(reader, atomic).is_some())
-        },
-    )?)
+    let inner = zero_offset_member(reader, &st.members, Some("inner"), |ty| {
+        unsafe_cell_layout(reader, ty)
+            .is_some_and(|(_, atomic)| atomic_value_path(reader, atomic).is_some())
+    })?;
+    transparent(emitter, &st.members, inner)
 }
 
 /// tokio's `loom::std::parking_lot` shims are newtypes that pair a
@@ -3563,14 +3561,17 @@ fn loom_parking_lot_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     }
     // Any member name will do, since the shims spell the lock differently; what
     // identifies it is being the one member at offset zero that is not a marker.
-    transparent(zero_offset_member(reader, &st.members, None, |ty| {
+    let lock = zero_offset_member(reader, &st.members, None, |ty| {
         !fq_name(reader, reader.canonicalize(ty))
             .is_some_and(|name| name.starts_with("core::marker::PhantomData"))
-    })?)
+    })?;
+    transparent(emitter, &st.members, lock)
 }
 
 fn non_null_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    transparent(non_null_layout(emitter.reader, id)?.0)
+    let st = struct_of(emitter.reader, id)?;
+    let (member, _) = non_null_layout(emitter.reader, id)?;
+    transparent(emitter, &st.members, member)
 }
 
 /// The member index and `T` of a `core::ptr::non_null::NonNull<T>`, or `None` if
@@ -3600,11 +3601,13 @@ fn unique_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let pointer = zero_offset_member(reader, &st.members, Some("pointer"), |ty| {
         non_null_layout(reader, ty).is_some_and(|(_, inner)| inner == target)
     })?;
-    transparent(pointer)
+    transparent(emitter, &st.members, pointer)
 }
 
 fn usize_no_high_bit_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    transparent(usize_no_high_bit_layout(emitter.reader, id)?.0)
+    let st = struct_of(emitter.reader, id)?;
+    let (member, _) = usize_no_high_bit_layout(emitter.reader, id)?;
+    transparent(emitter, &st.members, member)
 }
 
 /// The member index and integer type of a `core::num::niche_types::UsizeNoHighBit`,
@@ -3638,7 +3641,7 @@ fn nonzero_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let st = struct_of(reader, id)?;
     // Whatever the width, the wrapped inner is the whole value.
     let inner = zero_offset_member(reader, &st.members, Some("__0"), |_| true)?;
-    transparent(inner)
+    transparent(emitter, &st.members, inner)
 }
 
 /// The niche-typed inner of a `NonZero<T>`
@@ -3653,12 +3656,10 @@ fn nonzero_inner_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNo
     if !name.ends_with("Inner") {
         return None;
     }
-    transparent(zero_offset_member(
-        reader,
-        &st.members,
-        Some("__0"),
-        |ty| is_integer(reader, ty),
-    )?)
+    let value = zero_offset_member(reader, &st.members, Some("__0"), |ty| {
+        is_integer(reader, ty)
+    })?;
+    transparent(emitter, &st.members, value)
 }
 
 /// The index of the unique member at offset zero named `name` — or of whatever
@@ -3716,9 +3717,14 @@ fn sole_param_target(
 /// differs between them is only which member [`zero_offset_member`] accepts.
 /// (An atomic is not one of them: it aliases its value without chasing it, and
 /// reaches it through a whole wrapper chain — see [`atomic_value_path`].)
-fn transparent(member: u32) -> Option<DisplayNode> {
+fn transparent(
+    emitter: &mut Emitter<'_>,
+    members: &[crate::raw_types::RawMember<crate::StrId>],
+    member: u32,
+) -> Option<DisplayNode> {
+    let at = emitter.address(members, member);
     Some(DisplayNode::Alias {
-        at: Selector::member(member),
+        at: Selector(vec![Step::Member(at)]),
         follow_pointers: true,
     })
 }
@@ -4054,6 +4060,32 @@ impl<'a> Emitter<'a> {
     /// Intern a string for the bundle's string table.
     fn intern(&mut self, s: &str) -> StrRef {
         self.interner.intern(s)
+    }
+
+    /// How to address `members[index]`: by its name when it has one no sibling
+    /// shares, and by position otherwise.
+    ///
+    /// This is where a member a detector *found* — by shape, by offset, by
+    /// whatever screen it applied — becomes something the bundle can address.
+    /// A name is preferred because a member list is still rewritten after the
+    /// program is attached, which shifts positions but not names; an unnamed
+    /// member (they all intern as `<anon>`) or one of several spelled the same
+    /// has no name to use and keeps its position.
+    fn address(
+        &mut self,
+        members: &[crate::raw_types::RawMember<crate::StrId>],
+        index: u32,
+    ) -> MemberRef {
+        let reader = self.reader;
+        let named = members
+            .get(index as usize)
+            .and_then(|member| member.name)
+            .map(|name| reader.strings.get(name))
+            .filter(|name| unique_member(reader, members, name).is_some());
+        match named {
+            Some(name) => MemberRef::Named(self.intern(name)),
+            None => MemberRef::Index(index),
+        }
     }
 
     /// Build a [`DisplayNode::Struct`] field named `label` whose value is the
@@ -4920,6 +4952,42 @@ mod tests {
         Emitter::new(reader, BTreeMap::new(), None).specific_debug_format(id, Some(name))
     }
 
+    /// The member a transparent wrapper aliases, spelled the way the detector
+    /// addressed it: a name where it used one, `#index` where it counted.
+    ///
+    /// A `MemberRef::Named` carries a string-table position, which says nothing
+    /// on its own, so a test that means "aliases `__0`" compares against that
+    /// rather than against whatever position the emitter happened to intern it
+    /// at.
+    fn aliased(node: Option<DisplayNode>, emitter: &Emitter<'_>) -> Option<String> {
+        let DisplayNode::Alias {
+            at,
+            follow_pointers: true,
+        } = node?
+        else {
+            return None;
+        };
+        match at.steps() {
+            [Step::Member(MemberRef::Named(name))] => Some(emitter.interner.get(*name)?.to_owned()),
+            [Step::Member(MemberRef::Index(index))] => Some(format!("#{index}")),
+            _ => None,
+        }
+    }
+
+    /// [`aliased`] over one detector run directly.
+    fn detect_alias(reader: &DwReader<'_>, detector: Detector, id: TypeId) -> Option<String> {
+        let mut emitter = Emitter::new(reader, BTreeMap::new(), None);
+        let node = detector(&mut emitter, id);
+        aliased(node, &emitter)
+    }
+
+    /// [`aliased`] over one dispatch by name.
+    fn detect_alias_by_name(reader: &DwReader<'_>, id: TypeId, name: &str) -> Option<String> {
+        let mut emitter = Emitter::new(reader, BTreeMap::new(), None);
+        let node = emitter.specific_debug_format(id, Some(name));
+        aliased(node, &emitter)
+    }
+
     fn empty_struct(name: crate::StrId) -> RawType<crate::StrId> {
         RawStruct {
             name: Some(name),
@@ -5274,8 +5342,6 @@ mod tests {
 
     #[test]
     fn test_loom_parking_lot_mutex_is_transparent_over_inner_lock() {
-        use crate::bundle::Selector;
-
         let mut reader = DwReader::default();
 
         // Namespaces: tokio::loom::std::parking_lot and core::marker.
@@ -5325,11 +5391,9 @@ mod tests {
         // The PhantomData marker is skipped; the shim is transparent over the
         // real lock at member index 1.
         assert_eq!(
-            detect_by_name(&reader, mutex_id, "tokio::loom::std::parking_lot::Mutex<T>"),
-            Some(DisplayNode::Alias {
-                at: Selector::member(1),
-                follow_pointers: true,
-            })
+            detect_alias_by_name(&reader, mutex_id, "tokio::loom::std::parking_lot::Mutex<T>")
+                .as_deref(),
+            Some("__1")
         );
         // The namespace is the dispatch table's screen: the same layout under a
         // name outside the loom shims reaches no detector.
@@ -5345,7 +5409,6 @@ mod tests {
 
     #[test]
     fn test_nonzero_layers_are_transparent_over_the_integer() {
-        use crate::bundle::Selector;
         use crate::raw_types::{Encoding, RawBase};
 
         let mut reader = DwReader::default();
@@ -5399,17 +5462,15 @@ mod tests {
             ns_struct(Some(nonzero_ns), nonzero_name, 4, vec![member(inner_id)]),
         );
 
-        let transparent = Some(DisplayNode::Alias {
-            at: Selector::member(0),
-            follow_pointers: true,
-        });
         assert_eq!(
-            detect_by_name(&reader, nonzero_id, "core::num::nonzero::NonZero<i32>"),
-            transparent
+            detect_alias_by_name(&reader, nonzero_id, "core::num::nonzero::NonZero<i32>")
+                .as_deref(),
+            Some("__0")
         );
         assert_eq!(
-            detect_by_name(&reader, inner_id, "core::num::niche_types::NonZeroI32Inner"),
-            transparent
+            detect_alias_by_name(&reader, inner_id, "core::num::niche_types::NonZeroI32Inner")
+                .as_deref(),
+            Some("__0")
         );
 
         // The niche-types row is keyed by prefix, so it is offered every
@@ -5429,7 +5490,6 @@ mod tests {
 
     #[test]
     fn test_scalar_newtype_is_transparent_over_its_value() {
-        use crate::bundle::Selector;
         use crate::raw_types::{Encoding, RawBase};
 
         let mut reader = DwReader::default();
@@ -5462,11 +5522,8 @@ mod tests {
             ns_struct(None, epochn, 8, vec![member(m0, u64_id, 0)]),
         );
         assert_eq!(
-            detect(&reader, scalar_newtype_node, epoch_id),
-            Some(DisplayNode::Alias {
-                at: Selector::member(0),
-                follow_pointers: true,
-            })
+            detect_alias(&reader, scalar_newtype_node, epoch_id).as_deref(),
+            Some("__0")
         );
 
         // A pair is not a wrapper: the scalar does not fill the struct.
