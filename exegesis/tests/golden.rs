@@ -981,6 +981,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         assert_format(
             program,
             bundle,
+            "tokio::sync::watch::Shared<u32>",
+            "tokio::sync::watch::Shared<u32> :: Node Struct \
+             { value: Alias { value.__1.data.value@+296, follow }, state: <structural>, \
+             ref_count_rx: <structural>, ref_count_tx: <structural> }",
+        );
+        assert_format(
+            program,
+            bundle,
             "tokio::sync::watch::Receiver<u32>",
             "tokio::sync::watch::Receiver<u32> :: Node Struct { unseen: Variant { \
              discr=(Read(version.__0@+8) != \
