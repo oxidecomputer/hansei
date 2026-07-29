@@ -981,6 +981,15 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         assert_format(
             program,
             bundle,
+            "tokio::sync::watch::Sender<u32>",
+            "tokio::sync::watch::Sender<u32> :: Node Pointer { at=shared.ptr.pointer@+0, \
+             pointee=alloc::sync::ArcInner<tokio::sync::watch::Shared<u32>>, via=data@+16, \
+             then=Struct { value: Alias { value.__1.data.value@+296, follow }, \
+             state: <structural>, ref_count_rx: <structural>, ref_count_tx: <structural> } }",
+        );
+        assert_format(
+            program,
+            bundle,
             "tokio::sync::watch::Shared<u32>",
             "tokio::sync::watch::Shared<u32> :: Node Struct \
              { value: Alias { value.__1.data.value@+296, follow }, state: <structural>, \
