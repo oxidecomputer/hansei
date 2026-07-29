@@ -1570,15 +1570,11 @@ fn structural_debug_format(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Disp
 fn scalar_newtype_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     let st = struct_of(reader, id)?;
-    transparent(zero_offset_member(
-        reader,
-        &st.members,
-        Some("__0"),
-        |ty| {
-            matches!(reader.canonical_type(ty), Some(RawType::Base(base))
+    let scalar = zero_offset_member(reader, &st.members, Some("__0"), |ty| {
+        matches!(reader.canonical_type(ty), Some(RawType::Base(base))
             if base.size != 0 && base.size == st.size)
-        },
-    )?)
+    })?;
+    transparent(scalar)
 }
 
 /// Where a `Vec`-shaped owned buffer keeps its data pointer, length, capacity,
@@ -3179,12 +3175,10 @@ fn loom_unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     let reader = emitter.reader;
     let st = struct_of(reader, id)?;
     let target = sole_param_target(reader, st)?;
-    transparent(zero_offset_member(
-        reader,
-        &st.members,
-        Some("__0"),
-        |ty| unsafe_cell_layout(reader, ty).is_some_and(|(_, inner)| inner == target),
-    )?)
+    let cell = zero_offset_member(reader, &st.members, Some("__0"), |ty| {
+        unsafe_cell_layout(reader, ty).is_some_and(|(_, inner)| inner == target)
+    })?;
+    transparent(cell)
 }
 
 fn loom_atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -3263,12 +3257,10 @@ fn unique_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     let st = struct_of(reader, id)?;
     let target = sole_param_target(reader, st)?;
-    transparent(zero_offset_member(
-        reader,
-        &st.members,
-        Some("pointer"),
-        |ty| non_null_layout(reader, ty).is_some_and(|(_, inner)| inner == target),
-    )?)
+    let pointer = zero_offset_member(reader, &st.members, Some("pointer"), |ty| {
+        non_null_layout(reader, ty).is_some_and(|(_, inner)| inner == target)
+    })?;
+    transparent(pointer)
 }
 
 fn usize_no_high_bit_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
