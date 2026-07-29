@@ -1524,6 +1524,7 @@ static BY_NAME: &[(&str, Detector)] = &[
     ("tokio::sync::notify::Notify", notify_node),
     ("tokio::sync::watch::Receiver", watch_receiver_node),
     ("tokio::sync::watch::state::AtomicState", watch_state_node),
+    ("tokio::util::cacheline::CachePadded", cache_padded_node),
 ];
 
 /// Detectors keyed by a prefix of the *full* name, for a family no single base
@@ -3619,6 +3620,19 @@ fn dyn_tail_offset(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) ->
 #[cfg(test)]
 fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bool {
     dyn_tail_offset(reader, id, seen).is_some()
+}
+
+/// tokio pads a field out to a cache line by wrapping it in a struct whose one
+/// member is the value; show the value, so the padding does not read as a level
+/// of structure that is not there.
+fn cache_padded_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    emitter.compile(
+        id,
+        Pat::Alias {
+            at: path![Named("value")],
+            follow_pointers: true,
+        },
+    )
 }
 
 fn unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
