@@ -2823,10 +2823,27 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     }
     let mutex = emitter.walk(id, &mutex_byte_path(raw))?.0;
 
-    let (head, _) = field_path(reader, id, &["waiters", "__1", "data", "value", "head"])?;
+    let (head, _) = emitter.walk(
+        id,
+        &path![
+            Named("waiters"),
+            Named("__1"),
+            Named("data"),
+            Named("value"),
+            Named("head")
+        ],
+    )?;
 
     // The queue is a `LinkedList<Waiter, Waiter>`; its node type is the `Waiter`.
-    let (_, queue_ty) = field_path(reader, id, &["waiters", "__1", "data", "value"])?;
+    let (_, queue_ty) = emitter.walk(
+        id,
+        &path![
+            Named("waiters"),
+            Named("__1"),
+            Named("data"),
+            Named("value")
+        ],
+    )?;
     let list = struct_of(reader, queue_ty)?;
     let param = list.template_params.last()?;
     let waiter = reader.canonicalize(param.type_id);
@@ -2839,7 +2856,15 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let waiter_notification = emitter
         .walk(waiter, &path![Named("notification"), PeelTo(WORD)])?
         .0;
-    let (waiter_next, _) = field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
+    let (waiter_next, _) = emitter.walk(
+        waiter,
+        &path![
+            Named("pointers"),
+            Named("inner"),
+            Named("value"),
+            Named("next")
+        ],
+    )?;
 
     let state_decode = emitter.notify_state_decode();
     let mutex_decode = emitter.mutex_byte_decode();
@@ -2948,12 +2973,13 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
 
     // Receiver::shared is an Arc. Its NonNull raw pointer targets ArcInner,
     // whose `data` member is the actual Shared<T> allocation payload.
-    let (shared, ptr_ty) = field_path(reader, id, &["shared", "ptr", "pointer"])?;
+    let (shared, ptr_ty) =
+        emitter.walk(id, &path![Named("shared"), Named("ptr"), Named("pointer")])?;
     let RawType::Pointer(ptr) = reader.canonical_type(ptr_ty)? else {
         return None;
     };
     let arc_inner = reader.canonicalize(ptr.target_type_id);
-    let (shared_data, shared_ty) = field_path(reader, arc_inner, &["data"])?;
+    let (shared_data, shared_ty) = emitter.walk(arc_inner, &path![Named("data")])?;
     if fq_name(reader, shared_ty)?.split('<').next()? != "tokio::sync::watch::Shared" {
         return None;
     }
@@ -3065,14 +3091,22 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // The dispatch table screens by name; this validates only the structure.
     // Receiver → Rx → Arc → the `NonNull` raw pointer at `ptr.pointer`, which
     // targets the `ArcInner<Chan>` allocation.
-    let (chan_pointer, ptr_ty) = field_path(reader, id, &["chan", "inner", "ptr", "pointer"])?;
+    let (chan_pointer, ptr_ty) = emitter.walk(
+        id,
+        &path![
+            Named("chan"),
+            Named("inner"),
+            Named("ptr"),
+            Named("pointer")
+        ],
+    )?;
     let RawType::Pointer(ptr) = reader.canonical_type(ptr_ty)? else {
         return None;
     };
     let arcinner = reader.canonicalize(ptr.target_type_id);
 
     // Skip the Arc's strong/weak header to the `data` field: the `Chan`.
-    let (chan, chan_ty) = field_path(reader, arcinner, &["data"])?;
+    let (chan, chan_ty) = emitter.walk(arcinner, &path![Named("data")])?;
     if !fq_name(reader, chan_ty)
         .as_deref()
         .is_some_and(|name| name.starts_with("tokio::sync::mpsc::chan::Chan<"))
@@ -3081,7 +3115,7 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     }
 
     // Capacity is the bounded semaphore's `bound`, a plain `usize`.
-    let (bound, bound_ty) = field_path(reader, chan_ty, &["semaphore", "bound"])?;
+    let (bound, bound_ty) = emitter.walk(chan_ty, &path![Named("semaphore"), Named("bound")])?;
     if !is_unsigned_integer(reader, bound_ty, crate::bundle::POINTER_SIZE) {
         return None;
     }
@@ -3118,7 +3152,7 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     let reader = emitter.reader;
     // The dispatch table screens by name; this validates only the structure.
     // The capacity is the bounded semaphore's own `bound`, a plain `usize`.
-    let (bound, bound_ty) = field_path(reader, id, &["bound"])?;
+    let (bound, bound_ty) = emitter.walk(id, &path![Named("bound")])?;
     if !is_unsigned_integer(reader, bound_ty, crate::bundle::POINTER_SIZE) {
         return None;
     }
@@ -3148,34 +3182,45 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     }
     let mutex = emitter.walk(id, &mutex_byte_path(raw))?.0;
 
-    let (closed, closed_ty) = field_path(
-        reader,
+    let (closed, closed_ty) = emitter.walk(
         id,
-        &["semaphore", "waiters", "__1", "data", "value", "closed"],
+        &path![
+            Named("semaphore"),
+            Named("waiters"),
+            Named("__1"),
+            Named("data"),
+            Named("value"),
+            Named("closed")
+        ],
     )?;
     if !matches!(reader.canonical_type(closed_ty), Some(RawType::Base(base)) if base.size == 1) {
         return None;
     }
 
-    let (head, _) = field_path(
-        reader,
+    let (head, _) = emitter.walk(
         id,
-        &[
-            "semaphore",
-            "waiters",
-            "__1",
-            "data",
-            "value",
-            "queue",
-            "head",
+        &path![
+            Named("semaphore"),
+            Named("waiters"),
+            Named("__1"),
+            Named("data"),
+            Named("value"),
+            Named("queue"),
+            Named("head")
         ],
     )?;
 
     // The queue is a `LinkedList<Waiter, Waiter>`; its node type is the `Waiter`.
-    let (_, queue_ty) = field_path(
-        reader,
+    let (_, queue_ty) = emitter.walk(
         id,
-        &["semaphore", "waiters", "__1", "data", "value", "queue"],
+        &path![
+            Named("semaphore"),
+            Named("waiters"),
+            Named("__1"),
+            Named("data"),
+            Named("value"),
+            Named("queue")
+        ],
     )?;
     let list = struct_of(reader, queue_ty)?;
     let param = list.template_params.last()?;
@@ -3189,7 +3234,15 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     let waiter_state = emitter
         .walk(waiter, &path![Named("state"), PeelTo(WORD)])?
         .0;
-    let (waiter_next, _) = field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
+    let (waiter_next, _) = emitter.walk(
+        waiter,
+        &path![
+            Named("pointers"),
+            Named("inner"),
+            Named("value"),
+            Named("next")
+        ],
+    )?;
 
     let mutex_decode = emitter.mutex_byte_decode();
     let bool_decode = emitter.bool_decode();
@@ -3209,38 +3262,6 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     Some(DisplayNode::Struct {
         fields: vec![mutex, closed, permits, bound, queue],
     })
-}
-
-/// Walk a chain of named struct members, returning the member-index path and
-/// the type reached. Used to record navigation paths through transparent
-/// wrappers (CachePadded, UnsafeCell, NonNull) by name.
-fn field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<(Selector, TypeId)> {
-    let mut path = Vec::with_capacity(names.len());
-    let mut cur = reader.canonicalize(ty);
-    for name in names {
-        let members = match reader.canonical_type(cur)? {
-            RawType::Struct(st) => &st.members,
-            RawType::Union(u) => &u.members,
-            _ => {
-                explain!(
-                    "  field_path {names:?}: stopped at `{name}`, since {} is not a struct or union",
-                    type_label(reader, cur),
-                );
-                return None;
-            }
-        };
-        let Some((index, member)) = unique_member(reader, members, name) else {
-            explain!(
-                "  field_path {names:?}: no unique member `{name}` in {}, which has {}",
-                type_label(reader, cur),
-                member_labels(reader, members),
-            );
-            return None;
-        };
-        path.push(index as u32);
-        cur = reader.canonicalize(member.type_id);
-    }
-    Some((Selector::members(&path), cur))
 }
 
 /// Sum the byte offsets `selector` walks within `ty`, returning the datum's
@@ -3338,10 +3359,16 @@ fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
             ],
         )?
         .0;
-    let (head, head_ty) = field_path(
-        reader,
+    let (head, head_ty) = emitter.walk(
         id,
-        &["rx_fields", "__0", "value", "list", "head", "pointer"],
+        &path![
+            Named("rx_fields"),
+            Named("__0"),
+            Named("value"),
+            Named("list"),
+            Named("head"),
+            Named("pointer")
+        ],
     )?;
     let RawType::Pointer(head_ptr) = reader.canonical_type(head_ty)? else {
         return None;
@@ -3349,7 +3376,7 @@ fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
     let block = reader.canonicalize(head_ptr.target_type_id);
 
     // Paths rooted at the block type.
-    let (start_index, _) = field_path(reader, block, &["header", "start_index"])?;
+    let (start_index, _) = emitter.walk(block, &path![Named("header"), Named("start_index")])?;
     // `next` is an `AtomicPtr`; walk the atomic wrappers to the raw pointer.
     let next = emitter
         .walk(
@@ -3357,7 +3384,7 @@ fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
             &path![Named("header"), Named("next"), PeelTo(Shape::Pointer)],
         )?
         .0;
-    let (values, values_ty) = field_path(reader, block, &["values", "__0"])?;
+    let (values, values_ty) = emitter.walk(block, &path![Named("values"), Named("__0")])?;
     let RawType::Array(values_arr) = reader.canonical_type(values_ty)? else {
         return None;
     };
@@ -5025,8 +5052,7 @@ mod tests {
     use super::{
         Detector, Emitter, Named, Pat, StatePass, StaticRole, VtableTypeHint,
         demote_types_with_members_out_of_bounds, drop_members_of_other_states, dyn_tail_offset,
-        field_path, has_dyn_tail, match_static_symbol, scalar_newtype_node, scan_vtable_section,
-        str_node,
+        has_dyn_tail, match_static_symbol, scalar_newtype_node, scan_vtable_section, str_node,
     };
     use crate::bundle::{DisplayNode, MemberRef, POINTER_SIZE, Shape, Step};
     use crate::extract::PatStep::PeelTo;
@@ -5203,8 +5229,16 @@ mod tests {
             ),
         );
 
+        let compile = |pat| {
+            super::explain::capture(|| {
+                Emitter::new(&reader, BTreeMap::new(), None).compile(notify, pat)
+            })
+        };
+
         // The member is missing: the trace names it and lists what is there.
-        let (got, trace) = super::explain::capture(|| field_path(&reader, notify, &["state"]));
+        let (got, trace) = compile(Pat::Symbol {
+            at: path![Named("state")],
+        });
         assert!(got.is_none());
         assert_eq!(trace.len(), 1, "{trace:?}");
         assert!(
@@ -5216,8 +5250,9 @@ mod tests {
         );
 
         // The walk leaves an aggregate: the trace says where it stopped.
-        let (got, trace) =
-            super::explain::capture(|| field_path(&reader, notify, &["waiters", "value"]));
+        let (got, trace) = compile(Pat::Symbol {
+            at: path![Named("waiters"), Named("value")],
+        });
         assert!(got.is_none());
         assert!(
             trace[0].contains("stopped at `value`") && trace[0].contains("u64"),
@@ -5225,32 +5260,9 @@ mod tests {
             trace[0]
         );
 
-        // A walk that succeeds says nothing; silence is the ordinary case.
-        let (got, trace) = super::explain::capture(|| field_path(&reader, notify, &["waiters"]));
-        assert!(got.is_some());
-        assert!(trace.is_empty(), "{trace:?}");
-
-        // A pattern narrates the same way, and addresses what it finds by
-        // name — the point of describing the shape rather than walking it.
-        let compile = |pat| {
-            super::explain::capture(|| {
-                Emitter::new(&reader, BTreeMap::new(), None).compile(notify, pat)
-            })
-        };
-        let (got, trace) = compile(Pat::Symbol {
-            at: path![Named("state")],
-        });
-        assert!(got.is_none());
-        assert!(
-            trace[0].contains("no unique member `state`") && trace[0].contains("waiters"),
-            "{}",
-            trace[0]
-        );
-        let (got, trace) = compile(Pat::Symbol {
-            at: path![Named("waiters"), Named("value")],
-        });
-        assert!(got.is_none());
-        assert!(trace[0].contains("stopped at `value`"), "{}", trace[0]);
+        // A walk that fits says nothing — silence is the ordinary case — and
+        // addresses what it found by name, the point of describing a layout
+        // rather than counting to it.
         let (got, trace) = compile(Pat::Symbol {
             at: path![Named("waiters")],
         });
