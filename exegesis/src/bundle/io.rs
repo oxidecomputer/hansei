@@ -12,6 +12,7 @@ use crate::bundle::schema::{
     Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MapEntries, ScalarDecode, Selector,
     StaticsTable, Step, Stmt, TypeDef, ValueExpr, strip_llvm_suffix,
 };
+use crate::bundle::shape::{Addressed, Shape};
 use crate::bundle::strings::StrRef;
 use crate::symbols::normalized_value_index;
 
@@ -43,25 +44,6 @@ pub enum Error {
     Encode(#[source] postcard::Error),
     #[error("corrupt bundle: {0}")]
     Corrupt(String),
-}
-
-/// What a resolved [`Selector`] is expected to land on. Each variant folds a
-/// former open-coded post-walk check (`check_usize_format`,
-/// `check_byte_pointer_format`, the inline state-byte / pointer-sized checks)
-/// into one place.
-enum Shape {
-    /// A `usize`-sized unsigned base type: an atomic word, a length, a
-    /// capacity, a permit count.
-    Usize,
-    /// Any type occupying exactly one pointer word: a niche-optimized
-    /// `Option<NonNull<_>>` list head/next.
-    PointerSized,
-    /// Any pointer type.
-    Pointer,
-    /// Any array type.
-    Array,
-    /// No constraint on the landed type.
-    Any,
 }
 
 /// Walk a [`Selector`] from `root`, returning the type it lands on.
@@ -153,6 +135,54 @@ fn selector_offset(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> Optio
     Some(offset)
 }
 
+/// Whether the bundle's `id` meets `shape`. This is the [`TypeTable`] half of
+/// the shared shape table; exegesis supplies the DWARF half.
+fn shape_matches(bundle: &Bundle, id: BundleTypeId, shape: Shape) -> bool {
+    let landed = bundle.types.get(id);
+    match shape {
+        Shape::Word => matches!(type_size(bundle, id, &mut Vec::new()), Some(1..=8)),
+        Shape::Uint(size) => matches!(
+            landed,
+            Some(TypeDef::Base { size: found, encoding: crate::raw_types::Encoding::Unsigned, .. })
+                if *found == size
+        ),
+        Shape::PointerSized => {
+            type_size(bundle, id, &mut Vec::new()) == Some(crate::bundle::POINTER_SIZE)
+        }
+        Shape::Pointer => matches!(landed, Some(TypeDef::Pointer { .. })),
+        Shape::Array => matches!(landed, Some(TypeDef::Array { .. })),
+        Shape::Any => true,
+    }
+}
+
+/// Check one datum a node addresses within the value it renders. An
+/// [`Addressed`] that permits it may address the value itself with an empty
+/// selector, which [`check_selector`] otherwise forbids.
+fn check_addressed(
+    bundle: &Bundle,
+    scope: BundleTypeId,
+    addressed: &Addressed<'_>,
+    what: &str,
+) -> Result<()> {
+    let Addressed {
+        what: datum,
+        sel,
+        shape,
+        root_allowed,
+    } = *addressed;
+    if sel.is_empty() && root_allowed {
+        if !shape_matches(bundle, scope, shape) {
+            return Err(Error::Corrupt(format!(
+                "{what}: type {} is not itself {datum}",
+                scope.0
+            )));
+        }
+        return Ok(());
+    }
+    check_selector(bundle, scope, sel, shape, &format!("{what}: {datum}"))?;
+    Ok(())
+}
+
 /// Resolve `sel` against `root` and check the landed type matches `expect`,
 /// returning it. Rejects an empty selector: every formatter selector must
 /// navigate at least one step away from the formatted value.
@@ -170,24 +200,7 @@ fn check_selector(
         )));
     }
     let target = selector_target(bundle, root, sel, what)?;
-    let landed = bundle.types.get(target);
-    let ok = match expect {
-        Shape::Usize => matches!(
-            landed,
-            Some(TypeDef::Base {
-                size: crate::bundle::POINTER_SIZE,
-                encoding: crate::raw_types::Encoding::Unsigned,
-                ..
-            })
-        ),
-        Shape::PointerSized => {
-            type_size(bundle, target, &mut Vec::new()) == Some(crate::bundle::POINTER_SIZE)
-        }
-        Shape::Pointer => matches!(landed, Some(TypeDef::Pointer { .. })),
-        Shape::Array => matches!(landed, Some(TypeDef::Array { .. })),
-        Shape::Any => true,
-    };
-    if !ok {
+    if !shape_matches(bundle, target, expect) {
         return Err(Error::Corrupt(format!(
             "{what} for type {} lands on a type incompatible with the expected shape",
             root.0
@@ -275,30 +288,22 @@ fn check_scalar_decode(
 /// detector tree becomes a save/load-time error rather than garbage at render.
 fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &str) -> Result<()> {
     let corrupt = |msg: String| Err(Error::Corrupt(format!("{what}: {msg}")));
+    // Everything the node addresses within the value it renders, checked
+    // against the shared shape table before the arm below looks at whatever
+    // else its kind requires.
+    for addressed in node.addressed() {
+        check_addressed(bundle, scope, &addressed, what)?;
+    }
     match node {
         DisplayNode::Scalar { at, decode } => {
-            let landed = check_selector(bundle, scope, at, Shape::Any, what)?;
-            let size = type_size(bundle, landed, &mut Vec::new()).ok_or_else(|| {
-                Error::Corrupt(format!("{what}: scalar lands on an unsized type"))
-            })?;
-            if size == 0 || size > 8 {
-                return corrupt(format!("scalar word size {size} is not in 1..=8 bytes"));
-            }
+            // The shape table has already required a machine word; its exact
+            // width is what the decode table is checked against.
+            let landed = selector_target(bundle, scope, at, what)?;
+            let size =
+                type_size(bundle, landed, &mut Vec::new()).expect("a Word-shaped type is sized");
             check_scalar_decode(bundle, decode, (size * 8) as u8, what)?;
         }
-        DisplayNode::Symbol { at } => {
-            // `at` may be empty (the value itself is the code pointer, as for a
-            // bare function pointer), which `check_selector` forbids, so resolve
-            // the landed type directly. A symbol is rendered from a pointer word
-            // and never followed as data, so the target must be a pointer.
-            let landed = selector_target(bundle, scope, at, what)?;
-            if !matches!(bundle.types.get(landed), Some(TypeDef::Pointer { .. })) {
-                return corrupt(format!(
-                    "symbol node lands on type {} which is not a pointer",
-                    landed.0
-                ));
-            }
-        }
+        DisplayNode::Symbol { .. } => {}
         DisplayNode::Struct { fields } => {
             let members = match bundle.types.get(scope) {
                 Some(TypeDef::Struct { members, .. } | TypeDef::Union { members, .. }) => {
@@ -340,39 +345,19 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             }
         }
         DisplayNode::List {
-            head,
             next,
             node,
             node_ty,
+            ..
         } => {
-            check_selector(bundle, scope, head, Shape::PointerSized, what)?;
             if bundle.types.get(*node_ty).is_none() {
                 return corrupt(format!("list node type id {} out of range", node_ty.0));
             }
             check_selector(bundle, *node_ty, next, Shape::PointerSized, what)?;
             check_node(bundle, *node_ty, node, what)?;
         }
-        DisplayNode::Str {
-            pointer,
-            length,
-            capacity,
-        } => {
-            // A `&str`/`String` data pointer is byte-erased (`*u8`), but a
-            // `&camino::Utf8Path` data pointer is typed (`*Utf8Path`), so accept
-            // any pointer, not just a byte pointer — the render reads `length`
-            // bytes through the pointer regardless of its pointee type.
-            check_selector(bundle, scope, pointer, Shape::Pointer, what)?;
-            check_selector(bundle, scope, length, Shape::Usize, what)?;
-            if let Some(capacity) = capacity {
-                check_selector(bundle, scope, capacity, Shape::Usize, what)?;
-            }
-        }
-        DisplayNode::Slice {
-            pointer,
-            length,
-            capacity,
-            element,
-        } => {
+        DisplayNode::Str { .. } => {}
+        DisplayNode::Slice { element, .. } => {
             if bundle.types.get(*element).is_none() {
                 return corrupt(format!(
                     "slice node element type id {} out of range",
@@ -385,19 +370,11 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                     element.0
                 ));
             }
-            // A `Vec`'s pointer is byte-erased (`*u8`), but a `&[T]`/`Box<[T]>`
-            // data pointer is typed (`*T`), so accept any pointer, not just a
-            // byte pointer.
-            check_selector(bundle, scope, pointer, Shape::Pointer, what)?;
-            check_selector(bundle, scope, length, Shape::Usize, what)?;
-            if let Some(capacity) = capacity {
-                check_selector(bundle, scope, capacity, Shape::Usize, what)?;
-            }
         }
         DisplayNode::IpAddr { octets } => {
-            let target = check_selector(bundle, scope, octets, Shape::Array, what)?;
+            let target = selector_target(bundle, scope, octets, what)?;
             let Some(TypeDef::Array { elem, count }) = bundle.types.get(target) else {
-                return corrupt("IP-address octets do not target an array".to_string());
+                unreachable!("the shape table verified an array");
             };
             let Some(TypeDef::Base { size, encoding, .. }) = bundle.types.get(*elem) else {
                 return corrupt("IP-address octets are not a base type".to_string());
@@ -409,30 +386,16 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 return corrupt("IP-address octets are not 4 or 16 unsigned bytes".to_string());
             }
         }
-        DisplayNode::Alias {
-            at,
-            follow_pointers: _,
-        } => {
-            // The aliased value may have any type — an atomic peels to a plain
-            // integer, a pointer, or a small struct — so only require that the
-            // selector resolves.
-            check_selector(bundle, scope, at, Shape::Any, what)?;
-        }
-        DisplayNode::SlotCount { bitmap, slots } => {
-            // The readiness word is a `usize`; `slots` is the inline array
-            // whose length bounds which of its bits count as slots.
-            check_selector(bundle, scope, bitmap, Shape::Usize, what)?;
-            check_selector(bundle, scope, slots, Shape::Array, what)?;
-        }
+        DisplayNode::Alias { .. } | DisplayNode::SlotCount { .. } => {}
         DisplayNode::Pointer { at, via, then } => {
             // `at` reaches the pointer; `via` is rooted at its pointee and
             // reaches the rendered target, against which `then` is rooted.
-            let ptr = check_selector(bundle, scope, at, Shape::Pointer, what)?;
+            let ptr = selector_target(bundle, scope, at, what)?;
             let Some(TypeDef::Pointer {
                 target: pointee, ..
             }) = bundle.types.get(ptr)
             else {
-                unreachable!("check_selector verified a pointer");
+                unreachable!("the shape table verified a pointer");
             };
             let target = check_selector(bundle, *pointee, via, Shape::Any, what)?;
             check_node(bundle, target, then, what)?;
@@ -448,25 +411,25 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             if pointer == vtable {
                 return corrupt("dyn pointer reuses one selector".to_string());
             }
-            let data_ptr = check_selector(bundle, scope, pointer, Shape::Pointer, what)?;
+            let data_ptr = selector_target(bundle, scope, pointer, what)?;
             let Some(TypeDef::Pointer {
                 target: data_target,
                 ..
             }) = bundle.types.get(data_ptr)
             else {
-                unreachable!("check_selector verified a pointer");
+                unreachable!("the shape table verified a pointer");
             };
             if !has_dyn_tail(bundle, *data_target, &mut Vec::new()) {
                 return corrupt("dyn-pointer data selector does not target dyn".to_string());
             }
 
-            let vtable_ptr = check_selector(bundle, scope, vtable, Shape::Pointer, what)?;
+            let vtable_ptr = selector_target(bundle, scope, vtable, what)?;
             let Some(TypeDef::Pointer {
                 target: vtable_array,
                 ..
             }) = bundle.types.get(vtable_ptr)
             else {
-                unreachable!("check_selector verified a pointer");
+                unreachable!("the shape table verified a pointer");
             };
             let Some(TypeDef::Array { elem, count }) = bundle.types.get(*vtable_array) else {
                 return corrupt(
@@ -502,7 +465,6 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             value,
             entries,
         } => {
-            check_selector(bundle, scope, length, Shape::Usize, what)?;
             let MapEntries::BTree { root, .. } = entries.as_ref();
             if root == length {
                 return corrupt("B-tree map reuses root as length".to_string());
@@ -587,13 +549,14 @@ fn check_value_expr(
     match expr {
         ValueExpr::Const(_) => Ok(()),
         ValueExpr::Read(sel) => {
-            let target = check_selector(bundle, scope, sel, Shape::Any, what)?;
-            match type_size(bundle, target, &mut Vec::new()) {
-                Some(size) if size <= 8 => Ok(()),
-                _ => Err(Error::Corrupt(format!(
-                    "{what}: value-expression read does not land on a machine word"
-                ))),
-            }
+            check_selector(
+                bundle,
+                scope,
+                sel,
+                Shape::Word,
+                &format!("{what}: a value-expression read"),
+            )?;
+            Ok(())
         }
         ValueExpr::Var(id) => {
             if *id >= num_vars {
