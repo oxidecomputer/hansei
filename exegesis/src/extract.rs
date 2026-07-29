@@ -74,6 +74,10 @@ pub struct ExtractOptions {
     /// Provenance string recorded in the bundle's `Meta` (typically the
     /// extraction command line).
     pub extract_args: String,
+    /// Report why a formatter did or did not attach, for every emitted type
+    /// whose fully-qualified name contains this substring
+    /// (`--explain-format`). See [`explain`].
+    pub explain_format: Option<String>,
 }
 
 /// Counters describing an extraction run. Anything the extractor skipped,
@@ -81,6 +85,11 @@ pub struct ExtractOptions {
 /// is the `--stats` output.
 #[derive(Default, Debug)]
 pub struct ExtractStats {
+    /// Formatter traces requested with [`ExtractOptions::explain_format`], one
+    /// per matching type. Not part of the `Display` form, which is the
+    /// `--stats` summary; `exegesis extract --explain-format` prints these
+    /// itself.
+    pub format_explanations: Vec<String>,
     /// Task-table entries, one per `(T, S)` instantiation.
     pub task_entries: usize,
     /// Mangled symbols keying the task table.
@@ -1029,7 +1038,7 @@ fn extract_from_view_with_vtable_types(
 
     // --- Phase 3: transitive closure and emission (§7.3). ---
 
-    let mut em = Emitter::new(reader, resume_awaitees);
+    let mut em = Emitter::new(reader, resume_awaitees, opts.explain_format.clone());
 
     let mut entries: Vec<TaskFutureEntry> = Vec::new();
     let mut provenance: Vec<Provenance> = Vec::new();
@@ -1134,6 +1143,7 @@ fn extract_from_view_with_vtable_types(
 
     stats.unresolved_refs = em.unresolved_refs;
     stats.cenum_synth_repr = em.cenum_synth_repr;
+    stats.format_explanations = std::mem::take(&mut em.explanations);
     let (types, strings, counts) = em.finish();
     stats.types_emitted = types.types.len();
     stats.opaque_types = counts.opaque;
@@ -1316,6 +1326,45 @@ fn fq_name(reader: &DwReader<'_>, id: TypeId) -> Option<String> {
     })
 }
 
+/// How a type reads in a formatter trace: its name, or its shape when it has
+/// none (an anonymous struct, a pointer, an array).
+fn type_label(reader: &DwReader<'_>, id: TypeId) -> String {
+    if let Some(name) = fq_name(reader, id) {
+        return name;
+    }
+    match reader.canonical_type(id) {
+        Some(RawType::Struct(_)) => "an unnamed struct".to_string(),
+        Some(RawType::Union(_)) => "an unnamed union".to_string(),
+        Some(RawType::Pointer(_)) => "a pointer".to_string(),
+        Some(RawType::Array(_)) => "an array".to_string(),
+        Some(_) => "an unnamed type".to_string(),
+        None => "a type the reader did not model".to_string(),
+    }
+}
+
+/// The member names of an aggregate, for a formatter trace. Truncated, since
+/// the point is to show whether the name a detector wanted is among them.
+fn member_labels(
+    reader: &DwReader<'_>,
+    members: &[crate::raw_types::RawMember<crate::StrId>],
+) -> String {
+    const SHOWN: usize = 12;
+    if members.is_empty() {
+        return "no members".to_string();
+    }
+    let names: Vec<&str> = members
+        .iter()
+        .take(SHOWN)
+        .map(|m| m.name.map_or("<anonymous>", |n| reader.strings.get(n)))
+        .collect();
+    let rest = members.len().saturating_sub(SHOWN);
+    if rest > 0 {
+        format!("{} (and {rest} more)", names.join(", "))
+    } else {
+        names.join(", ")
+    }
+}
+
 /// The `a::b::c` path of a namespace.
 fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
     let mut segs = Vec::new();
@@ -1327,6 +1376,96 @@ fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
     }
     segs.reverse();
     segs.join("::")
+}
+
+/// Reporting why a formatter did or did not attach to a type.
+///
+/// A detector fails safe: on any mismatch it returns `None` and the type
+/// renders structurally. That is the right behavior and a poor diagnostic —
+/// the only evidence is a `debug:` line missing from the dump of a binary
+/// with tens of thousands of types, which says nothing about *where* the
+/// detector gave up. With `ExtractOptions::explain_format` set, the shared
+/// navigators record what they saw while the emitter works on a matching
+/// type, and [`Emitter::emit`] keeps the trace.
+///
+/// The sink is thread-local rather than a reporter threaded through every
+/// helper: the emit loop is single-threaded, and a parameter no ordinary
+/// extraction reads would spread across every navigation signature.
+mod explain {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static SINK: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    }
+
+    /// Whether a trace is being collected. Checked before a note is
+    /// formatted, so an ordinary extraction pays one thread-local read.
+    pub(super) fn active() -> bool {
+        SINK.with_borrow(Option::is_some)
+    }
+
+    /// Add one line to the trace being collected, if any.
+    pub(super) fn note(line: String) {
+        SINK.with_borrow_mut(|sink| {
+            if let Some(lines) = sink {
+                lines.push(line);
+            }
+        });
+    }
+
+    /// Run `f` with a trace collected, returning it alongside `f`'s result.
+    pub(super) fn capture<T>(f: impl FnOnce() -> T) -> (T, Vec<String>) {
+        SINK.with_borrow_mut(|sink| *sink = Some(Vec::new()));
+        let out = f();
+        let lines = SINK.with_borrow_mut(Option::take).unwrap_or_default();
+        (out, lines)
+    }
+}
+
+/// Add a line to the formatter trace when one is being collected. The
+/// arguments are formatted only then, so this is free in an ordinary run.
+macro_rules! explain {
+    ($($arg:tt)*) => {
+        if explain::active() {
+            explain::note(format!($($arg)*));
+        }
+    };
+}
+
+/// One type's formatter trace, as `--explain-format` prints it: what the
+/// navigators saw, then whether a program was emitted and of what shape.
+fn report(name: &str, id: BundleTypeId, node: Option<&DisplayNode>, trace: &[String]) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!("{name} [type {}]\n", id.0);
+    for line in trace {
+        let _ = writeln!(out, "{line}");
+    }
+    let _ = match node {
+        Some(node) => writeln!(out, "  => {}", node_label(node)),
+        None => writeln!(out, "  => no formatter; renders structurally"),
+    };
+    out
+}
+
+/// The kind of a display program, for a formatter trace. Only the outermost
+/// node is named; the whole tree is what `exegesis dump` prints.
+fn node_label(node: &DisplayNode) -> &'static str {
+    match node {
+        DisplayNode::Scalar { .. } => "Scalar",
+        DisplayNode::Symbol { .. } => "Symbol",
+        DisplayNode::Struct { .. } => "Struct",
+        DisplayNode::List { .. } => "List",
+        DisplayNode::Str { .. } => "Str",
+        DisplayNode::Slice { .. } => "Slice",
+        DisplayNode::IpAddr { .. } => "IpAddr",
+        DisplayNode::Alias { .. } => "Alias",
+        DisplayNode::SlotCount { .. } => "SlotCount",
+        DisplayNode::Pointer { .. } => "Pointer",
+        DisplayNode::DynPointer { .. } => "DynPointer",
+        DisplayNode::Map { .. } => "Map",
+        DisplayNode::Variant { .. } => "Variant",
+        DisplayNode::CustomList { .. } => "CustomList",
+    }
 }
 
 /// A detector that needs the [`Emitter`], because it interns a string (a record
@@ -1828,6 +1967,14 @@ enum Want<'a> {
 }
 
 impl Want<'_> {
+    /// How this want reads in a formatter trace.
+    fn label(&self) -> &'static str {
+        match self {
+            Want::Type(_) => "a matching type",
+            Want::PointerTo(_) => "a pointer to a matching type",
+        }
+    }
+
     /// The type to report for a candidate the walk landed on, or `None` when
     /// it is not what this want is looking for.
     fn accepts(&self, reader: &DwReader<'_>, id: TypeId) -> Option<TypeId> {
@@ -1926,6 +2073,20 @@ fn find_unique(
         &mut found,
     );
     let [(path, reported)] = found.as_slice() else {
+        explain!(
+            "  find_unique in {}: {} {} through {}",
+            type_label(reader, root),
+            if found.is_empty() {
+                "found nothing matching".to_string()
+            } else {
+                format!("found {}+ candidates for", found.len())
+            },
+            want.label(),
+            match through {
+                Through::ZeroOffset => "zero-offset members",
+                Through::AnyOffset => "any member",
+            },
+        );
         return None;
     };
     Some((Selector::members(path), *reported))
@@ -2690,9 +2851,22 @@ fn field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<(Sele
         let members = match reader.canonical_type(cur)? {
             RawType::Struct(st) => &st.members,
             RawType::Union(u) => &u.members,
-            _ => return None,
+            _ => {
+                explain!(
+                    "  field_path {names:?}: stopped at `{name}`, since {} is not a struct or union",
+                    type_label(reader, cur),
+                );
+                return None;
+            }
         };
-        let (index, member) = unique_member(reader, members, name)?;
+        let Some((index, member)) = unique_member(reader, members, name) else {
+            explain!(
+                "  field_path {names:?}: no unique member `{name}` in {}, which has {}",
+                type_label(reader, cur),
+                member_labels(reader, members),
+            );
+            return None;
+        };
         path.push(index as u32);
         cur = reader.canonicalize(member.type_id);
     }
@@ -3611,6 +3785,11 @@ struct Emitter<'a> {
     /// macro expanded it.
     resume_awaitees: BTreeMap<TypeId, Vec<(Option<TypeId>, OwnedLoc)>>,
     interner: StringInterner,
+    /// Report formatter attachment for types whose name contains this
+    /// substring; see [`explain`].
+    explain_format: Option<String>,
+    /// One trace per explained type, in emission order.
+    explanations: Vec<String>,
     ids: BTreeMap<TypeId, BundleTypeId>,
     defs: Vec<TypeDef>,
     debug_formats: BTreeMap<BundleTypeId, DisplayNode>,
@@ -3626,11 +3805,14 @@ impl<'a> Emitter<'a> {
     fn new(
         reader: &'a DwReader<'a>,
         resume_awaitees: BTreeMap<TypeId, Vec<(Option<TypeId>, OwnedLoc)>>,
+        explain_format: Option<String>,
     ) -> Self {
         Self {
             reader,
             resume_awaitees,
             interner: StringInterner::new(),
+            explain_format,
+            explanations: Vec::new(),
             ids: BTreeMap::new(),
             defs: Vec::new(),
             debug_formats: BTreeMap::new(),
@@ -3826,13 +4008,36 @@ impl<'a> Emitter<'a> {
             let def = self.convert(tid);
             self.defs[bid.0 as usize] = def;
             let name = fq_name(self.reader, tid);
-            let specific = self.specific_debug_format(tid, name.as_deref());
-            let node = specific.or_else(|| known_debug_format(self.reader, tid));
+            let node = match self.explained(name.as_deref()) {
+                Some(wanted) => {
+                    let (node, trace) =
+                        explain::capture(|| self.debug_format_of(tid, name.as_deref()));
+                    self.explanations
+                        .push(report(&wanted, bid, node.as_ref(), &trace));
+                    node
+                }
+                None => self.debug_format_of(tid, name.as_deref()),
+            };
             if let Some(node) = node {
                 self.debug_formats.insert(bid, node);
             }
         }
         root
+    }
+
+    /// The display program for one type: its name-keyed detector if it has
+    /// one, else the structural chain.
+    fn debug_format_of(&mut self, tid: TypeId, name: Option<&str>) -> Option<DisplayNode> {
+        self.specific_debug_format(tid, name)
+            .or_else(|| known_debug_format(self.reader, tid))
+    }
+
+    /// The name to report this type under, when the caller asked for its
+    /// formatter to be explained.
+    fn explained(&self, name: Option<&str>) -> Option<String> {
+        let wanted = self.explain_format.as_deref()?;
+        let name = name?;
+        name.contains(wanted).then(|| name.to_string())
     }
 
     /// Build the display program for a type whose fully-qualified name selects a
@@ -3845,15 +4050,16 @@ impl<'a> Emitter<'a> {
         // table keeps the full name, since `&[T]`/`Box<[T]>` are not
         // distinguished by a leading path.
         let base = full.split_once('<').map_or(full, |(head, _)| head);
-        let detector = BY_NAME
-            .iter()
-            .find(|&&(name, _)| name == base)
-            .or_else(|| {
-                BY_PREFIX
-                    .iter()
-                    .find(|&&(prefix, _)| full.starts_with(prefix))
-            })
-            .map(|&(_, detector)| detector)?;
+        let matched = BY_NAME.iter().find(|&&(name, _)| name == base).or_else(|| {
+            BY_PREFIX
+                .iter()
+                .find(|&&(prefix, _)| full.starts_with(prefix))
+        });
+        let Some(&(key, detector)) = matched else {
+            explain!("  no name-keyed detector for `{base}`; trying the structural chain");
+            return None;
+        };
+        explain!("  name-keyed detector for `{key}` selected");
         detector(self, tid)
     }
 
@@ -4447,10 +4653,11 @@ fn demote_types_with_members_out_of_bounds(
 mod tests {
     use super::{
         StatePass, StaticRole, VtableTypeHint, demote_types_with_members_out_of_bounds,
-        drop_members_of_other_states, dyn_tail_offset, has_dyn_tail, loom_parking_lot_debug_format,
-        match_static_symbol, nonzero_debug_format, nonzero_inner_debug_format,
-        scalar_newtype_debug_format, scan_vtable_section,
+        drop_members_of_other_states, dyn_tail_offset, field_path, find_stored_uint, has_dyn_tail,
+        loom_parking_lot_debug_format, match_static_symbol, nonzero_debug_format,
+        nonzero_inner_debug_format, scalar_newtype_debug_format, scan_vtable_section,
     };
+    use crate::bundle::POINTER_SIZE;
     use crate::raw_types::{NsId, RawMember, RawStruct, RawType};
     use crate::{DwReader, TypeId};
     use gimli::{DebugInfoOffset, UnitSectionOffset};
@@ -4527,6 +4734,141 @@ mod tests {
             Some(32)
         );
         assert_eq!(dyn_tail_offset(&reader, plain_id, &mut Vec::new()), None);
+    }
+
+    /// A failed named walk says which member it wanted and what the type
+    /// actually has — the question `--explain-format` exists to answer, since
+    /// a detector that returns `None` otherwise leaves no trace at all.
+    #[test]
+    fn test_a_failed_field_walk_names_the_member_and_the_alternatives() {
+        let mut reader = DwReader::default();
+        let notify = type_id(1);
+        let word = type_id(2);
+        let name = reader.strings.intern("Notify");
+        let u64_name = reader.strings.intern("u64");
+        let waiters = reader.strings.intern("waiters");
+        let generation = reader.strings.intern("generation");
+        reader.types.insert(
+            word,
+            crate::raw_types::RawBase {
+                name: Some(u64_name),
+                namespace: None,
+                size: 8,
+                alignment: None,
+                encoding: crate::Encoding::Unsigned,
+            }
+            .into(),
+        );
+        reader.types.insert(
+            notify,
+            ns_struct(
+                None,
+                name,
+                16,
+                vec![
+                    RawMember {
+                        name: Some(waiters),
+                        offset: 0,
+                        type_id: word,
+                        source_loc: None,
+                    },
+                    RawMember {
+                        name: Some(generation),
+                        offset: 8,
+                        type_id: word,
+                        source_loc: None,
+                    },
+                ],
+            ),
+        );
+
+        // The member is missing: the trace names it and lists what is there.
+        let (got, trace) = super::explain::capture(|| field_path(&reader, notify, &["state"]));
+        assert!(got.is_none());
+        assert_eq!(trace.len(), 1, "{trace:?}");
+        assert!(
+            trace[0].contains("no unique member `state`")
+                && trace[0].contains("Notify")
+                && trace[0].contains("waiters, generation"),
+            "{}",
+            trace[0]
+        );
+
+        // The walk leaves an aggregate: the trace says where it stopped.
+        let (got, trace) =
+            super::explain::capture(|| field_path(&reader, notify, &["waiters", "value"]));
+        assert!(got.is_none());
+        assert!(
+            trace[0].contains("stopped at `value`") && trace[0].contains("u64"),
+            "{}",
+            trace[0]
+        );
+
+        // A walk that succeeds says nothing; silence is the ordinary case.
+        let (got, trace) = super::explain::capture(|| field_path(&reader, notify, &["waiters"]));
+        assert!(got.is_some());
+        assert!(trace.is_empty(), "{trace:?}");
+    }
+
+    /// A shape-based reach reports both ways it can fail, since "no candidate"
+    /// and "more than one" call for opposite fixes.
+    #[test]
+    fn test_a_failed_shape_walk_separates_absence_from_ambiguity() {
+        let mut reader = DwReader::default();
+        let holder = type_id(1);
+        let word = type_id(2);
+        let holder_name = reader.strings.intern("Holder");
+        let u64_name = reader.strings.intern("u64");
+        let first = reader.strings.intern("first");
+        let second = reader.strings.intern("second");
+        reader.types.insert(
+            word,
+            crate::raw_types::RawBase {
+                name: Some(u64_name),
+                namespace: None,
+                size: 8,
+                alignment: None,
+                encoding: crate::Encoding::Unsigned,
+            }
+            .into(),
+        );
+        // Two words, both at offset zero, so a zero-offset walk sees both.
+        reader.types.insert(
+            holder,
+            ns_struct(
+                None,
+                holder_name,
+                8,
+                vec![
+                    RawMember {
+                        name: Some(first),
+                        offset: 0,
+                        type_id: word,
+                        source_loc: None,
+                    },
+                    RawMember {
+                        name: Some(second),
+                        offset: 0,
+                        type_id: word,
+                        source_loc: None,
+                    },
+                ],
+            ),
+        );
+
+        let (got, trace) =
+            super::explain::capture(|| find_stored_uint(&reader, holder, POINTER_SIZE));
+        assert!(got.is_none(), "two candidates must not resolve");
+        assert!(
+            trace[0].contains("candidates") && trace[0].contains("Holder"),
+            "{}",
+            trace[0]
+        );
+
+        // Nothing of that width is there at all.
+        let (got, trace) = super::explain::capture(|| find_stored_uint(&reader, holder, 2));
+        assert!(got.is_none());
+        assert!(trace[0].contains("found nothing matching"), "{}", trace[0]);
     }
 
     fn ns_struct(

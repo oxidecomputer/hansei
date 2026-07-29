@@ -41,6 +41,10 @@ enum Cmd {
         /// missing (placeholders are emitted instead).
         #[arg(long)]
         allow_missing_infra: bool,
+        /// Report why a formatter did or did not attach, for every emitted
+        /// type whose fully-qualified name contains this substring.
+        #[arg(long, value_name = "FQN")]
+        explain_format: Option<String>,
     },
     /// Parse a binary's DWARF and summarize its types and statics.
     DumpDwarf {
@@ -72,7 +76,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stats,
             include_types,
             allow_missing_infra,
-        } => extract(&binary, &output, stats, include_types, allow_missing_infra),
+            explain_format,
+        } => extract(
+            &binary,
+            &output,
+            stats,
+            include_types,
+            allow_missing_infra,
+            explain_format,
+        ),
         Cmd::DumpDwarf { binary } => dump_dwarf(&binary),
         Cmd::Stats { bundle } => stats(&bundle),
         Cmd::Dump { bundle } => dump(&bundle),
@@ -85,11 +97,14 @@ fn extract(
     print_stats: bool,
     include_types: Vec<String>,
     allow_missing_infra: bool,
+    explain_format: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let explaining = explain_format.clone();
     let opts = exegesis::extract::ExtractOptions {
         include_types,
         allow_missing_infra,
         extract_args: std::env::args().skip(1).collect::<Vec<_>>().join(" "),
+        explain_format,
     };
     let (bundle, stats) = exegesis::extract::extract_file(binary, &opts)?;
     bundle.save(output)?;
@@ -100,6 +115,17 @@ fn extract(
         bundle.tasks.entries.len(),
         bundle.dyn_futures.by_symbol.len(),
     );
+    if let Some(wanted) = explaining {
+        if stats.format_explanations.is_empty() {
+            println!(
+                "no emitted type's name contains {wanted:?}; \
+                 --include-type pulls in one nothing else reaches"
+            );
+        }
+        for report in &stats.format_explanations {
+            print!("{report}");
+        }
+    }
     if print_stats {
         print!("{stats}");
     }
