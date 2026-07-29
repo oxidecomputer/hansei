@@ -15,13 +15,23 @@
 //! stdout readiness marker — there are no timing sleeps anywhere. Cores
 //! are taken fresh into a tempdir and removed with it.
 //!
-//! None of it is platform-specific. `gcore(1)` takes a core of a running
-//! process under the same spelling on both systems, and hansei reads
-//! either format, so the same goldens hold on illumos — where the core
-//! comes back through libproc — and on Linux, where it is read from the
-//! file. What a system has to provide is the pinned toolchain and the
-//! right to core a process it owns; on Linux that means a
-//! `kernel.yama.ptrace_scope` permissive enough to attach.
+//! Nothing here is specific to *either* of the two systems it runs on.
+//! `gcore(1)` takes a core of a running process under the same spelling
+//! on both, and hansei reads either format, so the same goldens hold on
+//! illumos — where the core comes back through libproc — and on Linux,
+//! where it is read from the file. What a system has to provide is the
+//! pinned toolchain and the right to core a process it owns; on Linux
+//! that means a `kernel.yama.ptrace_scope` permissive enough to attach.
+//!
+//! Those two are the whole of it, so the suite compiles nowhere else.
+//! What it asks of a system is a core of an ELF target, and the only
+//! core formats hansei knows are the ELF ones these two write; macOS
+//! spells `gcore` the same way but hands back a Mach-O core of a Mach-O
+//! binary, which nothing downstream can read. The portable coverage of
+//! the same analysis is `hansei-types/tests/two_binary.rs`, which
+//! replays captured snapshots instead of coring anything.
+
+#![cfg(any(target_os = "linux", target_os = "illumos"))]
 
 use exegesis::bundle::{Bundle, BundleView};
 use exegesis::extract::{ExtractOptions, extract_file};
