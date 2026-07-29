@@ -1098,3 +1098,48 @@ fn test_golden_futurelock() {
 fn test_golden_channels() {
     run_golden("channels");
 }
+
+/// Two extractions of one binary agree byte for byte.
+///
+/// The sweep resolves several fields first-wins, so whichever function
+/// it reaches first decides an await's reported site, a coroutine's
+/// resume location, and a task's `poll` declaration. The reader hands
+/// functions out of a randomly seeded hash map, which made that choice
+/// vary from run to run — and a golden can only catch it by flaking, so
+/// the property is asserted directly. Both bundles come from one
+/// process, where each map still gets its own seed.
+#[test]
+fn test_extraction_is_reproducible() {
+    let program = "select-combinator";
+    if !ensure_fixture(program) {
+        return;
+    }
+
+    let opts = ExtractOptions {
+        extract_args: format!("golden-test {program}"),
+        ..Default::default()
+    };
+    let extract = || {
+        let (bundle, _) = extract_file(&dwarf_path(program), &opts)
+            .unwrap_or_else(|e| panic!("extract failed for {program}: {e}"));
+        let mut bytes = Vec::new();
+        bundle.write_to(&mut bytes).expect("bundle failed to write");
+        (bundle, bytes)
+    };
+
+    let (first, first_bytes) = extract();
+    let (second, second_bytes) = extract();
+
+    // Compared decoded as well as encoded: the bytes say *whether* two
+    // extractions agree, the values say *where* they do not.
+    assert_eq!(first.meta, second.meta, "{program}: meta differs");
+    assert_eq!(first.tasks, second.tasks, "{program}: task table differs");
+    assert_eq!(first.types, second.types, "{program}: type table differs");
+    assert_eq!(first, second, "{program}: bundles differ");
+    assert!(
+        first_bytes == second_bytes,
+        "{program}: serialized bundles differ ({} vs {} bytes)",
+        first_bytes.len(),
+        second_bytes.len()
+    );
+}

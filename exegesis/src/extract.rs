@@ -32,7 +32,7 @@ use std::num::NonZeroU8;
 use crate::raw_types::{NsId, RawType, VariantShape as RawVariantShape};
 use crate::symbols::normalized_value_index;
 use crate::view::{DwView, Func, SourceLocView};
-use crate::{DwReader, Encoding, TypeId};
+use crate::{DwReader, Encoding, FuncId, TypeId};
 
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 use tracing::{debug, warn};
@@ -647,7 +647,14 @@ impl Sweep {
 /// thread pool and the per-worker [`Sweep`]s merged in source order.
 fn sweep_functions(view: &DwView<'_>, raw_ns: Option<NsId>, glue_ns: Option<NsId>) -> Sweep {
     let reader = view.collector();
-    let funcs: Vec<Func> = view.functions().map(|(_, f)| f).collect();
+    // Sorted by id, i.e. by `.debug_info` offset, because the sweep's
+    // "first wins" fields make the order observable and the reader hands
+    // functions out in the order of a randomly seeded hash map — the same
+    // program would otherwise pick a different `__awaitee` list, resume
+    // location, or `poll` declaration on each run.
+    let mut funcs: Vec<(FuncId, Func)> = view.functions().collect();
+    funcs.sort_unstable_by_key(|&(id, _)| id);
+    let funcs: Vec<Func> = funcs.into_iter().map(|(_, func)| func).collect();
 
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     if threads <= 1 || funcs.len() < SWEEP_PARALLEL_THRESHOLD {
