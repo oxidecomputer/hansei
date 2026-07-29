@@ -991,6 +991,15 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              discr=(Read(shared.ptr.pointer.*.data.state.__0.inner.value.v.value.__0@+320) & 0x1), \
              arms=[0=>false, 1=>true] } }",
         );
+        // A cache-line pad is one member holding the value; it aliases that
+        // member so the padding does not read as a level of structure.
+        assert_format(
+            program,
+            bundle,
+            "tokio::util::cacheline::CachePadded<tokio::sync::mpsc::list::Tx<u32>>",
+            "tokio::util::cacheline::CachePadded<tokio::sync::mpsc::list::Tx<u32>> \
+             :: Node Alias { value@+0, follow }",
+        );
         assert_format(
             program,
             bundle,
