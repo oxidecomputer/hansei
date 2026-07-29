@@ -9,9 +9,9 @@ use exegesis::bundle::{
     Arm, BitField as BundleBitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION, Field as BundleField,
     FieldRender as BundleFieldRender, InfraTypes, MapEntries as BundleMapEntries, MemberDef,
-    MemberRef, Meta, ProvenanceTable, ScalarDecode as BundleScalarDecode, Selector, StaticsTable,
-    Step, Stmt as BundleStmt, StrRef, StringInterner, TaskTable, TypeDef, TypeTable, ValueExpr,
-    VariantDef, VariantShape,
+    MemberRef, Meta, Notation, ProvenanceTable, ScalarDecode as BundleScalarDecode, Selector,
+    StaticsTable, Step, Stmt as BundleStmt, StrRef, StringInterner, TaskTable, TypeDef, TypeTable,
+    ValueExpr, VariantDef, VariantShape,
 };
 
 use std::collections::BTreeMap;
@@ -390,6 +390,12 @@ fixture_ids! {
     F32, F64, I8, I16, I32, I64,
     CHAR, U24, COLOR, VAL_UNION, UNMODELLED, U16,
     U16_ARR,
+    // A `uuid::Uuid`: the same `[u8; 16]` an `Ipv6Addr` is, so only the
+    // notation separates what the two render as.
+    UUID_BYTES, UUID,
+    // A 32-byte digest: any length is hex, so it shares no length with the
+    // notations that fix one.
+    HASH_BYTES, HASH,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -448,6 +454,8 @@ pub fn test_bundle() -> Bundle {
         s("core::net::ip_addr::Ipv6Addr"),
         s("octets"),
     );
+    let (uuidn, uuid_bytesn) = (s("uuid::Uuid"), s("__0"));
+    let hashn = s("tufaceous_artifact::artifact::ArtifactHash");
     let (vecn, ptrn, vec_lenn, capacityn) =
         (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
     let slicen = s("&[u32]");
@@ -1382,6 +1390,36 @@ pub fn test_bundle() -> Bundle {
             count: 2,
         },
     );
+    types.add(
+        UUID_BYTES,
+        TypeDef::Array {
+            elem: U8,
+            count: 16,
+        },
+    );
+    types.add(
+        UUID,
+        TypeDef::Struct {
+            name: uuidn,
+            size: 16,
+            members: vec![m(uuid_bytesn, UUID_BYTES, 0)],
+        },
+    );
+    types.add(
+        HASH_BYTES,
+        TypeDef::Array {
+            elem: U8,
+            count: 32,
+        },
+    );
+    types.add(
+        HASH,
+        TypeDef::Struct {
+            name: hashn,
+            size: 32,
+            members: vec![m(uuid_bytesn, HASH_BYTES, 0)],
+        },
+    );
     let types = types.finish();
 
     // Field labels for the node-based `BoundedSemaphore` formatter (deduped
@@ -1561,8 +1599,34 @@ pub fn test_bundle() -> Bundle {
                         }),
                     },
                 ),
-                (IPV4, BundleNode::IpAddr { octets: sel(&[0]) }),
-                (IPV6, BundleNode::IpAddr { octets: sel(&[0]) }),
+                (
+                    IPV4,
+                    BundleNode::Bytes {
+                        at: sel(&[0]),
+                        notation: Notation::IpAddr,
+                    },
+                ),
+                (
+                    IPV6,
+                    BundleNode::Bytes {
+                        at: sel(&[0]),
+                        notation: Notation::IpAddr,
+                    },
+                ),
+                (
+                    UUID,
+                    BundleNode::Bytes {
+                        at: sel(&[0]),
+                        notation: Notation::Uuid,
+                    },
+                ),
+                (
+                    HASH,
+                    BundleNode::Bytes {
+                        at: sel(&[0]),
+                        notation: Notation::Hex,
+                    },
+                ),
                 (
                     VEC,
                     BundleNode::Slice {

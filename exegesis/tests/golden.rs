@@ -325,8 +325,8 @@ fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> Str
                 fq_name(bundle, *element),
             )
         }
-        DisplayNode::IpAddr { octets } => {
-            format!("IpAddr {{ octets={} }}", field(bundle, root, octets))
+        DisplayNode::Bytes { at, notation } => {
+            format!("Bytes {notation:?} {{ {} }}", field(bundle, root, at))
         }
         DisplayNode::Alias {
             at,
@@ -888,13 +888,13 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             "core::net::ip_addr::Ipv4Addr",
-            "core::net::ip_addr::Ipv4Addr :: Node IpAddr { octets=octets@+0 }",
+            "core::net::ip_addr::Ipv4Addr :: Node Bytes IpAddr { octets@+0 }",
         );
         assert_format(
             program,
             bundle,
             "core::net::ip_addr::Ipv6Addr",
-            "core::net::ip_addr::Ipv6Addr :: Node IpAddr { octets=octets@+0 }",
+            "core::net::ip_addr::Ipv6Addr :: Node Bytes IpAddr { octets@+0 }",
         );
         assert_format(
             program,

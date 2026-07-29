@@ -13,7 +13,7 @@ use std::fmt;
 use super::collections::{eval_list, eval_map, eval_slice};
 use super::dyn_ptr::eval_dyn_pointer;
 use super::scalar::{
-    apply, byte_range, eval_ip_addr, read_u64_at, read_unsigned_at, write_symbol, write_utf8_string,
+    apply, byte_range, eval_bytes, read_u64_at, read_unsigned_at, write_symbol, write_utf8_string,
 };
 use super::{DisplayRecurse, RenderCtx, write_indent, write_seq_close, write_seq_prefix};
 
@@ -97,10 +97,11 @@ pub(crate) fn eval_node<'a, T: DebugType<'a>>(
             ctx,
             pretty,
         ),
-        DisplayNode::IpAddr {
-            octets_offset,
-            octets_size,
-        } => eval_ip_addr(f, bytes, *octets_offset, u64::from(*octets_size)),
+        DisplayNode::Bytes {
+            offset,
+            size,
+            notation,
+        } => eval_bytes(f, bytes, *offset, u64::from(*size), *notation),
         DisplayNode::Alias {
             target,
             place,

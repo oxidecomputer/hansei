@@ -23,9 +23,10 @@
 use crate::bundle::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
-    MemberRef, Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, Shape, SourceLoc,
-    StaticDef, StaticRole, StaticsTable, Step, Stmt, StrRef, StringInterner, TaskEntryId,
-    TaskFutureEntry, TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape,
+    MemberRef, Meta, Notation, Provenance, ProvenanceTable, ScalarDecode, Selector, Shape,
+    SourceLoc, StaticDef, StaticRole, StaticsTable, Step, Stmt, StrRef, StringInterner,
+    TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef,
+    VariantShape,
 };
 use std::num::NonZeroU8;
 
@@ -1453,7 +1454,7 @@ fn node_label(node: &DisplayNode) -> &'static str {
         DisplayNode::List { .. } => "List",
         DisplayNode::Str { .. } => "Str",
         DisplayNode::Slice { .. } => "Slice",
-        DisplayNode::IpAddr { .. } => "IpAddr",
+        DisplayNode::Bytes { .. } => "Bytes",
         DisplayNode::Alias { .. } => "Alias",
         DisplayNode::SlotCount { .. } => "SlotCount",
         DisplayNode::Pointer { .. } => "Pointer",
@@ -1527,6 +1528,8 @@ static BY_NAME: &[(&str, Detector)] = &[
     ("tokio::sync::watch::Shared", watch_shared_node),
     ("tokio::sync::watch::state::AtomicState", watch_state_node),
     ("tokio::util::cacheline::CachePadded", cache_padded_node),
+    ("tufaceous_artifact::artifact::ArtifactHash", hex_bytes_node),
+    ("uuid::Uuid", uuid_node),
 ];
 
 /// Detectors keyed by a prefix of the *full* name, for a family no single base
@@ -2340,8 +2343,9 @@ enum Pat<'a> {
         capacity: Option<PatPath<'a>>,
         element: PatType<'a>,
     },
-    IpAddr {
-        octets: PatPath<'a>,
+    Bytes {
+        at: PatPath<'a>,
+        notation: Notation,
     },
     Struct {
         fields: PatFields<'a>,
@@ -2412,8 +2416,9 @@ impl Emitter<'_> {
                 capacity: self.walk_opt(root, capacity)?,
                 element: self.walk_type(root, &element)?,
             },
-            Pat::IpAddr { octets } => DisplayNode::IpAddr {
-                octets: self.walk(root, &octets)?.0,
+            Pat::Bytes { at, notation } => DisplayNode::Bytes {
+                at: self.walk(root, &at)?.0,
+                notation,
             },
             Pat::Struct { fields } => DisplayNode::Struct {
                 fields: self.compile_fields(root, fields)?,
@@ -2722,17 +2727,76 @@ fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
         "core::net::ip_addr::Ipv6Addr" => 16,
         _ => return None,
     };
-    // The octet count is what tells the two apart, and the `IpAddr` node reads
-    // the array wherever the path lands, so the width is the only screen the
-    // node's own requirement (an array) does not already make.
+    // The octet count is what tells the two apart, and the node's own
+    // requirement is only that the path reaches an array.
     let octets = || path![Named("octets")];
-    let RawType::Array(array) = reader.canonical_type(emitter.landed(id, &octets())?)? else {
-        return None;
-    };
-    if array.count != expected_octets || !is_unsigned_integer(reader, array.elem_type_id, 1) {
+    if !is_byte_array(emitter, id, &octets(), Some(expected_octets)) {
         return None;
     }
-    emitter.compile(id, Pat::IpAddr { octets: octets() })
+    emitter.compile(
+        id,
+        Pat::Bytes {
+            at: octets(),
+            notation: Notation::IpAddr,
+        },
+    )
+}
+
+/// A `uuid::Uuid` is a newtype over `[u8; 16]`, rendered in the hyphenated form
+/// its own `Display` produces. Sixteen bytes is also an `Ipv6Addr`, so the
+/// notation is what separates them, not the layout.
+fn uuid_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let bytes = || path![Named("__0")];
+    if !is_byte_array(emitter, id, &bytes(), Some(16)) {
+        return None;
+    }
+    emitter.compile(
+        id,
+        Pat::Bytes {
+            at: bytes(),
+            notation: Notation::Uuid,
+        },
+    )
+}
+
+/// A newtype over a byte array whose value is a digest — a TUF artifact hash, a
+/// build id — rendered as the lowercase hex everything else that prints one
+/// uses, so an id read out of a core can be matched against a log line or a
+/// manifest. Any length: SHA-1 is 20 bytes, SHA-256 and BLAKE3 are 32.
+fn hex_bytes_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let bytes = || path![Named("__0")];
+    if !is_byte_array(emitter, id, &bytes(), None) {
+        return None;
+    }
+    emitter.compile(
+        id,
+        Pat::Bytes {
+            at: bytes(),
+            notation: Notation::Hex,
+        },
+    )
+}
+
+/// Whether `at` reaches an inline array of unsigned bytes — exactly `count` of
+/// them when a count is given, any nonzero number otherwise.
+///
+/// A `Bytes` node requires an array and validation requires the length its
+/// notation spells, but only at save time — so a detector that would emit the
+/// wrong length screens for it here and declines instead.
+fn is_byte_array(
+    emitter: &mut Emitter<'_>,
+    id: TypeId,
+    at: &PatPath<'_>,
+    count: Option<u64>,
+) -> bool {
+    let Some(landed) = emitter.landed(id, at) else {
+        return false;
+    };
+    let reader = emitter.reader;
+    matches!(reader.canonical_type(landed), Some(RawType::Array(array))
+        if count.unwrap_or(array.count) == array.count
+            && array.count > 0
+            && is_unsigned_integer(reader, array.elem_type_id, 1))
 }
 
 fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -5185,7 +5249,7 @@ mod tests {
         demote_types_with_members_out_of_bounds, drop_members_of_other_states, dyn_tail_offset,
         has_dyn_tail, match_static_symbol, scalar_newtype_node, scan_vtable_section, str_node,
     };
-    use crate::bundle::{DisplayNode, MemberRef, POINTER_SIZE, Shape, Step};
+    use crate::bundle::{DisplayNode, MemberRef, Notation, POINTER_SIZE, Shape, Step};
     use crate::extract::PatStep::PeelTo;
     use crate::raw_types::{NsId, RawBase, RawMember, RawPointer, RawStruct, RawType};
     use crate::{DwReader, Encoding, TypeId};
@@ -5581,6 +5645,112 @@ mod tests {
         // the detector to it.
         assert!(detect(&reader, str_node, bad_id).is_some());
         assert_eq!(format_of(&reader, bad_id), None);
+    }
+
+    /// A `uuid::Uuid`-shaped newtype over `[u8; count]`, so a test can vary the
+    /// one thing the notation cares about.
+    #[test]
+    fn test_a_uuid_is_recognized_only_at_sixteen_bytes() {
+        for (count, expected) in [(16, true), (8, false), (4, false)] {
+            let mut reader = DwReader::default();
+            let m0 = reader.strings.intern("__0");
+            let byte_name = reader.strings.intern("u8");
+            let uuid_name = reader.strings.intern("Uuid");
+            let (byte, array, uuid) = (type_id(1), type_id(2), type_id(3));
+            reader
+                .types
+                .insert(byte, base(byte_name, 1, Encoding::Unsigned));
+            reader.types.insert(
+                array,
+                crate::raw_types::RawArray {
+                    elem_type_id: byte,
+                    count,
+                }
+                .into(),
+            );
+            reader.types.insert(
+                uuid,
+                ns_struct(
+                    None,
+                    uuid_name,
+                    count,
+                    vec![RawMember {
+                        name: Some(m0),
+                        offset: 0,
+                        type_id: array,
+                        source_loc: None,
+                    }],
+                ),
+            );
+
+            let got = detect_by_name(&reader, uuid, "uuid::Uuid");
+            assert_eq!(
+                got.is_some(),
+                expected,
+                "a {count}-byte newtype should{} be a UUID, got {got:?}",
+                if expected { "" } else { " not" },
+            );
+            // Sixteen bytes is also an `Ipv6Addr`'s layout, so the notation is
+            // the whole of what this detector decides.
+            if expected {
+                assert!(
+                    matches!(
+                        got,
+                        Some(DisplayNode::Bytes {
+                            notation: Notation::Uuid,
+                            ..
+                        })
+                    ),
+                    "{got:?}"
+                );
+            }
+        }
+    }
+
+    /// Hex spells any run of bytes, so unlike a UUID its detector must accept
+    /// every length — and still decline an empty array, which spells nothing.
+    #[test]
+    fn test_a_digest_is_hex_at_any_nonzero_length() {
+        for (count, expected) in [(32, true), (20, true), (1, true), (0, false)] {
+            let mut reader = DwReader::default();
+            let m0 = reader.strings.intern("__0");
+            let byte_name = reader.strings.intern("u8");
+            let hash_name = reader.strings.intern("ArtifactHash");
+            let (byte, array, hash) = (type_id(1), type_id(2), type_id(3));
+            reader
+                .types
+                .insert(byte, base(byte_name, 1, Encoding::Unsigned));
+            reader.types.insert(
+                array,
+                crate::raw_types::RawArray {
+                    elem_type_id: byte,
+                    count,
+                }
+                .into(),
+            );
+            reader.types.insert(
+                hash,
+                ns_struct(
+                    None,
+                    hash_name,
+                    count,
+                    vec![RawMember {
+                        name: Some(m0),
+                        offset: 0,
+                        type_id: array,
+                        source_loc: None,
+                    }],
+                ),
+            );
+
+            let got = detect_by_name(&reader, hash, "tufaceous_artifact::artifact::ArtifactHash");
+            assert_eq!(
+                got.is_some(),
+                expected,
+                "a {count}-byte digest should{} render as hex, got {got:?}",
+                if expected { "" } else { " not" },
+            );
+        }
     }
 
     fn ns_struct(
