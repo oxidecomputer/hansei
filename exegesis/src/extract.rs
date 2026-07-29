@@ -2222,6 +2222,251 @@ fn addressing_holds(
     }
 }
 
+/// One step of a [`Pat`]'s path: how the pattern says to get somewhere, before
+/// anything has looked at DWARF.
+#[derive(Clone)]
+enum PatStep<'a> {
+    /// The uniquely-named member. What a detector reaches for whenever the
+    /// spelling is stable, which is nearly always.
+    Named(&'a str),
+    /// Follow the pointer reached so far.
+    Deref,
+    /// Continue along a path something else already resolved — how a shape
+    /// helper's selectors are anchored under the member that holds them.
+    Resolved(Selector),
+}
+
+/// A path in a [`Pat`], outermost step first.
+type PatPath<'a> = Vec<PatStep<'a>>;
+
+// A pattern is written far more often than it is matched on, so the steps are
+// spelled bare: `path![Named("head"), Deref]` reads as the path it describes.
+use PatStep::{Deref, Named, Resolved};
+
+/// Build a [`PatPath`]. `path![Named("a"), Deref]` reads as the path it is.
+macro_rules! path {
+    ($($step:expr),* $(,)?) => { vec![$($step),*] };
+}
+
+/// A type a pattern needs the bundle to carry, named by where it is found
+/// rather than by a [`TypeId`] the detector had to dig out itself.
+enum PatType<'a> {
+    /// What the pointer the path lands on targets.
+    Behind(PatPath<'a>),
+}
+
+/// One field of a [`Pat::Struct`] record.
+enum PatField<'a> {
+    /// A real member whose value the pattern computes, keeping its own name.
+    Computed(&'a str, Pat<'a>),
+}
+
+/// A display program with its paths not yet found: a detector describes the
+/// shape it expects, and [`Emitter::compile`] looks for that shape in DWARF.
+///
+/// A pattern is not a second way to spell a [`DisplayNode`] — it is the same
+/// program with the *navigation* left as a description. Compiling it is what
+/// turns "the member called `length`" into a selector, so a detector states a
+/// layout once instead of walking it, checking it, and then rebuilding a
+/// selector out of what it found. A pattern that does not fit declines with a
+/// trace line naming the step that failed, which is the behavior every
+/// hand-written detector was supposed to have and only some did.
+///
+/// Only the node kinds a pattern can express appear here. A program whose
+/// contents depend on values discovered while navigating — a `Variant`'s
+/// computed discriminant, a `CustomList`'s loop — is still built by hand.
+enum Pat<'a> {
+    Symbol {
+        at: PatPath<'a>,
+    },
+    Str {
+        pointer: PatPath<'a>,
+        length: PatPath<'a>,
+        capacity: Option<PatPath<'a>>,
+    },
+    Slice {
+        pointer: PatPath<'a>,
+        length: PatPath<'a>,
+        capacity: Option<PatPath<'a>>,
+        element: PatType<'a>,
+    },
+    IpAddr {
+        octets: PatPath<'a>,
+    },
+    Struct {
+        fields: Vec<PatField<'a>>,
+    },
+}
+
+impl Emitter<'_> {
+    /// Find `pat` in the type `root` names and lower it to a display program,
+    /// or decline — leaving a trace line for `--explain-format` — when the
+    /// type does not have the shape the pattern describes.
+    ///
+    /// Every path becomes a name-addressed [`Selector`], so a program survives
+    /// the member-list rewriting that happens after it is attached.
+    fn compile(&mut self, root: TypeId, pat: Pat<'_>) -> Option<DisplayNode> {
+        Some(match pat {
+            Pat::Symbol { at } => DisplayNode::Symbol {
+                at: self.walk(root, &at)?.0,
+            },
+            Pat::Str {
+                pointer,
+                length,
+                capacity,
+            } => DisplayNode::Str {
+                pointer: self.walk(root, &pointer)?.0,
+                length: self.walk(root, &length)?.0,
+                capacity: self.walk_opt(root, capacity)?,
+            },
+            Pat::Slice {
+                pointer,
+                length,
+                capacity,
+                element,
+            } => DisplayNode::Slice {
+                pointer: self.walk(root, &pointer)?.0,
+                length: self.walk(root, &length)?.0,
+                capacity: self.walk_opt(root, capacity)?,
+                element: self.walk_type(root, &element)?,
+            },
+            Pat::IpAddr { octets } => DisplayNode::IpAddr {
+                octets: self.walk(root, &octets)?.0,
+            },
+            Pat::Struct { fields } => DisplayNode::Struct {
+                fields: fields
+                    .into_iter()
+                    .map(|field| self.compile_field(root, field))
+                    .collect::<Option<_>>()?,
+            },
+        })
+    }
+
+    /// Compile one [`PatField`]. A field names its member rather than
+    /// addressing it positionally, so the name has to resolve here too — a
+    /// record cannot show a member that is not there.
+    fn compile_field(&mut self, root: TypeId, field: PatField<'_>) -> Option<Field> {
+        let PatField::Computed(name, pat) = field;
+        let at = self.member_named(root, name)?;
+        Some(Field::computed(at, self.compile(root, pat)?))
+    }
+
+    /// Address the uniquely-named member `name` of `root`, checking it is
+    /// there.
+    fn member_named(&mut self, root: TypeId, name: &str) -> Option<MemberRef> {
+        let members = aggregate_members(self.reader, root)?;
+        if unique_member(self.reader, members, name).is_none() {
+            explain!(
+                "  no unique member `{name}` in {}, which has {}",
+                type_label(self.reader, root),
+                member_labels(self.reader, members),
+            );
+            return None;
+        }
+        Some(MemberRef::Named(self.intern(name)))
+    }
+
+    /// Resolve a pattern path against `root`: the selector it lowers to and
+    /// the type it lands on.
+    fn walk(&mut self, root: TypeId, path: &PatPath<'_>) -> Option<(Selector, TypeId)> {
+        let mut steps = Vec::new();
+        let mut cur = self.reader.canonicalize(root);
+        for step in path {
+            match step {
+                Named(name) => {
+                    let members = aggregate_members(self.reader, cur).or_else(|| {
+                        explain!(
+                            "  path stopped at `{name}`, since {} is not a struct or union",
+                            type_label(self.reader, cur),
+                        );
+                        None
+                    })?;
+                    let Some((_, member)) = unique_member(self.reader, members, name) else {
+                        explain!(
+                            "  no unique member `{name}` in {}, which has {}",
+                            type_label(self.reader, cur),
+                            member_labels(self.reader, members),
+                        );
+                        return None;
+                    };
+                    cur = self.reader.canonicalize(member.type_id);
+                    steps.push(Step::Member(MemberRef::Named(self.intern(name))));
+                }
+                PatStep::Deref => {
+                    let Some(RawType::Pointer(pointer)) = self.reader.canonical_type(cur) else {
+                        explain!(
+                            "  path dereferences {}, which is not a pointer",
+                            type_label(self.reader, cur),
+                        );
+                        return None;
+                    };
+                    cur = self.reader.canonicalize(pointer.target_type_id);
+                    steps.push(Step::Deref);
+                }
+                PatStep::Resolved(sel) => {
+                    let Some(landed) = selector_lands(self.reader, &self.interner, cur, sel) else {
+                        explain!(
+                            "  an already-resolved path does not reach into {}",
+                            type_label(self.reader, cur),
+                        );
+                        return None;
+                    };
+                    cur = landed;
+                    steps.extend(sel.steps().iter().cloned());
+                }
+            }
+        }
+        Some((Selector(steps), cur))
+    }
+
+    /// Resolve an optional path, distinguishing "absent" from "did not
+    /// resolve": a pattern that asks for a capacity and cannot find it has
+    /// failed, and must not quietly render as though it were borrowed.
+    fn walk_opt(&mut self, root: TypeId, path: Option<PatPath<'_>>) -> Option<Option<Selector>> {
+        match path {
+            None => Some(None),
+            Some(path) => Some(Some(self.walk(root, &path)?.0)),
+        }
+    }
+
+    /// Resolve a [`PatType`] and reserve the type it names, so the bundle
+    /// carries it.
+    fn walk_type(&mut self, root: TypeId, want: &PatType<'_>) -> Option<BundleTypeId> {
+        let found = match want {
+            PatType::Behind(path) => {
+                let landed = self.walk(root, path)?.1;
+                let Some(RawType::Pointer(pointer)) = self.reader.canonical_type(landed) else {
+                    explain!(
+                        "  {} is not a pointer, so nothing is behind it",
+                        type_label(self.reader, landed),
+                    );
+                    return None;
+                };
+                self.reader.canonicalize(pointer.target_type_id)
+            }
+        };
+        Some(self.reserve(found))
+    }
+
+    /// The type a pattern path lands on, for a screen tighter than the shape
+    /// the node itself requires.
+    fn landed(&mut self, root: TypeId, path: &PatPath<'_>) -> Option<TypeId> {
+        Some(self.walk(root, path)?.1)
+    }
+}
+
+/// The members of `id`, or `None` when it is not an aggregate.
+fn aggregate_members<'r>(
+    reader: &'r DwReader<'_>,
+    id: TypeId,
+) -> Option<&'r [crate::raw_types::RawMember<crate::StrId>]> {
+    match reader.canonical_type(id)? {
+        RawType::Struct(st) => Some(&st.members),
+        RawType::Union(union) => Some(&union.members),
+        _ => None,
+    }
+}
+
 fn function_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     let RawType::Pointer(pointer) = reader.canonical_type(id)? else {
@@ -2235,34 +2480,26 @@ fn function_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
 }
 
 fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
-    let st = struct_of(reader, id)?;
-    let member = |expected: &str| {
-        let (index, _) = unique_member(reader, &st.members, expected)?;
-        Some(index as u32)
-    };
     // Render the whole struct, replacing each function-pointer member's value
     // with a `Symbol` node (its address and resolved name) while keeping the
     // member's own name. That each member really is a pointer is the `Symbol`
     // node's own requirement, checked once the program is built. The fields are
     // emitted in RawWakerVTable's declared order (clone, wake, wake_by_ref,
     // drop) regardless of DWARF member order.
-    let symbol = |index: u32| {
-        Field::computed(
-            MemberRef::Index(index),
-            DisplayNode::Symbol {
-                at: Selector::member(index),
+    let symbol = |name| {
+        PatField::Computed(
+            name,
+            Pat::Symbol {
+                at: path![Named(name)],
             },
         )
     };
-    Some(DisplayNode::Struct {
-        fields: vec![
-            symbol(member("clone")?),
-            symbol(member("wake")?),
-            symbol(member("wake_by_ref")?),
-            symbol(member("drop")?),
-        ],
-    })
+    emitter.compile(
+        id,
+        Pat::Struct {
+            fields: ["clone", "wake", "wake_by_ref", "drop"].map(symbol).into(),
+        },
+    )
 }
 
 fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -2273,41 +2510,35 @@ fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
         "core::net::ip_addr::Ipv6Addr" => 16,
         _ => return None,
     };
-    let st = struct_of(reader, id)?;
-    let (index, member) = unique_member(reader, &st.members, "octets")?;
-    if member.offset != 0 {
-        return None;
-    }
-    let RawType::Array(array) = reader.canonical_type(member.type_id)? else {
+    // The octet count is what tells the two apart, and the `IpAddr` node reads
+    // the array wherever the path lands, so the width is the only screen the
+    // node's own requirement (an array) does not already make.
+    let octets = || path![Named("octets")];
+    let RawType::Array(array) = reader.canonical_type(emitter.landed(id, &octets())?)? else {
         return None;
     };
     if array.count != expected_octets || !is_unsigned_integer(reader, array.elem_type_id, 1) {
         return None;
     }
-    Some(DisplayNode::IpAddr {
-        octets: Selector::member(index as u32),
-    })
+    emitter.compile(id, Pat::IpAddr { octets: octets() })
 }
 
 fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
-    let st = struct_of(reader, id)?;
-    let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
-    let (length, _) = unique_member(reader, &st.members, "length")?;
     // The `Str` node accepts any data pointer, since camino's is typed; a `&str`
     // is the byte-erased one, and screening for that here is what keeps this
     // detector from claiming a fat pointer over something else.
-    let RawType::Pointer(raw_pointer) = reader.canonical_type(pointer_member.type_id)? else {
-        return None;
-    };
-    if !is_unsigned_integer(reader, raw_pointer.target_type_id, 1) {
+    let bytes = emitter.landed(id, &path![Named("data_ptr"), Deref])?;
+    if !is_unsigned_integer(emitter.reader, bytes, 1) {
         return None;
     }
-    Some(DisplayNode::Str {
-        pointer: Selector::member(pointer as u32),
-        length: Selector::member(length as u32),
-        capacity: None,
-    })
+    emitter.compile(
+        id,
+        Pat::Str {
+            pointer: path![Named("data_ptr")],
+            length: path![Named("length")],
+            capacity: None,
+        },
+    )
 }
 
 /// A `&[T]` slice reference or a `Box<[T]>` boxed slice. Both are laid out as a
@@ -2316,43 +2547,46 @@ fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 /// `Slice` node with `capacity: None`, the borrowed counterpart to an owned
 /// `Vec`.
 fn slice_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
     // The dispatch table screens by name (`&[` / `alloc::boxed::Box<[`); a thin
     // `Box<T>` has no `[` and `&str`/`String` are UTF-8, so neither reaches
-    // here. This validates only the fat-pointer structure.
-    let st = struct_of(reader, id)?;
-    let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
-    let (length, _) = unique_member(reader, &st.members, "length")?;
-    let RawType::Pointer(raw_pointer) = reader.canonical_type(pointer_member.type_id)? else {
-        return None;
-    };
-    let element = reader.canonicalize(raw_pointer.target_type_id);
-    Some(DisplayNode::Slice {
-        pointer: Selector::member(pointer as u32),
-        length: Selector::member(length as u32),
-        capacity: None,
-        element: emitter.reserve(element),
-    })
+    // here. This describes only the fat-pointer structure.
+    emitter.compile(
+        id,
+        Pat::Slice {
+            pointer: path![Named("data_ptr")],
+            length: path![Named("length")],
+            capacity: None,
+            element: PatType::Behind(path![Named("data_ptr")]),
+        },
+    )
 }
 
 fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
-    let st = struct_of(reader, id)?;
-    let (vec_index, vec_member) = unique_member(reader, &st.members, "vec")?;
-    let shape = vec_shape(reader, vec_member.type_id)?;
-    if !is_unsigned_integer(reader, shape.element, 1) {
+    // A `String` is a `Vec<u8>` behind a single member, so its data pointer,
+    // length, and capacity are the Vec's own paths anchored at the `vec`
+    // member. It renders exactly as a `&str` with the capacity checked, so it
+    // reuses the `Str` node with the capacity supplied.
+    let vec = emitter.landed(id, &path![Named("vec")])?;
+    let shape = vec_shape(emitter.reader, vec)?;
+    if !is_unsigned_integer(emitter.reader, shape.element, 1) {
         return None;
     }
-    // A `String` is a `Vec<u8>` behind a single member, so its data pointer,
-    // length, and capacity are the Vec's own selectors anchored at the `vec`
-    // member. It renders exactly as a `&str` with the capacity checked, so it
-    // reuses the `Str` node with the capacity selector supplied.
-    let vec = Selector::member(vec_index as u32);
-    Some(DisplayNode::Str {
-        pointer: vec.clone().then(shape.pointer),
-        length: vec.clone().then(shape.length),
-        capacity: Some(vec.then(shape.capacity)),
-    })
+    emitter.compile(id, buffer_pattern(&path![Named("vec")], shape))
+}
+
+/// The `Str` program an owned UTF-8 buffer renders through: a `Vec<u8>`'s own
+/// paths, anchored under the walk that reaches the vector.
+fn buffer_pattern<'a>(prefix: &PatPath<'a>, shape: VecShape) -> Pat<'a> {
+    let under = |sel| {
+        let mut path: PatPath<'a> = prefix.iter().map(PatStep::clone).collect();
+        path.push(Resolved(sel));
+        path
+    };
+    Pat::Str {
+        pointer: under(shape.pointer),
+        length: under(shape.length),
+        capacity: Some(under(shape.capacity)),
+    }
 }
 
 /// A borrowed `&camino::Utf8Path` is a `{ data_ptr, length }` fat pointer over a
@@ -2360,15 +2594,14 @@ fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 /// pointer is typed `*Utf8Path` rather than `*u8`. It renders through the same
 /// `Str` node with no capacity.
 fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
-    let st = struct_of(reader, id)?;
-    let (pointer, _) = unique_member(reader, &st.members, "data_ptr")?;
-    let (length, _) = unique_member(reader, &st.members, "length")?;
-    Some(DisplayNode::Str {
-        pointer: Selector::member(pointer as u32),
-        length: Selector::member(length as u32),
-        capacity: None,
-    })
+    emitter.compile(
+        id,
+        Pat::Str {
+            pointer: path![Named("data_ptr")],
+            length: path![Named("length")],
+            capacity: None,
+        },
+    )
 }
 
 /// An owned `camino::Utf8PathBuf` wraps a `std::path::PathBuf`, which nests
@@ -2377,17 +2610,12 @@ fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
 /// guaranteed-UTF-8 `Vec<u8>`, so it reuses the same `Str` node with the
 /// capacity checked, prefixing the Vec's own paths with the wrapper chain.
 fn utf8_path_buf_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
-    let (prefix, vec_type) = field_path(reader, id, &["__0", "inner", "inner", "inner"])?;
-    let shape = vec_shape(reader, vec_type)?;
-    if !is_unsigned_integer(reader, shape.element, 1) {
+    let prefix = path![Named("__0"), Named("inner"), Named("inner"), Named("inner"),];
+    let shape = vec_shape(emitter.reader, emitter.landed(id, &prefix)?)?;
+    if !is_unsigned_integer(emitter.reader, shape.element, 1) {
         return None;
     }
-    Some(DisplayNode::Str {
-        pointer: prefix.clone().then(shape.pointer),
-        length: prefix.clone().then(shape.length),
-        capacity: Some(prefix.then(shape.capacity)),
-    })
+    emitter.compile(id, buffer_pattern(&prefix, shape))
 }
 
 /// A `parking_lot::raw_mutex::RawMutex` is a single decoded lock-state byte
@@ -4664,12 +4892,12 @@ fn demote_types_with_members_out_of_bounds(
 #[cfg(test)]
 mod tests {
     use super::{
-        Detector, Emitter, StatePass, StaticRole, VtableTypeHint,
+        Detector, Emitter, Named, Pat, StatePass, StaticRole, VtableTypeHint,
         demote_types_with_members_out_of_bounds, drop_members_of_other_states, dyn_tail_offset,
         field_path, find_stored_uint, has_dyn_tail, match_static_symbol, scalar_newtype_node,
         scan_vtable_section, str_node,
     };
-    use crate::bundle::{DisplayNode, POINTER_SIZE};
+    use crate::bundle::{DisplayNode, MemberRef, POINTER_SIZE, Step};
     use crate::raw_types::{NsId, RawBase, RawMember, RawPointer, RawStruct, RawType};
     use crate::{DwReader, Encoding, TypeId};
     use gimli::{DebugInfoOffset, UnitSectionOffset};
@@ -4833,6 +5061,39 @@ mod tests {
         let (got, trace) = super::explain::capture(|| field_path(&reader, notify, &["waiters"]));
         assert!(got.is_some());
         assert!(trace.is_empty(), "{trace:?}");
+
+        // A pattern narrates the same way, and addresses what it finds by
+        // name — the point of describing the shape rather than walking it.
+        let compile = |pat| {
+            super::explain::capture(|| {
+                Emitter::new(&reader, BTreeMap::new(), None).compile(notify, pat)
+            })
+        };
+        let (got, trace) = compile(Pat::Symbol {
+            at: path![Named("state")],
+        });
+        assert!(got.is_none());
+        assert!(
+            trace[0].contains("no unique member `state`") && trace[0].contains("waiters"),
+            "{}",
+            trace[0]
+        );
+        let (got, trace) = compile(Pat::Symbol {
+            at: path![Named("waiters"), Named("value")],
+        });
+        assert!(got.is_none());
+        assert!(trace[0].contains("stopped at `value`"), "{}", trace[0]);
+        let (got, trace) = compile(Pat::Symbol {
+            at: path![Named("waiters")],
+        });
+        assert!(trace.is_empty(), "{trace:?}");
+        let Some(DisplayNode::Symbol { at }) = got else {
+            panic!("a pattern that fits compiles to its node");
+        };
+        assert!(
+            matches!(at.steps(), [Step::Member(MemberRef::Named(_))]),
+            "{at:?}"
+        );
     }
 
     /// A shape-based reach reports both ways it can fail, since "no candidate"
