@@ -379,9 +379,10 @@ pub enum MapEntries<T> {
     },
 }
 
-/// One resolved field of a [`DisplayNode::Struct`]. The bundle's `Named` and
-/// `Override` fields both resolve to `Computed` (they differ only in where the
-/// label comes from); `Member` resolves to `Structural`.
+/// One resolved field of a [`DisplayNode::Struct`]. A bundle `Synth` field and
+/// a member whose value a node computes both resolve to `Computed` — they
+/// differ only in where the label comes from; a plain member resolves to
+/// `Structural`.
 #[derive(Clone, Debug)]
 pub enum Field<T> {
     /// A real member rendered with reify's ordinary structural display.
@@ -529,7 +530,20 @@ impl<'a> DebugType<'a> for BundleType<'a> {
     }
 
     fn debug_format(&self) -> Option<DisplayNode<Self>> {
-        use exegesis::bundle::{Selector, Step};
+        use exegesis::bundle::{MemberRef, Selector, Step};
+
+        /// The member a [`MemberRef`] addresses in `ty`, resolved the way the
+        /// bundle resolves it: by position, or by the one member bearing the
+        /// name. A name that no member or several members answer to resolves
+        /// to nothing, so the display program declines rather than landing on
+        /// an arbitrary member.
+        fn member_at<'a>(ty: BundleType<'a>, at: &MemberRef) -> Option<BundleMember<'a>> {
+            let members: Vec<_> = ty.members().collect();
+            let index = at.resolve(members.len(), |index, name| {
+                members[index].name() == ty.resolve_str(name)
+            })?;
+            members.get(index).copied()
+        }
 
         /// Resolve a selector against `root` to `(landed type, Place)`. The one
         /// traversal primitive: `Member` steps accumulate offsets, a `Deref`
@@ -549,8 +563,8 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             let mut before_first_deref = true;
             for step in sel.steps() {
                 match step {
-                    Step::Member(index) => {
-                        let member = ty.members().nth(*index as usize)?;
+                    Step::Member(at) => {
+                        let member = member_at(ty, at)?;
                         offset = offset.checked_add(member.offset())?;
                         ty = member.ty();
                     }
@@ -995,33 +1009,33 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             })
         }
 
-        /// Resolve one bundle [`exegesis::bundle::Field`]. `Named`/`Override`
-        /// collapse to `Computed` (they differ only in the label source).
+        /// Resolve one bundle [`exegesis::bundle::Field`]. A member whose value
+        /// a node computes and a synthesized field both become `Computed`;
+        /// they differ only in where the label comes from.
         fn resolve_field<'a>(
             scope: BundleType<'a>,
             field: &exegesis::bundle::Field,
         ) -> Option<Field<BundleType<'a>>> {
             use exegesis::bundle::Field as BundleField;
             match field {
-                BundleField::Member(index) => {
-                    let member = scope.members().nth(*index as usize)?;
-                    Some(Field::Structural {
-                        name: member.name().to_string(),
-                        ty: member.ty(),
-                        offset: member.offset(),
+                BundleField::Member { at, node } => {
+                    let member = member_at(scope, at)?;
+                    Some(match node {
+                        None => Field::Structural {
+                            name: member.name().to_string(),
+                            ty: member.ty(),
+                            offset: member.offset(),
+                        },
+                        Some(node) => Field::Computed {
+                            label: member.name().to_string(),
+                            node: resolve_node(scope, node)?,
+                        },
                     })
                 }
-                BundleField::Named { label, node } => Some(Field::Computed {
+                BundleField::Synth { label, node } => Some(Field::Computed {
                     label: scope.resolve_str(*label).to_string(),
                     node: resolve_node(scope, node)?,
                 }),
-                BundleField::Override { index, node } => {
-                    let member = scope.members().nth(*index as usize)?;
-                    Some(Field::Computed {
-                        label: member.name().to_string(),
-                        node: resolve_node(scope, node)?,
-                    })
-                }
             }
         }
 

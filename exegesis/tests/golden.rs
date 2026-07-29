@@ -15,8 +15,8 @@
 //! -p exegesis --test golden`.
 
 use exegesis::bundle::{
-    Bundle, BundleTypeId, DisplayNode, Field, MapEntries, Selector, StaticRole, Step, TypeDef,
-    ValueExpr,
+    Bundle, BundleTypeId, DisplayNode, Field, MapEntries, MemberRef, Selector, StaticRole, Step,
+    TypeDef, ValueExpr,
 };
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
 
@@ -148,6 +148,27 @@ fn fq_name(bundle: &Bundle, id: BundleTypeId) -> String {
     }
 }
 
+/// The member a [`MemberRef`] addresses, resolved the same way the bundle
+/// resolves it.
+fn member_at<'m>(
+    members: &'m [exegesis::bundle::MemberDef],
+    at: &MemberRef,
+) -> Option<&'m exegesis::bundle::MemberDef> {
+    let index = at.resolve(members.len(), |index, name| members[index].name == name)?;
+    members.get(index)
+}
+
+/// How an unresolvable member address prints in the summary.
+fn unresolved(bundle: &Bundle, at: &MemberRef) -> String {
+    match at {
+        MemberRef::Index(index) => format!("<oob:{index}>"),
+        MemberRef::Named(name) => {
+            let name = bundle.strings.get(*name).unwrap_or("<bad strref>");
+            format!("<no unique member `{name}`>")
+        }
+    }
+}
+
 /// Walk a member-index path from `root`, returning the dotted field-name
 /// chain, the terminal byte offset, and the type the path lands on. This is
 /// the portable, layout-sensitive rendering of a debug-format path: a wrong
@@ -160,7 +181,7 @@ fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, Bu
     let mut cur = root;
     for step in sel.steps() {
         match step {
-            Step::Member(mi) => {
+            Step::Member(at) => {
                 let members = match &bundle.types.types[cur.0 as usize] {
                     TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
                     _ => {
@@ -168,14 +189,14 @@ fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, Bu
                         return (names.join("."), offset, cur);
                     }
                 };
-                match members.get(*mi as usize) {
+                match member_at(members, at) {
                     Some(m) => {
                         names.push(s(m.name));
                         offset += m.offset;
                         cur = m.ty;
                     }
                     None => {
-                        names.push(format!("<oob:{mi}>"));
+                        names.push(unresolved(bundle, at));
                         return (names.join("."), offset, cur);
                     }
                 }
@@ -487,25 +508,22 @@ fn describe_value_expr(bundle: &Bundle, root: BundleTypeId, expr: &ValueExpr) ->
 
 /// Render one [`Field`] of a [`DisplayNode::Struct`] for [`describe_node`].
 fn describe_field(bundle: &Bundle, root: BundleTypeId, fld: &Field) -> String {
-    let member_name = |index: u32| match &bundle.types.types[root.0 as usize] {
-        TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members
-            .get(index as usize)
-            .map_or("?", |m| bundle.strings.get(m.name).unwrap_or("?")),
+    let member_name = |at: &MemberRef| match &bundle.types.types[root.0 as usize] {
+        TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => {
+            member_at(members, at).map_or("?", |m| bundle.strings.get(m.name).unwrap_or("?"))
+        }
         _ => "?",
     };
     match fld {
-        Field::Member(index) => format!("{}: <structural>", member_name(*index)),
-        Field::Named { label, node } => {
+        Field::Member { at, node: None } => format!("{}: <structural>", member_name(at)),
+        Field::Member {
+            at,
+            node: Some(node),
+        } => format!("{}: {}", member_name(at), describe_node(bundle, root, node)),
+        Field::Synth { label, node } => {
             format!(
                 "{}: {}",
                 bundle.strings.get(*label).unwrap_or("?"),
-                describe_node(bundle, root, node)
-            )
-        }
-        Field::Override { index, node } => {
-            format!(
-                "{}: {}",
-                member_name(*index),
                 describe_node(bundle, root, node)
             )
         }

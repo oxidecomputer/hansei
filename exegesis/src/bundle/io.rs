@@ -9,8 +9,8 @@
 //! tool version that wrote it (`format_version` bumps freely).
 
 use crate::bundle::schema::{
-    Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MapEntries, ScalarDecode, Selector,
-    StaticsTable, Step, Stmt, TypeDef, ValueExpr, strip_llvm_suffix,
+    Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MapEntries, MemberDef, MemberRef,
+    ScalarDecode, Selector, StaticsTable, Step, Stmt, TypeDef, ValueExpr, strip_llvm_suffix,
 };
 use crate::bundle::shape::{Addressed, Shape};
 use crate::bundle::strings::StrRef;
@@ -25,7 +25,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 22;
+pub const FORMAT_VERSION: u32 = 23;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -44,6 +44,22 @@ pub enum Error {
     Encode(#[source] postcard::Error),
     #[error("corrupt bundle: {0}")]
     Corrupt(String),
+}
+
+/// The member a [`MemberRef`] addresses in a bundle aggregate's member list.
+fn member_at<'a>(members: &'a [MemberDef], at: &MemberRef) -> Option<&'a MemberDef> {
+    let index = at.resolve(members.len(), |index, name| members[index].name == name)?;
+    members.get(index)
+}
+
+/// How an unresolvable member address reads in a validation error. A name that
+/// resolved to nothing may have been absent or ambiguous; both are equally a
+/// broken program, so the message does not distinguish them.
+fn unresolved(at: &MemberRef) -> String {
+    match at {
+        MemberRef::Index(index) => format!("member index {index} out of range"),
+        MemberRef::Named(name) => format!("no unique member with string ref {}", name.0),
+    }
 }
 
 /// Walk a [`Selector`] from `root`, returning the type it lands on.
@@ -67,7 +83,7 @@ fn selector_target(
     let mut seen = vec![root];
     for (step, item) in sel.steps().iter().enumerate() {
         match item {
-            Step::Member(member_index) => {
+            Step::Member(at) => {
                 let members = match def {
                     TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
                     _ => {
@@ -77,10 +93,12 @@ fn selector_target(
                         )));
                     }
                 };
-                let member = members.get(*member_index as usize).ok_or_else(|| {
+                let member = member_at(members, at).ok_or_else(|| {
                     Error::Corrupt(format!(
-                        "{what} for type {}: member index {member_index} out of range at step {step}",
-                        root.0))
+                        "{what} for type {}: {} at step {step}",
+                        root.0,
+                        unresolved(at)
+                    ))
                 })?;
                 if seen.contains(&member.ty) {
                     return Err(Error::Corrupt(format!(
@@ -121,14 +139,14 @@ fn selector_offset(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> Optio
     let mut def = bundle.types.get(root)?;
     let mut offset = 0u64;
     for step in sel.steps() {
-        let Step::Member(index) = step else {
+        let Step::Member(at) = step else {
             return None;
         };
         let members = match def {
             TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
             _ => return None,
         };
-        let member = members.get(*index as usize)?;
+        let member = member_at(members, at)?;
         offset = offset.checked_add(member.offset)?;
         def = bundle.types.get(member.ty)?;
     }
@@ -311,34 +329,33 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 }
                 _ => None,
             };
-            let member_in_range = |index: u32, kind: &str| {
+            let resolves = |at: &MemberRef| {
                 let members = members.ok_or_else(|| {
                     Error::Corrupt(format!(
-                        "{what}: {kind} field on non-aggregate type {}",
+                        "{what}: member field on non-aggregate type {}",
                         scope.0
                     ))
                 })?;
-                if members.get(index as usize).is_none() {
-                    return Err(Error::Corrupt(format!(
-                        "{what}: {kind} member index {index} out of range"
-                    )));
+                if member_at(members, at).is_none() {
+                    return Err(Error::Corrupt(format!("{what}: {}", unresolved(at))));
                 }
                 Ok(())
             };
             for (i, field) in fields.iter().enumerate() {
                 match field {
-                    Field::Member(index) => member_in_range(*index, "Member")?,
-                    Field::Named { label, node } => {
+                    Field::Member { at, node } => {
+                        resolves(at)?;
+                        if let Some(node) = node {
+                            check_node(bundle, scope, node, what)?;
+                        }
+                    }
+                    Field::Synth { label, node } => {
                         if bundle.strings.get(*label).is_none() {
                             return corrupt(format!(
                                 "field {i} label string ref {} out of range",
                                 label.0
                             ));
                         }
-                        check_node(bundle, scope, node, what)?;
-                    }
-                    Field::Override { index, node } => {
-                        member_in_range(*index, "Override")?;
                         check_node(bundle, scope, node, what)?;
                     }
                 }

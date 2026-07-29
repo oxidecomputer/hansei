@@ -504,7 +504,11 @@ fn test_validate_accepts_selector_through_deref() {
             debug_formats: BTreeMap::from([(
                 BundleTypeId(3),
                 DisplayNode::Alias {
-                    at: Selector(vec![Step::Member(0), Step::Deref, Step::Member(0)]),
+                    at: Selector(vec![
+                        Step::Member(MemberRef::Index(0)),
+                        Step::Deref,
+                        Step::Member(MemberRef::Index(0)),
+                    ]),
                     follow_pointers: true,
                 },
             )]),
@@ -605,7 +609,7 @@ fn test_validate_rejects_out_of_range_member() {
             debug_formats: BTreeMap::from([(
                 BundleTypeId(1),
                 DisplayNode::Struct {
-                    fields: vec![Field::Member(9)],
+                    fields: vec![Field::member(MemberRef::Index(9))],
                 },
             )]),
             name_index: vec![],
@@ -629,6 +633,91 @@ fn test_validate_rejects_out_of_range_member() {
         .validate()
         .expect_err("out-of-range Member must be rejected");
     assert!(format!("{err}").contains("out of range"), "{err}");
+}
+
+/// A member addressed by name resolves only when exactly one member answers to
+/// it. Both failures — no such member, and two of them — are the same broken
+/// program, and neither may quietly pick a member.
+#[test]
+fn test_validate_requires_a_named_member_to_be_unique() {
+    let mut strings = StringInterner::new();
+    let u32n = strings.intern("u32");
+    let pointn = strings.intern("Point");
+    let xn = strings.intern("x");
+    let yn = strings.intern("y");
+    let zn = strings.intern("z");
+    let strings = strings.finish();
+    let ty = BundleTypeId(0);
+
+    // `Twice` repeats the name `x`, so nothing addresses either of its members
+    // by that name; `Point` spells each of its own once.
+    let member = |name, offset| MemberDef {
+        name,
+        ty: BundleTypeId(0),
+        offset,
+    };
+    let bundle = |scope: BundleTypeId, at: MemberRef| Bundle {
+        meta: Meta {
+            format_version: FORMAT_VERSION,
+            ..Default::default()
+        },
+        strings: strings.clone(),
+        types: TypeTable {
+            types: vec![
+                TypeDef::Base {
+                    name: u32n,
+                    size: 4,
+                    encoding: Encoding::Unsigned,
+                },
+                TypeDef::Struct {
+                    name: pointn,
+                    size: 8,
+                    members: vec![member(xn, 0), member(yn, 4)],
+                },
+                TypeDef::Struct {
+                    name: pointn,
+                    size: 8,
+                    members: vec![member(xn, 0), member(xn, 4)],
+                },
+            ],
+            debug_formats: BTreeMap::from([(
+                scope,
+                DisplayNode::Struct {
+                    fields: vec![Field::member(at)],
+                },
+            )]),
+            name_index: vec![],
+        },
+        tasks: TaskTable::default(),
+        dyn_futures: DynFutureTable::default(),
+        statics: StaticsTable::default(),
+        infra: InfraTypes {
+            header: ty,
+            vtable: ty,
+            trailer: ty,
+            context: ty,
+            scheduler_handle: ty,
+            mt_handle: ty,
+            location: ty,
+            raw_waker_vtable: ty,
+        },
+        provenance: ProvenanceTable::default(),
+    };
+
+    let point = BundleTypeId(1);
+    let twice = BundleTypeId(2);
+    bundle(point, MemberRef::Named(yn))
+        .validate()
+        .expect("a uniquely named member resolves");
+    for (scope, at, why) in [
+        (point, zn, "a name no member bears must be rejected"),
+        (twice, xn, "a name two members share must be rejected"),
+    ] {
+        let err = bundle(scope, MemberRef::Named(at))
+            .validate()
+            .expect_err(why);
+        assert!(format!("{err}").contains("no unique member"), "{err}");
+    }
 }
 
 #[test]

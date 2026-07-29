@@ -8,9 +8,9 @@ use exegesis::Encoding;
 use exegesis::bundle::{
     Arm, BitField as BundleBitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION, Field as BundleField,
-    FieldRender as BundleFieldRender, InfraTypes, MapEntries as BundleMapEntries, MemberDef, Meta,
-    ProvenanceTable, ScalarDecode as BundleScalarDecode, Selector, StaticsTable, Step,
-    Stmt as BundleStmt, StrRef, StringInterner, TaskTable, TypeDef, TypeTable, ValueExpr,
+    FieldRender as BundleFieldRender, InfraTypes, MapEntries as BundleMapEntries, MemberDef,
+    MemberRef, Meta, ProvenanceTable, ScalarDecode as BundleScalarDecode, Selector, StaticsTable,
+    Step, Stmt as BundleStmt, StrRef, StringInterner, TaskTable, TypeDef, TypeTable, ValueExpr,
     VariantDef, VariantShape,
 };
 
@@ -198,6 +198,34 @@ pub fn u64s(values: &[u64]) -> Vec<u8> {
 /// `Selector::members(..).deref()`.
 pub fn sel(members: &[u32]) -> Selector {
     Selector::members(members)
+}
+
+/// Build a [`Selector`] over a member-*name* path — the addressing a detector
+/// reaches for whenever the names are stable, and the one a fixture must also
+/// exercise so resolution by name is covered.
+pub fn nsel(names: &[StrRef]) -> Selector {
+    Selector::named_path(names)
+}
+
+/// A [`BundleField`] for a real member at `index`, rendered structurally.
+pub fn fmember(index: u32) -> BundleField {
+    BundleField::member(MemberRef::Index(index))
+}
+
+/// A [`BundleField`] for the real member at `index`, keeping its name but
+/// computing its value with `node`.
+pub fn fcomputed(index: u32, node: BundleNode) -> BundleField {
+    BundleField::computed(MemberRef::Index(index), node)
+}
+
+/// As [`fcomputed`], but addressing the member by name rather than position.
+pub fn fcomputed_named(name: StrRef, node: BundleNode) -> BundleField {
+    BundleField::computed(MemberRef::Named(name), node)
+}
+
+/// A [`BundleField`] synthesized under an explicit `label`.
+pub fn fsynth(label: StrRef, node: BundleNode) -> BundleField {
+    BundleField::Synth { label, node }
 }
 
 /// Build an enumerated bundle [`BundleBitField`] from pre-interned labels.
@@ -1375,18 +1403,18 @@ pub fn test_bundle() -> Bundle {
         (s("unseen"), s("Some"), s("None"), s("false"), s("true"));
     let watch_cross = |tail: u32| {
         Selector(vec![
-            Step::Member(0),
+            Step::Member(MemberRef::Index(0)),
             Step::Deref,
-            Step::Member(2),
-            Step::Member(tail),
+            Step::Member(MemberRef::Index(2)),
+            Step::Member(MemberRef::Index(tail)),
         ])
     };
     let watch_state_sel = watch_cross(0);
     let watch_receiver_node = BundleNode::Struct {
         fields: vec![
-            BundleField::Named {
-                label: unseenl,
-                node: BundleNode::Variant {
+            fsynth(
+                unseenl,
+                BundleNode::Variant {
                     discriminant: ValueExpr::Ne(
                         Box::new(ValueExpr::Read(sel(&[1]))),
                         Box::new(ValueExpr::And(
@@ -1411,10 +1439,10 @@ pub fn test_bundle() -> Bundle {
                     ],
                     default: None,
                 },
-            },
-            BundleField::Named {
-                label: closedfl,
-                node: BundleNode::Variant {
+            ),
+            fsynth(
+                closedfl,
+                BundleNode::Variant {
                     discriminant: ValueExpr::And(
                         Box::new(ValueExpr::Read(watch_state_sel)),
                         Box::new(ValueExpr::Const(1)),
@@ -1433,16 +1461,13 @@ pub fn test_bundle() -> Bundle {
                     ],
                     default: None,
                 },
-            },
+            ),
         ],
     };
     // A channel's synthetic `queued` field: the block-chain walk as a
     // CustomList (see `chan_queued_node`). Reused by the standalone Chan and
     // the Receiver.
-    let chan_queued = || BundleField::Named {
-        label: queuedl,
-        node: chan_queued_node(U32),
-    };
+    let chan_queued = || fsynth(queuedl, chan_queued_node(U32));
     let emptyl = s("");
     let bool_decode =
         || BundleScalarDecode::Bits(vec![ebf(emptyl, 0, 0, vec![(0, falsel), (1, truel)])]);
@@ -1506,22 +1531,10 @@ pub fn test_bundle() -> Bundle {
                     RAW_WAKER_VTABLE,
                     BundleNode::Struct {
                         fields: vec![
-                            BundleField::Override {
-                                index: 0,
-                                node: BundleNode::Symbol { at: sel(&[0]) },
-                            },
-                            BundleField::Override {
-                                index: 1,
-                                node: BundleNode::Symbol { at: sel(&[1]) },
-                            },
-                            BundleField::Override {
-                                index: 2,
-                                node: BundleNode::Symbol { at: sel(&[2]) },
-                            },
-                            BundleField::Override {
-                                index: 3,
-                                node: BundleNode::Symbol { at: sel(&[3]) },
-                            },
+                            fcomputed(0, BundleNode::Symbol { at: sel(&[0]) }),
+                            fcomputed(1, BundleNode::Symbol { at: sel(&[1]) }),
+                            fcomputed(2, BundleNode::Symbol { at: sel(&[2]) }),
+                            fcomputed(3, BundleNode::Symbol { at: sel(&[3]) }),
                         ],
                     },
                 ),
@@ -1595,9 +1608,9 @@ pub fn test_bundle() -> Bundle {
                     NOTIFY,
                     BundleNode::Struct {
                         fields: vec![
-                            BundleField::Named {
-                                label: statel,
-                                node: BundleNode::Scalar {
+                            fsynth(
+                                statel,
+                                BundleNode::Scalar {
                                     at: sel(&[0]),
                                     decode: BundleScalarDecode::Bits(vec![
                                         ebf(
@@ -1609,23 +1622,23 @@ pub fn test_bundle() -> Bundle {
                                         ubf(generationl, 2),
                                     ]),
                                 },
-                            },
-                            BundleField::Named {
-                                label: mutexfl,
-                                node: BundleNode::Scalar {
+                            ),
+                            fsynth(
+                                mutexfl,
+                                BundleNode::Scalar {
                                     at: sel(&[1, 0, 0]),
                                     decode: mutex_decode(),
                                 },
-                            },
-                            BundleField::Named {
-                                label: queuefl,
-                                node: BundleNode::List {
+                            ),
+                            fsynth(
+                                queuefl,
+                                BundleNode::List {
                                     head: sel(&[1, 1, 0]),
                                     next: sel(&[1]),
                                     node: Box::new(BundleNode::Struct {
-                                        fields: vec![BundleField::Named {
-                                            label: notificationn,
-                                            node: BundleNode::Scalar {
+                                        fields: vec![fsynth(
+                                            notificationn,
+                                            BundleNode::Scalar {
                                                 at: sel(&[0]),
                                                 decode: BundleScalarDecode::Bits(vec![
                                                     ebf(
@@ -1637,11 +1650,11 @@ pub fn test_bundle() -> Bundle {
                                                     ebf(orderl, 2, 1, vec![(0, fifol), (1, lifol)]),
                                                 ]),
                                             },
-                                        }],
+                                        )],
                                     }),
                                     node_ty: NOTIFY_WAITER,
                                 },
-                            },
+                            ),
                         ],
                     },
                 ),
@@ -1649,14 +1662,14 @@ pub fn test_bundle() -> Bundle {
                     SEMAPHORE,
                     BundleNode::Struct {
                         fields: vec![
-                            BundleField::Override {
-                                index: 0,
-                                node: BundleNode::Scalar {
+                            fcomputed(
+                                0,
+                                BundleNode::Scalar {
                                     at: sel(&[0]),
                                     decode: semaphore_permits_decode(),
                                 },
-                            },
-                            BundleField::Member(1),
+                            ),
+                            fmember(1),
                         ],
                     },
                 ),
@@ -1664,14 +1677,14 @@ pub fn test_bundle() -> Bundle {
                     BLOCK,
                     BundleNode::Struct {
                         fields: vec![
-                            BundleField::Override {
-                                index: 0,
-                                node: BundleNode::SlotCount {
+                            fcomputed(
+                                0,
+                                BundleNode::SlotCount {
                                     bitmap: sel(&[1, 0]),
                                     slots: sel(&[0]),
                                 },
-                            },
-                            BundleField::Member(1),
+                            ),
+                            fmember(1),
                         ],
                     },
                 ),
@@ -1689,12 +1702,7 @@ pub fn test_bundle() -> Bundle {
                     // Chan: `queued` then its three members (tail, index, head).
                     CHAN,
                     BundleNode::Struct {
-                        fields: vec![
-                            chan_queued(),
-                            BundleField::Member(0),
-                            BundleField::Member(1),
-                            BundleField::Member(2),
-                        ],
+                        fields: vec![chan_queued(), fmember(0), fmember(1), fmember(2)],
                     },
                 ),
                 (
@@ -1703,10 +1711,10 @@ pub fn test_bundle() -> Bundle {
                     BundleNode::Struct {
                         fields: vec![
                             chan_queued(),
-                            BundleField::Member(0),
-                            BundleField::Member(1),
-                            BundleField::Member(2),
-                            BundleField::Member(3),
+                            fmember(0),
+                            fmember(1),
+                            fmember(2),
+                            fmember(3),
                         ],
                     },
                 ),
@@ -1722,25 +1730,25 @@ pub fn test_bundle() -> Bundle {
                         via: sel(&[2]),
                         then: Box::new(BundleNode::Struct {
                             fields: vec![
-                                BundleField::Named {
-                                    label: capacityl,
-                                    node: BundleNode::Scalar {
+                                fsynth(
+                                    capacityl,
+                                    BundleNode::Scalar {
                                         at: sel(&[3, 1]),
                                         decode: BundleScalarDecode::Raw,
                                     },
-                                },
-                                BundleField::Named {
-                                    label: freel,
-                                    node: BundleNode::Scalar {
+                                ),
+                                fsynth(
+                                    freel,
+                                    BundleNode::Scalar {
                                         at: sel(&[3, 0]),
                                         decode: semaphore_permits_decode(),
                                     },
-                                },
+                                ),
                                 chan_queued(),
-                                BundleField::Member(0),
-                                BundleField::Member(1),
-                                BundleField::Member(2),
-                                BundleField::Member(3),
+                                fmember(0),
+                                fmember(1),
+                                fmember(2),
+                                fmember(3),
                             ],
                         }),
                     },
@@ -1749,51 +1757,51 @@ pub fn test_bundle() -> Bundle {
                     BOUNDED_SEM,
                     BundleNode::Struct {
                         fields: vec![
-                            BundleField::Named {
-                                label: mutexfl,
-                                node: BundleNode::Scalar {
+                            fsynth(
+                                mutexfl,
+                                BundleNode::Scalar {
                                     at: sel(&[0, 0, 0, 0]),
                                     decode: mutex_decode(),
                                 },
-                            },
-                            BundleField::Named {
-                                label: closedfl,
-                                node: BundleNode::Scalar {
+                            ),
+                            fsynth(
+                                closedfl,
+                                BundleNode::Scalar {
                                     at: sel(&[0, 0, 1, 1]),
                                     decode: bool_decode(),
                                 },
-                            },
-                            BundleField::Named {
-                                label: permitsfl,
-                                node: BundleNode::Scalar {
+                            ),
+                            fsynth(
+                                permitsfl,
+                                BundleNode::Scalar {
                                     at: sel(&[0, 1]),
                                     decode: semaphore_permits_decode(),
                                 },
-                            },
-                            BundleField::Named {
-                                label: boundfl,
-                                node: BundleNode::Scalar {
+                            ),
+                            fsynth(
+                                boundfl,
+                                BundleNode::Scalar {
                                     at: sel(&[1]),
                                     decode: BundleScalarDecode::Raw,
                                 },
-                            },
-                            BundleField::Named {
-                                label: queuefl,
-                                node: BundleNode::List {
+                            ),
+                            fsynth(
+                                queuefl,
+                                BundleNode::List {
                                     head: sel(&[0, 0, 1, 0, 0]),
                                     next: sel(&[1]),
                                     node: Box::new(BundleNode::Struct {
-                                        fields: vec![BundleField::Named {
-                                            label: permits_neededfl,
-                                            node: BundleNode::Scalar {
+                                        fields: vec![fsynth(
+                                            permits_neededfl,
+                                            BundleNode::Scalar {
                                                 at: sel(&[0]),
                                                 decode: BundleScalarDecode::Raw,
                                             },
-                                        }],
+                                        )],
                                     }),
                                     node_ty: WAITER,
                                 },
-                            },
+                            ),
                         ],
                     },
                 ),
@@ -1839,8 +1847,8 @@ fixture_ids! {
 ///
 /// ```text
 /// Thing {
-///   state: <Scalar Bits>          // Named field
-///   flag:  <Scalar Raw>           // Override field (reuses member 1's name)
+///   state: <Scalar Bits>          // Synth field
+///   flag:  <Scalar Raw>           // Member field with a computed value
 ///   point: Point { x, y }         // Member field (structural recursion)
 ///   queue: [Waiter { notification: <Scalar Bits> }, …]   // List of Struct
 /// }
@@ -1849,8 +1857,6 @@ fixture_ids! {
 /// Built separately from [`test_bundle`] so its layout can't perturb the
 /// other tests' shared fixtures.
 pub fn node_bundle() -> Bundle {
-    use BundleField::{Member, Named, Override};
-
     let mut strings = StringInterner::new();
     let mut s = |name: &str| strings.intern(name);
 
@@ -1967,40 +1973,43 @@ pub fn node_bundle() -> Bundle {
     ]);
 
     let waiter_node = BundleNode::Struct {
-        fields: vec![Named {
-            label: notifn,
-            node: BundleNode::Scalar {
+        fields: vec![fsynth(
+            notifn,
+            BundleNode::Scalar {
                 at: sel(&[0]),
                 decode: notif_decode,
             },
-        }],
+        )],
     };
     let thing_node = BundleNode::Struct {
         fields: vec![
-            Named {
-                label: staten,
-                node: BundleNode::Scalar {
+            fsynth(
+                staten,
+                BundleNode::Scalar {
                     at: sel(&[0]),
                     decode: state_decode,
                 },
-            },
-            Override {
-                index: 1,
-                node: BundleNode::Scalar {
-                    at: sel(&[1]),
+            ),
+            // `flag` is reached by name, both as the field and inside the
+            // node, where the rest of the fixture uses positions: the two
+            // addressings must render identically.
+            fcomputed_named(
+                flagn,
+                BundleNode::Scalar {
+                    at: nsel(&[flagn]),
                     decode: BundleScalarDecode::Raw,
                 },
-            },
-            Member(2),
-            Named {
-                label: queuel,
-                node: BundleNode::List {
-                    head: sel(&[3]),
+            ),
+            fmember(2),
+            fsynth(
+                queuel,
+                BundleNode::List {
+                    head: nsel(&[headn]),
                     next: sel(&[1]),
                     node: Box::new(waiter_node),
                     node_ty: N_WAITER,
                 },
-            },
+            ),
         ],
     };
 
