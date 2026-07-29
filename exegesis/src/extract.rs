@@ -2261,14 +2261,19 @@ enum PatField<'a> {
 enum PatFields<'a> {
     /// Only these, in this order — a curated record that hides the rest.
     Only(Vec<PatField<'a>>),
-    /// Every member structural display would show, with these named ones
-    /// computed instead.
+    /// Every member structural display would show, with these computed instead
+    /// of rendered.
     ///
     /// "Would show" means every member of nonzero size: a zero-sized one
     /// carries no value and structural display elides it, so a record that
     /// listed it would differ from the plain view for no reason. This is how a
     /// type is rendered as itself with one field decoded.
-    AllVisible(Vec<PatField<'a>>),
+    ///
+    /// An override is a member name and the program computing its value.
+    /// Deliberately not a [`PatField`]: there is no structural member to list
+    /// here — the default already lists them all — and no position to state,
+    /// since the record follows declaration order however these are ordered.
+    AllVisible { overrides: Vec<(&'a str, Pat<'a>)> },
 }
 
 /// A display program with its paths not yet found: a detector describes the
@@ -2378,25 +2383,22 @@ impl Emitter<'_> {
 
     /// Compile a record's field list.
     fn compile_fields(&mut self, root: TypeId, fields: PatFields<'_>) -> Option<Vec<Field>> {
-        let computed = match fields {
+        let declared = match fields {
             PatFields::Only(fields) => {
                 return fields
                     .into_iter()
                     .map(|field| self.compile_field(root, field))
                     .collect();
             }
-            PatFields::AllVisible(computed) => computed,
+            PatFields::AllVisible { overrides } => overrides,
         };
         // Compile the overrides first, so a name that is not there declines
         // before anything is built, then lay the visible members out in
         // declaration order with each override in its member's place.
-        let mut overrides = Vec::with_capacity(computed.len());
-        for field in computed {
-            let PatField::Computed(name, pat) = field;
-            overrides.push((
-                name,
-                self.compile_field(root, PatField::Computed(name, pat))?,
-            ));
+        let mut overrides = Vec::with_capacity(declared.len());
+        for (name, pat) in declared {
+            let at = self.member_named(root, name)?;
+            overrides.push((name, Field::computed(at, self.compile(root, pat)?)));
         }
         let reader = self.reader;
         let members = aggregate_members(reader, root)?;
@@ -2908,13 +2910,15 @@ fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Display
     emitter.compile(
         id,
         Pat::Struct {
-            fields: PatFields::AllVisible(vec![PatField::Computed(
-                "permits",
-                Pat::Scalar {
-                    at: path![Named("permits"), PeelTo(WORD)],
-                    decode,
-                },
-            )]),
+            fields: PatFields::AllVisible {
+                overrides: vec![(
+                    "permits",
+                    Pat::Scalar {
+                        at: path![Named("permits"), PeelTo(WORD)],
+                        decode,
+                    },
+                )],
+            },
         },
     )
 }
@@ -2941,13 +2945,15 @@ fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
     emitter.compile(
         id,
         Pat::Struct {
-            fields: PatFields::AllVisible(vec![PatField::Computed(
-                "values",
-                Pat::SlotCount {
-                    bitmap: path![Named("header"), Named("ready_slots"), PeelTo(WORD)],
-                    slots: path![Named("values"), Named("__0")],
-                },
-            )]),
+            fields: PatFields::AllVisible {
+                overrides: vec![(
+                    "values",
+                    Pat::SlotCount {
+                        bitmap: path![Named("header"), Named("ready_slots"), PeelTo(WORD)],
+                        slots: path![Named("values"), Named("__0")],
+                    },
+                )],
+            },
         },
     )
 }
