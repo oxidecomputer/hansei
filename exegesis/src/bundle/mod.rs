@@ -13,9 +13,9 @@ pub use io::{Error, FORMAT_VERSION, MAGIC, Result};
 pub use schema::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
-    MemberRef, Meta, Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef,
-    StaticRole, StaticsTable, Step, Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable,
-    TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape, strip_llvm_suffix,
+    MemberRef, Meta, Notation, Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc,
+    StaticDef, StaticRole, StaticsTable, Step, Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry,
+    TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape, strip_llvm_suffix,
 };
 pub use shape::{Addressed, Shape};
 pub use strings::{StrRef, StringInterner, StringTable};

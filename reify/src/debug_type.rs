@@ -1,5 +1,7 @@
 use crate::Result;
 
+pub use exegesis::bundle::Notation;
+
 use std::fmt;
 use std::num::NonZeroU8;
 
@@ -212,11 +214,12 @@ pub enum DisplayNode<T> {
         element: T,
         element_size: u32,
     },
-    /// Render the inline `octets_size`-byte octet array at `octets_offset` as an
-    /// IPv4 (4 octets) or IPv6 (16 octets) address in standard notation.
-    IpAddr {
-        octets_offset: u64,
-        octets_size: u32,
+    /// Render the inline `size`-byte array at `offset` in `notation`: an IPv4
+    /// (4 bytes) or IPv6 (16 bytes) address, or a hyphenated UUID (16 bytes).
+    Bytes {
+        offset: u64,
+        size: u32,
+        notation: Notation,
     },
     /// Render the `target` value at `place` as though it were the whole value,
     /// peeling a transparent wrapper. `place` is usually a plain local offset
@@ -805,14 +808,16 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         element_size: element.size() as u32,
                     })
                 }
-                BundleNode::IpAddr { octets } => {
-                    let (octets_ty, octets_offset) = resolve_selector(scope, octets)?;
+                BundleNode::Bytes { at, notation } => {
+                    let (array_ty, offset) = resolve_selector(scope, at)?;
                     // `array_info` bounds the read to a real array; io.rs has
-                    // already checked it is 4 or 16 unsigned bytes.
-                    let (_, count) = octets_ty.array_info()?;
-                    Some(DisplayNode::IpAddr {
-                        octets_offset,
-                        octets_size: count as u32,
+                    // already checked its element is an unsigned byte and its
+                    // length is one the notation spells.
+                    let (_, count) = array_ty.array_info()?;
+                    Some(DisplayNode::Bytes {
+                        offset,
+                        size: count as u32,
+                        notation: *notation,
                     })
                 }
                 BundleNode::Alias {

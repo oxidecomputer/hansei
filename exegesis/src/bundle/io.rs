@@ -10,7 +10,8 @@
 
 use crate::bundle::schema::{
     Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MapEntries, MemberDef, MemberRef,
-    ScalarDecode, Selector, StaticsTable, Step, Stmt, TypeDef, ValueExpr, strip_llvm_suffix,
+    Notation, ScalarDecode, Selector, StaticsTable, Step, Stmt, TypeDef, ValueExpr,
+    strip_llvm_suffix,
 };
 use crate::bundle::shape::{Addressed, Shape};
 use crate::bundle::strings::StrRef;
@@ -25,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 23;
+pub const FORMAT_VERSION: u32 = 24;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -388,19 +389,30 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 ));
             }
         }
-        DisplayNode::IpAddr { octets } => {
-            let target = selector_target(bundle, scope, octets, what)?;
+        DisplayNode::Bytes { at, notation } => {
+            let target = selector_target(bundle, scope, at, what)?;
             let Some(TypeDef::Array { elem, count }) = bundle.types.get(target) else {
                 unreachable!("the shape table verified an array");
             };
             let Some(TypeDef::Base { size, encoding, .. }) = bundle.types.get(*elem) else {
-                return corrupt("IP-address octets are not a base type".to_string());
+                return corrupt("a byte-array notation does not target a base type".to_string());
             };
-            if *size != 1
-                || !matches!(encoding, crate::raw_types::Encoding::Unsigned)
-                || !matches!(count, 4 | 16)
-            {
-                return corrupt("IP-address octets are not 4 or 16 unsigned bytes".to_string());
+            if *size != 1 || !matches!(encoding, crate::raw_types::Encoding::Unsigned) {
+                return corrupt("a byte-array notation does not target unsigned bytes".to_string());
+            }
+            // Each notation is defined only for the lengths it spells; reading
+            // 16 bytes as an address when they are a UUID would be wrong rather
+            // than merely ugly, so the length is part of the contract.
+            let admitted = match notation {
+                Notation::IpAddr => matches!(count, 4 | 16),
+                Notation::Uuid => *count == 16,
+                // Hex spells any run of bytes; an empty one spells nothing.
+                Notation::Hex => *count > 0,
+            };
+            if !admitted {
+                return corrupt(format!(
+                    "{count} bytes is not a length the {notation:?} notation spells"
+                ));
             }
         }
         DisplayNode::Alias { .. } | DisplayNode::SlotCount { .. } => {}

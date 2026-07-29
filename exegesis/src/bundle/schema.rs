@@ -262,6 +262,25 @@ pub enum FieldRender {
     Uint,
 }
 
+/// How a [`DisplayNode::Bytes`] array is spelled as text.
+///
+/// A notation is data rather than a node kind of its own, so a fixed-size byte
+/// array with a canonical text form costs one variant here instead of six sites
+/// and a format bump. Each admits only the lengths its notation is defined for.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Notation {
+    /// 4 or 16 unsigned bytes as an IPv4 or IPv6 address; which one follows
+    /// from the count.
+    IpAddr,
+    /// Exactly 16 unsigned bytes as a hyphenated lowercase UUID, the form
+    /// `uuid::Uuid`'s own `Display` produces.
+    Uuid,
+    /// Any number of unsigned bytes as lowercase hex, unseparated and
+    /// unprefixed — how a digest is written everywhere it is written: a Git
+    /// object id, a TUF artifact hash, a build id.
+    Hex,
+}
+
 /// A composable display program for a known type: a recursive tree of nodes
 /// that reify interprets with a single generic evaluator, in place of a
 /// per-type `write_*` renderer.
@@ -345,15 +364,19 @@ pub enum DisplayNode {
         capacity: Option<Selector>,
         element: BundleTypeId,
     },
-    /// Render an inline octet array as an IPv4 or IPv6 address in standard
-    /// notation.
+    /// Render an inline byte array in the standard textual notation for
+    /// whatever it represents.
     ///
-    /// `octets` reaches an inline `[u8; 4]` or `[u8; 16]` array (an
-    /// `Ipv4Addr`/`Ipv6Addr`'s only member) — the address version is inferred
-    /// from the octet count, which is validated to be 4 or 16. Unlike `Str`
-    /// and `Slice` this reads no pointer: the octets live in the value's own
-    /// bytes, so it is a leaf that renders the bytes it lands on directly.
-    IpAddr { octets: Selector },
+    /// `at` reaches the array — an `Ipv4Addr`/`Ipv6Addr`'s or a `Uuid`'s only
+    /// member. Unlike `Str` and `Slice` this reads no pointer: the bytes live
+    /// in the value's own bytes, so it is a leaf that renders what it lands on
+    /// directly. The element type is validated to be an unsigned byte and the
+    /// count to be one the notation admits.
+    ///
+    /// The notation is what distinguishes these types, not their layout: a
+    /// `Uuid` and an `Ipv6Addr` are both `[u8; 16]`, and reading one as the
+    /// other would be wrong rather than merely ugly.
+    Bytes { at: Selector, notation: Notation },
     /// Render the value reached by `at` as though it were the whole value,
     /// peeling a transparent wrapper down to one inner member.
     ///

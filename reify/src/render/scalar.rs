@@ -1,12 +1,12 @@
 //! Leaf renderers: one machine word decoded through a
 //! [`ScalarDecode`](crate::debug_type::ScalarDecode), a code pointer resolved
-//! to a symbol, a UTF-8 string, an IP address -- plus the byte-slicing
-//! primitives the other render modules read words with.
+//! to a symbol, a UTF-8 string, a byte array in a standard notation -- plus the
+//! byte-slicing primitives the other render modules read words with.
 
-use crate::debug_type::{FieldRender, ScalarDecode};
+use crate::debug_type::{BitField, FieldRender, ScalarDecode};
 use crate::target::ReadFromProc;
 
-use crate::debug_type::BitField;
+use exegesis::bundle::Notation;
 
 use std::fmt;
 
@@ -156,22 +156,49 @@ pub(crate) fn read_u64_at(bytes: &[u8], offset: u64) -> Option<u64> {
 /// Render the inline octets at `offset` as an IPv4 (4 octets) or IPv6 (16
 /// octets) address in standard notation; the version is inferred from the octet
 /// count that resolution validated to be 4 or 16.
-pub(crate) fn eval_ip_addr(
+pub(crate) fn eval_bytes(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     offset: u64,
-    octets_size: u64,
+    size: u64,
+    notation: Notation,
 ) -> fmt::Result {
-    let Some(bytes) = byte_range(bytes, offset, octets_size) else {
+    let Some(bytes) = byte_range(bytes, offset, size) else {
         return write!(f, "<truncated>");
     };
-    match <&[u8; 4]>::try_from(bytes) {
-        Ok(octets) => write!(f, "{}", std::net::Ipv4Addr::from(*octets)),
-        Err(_) => match <&[u8; 16]>::try_from(bytes) {
-            Ok(octets) => write!(f, "{}", std::net::Ipv6Addr::from(*octets)),
-            Err(_) => write!(f, "<invalid IP address layout>"),
+    match notation {
+        Notation::IpAddr => match <&[u8; 4]>::try_from(bytes) {
+            Ok(octets) => write!(f, "{}", std::net::Ipv4Addr::from(*octets)),
+            Err(_) => match <&[u8; 16]>::try_from(bytes) {
+                Ok(octets) => write!(f, "{}", std::net::Ipv6Addr::from(*octets)),
+                Err(_) => write!(f, "<invalid IP address layout>"),
+            },
         },
+        Notation::Uuid => match <&[u8; 16]>::try_from(bytes) {
+            Ok(uuid) => write_uuid(f, uuid),
+            Err(_) => write!(f, "<invalid UUID layout>"),
+        },
+        Notation::Hex => {
+            for byte in bytes {
+                write!(f, "{byte:02x}")?;
+            }
+            Ok(())
+        }
     }
+}
+
+/// Write 16 bytes as a hyphenated lowercase UUID: the bytes in order, grouped
+/// 8-4-4-4-12 hex digits, which is what `uuid::Uuid`'s own `Display` produces.
+/// Spelled here rather than taken from the crate so reify does not depend on a
+/// target's choice of uuid version.
+fn write_uuid(f: &mut fmt::Formatter<'_>, uuid: &[u8; 16]) -> fmt::Result {
+    for (i, byte) in uuid.iter().enumerate() {
+        if matches!(i, 4 | 6 | 8 | 10) {
+            write!(f, "-")?;
+        }
+        write!(f, "{byte:02x}")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -201,6 +228,63 @@ mod tests {
                 TypeInfoRef::new(v.ty(IPV6).unwrap(), 0, &ipv6).display()
             ),
             "2001:db8::1"
+        );
+    }
+
+    /// A `Uuid` and an `Ipv6Addr` are both `[u8; 16]`, so the same sixteen bytes
+    /// must render two ways — and the hyphens must land where `uuid::Uuid`'s own
+    /// `Display` puts them, or a UUID read out of a core will not match the one
+    /// in a log line.
+    #[test]
+    fn test_a_uuid_renders_hyphenated_where_an_address_would_not() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = [
+            0x67, 0xe5, 0x50, 0x44, 0x10, 0xb1, 0x42, 0x6f, 0x92, 0x47, 0xbb, 0x68, 0x0e, 0x5f,
+            0xe0, 0xc8,
+        ];
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(UUID).unwrap(), 0, &bytes).display()
+            ),
+            "67e55044-10b1-426f-9247-bb680e5fe0c8"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(IPV6).unwrap(), 0, &bytes).display()
+            ),
+            "67e5:5044:10b1:426f:9247:bb68:e5f:e0c8"
+        );
+
+        // Too few bytes to read: a marker, not a panic and not a short UUID.
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(UUID).unwrap(), 0, &bytes[..8]).display()
+            ),
+            "<truncated>"
+        );
+    }
+
+    /// A digest is spelled the way every tool that prints one spells it:
+    /// lowercase, unseparated, unprefixed, so it can be pasted into a search.
+    #[test]
+    fn test_a_digest_renders_as_plain_lowercase_hex() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mut bytes = [0u8; 32];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = i as u8;
+        }
+        bytes[31] = 0xff;
+        assert_eq!(
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(HASH).unwrap(), 0, &bytes).display()
+            ),
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1eff"
         );
     }
 

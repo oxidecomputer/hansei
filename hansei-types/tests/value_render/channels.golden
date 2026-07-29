@@ -6,17 +6,13 @@ tokio::sync::mpsc::bounded::Receiver<u32> {
         10,
         20,
     ],
-    tx: tokio::util::cacheline::CachePadded<tokio::sync::mpsc::list::Tx<u32>> {
-        value: tokio::sync::mpsc::list::Tx<u32> {
-            block_tail: 0xADDR,
-            tail_position: 2,
-        },
+    tx: tokio::sync::mpsc::list::Tx<u32> {
+        block_tail: 0xADDR,
+        tail_position: 2,
     },
-    rx_waker: tokio::util::cacheline::CachePadded<tokio::sync::task::atomic_waker::AtomicWaker> {
-        value: tokio::sync::task::atomic_waker::AtomicWaker {
-            state: 0,
-            waker: core::option::Option<core::task::wake::Waker>::None,
-        },
+    rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
+        state: 0,
+        waker: core::option::Option<core::task::wake::Waker>::None,
     },
     notify_rx_closed: tokio::sync::notify::Notify {
         state: state=idle, generation=0,

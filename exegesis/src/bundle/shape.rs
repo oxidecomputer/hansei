@@ -1,7 +1,7 @@
 //! What a [`DisplayNode`] requires of the types its selectors land on.
 //!
 //! Every node kind has an addressing contract — a `Str`'s length is a `usize`,
-//! a `Symbol` reads a pointer, an `IpAddr`'s octets are an array — and that
+//! a `Symbol` reads a pointer, a `Bytes` notation reads an array — and that
 //! contract has to hold in two type universes. exegesis navigates DWARF while
 //! it builds a node; validation re-checks the finished node against the
 //! bundle's own [`TypeTable`](super::TypeTable) on every save and load, since a
@@ -127,8 +127,8 @@ impl DisplayNode {
                 capacity.as_ref(),
                 word,
             ),
-            DisplayNode::IpAddr { octets } => {
-                vec![Addressed::new("IP-address octets", octets, Shape::Array)]
+            DisplayNode::Bytes { at, .. } => {
+                vec![Addressed::new("an inline byte array", at, Shape::Array)]
             }
             DisplayNode::Alias { at, .. } => {
                 // An aliased value may have any type — a peeled atomic is a
