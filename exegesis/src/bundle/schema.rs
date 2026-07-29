@@ -122,8 +122,16 @@ impl Selector {
     /// new root, then continues with this selector's steps. Used by detectors
     /// that anchor an inner path (e.g. an atomic's word) at an outer field.
     pub fn under_member(self, index: u32) -> Self {
-        let mut steps = Vec::with_capacity(self.0.len() + 1);
-        steps.push(Step::Member(index));
+        self.under_members(&[index])
+    }
+
+    /// Prepend a run of leading [`Step::Member`]s: the result walks `prefix`
+    /// from a new root, then continues with this selector's steps. Used by a
+    /// detector that reuses an inner type's selectors from an outer type that
+    /// reaches it through transparent wrappers.
+    pub fn under_members(self, prefix: &[u32]) -> Self {
+        let mut steps = Vec::with_capacity(self.0.len() + prefix.len());
+        steps.extend(prefix.iter().copied().map(Step::Member));
         steps.extend(self.0);
         Selector(steps)
     }
