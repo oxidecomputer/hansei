@@ -1429,6 +1429,11 @@ macro_rules! explain {
     };
 }
 
+/// Build a [`PatPath`]. `path![Named("a"), Deref]` reads as the path it is.
+macro_rules! path {
+    ($($step:expr),* $(,)?) => { vec![$($step),*] };
+}
+
 /// One type's formatter trace, as `--explain-format` prints it: what the
 /// navigators saw, then whether a program was emitted and of what shape.
 fn report(name: &str, id: BundleTypeId, node: Option<&DisplayNode>, trace: &[String]) -> String {
@@ -1597,8 +1602,7 @@ struct VecShape {
 /// A `Vec<T, A>`, in either spelling, renders through the `Slice` node: an owned
 /// buffer that supplies its capacity for the length check.
 fn vec_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
-    let shape = vec_shape(reader, id).or_else(|| allocator_api2_vec_shape(reader, id))?;
+    let shape = vec_shape(emitter, id).or_else(|| allocator_api2_vec_shape(emitter, id))?;
     Some(DisplayNode::Slice {
         pointer: shape.pointer,
         length: shape.length,
@@ -1607,7 +1611,8 @@ fn vec_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     })
 }
 
-fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
+fn vec_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<VecShape> {
+    let reader = emitter.reader;
     let vec = struct_of(reader, id)?;
     if fq_name(reader, id)?.split('<').next()? != "alloc::vec::Vec" {
         return None;
@@ -1623,8 +1628,8 @@ fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
     let element = reader.canonicalize(element_param.type_id);
     let alloc = reader.canonicalize(alloc_param.type_id);
 
-    let (buf_index, buf_member) = unique_member(reader, &vec.members, "buf")?;
-    let (len_index, _) = unique_member(reader, &vec.members, "len")?;
+    let (_, buf_member) = unique_member(reader, &vec.members, "buf")?;
+    unique_member(reader, &vec.members, "len")?;
 
     let raw_vec = struct_of(reader, buf_member.type_id)?;
     if fq_name(reader, buf_member.type_id)?.split('<').next()? != "alloc::raw_vec::RawVec" {
@@ -1639,7 +1644,7 @@ fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
         return None;
     }
 
-    let (inner_index, inner_member) = unique_member(reader, &raw_vec.members, "inner")?;
+    let (_, inner_member) = unique_member(reader, &raw_vec.members, "inner")?;
     let inner = struct_of(reader, inner_member.type_id)?;
     if fq_name(reader, inner_member.type_id)?.split('<').next()? != "alloc::raw_vec::RawVecInner" {
         return None;
@@ -1659,14 +1664,21 @@ fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
         Through::AnyOffset,
     )?;
 
-    let (cap_index, cap_member) = unique_member(reader, &inner.members, "cap")?;
+    let (_, cap_member) = unique_member(reader, &inner.members, "cap")?;
     let (cap_value, _) = usize_no_high_bit_layout(reader, cap_member.type_id)?;
 
-    let buf = Selector::members(&[buf_index as u32, inner_index as u32]);
+    // The buffer walk is by name; the pointer was found by shape and the niche
+    // newtype's field by position, so both are spliced in and re-addressed.
+    let buf = || path![Named("buf"), Named("inner")];
+    let mut pointer = buf();
+    pointer.push(Resolved(pointer_path));
+    let mut capacity = buf();
+    capacity.push(Named("cap"));
+    capacity.push(Resolved(Selector::member(cap_value)));
     Some(VecShape {
-        pointer: buf.clone().then(pointer_path),
-        length: Selector::member(len_index as u32),
-        capacity: buf.then(Selector::members(&[cap_index as u32, cap_value])),
+        pointer: emitter.walk(id, &pointer)?.0,
+        length: emitter.walk(id, &path![Named("len")])?.0,
+        capacity: emitter.walk(id, &capacity)?.0,
         element,
     })
 }
@@ -1679,7 +1691,8 @@ fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
 /// with no type-erased `Unique<u8>` and no `Cap` niche newtype. Because the
 /// pointer is `NonNull<T>` over the real element (not a `u8` byte pointer), the
 /// buffer pointer is matched by its element target rather than by width.
-fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
+fn allocator_api2_vec_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<VecShape> {
+    let reader = emitter.reader;
     let vec = struct_of(reader, id)?;
     if fq_name(reader, id)?.split('<').next()? != "allocator_api2::stable::vec::Vec" {
         return None;
@@ -1695,8 +1708,8 @@ fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShap
     let element = reader.canonicalize(element_param.type_id);
     let alloc = reader.canonicalize(alloc_param.type_id);
 
-    let (buf_index, buf_member) = unique_member(reader, &vec.members, "buf")?;
-    let (len_index, _) = unique_member(reader, &vec.members, "len")?;
+    let (_, buf_member) = unique_member(reader, &vec.members, "buf")?;
+    unique_member(reader, &vec.members, "len")?;
 
     let raw_vec = struct_of(reader, buf_member.type_id)?;
     if fq_name(reader, buf_member.type_id)?.split('<').next()?
@@ -1724,12 +1737,14 @@ fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShap
         Through::ZeroOffset,
     )?;
 
-    let (cap_index, _) = unique_member(reader, &raw_vec.members, "cap")?;
+    unique_member(reader, &raw_vec.members, "cap")?;
 
+    let mut pointer = path![Named("buf")];
+    pointer.push(Resolved(pointer_path));
     Some(VecShape {
-        pointer: Selector::member(buf_index as u32).then(pointer_path),
-        length: Selector::member(len_index as u32),
-        capacity: Selector::members(&[buf_index as u32, cap_index as u32]),
+        pointer: emitter.walk(id, &pointer)?.0,
+        length: emitter.walk(id, &path![Named("len")])?.0,
+        capacity: emitter.walk(id, &path![Named("buf"), Named("cap")])?.0,
         element,
     })
 }
@@ -1775,12 +1790,12 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         Through::ZeroOffset,
     )?;
     let node_ref_ty = struct_of(reader, node_ref)?;
-    let (height, height_member) = unique_member(reader, &node_ref_ty.members, "height")?;
+    let (_, height_member) = unique_member(reader, &node_ref_ty.members, "height")?;
     if !is_unsigned_integer(reader, height_member.type_id, 8) {
         return None;
     }
 
-    let (node_member_index, node_member) = unique_member(reader, &node_ref_ty.members, "node")?;
+    let (_, node_member) = unique_member(reader, &node_ref_ty.members, "node")?;
     let is_leaf_node = |target| is_btree_node(reader, target, "LeafNode", key, value);
     let (node_tail, leaf) = find_unique(
         reader,
@@ -1788,15 +1803,14 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         Want::PointerTo(&is_leaf_node),
         Through::ZeroOffset,
     )?;
-    let node = Selector::member(node_member_index as u32).then(node_tail);
 
     let leaf_ty = struct_of(reader, leaf)?;
-    let (leaf_len, leaf_len_member) = unique_member(reader, &leaf_ty.members, "len")?;
+    let (_, leaf_len_member) = unique_member(reader, &leaf_ty.members, "len")?;
     if !is_unsigned_integer(reader, leaf_len_member.type_id, 2) {
         return None;
     }
-    let (leaf_keys, keys_member) = unique_member(reader, &leaf_ty.members, "keys")?;
-    let (leaf_values, values_member) = unique_member(reader, &leaf_ty.members, "vals")?;
+    let (_, keys_member) = unique_member(reader, &leaf_ty.members, "keys")?;
+    let (_, values_member) = unique_member(reader, &leaf_ty.members, "vals")?;
     let RawType::Array(keys) = reader.canonical_type(keys_member.type_id)? else {
         return None;
     };
@@ -1824,11 +1838,11 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         Through::ZeroOffset,
     )?;
     let internal_ty = struct_of(reader, internal)?;
-    let (internal_data, data_member) = unique_member(reader, &internal_ty.members, "data")?;
+    let (_, data_member) = unique_member(reader, &internal_ty.members, "data")?;
     if reader.canonicalize(data_member.type_id) != leaf || data_member.offset != 0 {
         return None;
     }
-    let (internal_edges, edges_member) = unique_member(reader, &internal_ty.members, "edges")?;
+    let (_, edges_member) = unique_member(reader, &internal_ty.members, "edges")?;
     let RawType::Array(edges) = reader.canonical_type(edges_member.type_id)? else {
         return None;
     };
@@ -1843,23 +1857,28 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         Through::ZeroOffset,
     )?;
 
+    // Each of the twelve reaches is rooted at whichever type the walk had got
+    // to; the three found by shape are spliced in and re-addressed with the
+    // rest. Nothing here records a position.
+    let mut node_path = path![Named("node")];
+    node_path.push(Resolved(node_tail));
     Some(DisplayNode::Map {
-        length: Selector::member(length as u32),
+        length: emitter.walk(id, &path![Named("length")])?.0,
         key: emitter.reserve(key),
         value: emitter.reserve(value),
         entries: Box::new(MapEntries::BTree {
-            root: Selector::member(root as u32),
-            root_node,
-            height: Selector::member(height as u32),
-            node,
+            root: emitter.walk(id, &path![Named("root")])?.0,
+            root_node: emitter.readdress(some.type_id, &root_node)?,
+            height: emitter.walk(node_ref, &path![Named("height")])?.0,
+            node: emitter.walk(node_ref, &node_path)?.0,
             leaf: emitter.reserve(leaf),
-            leaf_len: Selector::member(leaf_len as u32),
-            leaf_keys: Selector::member(leaf_keys as u32),
-            leaf_values: Selector::member(leaf_values as u32),
+            leaf_len: emitter.walk(leaf, &path![Named("len")])?.0,
+            leaf_keys: emitter.walk(leaf, &path![Named("keys")])?.0,
+            leaf_values: emitter.walk(leaf, &path![Named("vals")])?.0,
             internal: emitter.reserve(internal),
-            internal_data: Selector::member(internal_data as u32),
-            internal_edges: Selector::member(internal_edges as u32),
-            edge,
+            internal_data: emitter.walk(internal, &path![Named("data")])?.0,
+            internal_edges: emitter.walk(internal, &path![Named("edges")])?.0,
+            edge: emitter.readdress(edges.elem_type_id, &edge)?,
         }),
     })
 }
@@ -2253,11 +2272,6 @@ use PatStep::{Deref, FindParam, Named, PeelTo, PeelToParam, Resolved};
 
 /// The shape of a `usize`, which most of what a pattern peels to is.
 const WORD: Shape = Shape::Uint(crate::bundle::POINTER_SIZE);
-
-/// Build a [`PatPath`]. `path![Named("a"), Deref]` reads as the path it is.
-macro_rules! path {
-    ($($step:expr),* $(,)?) => { vec![$($step),*] };
-}
 
 /// A type a pattern needs the bundle to carry, named by where it is found
 /// rather than by a [`TypeId`] the detector had to dig out itself.
@@ -2843,7 +2857,7 @@ fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // member. It renders exactly as a `&str` with the capacity checked, so it
     // reuses the `Str` node with the capacity supplied.
     let vec = emitter.landed(id, &path![Named("vec")])?;
-    let shape = vec_shape(emitter.reader, vec)?;
+    let shape = vec_shape(emitter, vec)?;
     if !is_unsigned_integer(emitter.reader, shape.element, 1) {
         return None;
     }
@@ -2887,7 +2901,8 @@ fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
 /// capacity checked, prefixing the Vec's own paths with the wrapper chain.
 fn utf8_path_buf_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let prefix = path![Named("__0"), Named("inner"), Named("inner"), Named("inner"),];
-    let shape = vec_shape(emitter.reader, emitter.landed(id, &prefix)?)?;
+    let vec = emitter.landed(id, &prefix)?;
+    let shape = vec_shape(emitter, vec)?;
     if !is_unsigned_integer(emitter.reader, shape.element, 1) {
         return None;
     }
@@ -3181,7 +3196,7 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
     // The value is behind the platform-selected RwLock implementation. Search
     // its concrete aggregate storage for the one T rather than baking in the
     // std/parking_lot wrapper chain.
-    let (value_index, value_member) = unique_member(reader, &shared_def.members, "value")?;
+    let (_, value_member) = unique_member(reader, &shared_def.members, "value")?;
     let is_element = |candidate| candidate == element;
     let (value_tail, _) = find_unique(
         reader,
@@ -3189,7 +3204,9 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
         Want::Type(&is_element),
         Through::AnyOffset,
     )?;
-    let value = Selector::member(value_index as u32).then(value_tail);
+    let mut value_path = path![Named("value")];
+    value_path.push(Resolved(value_tail));
+    let value = emitter.walk(shared_ty, &value_path)?.0;
 
     // Reserve the element type so the `Some(T)` alias resolves even if nothing
     // else pulls it into the type graph.
@@ -3495,9 +3512,9 @@ struct ChanShape {
     stride: u64,
     count: u64,
     element: TypeId,
-    /// The channel's own members (zero-sized ones elided, original indices
-    /// preserved), rendered structurally after the synthetic `queued` field.
-    members: Vec<u32>,
+    /// The channel's own members (zero-sized ones elided), rendered
+    /// structurally after the synthetic `queued` field.
+    members: Vec<MemberRef>,
 }
 
 /// A channel is a struct whose first field is the synthetic `queued` block-chain
@@ -3594,12 +3611,16 @@ fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
     // by its real members. Structural display skips zero-sized members, so
     // enumerate over the full list and keep the surviving indices.
     let chan_st = struct_of(reader, id)?;
-    let members = chan_st
+    let visible: Vec<u32> = chan_st
         .members
         .iter()
         .enumerate()
         .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
         .map(|(index, _)| index as u32)
+        .collect();
+    let members = visible
+        .into_iter()
+        .map(|index| emitter.address(&chan_st.members, index))
         .collect();
 
     Some(ChanShape {
@@ -3758,9 +3779,14 @@ fn dyn_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode
         return None;
     }
 
+    // Both members were found by shape — the screens above are what identify
+    // them — so their addresses come from the one place a found member becomes
+    // an address.
+    let pointer = emitter.address(&st.members, pointer_index as u32);
+    let vtable = emitter.address(&st.members, vtable_index as u32);
     Some(DisplayNode::DynPointer {
-        pointer: Selector::member(pointer_index as u32),
-        vtable: Selector::member(vtable_index as u32),
+        pointer: Selector(vec![Step::Member(pointer)]),
+        vtable: Selector(vec![Step::Member(vtable)]),
         drop_in_place: 0,
         size: 1,
         align: 2,
@@ -4576,11 +4602,7 @@ impl<'a> Emitter<'a> {
             ),
         };
         std::iter::once(queued)
-            .chain(
-                members
-                    .into_iter()
-                    .map(|index| Field::member(MemberRef::Index(index))),
-            )
+            .chain(members.into_iter().map(Field::member))
             .collect()
     }
 
