@@ -1500,7 +1500,10 @@ static BY_NAME: &[(&str, Detector)] = &[
     ("core::cell::UnsafeCell", unsafe_cell_node),
     ("core::net::ip_addr::Ipv4Addr", ip_address_node),
     ("core::net::ip_addr::Ipv6Addr", ip_address_node),
-    ("core::num::niche_types::UsizeNoHighBit", usize_no_high_bit_node),
+    (
+        "core::num::niche_types::UsizeNoHighBit",
+        usize_no_high_bit_node,
+    ),
     ("core::num::nonzero::NonZero", nonzero_node),
     ("core::ptr::non_null::NonNull", non_null_node),
     ("core::ptr::unique::Unique", unique_node),
@@ -1559,9 +1562,7 @@ static STRUCTURAL: &[Detector] = &[
 
 /// Try the shape-keyed detectors in order.
 fn structural_debug_format(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    STRUCTURAL
-        .iter()
-        .find_map(|detector| detector(emitter, id))
+    STRUCTURAL.iter().find_map(|detector| detector(emitter, id))
 }
 
 /// A tuple newtype wrapping a single scalar (`Version(usize)`, `Epoch(u64)`,
@@ -1575,19 +1576,15 @@ fn scalar_newtype_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let (index, member) = st.members.iter().enumerate().find(|(_, member)| {
-        member.offset == 0 && member.name.map(|name| reader.strings.get(name)) == Some("__0")
-    })?;
-    let RawType::Base(base) = reader.canonical_type(member.type_id)? else {
-        return None;
-    };
-    if base.size == 0 || st.size != base.size {
-        return None;
-    }
-    Some(DisplayNode::Alias {
-        at: Selector::member(index as u32),
-        follow_pointers: true,
-    })
+    transparent(zero_offset_member(
+        reader,
+        &st.members,
+        Some("__0"),
+        |ty| {
+            matches!(reader.canonical_type(ty), Some(RawType::Base(base))
+            if base.size != 0 && base.size == st.size)
+        },
+    )?)
 }
 
 /// Where a `Vec`-shaped owned buffer keeps its data pointer, length, capacity,
@@ -3220,13 +3217,12 @@ fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bo
 }
 
 fn unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let (member, _) = unsafe_cell_layout(emitter.reader, id)?;
-    Some(DisplayNode::Alias {
-        at: Selector::member(member),
-        follow_pointers: true,
-    })
+    transparent(unsafe_cell_layout(emitter.reader, id)?.0)
 }
 
+/// The member index and `T` of a `core::cell::UnsafeCell<T>`, or `None` if `id`
+/// is not one. The name check stays here because the loom shims reach a cell as
+/// their own member, where no dispatch table has screened it for them.
 fn unsafe_cell_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
@@ -3236,52 +3232,27 @@ fn unsafe_cell_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)
     if namespace != "core::cell" || !name.starts_with("UnsafeCell<") || !name.ends_with('>') {
         return None;
     }
-
-    let [param] = st.template_params.as_ref() else {
-        return None;
-    };
-    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
-        return None;
-    }
-    let target = reader.canonicalize(param.type_id);
-    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
-        member.offset == 0
-            && member.name.map(|name| reader.strings.get(name)) == Some("value")
-            && reader.canonicalize(member.type_id) == target
-    });
-    let (index, _) = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-    Some((index as u32, target))
+    let target = sole_param_target(reader, st)?;
+    let member = zero_offset_member(reader, &st.members, Some("value"), |ty| {
+        reader.canonicalize(ty) == target
+    })?;
+    Some((member, target))
 }
 
+/// tokio's loom shim wraps a `core::cell::UnsafeCell<T>` in a newtype over the
+/// same `T`; display it as the cell, which is itself transparent.
 fn loom_unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let [param] = st.template_params.as_ref() else {
-        return None;
-    };
-    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
-        return None;
-    }
-    let target = reader.canonicalize(param.type_id);
-    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
-        member.offset == 0
-            && member.name.map(|name| reader.strings.get(name)) == Some("__0")
-            && unsafe_cell_layout(reader, member.type_id)
-                .is_some_and(|(_, inner_target)| inner_target == target)
-    });
-    let (index, _) = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-    Some(DisplayNode::Alias {
-        at: Selector::member(index as u32),
-        follow_pointers: true,
-    })
+    let target = sole_param_target(reader, st)?;
+    transparent(zero_offset_member(
+        reader,
+        &st.members,
+        Some("__0"),
+        |ty| unsafe_cell_layout(reader, ty).is_some_and(|(_, inner)| inner == target),
+    )?)
 }
 
 fn loom_atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -3300,24 +3271,17 @@ fn loom_atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode
     if !name.starts_with("Atomic") {
         return None;
     }
-
-    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
-        if member.offset != 0 || member.name.map(|name| reader.strings.get(name)) != Some("inner") {
-            return false;
-        }
-        let Some((_, atomic)) = unsafe_cell_layout(reader, member.type_id) else {
-            return false;
-        };
-        atomic_value_path(reader, atomic).is_some()
-    });
-    let (index, _) = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-    Some(DisplayNode::Alias {
-        at: Selector::member(index as u32),
-        follow_pointers: true,
-    })
+    // The shim holds the real atomic in an `UnsafeCell`, so accept a member
+    // only when a `core::sync::atomic::Atomic<_>` is what the cell contains.
+    transparent(zero_offset_member(
+        reader,
+        &st.members,
+        Some("inner"),
+        |ty| {
+            unsafe_cell_layout(reader, ty)
+                .is_some_and(|(_, atomic)| atomic_value_path(reader, atomic).is_some())
+        },
+    )?)
 }
 
 /// tokio's `loom::std::parking_lot` shims are newtypes that pair a
@@ -3335,30 +3299,21 @@ fn loom_parking_lot_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     if st.namespace.map(|ns| ns_path(reader, ns))? != "tokio::loom::std::parking_lot" {
         return None;
     }
-    // A single non-marker member sitting at offset zero is the wrapped lock.
-    let mut real = st.members.iter().enumerate().filter(|(_, member)| {
-        member.offset == 0
-            && !fq_name(reader, reader.canonicalize(member.type_id))
-                .is_some_and(|name| name.starts_with("core::marker::PhantomData"))
-    });
-    let (index, _) = real.next()?;
-    if real.next().is_some() {
-        return None;
-    }
-    Some(DisplayNode::Alias {
-        at: Selector::member(index as u32),
-        follow_pointers: true,
-    })
+    // Any member name will do, since the shims spell the lock differently; what
+    // identifies it is being the one member at offset zero that is not a marker.
+    transparent(zero_offset_member(reader, &st.members, None, |ty| {
+        !fq_name(reader, reader.canonicalize(ty))
+            .is_some_and(|name| name.starts_with("core::marker::PhantomData"))
+    })?)
 }
 
 fn non_null_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let (member, _) = non_null_layout(emitter.reader, id)?;
-    Some(DisplayNode::Alias {
-        at: Selector::member(member),
-        follow_pointers: true,
-    })
+    transparent(non_null_layout(emitter.reader, id)?.0)
 }
 
+/// The member index and `T` of a `core::ptr::non_null::NonNull<T>`, or `None` if
+/// `id` is not one. Like [`unsafe_cell_layout`] this keeps its name check, for
+/// [`unique_node`], which reaches a `NonNull` as its own member.
 fn non_null_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
@@ -3368,67 +3323,37 @@ fn non_null_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
     if namespace != "core::ptr::non_null" || !name.starts_with("NonNull<") || !name.ends_with('>') {
         return None;
     }
-
-    let [param] = st.template_params.as_ref() else {
-        return None;
-    };
-    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
-        return None;
-    }
-    let target = reader.canonicalize(param.type_id);
-    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
-        if member.offset != 0 || member.name.map(|name| reader.strings.get(name)) != Some("pointer")
-        {
-            return false;
-        }
-        let Some(RawType::Pointer(pointer)) = reader.canonical_type(member.type_id) else {
-            return false;
-        };
-        reader.canonicalize(pointer.target_type_id) == target
-    });
-    let (index, _) = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-    Some((index as u32, target))
+    let target = sole_param_target(reader, st)?;
+    let member = zero_offset_member(reader, &st.members, Some("pointer"), |ty| {
+        matches!(reader.canonical_type(ty), Some(RawType::Pointer(pointer))
+            if reader.canonicalize(pointer.target_type_id) == target)
+    })?;
+    Some((member, target))
 }
 
+/// `core::ptr::unique::Unique<T>` wraps a `NonNull<T>`, itself transparent over
+/// the pointer.
 fn unique_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let [param] = st.template_params.as_ref() else {
-        return None;
-    };
-    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
-        return None;
-    }
-    let target = reader.canonicalize(param.type_id);
-    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
-        member.offset == 0
-            && member.name.map(|name| reader.strings.get(name)) == Some("pointer")
-            && non_null_layout(reader, member.type_id)
-                .is_some_and(|(_, inner_target)| inner_target == target)
-    });
-    let (index, _) = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-    Some(DisplayNode::Alias {
-        at: Selector::member(index as u32),
-        follow_pointers: true,
-    })
+    let target = sole_param_target(reader, st)?;
+    transparent(zero_offset_member(
+        reader,
+        &st.members,
+        Some("pointer"),
+        |ty| non_null_layout(reader, ty).is_some_and(|(_, inner)| inner == target),
+    )?)
 }
 
 fn usize_no_high_bit_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let (member, _) = usize_no_high_bit_layout(emitter.reader, id)?;
-    Some(DisplayNode::Alias {
-        at: Selector::member(member),
-        follow_pointers: true,
-    })
+    transparent(usize_no_high_bit_layout(emitter.reader, id)?.0)
 }
 
+/// The member index and integer type of a `core::num::niche_types::UsizeNoHighBit`,
+/// or `None` if `id` is not one. Keeps its name check for
+/// [`allocator_api2_vec_shape`], which reaches one as a capacity member.
 fn usize_no_high_bit_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
     if fq_name(reader, id).as_deref() != Some("core::num::niche_types::UsizeNoHighBit") {
         return None;
@@ -3436,16 +3361,11 @@ fn usize_no_high_bit_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, T
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
-        member.offset == 0
-            && member.name.map(|name| reader.strings.get(name)) == Some("__0")
-            && is_unsigned_integer(reader, member.type_id, crate::bundle::POINTER_SIZE)
-    });
-    let (index, _) = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-    Some((index as u32, reader.canonicalize(st.members[index].type_id)))
+    let member = zero_offset_member(reader, &st.members, Some("__0"), |ty| {
+        is_unsigned_integer(reader, ty, crate::bundle::POINTER_SIZE)
+    })?;
+    let integer = reader.canonicalize(st.members[member as usize].type_id);
+    Some((member, integer))
 }
 
 fn is_integer(reader: &DwReader<'_>, id: TypeId) -> bool {
@@ -3464,11 +3384,9 @@ fn nonzero_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let RawType::Struct(st) = reader.canonical_type(id)? else {
         return None;
     };
-    let member = single_zero_offset_field(reader, &st.members, |_| true)?;
-    Some(DisplayNode::Alias {
-        at: Selector::member(member),
-        follow_pointers: true,
-    })
+    // Whatever the width, the wrapped inner is the whole value.
+    let inner = zero_offset_member(reader, &st.members, Some("__0"), |_| true)?;
+    transparent(inner)
 }
 
 /// The niche-typed inner of a `NonZero<T>`
@@ -3485,27 +3403,61 @@ fn nonzero_inner_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNo
     if !name.ends_with("Inner") {
         return None;
     }
-    let member = single_zero_offset_field(reader, &st.members, |ty| is_integer(reader, ty))?;
-    Some(DisplayNode::Alias {
-        at: Selector::member(member),
-        follow_pointers: true,
-    })
+    transparent(zero_offset_member(
+        reader,
+        &st.members,
+        Some("__0"),
+        |ty| is_integer(reader, ty),
+    )?)
 }
 
-/// The index of the unique `__0` member at offset zero whose type satisfies
-/// `accept`, or `None` if there isn't exactly one.
-fn single_zero_offset_field(
+/// The index of the unique member at offset zero named `name` — or of whatever
+/// name, when that is `None` — whose type `accept`s.
+///
+/// Zero and several both give `None`: a wrapper with two candidate members is
+/// not one this can see through, so an ambiguous layout fails closed the same
+/// way a renamed member does.
+fn zero_offset_member(
     reader: &DwReader<'_>,
     members: &[crate::raw_types::RawMember<crate::StrId>],
+    name: Option<&str>,
     accept: impl Fn(TypeId) -> bool,
 ) -> Option<u32> {
     let mut matches = members.iter().enumerate().filter(|(_, member)| {
         member.offset == 0
-            && member.name.map(|name| reader.strings.get(name)) == Some("__0")
+            && name.is_none_or(|want| member.name.map(|n| reader.strings.get(n)) == Some(want))
             && accept(member.type_id)
     });
     let (index, _) = matches.next()?;
     matches.next().is_none().then_some(index as u32)
+}
+
+/// The `T` of a wrapper declared `Wrapper<T>`, canonicalized, or `None` if the
+/// type does not have exactly that one parameter. A transparent wrapper's
+/// member has to *be* this type: checking it is what stops a detector from
+/// aliasing whatever else happens to sit at offset zero.
+fn sole_param_target(
+    reader: &DwReader<'_>,
+    st: &crate::raw_types::RawStruct<crate::StrId>,
+) -> Option<TypeId> {
+    let [param] = st.template_params.as_ref() else {
+        return None;
+    };
+    (param.name.map(|name| reader.strings.get(name)) == Some("T"))
+        .then(|| reader.canonicalize(param.type_id))
+}
+
+/// A transparent wrapper displays as the one member that *is* its value, so it
+/// renders through that member and chases it if it is a pointer. The ten
+/// wrappers std and tokio's loom shims interpose all reduce to this; what
+/// differs between them is only which member [`zero_offset_member`] accepts.
+/// (An atomic is not one of them: it aliases its value without chasing it, and
+/// reaches it through a whole wrapper chain — see [`atomic_value_path`].)
+fn transparent(member: u32) -> Option<DisplayNode> {
+    Some(DisplayNode::Alias {
+        at: Selector::member(member),
+        follow_pointers: true,
+    })
 }
 
 fn atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
