@@ -1227,17 +1227,13 @@ fn cell_from_dealloc_param(
     core_ns: Option<NsId>,
     param: TypeId,
 ) -> Option<TypeId> {
-    let RawType::Struct(non_null) = reader.canonical_type(param)? else {
-        return None;
-    };
+    let non_null = struct_of(reader, param)?;
     let ptr_member = non_null.members.first()?;
     let RawType::Pointer(p) = reader.canonical_type(ptr_member.type_id)? else {
         return None;
     };
     let cell_id = reader.canonicalize(p.target_type_id);
-    let RawType::Struct(cell) = reader.canonical_type(cell_id)? else {
-        return None;
-    };
+    let cell = struct_of(reader, cell_id)?;
     let name = cell.name.map(|n| reader.strings.get(n)).unwrap_or_default();
     (cell.namespace == core_ns && name.starts_with("Cell<")).then_some(cell_id)
 }
@@ -1573,9 +1569,7 @@ fn structural_debug_format(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Disp
 /// this only sees a type no table named.
 fn scalar_newtype_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     transparent(zero_offset_member(
         reader,
         &st.members,
@@ -1612,9 +1606,7 @@ fn vec_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 }
 
 fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
-    let RawType::Struct(vec) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let vec = struct_of(reader, id)?;
     if fq_name(reader, id)?.split('<').next()? != "alloc::vec::Vec" {
         return None;
     }
@@ -1635,9 +1627,7 @@ fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
         return None;
     }
 
-    let RawType::Struct(raw_vec) = reader.canonical_type(buf_member.type_id)? else {
-        return None;
-    };
+    let raw_vec = struct_of(reader, buf_member.type_id)?;
     if fq_name(reader, buf_member.type_id)?.split('<').next()? != "alloc::raw_vec::RawVec" {
         return None;
     }
@@ -1651,9 +1641,7 @@ fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
     }
 
     let (inner_index, inner_member) = unique_member(reader, &raw_vec.members, "inner")?;
-    let RawType::Struct(inner) = reader.canonical_type(inner_member.type_id)? else {
-        return None;
-    };
+    let inner = struct_of(reader, inner_member.type_id)?;
     if fq_name(reader, inner_member.type_id)?.split('<').next()? != "alloc::raw_vec::RawVecInner" {
         return None;
     }
@@ -1693,9 +1681,7 @@ fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
 /// pointer is `NonNull<T>` over the real element (not a `u8` byte pointer), the
 /// buffer pointer is matched by its element target rather than by width.
 fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
-    let RawType::Struct(vec) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let vec = struct_of(reader, id)?;
     if fq_name(reader, id)?.split('<').next()? != "allocator_api2::stable::vec::Vec" {
         return None;
     }
@@ -1716,9 +1702,7 @@ fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShap
         return None;
     }
 
-    let RawType::Struct(raw_vec) = reader.canonical_type(buf_member.type_id)? else {
-        return None;
-    };
+    let raw_vec = struct_of(reader, buf_member.type_id)?;
     if fq_name(reader, buf_member.type_id)?.split('<').next()?
         != "allocator_api2::stable::raw_vec::RawVec"
     {
@@ -1764,9 +1748,7 @@ fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShap
 fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     // The dispatch table screens by name; this validates only the structure.
-    let RawType::Struct(map) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let map = struct_of(reader, id)?;
     let [key_param, value_param, alloc_param] = map.template_params.as_ref() else {
         return None;
     };
@@ -1799,9 +1781,7 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         Want::Type(&is_node_ref),
         Through::ZeroOffset,
     )?;
-    let RawType::Struct(node_ref_ty) = reader.canonical_type(node_ref)? else {
-        return None;
-    };
+    let node_ref_ty = struct_of(reader, node_ref)?;
     let (height, height_member) = unique_member(reader, &node_ref_ty.members, "height")?;
     if !is_unsigned_integer(reader, height_member.type_id, 8) {
         return None;
@@ -1817,9 +1797,7 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
     )?;
     let node = Selector::member(node_member_index as u32).then(node_tail);
 
-    let RawType::Struct(leaf_ty) = reader.canonical_type(leaf)? else {
-        return None;
-    };
+    let leaf_ty = struct_of(reader, leaf)?;
     let (leaf_len, leaf_len_member) = unique_member(reader, &leaf_ty.members, "len")?;
     if !is_unsigned_integer(reader, leaf_len_member.type_id, 2) {
         return None;
@@ -1852,9 +1830,7 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         Want::PointerTo(&is_internal_node),
         Through::ZeroOffset,
     )?;
-    let RawType::Struct(internal_ty) = reader.canonical_type(internal)? else {
-        return None;
-    };
+    let internal_ty = struct_of(reader, internal)?;
     let (internal_data, data_member) = unique_member(reader, &internal_ty.members, "data")?;
     if reader.canonicalize(data_member.type_id) != leaf || data_member.offset != 0 {
         return None;
@@ -2151,9 +2127,7 @@ fn function_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
 
 fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let member = |expected: &str| {
         let mut matches = st.members.iter().enumerate().filter(|(_, member)| {
             member.name.map(|name| reader.strings.get(name)) == Some(expected)
@@ -2193,9 +2167,7 @@ fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
         "core::net::ip_addr::Ipv6Addr" => 16,
         _ => return None,
     };
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let (index, member) = unique_member(reader, &st.members, "octets")?;
     if member.offset != 0 {
         return None;
@@ -2213,9 +2185,7 @@ fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
 
 fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
     let (length, length_member) = unique_member(reader, &st.members, "length")?;
     let RawType::Pointer(raw_pointer) = reader.canonical_type(pointer_member.type_id)? else {
@@ -2243,9 +2213,7 @@ fn slice_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // The dispatch table screens by name (`&[` / `alloc::boxed::Box<[`); a thin
     // `Box<T>` has no `[` and `&str`/`String` are UTF-8, so neither reaches
     // here. This validates only the fat-pointer structure.
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
     let (length, length_member) = unique_member(reader, &st.members, "length")?;
     let RawType::Pointer(raw_pointer) = reader.canonical_type(pointer_member.type_id)? else {
@@ -2265,9 +2233,7 @@ fn slice_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 
 fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let (vec_index, vec_member) = unique_member(reader, &st.members, "vec")?;
     let shape = vec_shape(reader, vec_member.type_id)?;
     if !is_unsigned_integer(reader, shape.element, 1) {
@@ -2291,9 +2257,7 @@ fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 /// `Str` node with no capacity.
 fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let (pointer, pointer_member) = unique_member(reader, &st.members, "data_ptr")?;
     let (length, length_member) = unique_member(reader, &st.members, "length")?;
     let RawType::Pointer(_) = reader.canonical_type(pointer_member.type_id)? else {
@@ -2333,16 +2297,12 @@ fn utf8_path_buf_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNo
 fn raw_mutex_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     // The dispatch table screens by name; this validates only the structure.
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let (state_index, state_member) = unique_member(reader, &st.members, "state")?;
     // The state is a single-byte atomic. Reuse the atomic detector's own walk
     // for the path to the stored byte, then anchor it at `state`.
     let value = atomic_value_path(reader, state_member.type_id)?;
-    let RawType::Struct(atomic) = reader.canonical_type(state_member.type_id)? else {
-        return None;
-    };
+    let atomic = struct_of(reader, state_member.type_id)?;
     if atomic.size != 1 {
         return None;
     }
@@ -2366,9 +2326,7 @@ fn atomic_usize_field_path(
     if fq_name(reader, id).as_deref() != Some(type_name) {
         return None;
     }
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let (field_index, field_member) = unique_member(reader, &st.members, field)?;
     let inner = find_stored_uint(reader, field_member.type_id, crate::bundle::POINTER_SIZE)?;
     Some(Selector::member(field_index as u32).then(inner))
@@ -2402,9 +2360,7 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 
     // The queue is a `LinkedList<Waiter, Waiter>`; its node type is the `Waiter`.
     let (_, queue_ty) = field_path(reader, id, &["waiters", "__1", "data", "value"])?;
-    let RawType::Struct(list) = reader.canonical_type(queue_ty)? else {
-        return None;
-    };
+    let list = struct_of(reader, queue_ty)?;
     let param = list.template_params.last()?;
     let waiter = reader.canonicalize(param.type_id);
     if fq_name(reader, waiter).as_deref() != Some("tokio::sync::notify::Waiter") {
@@ -2450,9 +2406,7 @@ fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Display
         "tokio::sync::batch_semaphore::Semaphore",
         "permits",
     )?;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     // The permit word is reached through the `permits` member, so that first
     // step names the member whose display is overridden.
     let Some(&Step::Member(permits_member)) = permits.steps().first() else {
@@ -2501,25 +2455,19 @@ fn watch_state_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode
 
 fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
 
     // The readiness bitmap lives in `header.ready_slots`, an atomic `usize`
     // behind the usual loom/UnsafeCell/Atomic wrappers.
     let (header_index, header_member) = unique_member(reader, &st.members, "header")?;
-    let RawType::Struct(header) = reader.canonical_type(header_member.type_id)? else {
-        return None;
-    };
+    let header = struct_of(reader, header_member.type_id)?;
     let (ready_index, ready_member) = unique_member(reader, &header.members, "ready_slots")?;
     let ready_tail = find_stored_uint(reader, ready_member.type_id, crate::bundle::POINTER_SIZE)?;
     let bitmap = Selector::members(&[header_index as u32, ready_index as u32]).then(ready_tail);
 
     // The slots are the inline array behind `values.__0`.
     let (values_index, values_member) = unique_member(reader, &st.members, "values")?;
-    let RawType::Struct(values) = reader.canonical_type(values_member.type_id)? else {
-        return None;
-    };
+    let values = struct_of(reader, values_member.type_id)?;
     let (array_index, array_member) = unique_member(reader, &values.members, "__0")?;
     if !matches!(
         reader.canonical_type(array_member.type_id),
@@ -2565,9 +2513,7 @@ fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
 fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     // The dispatch table screens by name; this validates only the structure.
-    let RawType::Struct(receiver) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let receiver = struct_of(reader, id)?;
     let [element_param] = receiver.template_params.as_ref() else {
         return None;
     };
@@ -2590,9 +2536,7 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
     if fq_name(reader, shared_ty)?.split('<').next()? != "tokio::sync::watch::Shared" {
         return None;
     }
-    let RawType::Struct(shared_def) = reader.canonical_type(shared_ty)? else {
-        return None;
-    };
+    let shared_def = struct_of(reader, shared_ty)?;
     let [shared_element] = shared_def.template_params.as_ref() else {
         return None;
     };
@@ -2811,9 +2755,7 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
         id,
         &["semaphore", "waiters", "__1", "data", "value", "queue"],
     )?;
-    let RawType::Struct(list) = reader.canonical_type(queue_ty)? else {
-        return None;
-    };
+    let list = struct_of(reader, queue_ty)?;
     let param = list.template_params.last()?;
     let waiter = reader.canonicalize(param.type_id);
     if fq_name(reader, waiter).as_deref() != Some("tokio::sync::batch_semaphore::Waiter") {
@@ -2988,9 +2930,7 @@ fn mpsc_chan_shape(reader: &DwReader<'_>, id: TypeId) -> Option<ChanShape> {
     let count = values_arr.count;
 
     // `element` is the block's message type `T`.
-    let RawType::Struct(bst) = reader.canonical_type(block)? else {
-        return None;
-    };
+    let bst = struct_of(reader, block)?;
     let [param] = bst.template_params.as_ref() else {
         return None;
     };
@@ -3002,9 +2942,7 @@ fn mpsc_chan_shape(reader: &DwReader<'_>, id: TypeId) -> Option<ChanShape> {
     // The channel renders as a struct: the synthetic `queued` field followed
     // by its real members. Structural display skips zero-sized members, so
     // enumerate over the full list and keep the surviving indices.
-    let RawType::Struct(chan_st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let chan_st = struct_of(reader, id)?;
     let members = chan_st
         .members
         .iter()
@@ -3127,9 +3065,7 @@ fn mpsc_queued_node(
 /// rustc's slot numbers independently.
 fn dyn_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
 
     let mut data_matches = st.members.iter().enumerate().filter_map(|(index, member)| {
         if member.name.map(|name| reader.strings.get(name)) != Some("pointer") {
@@ -3224,9 +3160,7 @@ fn unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode
 /// is not one. The name check stays here because the loom shims reach a cell as
 /// their own member, where no dispatch table has screened it for them.
 fn unsafe_cell_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
     if namespace != "core::cell" || !name.starts_with("UnsafeCell<") || !name.ends_with('>') {
@@ -3243,9 +3177,7 @@ fn unsafe_cell_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)
 /// same `T`; display it as the cell, which is itself transparent.
 fn loom_unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let target = sole_param_target(reader, st)?;
     transparent(zero_offset_member(
         reader,
@@ -3257,9 +3189,7 @@ fn loom_unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
 
 fn loom_atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     // The prefix key reaches every `atomic_<width>` module; require the single
     // segment and the `Atomic*` type name it cannot express.
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
@@ -3290,9 +3220,7 @@ fn loom_atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode
 /// loom scaffolding does not obscure it.
 fn loom_parking_lot_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     // The prefix key spans the whole shim module — which is the point, since
     // every type in it is a wrapper — but it also admits a submodule the key
     // cannot exclude, so require the module itself.
@@ -3315,9 +3243,7 @@ fn non_null_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 /// `id` is not one. Like [`unsafe_cell_layout`] this keeps its name check, for
 /// [`unique_node`], which reaches a `NonNull` as its own member.
 fn non_null_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
     if namespace != "core::ptr::non_null" || !name.starts_with("NonNull<") || !name.ends_with('>') {
@@ -3335,9 +3261,7 @@ fn non_null_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, TypeId)> {
 /// the pointer.
 fn unique_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let target = sole_param_target(reader, st)?;
     transparent(zero_offset_member(
         reader,
@@ -3358,9 +3282,7 @@ fn usize_no_high_bit_layout(reader: &DwReader<'_>, id: TypeId) -> Option<(u32, T
     if fq_name(reader, id).as_deref() != Some("core::num::niche_types::UsizeNoHighBit") {
         return None;
     }
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let member = zero_offset_member(reader, &st.members, Some("__0"), |ty| {
         is_unsigned_integer(reader, ty, crate::bundle::POINTER_SIZE)
     })?;
@@ -3381,9 +3303,7 @@ fn is_integer(reader: &DwReader<'_>, id: TypeId) -> bool {
 /// value. Handles every width and signedness.
 fn nonzero_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     // Whatever the width, the wrapped inner is the whole value.
     let inner = zero_offset_member(reader, &st.members, Some("__0"), |_| true)?;
     transparent(inner)
@@ -3394,9 +3314,7 @@ fn nonzero_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 /// integer field.
 fn nonzero_inner_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     // The prefix key admits any `niche_types::NonZero*`; only the `*Inner`
     // wrappers are transparent over an integer.
     let name = st.name.map(|name| reader.strings.get(name))?;
@@ -3430,6 +3348,19 @@ fn zero_offset_member(
     });
     let (index, _) = matches.next()?;
     matches.next().is_none().then_some(index as u32)
+}
+
+/// The struct `id` canonically names, or `None` if it is not a struct. This is a
+/// detector's usual first move: a formatter for a named Rust type is a formatter
+/// for an aggregate, and one handed anything else declines.
+fn struct_of<'r>(
+    reader: &'r DwReader<'_>,
+    id: TypeId,
+) -> Option<&'r crate::raw_types::RawStruct<crate::StrId>> {
+    match reader.canonical_type(id)? {
+        RawType::Struct(st) => Some(st),
+        _ => None,
+    }
 }
 
 /// The `T` of a wrapper declared `Wrapper<T>`, canonicalized, or `None` if the
@@ -3479,9 +3410,7 @@ fn atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 /// `AtomicU8`/`AtomicUsize` types, which have no `T` parameter; reach the word
 /// those store with [`find_stored_uint`] instead.
 fn atomic_value_path(reader: &DwReader<'_>, id: TypeId) -> Option<Selector> {
-    let RawType::Struct(st) = reader.canonical_type(id)? else {
-        return None;
-    };
+    let st = struct_of(reader, id)?;
     let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
     let name = st.name.map(|name| reader.strings.get(name))?;
     if namespace != "core::sync::atomic" || !name.starts_with("Atomic<") || !name.ends_with('>') {
