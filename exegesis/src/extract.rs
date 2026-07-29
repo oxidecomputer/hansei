@@ -2231,6 +2231,18 @@ enum PatStep<'a> {
     Named(&'a str),
     /// Follow the pointer reached so far.
     Deref,
+    /// Descend the zero-offset wrapper chain to the one value of this shape.
+    ///
+    /// tokio reaches an atomic's word through a different chain of loom,
+    /// `UnsafeCell` and atomic shims depending on how the compiler spelled the
+    /// atomic, so a pattern says what it is looking for rather than naming
+    /// wrappers it cannot predict. Two candidates decline just as none do.
+    PeelTo(Shape),
+    /// Descend the zero-offset wrapper chain to the `T` a `Wrapper<T>`
+    /// declares. What an atomic peels to is its own parameter rather than any
+    /// fixed shape — `AtomicPtr` stores a pointer, `AtomicUsize` a word — so
+    /// the type the wrapper names is the only thing that identifies it.
+    PeelToParam,
     /// Continue along a path something else already resolved — how a shape
     /// helper's selectors are anchored under the member that holds them.
     Resolved(Selector),
@@ -2241,7 +2253,10 @@ type PatPath<'a> = Vec<PatStep<'a>>;
 
 // A pattern is written far more often than it is matched on, so the steps are
 // spelled bare: `path![Named("head"), Deref]` reads as the path it describes.
-use PatStep::{Deref, Named, Resolved};
+use PatStep::{Deref, Named, PeelTo, PeelToParam, Resolved};
+
+/// The shape of a `usize`, which most of what a pattern peels to is.
+const WORD: Shape = Shape::Uint(crate::bundle::POINTER_SIZE);
 
 /// Build a [`PatPath`]. `path![Named("a"), Deref]` reads as the path it is.
 macro_rules! path {
@@ -2261,6 +2276,20 @@ enum PatField<'a> {
     Computed(&'a str, Pat<'a>),
 }
 
+/// Which fields a [`Pat::Struct`] record shows.
+enum PatFields<'a> {
+    /// Only these, in this order — a curated record that hides the rest.
+    Only(Vec<PatField<'a>>),
+    /// Every member structural display would show, with these named ones
+    /// computed instead.
+    ///
+    /// "Would show" means every member of nonzero size: a zero-sized one
+    /// carries no value and structural display elides it, so a record that
+    /// listed it would differ from the plain view for no reason. This is how a
+    /// type is rendered as itself with one field decoded.
+    AllVisible(Vec<PatField<'a>>),
+}
+
 /// A display program with its paths not yet found: a detector describes the
 /// shape it expects, and [`Emitter::compile`] looks for that shape in DWARF.
 ///
@@ -2276,8 +2305,20 @@ enum PatField<'a> {
 /// contents depend on values discovered while navigating — a `Variant`'s
 /// computed discriminant, a `CustomList`'s loop — is still built by hand.
 enum Pat<'a> {
+    Scalar {
+        at: PatPath<'a>,
+        decode: ScalarDecode,
+    },
     Symbol {
         at: PatPath<'a>,
+    },
+    SlotCount {
+        bitmap: PatPath<'a>,
+        slots: PatPath<'a>,
+    },
+    Alias {
+        at: PatPath<'a>,
+        follow_pointers: bool,
     },
     Str {
         pointer: PatPath<'a>,
@@ -2294,7 +2335,7 @@ enum Pat<'a> {
         octets: PatPath<'a>,
     },
     Struct {
-        fields: Vec<PatField<'a>>,
+        fields: PatFields<'a>,
     },
 }
 
@@ -2307,8 +2348,23 @@ impl Emitter<'_> {
     /// the member-list rewriting that happens after it is attached.
     fn compile(&mut self, root: TypeId, pat: Pat<'_>) -> Option<DisplayNode> {
         Some(match pat {
+            Pat::Scalar { at, decode } => DisplayNode::Scalar {
+                at: self.walk(root, &at)?.0,
+                decode,
+            },
             Pat::Symbol { at } => DisplayNode::Symbol {
                 at: self.walk(root, &at)?.0,
+            },
+            Pat::SlotCount { bitmap, slots } => DisplayNode::SlotCount {
+                bitmap: self.walk(root, &bitmap)?.0,
+                slots: self.walk(root, &slots)?.0,
+            },
+            Pat::Alias {
+                at,
+                follow_pointers,
+            } => DisplayNode::Alias {
+                at: self.walk(root, &at)?.0,
+                follow_pointers,
             },
             Pat::Str {
                 pointer,
@@ -2334,12 +2390,53 @@ impl Emitter<'_> {
                 octets: self.walk(root, &octets)?.0,
             },
             Pat::Struct { fields } => DisplayNode::Struct {
-                fields: fields
-                    .into_iter()
-                    .map(|field| self.compile_field(root, field))
-                    .collect::<Option<_>>()?,
+                fields: self.compile_fields(root, fields)?,
             },
         })
+    }
+
+    /// Compile a record's field list.
+    fn compile_fields(&mut self, root: TypeId, fields: PatFields<'_>) -> Option<Vec<Field>> {
+        let computed = match fields {
+            PatFields::Only(fields) => {
+                return fields
+                    .into_iter()
+                    .map(|field| self.compile_field(root, field))
+                    .collect();
+            }
+            PatFields::AllVisible(computed) => computed,
+        };
+        // Compile the overrides first, so a name that is not there declines
+        // before anything is built, then lay the visible members out in
+        // declaration order with each override in its member's place.
+        let mut overrides = Vec::with_capacity(computed.len());
+        for field in computed {
+            let PatField::Computed(name, pat) = field;
+            overrides.push((
+                name,
+                self.compile_field(root, PatField::Computed(name, pat))?,
+            ));
+        }
+        let reader = self.reader;
+        let members = aggregate_members(reader, root)?;
+        let visible: Vec<u32> = members
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
+            .map(|(index, _)| index as u32)
+            .collect();
+        let mut out = Vec::with_capacity(visible.len());
+        for index in visible {
+            let at = self.address(members, index);
+            let name = members[index as usize]
+                .name
+                .map(|name| reader.strings.get(name));
+            match overrides.iter().position(|(want, _)| Some(*want) == name) {
+                Some(position) => out.push(overrides.remove(position).1),
+                None => out.push(Field::member(at)),
+            }
+        }
+        Some(out)
     }
 
     /// Compile one [`PatField`]. A field names its member rather than
@@ -2403,6 +2500,29 @@ impl Emitter<'_> {
                     cur = self.reader.canonicalize(pointer.target_type_id);
                     steps.push(Step::Deref);
                 }
+                PatStep::PeelTo(shape) => {
+                    let reader = self.reader;
+                    let accepts = |id| raw_shape_matches(reader, id, *shape);
+                    let (found, landed) = self.peel(cur, &accepts, &shape.to_string())?;
+                    steps.extend(found.0);
+                    cur = landed;
+                }
+                PatStep::PeelToParam => {
+                    let reader = self.reader;
+                    let Some(param) =
+                        struct_of(reader, cur).and_then(|st| sole_param_target(reader, st))
+                    else {
+                        explain!(
+                            "  {} does not declare a sole parameter `T` to peel to",
+                            type_label(reader, cur),
+                        );
+                        return None;
+                    };
+                    let accepts = |id| id == param;
+                    let (found, landed) = self.peel(cur, &accepts, &type_label(reader, param))?;
+                    steps.extend(found.0);
+                    cur = landed;
+                }
                 PatStep::Resolved(sel) => {
                     let Some(landed) = selector_lands(self.reader, &self.interner, cur, sel) else {
                         explain!(
@@ -2411,8 +2531,8 @@ impl Emitter<'_> {
                         );
                         return None;
                     };
+                    steps.extend(self.readdress(cur, sel)?.0);
                     cur = landed;
-                    steps.extend(sel.steps().iter().cloned());
                 }
             }
         }
@@ -2446,6 +2566,60 @@ impl Emitter<'_> {
             }
         };
         Some(self.reserve(found))
+    }
+
+    /// Descend the zero-offset wrapper chain from `root` to the one value
+    /// `accepts` takes, name-addressed. `want` names what was looked for, for
+    /// the trace when nothing or several were found.
+    fn peel(
+        &mut self,
+        root: TypeId,
+        accepts: &dyn Fn(TypeId) -> bool,
+        want: &str,
+    ) -> Option<(Selector, TypeId)> {
+        let Some((found, landed)) =
+            find_unique(self.reader, root, Want::Type(accepts), Through::ZeroOffset)
+        else {
+            explain!(
+                "  no single {want} is stored in {}",
+                type_label(self.reader, root),
+            );
+            return None;
+        };
+        Some((self.readdress(root, &found)?, landed))
+    }
+
+    /// Re-address a path that was found rather than declared, so it names what
+    /// it can.
+    ///
+    /// A shape walk reports positions, since what it matched on was a type and
+    /// not a name. Converting each hop through [`Emitter::address`] here is
+    /// what makes a discovered path as durable as a declared one — and it is
+    /// the only place that conversion happens, so no walk can forget it.
+    fn readdress(&mut self, root: TypeId, found: &Selector) -> Option<Selector> {
+        let mut steps = Vec::with_capacity(found.steps().len());
+        let mut cur = self.reader.canonicalize(root);
+        for step in found.steps() {
+            match step {
+                Step::Member(at) => {
+                    let members = aggregate_members(self.reader, cur)?;
+                    let index = at.resolve(members.len(), |index, name| {
+                        members[index].name.map(|n| self.reader.strings.get(n))
+                            == self.interner.get(name)
+                    })?;
+                    cur = self.reader.canonicalize(members[index].type_id);
+                    steps.push(Step::Member(self.address(members, index as u32)));
+                }
+                Step::Deref => {
+                    let RawType::Pointer(pointer) = self.reader.canonical_type(cur)? else {
+                        return None;
+                    };
+                    cur = self.reader.canonicalize(pointer.target_type_id);
+                    steps.push(Step::Deref);
+                }
+            }
+        }
+        Some(Selector(steps))
     }
 
     /// The type a pattern path lands on, for a screen tighter than the shape
@@ -2497,7 +2671,7 @@ fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     emitter.compile(
         id,
         Pat::Struct {
-            fields: ["clone", "wake", "wake_by_ref", "drop"].map(symbol).into(),
+            fields: PatFields::Only(["clone", "wake", "wake_by_ref", "drop"].map(symbol).into()),
         },
     )
 }
@@ -2621,41 +2795,16 @@ fn utf8_path_buf_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNo
 /// A `parking_lot::raw_mutex::RawMutex` is a single decoded lock-state byte
 /// (`LOCKED_BIT`/`PARKED_BIT`), shown in place of the whole value.
 fn raw_mutex_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
-    // The dispatch table screens by name; this validates only the structure.
-    let st = struct_of(reader, id)?;
-    let (state_index, state_member) = unique_member(reader, &st.members, "state")?;
-    // The state is a single-byte atomic. Reuse the atomic detector's own walk
-    // for the path to the stored byte, then anchor it at `state`.
-    let value = atomic_value_path(reader, state_member.type_id)?;
-    let atomic = struct_of(reader, state_member.type_id)?;
-    if atomic.size != 1 {
-        return None;
-    }
-    Some(DisplayNode::Scalar {
-        at: Selector::member(state_index as u32).then(value),
-        decode: emitter.mutex_byte_decode(),
-    })
-}
-
-/// The member path from a struct named `type_name` to the atomic `usize`
-/// stored in its `field` member. tokio uses its own loom shim internally, so
-/// the word sits behind loom/UnsafeCell/Atomic wrappers rather than a bare
-/// `core::sync::atomic::Atomic<usize>`; walk the zero-offset chain to the
-/// unique `usize` and anchor the path at `field`.
-fn atomic_usize_field_path(
-    reader: &DwReader<'_>,
-    id: TypeId,
-    type_name: &str,
-    field: &str,
-) -> Option<Selector> {
-    if fq_name(reader, id).as_deref() != Some(type_name) {
-        return None;
-    }
-    let st = struct_of(reader, id)?;
-    let (field_index, field_member) = unique_member(reader, &st.members, field)?;
-    let inner = find_stored_uint(reader, field_member.type_id, crate::bundle::POINTER_SIZE)?;
-    Some(Selector::member(field_index as u32).then(inner))
+    // The dispatch table screens by name; this describes only the structure.
+    // The state is a single-byte atomic, whichever way the compiler spelled it.
+    let decode = emitter.mutex_byte_decode();
+    emitter.compile(
+        id,
+        Pat::Scalar {
+            at: path![Named("state"), PeelTo(Shape::Uint(1))],
+            decode,
+        },
+    )
 }
 
 /// Render a `tokio::sync::notify::Notify` as a curated record: the notification
@@ -2664,9 +2813,7 @@ fn atomic_usize_field_path(
 fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     // The notification state word, an atomic `usize` behind tokio's loom shim.
-    // `atomic_usize_field_path` validates the type name, so the caller's screen
-    // is not re-checked here.
-    let state = atomic_usize_field_path(reader, id, "tokio::sync::notify::Notify", "state")?;
+    let state = emitter.walk(id, &path![Named("state"), PeelTo(WORD)])?.0;
 
     // The waiter list lives behind the `waiters` mutex. tokio wraps it in a loom
     // shim over parking_lot's `lock_api::Mutex`; navigate the shim (`__1`) to the
@@ -2695,12 +2842,9 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 
     // Rooted at the `Waiter`: its atomic `notification` word (whether it has been
     // handed a notification) and its successor pointer (`pointers.inner.value.next`).
-    let waiter_notification = atomic_usize_field_path(
-        reader,
-        waiter,
-        "tokio::sync::notify::Waiter",
-        "notification",
-    )?;
+    let waiter_notification = emitter
+        .walk(waiter, &path![Named("notification"), PeelTo(WORD)])?
+        .0;
     let (waiter_next, _) = field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
 
     let state_decode = emitter.notify_state_decode();
@@ -2724,112 +2868,68 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 /// Render a `tokio::sync::batch_semaphore::Semaphore` structurally, but decode
 /// its atomic permit word in place (available count plus closed flag); every
 /// other member shows as itself.
+/// Whether `id` is the batch semaphore. A caller that reached one by walking
+/// has had no dispatch key screen it, so the name is checked where it is
+/// reached rather than in the detector the key already selected.
+fn is_batch_semaphore(reader: &DwReader<'_>, id: TypeId) -> bool {
+    fq_name(reader, id).as_deref() == Some("tokio::sync::batch_semaphore::Semaphore")
+}
+
+/// The batch semaphore's atomic permit word, reached under `prefix`.
+fn permits_path(mut prefix: PatPath<'_>) -> PatPath<'_> {
+    prefix.push(Named("permits"));
+    prefix.push(PeelTo(WORD));
+    prefix
+}
+
 fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
-    let permits = atomic_usize_field_path(
-        reader,
-        id,
-        "tokio::sync::batch_semaphore::Semaphore",
-        "permits",
-    )?;
-    let st = struct_of(reader, id)?;
-    // The permit word is reached through the `permits` member, so that first
-    // step names the member whose display is overridden.
-    let Some(&Step::Member(permits_member)) = permits.steps().first() else {
-        return None;
-    };
+    // Render the semaphore as itself, with the permit word decoded in place.
     let decode = emitter.semaphore_permits_decode();
-    // Structural display skips zero-sized members; enumerate over the full list
-    // so the surviving indices still address the concrete members.
-    let fields = st
-        .members
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
-        .map(|(index, _)| index as u32)
-        .map(|index| {
-            let at = MemberRef::Index(index);
-            if at == permits_member {
-                Field::computed(
-                    at,
-                    DisplayNode::Scalar {
-                        at: permits.clone(),
-                        decode: decode.clone(),
-                    },
-                )
-            } else {
-                Field::member(at)
-            }
-        })
-        .collect();
-    Some(DisplayNode::Struct { fields })
+    emitter.compile(
+        id,
+        Pat::Struct {
+            fields: PatFields::AllVisible(vec![PatField::Computed(
+                "permits",
+                Pat::Scalar {
+                    at: path![Named("permits"), PeelTo(WORD)],
+                    decode,
+                },
+            )]),
+        },
+    )
 }
 
 /// A `tokio::sync::watch::state::AtomicState` is a single decoded atomic state
 /// word: the closed flag in bit 0 and the version counter above it.
 fn watch_state_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let at = atomic_usize_field_path(
-        emitter.reader,
+    let decode = emitter.watch_state_decode();
+    emitter.compile(
         id,
-        "tokio::sync::watch::state::AtomicState",
-        "__0",
-    )?;
-    Some(DisplayNode::Scalar {
-        at,
-        decode: emitter.watch_state_decode(),
-    })
+        Pat::Scalar {
+            at: path![Named("__0"), PeelTo(WORD)],
+            decode,
+        },
+    )
 }
 
 fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
-    let st = struct_of(reader, id)?;
-
-    // The readiness bitmap lives in `header.ready_slots`, an atomic `usize`
-    // behind the usual loom/UnsafeCell/Atomic wrappers.
-    let (header_index, header_member) = unique_member(reader, &st.members, "header")?;
-    let header = struct_of(reader, header_member.type_id)?;
-    let (ready_index, ready_member) = unique_member(reader, &header.members, "ready_slots")?;
-    let ready_tail = find_stored_uint(reader, ready_member.type_id, crate::bundle::POINTER_SIZE)?;
-    let bitmap = Selector::members(&[header_index as u32, ready_index as u32]).then(ready_tail);
-
-    // The slots are the inline array behind `values.__0`.
-    let (values_index, values_member) = unique_member(reader, &st.members, "values")?;
-    let values = struct_of(reader, values_member.type_id)?;
-    let (array_index, array_member) = unique_member(reader, &values.members, "__0")?;
-    if !matches!(
-        reader.canonical_type(array_member.type_id),
-        Some(RawType::Array(_))
-    ) {
-        return None;
-    }
-    let slots = Selector::members(&[values_index as u32, array_index as u32]);
-
-    // Render the block structurally, but replace the `values` array with a
-    // written-slot count derived from the readiness bitmap. Zero-sized members
-    // are elided (structural display skips them); the survivors keep their
-    // original indices so they still address the concrete members.
-    let fields = st
-        .members
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
-        .map(|(index, _)| {
-            let at = MemberRef::Index(index as u32);
-            if index == values_index {
-                Field::computed(
-                    at,
-                    DisplayNode::SlotCount {
-                        bitmap: bitmap.clone(),
-                        slots: slots.clone(),
-                    },
-                )
-            } else {
-                Field::member(at)
-            }
-        })
-        .collect();
-
-    Some(DisplayNode::Struct { fields })
+    // Render the block as itself, but replace the `values` array with a
+    // written-slot count derived from the readiness bitmap in
+    // `header.ready_slots` — an atomic `usize` behind the usual loom/cell
+    // shims. A block cannot tell a still-queued message from a consumed one,
+    // so the values themselves are not shown.
+    emitter.compile(
+        id,
+        Pat::Struct {
+            fields: PatFields::AllVisible(vec![PatField::Computed(
+                "values",
+                Pat::SlotCount {
+                    bitmap: path![Named("header"), Named("ready_slots"), PeelTo(WORD)],
+                    slots: path![Named("values"), Named("__0")],
+                },
+            )]),
+        },
+    )
 }
 
 /// Render a `tokio::sync::watch::Receiver<T>` as its one-slot inbox — an unseen
@@ -2993,14 +3093,11 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // Available buffer slots live in the batch semaphore's atomic `permits`
     // word. Reach the inner `batch_semaphore::Semaphore`, then walk to its
     // permit `usize`, and root the path at the `Chan`.
-    let (sem_prefix, sem_ty) = field_path(reader, chan_ty, &["semaphore", "semaphore"])?;
-    let permits_tail = atomic_usize_field_path(
-        reader,
-        sem_ty,
-        "tokio::sync::batch_semaphore::Semaphore",
-        "permits",
-    )?;
-    let permits = sem_prefix.then(permits_tail);
+    let inner = path![Named("semaphore"), Named("semaphore")];
+    if !is_batch_semaphore(reader, emitter.landed(chan_ty, &inner)?) {
+        return None;
+    }
+    let permits = emitter.walk(chan_ty, &permits_path(inner.clone()))?.0;
 
     // The channel behind the pointer renders exactly as a standalone `Chan`
     // would; reuse its navigation so the queued walk and member list are shared.
@@ -3031,14 +3128,11 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     }
 
     // The available permits are the inner batch semaphore's atomic word.
-    let (sem_prefix, sem_ty) = field_path(reader, id, &["semaphore"])?;
-    let permits_tail = atomic_usize_field_path(
-        reader,
-        sem_ty,
-        "tokio::sync::batch_semaphore::Semaphore",
-        "permits",
-    )?;
-    let permits = sem_prefix.then(permits_tail);
+    let inner = path![Named("semaphore")];
+    if !is_batch_semaphore(reader, emitter.landed(id, &inner)?) {
+        return None;
+    }
+    let permits = emitter.walk(id, &permits_path(inner))?.0;
 
     // The waiter list lives behind the batch semaphore's `waiters` mutex. tokio
     // wraps it in a loom shim over parking_lot's `lock_api::Mutex`; navigate the
@@ -3091,12 +3185,9 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
 
     // Rooted at the `Waiter`: its atomic `state` word (permits still needed) and
     // its successor pointer (`pointers.inner.value.next`).
-    let waiter_state = atomic_usize_field_path(
-        reader,
-        waiter,
-        "tokio::sync::batch_semaphore::Waiter",
-        "state",
-    )?;
+    let waiter_state = emitter
+        .walk(waiter, &path![Named("state"), PeelTo(WORD)])?
+        .0;
     let (waiter_next, _) = field_path(reader, waiter, &["pointers", "inner", "value", "next"])?;
 
     let mutex_decode = emitter.mutex_byte_decode();
@@ -3540,8 +3631,7 @@ fn loom_atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode
     // The shim holds the real atomic in an `UnsafeCell`, so accept a member
     // only when a `core::sync::atomic::Atomic<_>` is what the cell contains.
     let inner = zero_offset_member(reader, &st.members, Some("inner"), |ty| {
-        unsafe_cell_layout(reader, ty)
-            .is_some_and(|(_, atomic)| atomic_value_path(reader, atomic).is_some())
+        unsafe_cell_layout(reader, ty).is_some_and(|(_, atomic)| is_generic_atomic(reader, atomic))
     })?;
     transparent(emitter, &st.members, inner)
 }
@@ -3716,7 +3806,7 @@ fn sole_param_target(
 /// wrappers std and tokio's loom shims interpose all reduce to this; what
 /// differs between them is only which member [`zero_offset_member`] accepts.
 /// (An atomic is not one of them: it aliases its value without chasing it, and
-/// reaches it through a whole wrapper chain — see [`atomic_value_path`].)
+/// reaches it through a whole wrapper chain, peeling to its own parameter.)
 fn transparent(
     emitter: &mut Emitter<'_>,
     members: &[crate::raw_types::RawMember<crate::StrId>],
@@ -3732,39 +3822,33 @@ fn transparent(
 fn atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // An atomic aliases its stored value but does not chase it: an `AtomicPtr`'s
     // `Debug` reports the address it holds, so `follow_pointers` is false.
-    Some(DisplayNode::Alias {
-        at: atomic_value_path(emitter.reader, id)?,
-        follow_pointers: false,
-    })
+    emitter.compile(
+        id,
+        Pat::Alias {
+            at: path![PeelToParam],
+            follow_pointers: false,
+        },
+    )
 }
 
-/// The member path from a `core::sync::atomic::Atomic<T>` to the `T` it stores,
-/// or `None` if `id` is not that type. Detectors that reach an atomic as some
-/// other type's member call this rather than [`atomic_node`], so they get the
-/// path without a display node to unwrap — and the name check with it, since
-/// the dispatch table has not screened the member type for them.
-///
-/// This recognizes only the generic spelling. A binary also emits concrete
-/// `AtomicU8`/`AtomicUsize` types, which have no `T` parameter; reach the word
-/// those store with [`find_stored_uint`] instead.
-fn atomic_value_path(reader: &DwReader<'_>, id: TypeId) -> Option<Selector> {
-    let st = struct_of(reader, id)?;
-    let namespace = st.namespace.map(|ns| ns_path(reader, ns))?;
-    let name = st.name.map(|name| reader.strings.get(name))?;
-    if namespace != "core::sync::atomic" || !name.starts_with("Atomic<") || !name.ends_with('>') {
-        return None;
-    }
-
-    let [param] = st.template_params.as_ref() else {
-        return None;
+/// Whether `id` is the generic `core::sync::atomic::Atomic<T>` spelling, the
+/// one tokio's loom shim wraps. A binary also emits concrete `AtomicU8` and
+/// `AtomicUsize` types, which declare no `T`; a caller after the word one of
+/// those stores peels to a shape instead.
+fn is_generic_atomic(reader: &DwReader<'_>, id: TypeId) -> bool {
+    let Some(st) = struct_of(reader, id) else {
+        return false;
     };
-    if param.name.map(|name| reader.strings.get(name)) != Some("T") {
-        return None;
-    }
-    let target = reader.canonicalize(param.type_id);
-    let is_stored = |candidate| candidate == target;
-    let (value, _) = find_unique(reader, id, Want::Type(&is_stored), Through::ZeroOffset)?;
-    Some(value)
+    let (Some(namespace), Some(name)) = (
+        st.namespace.map(|ns| ns_path(reader, ns)),
+        st.name.map(|name| reader.strings.get(name)),
+    ) else {
+        return false;
+    };
+    namespace == "core::sync::atomic"
+        && name.starts_with("Atomic<")
+        && name.ends_with('>')
+        && sole_param_target(reader, st).is_some()
 }
 
 /// Locate the named statics (§5.4) by DWARF shape, not by hardcoded
