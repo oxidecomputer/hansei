@@ -186,13 +186,6 @@ fn body(
     nesting: &mut Nesting,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    // What the value renderer does with this type, when it does
-    // anything beyond walking the members below. It comes before them
-    // rather than after: nested, the members can run a long way down,
-    // and the instruction belongs to the type named just above.
-    if let Some(format) = ty.debug_format() {
-        writeln!(out, "{:indent$}formatter: {format:?}", "")?;
-    }
     match ty.def() {
         TypeDef::Base { .. } => {}
         // Anonymous, and already spelled out by `label` wherever they
@@ -382,16 +375,15 @@ fn reach(ty: BundleType<'_>) -> Option<(BundleType<'_>, bool)> {
 }
 
 /// Whether [`body`] writes anything for this type. A `PhantomData` has
-/// no members and no formatter, so the line that named it is its whole
-/// layout and there is nothing below to say has been left out.
+/// no members, so the line that named it is its whole layout and there
+/// is nothing below to say has been left out.
 fn has_body(ty: BundleType<'_>) -> bool {
-    ty.debug_format().is_some()
-        || match ty.def() {
-            TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => !members.is_empty(),
-            TypeDef::CEnum { enumerators, .. } => !enumerators.is_empty(),
-            TypeDef::Enum { .. } | TypeDef::Opaque { .. } => true,
-            TypeDef::Base { .. } | TypeDef::Pointer { .. } | TypeDef::Array { .. } => false,
-        }
+    match ty.def() {
+        TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => !members.is_empty(),
+        TypeDef::CEnum { enumerators, .. } => !enumerators.is_empty(),
+        TypeDef::Enum { .. } | TypeDef::Opaque { .. } => true,
+        TypeDef::Base { .. } | TypeDef::Pointer { .. } | TypeDef::Array { .. } => false,
+    }
 }
 
 /// Whether describing this type says anything the line that named it
