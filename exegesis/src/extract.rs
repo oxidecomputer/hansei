@@ -1500,18 +1500,13 @@ fn vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShape> {
         return None;
     }
 
-    let mut pointer_paths = Vec::new();
-    find_pointer_paths_any_offset(
+    let is_byte = |target| is_unsigned_integer(reader, target, 1);
+    let (pointer_path, _) = find_unique(
         reader,
-        reader.canonicalize(inner_member.type_id),
-        &|target| is_unsigned_integer(reader, target, 1),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut pointer_paths,
-    );
-    let [(pointer_path, _)] = pointer_paths.as_slice() else {
-        return None;
-    };
+        inner_member.type_id,
+        Want::PointerTo(&is_byte),
+        Through::AnyOffset,
+    )?;
 
     let (cap_index, cap_member) = unique_member(reader, &inner.members, "cap")?;
     let (cap_value, _) = usize_no_high_bit_layout(reader, cap_member.type_id)?;
@@ -1587,18 +1582,13 @@ fn allocator_api2_vec_shape(reader: &DwReader<'_>, id: TypeId) -> Option<VecShap
     // `ptr` and `cap` sit at fixed offsets in `RawVec`, so a zero-offset walk
     // from the buffer yields exactly the one pointer that targets the element
     // type — `ptr.pointer` through the `NonNull<T>` wrapper.
-    let mut pointer_paths = Vec::new();
-    find_pointer_paths(
+    let is_element = |target| target == element;
+    let (pointer_path, _) = find_unique(
         reader,
-        reader.canonicalize(buf_member.type_id),
-        &|target| reader.canonicalize(target) == element,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut pointer_paths,
-    );
-    let [(pointer_path, _)] = pointer_paths.as_slice() else {
-        return None;
-    };
+        buf_member.type_id,
+        Want::PointerTo(&is_element),
+        Through::ZeroOffset,
+    )?;
 
     let (cap_index, cap_member) = unique_member(reader, &raw_vec.members, "cap")?;
     if !is_unsigned_integer(reader, cap_member.type_id, crate::bundle::POINTER_SIZE) {
@@ -1651,19 +1641,14 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         return None;
     }
     let some = raw_variant(reader, root_option, "Some")?;
-    let mut node_refs = Vec::new();
-    find_type_paths(
+    let is_node_ref = |candidate| is_btree_node_ref(reader, candidate, key, value);
+    let (root_node, node_ref) = find_unique(
         reader,
-        reader.canonicalize(some.type_id),
-        &|candidate| is_btree_node_ref(reader, candidate, key, value),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut node_refs,
-    );
-    let [(root_node, node_ref)] = node_refs.as_slice() else {
-        return None;
-    };
-    let RawType::Struct(node_ref_ty) = reader.canonical_type(*node_ref)? else {
+        some.type_id,
+        Want::Type(&is_node_ref),
+        Through::ZeroOffset,
+    )?;
+    let RawType::Struct(node_ref_ty) = reader.canonical_type(node_ref)? else {
         return None;
     };
     let (height, height_member) = unique_member(reader, &node_ref_ty.members, "height")?;
@@ -1672,22 +1657,17 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
     }
 
     let (node_member_index, node_member) = unique_member(reader, &node_ref_ty.members, "node")?;
-    let mut node_pointers = Vec::new();
-    find_pointer_paths(
+    let is_leaf_node = |target| is_btree_node(reader, target, "LeafNode", key, value);
+    let (node_tail, leaf) = find_unique(
         reader,
-        reader.canonicalize(node_member.type_id),
-        &|target| is_btree_node(reader, target, "LeafNode", key, value),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut node_pointers,
-    );
-    let [(node_tail, leaf)] = node_pointers.as_slice() else {
-        return None;
-    };
+        node_member.type_id,
+        Want::PointerTo(&is_leaf_node),
+        Through::ZeroOffset,
+    )?;
     let mut node = vec![node_member_index as u32];
-    node.extend_from_slice(node_tail);
+    node.extend_from_slice(&node_tail);
 
-    let RawType::Struct(leaf_ty) = reader.canonical_type(*leaf)? else {
+    let RawType::Struct(leaf_ty) = reader.canonical_type(leaf)? else {
         return None;
     };
     let (leaf_len, leaf_len_member) = unique_member(reader, &leaf_ty.members, "len")?;
@@ -1715,23 +1695,18 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         return None;
     };
     let parent_some = raw_variant(reader, parent_option, "Some")?;
-    let mut parent_pointers = Vec::new();
-    find_pointer_paths(
+    let is_internal_node = |target| is_btree_node(reader, target, "InternalNode", key, value);
+    let (_, internal) = find_unique(
         reader,
-        reader.canonicalize(parent_some.type_id),
-        &|target| is_btree_node(reader, target, "InternalNode", key, value),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut parent_pointers,
-    );
-    let [(_, internal)] = parent_pointers.as_slice() else {
-        return None;
-    };
-    let RawType::Struct(internal_ty) = reader.canonical_type(*internal)? else {
+        parent_some.type_id,
+        Want::PointerTo(&is_internal_node),
+        Through::ZeroOffset,
+    )?;
+    let RawType::Struct(internal_ty) = reader.canonical_type(internal)? else {
         return None;
     };
     let (internal_data, data_member) = unique_member(reader, &internal_ty.members, "data")?;
-    if reader.canonicalize(data_member.type_id) != *leaf || data_member.offset != 0 {
+    if reader.canonicalize(data_member.type_id) != leaf || data_member.offset != 0 {
         return None;
     }
     let (internal_edges, edges_member) = unique_member(reader, &internal_ty.members, "edges")?;
@@ -1741,18 +1716,13 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
     if edges.count != keys.count + 1 {
         return None;
     }
-    let mut edge_pointers = Vec::new();
-    find_pointer_paths(
+    let is_leaf = |target| target == leaf;
+    let (edge, _) = find_unique(
         reader,
-        reader.canonicalize(edges.elem_type_id),
-        &|target| reader.canonicalize(target) == *leaf,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut edge_pointers,
-    );
-    let [(edge, _)] = edge_pointers.as_slice() else {
-        return None;
-    };
+        edges.elem_type_id,
+        Want::PointerTo(&is_leaf),
+        Through::ZeroOffset,
+    )?;
 
     Some(DisplayNode::Map {
         length: Selector::member(length as u32),
@@ -1760,17 +1730,17 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
         value: emitter.reserve(value),
         entries: Box::new(MapEntries::BTree {
             root: Selector::member(root as u32),
-            root_node: root_node.clone().into(),
+            root_node: root_node.into(),
             height: Selector::member(height as u32),
             node: node.into(),
-            leaf: emitter.reserve(*leaf),
+            leaf: emitter.reserve(leaf),
             leaf_len: Selector::member(leaf_len as u32),
             leaf_keys: Selector::member(leaf_keys as u32),
             leaf_values: Selector::member(leaf_values as u32),
-            internal: emitter.reserve(*internal),
+            internal: emitter.reserve(internal),
             internal_data: Selector::member(internal_data as u32),
             internal_edges: Selector::member(internal_edges as u32),
-            edge: edge.clone().into(),
+            edge: edge.into(),
         }),
     })
 }
@@ -1861,140 +1831,138 @@ fn maybe_uninit_target(reader: &DwReader<'_>, id: TypeId) -> Option<TypeId> {
         .then(|| reader.canonicalize(param.type_id))
 }
 
-fn find_type_paths(
-    reader: &DwReader<'_>,
-    current: TypeId,
-    matches: &impl Fn(TypeId) -> bool,
-    path: &mut Vec<u32>,
-    seen: &mut Vec<TypeId>,
-    found: &mut Vec<(Vec<u32>, TypeId)>,
-) {
-    let current = reader.canonicalize(current);
-    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
-        return;
-    }
-    if matches(current) {
-        found.push((path.clone(), current));
-        return;
-    }
-    let members = match reader.canonical_type(current) {
-        Some(RawType::Struct(st)) => st.members.as_ref(),
-        Some(RawType::Union(union)) => union.members.as_ref(),
-        _ => return,
-    };
-    seen.push(current);
-    for (index, member) in members
-        .iter()
-        .enumerate()
-        .filter(|(_, member)| member.offset == 0)
-    {
-        path.push(index as u32);
-        find_type_paths(reader, member.type_id, matches, path, seen, found);
-        path.pop();
-    }
-    seen.pop();
+/// What a member walk is looking for, and what it reports on arrival.
+enum Want<'a> {
+    /// A type the predicate accepts, reported as itself.
+    Type(&'a dyn Fn(TypeId) -> bool),
+    /// A pointer whose target the predicate accepts. The walk lands on the
+    /// pointer — so the path stops there rather than crossing it — and
+    /// reports the *target*, which is what a caller then navigates.
+    PointerTo(&'a dyn Fn(TypeId) -> bool),
 }
 
-/// Like [`find_type_paths`], but member offsets need not be zero. This is used
-/// to find the protected value inside a lock, where bookkeeping fields precede
-/// the `UnsafeCell<T>`. The caller still requires one unique path, so layout
-/// drift fails closed rather than selecting an arbitrary occurrence of `T`.
-fn find_type_paths_any_offset(
-    reader: &DwReader<'_>,
-    current: TypeId,
-    matches: &impl Fn(TypeId) -> bool,
-    path: &mut Vec<u32>,
-    seen: &mut Vec<TypeId>,
-    found: &mut Vec<(Vec<u32>, TypeId)>,
-) {
-    let current = reader.canonicalize(current);
-    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
-        return;
-    }
-    if matches(current) {
-        found.push((path.clone(), current));
-        return;
-    }
-    let members = match reader.canonical_type(current) {
-        Some(RawType::Struct(st)) => st.members.as_ref(),
-        Some(RawType::Union(union)) => union.members.as_ref(),
-        _ => return,
-    };
-    seen.push(current);
-    for (index, member) in members.iter().enumerate() {
-        path.push(index as u32);
-        find_type_paths_any_offset(reader, member.type_id, matches, path, seen, found);
-        path.pop();
-    }
-    seen.pop();
-}
-
-fn find_pointer_paths(
-    reader: &DwReader<'_>,
-    current: TypeId,
-    matches: &impl Fn(TypeId) -> bool,
-    path: &mut Vec<u32>,
-    seen: &mut Vec<TypeId>,
-    found: &mut Vec<(Vec<u32>, TypeId)>,
-) {
-    find_pointer_paths_inner(reader, current, matches, path, seen, found, true)
-}
-
-fn find_pointer_paths_any_offset(
-    reader: &DwReader<'_>,
-    current: TypeId,
-    matches: &impl Fn(TypeId) -> bool,
-    path: &mut Vec<u32>,
-    seen: &mut Vec<TypeId>,
-    found: &mut Vec<(Vec<u32>, TypeId)>,
-) {
-    find_pointer_paths_inner(reader, current, matches, path, seen, found, false)
-}
-
-fn find_pointer_paths_inner(
-    reader: &DwReader<'_>,
-    current: TypeId,
-    matches: &impl Fn(TypeId) -> bool,
-    path: &mut Vec<u32>,
-    seen: &mut Vec<TypeId>,
-    found: &mut Vec<(Vec<u32>, TypeId)>,
-    zero_offset_only: bool,
-) {
-    let current = reader.canonicalize(current);
-    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
-        return;
-    }
-    if let Some(RawType::Pointer(pointer)) = reader.canonical_type(current) {
-        let target = reader.canonicalize(pointer.target_type_id);
-        if matches(target) {
-            found.push((path.clone(), target));
+impl Want<'_> {
+    /// The type to report for a candidate the walk landed on, or `None` when
+    /// it is not what this want is looking for.
+    fn accepts(&self, reader: &DwReader<'_>, id: TypeId) -> Option<TypeId> {
+        match self {
+            Want::Type(pred) => pred(id).then_some(id),
+            Want::PointerTo(pred) => {
+                let RawType::Pointer(pointer) = reader.canonical_type(id)? else {
+                    return None;
+                };
+                let target = reader.canonicalize(pointer.target_type_id);
+                pred(target).then_some(target)
+            }
         }
-        return;
     }
-    let members = match reader.canonical_type(current) {
-        Some(RawType::Struct(st)) => st.members.as_ref(),
-        Some(RawType::Union(union)) => union.members.as_ref(),
-        _ => return,
+}
+
+/// Which members a walk may descend through.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Through {
+    /// Members at offset zero only: the transparent-wrapper chain an atomic,
+    /// a cell, or a newtype builds around one datum.
+    ZeroOffset,
+    /// Every member, for a datum a struct keeps past its own bookkeeping —
+    /// the value inside a lock, say.
+    AnyOffset,
+}
+
+/// A wrapper chain deeper than this is not one; the cap also bounds the walk
+/// on a type graph that nests without repeating a type.
+const MAX_WRAPPER_DEPTH: usize = 8;
+
+/// The one member path from `root` to what `want` accepts, with the type it
+/// reports.
+///
+/// Uniqueness is the point: two candidates mean this is not the layout the
+/// caller recognized, and choosing either would be a guess, so both that and
+/// "no candidate" return `None` and the type renders structurally. Every
+/// detector that reaches a datum by shape rather than by name goes through
+/// here.
+fn find_unique(
+    reader: &DwReader<'_>,
+    root: TypeId,
+    want: Want<'_>,
+    through: Through,
+) -> Option<(Vec<u32>, TypeId)> {
+    fn walk(
+        reader: &DwReader<'_>,
+        current: TypeId,
+        want: &Want<'_>,
+        through: Through,
+        path: &mut Vec<u32>,
+        seen: &mut Vec<TypeId>,
+        found: &mut Vec<(Vec<u32>, TypeId)>,
+    ) {
+        // One hit past the first is enough to know the answer is ambiguous.
+        if found.len() > 1 || path.len() >= MAX_WRAPPER_DEPTH || seen.contains(&current) {
+            return;
+        }
+        if let Some(reported) = want.accepts(reader, current) {
+            found.push((path.clone(), reported));
+            return;
+        }
+        let members = match reader.canonical_type(current) {
+            Some(RawType::Struct(st)) => st.members.as_ref(),
+            Some(RawType::Union(union)) => union.members.as_ref(),
+            _ => return,
+        };
+        seen.push(current);
+        for (index, member) in members.iter().enumerate() {
+            if through == Through::ZeroOffset && member.offset != 0 {
+                continue;
+            }
+            path.push(index as u32);
+            walk(
+                reader,
+                reader.canonicalize(member.type_id),
+                want,
+                through,
+                path,
+                seen,
+                found,
+            );
+            path.pop();
+        }
+        seen.pop();
+    }
+
+    let mut found = Vec::new();
+    walk(
+        reader,
+        reader.canonicalize(root),
+        &want,
+        through,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut found,
+    );
+    let [(path, reported)] = found.as_slice() else {
+        return None;
     };
-    seen.push(current);
-    for (index, member) in members
-        .iter()
-        .enumerate()
-        .filter(|(_, member)| !zero_offset_only || member.offset == 0)
-    {
-        path.push(index as u32);
-        find_pointer_paths_inner(
-            reader,
-            member.type_id,
-            matches,
-            path,
-            seen,
-            found,
-            zero_offset_only,
-        );
-        path.pop();
-    }
-    seen.pop();
+    Some((path.clone(), *reported))
+}
+
+/// The path to the `size`-byte unsigned integer a wrapper chain stores.
+///
+/// tokio's atomics reach their word through a different chain of loom,
+/// `UnsafeCell` and atomic shims depending on how the compiler spelled the
+/// atomic, so the word is found by walking to the unique `uN` rather than by
+/// naming the wrappers.
+fn find_stored_uint(reader: &DwReader<'_>, root: TypeId, size: u64) -> Option<Vec<u32>> {
+    let is_uint = |id| is_unsigned_integer(reader, id, size);
+    let (path, _) = find_unique(reader, root, Want::Type(&is_uint), Through::ZeroOffset)?;
+    Some(path)
+}
+
+/// The path to the raw pointer a wrapper chain stores, as an `AtomicPtr`
+/// wraps the pointer a block chain is linked by.
+fn find_stored_pointer(reader: &DwReader<'_>, root: TypeId) -> Option<Vec<u32>> {
+    let is_pointer = |id| matches!(reader.canonical_type(id), Some(RawType::Pointer(_)));
+    let (path, _) = find_unique(reader, root, Want::Type(&is_pointer), Through::ZeroOffset)?;
+    Some(path)
 }
 
 fn function_pointer_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -2241,23 +2209,8 @@ fn atomic_usize_field_path(
         return None;
     };
     let (field_index, field_member) = unique_member(reader, &st.members, field)?;
-    let mut paths = Vec::new();
-    find_zero_offset_uint_paths(
-        reader,
-        reader.canonicalize(field_member.type_id),
-        crate::bundle::POINTER_SIZE,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut paths,
-    );
-    let [inner] = paths.as_slice() else {
-        return None;
-    };
-    Some(
-        std::iter::once(field_index as u32)
-            .chain(inner.iter().copied())
-            .collect(),
-    )
+    let inner = find_stored_uint(reader, field_member.type_id, crate::bundle::POINTER_SIZE)?;
+    Some(std::iter::once(field_index as u32).chain(inner).collect())
 }
 
 /// Render a `tokio::sync::notify::Notify` as a curated record: the notification
@@ -2282,23 +2235,8 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     if fq_name(reader, raw_ty).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
         return None;
     }
-    let mut state_tails = Vec::new();
-    find_zero_offset_uint_paths(
-        reader,
-        raw_ty,
-        1,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut state_tails,
-    );
-    let [state_tail] = state_tails.as_slice() else {
-        return None;
-    };
-    let mutex = raw_prefix
-        .iter()
-        .copied()
-        .chain(state_tail.iter().copied())
-        .collect();
+    let state_tail = find_stored_uint(reader, raw_ty, 1)?;
+    let mutex = raw_prefix.into_iter().chain(state_tail).collect();
 
     let (head, _) = field_path(reader, id, &["waiters", "__1", "data", "value", "head"])?;
 
@@ -2415,21 +2353,10 @@ fn mpsc_block_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayN
         return None;
     };
     let (ready_index, ready_member) = unique_member(reader, &header.members, "ready_slots")?;
-    let mut ready_tail = Vec::new();
-    find_zero_offset_uint_paths(
-        reader,
-        reader.canonicalize(ready_member.type_id),
-        crate::bundle::POINTER_SIZE,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut ready_tail,
-    );
-    let [ready_tail] = ready_tail.as_slice() else {
-        return None;
-    };
+    let ready_tail = find_stored_uint(reader, ready_member.type_id, crate::bundle::POINTER_SIZE)?;
     let ready_slots = [header_index as u32, ready_index as u32]
         .into_iter()
-        .chain(ready_tail.iter().copied())
+        .chain(ready_tail)
         .collect::<Vec<u32>>();
 
     // The slots are the inline array behind `values.__0`.
@@ -2526,20 +2453,15 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
     // its concrete aggregate storage for the one T rather than baking in the
     // std/parking_lot wrapper chain.
     let (value_index, value_member) = unique_member(reader, &shared_def.members, "value")?;
-    let mut value_paths = Vec::new();
-    find_type_paths_any_offset(
+    let is_element = |candidate| candidate == element;
+    let (value_tail, _) = find_unique(
         reader,
         value_member.type_id,
-        &|candidate| reader.canonicalize(candidate) == element,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut value_paths,
-    );
-    let [(value_tail, _)] = value_paths.as_slice() else {
-        return None;
-    };
+        Want::Type(&is_element),
+        Through::AnyOffset,
+    )?;
     let value: Vec<u32> = std::iter::once(value_index as u32)
-        .chain(value_tail.iter().copied())
+        .chain(value_tail)
         .collect();
 
     // Reserve the element type so the `Some(T)` alias resolves even if nothing
@@ -2714,23 +2636,8 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     if fq_name(reader, raw_ty).as_deref() != Some("parking_lot::raw_mutex::RawMutex") {
         return None;
     }
-    let mut state_tails = Vec::new();
-    find_zero_offset_uint_paths(
-        reader,
-        raw_ty,
-        1,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut state_tails,
-    );
-    let [state_tail] = state_tails.as_slice() else {
-        return None;
-    };
-    let mutex = raw_prefix
-        .iter()
-        .copied()
-        .chain(state_tail.iter().copied())
-        .collect();
+    let state_tail = find_stored_uint(reader, raw_ty, 1)?;
+    let mutex = raw_prefix.into_iter().chain(state_tail).collect();
 
     let (closed, closed_ty) = field_path(
         reader,
@@ -2843,19 +2750,8 @@ fn path_offset(reader: &DwReader<'_>, ty: TypeId, path: &[u32]) -> Option<(u64, 
 /// the `usize` it stores, returning the full member path.
 fn usize_field_path(reader: &DwReader<'_>, ty: TypeId, names: &[&str]) -> Option<Vec<u32>> {
     let (head, field_ty) = field_path(reader, ty, names)?;
-    let mut tails = Vec::new();
-    find_zero_offset_uint_paths(
-        reader,
-        field_ty,
-        crate::bundle::POINTER_SIZE,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut tails,
-    );
-    let [tail] = tails.as_slice() else {
-        return None;
-    };
-    Some(head.into_iter().chain(tail.iter().copied()).collect())
+    let tail = find_stored_uint(reader, field_ty, crate::bundle::POINTER_SIZE)?;
+    Some(head.into_iter().chain(tail).collect())
 }
 
 /// Where a `tokio::sync::mpsc::chan::Chan` keeps the state its `queued` walk
@@ -2913,22 +2809,8 @@ fn mpsc_chan_shape(reader: &DwReader<'_>, id: TypeId) -> Option<ChanShape> {
     let (start_index, _) = field_path(reader, block, &["header", "start_index"])?;
     // `next` is an `AtomicPtr`; walk the atomic wrappers to the raw pointer.
     let (next_head, next_ty) = field_path(reader, block, &["header", "next"])?;
-    let mut next_tails = Vec::new();
-    find_zero_offset_pointer_paths(
-        reader,
-        next_ty,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut next_tails,
-    );
-    let [next_tail] = next_tails.as_slice() else {
-        return None;
-    };
-    let next: Vec<u32> = next_head
-        .iter()
-        .copied()
-        .chain(next_tail.iter().copied())
-        .collect();
+    let next_tail = find_stored_pointer(reader, next_ty)?;
+    let next: Vec<u32> = next_head.into_iter().chain(next_tail).collect();
     let (values, values_ty) = field_path(reader, block, &["values", "__0"])?;
     let RawType::Array(values_arr) = reader.canonical_type(values_ty)? else {
         return None;
@@ -3075,89 +2957,6 @@ fn mpsc_queued_node(
         ],
         element,
     }
-}
-
-/// Like [`find_zero_offset_uint_paths`], but the target is any pointer. Used
-/// to reach the raw pointer behind an `AtomicPtr` wrapper.
-fn find_zero_offset_pointer_paths(
-    reader: &DwReader<'_>,
-    current: TypeId,
-    path: &mut Vec<u32>,
-    seen: &mut Vec<TypeId>,
-    found: &mut Vec<Vec<u32>>,
-) {
-    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
-        return;
-    }
-    if matches!(reader.canonical_type(current), Some(RawType::Pointer(_))) {
-        found.push(path.clone());
-        return;
-    }
-    seen.push(current);
-    let members = match reader.canonical_type(current) {
-        Some(RawType::Struct(st)) => st.members.as_ref(),
-        Some(RawType::Union(u)) => u.members.as_ref(),
-        _ => &[],
-    };
-    for (index, member) in members
-        .iter()
-        .enumerate()
-        .filter(|(_, member)| member.offset == 0)
-    {
-        path.push(index as u32);
-        find_zero_offset_pointer_paths(
-            reader,
-            reader.canonicalize(member.type_id),
-            path,
-            seen,
-            found,
-        );
-        path.pop();
-    }
-    seen.pop();
-}
-
-/// Like [`find_zero_offset_paths`], but the target is any unsigned integer of
-/// `size` bytes rather than a specific type id. Used to reach the word behind
-/// an atomic wrapper without knowing whether it is the core or loom shape.
-fn find_zero_offset_uint_paths(
-    reader: &DwReader<'_>,
-    current: TypeId,
-    size: u64,
-    path: &mut Vec<u32>,
-    seen: &mut Vec<TypeId>,
-    found: &mut Vec<Vec<u32>>,
-) {
-    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
-        return;
-    }
-    if is_unsigned_integer(reader, current, size) {
-        found.push(path.clone());
-        return;
-    }
-    seen.push(current);
-    let members = match reader.canonical_type(current) {
-        Some(RawType::Struct(st)) => st.members.as_ref(),
-        Some(RawType::Union(u)) => u.members.as_ref(),
-        _ => &[],
-    };
-    for (index, member) in members
-        .iter()
-        .enumerate()
-        .filter(|(_, member)| member.offset == 0)
-    {
-        path.push(index as u32);
-        find_zero_offset_uint_paths(
-            reader,
-            reader.canonicalize(member.type_id),
-            size,
-            path,
-            seen,
-            found,
-        );
-        path.pop();
-    }
-    seen.pop();
 }
 
 /// Recognize rustc's DWARF representation of a Rust trait-object wide
@@ -3572,68 +3371,14 @@ fn atomic_debug_format(reader: &DwReader<'_>, id: TypeId) -> Option<DisplayNode>
         return None;
     }
     let target = reader.canonicalize(param.type_id);
-    let mut paths = Vec::new();
-    find_zero_offset_paths(
-        reader,
-        reader.canonicalize(id),
-        target,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut paths,
-    );
-    let [value] = paths.as_slice() else {
-        return None;
-    };
+    let is_stored = |candidate| candidate == target;
+    let (value, _) = find_unique(reader, id, Want::Type(&is_stored), Through::ZeroOffset)?;
     // An atomic aliases its stored value but does not chase it: an `AtomicPtr`'s
     // `Debug` reports the address it holds, so `follow_pointers` is false.
     Some(DisplayNode::Alias {
-        at: value.clone().into(),
+        at: value.into(),
         follow_pointers: false,
     })
-}
-
-/// Find all short, acyclic member paths from `current` to `target` whose
-/// members remain at offset zero. Atomic storage wrappers are layout-only;
-/// requiring one unique path prevents us from guessing when rustc changes
-/// their representation.
-fn find_zero_offset_paths(
-    reader: &DwReader<'_>,
-    current: TypeId,
-    target: TypeId,
-    path: &mut Vec<u32>,
-    seen: &mut Vec<TypeId>,
-    found: &mut Vec<Vec<u32>>,
-) {
-    if found.len() > 1 || path.len() >= 8 || seen.contains(&current) {
-        return;
-    }
-    if current == target {
-        found.push(path.clone());
-        return;
-    }
-    seen.push(current);
-    let members = match reader.canonical_type(current) {
-        Some(RawType::Struct(st)) => st.members.as_ref(),
-        Some(RawType::Union(u)) => u.members.as_ref(),
-        _ => &[],
-    };
-    for (index, member) in members
-        .iter()
-        .enumerate()
-        .filter(|(_, member)| member.offset == 0)
-    {
-        path.push(index as u32);
-        find_zero_offset_paths(
-            reader,
-            reader.canonicalize(member.type_id),
-            target,
-            path,
-            seen,
-            found,
-        );
-        path.pop();
-    }
-    seen.pop();
 }
 
 /// Locate the named statics (§5.4) by DWARF shape, not by hardcoded
