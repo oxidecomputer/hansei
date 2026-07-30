@@ -191,7 +191,15 @@ fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, Bu
                 };
                 match member_at(members, at) {
                     Some(m) => {
-                        names.push(s(m.name));
+                        // A positional hop is marked, so an assertion pins not
+                        // only where a path lands but how it says to get there.
+                        // `%` is the marker because it cannot occur in a Rust
+                        // type name, unlike `#`, which every closure and async
+                        // block carries.
+                        names.push(match at {
+                            MemberRef::Named(_) => s(m.name),
+                            MemberRef::Index(index) => format!("{}%{index}", s(m.name)),
+                        });
                         offset += m.offset;
                         cur = m.ty;
                     }
@@ -530,6 +538,32 @@ fn describe_field(bundle: &Bundle, root: BundleTypeId, fld: &Field) -> String {
     }
 }
 
+/// Assert no display program reaches a member by its position.
+///
+/// A name survives the member-list rewriting extraction does after programs are
+/// attached; a position does not. Only a member no name can select may be
+/// addressed positionally — an unnamed one, or one of several sharing a name —
+/// and no fixture has either, so any positional address here is a detector that
+/// recorded where it found something instead of what it found.
+///
+/// This reuses `describe_debug_format` rather than walking the tree again, so a
+/// new node kind is covered as soon as the summary learns to print it.
+fn assert_addresses_by_name(program: &str, bundle: &Bundle) {
+    let positional: Vec<String> = bundle
+        .types
+        .debug_formats
+        .iter()
+        .map(|(id, node)| describe_debug_format(bundle, *id, node))
+        .filter(|rendered| rendered.contains('%'))
+        .collect();
+    assert!(
+        positional.is_empty(),
+        "{program}: {} display program(s) address a member by position:\n{}",
+        positional.len(),
+        positional.join("\n"),
+    );
+}
+
 /// Assert that the debug format on the type named exactly `type_name` resolves
 /// to `expected` (as rendered by [`describe_debug_format`]). This is the
 /// resolved-path check: it fails not only when a detector never fires but when
@@ -730,6 +764,7 @@ fn summarize(program: &str, crate_str: &str, bundle: &Bundle) -> String {
 /// Structural assertions that hold for every fixture — the "zero silent
 /// drops" checks (§11.2) plus metadata sanity.
 fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
+    assert_addresses_by_name(program, bundle);
     assert_eq!(stats.cells_missing, 0, "{program}: cells missing");
     assert_eq!(stats.stages_missing, 0, "{program}: stages missing");
     assert_eq!(
