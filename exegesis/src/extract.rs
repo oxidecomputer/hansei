@@ -1429,8 +1429,8 @@ macro_rules! explain {
     };
 }
 
-/// Build a [`PatPath`]. `path![Named("a"), Deref]` reads as the path it is.
-macro_rules! path {
+/// Build a [`Reach`]. `reach![Named("a"), Deref]` reads as the path it describes.
+macro_rules! reach {
     ($($step:expr),* $(,)?) => { vec![$($step),*] };
 }
 
@@ -1669,7 +1669,7 @@ fn vec_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<VecShape> {
 
     // The buffer walk is by name; the pointer was found by shape and the niche
     // newtype's field by position, so both are spliced in and re-addressed.
-    let buf = || path![Named("buf"), Named("inner")];
+    let buf = || reach![Named("buf"), Named("inner")];
     let mut pointer = buf();
     pointer.push(Resolved(pointer_path));
     let mut capacity = buf();
@@ -1677,7 +1677,7 @@ fn vec_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<VecShape> {
     capacity.push(Resolved(Selector::member(cap_value)));
     Some(VecShape {
         pointer: emitter.walk(id, &pointer)?.0,
-        length: emitter.walk(id, &path![Named("len")])?.0,
+        length: emitter.walk(id, &reach![Named("len")])?.0,
         capacity: emitter.walk(id, &capacity)?.0,
         element,
     })
@@ -1739,12 +1739,12 @@ fn allocator_api2_vec_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Vec
 
     unique_member(reader, &raw_vec.members, "cap")?;
 
-    let mut pointer = path![Named("buf")];
+    let mut pointer = reach![Named("buf")];
     pointer.push(Resolved(pointer_path));
     Some(VecShape {
         pointer: emitter.walk(id, &pointer)?.0,
-        length: emitter.walk(id, &path![Named("len")])?.0,
-        capacity: emitter.walk(id, &path![Named("buf"), Named("cap")])?.0,
+        length: emitter.walk(id, &reach![Named("len")])?.0,
+        capacity: emitter.walk(id, &reach![Named("buf"), Named("cap")])?.0,
         element,
     })
 }
@@ -1860,24 +1860,24 @@ fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
     // Each of the twelve reaches is rooted at whichever type the walk had got
     // to; the three found by shape are spliced in and re-addressed with the
     // rest. Nothing here records a position.
-    let mut node_path = path![Named("node")];
+    let mut node_path = reach![Named("node")];
     node_path.push(Resolved(node_tail));
     Some(DisplayNode::Map {
-        length: emitter.walk(id, &path![Named("length")])?.0,
+        length: emitter.walk(id, &reach![Named("length")])?.0,
         key: emitter.reserve(key),
         value: emitter.reserve(value),
         entries: Box::new(MapEntries::BTree {
-            root: emitter.walk(id, &path![Named("root")])?.0,
+            root: emitter.walk(id, &reach![Named("root")])?.0,
             root_node: emitter.readdress(some.type_id, &root_node)?,
-            height: emitter.walk(node_ref, &path![Named("height")])?.0,
+            height: emitter.walk(node_ref, &reach![Named("height")])?.0,
             node: emitter.walk(node_ref, &node_path)?.0,
             leaf: emitter.reserve(leaf),
-            leaf_len: emitter.walk(leaf, &path![Named("len")])?.0,
-            leaf_keys: emitter.walk(leaf, &path![Named("keys")])?.0,
-            leaf_values: emitter.walk(leaf, &path![Named("vals")])?.0,
+            leaf_len: emitter.walk(leaf, &reach![Named("len")])?.0,
+            leaf_keys: emitter.walk(leaf, &reach![Named("keys")])?.0,
+            leaf_values: emitter.walk(leaf, &reach![Named("vals")])?.0,
             internal: emitter.reserve(internal),
-            internal_data: emitter.walk(internal, &path![Named("data")])?.0,
-            internal_edges: emitter.walk(internal, &path![Named("edges")])?.0,
+            internal_data: emitter.walk(internal, &reach![Named("data")])?.0,
+            internal_edges: emitter.walk(internal, &reach![Named("edges")])?.0,
             edge: emitter.readdress(edges.elem_type_id, &edge)?,
         }),
     })
@@ -2227,10 +2227,10 @@ fn addressing_holds(
     }
 }
 
-/// One step of a [`Pat`]'s path: how the pattern says to get somewhere, before
+/// One step of a [`Reach`]: how a detector says to get somewhere, before
 /// anything has looked at DWARF.
 #[derive(Clone)]
-enum PatStep<'a> {
+enum ReachStep<'a> {
     /// The uniquely-named member. What a detector reaches for whenever the
     /// spelling is stable, which is nearly always.
     Named(&'a str),
@@ -2263,14 +2263,14 @@ enum PatStep<'a> {
     Resolved(Selector),
 }
 
-/// A path in a [`Pat`], outermost step first.
-type PatPath<'a> = Vec<PatStep<'a>>;
+/// A path from a type to a datum inside it, outermost step first.
+type Reach<'a> = Vec<ReachStep<'a>>;
 
-// A pattern is written far more often than it is matched on, so the steps are
-// spelled bare: `path![Named("head"), Deref]` reads as the path it describes.
-use PatStep::{Deref, FindParam, Named, PeelTo, PeelToParam, Resolved};
+// A path is written far more often than it is matched on, so the steps are
+// spelled bare: `reach![Named("head"), Deref]` reads as the path it describes.
+use ReachStep::{Deref, FindParam, Named, PeelTo, PeelToParam, Resolved};
 
-/// The shape of a `usize`, which most of what a pattern peels to is.
+/// The shape of a `usize`, which most of what a path peels to is.
 const WORD: Shape = Shape::Uint(crate::bundle::POINTER_SIZE);
 
 impl Emitter<'_> {
@@ -2291,7 +2291,7 @@ impl Emitter<'_> {
 
     /// Resolve a pattern path against `root`: the selector it lowers to and
     /// the type it lands on.
-    fn walk(&mut self, root: TypeId, path: &PatPath<'_>) -> Option<(Selector, TypeId)> {
+    fn walk(&mut self, root: TypeId, path: &Reach<'_>) -> Option<(Selector, TypeId)> {
         let mut steps = Vec::new();
         let mut cur = self.reader.canonicalize(root);
         for step in path {
@@ -2315,7 +2315,7 @@ impl Emitter<'_> {
                     cur = self.reader.canonicalize(member.type_id);
                     steps.push(Step::Member(MemberRef::Named(self.intern(name))));
                 }
-                PatStep::Deref => {
+                ReachStep::Deref => {
                     let Some(RawType::Pointer(pointer)) = self.reader.canonical_type(cur) else {
                         explain!(
                             "  path dereferences {}, which is not a pointer",
@@ -2326,7 +2326,7 @@ impl Emitter<'_> {
                     cur = self.reader.canonicalize(pointer.target_type_id);
                     steps.push(Step::Deref);
                 }
-                PatStep::PeelTo(shape) => {
+                ReachStep::PeelTo(shape) => {
                     let reader = self.reader;
                     let accepts = |id| raw_shape_matches(reader, id, *shape);
                     let (found, landed) =
@@ -2334,17 +2334,17 @@ impl Emitter<'_> {
                     steps.extend(found.0);
                     cur = landed;
                 }
-                PatStep::PeelToParam => {
+                ReachStep::PeelToParam => {
                     let (found, landed) = self.search_param(cur, Through::ZeroOffset)?;
                     steps.extend(found.0);
                     cur = landed;
                 }
-                PatStep::FindParam => {
+                ReachStep::FindParam => {
                     let (found, landed) = self.search_param(cur, Through::AnyOffset)?;
                     steps.extend(found.0);
                     cur = landed;
                 }
-                PatStep::Resolved(sel) => {
+                ReachStep::Resolved(sel) => {
                     let Some(landed) = selector_lands(self.reader, &self.interner, cur, sel) else {
                         explain!(
                             "  an already-resolved path does not reach into {}",
@@ -2491,7 +2491,7 @@ impl Emitter<'_> {
 
     /// The type a pattern path lands on, for a screen tighter than the shape
     /// the node itself requires.
-    fn landed(&mut self, root: TypeId, path: &PatPath<'_>) -> Option<TypeId> {
+    fn landed(&mut self, root: TypeId, path: &Reach<'_>) -> Option<TypeId> {
         Some(self.walk(root, path)?.1)
     }
 }
@@ -2531,7 +2531,7 @@ fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     for name in ["clone", "wake", "wake_by_ref", "drop"] {
         let at = emitter.member_named(id, name)?;
         let node = DisplayNode::Symbol {
-            at: emitter.walk(id, &path![Named(name)])?.0,
+            at: emitter.walk(id, &reach![Named(name)])?.0,
         };
         fields.push(Field::computed(at, node));
     }
@@ -2548,7 +2548,7 @@ fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
     };
     // The octet count is what tells the two apart, and the node's own
     // requirement is only that the path reaches an array.
-    let octets = || path![Named("octets")];
+    let octets = || reach![Named("octets")];
     if !is_byte_array(emitter, id, &octets(), Some(expected_octets)) {
         return None;
     }
@@ -2562,7 +2562,7 @@ fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
 /// its own `Display` produces. Sixteen bytes is also an `Ipv6Addr`, so the
 /// notation is what separates them, not the layout.
 fn uuid_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let bytes = || path![Named("__0")];
+    let bytes = || reach![Named("__0")];
     if !is_byte_array(emitter, id, &bytes(), Some(16)) {
         return None;
     }
@@ -2577,7 +2577,7 @@ fn uuid_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 /// uses, so an id read out of a core can be matched against a log line or a
 /// manifest. Any length: SHA-1 is 20 bytes, SHA-256 and BLAKE3 are 32.
 fn hex_bytes_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let bytes = || path![Named("__0")];
+    let bytes = || reach![Named("__0")];
     if !is_byte_array(emitter, id, &bytes(), None) {
         return None;
     }
@@ -2596,7 +2596,7 @@ fn hex_bytes_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
 fn is_byte_array(
     emitter: &mut Emitter<'_>,
     id: TypeId,
-    at: &PatPath<'_>,
+    at: &Reach<'_>,
     count: Option<u64>,
 ) -> bool {
     let Some(landed) = emitter.landed(id, at) else {
@@ -2613,13 +2613,13 @@ fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // The `Str` node accepts any data pointer, since camino's is typed; a `&str`
     // is the byte-erased one, and screening for that here is what keeps this
     // detector from claiming a fat pointer over something else.
-    let bytes = emitter.landed(id, &path![Named("data_ptr"), Deref])?;
+    let bytes = emitter.landed(id, &reach![Named("data_ptr"), Deref])?;
     if !is_unsigned_integer(emitter.reader, bytes, 1) {
         return None;
     }
     Some(DisplayNode::Str {
-        pointer: emitter.walk(id, &path![Named("data_ptr")])?.0,
-        length: emitter.walk(id, &path![Named("length")])?.0,
+        pointer: emitter.walk(id, &reach![Named("data_ptr")])?.0,
+        length: emitter.walk(id, &reach![Named("length")])?.0,
         capacity: None,
     })
 }
@@ -2633,10 +2633,10 @@ fn slice_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // The dispatch table screens by name (`&[` / `alloc::boxed::Box<[`); a thin
     // `Box<T>` has no `[` and `&str`/`String` are UTF-8, so neither reaches
     // here. This describes only the fat-pointer structure.
-    let (pointer, ptr_ty) = emitter.walk(id, &path![Named("data_ptr")])?;
+    let (pointer, ptr_ty) = emitter.walk(id, &reach![Named("data_ptr")])?;
     Some(DisplayNode::Slice {
         pointer,
-        length: emitter.walk(id, &path![Named("length")])?.0,
+        length: emitter.walk(id, &reach![Named("length")])?.0,
         capacity: None,
         element: emitter.behind(ptr_ty)?,
     })
@@ -2647,12 +2647,12 @@ fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // length, and capacity are the Vec's own paths anchored at the `vec`
     // member. It renders exactly as a `&str` with the capacity checked, so it
     // reuses the `Str` node with the capacity supplied.
-    let vec = emitter.landed(id, &path![Named("vec")])?;
+    let vec = emitter.landed(id, &reach![Named("vec")])?;
     let shape = vec_shape(emitter, vec)?;
     if !is_unsigned_integer(emitter.reader, shape.element, 1) {
         return None;
     }
-    buffer_node(emitter, id, &path![Named("vec")], shape)
+    buffer_node(emitter, id, &reach![Named("vec")], shape)
 }
 
 /// The `Str` program an owned UTF-8 buffer renders through: a `Vec<u8>`'s own
@@ -2660,11 +2660,11 @@ fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 fn buffer_node(
     emitter: &mut Emitter<'_>,
     root: TypeId,
-    prefix: &PatPath<'_>,
+    prefix: &Reach<'_>,
     shape: VecShape,
 ) -> Option<DisplayNode> {
     let under = |emitter: &mut Emitter<'_>, sel| {
-        let mut path: PatPath<'_> = prefix.iter().map(PatStep::clone).collect();
+        let mut path: Reach<'_> = prefix.iter().map(ReachStep::clone).collect();
         path.push(Resolved(sel));
         Some(emitter.walk(root, &path)?.0)
     };
@@ -2681,8 +2681,8 @@ fn buffer_node(
 /// `Str` node with no capacity.
 fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     Some(DisplayNode::Str {
-        pointer: emitter.walk(id, &path![Named("data_ptr")])?.0,
-        length: emitter.walk(id, &path![Named("length")])?.0,
+        pointer: emitter.walk(id, &reach![Named("data_ptr")])?.0,
+        length: emitter.walk(id, &reach![Named("length")])?.0,
         capacity: None,
     })
 }
@@ -2693,7 +2693,7 @@ fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
 /// guaranteed-UTF-8 `Vec<u8>`, so it reuses the same `Str` node with the
 /// capacity checked, prefixing the Vec's own paths with the wrapper chain.
 fn utf8_path_buf_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let prefix = path![Named("__0"), Named("inner"), Named("inner"), Named("inner"),];
+    let prefix = reach![Named("__0"), Named("inner"), Named("inner"), Named("inner"),];
     let vec = emitter.landed(id, &prefix)?;
     let shape = vec_shape(emitter, vec)?;
     if !is_unsigned_integer(emitter.reader, shape.element, 1) {
@@ -2711,7 +2711,7 @@ fn is_raw_mutex(reader: &DwReader<'_>, id: TypeId) -> bool {
 /// The raw mutex's single lock-state byte, reached under `prefix`. It sits in
 /// a one-byte atomic, which the compiler spells either generically or as a
 /// concrete `AtomicU8`, so the byte is peeled to rather than named.
-fn mutex_byte_path(mut prefix: PatPath<'_>) -> PatPath<'_> {
+fn mutex_byte_path(mut prefix: Reach<'_>) -> Reach<'_> {
     prefix.push(PeelTo(Shape::Uint(1)));
     prefix
 }
@@ -2723,7 +2723,9 @@ fn raw_mutex_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
     // The state is a single-byte atomic, whichever way the compiler spelled it.
     let decode = emitter.mutex_byte_decode();
     Some(DisplayNode::Scalar {
-        at: emitter.walk(id, &mutex_byte_path(path![Named("state")]))?.0,
+        at: emitter
+            .walk(id, &mutex_byte_path(reach![Named("state")]))?
+            .0,
         decode,
     })
 }
@@ -2734,7 +2736,7 @@ fn raw_mutex_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
 fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     // The notification state word, an atomic `usize` behind tokio's loom shim.
-    let state = emitter.walk(id, &path![Named("state"), PeelTo(WORD)])?.0;
+    let state = emitter.walk(id, &reach![Named("state"), PeelTo(WORD)])?.0;
 
     // The waiter list lives behind the `waiters` mutex. tokio wraps it in a loom
     // shim over parking_lot's `lock_api::Mutex`; navigate the shim (`__1`) to the
@@ -2744,7 +2746,7 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // state byte through its atomic wrapper by walking to the zero-offset `u8`,
     // which works whether the compiler emitted the atomic as the generic
     // `Atomic<u8>` or the concrete `AtomicU8`.
-    let raw = path![Named("waiters"), Named("__1"), Named("raw")];
+    let raw = reach![Named("waiters"), Named("__1"), Named("raw")];
     if !is_raw_mutex(reader, emitter.landed(id, &raw)?) {
         return None;
     }
@@ -2752,7 +2754,7 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
 
     let (head, _) = emitter.walk(
         id,
-        &path![
+        &reach![
             Named("waiters"),
             Named("__1"),
             Named("data"),
@@ -2764,7 +2766,7 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // The queue is a `LinkedList<Waiter, Waiter>`; its node type is the `Waiter`.
     let (_, queue_ty) = emitter.walk(
         id,
-        &path![
+        &reach![
             Named("waiters"),
             Named("__1"),
             Named("data"),
@@ -2781,11 +2783,11 @@ fn notify_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // Rooted at the `Waiter`: its atomic `notification` word (whether it has been
     // handed a notification) and its successor pointer (`pointers.inner.value.next`).
     let waiter_notification = emitter
-        .walk(waiter, &path![Named("notification"), PeelTo(WORD)])?
+        .walk(waiter, &reach![Named("notification"), PeelTo(WORD)])?
         .0;
     let (waiter_next, _) = emitter.walk(
         waiter,
-        &path![
+        &reach![
             Named("pointers"),
             Named("inner"),
             Named("value"),
@@ -2822,7 +2824,7 @@ fn is_batch_semaphore(reader: &DwReader<'_>, id: TypeId) -> bool {
 }
 
 /// The batch semaphore's atomic permit word, reached under `prefix`.
-fn permits_path(mut prefix: PatPath<'_>) -> PatPath<'_> {
+fn permits_path(mut prefix: Reach<'_>) -> Reach<'_> {
     prefix.push(Named("permits"));
     prefix.push(PeelTo(WORD));
     prefix
@@ -2832,7 +2834,7 @@ fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Display
     // Render the semaphore as itself, with the permit word decoded in place.
     let decode = emitter.semaphore_permits_decode();
     let permits = DisplayNode::Scalar {
-        at: emitter.walk(id, &path![Named("permits"), PeelTo(WORD)])?.0,
+        at: emitter.walk(id, &reach![Named("permits"), PeelTo(WORD)])?.0,
         decode,
     };
     Some(DisplayNode::Struct {
@@ -2845,7 +2847,7 @@ fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Display
 fn watch_state_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let decode = emitter.watch_state_decode();
     Some(DisplayNode::Scalar {
-        at: emitter.walk(id, &path![Named("__0"), PeelTo(WORD)])?.0,
+        at: emitter.walk(id, &reach![Named("__0"), PeelTo(WORD)])?.0,
         decode,
     })
 }
@@ -2860,10 +2862,10 @@ fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
         bitmap: emitter
             .walk(
                 id,
-                &path![Named("header"), Named("ready_slots"), PeelTo(WORD)],
+                &reach![Named("header"), Named("ready_slots"), PeelTo(WORD)],
             )?
             .0,
-        slots: emitter.walk(id, &path![Named("values"), Named("__0")])?.0,
+        slots: emitter.walk(id, &reach![Named("values"), Named("__0")])?.0,
     };
     Some(DisplayNode::Struct {
         fields: emitter.visible_fields(id, vec![("values", values)])?,
@@ -2895,7 +2897,7 @@ fn watch_shared_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNod
 /// so the two cannot drift into showing different things.
 fn watch_shared_fields(emitter: &mut Emitter<'_>, root: TypeId) -> Option<Vec<Field>> {
     let value = DisplayNode::Alias {
-        at: emitter.walk(root, &path![Named("value"), FindParam])?.0,
+        at: emitter.walk(root, &reach![Named("value"), FindParam])?.0,
         follow_pointers: true,
     };
     let mut fields = vec![Field::computed(emitter.member_named(root, "value")?, value)];
@@ -2913,9 +2915,9 @@ fn watch_shared_fields(emitter: &mut Emitter<'_>, root: TypeId) -> Option<Vec<Fi
 fn watch_sender_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // A sized `Arc<T>` points at `ArcInner<T> { strong, weak, data: T }`, so the
     // hop is the `NonNull`'s raw pointer and the step past the header is `data`.
-    let (at, ptr) = emitter.walk(id, &path![Named("shared"), Named("ptr"), Named("pointer")])?;
+    let (at, ptr) = emitter.walk(id, &reach![Named("shared"), Named("ptr"), Named("pointer")])?;
     let pointee = emitter.pointee(ptr)?;
-    let (via, target) = emitter.walk(pointee, &path![Named("data")])?;
+    let (via, target) = emitter.walk(pointee, &reach![Named("data")])?;
     Some(DisplayNode::Pointer {
         at,
         via,
@@ -2943,17 +2945,17 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
     let element = reader.canonicalize(element_param.type_id);
 
     // Receiver::version is a transparent `Version(usize)` wrapper.
-    let observed = emitter.walk(id, &path![Named("version"), PeelTo(WORD)])?.0;
+    let observed = emitter.walk(id, &reach![Named("version"), PeelTo(WORD)])?.0;
 
     // Receiver::shared is an Arc. Its NonNull raw pointer targets ArcInner,
     // whose `data` member is the actual Shared<T> allocation payload.
     let (shared, ptr_ty) =
-        emitter.walk(id, &path![Named("shared"), Named("ptr"), Named("pointer")])?;
+        emitter.walk(id, &reach![Named("shared"), Named("ptr"), Named("pointer")])?;
     let RawType::Pointer(ptr) = reader.canonical_type(ptr_ty)? else {
         return None;
     };
     let arc_inner = reader.canonicalize(ptr.target_type_id);
-    let (shared_data, shared_ty) = emitter.walk(arc_inner, &path![Named("data")])?;
+    let (shared_data, shared_ty) = emitter.walk(arc_inner, &reach![Named("data")])?;
     if fq_name(reader, shared_ty)?.split('<').next()? != "tokio::sync::watch::Shared" {
         return None;
     }
@@ -2967,7 +2969,7 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
 
     // The packed state is an atomic usize behind Tokio's loom wrappers.
     let state = emitter
-        .walk(shared_ty, &path![Named("state"), PeelTo(WORD)])?
+        .walk(shared_ty, &reach![Named("state"), PeelTo(WORD)])?
         .0;
 
     // The value is behind the platform-selected RwLock implementation. Search
@@ -2981,7 +2983,7 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
         Want::Type(&is_element),
         Through::AnyOffset,
     )?;
-    let mut value_path = path![Named("value")];
+    let mut value_path = reach![Named("value")];
     value_path.push(Resolved(value_tail));
     let value = emitter.walk(shared_ty, &value_path)?.0;
 
@@ -3069,7 +3071,7 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // targets the `ArcInner<Chan>` allocation.
     let (chan_pointer, ptr_ty) = emitter.walk(
         id,
-        &path![
+        &reach![
             Named("chan"),
             Named("inner"),
             Named("ptr"),
@@ -3082,7 +3084,7 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let arcinner = reader.canonicalize(ptr.target_type_id);
 
     // Skip the Arc's strong/weak header to the `data` field: the `Chan`.
-    let (chan, chan_ty) = emitter.walk(arcinner, &path![Named("data")])?;
+    let (chan, chan_ty) = emitter.walk(arcinner, &reach![Named("data")])?;
     if !fq_name(reader, chan_ty)
         .as_deref()
         .is_some_and(|name| name.starts_with("tokio::sync::mpsc::chan::Chan<"))
@@ -3091,7 +3093,7 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     }
 
     // Capacity is the bounded semaphore's `bound`, a plain `usize`.
-    let (bound, bound_ty) = emitter.walk(chan_ty, &path![Named("semaphore"), Named("bound")])?;
+    let (bound, bound_ty) = emitter.walk(chan_ty, &reach![Named("semaphore"), Named("bound")])?;
     if !is_unsigned_integer(reader, bound_ty, crate::bundle::POINTER_SIZE) {
         return None;
     }
@@ -3099,7 +3101,7 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // Available buffer slots live in the batch semaphore's atomic `permits`
     // word. Reach the inner `batch_semaphore::Semaphore`, then walk to its
     // permit `usize`, and root the path at the `Chan`.
-    let inner = path![Named("semaphore"), Named("semaphore")];
+    let inner = reach![Named("semaphore"), Named("semaphore")];
     if !is_batch_semaphore(reader, emitter.landed(chan_ty, &inner)?) {
         return None;
     }
@@ -3128,13 +3130,13 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     let reader = emitter.reader;
     // The dispatch table screens by name; this validates only the structure.
     // The capacity is the bounded semaphore's own `bound`, a plain `usize`.
-    let (bound, bound_ty) = emitter.walk(id, &path![Named("bound")])?;
+    let (bound, bound_ty) = emitter.walk(id, &reach![Named("bound")])?;
     if !is_unsigned_integer(reader, bound_ty, crate::bundle::POINTER_SIZE) {
         return None;
     }
 
     // The available permits are the inner batch semaphore's atomic word.
-    let inner = path![Named("semaphore")];
+    let inner = reach![Named("semaphore")];
     if !is_batch_semaphore(reader, emitter.landed(id, &inner)?) {
         return None;
     }
@@ -3147,7 +3149,7 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     // the RawMutex's single state byte through its atomic wrapper by walking to
     // the zero-offset `u8`, which works whether the compiler emitted the atomic
     // as the generic `Atomic<u8>` or the concrete `AtomicU8`.
-    let raw = path![
+    let raw = reach![
         Named("semaphore"),
         Named("waiters"),
         Named("__1"),
@@ -3160,7 +3162,7 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
 
     let (closed, closed_ty) = emitter.walk(
         id,
-        &path![
+        &reach![
             Named("semaphore"),
             Named("waiters"),
             Named("__1"),
@@ -3175,7 +3177,7 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
 
     let (head, _) = emitter.walk(
         id,
-        &path![
+        &reach![
             Named("semaphore"),
             Named("waiters"),
             Named("__1"),
@@ -3189,7 +3191,7 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     // The queue is a `LinkedList<Waiter, Waiter>`; its node type is the `Waiter`.
     let (_, queue_ty) = emitter.walk(
         id,
-        &path![
+        &reach![
             Named("semaphore"),
             Named("waiters"),
             Named("__1"),
@@ -3208,11 +3210,11 @@ fn bounded_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displ
     // Rooted at the `Waiter`: its atomic `state` word (permits still needed) and
     // its successor pointer (`pointers.inner.value.next`).
     let waiter_state = emitter
-        .walk(waiter, &path![Named("state"), PeelTo(WORD)])?
+        .walk(waiter, &reach![Named("state"), PeelTo(WORD)])?
         .0;
     let (waiter_next, _) = emitter.walk(
         waiter,
-        &path![
+        &reach![
             Named("pointers"),
             Named("inner"),
             Named("value"),
@@ -3311,7 +3313,7 @@ fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
     let tail = emitter
         .walk(
             id,
-            &path![
+            &reach![
                 Named("tx"),
                 Named("value"),
                 Named("tail_position"),
@@ -3322,7 +3324,7 @@ fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
     let index = emitter
         .walk(
             id,
-            &path![
+            &reach![
                 Named("rx_fields"),
                 Named("__0"),
                 Named("value"),
@@ -3334,7 +3336,7 @@ fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
         .0;
     let (head, head_ty) = emitter.walk(
         id,
-        &path![
+        &reach![
             Named("rx_fields"),
             Named("__0"),
             Named("value"),
@@ -3349,15 +3351,15 @@ fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
     let block = reader.canonicalize(head_ptr.target_type_id);
 
     // Paths rooted at the block type.
-    let (start_index, _) = emitter.walk(block, &path![Named("header"), Named("start_index")])?;
+    let (start_index, _) = emitter.walk(block, &reach![Named("header"), Named("start_index")])?;
     // `next` is an `AtomicPtr`; walk the atomic wrappers to the raw pointer.
     let next = emitter
         .walk(
             block,
-            &path![Named("header"), Named("next"), PeelTo(Shape::Pointer)],
+            &reach![Named("header"), Named("next"), PeelTo(Shape::Pointer)],
         )?
         .0;
-    let (values, values_ty) = emitter.walk(block, &path![Named("values"), Named("__0")])?;
+    let (values, values_ty) = emitter.walk(block, &reach![Named("values"), Named("__0")])?;
     let RawType::Array(values_arr) = reader.canonical_type(values_ty)? else {
         return None;
     };
@@ -3594,7 +3596,7 @@ fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bo
 /// of structure that is not there.
 fn cache_padded_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     Some(DisplayNode::Alias {
-        at: emitter.walk(id, &path![Named("value")])?.0,
+        at: emitter.walk(id, &reach![Named("value")])?.0,
         follow_pointers: true,
     })
 }
@@ -3843,7 +3845,7 @@ fn atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // An atomic aliases its stored value but does not chase it: an `AtomicPtr`'s
     // `Debug` reports the address it holds, so `follow_pointers` is false.
     Some(DisplayNode::Alias {
-        at: emitter.walk(id, &path![PeelToParam])?.0,
+        at: emitter.walk(id, &reach![PeelToParam])?.0,
         follow_pointers: false,
     })
 }
@@ -5025,7 +5027,7 @@ mod tests {
         has_dyn_tail, match_static_symbol, scalar_newtype_node, scan_vtable_section, str_node,
     };
     use crate::bundle::{DisplayNode, MemberRef, Notation, POINTER_SIZE, Shape, Step};
-    use crate::extract::PatStep::PeelTo;
+    use crate::extract::ReachStep::PeelTo;
     use crate::raw_types::{NsId, RawBase, RawMember, RawPointer, RawStruct, RawType};
     use crate::{DwReader, Encoding, TypeId};
     use gimli::{DebugInfoOffset, UnitSectionOffset};
@@ -5208,7 +5210,7 @@ mod tests {
         };
 
         // The member is missing: the trace names it and lists what is there.
-        let (got, trace) = walk(path![Named("state")]);
+        let (got, trace) = walk(reach![Named("state")]);
         assert!(got.is_none());
         assert_eq!(trace.len(), 1, "{trace:?}");
         assert!(
@@ -5220,7 +5222,7 @@ mod tests {
         );
 
         // The walk leaves an aggregate: the trace says where it stopped.
-        let (got, trace) = walk(path![Named("waiters"), Named("value")]);
+        let (got, trace) = walk(reach![Named("waiters"), Named("value")]);
         assert!(got.is_none());
         assert!(
             trace[0].contains("stopped at `value`") && trace[0].contains("u64"),
@@ -5231,7 +5233,7 @@ mod tests {
         // A walk that fits says nothing — silence is the ordinary case — and
         // addresses what it found by name, the point of describing a layout
         // rather than counting to it.
-        let (got, trace) = walk(path![Named("waiters")]);
+        let (got, trace) = walk(reach![Named("waiters")]);
         assert!(trace.is_empty(), "{trace:?}");
         let Some(at) = got else {
             panic!("a pattern that fits compiles to its node");
@@ -5290,7 +5292,7 @@ mod tests {
 
         let peel = |shape| {
             super::explain::capture(|| {
-                Emitter::new(&reader, BTreeMap::new(), None).walk(holder, &path![PeelTo(shape)])
+                Emitter::new(&reader, BTreeMap::new(), None).walk(holder, &reach![PeelTo(shape)])
             })
         };
         let (got, trace) = peel(Shape::Uint(POINTER_SIZE));
