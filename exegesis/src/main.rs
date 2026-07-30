@@ -333,12 +333,19 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 println!("[{i}] opaque {} size={size:?}", s(*name));
             }
         }
-        if let Some(format) = bundle
-            .types
-            .debug_formats
-            .get(&exegesis::bundle::BundleTypeId(i as u32))
-        {
-            println!("      debug: {format:?}");
+        let id = exegesis::bundle::BundleTypeId(i as u32);
+        if let Some(format) = bundle.types.debug_formats.get(&id) {
+            // Resolved, not `Debug`: a raw dump spells a selector as interned
+            // string ids, which says nothing about which member a formatter
+            // reaches or where it sits.
+            //
+            // Indented shallower than the member and variant lines above: the
+            // display program belongs to the type, and at their column it reads
+            // as one more entry in a list it is not part of.
+            println!(
+                "  debug: {}",
+                exegesis::bundle::describe_node(&bundle, id, format)
+            );
         }
     }
 

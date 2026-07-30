@@ -3,12 +3,14 @@
 //! target binary can be interpreted without any address ever crossing
 //! between the two (see `HANSEI_V0_MANGLING_PLAN.md` §5).
 
+mod describe;
 mod io;
 mod schema;
 mod shape;
 mod strings;
 mod view;
 
+pub use describe::{describe_debug_format, describe_node};
 pub use io::{Error, FORMAT_VERSION, MAGIC, Result};
 pub use schema::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
