@@ -1521,7 +1521,8 @@ static BY_NAME: &[(&str, Detector)] = &[
         batch_semaphore_node,
     ),
     ("tokio::sync::mpsc::block::Block", mpsc_block_node),
-    ("tokio::sync::mpsc::bounded::Receiver", mpsc_rx_node),
+    ("tokio::sync::mpsc::bounded::Receiver", mpsc_handle_node),
+    ("tokio::sync::mpsc::bounded::Sender", mpsc_handle_node),
     (
         "tokio::sync::mpsc::bounded::Semaphore",
         bounded_semaphore_node,
@@ -3060,14 +3061,24 @@ fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
     })
 }
 
-/// Render a `tokio::sync::mpsc::bounded::Receiver<T>` as the channel it drains,
-/// reached across its `Arc`: a [`DisplayNode::Pointer`] hop to the `Chan`, whose
-/// own record is prefixed with the decoded `capacity` (the bounded semaphore's
-/// `bound`) and `free` (the batch semaphore's permit word) fields.
-fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+/// Render a bounded mpsc handle — a `Sender` or the `Receiver` — as the channel
+/// it is a handle on, reached across its `Arc`: a [`DisplayNode::Pointer`] hop
+/// to the `Chan`, whose own record is prefixed with the decoded `capacity` (the
+/// bounded semaphore's `bound`) and `free` (the batch semaphore's permit word).
+///
+/// One detector serves both because they navigate identically: a `Receiver`'s
+/// `chan` is a `chan::Rx` and a `Sender`'s a `chan::Tx`, and each holds the
+/// shared allocation at `inner`. They also want the same answers — how much
+/// room is left, whether the far end is gone, what is in flight — so neither
+/// gets a record of its own.
+///
+/// A sender cannot pick itself out of what it sees: `queued` is every sender's
+/// messages, and a sender blocked in `send` is one of the semaphore's waiters
+/// with nothing marking which.
+fn mpsc_handle_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let reader = emitter.reader;
     // The dispatch table screens by name; this validates only the structure.
-    // Receiver → Rx → Arc → the `NonNull` raw pointer at `ptr.pointer`, which
+    // Handle → Rx/Tx → Arc → the `NonNull` raw pointer at `ptr.pointer`, which
     // targets the `ArcInner<Chan>` allocation.
     let (chan_pointer, ptr_ty) = emitter.walk(
         id,
@@ -3078,10 +3089,7 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
             Named("pointer")
         ],
     )?;
-    let RawType::Pointer(ptr) = reader.canonical_type(ptr_ty)? else {
-        return None;
-    };
-    let arcinner = reader.canonicalize(ptr.target_type_id);
+    let arcinner = emitter.pointee(ptr_ty)?;
 
     // Skip the Arc's strong/weak header to the `data` field: the `Chan`.
     let (chan, chan_ty) = emitter.walk(arcinner, &reach![Named("data")])?;
