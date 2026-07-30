@@ -88,9 +88,9 @@ pub struct ExtractOptions {
 pub struct ExtractStats {
     /// Formatter traces requested with [`ExtractOptions::explain_format`], one
     /// per matching type. Not part of the `Display` form, which is the
-    /// `--stats` summary; `exegesis extract --explain-format` prints these
-    /// itself.
-    pub format_explanations: Vec<String>,
+    /// `--stats` summary; `exegesis extract --explain-format` renders these
+    /// itself, against the bundle the extraction produced.
+    pub format_explanations: Vec<FormatExplanation>,
     /// Task-table entries, one per `(T, S)` instantiation.
     pub task_entries: usize,
     /// Mangled symbols keying the task table.
@@ -1434,39 +1434,45 @@ macro_rules! reach {
     ($($step:expr),* $(,)?) => { vec![$($step),*] };
 }
 
-/// One type's formatter trace, as `--explain-format` prints it: what the
-/// navigators saw, then whether a program was emitted and of what shape.
-fn report(name: &str, id: BundleTypeId, node: Option<&DisplayNode>, trace: &[String]) -> String {
-    use std::fmt::Write as _;
-    let mut out = format!("{name} [type {}]\n", id.0);
-    for line in trace {
-        let _ = writeln!(out, "{line}");
-    }
-    let _ = match node {
-        Some(node) => writeln!(out, "  => {}", node_label(node)),
-        None => writeln!(out, "  => no formatter; renders structurally"),
-    };
-    out
+/// One type's formatter trace: what the navigators saw while a display program
+/// was built for it, and which type it was built for.
+///
+/// The verdict — the program itself — is deliberately *not* recorded here. It
+/// is read back out of the finished bundle by [`FormatExplanation::render`],
+/// for two reasons. Rendering a program resolved to member names and byte
+/// offsets needs the type table, which is still being built while the trace is
+/// collected; and extraction rewrites member lists after programs are attached,
+/// so a verdict captured here would describe the program as built rather than
+/// as shipped.
+#[derive(Debug)]
+pub struct FormatExplanation {
+    /// The fully-qualified name the type was reported under.
+    pub name: String,
+    /// The type the trace belongs to, as `exegesis dump` numbers it.
+    pub id: BundleTypeId,
+    /// What the navigators saw, one line each, in the order they saw it.
+    pub trace: Vec<String>,
 }
 
-/// The kind of a display program, for a formatter trace. Only the outermost
-/// node is named; the whole tree is what `exegesis dump` prints.
-fn node_label(node: &DisplayNode) -> &'static str {
-    match node {
-        DisplayNode::Scalar { .. } => "Scalar",
-        DisplayNode::Symbol { .. } => "Symbol",
-        DisplayNode::Struct { .. } => "Struct",
-        DisplayNode::List { .. } => "List",
-        DisplayNode::Str { .. } => "Str",
-        DisplayNode::Slice { .. } => "Slice",
-        DisplayNode::Bytes { .. } => "Bytes",
-        DisplayNode::Alias { .. } => "Alias",
-        DisplayNode::SlotCount { .. } => "SlotCount",
-        DisplayNode::Pointer { .. } => "Pointer",
-        DisplayNode::DynPointer { .. } => "DynPointer",
-        DisplayNode::Map { .. } => "Map",
-        DisplayNode::Variant { .. } => "Variant",
-        DisplayNode::CustomList { .. } => "CustomList",
+impl FormatExplanation {
+    /// The trace as `--explain-format` prints it: the type, what the navigators
+    /// saw, then the program `bundle` ended up carrying for it, resolved to the
+    /// paths it addresses.
+    pub fn render(&self, bundle: &Bundle) -> String {
+        use std::fmt::Write as _;
+        let mut out = format!("{} [type {}]\n", self.name, self.id.0);
+        for line in &self.trace {
+            let _ = writeln!(out, "{line}");
+        }
+        let _ = match bundle.types.debug_formats.get(&self.id) {
+            Some(node) => writeln!(
+                out,
+                "  => {}",
+                crate::bundle::describe_node(bundle, self.id, node)
+            ),
+            None => writeln!(out, "  => no formatter; renders structurally"),
+        };
+        out
     }
 }
 
@@ -4133,7 +4139,7 @@ struct Emitter<'a> {
     /// substring; see [`explain`].
     explain_format: Option<String>,
     /// One trace per explained type, in emission order.
-    explanations: Vec<String>,
+    explanations: Vec<FormatExplanation>,
     ids: BTreeMap<TypeId, BundleTypeId>,
     defs: Vec<TypeDef>,
     debug_formats: BTreeMap<BundleTypeId, DisplayNode>,
@@ -4381,8 +4387,11 @@ impl<'a> Emitter<'a> {
                 Some(wanted) => {
                     let (node, trace) =
                         explain::capture(|| self.debug_format_of(tid, name.as_deref()));
-                    self.explanations
-                        .push(report(&wanted, bid, node.as_ref(), &trace));
+                    self.explanations.push(FormatExplanation {
+                        name: wanted,
+                        id: bid,
+                        trace,
+                    });
                     node
                 }
                 None => self.debug_format_of(tid, name.as_deref()),

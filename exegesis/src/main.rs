@@ -122,8 +122,8 @@ fn extract(
                  --include-type pulls in one nothing else reaches"
             );
         }
-        for report in &stats.format_explanations {
-            print!("{report}");
+        for explanation in &stats.format_explanations {
+            print!("{}", explanation.render(&bundle));
         }
     }
     if print_stats {
