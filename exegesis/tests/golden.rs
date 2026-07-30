@@ -14,10 +14,7 @@
 //! serves macOS and illumos. Regenerate with `EXEGESIS_BLESS=1 cargo test
 //! -p exegesis --test golden`.
 
-use exegesis::bundle::{
-    Bundle, BundleTypeId, DisplayNode, Field, MapEntries, MemberRef, Selector, StaticRole, Step,
-    TypeDef, ValueExpr,
-};
+use exegesis::bundle::{Bundle, DisplayNode, StaticRole, TypeDef, describe_debug_format};
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
 
 use std::collections::BTreeMap;
@@ -129,413 +126,6 @@ fn leaf_of(name: &str) -> &str {
 
 fn basename(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
-}
-
-/// The fully-qualified name of a type, or a placeholder for the anonymous
-/// pointer/array kinds. Type *ids* are not portable across platforms, so the
-/// debug-format summary keys everything on these names instead.
-fn fq_name(bundle: &Bundle, id: BundleTypeId) -> String {
-    let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>").to_owned();
-    match &bundle.types.types[id.0 as usize] {
-        TypeDef::Base { name, .. }
-        | TypeDef::Struct { name, .. }
-        | TypeDef::Union { name, .. }
-        | TypeDef::Enum { name, .. }
-        | TypeDef::CEnum { name, .. }
-        | TypeDef::Opaque { name, .. } => s(*name),
-        TypeDef::Pointer { .. } => "<pointer>".to_owned(),
-        TypeDef::Array { .. } => "<array>".to_owned(),
-    }
-}
-
-/// The member a [`MemberRef`] addresses, resolved the same way the bundle
-/// resolves it.
-fn member_at<'m>(
-    members: &'m [exegesis::bundle::MemberDef],
-    at: &MemberRef,
-) -> Option<&'m exegesis::bundle::MemberDef> {
-    let index = at.resolve(members.len(), |index, name| members[index].name == name)?;
-    members.get(index)
-}
-
-/// How an unresolvable member address prints in the summary.
-fn unresolved(bundle: &Bundle, at: &MemberRef) -> String {
-    match at {
-        MemberRef::Index(index) => format!("<oob:{index}>"),
-        MemberRef::Named(name) => {
-            let name = bundle.strings.get(*name).unwrap_or("<bad strref>");
-            format!("<no unique member `{name}`>")
-        }
-    }
-}
-
-/// Walk a member-index path from `root`, returning the dotted field-name
-/// chain, the terminal byte offset, and the type the path lands on. This is
-/// the portable, layout-sensitive rendering of a debug-format path: a wrong
-/// member (the failure mode this coverage targets) changes the name or the
-/// offset even when the path still validates.
-fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, BundleTypeId) {
-    let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>").to_owned();
-    let mut names = Vec::new();
-    let mut offset = 0u64;
-    let mut cur = root;
-    for step in sel.steps() {
-        match step {
-            Step::Member(at) => {
-                let members = match &bundle.types.types[cur.0 as usize] {
-                    TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
-                    _ => {
-                        names.push("<non-aggregate>".to_owned());
-                        return (names.join("."), offset, cur);
-                    }
-                };
-                match member_at(members, at) {
-                    Some(m) => {
-                        // A positional hop is marked, so an assertion pins not
-                        // only where a path lands but how it says to get there.
-                        // `%` is the marker because it cannot occur in a Rust
-                        // type name, unlike `#`, which every closure and async
-                        // block carries.
-                        names.push(match at {
-                            MemberRef::Named(_) => s(m.name),
-                            MemberRef::Index(index) => format!("{}%{index}", s(m.name)),
-                        });
-                        offset += m.offset;
-                        cur = m.ty;
-                    }
-                    None => {
-                        names.push(unresolved(bundle, at));
-                        return (names.join("."), offset, cur);
-                    }
-                }
-            }
-            Step::Deref => match &bundle.types.types[cur.0 as usize] {
-                TypeDef::Pointer { target, .. } => {
-                    names.push("*".to_owned());
-                    offset = 0;
-                    cur = *target;
-                }
-                _ => {
-                    names.push("<non-pointer-deref>".to_owned());
-                    return (names.join("."), offset, cur);
-                }
-            },
-        }
-    }
-    (names.join("."), offset, cur)
-}
-
-/// Render one path as `chain@+offset` (rooted at `root`).
-fn field(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> String {
-    let (chain, offset, _) = walk(bundle, root, sel);
-    let chain = if chain.is_empty() {
-        "<self>".to_owned()
-    } else {
-        chain
-    };
-    format!("{chain}@+{offset}")
-}
-
-fn ptr_target(bundle: &Bundle, id: BundleTypeId) -> Option<BundleTypeId> {
-    match &bundle.types.types[id.0 as usize] {
-        TypeDef::Pointer { target, .. } => Some(*target),
-        _ => None,
-    }
-}
-
-/// The payload type of an enum's `Some` variant (BTreeMap's `root` is an
-/// `Option<Box<…>>`).
-fn some_payload(bundle: &Bundle, id: BundleTypeId) -> Option<BundleTypeId> {
-    match &bundle.types.types[id.0 as usize] {
-        TypeDef::Enum { shape, .. } => shape
-            .variants
-            .iter()
-            .find(|v| bundle.strings.get(v.name) == Some("Some"))
-            .map(|v| v.payload.ty),
-        _ => None,
-    }
-}
-
-fn array_elem(bundle: &Bundle, id: BundleTypeId) -> Option<BundleTypeId> {
-    match &bundle.types.types[id.0 as usize] {
-        TypeDef::Array { elem, .. } => Some(*elem),
-        _ => None,
-    }
-}
-
-/// Render a debug format as a portable, layout-sensitive summary.
-fn describe_debug_format(bundle: &Bundle, id: BundleTypeId, node: &DisplayNode) -> String {
-    format!(
-        "{} :: Node {}",
-        fq_name(bundle, id),
-        describe_node(bundle, id, node)
-    )
-}
-
-/// Render a [`DisplayNode`] tree as a portable, layout-sensitive summary: every
-/// selector resolved to its field-name chain and byte offset (rooted at the
-/// type the node is rendered against, following the same rooting as resolution),
-/// so a wrong-member regression after a toolchain/layout shift trips the test.
-fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> String {
-    match node {
-        DisplayNode::Scalar { at, .. } => field(bundle, root, at),
-        DisplayNode::Symbol { at } => format!("Symbol {{ {} }}", field(bundle, root, at)),
-        DisplayNode::Struct { fields } => {
-            let parts: Vec<String> = fields
-                .iter()
-                .map(|fld| describe_field(bundle, root, fld))
-                .collect();
-            format!("Struct {{ {} }}", parts.join(", "))
-        }
-        DisplayNode::List {
-            head,
-            next,
-            node,
-            node_ty,
-        } => format!(
-            "List {{ head={}, node_ty={}, next={}, {} }}",
-            field(bundle, root, head),
-            fq_name(bundle, *node_ty),
-            field(bundle, *node_ty, next),
-            describe_node(bundle, *node_ty, node),
-        ),
-        DisplayNode::Str {
-            pointer,
-            length,
-            capacity,
-        } => {
-            let capacity = match capacity {
-                Some(capacity) => format!(", capacity={}", field(bundle, root, capacity)),
-                None => String::new(),
-            };
-            format!(
-                "Str {{ pointer={}, length={}{} }}",
-                field(bundle, root, pointer),
-                field(bundle, root, length),
-                capacity,
-            )
-        }
-        DisplayNode::Slice {
-            pointer,
-            length,
-            capacity,
-            element,
-        } => {
-            let capacity = match capacity {
-                Some(capacity) => format!(", capacity={}", field(bundle, root, capacity)),
-                None => String::new(),
-            };
-            format!(
-                "Slice {{ pointer={}, length={}{}, element={} }}",
-                field(bundle, root, pointer),
-                field(bundle, root, length),
-                capacity,
-                fq_name(bundle, *element),
-            )
-        }
-        DisplayNode::Bytes { at, notation } => {
-            format!("Bytes {notation:?} {{ {} }}", field(bundle, root, at))
-        }
-        DisplayNode::Alias {
-            at,
-            follow_pointers,
-        } => {
-            let follow = if *follow_pointers { ", follow" } else { "" };
-            format!("Alias {{ {}{} }}", field(bundle, root, at), follow)
-        }
-        DisplayNode::SlotCount { bitmap, slots } => format!(
-            "SlotCount {{ bitmap={}, slots={} }}",
-            field(bundle, root, bitmap),
-            field(bundle, root, slots),
-        ),
-        DisplayNode::Pointer { at, via, then } => {
-            let (_, _, ptr_land) = walk(bundle, root, at);
-            let pointee = ptr_target(bundle, ptr_land).unwrap_or(root);
-            let (_, _, target) = walk(bundle, pointee, via);
-            format!(
-                "Pointer {{ at={}, pointee={}, via={}, then={} }}",
-                field(bundle, root, at),
-                fq_name(bundle, pointee),
-                field(bundle, pointee, via),
-                describe_node(bundle, target, then),
-            )
-        }
-        DisplayNode::DynPointer {
-            pointer,
-            vtable,
-            drop_in_place,
-            size,
-            align,
-            tail_offset,
-        } => format!(
-            "DynPointer {{ pointer={}, vtable={}, slots=[drop_in_place:{drop_in_place}, size:{size}, align:{align}], tail_offset={tail_offset} }}",
-            field(bundle, root, pointer),
-            field(bundle, root, vtable),
-        ),
-        DisplayNode::Map {
-            length,
-            key,
-            value,
-            entries,
-        } => {
-            let MapEntries::BTree {
-                root: map_root,
-                root_node,
-                height,
-                node,
-                leaf,
-                leaf_len,
-                leaf_keys,
-                leaf_values,
-                internal,
-                internal_data,
-                internal_edges,
-                edge,
-            } = entries.as_ref();
-            let (_, _, root_ty) = walk(bundle, root, map_root);
-            let some = some_payload(bundle, root_ty).unwrap_or(root_ty);
-            let (_, _, node_ref) = walk(bundle, some, root_node);
-            let (_, _, edges_ty) = walk(bundle, *internal, internal_edges);
-            let edge_elem = array_elem(bundle, edges_ty).unwrap_or(*internal);
-            format!(
-                "Map {{ length={}, key={}, value={}, entries=BTree {{ root={}, root_node={}, \
-                 height={}, node={}, leaf={}, leaf_len={}, leaf_keys={}, leaf_values={}, \
-                 internal={}, internal_data={}, internal_edges={}, edge={} }} }}",
-                field(bundle, root, length),
-                fq_name(bundle, *key),
-                fq_name(bundle, *value),
-                field(bundle, root, map_root),
-                field(bundle, some, root_node),
-                field(bundle, node_ref, height),
-                field(bundle, node_ref, node),
-                fq_name(bundle, *leaf),
-                field(bundle, *leaf, leaf_len),
-                field(bundle, *leaf, leaf_keys),
-                field(bundle, *leaf, leaf_values),
-                fq_name(bundle, *internal),
-                field(bundle, *internal, internal_data),
-                field(bundle, *internal, internal_edges),
-                field(bundle, edge_elem, edge),
-            )
-        }
-        DisplayNode::Variant {
-            discriminant,
-            arms,
-            default,
-        } => {
-            let arms = arms
-                .iter()
-                .map(|arm| {
-                    let label = arm
-                        .label
-                        .map_or("", |l| bundle.strings.get(l).unwrap_or("?"));
-                    match &arm.payload {
-                        Some(payload) => format!(
-                            "{}=>{label}({})",
-                            arm.value,
-                            describe_node(bundle, root, payload)
-                        ),
-                        None => format!("{}=>{label}", arm.value),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let default = match default {
-                Some(node) => format!(", default={}", describe_node(bundle, root, node)),
-                None => String::new(),
-            };
-            format!(
-                "Variant {{ discr={}, arms=[{arms}]{default} }}",
-                describe_value_expr(bundle, root, discriminant),
-            )
-        }
-        DisplayNode::CustomList {
-            vars,
-            condition,
-            body,
-            element,
-        } => {
-            let vars = vars
-                .iter()
-                .map(|expr| describe_value_expr(bundle, root, expr))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "CustomList {{ vars=[{vars}], condition={}, body={} stmts, element={} }}",
-                describe_value_expr(bundle, root, condition),
-                body.len(),
-                fq_name(bundle, *element),
-            )
-        }
-    }
-}
-
-/// Render a [`ValueExpr`] for [`describe_node`], resolving each `Read` selector
-/// to its member path (crossing any `Deref` via [`walk`]).
-fn describe_value_expr(bundle: &Bundle, root: BundleTypeId, expr: &ValueExpr) -> String {
-    match expr {
-        ValueExpr::Read(sel) => format!("Read({})", field(bundle, root, sel)),
-        ValueExpr::Const(value) => format!("{value:#x}"),
-        ValueExpr::And(a, b) => format!(
-            "({} & {})",
-            describe_value_expr(bundle, root, a),
-            describe_value_expr(bundle, root, b)
-        ),
-        ValueExpr::Not(inner) => format!("~{}", describe_value_expr(bundle, root, inner)),
-        ValueExpr::Ne(a, b) => format!(
-            "({} != {})",
-            describe_value_expr(bundle, root, a),
-            describe_value_expr(bundle, root, b)
-        ),
-        ValueExpr::Var(id) => format!("Var({id})"),
-        ValueExpr::Load { addr, size } => {
-            format!("Load({}, {size})", describe_value_expr(bundle, root, addr))
-        }
-        ValueExpr::Add(a, b) => format!(
-            "({} + {})",
-            describe_value_expr(bundle, root, a),
-            describe_value_expr(bundle, root, b)
-        ),
-        ValueExpr::Sub(a, b) => format!(
-            "({} - {})",
-            describe_value_expr(bundle, root, a),
-            describe_value_expr(bundle, root, b)
-        ),
-        ValueExpr::Mul(a, b) => format!(
-            "({} * {})",
-            describe_value_expr(bundle, root, a),
-            describe_value_expr(bundle, root, b)
-        ),
-        ValueExpr::Lt(a, b) => format!(
-            "({} < {})",
-            describe_value_expr(bundle, root, a),
-            describe_value_expr(bundle, root, b)
-        ),
-    }
-}
-
-/// Render one [`Field`] of a [`DisplayNode::Struct`] for [`describe_node`].
-fn describe_field(bundle: &Bundle, root: BundleTypeId, fld: &Field) -> String {
-    let member_name = |at: &MemberRef| match &bundle.types.types[root.0 as usize] {
-        TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => {
-            member_at(members, at).map_or("?", |m| bundle.strings.get(m.name).unwrap_or("?"))
-        }
-        _ => "?",
-    };
-    match fld {
-        Field::Member { at, node: None } => format!("{}: <structural>", member_name(at)),
-        Field::Member {
-            at,
-            node: Some(node),
-        } => format!("{}: {}", member_name(at), describe_node(bundle, root, node)),
-        Field::Synth { label, node } => {
-            format!(
-                "{}: {}",
-                bundle.strings.get(*label).unwrap_or("?"),
-                describe_node(bundle, root, node)
-            )
-        }
-    }
 }
 
 /// Assert no display program reaches a member by its position.
@@ -1026,7 +616,12 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              queued: CustomList { vars=[Read(rx_fields.__0.value.list.index@+304), \
              Read(tx.value.tail_position.inner.value.v.value.__0@+8), \
              Read(rx_fields.__0.value.list.head.pointer@+288)], \
-             condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=2 stmts, element=u32 }, \
+             condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), \
+             body=[break if (Var(0) < Load((Var(2) + 0x80), 8)); \
+             if ((Var(0) - Load((Var(2) + 0x80), 8)) < 0x20) \
+             { emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); \
+             Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x88), 8) }], \
+             element=u32 }, \
              tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, \
              semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, \
              rx_fields: <structural> } }",
@@ -1079,7 +674,12 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              { vars=[Read(rx_fields.__0.value.list.index@+304), \
              Read(tx.value.tail_position.inner.value.v.value.__0@+8), \
              Read(rx_fields.__0.value.list.head.pointer@+288)], \
-             condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=2 stmts, element=u32 }, \
+             condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), \
+             body=[break if (Var(0) < Load((Var(2) + 0x80), 8)); \
+             if ((Var(0) - Load((Var(2) + 0x80), 8)) < 0x20) \
+             { emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); \
+             Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x88), 8) }], \
+             element=u32 }, \
              tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, \
              semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, \
              rx_fields: <structural> }",
@@ -1106,7 +706,12 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              queued: CustomList { vars=[Read(rx_fields.__0.value.list.index@+304), \
              Read(tx.value.tail_position.inner.value.v.value.__0@+8), \
              Read(rx_fields.__0.value.list.head.pointer@+288)], \
-             condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=2 stmts, element=u32 }, \
+             condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), \
+             body=[break if (Var(0) < Load((Var(2) + 0x80), 8)); \
+             if ((Var(0) - Load((Var(2) + 0x80), 8)) < 0x20) \
+             { emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); \
+             Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x88), 8) }], \
+             element=u32 }, \
              tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, \
              semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, \
              rx_fields: <structural> } }",
