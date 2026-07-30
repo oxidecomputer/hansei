@@ -2289,25 +2289,6 @@ enum PatField<'a> {
     Computed(&'a str, Pat<'a>),
 }
 
-/// Which fields a [`Pat::Struct`] record shows.
-enum PatFields<'a> {
-    /// Only these, in this order — a curated record that hides the rest.
-    Only(Vec<PatField<'a>>),
-    /// Every member structural display would show, with these computed instead
-    /// of rendered.
-    ///
-    /// "Would show" means every member of nonzero size: a zero-sized one
-    /// carries no value and structural display elides it, so a record that
-    /// listed it would differ from the plain view for no reason. This is how a
-    /// type is rendered as itself with one field decoded.
-    ///
-    /// An override is a member name and the program computing its value.
-    /// Deliberately not a [`PatField`]: there is no structural member to list
-    /// here — the default already lists them all — and no position to state,
-    /// since the record follows declaration order however these are ordered.
-    AllVisible { overrides: Vec<(&'a str, Pat<'a>)> },
-}
-
 /// A display program with its paths not yet found: a detector describes the
 /// shape it expects, and [`Emitter::compile`] looks for that shape in DWARF.
 ///
@@ -2329,10 +2310,6 @@ enum Pat<'a> {
     },
     Symbol {
         at: PatPath<'a>,
-    },
-    SlotCount {
-        bitmap: PatPath<'a>,
-        slots: PatPath<'a>,
     },
     Alias {
         at: PatPath<'a>,
@@ -2362,7 +2339,7 @@ enum Pat<'a> {
         notation: Notation,
     },
     Struct {
-        fields: PatFields<'a>,
+        fields: Vec<PatField<'a>>,
     },
 }
 
@@ -2381,10 +2358,6 @@ impl Emitter<'_> {
             },
             Pat::Symbol { at } => DisplayNode::Symbol {
                 at: self.walk(root, &at)?.0,
-            },
-            Pat::SlotCount { bitmap, slots } => DisplayNode::SlotCount {
-                bitmap: self.walk(root, &bitmap)?.0,
-                slots: self.walk(root, &slots)?.0,
             },
             Pat::Alias {
                 at,
@@ -2435,50 +2408,12 @@ impl Emitter<'_> {
                 notation,
             },
             Pat::Struct { fields } => DisplayNode::Struct {
-                fields: self.compile_fields(root, fields)?,
-            },
-        })
-    }
-
-    /// Compile a record's field list.
-    fn compile_fields(&mut self, root: TypeId, fields: PatFields<'_>) -> Option<Vec<Field>> {
-        let declared = match fields {
-            PatFields::Only(fields) => {
-                return fields
+                fields: fields
                     .into_iter()
                     .map(|field| self.compile_field(root, field))
-                    .collect();
-            }
-            PatFields::AllVisible { overrides } => overrides,
-        };
-        // Compile the overrides first, so a name that is not there declines
-        // before anything is built, then lay the visible members out in
-        // declaration order with each override in its member's place.
-        let mut overrides = Vec::with_capacity(declared.len());
-        for (name, pat) in declared {
-            let at = self.member_named(root, name)?;
-            overrides.push((name, Field::computed(at, self.compile(root, pat)?)));
-        }
-        let reader = self.reader;
-        let members = aggregate_members(reader, root)?;
-        let visible: Vec<u32> = members
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
-            .map(|(index, _)| index as u32)
-            .collect();
-        let mut out = Vec::with_capacity(visible.len());
-        for index in visible {
-            let at = self.address(members, index);
-            let name = members[index as usize]
-                .name
-                .map(|name| reader.strings.get(name));
-            match overrides.iter().position(|(want, _)| Some(*want) == name) {
-                Some(position) => out.push(overrides.remove(position).1),
-                None => out.push(Field::member(at)),
-            }
-        }
-        Some(out)
+                    .collect::<Option<_>>()?,
+            },
+        })
     }
 
     /// Compile one [`PatField`]. A field names its member rather than
@@ -2646,6 +2581,44 @@ impl Emitter<'_> {
         self.search(root, &accepts, through, &type_label(reader, param))
     }
 
+    /// Every member structural display would show — those of nonzero size — as
+    /// `Field`s in declaration order, with the named ones computed instead of
+    /// rendered.
+    ///
+    /// A zero-sized member carries no value and structural display elides it,
+    /// so a record that listed it would differ from the plain view for no
+    /// reason. An override naming a member that is not there, or is elided,
+    /// declines: it means the detector is describing a layout this type does
+    /// not have.
+    ///
+    /// Synthesized fields are the caller's business — it splices them around
+    /// the result — which is why this is a helper and not a kind of field list.
+    /// A record that is "the type itself plus one computed field" and one that
+    /// is "the type itself plus a synthetic field" then cost the same.
+    fn visible_fields(
+        &mut self,
+        root: TypeId,
+        mut overrides: Vec<(&str, DisplayNode)>,
+    ) -> Option<Vec<Field>> {
+        let reader = self.reader;
+        let members = aggregate_members(reader, root)?;
+        let mut fields = Vec::with_capacity(members.len());
+        for (index, member) in members.iter().enumerate() {
+            if raw_type_size(reader, member.type_id).unwrap_or(0) == 0 {
+                continue;
+            }
+            let name = member.name.map(|name| reader.strings.get(name));
+            let at = self.address(members, index as u32);
+            fields.push(
+                match overrides.iter().position(|(want, _)| Some(*want) == name) {
+                    Some(position) => Field::computed(at, overrides.remove(position).1),
+                    None => Field::member(at),
+                },
+            );
+        }
+        overrides.is_empty().then_some(fields)
+    }
+
     /// Re-address a path that was found rather than declared, so it names what
     /// it can.
     ///
@@ -2728,7 +2701,7 @@ fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     emitter.compile(
         id,
         Pat::Struct {
-            fields: PatFields::Only(["clone", "wake", "wake_by_ref", "drop"].map(symbol).into()),
+            fields: (["clone", "wake", "wake_by_ref", "drop"].map(symbol).into()),
         },
     )
 }
@@ -3041,20 +3014,13 @@ fn permits_path(mut prefix: PatPath<'_>) -> PatPath<'_> {
 fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // Render the semaphore as itself, with the permit word decoded in place.
     let decode = emitter.semaphore_permits_decode();
-    emitter.compile(
-        id,
-        Pat::Struct {
-            fields: PatFields::AllVisible {
-                overrides: vec![(
-                    "permits",
-                    Pat::Scalar {
-                        at: path![Named("permits"), PeelTo(WORD)],
-                        decode,
-                    },
-                )],
-            },
-        },
-    )
+    let permits = DisplayNode::Scalar {
+        at: emitter.walk(id, &path![Named("permits"), PeelTo(WORD)])?.0,
+        decode,
+    };
+    Some(DisplayNode::Struct {
+        fields: emitter.visible_fields(id, vec![("permits", permits)])?,
+    })
 }
 
 /// A `tokio::sync::watch::state::AtomicState` is a single decoded atomic state
@@ -3076,20 +3042,18 @@ fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
     // `header.ready_slots` — an atomic `usize` behind the usual loom/cell
     // shims. A block cannot tell a still-queued message from a consumed one,
     // so the values themselves are not shown.
-    emitter.compile(
-        id,
-        Pat::Struct {
-            fields: PatFields::AllVisible {
-                overrides: vec![(
-                    "values",
-                    Pat::SlotCount {
-                        bitmap: path![Named("header"), Named("ready_slots"), PeelTo(WORD)],
-                        slots: path![Named("values"), Named("__0")],
-                    },
-                )],
-            },
-        },
-    )
+    let values = DisplayNode::SlotCount {
+        bitmap: emitter
+            .walk(
+                id,
+                &path![Named("header"), Named("ready_slots"), PeelTo(WORD)],
+            )?
+            .0,
+        slots: emitter.walk(id, &path![Named("values"), Named("__0")])?.0,
+    };
+    Some(DisplayNode::Struct {
+        fields: emitter.visible_fields(id, vec![("values", values)])?,
+    })
 }
 
 /// Render the `Arc`-backed payload of a watch channel as the four things worth
@@ -3115,7 +3079,7 @@ fn watch_shared_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNod
 /// so the two cannot drift into showing different things.
 fn watch_shared_record() -> Pat<'static> {
     Pat::Struct {
-        fields: PatFields::Only(vec![
+        fields: vec![
             PatField::Computed(
                 "value",
                 Pat::Alias {
@@ -3126,7 +3090,7 @@ fn watch_shared_record() -> Pat<'static> {
             PatField::Member("state"),
             PatField::Member("ref_count_rx"),
             PatField::Member("ref_count_tx"),
-        ]),
+        ],
     }
 }
 
@@ -3336,7 +3300,7 @@ fn mpsc_rx_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let capacity = emitter.named_scalar("capacity", bound, ScalarDecode::Raw);
     let free = emitter.named_scalar("free", permits, permits_decode);
     let mut fields = vec![capacity, free];
-    fields.extend(emitter.chan_struct_fields(chan_shape));
+    fields.extend(emitter.chan_struct_fields(chan_ty, chan_shape)?);
     Some(DisplayNode::Pointer {
         at: chan_pointer,
         via: chan,
@@ -3512,9 +3476,6 @@ struct ChanShape {
     stride: u64,
     count: u64,
     element: TypeId,
-    /// The channel's own members (zero-sized ones elided), rendered
-    /// structurally after the synthetic `queued` field.
-    members: Vec<MemberRef>,
 }
 
 /// A channel is a struct whose first field is the synthetic `queued` block-chain
@@ -3522,7 +3483,7 @@ struct ChanShape {
 fn mpsc_chan_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let shape = mpsc_chan_shape(emitter, id)?;
     Some(DisplayNode::Struct {
-        fields: emitter.chan_struct_fields(shape),
+        fields: emitter.chan_struct_fields(id, shape)?,
     })
 }
 
@@ -3610,19 +3571,6 @@ fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
     // The channel renders as a struct: the synthetic `queued` field followed
     // by its real members. Structural display skips zero-sized members, so
     // enumerate over the full list and keep the surviving indices.
-    let chan_st = struct_of(reader, id)?;
-    let visible: Vec<u32> = chan_st
-        .members
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| raw_type_size(reader, m.type_id).unwrap_or(0) > 0)
-        .map(|(index, _)| index as u32)
-        .collect();
-    let members = visible
-        .into_iter()
-        .map(|index| emitter.address(&chan_st.members, index))
-        .collect();
-
     Some(ChanShape {
         tail,
         index,
@@ -3633,7 +3581,6 @@ fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<ChanShape> {
         stride,
         count,
         element,
-        members,
     })
 }
 
@@ -4573,7 +4520,7 @@ impl<'a> Emitter<'a> {
     /// Shared by the
     /// standalone `Chan` formatter and the `Receiver`, which prepends its
     /// decoded `capacity`/`free` fields to the same list.
-    fn chan_struct_fields(&mut self, shape: ChanShape) -> Vec<Field> {
+    fn chan_struct_fields(&mut self, chan: TypeId, shape: ChanShape) -> Option<Vec<Field>> {
         let ChanShape {
             tail,
             index,
@@ -4584,7 +4531,6 @@ impl<'a> Emitter<'a> {
             stride,
             count,
             element,
-            members,
         } = shape;
         let element = self.reserve(element);
         let queued = Field::Synth {
@@ -4601,9 +4547,9 @@ impl<'a> Emitter<'a> {
                 element,
             ),
         };
-        std::iter::once(queued)
-            .chain(members.into_iter().map(Field::member))
-            .collect()
+        let mut fields = vec![queued];
+        fields.extend(self.visible_fields(chan, Vec::new())?);
+        Some(fields)
     }
 
     /// Emit a type (and, transitively, everything it references),
