@@ -1016,6 +1016,24 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         assert_format(
             program,
             bundle,
+            "tokio::sync::mpsc::bounded::Sender<u32>",
+            "tokio::sync::mpsc::bounded::Sender<u32> :: Node Pointer \
+             { at=chan.inner.ptr.pointer@+0, \
+             pointee=alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<u32, \
+             tokio::sync::mpsc::bounded::Semaphore>>, via=data@+128, \
+             then=Struct { capacity: semaphore.bound@+360, \
+             free: semaphore.semaphore.permits.inner.value.v.value.__0@+352, \
+             queued: CustomList { vars=[Read(rx_fields.__0.value.list.index@+304), \
+             Read(tx.value.tail_position.inner.value.v.value.__0@+8), \
+             Read(rx_fields.__0.value.list.head.pointer@+288)], \
+             condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=2 stmts, element=u32 }, \
+             tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, \
+             semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, \
+             rx_fields: <structural> } }",
+        );
+        assert_format(
+            program,
+            bundle,
             "tokio::sync::watch::Sender<u32>",
             "tokio::sync::watch::Sender<u32> :: Node Pointer { at=shared.ptr.pointer@+0, \
              pointee=alloc::sync::ArcInner<tokio::sync::watch::Shared<u32>>, via=data@+16, \
