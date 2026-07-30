@@ -2273,162 +2273,7 @@ use PatStep::{Deref, FindParam, Named, PeelTo, PeelToParam, Resolved};
 /// The shape of a `usize`, which most of what a pattern peels to is.
 const WORD: Shape = Shape::Uint(crate::bundle::POINTER_SIZE);
 
-/// A type a pattern needs the bundle to carry, named by where it is found
-/// rather than by a [`TypeId`] the detector had to dig out itself.
-enum PatType<'a> {
-    /// What the pointer the path lands on targets.
-    Behind(PatPath<'a>),
-}
-
-/// One field of a [`Pat::Struct`] record.
-enum PatField<'a> {
-    /// A real member, rendered structurally under its own name — including any
-    /// formatter its own type has.
-    Member(&'a str),
-    /// A real member whose value the pattern computes, keeping its own name.
-    Computed(&'a str, Pat<'a>),
-}
-
-/// A display program with its paths not yet found: a detector describes the
-/// shape it expects, and [`Emitter::compile`] looks for that shape in DWARF.
-///
-/// A pattern is not a second way to spell a [`DisplayNode`] — it is the same
-/// program with the *navigation* left as a description. Compiling it is what
-/// turns "the member called `length`" into a selector, so a detector states a
-/// layout once instead of walking it, checking it, and then rebuilding a
-/// selector out of what it found. A pattern that does not fit declines with a
-/// trace line naming the step that failed, which is the behavior every
-/// hand-written detector was supposed to have and only some did.
-///
-/// Only the node kinds a pattern can express appear here. A program whose
-/// contents depend on values discovered while navigating — a `Variant`'s
-/// computed discriminant, a `CustomList`'s loop — is still built by hand.
-enum Pat<'a> {
-    Scalar {
-        at: PatPath<'a>,
-        decode: ScalarDecode,
-    },
-    Symbol {
-        at: PatPath<'a>,
-    },
-    Alias {
-        at: PatPath<'a>,
-        follow_pointers: bool,
-    },
-    /// One pointer hop: `at` reaches the pointer, `via` crosses its pointee to
-    /// the value actually rendered, and `then` is rooted there. How a handle on
-    /// a shared allocation renders as the thing it is a handle on.
-    Pointer {
-        at: PatPath<'a>,
-        via: PatPath<'a>,
-        then: Box<Pat<'a>>,
-    },
-    Str {
-        pointer: PatPath<'a>,
-        length: PatPath<'a>,
-        capacity: Option<PatPath<'a>>,
-    },
-    Slice {
-        pointer: PatPath<'a>,
-        length: PatPath<'a>,
-        capacity: Option<PatPath<'a>>,
-        element: PatType<'a>,
-    },
-    Bytes {
-        at: PatPath<'a>,
-        notation: Notation,
-    },
-    Struct {
-        fields: Vec<PatField<'a>>,
-    },
-}
-
 impl Emitter<'_> {
-    /// Find `pat` in the type `root` names and lower it to a display program,
-    /// or decline — leaving a trace line for `--explain-format` — when the
-    /// type does not have the shape the pattern describes.
-    ///
-    /// Every path becomes a name-addressed [`Selector`], so a program survives
-    /// the member-list rewriting that happens after it is attached.
-    fn compile(&mut self, root: TypeId, pat: Pat<'_>) -> Option<DisplayNode> {
-        Some(match pat {
-            Pat::Scalar { at, decode } => DisplayNode::Scalar {
-                at: self.walk(root, &at)?.0,
-                decode,
-            },
-            Pat::Symbol { at } => DisplayNode::Symbol {
-                at: self.walk(root, &at)?.0,
-            },
-            Pat::Alias {
-                at,
-                follow_pointers,
-            } => DisplayNode::Alias {
-                at: self.walk(root, &at)?.0,
-                follow_pointers,
-            },
-            Pat::Pointer { at, via, then } => {
-                let (at, ptr) = self.walk(root, &at)?;
-                let Some(RawType::Pointer(pointer)) = self.reader.canonical_type(ptr) else {
-                    explain!(
-                        "  a pointer hop reaches {}, which is not a pointer",
-                        type_label(self.reader, ptr),
-                    );
-                    return None;
-                };
-                let pointee = self.reader.canonicalize(pointer.target_type_id);
-                let (via, target) = self.walk(pointee, &via)?;
-                DisplayNode::Pointer {
-                    at,
-                    via,
-                    then: Box::new(self.compile(target, *then)?),
-                }
-            }
-            Pat::Str {
-                pointer,
-                length,
-                capacity,
-            } => DisplayNode::Str {
-                pointer: self.walk(root, &pointer)?.0,
-                length: self.walk(root, &length)?.0,
-                capacity: self.walk_opt(root, capacity)?,
-            },
-            Pat::Slice {
-                pointer,
-                length,
-                capacity,
-                element,
-            } => DisplayNode::Slice {
-                pointer: self.walk(root, &pointer)?.0,
-                length: self.walk(root, &length)?.0,
-                capacity: self.walk_opt(root, capacity)?,
-                element: self.walk_type(root, &element)?,
-            },
-            Pat::Bytes { at, notation } => DisplayNode::Bytes {
-                at: self.walk(root, &at)?.0,
-                notation,
-            },
-            Pat::Struct { fields } => DisplayNode::Struct {
-                fields: fields
-                    .into_iter()
-                    .map(|field| self.compile_field(root, field))
-                    .collect::<Option<_>>()?,
-            },
-        })
-    }
-
-    /// Compile one [`PatField`]. A field names its member rather than
-    /// addressing it positionally, so the name has to resolve here too — a
-    /// record cannot show a member that is not there.
-    fn compile_field(&mut self, root: TypeId, field: PatField<'_>) -> Option<Field> {
-        Some(match field {
-            PatField::Member(name) => Field::member(self.member_named(root, name)?),
-            PatField::Computed(name, pat) => {
-                let at = self.member_named(root, name)?;
-                Field::computed(at, self.compile(root, pat)?)
-            }
-        })
-    }
-
     /// Address the uniquely-named member `name` of `root`, checking it is
     /// there.
     fn member_named(&mut self, root: TypeId, name: &str) -> Option<MemberRef> {
@@ -2515,35 +2360,6 @@ impl Emitter<'_> {
         Some((Selector(steps), cur))
     }
 
-    /// Resolve an optional path, distinguishing "absent" from "did not
-    /// resolve": a pattern that asks for a capacity and cannot find it has
-    /// failed, and must not quietly render as though it were borrowed.
-    fn walk_opt(&mut self, root: TypeId, path: Option<PatPath<'_>>) -> Option<Option<Selector>> {
-        match path {
-            None => Some(None),
-            Some(path) => Some(Some(self.walk(root, &path)?.0)),
-        }
-    }
-
-    /// Resolve a [`PatType`] and reserve the type it names, so the bundle
-    /// carries it.
-    fn walk_type(&mut self, root: TypeId, want: &PatType<'_>) -> Option<BundleTypeId> {
-        let found = match want {
-            PatType::Behind(path) => {
-                let landed = self.walk(root, path)?.1;
-                let Some(RawType::Pointer(pointer)) = self.reader.canonical_type(landed) else {
-                    explain!(
-                        "  {} is not a pointer, so nothing is behind it",
-                        type_label(self.reader, landed),
-                    );
-                    return None;
-                };
-                self.reader.canonicalize(pointer.target_type_id)
-            }
-        };
-        Some(self.reserve(found))
-    }
-
     /// Descend from `root` to the one value `accepts` takes, name-addressed —
     /// `through` decides whether that is the zero-offset wrapper chain or any
     /// member. `want` names what was looked for, for the trace when nothing or
@@ -2619,6 +2435,27 @@ impl Emitter<'_> {
         overrides.is_empty().then_some(fields)
     }
 
+    /// The type the pointer `ty` targets. Declines, narrating, when it is not
+    /// a pointer — the one thing a caller crossing one has to establish before
+    /// it can root anything at the far side.
+    fn pointee(&self, ty: TypeId) -> Option<TypeId> {
+        let Some(RawType::Pointer(pointer)) = self.reader.canonical_type(ty) else {
+            explain!(
+                "  {} is not a pointer, so nothing is behind it",
+                type_label(self.reader, ty),
+            );
+            return None;
+        };
+        Some(self.reader.canonicalize(pointer.target_type_id))
+    }
+
+    /// [`Emitter::pointee`], reserved, for a node that names the type behind a
+    /// pointer rather than rooting a path there.
+    fn behind(&mut self, ty: TypeId) -> Option<BundleTypeId> {
+        let target = self.pointee(ty)?;
+        Some(self.reserve(target))
+    }
+
     /// Re-address a path that was found rather than declared, so it names what
     /// it can.
     ///
@@ -2690,20 +2527,15 @@ fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     // node's own requirement, checked once the program is built. The fields are
     // emitted in RawWakerVTable's declared order (clone, wake, wake_by_ref,
     // drop) regardless of DWARF member order.
-    let symbol = |name| {
-        PatField::Computed(
-            name,
-            Pat::Symbol {
-                at: path![Named(name)],
-            },
-        )
-    };
-    emitter.compile(
-        id,
-        Pat::Struct {
-            fields: (["clone", "wake", "wake_by_ref", "drop"].map(symbol).into()),
-        },
-    )
+    let mut fields = Vec::new();
+    for name in ["clone", "wake", "wake_by_ref", "drop"] {
+        let at = emitter.member_named(id, name)?;
+        let node = DisplayNode::Symbol {
+            at: emitter.walk(id, &path![Named(name)])?.0,
+        };
+        fields.push(Field::computed(at, node));
+    }
+    Some(DisplayNode::Struct { fields })
 }
 
 fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -2720,13 +2552,10 @@ fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
     if !is_byte_array(emitter, id, &octets(), Some(expected_octets)) {
         return None;
     }
-    emitter.compile(
-        id,
-        Pat::Bytes {
-            at: octets(),
-            notation: Notation::IpAddr,
-        },
-    )
+    Some(DisplayNode::Bytes {
+        at: emitter.walk(id, &octets())?.0,
+        notation: Notation::IpAddr,
+    })
 }
 
 /// A `uuid::Uuid` is a newtype over `[u8; 16]`, rendered in the hyphenated form
@@ -2737,13 +2566,10 @@ fn uuid_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     if !is_byte_array(emitter, id, &bytes(), Some(16)) {
         return None;
     }
-    emitter.compile(
-        id,
-        Pat::Bytes {
-            at: bytes(),
-            notation: Notation::Uuid,
-        },
-    )
+    Some(DisplayNode::Bytes {
+        at: emitter.walk(id, &bytes())?.0,
+        notation: Notation::Uuid,
+    })
 }
 
 /// A newtype over a byte array whose value is a digest — a TUF artifact hash, a
@@ -2755,13 +2581,10 @@ fn hex_bytes_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
     if !is_byte_array(emitter, id, &bytes(), None) {
         return None;
     }
-    emitter.compile(
-        id,
-        Pat::Bytes {
-            at: bytes(),
-            notation: Notation::Hex,
-        },
-    )
+    Some(DisplayNode::Bytes {
+        at: emitter.walk(id, &bytes())?.0,
+        notation: Notation::Hex,
+    })
 }
 
 /// Whether `at` reaches an inline array of unsigned bytes — exactly `count` of
@@ -2794,14 +2617,11 @@ fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     if !is_unsigned_integer(emitter.reader, bytes, 1) {
         return None;
     }
-    emitter.compile(
-        id,
-        Pat::Str {
-            pointer: path![Named("data_ptr")],
-            length: path![Named("length")],
-            capacity: None,
-        },
-    )
+    Some(DisplayNode::Str {
+        pointer: emitter.walk(id, &path![Named("data_ptr")])?.0,
+        length: emitter.walk(id, &path![Named("length")])?.0,
+        capacity: None,
+    })
 }
 
 /// A `&[T]` slice reference or a `Box<[T]>` boxed slice. Both are laid out as a
@@ -2813,15 +2633,13 @@ fn slice_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // The dispatch table screens by name (`&[` / `alloc::boxed::Box<[`); a thin
     // `Box<T>` has no `[` and `&str`/`String` are UTF-8, so neither reaches
     // here. This describes only the fat-pointer structure.
-    emitter.compile(
-        id,
-        Pat::Slice {
-            pointer: path![Named("data_ptr")],
-            length: path![Named("length")],
-            capacity: None,
-            element: PatType::Behind(path![Named("data_ptr")]),
-        },
-    )
+    let (pointer, ptr_ty) = emitter.walk(id, &path![Named("data_ptr")])?;
+    Some(DisplayNode::Slice {
+        pointer,
+        length: emitter.walk(id, &path![Named("length")])?.0,
+        capacity: None,
+        element: emitter.behind(ptr_ty)?,
+    })
 }
 
 fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -2834,22 +2652,27 @@ fn string_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     if !is_unsigned_integer(emitter.reader, shape.element, 1) {
         return None;
     }
-    emitter.compile(id, buffer_pattern(&path![Named("vec")], shape))
+    buffer_node(emitter, id, &path![Named("vec")], shape)
 }
 
 /// The `Str` program an owned UTF-8 buffer renders through: a `Vec<u8>`'s own
 /// paths, anchored under the walk that reaches the vector.
-fn buffer_pattern<'a>(prefix: &PatPath<'a>, shape: VecShape) -> Pat<'a> {
-    let under = |sel| {
-        let mut path: PatPath<'a> = prefix.iter().map(PatStep::clone).collect();
+fn buffer_node(
+    emitter: &mut Emitter<'_>,
+    root: TypeId,
+    prefix: &PatPath<'_>,
+    shape: VecShape,
+) -> Option<DisplayNode> {
+    let under = |emitter: &mut Emitter<'_>, sel| {
+        let mut path: PatPath<'_> = prefix.iter().map(PatStep::clone).collect();
         path.push(Resolved(sel));
-        path
+        Some(emitter.walk(root, &path)?.0)
     };
-    Pat::Str {
-        pointer: under(shape.pointer),
-        length: under(shape.length),
-        capacity: Some(under(shape.capacity)),
-    }
+    Some(DisplayNode::Str {
+        pointer: under(emitter, shape.pointer)?,
+        length: under(emitter, shape.length)?,
+        capacity: Some(under(emitter, shape.capacity)?),
+    })
 }
 
 /// A borrowed `&camino::Utf8Path` is a `{ data_ptr, length }` fat pointer over a
@@ -2857,14 +2680,11 @@ fn buffer_pattern<'a>(prefix: &PatPath<'a>, shape: VecShape) -> Pat<'a> {
 /// pointer is typed `*Utf8Path` rather than `*u8`. It renders through the same
 /// `Str` node with no capacity.
 fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    emitter.compile(
-        id,
-        Pat::Str {
-            pointer: path![Named("data_ptr")],
-            length: path![Named("length")],
-            capacity: None,
-        },
-    )
+    Some(DisplayNode::Str {
+        pointer: emitter.walk(id, &path![Named("data_ptr")])?.0,
+        length: emitter.walk(id, &path![Named("length")])?.0,
+        capacity: None,
+    })
 }
 
 /// An owned `camino::Utf8PathBuf` wraps a `std::path::PathBuf`, which nests
@@ -2879,7 +2699,7 @@ fn utf8_path_buf_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNo
     if !is_unsigned_integer(emitter.reader, shape.element, 1) {
         return None;
     }
-    emitter.compile(id, buffer_pattern(&prefix, shape))
+    buffer_node(emitter, id, &prefix, shape)
 }
 
 /// Whether `id` is parking_lot's raw mutex. A caller that reached one behind
@@ -2902,13 +2722,10 @@ fn raw_mutex_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> 
     // The dispatch table screens by name; this describes only the structure.
     // The state is a single-byte atomic, whichever way the compiler spelled it.
     let decode = emitter.mutex_byte_decode();
-    emitter.compile(
-        id,
-        Pat::Scalar {
-            at: mutex_byte_path(path![Named("state")]),
-            decode,
-        },
-    )
+    Some(DisplayNode::Scalar {
+        at: emitter.walk(id, &mutex_byte_path(path![Named("state")]))?.0,
+        decode,
+    })
 }
 
 /// Render a `tokio::sync::notify::Notify` as a curated record: the notification
@@ -3027,13 +2844,10 @@ fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Display
 /// word: the closed flag in bit 0 and the version counter above it.
 fn watch_state_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     let decode = emitter.watch_state_decode();
-    emitter.compile(
-        id,
-        Pat::Scalar {
-            at: path![Named("__0"), PeelTo(WORD)],
-            decode,
-        },
-    )
+    Some(DisplayNode::Scalar {
+        at: emitter.walk(id, &path![Named("__0"), PeelTo(WORD)])?.0,
+        decode,
+    })
 }
 
 fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -3070,28 +2884,25 @@ fn mpsc_block_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode>
 /// of them, and a watch channel's waiters are reported by the tasks parked on
 /// it rather than by the channel they are parked on.
 fn watch_shared_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    emitter.compile(id, watch_shared_record())
+    Some(DisplayNode::Struct {
+        fields: watch_shared_fields(emitter, id)?,
+    })
 }
 
 /// The record a watch channel's shared state renders as. Shared by
 /// [`watch_shared_node`], which is rooted at the allocation, and
 /// [`watch_sender_node`], which reaches the same allocation across an `Arc` —
 /// so the two cannot drift into showing different things.
-fn watch_shared_record() -> Pat<'static> {
-    Pat::Struct {
-        fields: vec![
-            PatField::Computed(
-                "value",
-                Pat::Alias {
-                    at: path![Named("value"), FindParam],
-                    follow_pointers: true,
-                },
-            ),
-            PatField::Member("state"),
-            PatField::Member("ref_count_rx"),
-            PatField::Member("ref_count_tx"),
-        ],
+fn watch_shared_fields(emitter: &mut Emitter<'_>, root: TypeId) -> Option<Vec<Field>> {
+    let value = DisplayNode::Alias {
+        at: emitter.walk(root, &path![Named("value"), FindParam])?.0,
+        follow_pointers: true,
+    };
+    let mut fields = vec![Field::computed(emitter.member_named(root, "value")?, value)];
+    for name in ["state", "ref_count_rx", "ref_count_tx"] {
+        fields.push(Field::member(emitter.member_named(root, name)?));
     }
+    Some(fields)
 }
 
 /// Render a `tokio::sync::watch::Sender<T>` as the shared state it publishes
@@ -3102,14 +2913,16 @@ fn watch_shared_record() -> Pat<'static> {
 fn watch_sender_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // A sized `Arc<T>` points at `ArcInner<T> { strong, weak, data: T }`, so the
     // hop is the `NonNull`'s raw pointer and the step past the header is `data`.
-    emitter.compile(
-        id,
-        Pat::Pointer {
-            at: path![Named("shared"), Named("ptr"), Named("pointer")],
-            via: path![Named("data")],
-            then: Box::new(watch_shared_record()),
-        },
-    )
+    let (at, ptr) = emitter.walk(id, &path![Named("shared"), Named("ptr"), Named("pointer")])?;
+    let pointee = emitter.pointee(ptr)?;
+    let (via, target) = emitter.walk(pointee, &path![Named("data")])?;
+    Some(DisplayNode::Pointer {
+        at,
+        via,
+        then: Box::new(DisplayNode::Struct {
+            fields: watch_shared_fields(emitter, target)?,
+        }),
+    })
 }
 
 /// Render a `tokio::sync::watch::Receiver<T>` as its one-slot inbox — an unseen
@@ -3780,13 +3593,10 @@ fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bo
 /// member is the value; show the value, so the padding does not read as a level
 /// of structure that is not there.
 fn cache_padded_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    emitter.compile(
-        id,
-        Pat::Alias {
-            at: path![Named("value")],
-            follow_pointers: true,
-        },
-    )
+    Some(DisplayNode::Alias {
+        at: emitter.walk(id, &path![Named("value")])?.0,
+        follow_pointers: true,
+    })
 }
 
 fn unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -4032,13 +3842,10 @@ fn transparent(
 fn atomic_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // An atomic aliases its stored value but does not chase it: an `AtomicPtr`'s
     // `Debug` reports the address it holds, so `follow_pointers` is false.
-    emitter.compile(
-        id,
-        Pat::Alias {
-            at: path![PeelToParam],
-            follow_pointers: false,
-        },
-    )
+    Some(DisplayNode::Alias {
+        at: emitter.walk(id, &path![PeelToParam])?.0,
+        follow_pointers: false,
+    })
 }
 
 /// Whether `id` is the generic `core::sync::atomic::Atomic<T>` spelling, the
@@ -5213,7 +5020,7 @@ fn demote_types_with_members_out_of_bounds(
 #[cfg(test)]
 mod tests {
     use super::{
-        Detector, Emitter, Named, Pat, StatePass, StaticRole, VtableTypeHint,
+        Detector, Emitter, Named, StatePass, StaticRole, VtableTypeHint,
         demote_types_with_members_out_of_bounds, drop_members_of_other_states, dyn_tail_offset,
         has_dyn_tail, match_static_symbol, scalar_newtype_node, scan_vtable_section, str_node,
     };
@@ -5392,16 +5199,16 @@ mod tests {
             ),
         );
 
-        let compile = |pat| {
+        let walk = |path| {
             super::explain::capture(|| {
-                Emitter::new(&reader, BTreeMap::new(), None).compile(notify, pat)
+                Emitter::new(&reader, BTreeMap::new(), None)
+                    .walk(notify, &path)
+                    .map(|(at, _)| at)
             })
         };
 
         // The member is missing: the trace names it and lists what is there.
-        let (got, trace) = compile(Pat::Symbol {
-            at: path![Named("state")],
-        });
+        let (got, trace) = walk(path![Named("state")]);
         assert!(got.is_none());
         assert_eq!(trace.len(), 1, "{trace:?}");
         assert!(
@@ -5413,9 +5220,7 @@ mod tests {
         );
 
         // The walk leaves an aggregate: the trace says where it stopped.
-        let (got, trace) = compile(Pat::Symbol {
-            at: path![Named("waiters"), Named("value")],
-        });
+        let (got, trace) = walk(path![Named("waiters"), Named("value")]);
         assert!(got.is_none());
         assert!(
             trace[0].contains("stopped at `value`") && trace[0].contains("u64"),
@@ -5426,11 +5231,9 @@ mod tests {
         // A walk that fits says nothing — silence is the ordinary case — and
         // addresses what it found by name, the point of describing a layout
         // rather than counting to it.
-        let (got, trace) = compile(Pat::Symbol {
-            at: path![Named("waiters")],
-        });
+        let (got, trace) = walk(path![Named("waiters")]);
         assert!(trace.is_empty(), "{trace:?}");
-        let Some(DisplayNode::Symbol { at }) = got else {
+        let Some(at) = got else {
             panic!("a pattern that fits compiles to its node");
         };
         assert!(
@@ -5487,13 +5290,7 @@ mod tests {
 
         let peel = |shape| {
             super::explain::capture(|| {
-                Emitter::new(&reader, BTreeMap::new(), None).compile(
-                    holder,
-                    Pat::Alias {
-                        at: path![PeelTo(shape)],
-                        follow_pointers: false,
-                    },
-                )
+                Emitter::new(&reader, BTreeMap::new(), None).walk(holder, &path![PeelTo(shape)])
             })
         };
         let (got, trace) = peel(Shape::Uint(POINTER_SIZE));
@@ -5503,8 +5300,8 @@ mod tests {
             "{}",
             trace[0]
         );
-        // The pattern says what it was after, since "nothing" and "several"
-        // read the same without it.
+        // The walk says what it was after, since "nothing" and "several" read
+        // the same without it.
         assert!(
             trace[1].contains("no single a 8-byte unsigned integer"),
             "{}",
