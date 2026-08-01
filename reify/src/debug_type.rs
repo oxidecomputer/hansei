@@ -291,6 +291,8 @@ pub enum DisplayNode<T> {
         body: Vec<Stmt>,
         element: T,
     },
+    /// Render the value as the single token `<elided>`, reading nothing.
+    Elided,
 }
 
 /// One resolved [`DisplayNode::CustomList`] body statement, mirroring the bundle
@@ -938,6 +940,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         element: scope.related_type(*element),
                     })
                 }
+                BundleNode::Elided => Some(DisplayNode::Elided),
             }
         }
 

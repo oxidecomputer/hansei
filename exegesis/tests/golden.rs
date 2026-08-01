@@ -481,6 +481,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
          { clone: Symbol { clone@+0 }, wake: Symbol { wake@+8 }, \
          wake_by_ref: Symbol { wake_by_ref@+16 }, drop: Symbol { drop@+24 } }",
     );
+    // Every tokio fixture reaches the runtime handle, and its insides are
+    // never what a session is after, so the bundle hides them.
+    assert_format(
+        program,
+        bundle,
+        "tokio::runtime::handle::Handle",
+        "tokio::runtime::handle::Handle :: Node Elided",
+    );
     if program == "simple-await" {
         for prefix in [
             "core::ptr::unique::Unique<",

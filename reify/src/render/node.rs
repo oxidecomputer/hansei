@@ -35,6 +35,9 @@ pub(crate) fn eval_node<'a, T: DebugType<'a>>(
     pretty: bool,
 ) -> fmt::Result {
     match node {
+        // Not a degradation: the bundle chose to keep this type's insides
+        // out of the way, and `--ugly` is the way past that choice.
+        DisplayNode::Elided => write!(f, "<elided>"),
         DisplayNode::Scalar {
             offset,
             word_size,
@@ -1127,6 +1130,33 @@ mod tests {
         assert_eq!(show(1), "one");
         assert_eq!(show(2), "<unknown: 2>");
         assert_eq!(show(255), "<unknown: 255>");
+    }
+
+    /// An `Elided` format suppresses the whole value — its member never
+    /// renders and the target is never read — while `--ugly` shows the
+    /// structure like any other suppressed formatter.
+    #[test]
+    fn test_elided_hides_the_value_and_ugly_reveals_it() {
+        let b = node_bundle();
+        let v = BundleView::new(&b);
+        let logger = v.ty(N_LOGGER).unwrap();
+        // An unreadable target proves elision reads nothing: any read
+        // would surface as a degradation string instead.
+        let mem = FakeMem::new().unreadable();
+        let bytes = 0xdead_beef_u64.to_le_bytes();
+        let value = TypeInfoRef::new(logger, 0, &bytes);
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&mem, 8)),
+            "<elided>"
+        );
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8)),
+            "<elided>"
+        );
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8).ugly()),
+            "Logger { drain: 3735928559 }"
+        );
     }
 
     /// A `CustomList` lays out like the other sequence nodes in pretty mode:
