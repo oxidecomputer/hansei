@@ -30,6 +30,7 @@ use goblin::elf::sym::{STT_FUNC, STT_OBJECT, STT_TLS};
 use memmap2::Mmap;
 
 use std::cell::OnceCell;
+use std::sync::OnceLock;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::ops::Range;
@@ -198,6 +199,38 @@ struct Symbols {
     /// Data symbols, including the `STT_TLS` ones, whose `st_value` is
     /// an offset into a TLS block rather than an address.
     objects: Vec<SymbolBuf>,
+    /// Positions into functions-then-objects, sorted by name, built on
+    /// the first by-name lookup. Attach-time fingerprint validation asks
+    /// for thousands of names, and a linear scan per name over a
+    /// debug-build symtab was a quarter of the time to the first prompt.
+    by_name: OnceLock<Vec<u32>>,
+}
+
+impl Symbols {
+    /// The symbol at a position in the functions-then-objects chain.
+    fn at(&self, position: u32) -> &SymbolBuf {
+        let position = position as usize;
+        self.functions
+            .get(position)
+            .unwrap_or_else(|| &self.objects[position - self.functions.len()])
+    }
+
+    /// The first symbol of this name in chain order — the one a linear
+    /// scan found, by binary search. The sort is stable, so symbols
+    /// sharing a name keep their chain order.
+    fn find_by_name(&self, name: &str) -> Option<&SymbolBuf> {
+        let index = self.by_name.get_or_init(|| {
+            let mut index: Vec<u32> =
+                (0..(self.functions.len() + self.objects.len()) as u32).collect();
+            index.sort_by_key(|&p| self.at(p).name.as_str());
+            index
+        });
+        let lo = index.partition_point(|&p| self.at(p).name.as_str() < name);
+        index
+            .get(lo)
+            .map(|&p| self.at(p))
+            .filter(|sym| sym.name == name)
+    }
 }
 
 pub struct Core {
@@ -710,12 +743,7 @@ impl Core {
     pub fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
         let exec = self.exec.as_ref()?;
         let symbols = self.symbols_of(&exec.path)?;
-        symbols
-            .functions
-            .iter()
-            .chain(&symbols.objects)
-            .find(|s| s.name == name)
-            .cloned()
+        symbols.find_by_name(name).cloned()
     }
 
     pub fn lookup_symbol_name_by_addr(&self, address: u64) -> Option<String> {

@@ -46,6 +46,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Note types from `<sys/procfs.h>`.
 const NT_AUXV: u32 = 6;
@@ -253,6 +254,38 @@ fn span_of(phdrs: &[ProgramHeader], bias: u64) -> Option<Range<u64>> {
 struct Symbols {
     functions: Vec<SymbolBuf>,
     objects: Vec<SymbolBuf>,
+    /// Positions into functions-then-objects, sorted by name, built on
+    /// the first by-name lookup. Attach-time fingerprint validation asks
+    /// for thousands of names, and a linear scan per name over a
+    /// debug-build symtab was a quarter of the time to the first prompt.
+    by_name: OnceLock<Vec<u32>>,
+}
+
+impl Symbols {
+    /// The symbol at a position in the functions-then-objects chain.
+    fn at(&self, position: u32) -> &SymbolBuf {
+        let position = position as usize;
+        self.functions
+            .get(position)
+            .unwrap_or_else(|| &self.objects[position - self.functions.len()])
+    }
+
+    /// The first symbol of this name in chain order — the one a linear
+    /// scan found, by binary search. The sort is stable, so symbols
+    /// sharing a name keep their chain order.
+    fn find_by_name(&self, name: &str) -> Option<&SymbolBuf> {
+        let index = self.by_name.get_or_init(|| {
+            let mut index: Vec<u32> =
+                (0..(self.functions.len() + self.objects.len()) as u32).collect();
+            index.sort_by_key(|&p| self.at(p).name.as_str());
+            index
+        });
+        let lo = index.partition_point(|&p| self.at(p).name.as_str() < name);
+        index
+            .get(lo)
+            .map(|&p| self.at(p))
+            .filter(|sym| sym.name == name)
+    }
 }
 
 pub struct Core {
@@ -740,12 +773,7 @@ impl Core {
 
     pub fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
         let object = self.symbols.get(&self.exec_base?)?;
-        object
-            .functions
-            .iter()
-            .chain(&object.objects)
-            .find(|s| s.name == name)
-            .cloned()
+        object.find_by_name(name).cloned()
     }
 
     pub fn lookup_symbol_name_by_addr(&self, address: u64) -> Option<String> {
