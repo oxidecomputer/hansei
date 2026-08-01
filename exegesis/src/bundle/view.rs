@@ -146,17 +146,11 @@ impl<'a> BundleType<'a> {
     /// bundle. Duplicate DIEs with the same layout are benign; conflicting
     /// sizes make the lookup ambiguous.
     pub fn size_by_name(&self, name: &str) -> Option<u64> {
-        let mut sizes =
-            self.bundle
-                .types
-                .name_index
-                .iter()
-                .filter(|&&(r, _)| {
-                    self.bundle.strings.get(r).is_some_and(|candidate| {
-                        crate::symbols::rust_type_names_equal(candidate, name)
-                    })
-                })
-                .map(|&(_, id)| self.at(id).size());
+        let mut sizes = self
+            .bundle
+            .types
+            .find_by_normalized_name(&self.bundle.strings, name)
+            .map(|id| self.at(id).size());
         let size = sizes.next()?;
         sizes.all(|candidate| candidate == size).then_some(size)
     }
@@ -164,17 +158,10 @@ impl<'a> BundleType<'a> {
     /// The unique type associated with a fully-qualified name in this
     /// bundle. Conflicting same-named layouts make the lookup ambiguous.
     pub fn type_by_name(&self, name: &str) -> Option<BundleType<'a>> {
-        let mut ids =
-            self.bundle
-                .types
-                .name_index
-                .iter()
-                .filter(|&&(r, _)| {
-                    self.bundle.strings.get(r).is_some_and(|candidate| {
-                        crate::symbols::rust_type_names_equal(candidate, name)
-                    })
-                })
-                .map(|&(_, id)| id);
+        let mut ids = self
+            .bundle
+            .types
+            .find_by_normalized_name(&self.bundle.strings, name);
         let id = ids.next()?;
         ids.all(|candidate| candidate == id).then(|| self.at(id))
     }
