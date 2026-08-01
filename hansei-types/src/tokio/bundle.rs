@@ -215,14 +215,13 @@ impl<'b, T: Target> Context<'b, T> {
             && let Ok(all) = self.proc.symbols()
         {
             let stripped: HashSet<&str> = all.iter().map(|s| strip_llvm_suffix(&s.name)).collect();
-            let normalized: HashSet<String> = all
-                .iter()
-                .filter_map(|s| normalized_v0_key(&s.name))
-                .collect();
-            missing.retain(|s| {
-                !stripped.contains(s.as_str())
-                    && normalized_v0_key(s).is_none_or(|key| !normalized.contains(&key))
-            });
+            missing.retain(|s| !stripped.contains(s.as_str()));
+
+            if !missing.is_empty() {
+                let normalized = normalized_key_set(&all);
+                missing
+                    .retain(|s| normalized_v0_key(s).is_none_or(|key| !normalized.contains(&key)));
+            }
         }
 
         Fingerprint {
@@ -1339,6 +1338,41 @@ impl<T: Target> ParseCtx for Context<'_, T> {
     fn proc(&self) -> &T {
         self.proc
     }
+}
+
+/// The normalized v0 key of every symbol, demangled across however many
+/// threads the machine offers.
+///
+/// This demangles a debug binary's entire symtab — six figures of symbols,
+/// with kilobyte-long names — which is the dominant cost of attaching to a
+/// target whose fingerprint does not match exactly. The keys land in one
+/// set, so the split carries no ordering to preserve.
+fn normalized_key_set(symbols: &[SymbolBuf]) -> HashSet<String> {
+    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let Some(chunk) = std::num::NonZeroUsize::new(symbols.len().div_ceil(workers)) else {
+        return HashSet::new();
+    };
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = symbols
+            .chunks(chunk.get())
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .filter_map(|s| normalized_v0_key(&s.name))
+                        .collect::<HashSet<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("demangling does not panic"))
+            .reduce(|mut set, chunk| {
+                set.extend(chunk);
+                set
+            })
+            .unwrap_or_default()
+    })
 }
 
 /// Result of resolving the bundle's symbol fingerprint against the target
