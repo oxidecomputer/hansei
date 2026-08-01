@@ -8,6 +8,7 @@ use proc::snapshot::Recorder;
 use reify::{TypeInfo, TypeInfoRef};
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -526,8 +527,7 @@ fn print_await_chain<'b, T: proc::Target>(
                         if ugly {
                             disp = disp.ugly();
                         }
-                        let value = format!("{:#}", disp);
-                        print_variable(out, &value_indent, m.name(), &value)?;
+                        print_variable(out, &value_indent, m.name(), &format_args!("{disp:#}"))?;
                     }
                     None => writeln!(out, "{value_indent}{}: <unreadable>", m.name())?,
                 }
@@ -860,16 +860,164 @@ fn async_kind(name: &str, state: Option<&str>) -> &'static str {
 
 /// Print a named variable compactly when it fits on one line, or as an
 /// indented block when the value formatter expands an aggregate.
-fn print_variable(out: &mut dyn io::Write, indent: &str, name: &str, value: &str) -> Result<()> {
-    if value.contains('\n') {
-        writeln!(out, "{indent}{name}:")?;
-        for line in value.lines() {
-            writeln!(out, "{indent}  {line}")?;
-        }
-    } else {
-        writeln!(out, "{indent}{name}: {value}")?;
+/// Write `name: value` on one line, or a `name:` heading with the value's
+/// lines indented beneath it when the value is multi-line.
+///
+/// The value is *streamed*: which layout applies is decided by its first
+/// newline, so only text up to that newline is held back, and the rest is
+/// written as the value renders. Rendering to a `String` first and copying
+/// it out line by line doubles the traffic, and a deep task's locals run
+/// to gigabytes.
+fn print_variable(
+    out: &mut dyn io::Write,
+    indent: &str,
+    name: &str,
+    value: &dyn fmt::Display,
+) -> Result<()> {
+    /// Raw text beyond this is laid out and flushed to the sink. The
+    /// renderer writes in pieces of a few bytes — a member name, a
+    /// brace — so accepting one must cost what a `String` append does:
+    /// the pieces are pushed verbatim, and the newline-to-indent layout
+    /// runs over a whole chunk at a time, where even the scan for the
+    /// newlines is a bulk operation instead of a per-piece one.
+    const CHUNK: usize = 64 << 10;
+
+    struct Stream<'w> {
+        sink: &'w mut dyn io::Write,
+        /// Value text as the renderer wrote it, bounded by [`CHUNK`].
+        chunk: String,
+        /// The chunk with the indentation laid in, reused per flush.
+        staged: String,
+        indent: &'w str,
+        name: &'w str,
+        /// The first line so far; `None` once a newline committed the
+        /// heading layout.
+        first: Option<String>,
+        /// Newlines seen but not yet expanded, so that only one followed
+        /// by more text opens an indented line under it — a trailing one
+        /// must close the last line instead.
+        deferred: usize,
+        /// The io error behind a `fmt::Error`, which cannot carry it.
+        error: Option<io::Error>,
     }
-    Ok(())
+
+    impl Stream<'_> {
+        fn put(&mut self, text: &str) -> io::Result<()> {
+            let mut text = text;
+            if let Some(first) = &mut self.first {
+                match text.split_once('\n') {
+                    None => {
+                        first.push_str(text);
+                        return Ok(());
+                    }
+                    Some((head, rest)) => {
+                        let first = self.first.take().unwrap();
+                        self.staged.push_str(self.indent);
+                        self.staged.push_str(self.name);
+                        self.staged.push_str(":\n");
+                        self.staged.push_str(self.indent);
+                        self.staged.push_str("  ");
+                        self.staged.push_str(&first);
+                        self.staged.push_str(head);
+                        self.deferred = 1;
+                        text = rest;
+                    }
+                }
+            }
+            self.chunk.push_str(text);
+            if self.chunk.len() >= CHUNK {
+                self.flush_chunk()?;
+            }
+            Ok(())
+        }
+
+        /// Lay the chunk's text out into `staged` and write it: every
+        /// newline followed by more text becomes a break plus the indent
+        /// of the line it opens, and the trailing run of newlines joins
+        /// `deferred`, to be expanded once something follows them.
+        fn flush_chunk(&mut self) -> io::Result<()> {
+            let body = self.chunk.trim_end_matches('\n');
+            let trailing = self.chunk.len() - body.len();
+            if !body.is_empty() {
+                for _ in 0..self.deferred {
+                    self.staged.push('\n');
+                    self.staged.push_str(self.indent);
+                    self.staged.push_str("  ");
+                }
+                self.deferred = 0;
+                let mut lines = body.split('\n');
+                self.staged.push_str(lines.next().unwrap_or_default());
+                for line in lines {
+                    self.staged.push('\n');
+                    self.staged.push_str(self.indent);
+                    self.staged.push_str("  ");
+                    self.staged.push_str(line);
+                }
+            }
+            self.deferred += trailing;
+            self.chunk.clear();
+            self.sink.write_all(self.staged.as_bytes())?;
+            self.staged.clear();
+            Ok(())
+        }
+
+        fn finish(&mut self) -> io::Result<()> {
+            match self.first.take() {
+                // No newline ever came: the single-line layout.
+                Some(value) => {
+                    self.staged.push_str(self.indent);
+                    self.staged.push_str(self.name);
+                    self.staged.push_str(": ");
+                    self.staged.push_str(&value);
+                    self.staged.push('\n');
+                }
+                None => {
+                    self.flush_chunk()?;
+                    // Deferred newlines beyond the closing one were
+                    // trailing empty lines; write them as such.
+                    for _ in 1..self.deferred {
+                        self.staged.push('\n');
+                        self.staged.push_str(self.indent);
+                        self.staged.push_str("  ");
+                    }
+                    self.staged.push('\n');
+                }
+            }
+            self.sink.write_all(self.staged.as_bytes())?;
+            self.staged.clear();
+            Ok(())
+        }
+    }
+
+    impl fmt::Write for Stream<'_> {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            self.put(text).map_err(|e| {
+                self.error = Some(e);
+                fmt::Error
+            })
+        }
+    }
+
+    let mut stream = Stream {
+        sink: out,
+        chunk: String::new(),
+        staged: String::new(),
+        indent,
+        name,
+        first: Some(String::new()),
+        deferred: 0,
+        error: None,
+    };
+    use fmt::Write as _;
+    let outcome = write!(stream, "{value}");
+    match stream.error.take() {
+        Some(error) => Err(error.into()),
+        None => {
+            outcome.map_err(|_| anyhow::anyhow!("failed to render {name}"))?;
+            stream.finish()?;
+            Ok(())
+        }
+    }
 }
 
 /// Attach-time bundle validation (§5.1), shared by all bundle-mode
@@ -1280,7 +1428,12 @@ fn print_thread_context(
     let info = session.ctx.context_info(worker.context_addr)?;
     for field in ["thread_id", "runtime", "budget"] {
         let value = info.member(field)?;
-        print_variable(out, "  ", field, &render(session, &value, depth, ugly))?;
+        print_variable(
+            out,
+            "  ",
+            field,
+            &format_args!("{:#}", render(session, &value, depth, ugly)),
+        )?;
     }
     Ok(())
 }
@@ -1302,7 +1455,12 @@ fn print_worker_state<'b>(
     writeln!(out, "  worker {index}")?;
 
     let defer = worker_ctx.member("defer")?;
-    print_variable(out, "  ", "defer", &render(session, &defer, depth, ugly))?;
+    print_variable(
+        out,
+        "  ",
+        "defer",
+        &format_args!("{:#}", render(session, &defer, depth, ugly)),
+    )?;
 
     // The core is moved out of the thread's context while the scheduler
     // parks or hands it to another thread, so its absence is a state
@@ -1317,7 +1475,7 @@ fn print_worker_state<'b>(
         out,
         "  ",
         "core",
-        &render(session, &core.as_ref(), depth, ugly),
+        &format_args!("{:#}", render(session, &core.as_ref(), depth, ugly)),
     )?;
     Ok(())
 }
@@ -1336,24 +1494,22 @@ fn exec_runtime_field(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let value = session.handle.member(field)?;
-    writeln!(out, "{}", render(session, &value, depth, ugly))?;
+    writeln!(out, "{:#}", render(session, &value, depth, ugly))?;
     Ok(())
 }
 
-/// Format a value read from the target, honouring the custom formatters
-/// unless asked for the raw structural view.
-fn render<'b>(
-    session: &Session<'_>,
-    value: &TypeInfoRef<'_, 'b, BundleType<'b>>,
+/// Display a value read from the target, honouring the custom formatters
+/// unless asked for the raw structural view. Nothing is rendered until the
+/// caller formats the result (with `{:#}` for the usual pretty layout), so
+/// the text can stream to its destination instead of through a `String`.
+fn render<'r, 'buf, 'b: 'buf>(
+    session: &'r Session<'b>,
+    value: &'r TypeInfoRef<'buf, 'b, BundleType<'b>>,
     depth: usize,
     ugly: bool,
-) -> String {
+) -> reify::DisplayTargetValue<'r, 'buf, 'b, BundleType<'b>, Proc> {
     let display = value.display_from_target(session.ctx.proc, depth);
-    if ugly {
-        format!("{:#}", display.ugly())
-    } else {
-        format!("{display:#}")
-    }
+    if ugly { display.ugly() } else { display }
 }
 
 /// Render one futurelock diagnosis: who holds what, where the
@@ -1403,17 +1559,75 @@ mod variable_format_tests {
     #[test]
     fn scalar_stays_on_the_name_line() {
         let mut out = Vec::new();
-        print_variable(&mut out, "  ", "count", "42").unwrap();
+        print_variable(&mut out, "  ", "count", &"42").unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "  count: 42\n");
     }
 
     #[test]
     fn aggregate_is_indented_below_the_name() {
         let mut out = Vec::new();
-        print_variable(&mut out, "  ", "point", "Point {\n    x: 1,\n    y: 2,\n}").unwrap();
+        print_variable(&mut out, "  ", "point", &"Point {\n    x: 1,\n    y: 2,\n}").unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "  point:\n    Point {\n        x: 1,\n        y: 2,\n    }\n"
+        );
+    }
+
+    /// The streamed layout must match what rendering the value whole and
+    /// splitting it with `str::lines` produced, byte for byte, across the
+    /// shapes a value's text can take: trailing/leading/doubled newlines,
+    /// values that are nothing but newlines, and the empty value.
+    #[test]
+    fn streamed_layout_matches_the_line_split_one() {
+        for value in [
+            "",
+            "42",
+            "a\nb",
+            "a\nb\n",
+            "a\n\nb",
+            "a\n\n",
+            "\na",
+            "\n",
+            "\n\n",
+            "Point {\n    x: 1,\n}",
+        ] {
+            let expected = if value.contains('\n') {
+                let mut s = String::from("  v:\n");
+                for line in value.lines() {
+                    s.push_str("    ");
+                    s.push_str(line);
+                    s.push('\n');
+                }
+                s
+            } else {
+                format!("  v: {value}\n")
+            };
+            let mut out = Vec::new();
+            print_variable(&mut out, "  ", "v", &value).unwrap();
+            assert_eq!(String::from_utf8(out).unwrap(), expected, "for {value:?}");
+        }
+    }
+
+    /// Streaming decides the layout at the first newline however the text
+    /// is chunked, so a value whose `Display` writes a piece at a time
+    /// must land exactly where a single-write one does.
+    #[test]
+    fn chunked_writes_land_like_whole_ones() {
+        struct Chunked<'a>(&'a [&'a str]);
+        impl std::fmt::Display for Chunked<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.iter().try_for_each(|piece| f.write_str(piece))
+            }
+        }
+        let pieces = ["Point {", "\n    x", ": 1,", "\n", "}"];
+        let mut chunked = Vec::new();
+        print_variable(&mut chunked, "  ", "v", &Chunked(&pieces)).unwrap();
+        let mut whole = Vec::new();
+        print_variable(&mut whole, "  ", "v", &pieces.concat().as_str()).unwrap();
+        assert_eq!(chunked, whole);
+        assert_eq!(
+            String::from_utf8(whole).unwrap(),
+            "  v:\n    Point {\n        x: 1,\n    }\n"
         );
     }
 
