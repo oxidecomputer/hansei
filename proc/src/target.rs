@@ -1,11 +1,13 @@
 //! [`Proc`]: whichever backend can read the target in hand.
 //!
 //! A core is identified by what wrote it, not by what is reading it, so
-//! [`Proc::open_core`] looks at the file and picks. A Linux core reads
-//! anywhere. An illumos core reads through libproc on illumos, which
-//! knows more about one than this crate does — it walks the link map for
-//! shared-object names, among other things — and elsewhere would need
-//! the portable reader that does not exist yet.
+//! [`Proc::open_core`] looks at the file and picks. Either system's core
+//! reads from the file, anywhere: the portable readers parse the notes
+//! and symbol tables themselves, and every read is a copy out of the
+//! mapped file rather than a `pread` through libproc — which a render
+//! pass issuing one read per string can feel. On illumos libproc remains
+//! the reference reader, held against the portable one in tests via
+//! [`Proc::open_core_libproc`].
 //!
 //! Live processes are the operating system's business and stay with it:
 //! [`Proc::grab_pid`] exists only on illumos, where libproc provides it.
@@ -17,14 +19,12 @@ use std::path::{Path, PathBuf};
 
 /// A target: a core dump of either system, or a live process.
 pub enum Proc {
-    /// A live process or an illumos core, through libproc.
+    /// A live process, through libproc.
     #[cfg(target_os = "illumos")]
     Libproc(crate::illumos::Proc),
     /// A Linux core, read from the file.
     LinuxCore(coredump::linux::Core),
-    /// An illumos core, read from the file. Only reached off illumos;
-    /// there libproc knows more about one than this reader does.
-    #[cfg(not(target_os = "illumos"))]
+    /// An illumos core, read from the file.
     IllumosCore(coredump::illumos::Core),
 }
 
@@ -33,9 +33,6 @@ impl Proc {
     pub fn open_core(path: &Path) -> Result<Self> {
         match coredump::flavour(path)? {
             Flavour::Linux => Ok(Proc::LinuxCore(coredump::linux::Core::open(path)?)),
-            #[cfg(target_os = "illumos")]
-            Flavour::Illumos => Ok(Proc::Libproc(crate::illumos::Proc::open_core(path)?)),
-            #[cfg(not(target_os = "illumos"))]
             Flavour::Illumos => Ok(Proc::IllumosCore(coredump::illumos::Core::open(path)?)),
         }
     }
@@ -46,7 +43,6 @@ impl Proc {
             #[cfg(target_os = "illumos")]
             Proc::Libproc(_) => Flavour::Illumos,
             Proc::LinuxCore(_) => Flavour::Linux,
-            #[cfg(not(target_os = "illumos"))]
             Proc::IllumosCore(_) => Flavour::Illumos,
         }
     }
@@ -59,7 +55,6 @@ macro_rules! dispatch {
             #[cfg(target_os = "illumos")]
             Proc::Libproc(p) => p.$method($($arg),*),
             Proc::LinuxCore(c) => c.$method($($arg),*),
-            #[cfg(not(target_os = "illumos"))]
             Proc::IllumosCore(c) => c.$method($($arg),*),
         }
     };
@@ -149,6 +144,13 @@ impl Proc {
         Ok(Proc::Libproc(crate::illumos::Proc::grab_pid(pid)?))
     }
 
+    /// Open an illumos core through libproc rather than the portable
+    /// reader. libproc is the reference the portable reader is held to,
+    /// so this is for the tests that compare the two on one core.
+    pub fn open_core_libproc(path: &Path) -> Result<Self> {
+        Ok(Proc::Libproc(crate::illumos::Proc::open_core(path)?))
+    }
+
     pub fn grab_pid_no_stop(pid: u32) -> Result<Self> {
         Ok(Proc::Libproc(crate::illumos::Proc::grab_pid_no_stop(pid)?))
     }
@@ -177,6 +179,7 @@ impl Proc {
     pub fn lwp_name(&self, lwpid: u32) -> Result<String> {
         match self {
             Proc::Libproc(p) => p.lwp_name(lwpid),
+            Proc::IllumosCore(c) => c.lwp_name(lwpid),
             _ => Err(crate::Error::no_lwp_name()),
         }
     }
@@ -200,7 +203,6 @@ impl std::fmt::Debug for Proc {
             #[cfg(target_os = "illumos")]
             Proc::Libproc(p) => p.fmt(f),
             Proc::LinuxCore(c) => c.fmt(f),
-            #[cfg(not(target_os = "illumos"))]
             Proc::IllumosCore(c) => c.fmt(f),
         }
     }
