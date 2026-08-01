@@ -17,8 +17,9 @@ use crate::{Error, Result};
 
 use goblin::elf::note::{NT_FILE, NT_PRSTATUS};
 
+use memmap2::Mmap;
+
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
 /// Which system's core this is.
@@ -77,12 +78,11 @@ const ILLUMOS_PRSTATUS_LEN: usize = 824;
 /// Reads only the ELF and note headers, so it costs a few pages however
 /// large the core is.
 pub fn flavour(path: &Path) -> Result<Flavour> {
-    let mut bytes = Vec::new();
-    File::open(path)
-        .map_err(Error::read)?
-        .read_to_end(&mut bytes)
-        .map_err(Error::read)?;
-    flavour_of(&bytes)
+    let file = File::open(path).map_err(Error::read)?;
+    // SAFETY: as everywhere else in this workspace, we assume the file is
+    // not modified while mapped.
+    let core = unsafe { Mmap::map(&file) }.map_err(Error::read)?;
+    flavour_of(&core)
 }
 
 /// The size of `NT_PRSTATUS` is a last resort, for a core carrying none
