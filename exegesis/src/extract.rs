@@ -406,7 +406,7 @@ fn vtable_name_index(
             continue;
         };
         by_name
-            .entry(crate::symbols::normalized_rust_type_name(&name))
+            .entry(crate::symbols::normalized_rust_type_name(&name).into_owned())
             .or_default()
             .push((id, size));
     }
@@ -448,7 +448,7 @@ fn resolve_vtable_type_hints(
     let mut roots = BTreeSet::new();
     for hint in hints {
         let name = crate::symbols::normalized_rust_type_name(&hint.name);
-        let Some(candidates) = by_name.get(&name) else {
+        let Some(candidates) = by_name.get(name.as_ref()) else {
             stats.vtable_types_missing += 1;
             continue;
         };
