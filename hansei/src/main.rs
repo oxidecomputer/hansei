@@ -158,6 +158,19 @@ pub enum Command {
         /// structural view of values instead.
         #[arg(long, short)]
         ugly: bool,
+
+        /// Show the values the bundle renders as `<elided>` (runtime
+        /// handles, loggers) instead of hiding them.
+        #[arg(long, short = 'n')]
+        no_elide: bool,
+
+        /// Render matching types as `<elided>`; repeat the flag to add
+        /// more. `*` matches any run of characters (quote the pattern
+        /// from the shell), a name without a `*` covers every
+        /// instantiation, and a matched type stays elided under
+        /// --no-elide.
+        #[arg(long, short = 'e', value_name = "TYPE")]
+        elide: Vec<String>,
     },
 
     /// Print the layout the bundle records for a type, by its exact
@@ -267,7 +280,15 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             verbose,
             depth,
             ugly,
-        } => exec_trace(session, task_id, verbose, depth, ugly, out)?,
+            no_elide,
+            elide,
+        } => {
+            let elide = reify::ElideOverride {
+                no_elide,
+                types: elide,
+            };
+            exec_trace(session, task_id, verbose, depth, ugly, &elide, out)?
+        }
         Command::Type {
             name,
             recursive,
@@ -339,6 +360,7 @@ fn exec_trace(
     verbose: bool,
     depth: usize,
     ugly: bool,
+    elide: &reify::ElideOverride,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let ctx = &session.ctx;
@@ -391,7 +413,7 @@ fn exec_trace(
     match ctx.task_stage(task)? {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
-            print_await_chain(ctx, &chain, verbose, depth, ugly, out)?;
+            print_await_chain(ctx, &chain, verbose, depth, ugly, elide, out)?;
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
@@ -428,6 +450,7 @@ fn print_await_chain<'b, T: proc::Target>(
     verbose: bool,
     depth: usize,
     ugly: bool,
+    elide: &reify::ElideOverride,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let active_frame = chain.frames.len().checked_sub(1);
@@ -523,7 +546,7 @@ fn print_await_chain<'b, T: proc::Target>(
                     Some(bytes) => {
                         let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes)
                             .peel();
-                        let mut disp = v.display_from_target(ctx.proc, depth);
+                        let mut disp = v.display_from_target(ctx.proc, depth).elide_override(elide);
                         if ugly {
                             disp = disp.ugly();
                         }
@@ -1730,7 +1753,16 @@ mod trace_render_tests {
 
         let chain = ctx.await_chain(root);
         let mut out = Vec::new();
-        print_await_chain(&ctx, &chain, verbose, 4, false, &mut out).expect("the chain renders");
+        print_await_chain(
+            &ctx,
+            &chain,
+            verbose,
+            4,
+            false,
+            &Default::default(),
+            &mut out,
+        )
+        .expect("the chain renders");
         let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
         regex::Regex::new(r"0x[0-9a-f]+")
             .unwrap()

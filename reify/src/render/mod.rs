@@ -67,6 +67,7 @@ pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromP
     proc: &'r P,
     max_depth: usize,
     ugly: bool,
+    elide: Option<&'r ElideOverride>,
     visited: RefCell<HashSet<(u64, &'a str)>>,
 }
 
@@ -74,6 +75,12 @@ impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc> DisplayTargetValue<'
     /// Suppress custom formatters and render the base structural view.
     pub fn ugly(mut self) -> Self {
         self.ugly = true;
+        self
+    }
+
+    /// Adjust which types render as `<elided>`; see [`ElideOverride`].
+    pub fn elide_override(mut self, elide: &'r ElideOverride) -> Self {
+        self.elide = Some(elide);
         self
     }
 }
@@ -87,6 +94,7 @@ impl<'a, T: DebugType<'a>, P: ReadFromProc> fmt::Display for DisplayTargetValue<
             visited: Some(&self.visited),
             hex_integers: false,
             ugly: self.ugly,
+            elide: self.elide,
         };
         write_display_value(f, self.info, ctx)
     }
@@ -123,6 +131,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             proc,
             max_depth,
             ugly: false,
+            elide: None,
             visited: RefCell::new(HashSet::new()),
         }
     }
@@ -146,6 +155,82 @@ pub(crate) struct RenderCtx<'buf, 'a> {
     /// structural view. Propagates to nested values, so a whole subtree
     /// renders without custom formatters once set.
     ugly: bool,
+    /// Render-time adjustment of what renders as `<elided>`; `None` leaves
+    /// the bundle's choices alone.
+    elide: Option<&'buf ElideOverride>,
+}
+
+/// A render-time adjustment of which types render as `<elided>`, layered
+/// over the bundle's own choices.
+///
+/// `no_elide` ignores the `Elided` display formats the bundle carries, so
+/// the types under them render structurally; `types` names types that
+/// render `<elided>` regardless of what format they carry — including
+/// under `no_elide`, so "nothing but these" is `no_elide` plus a list,
+/// and including under the ugly view, where an explicit elision is the
+/// more specific of the user's two asks.
+#[derive(Clone, Debug, Default)]
+pub struct ElideOverride {
+    /// Ignore the `Elided` display formats carried by the bundle.
+    pub no_elide: bool,
+    /// Patterns for type names to force to `<elided>`. A pattern with a
+    /// `*` is a glob, each `*` matching any run of characters; one
+    /// without is a fully-qualified name, which also covers every
+    /// instantiation when it carries no generic arguments, the way a
+    /// detector keyed on the base name does. Both sides are compared in
+    /// the normalized spelling (no whitespace, default allocators
+    /// elided), so a pattern need not match the debug info's formatting.
+    pub types: Vec<String>,
+}
+
+impl ElideOverride {
+    /// Whether the value type named `name` is forced to `<elided>`.
+    fn forces(&self, name: &str) -> bool {
+        if self.types.is_empty() {
+            return false;
+        }
+        let name = exegesis::symbols::normalized_rust_type_name(name);
+        let base = name.split_once('<').map_or(&*name, |(base, _)| base);
+        self.types.iter().any(|spec| {
+            let spec = exegesis::symbols::normalized_rust_type_name(spec);
+            if spec.contains('*') {
+                glob_match(&spec, &name)
+            } else {
+                spec == name || spec == base
+            }
+        })
+    }
+}
+
+/// Whether `name` matches `pattern`, where each `*` matches any run of
+/// characters and everything else matches itself. Anchored at both ends:
+/// `steno::*` does not match a name that merely contains `steno::`.
+///
+/// The classic two-pointer walk with one backtrack point per `*`. Bytes
+/// are enough: a `*` consumes UTF-8 continuation bytes like any others,
+/// and the literal stretches only match where the same bytes occur.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let (pattern, name) = (pattern.as_bytes(), name.as_bytes());
+    let (mut pi, mut ni) = (0, 0);
+    let mut backtrack = None;
+    while ni < name.len() {
+        if pattern.get(pi) == Some(&b'*') {
+            // Match nothing for now; remember where to widen from.
+            backtrack = Some((pi, ni));
+            pi += 1;
+        } else if pattern.get(pi) == Some(&name[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if let Some((star, matched)) = backtrack {
+            // Widen the last `*` by one character and retry after it.
+            backtrack = Some((star, matched + 1));
+            pi = star + 1;
+            ni = matched + 1;
+        } else {
+            return false;
+        }
+    }
+    pattern[pi..].iter().all(|&ch| ch == b'*')
 }
 
 impl<'buf, 'a> RenderCtx<'buf, 'a> {
@@ -158,6 +243,7 @@ impl<'buf, 'a> RenderCtx<'buf, 'a> {
             visited: None,
             hex_integers: false,
             ugly: false,
+            elide: None,
         }
     }
 
@@ -216,10 +302,20 @@ fn write_display_value<'a, T: DebugType<'a>>(
         return write!(f, "<truncated>");
     }
 
+    // A forced elision outranks everything, `--ugly` included: both flags
+    // are the user speaking, and the elision is the more specific ask.
+    if let Some(elide) = ctx.elide
+        && elide.forces(ty.name())
+    {
+        return write!(f, "<elided>");
+    }
+
     // `--ugly` mode skips every custom formatter and renders the type through
-    // its structural classification below.
+    // its structural classification below; `--no-elide` skips only the
+    // bundle's `Elided` formats, leaving the types under them structural.
     if !ctx.ugly
         && let Some(node) = ty.debug_format()
+        && !(matches!(node, DisplayNode::Elided) && ctx.elide.is_some_and(|e| e.no_elide))
     {
         // A top-level `Scalar` formatter (e.g. a parking_lot `RawMutex`)
         // has no enclosing field label to give it context, so it is prefixed
@@ -937,5 +1033,41 @@ mod tests {
             show(ARR, &u32s(&[1, 0xabcdef, u32::MAX])),
             "[0x00000001, 0x00abcdef, 0xffffffff]"
         );
+    }
+
+    #[test]
+    fn test_glob_matches_anchored_wildcards() {
+        use super::glob_match;
+
+        assert!(glob_match("alloc::vec::Vec<*>", "alloc::vec::Vec<u8>"));
+        assert!(glob_match("*::Logger<*>", "slog::Logger<a::B<c::D>>"));
+        assert!(glob_match("steno::*", "steno::saga_log::SagaLog"));
+        assert!(glob_match("*", "anything at all"));
+        assert!(glob_match("a*b*c", "a__b__b__c"));
+        assert!(glob_match("exact", "exact"));
+
+        // Anchored: a bare segment is not a substring match.
+        assert!(!glob_match("steno::*", "nexus::steno::Wrapper"));
+        assert!(!glob_match("*::Logger", "slog::Logger<a::B>"));
+        assert!(!glob_match("a*b", "a__b__c"));
+        assert!(!glob_match("exact", "exactly"));
+    }
+
+    #[test]
+    fn test_forces_normalizes_both_sides() {
+        use super::ElideOverride;
+
+        let elide = |spec: &str| ElideOverride {
+            no_elide: false,
+            types: vec![spec.to_owned()],
+        };
+        // Both sides are compared normalized: whitespace gone, default
+        // allocator elided.
+        assert!(elide("alloc::vec::Vec<u8>").forces("alloc::vec::Vec<u8, alloc::alloc::Global>"));
+        assert!(elide("alloc::vec::Vec<*>").forces("alloc::vec::Vec<u8, alloc::alloc::Global>"));
+        // A bare name covers instantiations; a glob must spell them.
+        assert!(elide("slog::Logger").forces("slog::Logger<a::B>"));
+        assert!(!elide("slog::Log*er").forces("slog::Logger<a::B>"));
+        assert!(elide("slog::Log*er<*>").forces("slog::Logger<a::B>"));
     }
 }
