@@ -1518,10 +1518,13 @@ static BY_NAME: &[(&str, Detector)] = &[
     ("core::sync::atomic::Atomic", atomic_node),
     ("core::task::wake::RawWakerVTable", raw_waker_vtable_node),
     ("parking_lot::raw_mutex::RawMutex", raw_mutex_node),
+    ("slog::Logger", elided_node),
     (
         "tokio::loom::std::unsafe_cell::UnsafeCell",
         loom_unsafe_cell_node,
     ),
+    ("tokio::runtime::handle::Handle", elided_node),
+    ("tokio::runtime::runtime::Runtime", elided_node),
     (
         "tokio::sync::batch_semaphore::Semaphore",
         batch_semaphore_node,
@@ -2680,6 +2683,22 @@ fn buffer_node(
         length: under(emitter, shape.length)?,
         capacity: Some(under(emitter, shape.capacity)?),
     })
+}
+
+/// The types worth less than the space their insides take: a runtime handle
+/// or an owned runtime drags the whole scheduler graph into every value that
+/// stores one, and a logger is an `Arc<dyn Drain>` chain of sinks. Neither is
+/// ever what a debugging session is reading a value for, so they render as
+/// `<elided>`; `--ugly` shows them structurally like everything else.
+///
+/// Deliberately *not* here: the inner driver and scheduler handles
+/// (`tokio::runtime::driver::Handle`, `io::driver::Handle`, the per-scheduler
+/// `Handle`s), which the `drivers` and `shared-state` commands render on
+/// purpose. Eliding the outer `handle::Handle` embedded in user futures does
+/// not touch them, since hansei reaches them through members, not through a
+/// `handle::Handle` value.
+fn elided_node(_emitter: &mut Emitter<'_>, _id: TypeId) -> Option<DisplayNode> {
+    Some(DisplayNode::Elided)
 }
 
 /// A borrowed `&camino::Utf8Path` is a `{ data_ptr, length }` fat pointer over a

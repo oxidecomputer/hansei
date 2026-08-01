@@ -160,10 +160,12 @@ impl DisplayNode {
             }
             // A `Struct`'s fields address members by index, not by selector; a
             // `Variant` and a `CustomList` address through value expressions,
-            // whose reads are checked as they are walked.
+            // whose reads are checked as they are walked. `Elided` renders
+            // nothing, so there is nothing for it to address.
             DisplayNode::Struct { .. }
             | DisplayNode::Variant { .. }
-            | DisplayNode::CustomList { .. } => Vec::new(),
+            | DisplayNode::CustomList { .. }
+            | DisplayNode::Elided => Vec::new(),
         }
     }
 }
