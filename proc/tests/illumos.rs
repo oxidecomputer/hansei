@@ -181,7 +181,7 @@ fn test_the_portable_reader_agrees_with_libproc() {
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core_path = gcore(parked.pid(), dir.path());
 
-    let libproc = Proc::open_core(&core_path).expect("libproc failed to open the core");
+    let libproc = Proc::open_core_libproc(&core_path).expect("libproc failed to open the core");
     let portable = Core::open(&core_path).expect("the portable reader failed to open the core");
 
     // Threads, their registers, and the stacks they are running on.
@@ -651,11 +651,16 @@ fn test_lwps_match_procfs() {
         }
 
         // A thread handle reports the stop timestamp the iteration did.
+        // Handles are a live-process affordance: a core's facade
+        // declines them, as a Linux core's always has.
         let first = &lwps[0];
-        let handle = p
-            .lwp_handle(first.tid)
-            .unwrap_or_else(|e| panic!("({who}) failed to grab tid {}: {e}", first.tid));
-        assert_eq!(handle.status(), first.tstamp, "({who})");
+        match p.lwp_handle(first.tid) {
+            Ok(handle) => {
+                assert_eq!(who, "live", "({who}) a core handed out an LWP handle");
+                assert_eq!(handle.status(), first.tstamp, "({who})");
+            }
+            Err(e) => assert_eq!(who, "core", "({who}) tid {}: {e}", first.tid),
+        }
 
         // There is no LWP 0.
         assert!(p.lwp_handle(0).is_err(), "({who})");
@@ -769,10 +774,20 @@ fn test_core_and_live_agree() {
         Some(std::ffi::OsStr::new(PROGRAM))
     );
 
-    assert_eq!(core.symbols().unwrap(), live.symbols().unwrap());
+    // The core reads through the portable reader and the live process
+    // through libproc, and the two arrive at their tables by different
+    // routes — so compare as name to address, as the portable-reader
+    // parity test does; entry-for-entry agreement is that test's job.
+    let table = |syms: Vec<proc::SymbolBuf>| -> BTreeMap<String, u64> {
+        syms.into_iter().map(|s| (s.name, s.st_value)).collect()
+    };
     assert_eq!(
-        core.object_symbols().unwrap(),
-        live.object_symbols().unwrap()
+        table(core.symbols().unwrap()),
+        table(live.symbols().unwrap())
+    );
+    assert_eq!(
+        table(core.object_symbols().unwrap()),
+        table(live.object_symbols().unwrap())
     );
     for name in [MARKER_FN, MARKER_VALUE_SYM, COUNTER_SYM] {
         assert_eq!(
