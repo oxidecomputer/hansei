@@ -66,8 +66,11 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
         }
     }
 
-    let concrete = infer_concrete_type(ty, words.as_deref(), *size_slot, &functions);
-    let concrete_ty = concrete.as_deref().and_then(|name| ty.type_by_name(name));
+    let inferred = infer_concrete_type(ty, words.as_deref(), *size_slot, &functions);
+    let (concrete, concrete_ty) = match inferred {
+        Some((name, resolved)) => (Some(name), resolved),
+        None => (None, None),
+    };
     let pretty = f.alternate();
     if let Some(name) = name.filter(|name| !name.is_empty()) {
         write!(f, "{name}")?;
@@ -251,12 +254,22 @@ fn read_vtable_words<'a, T: DebugType<'a>>(
     )
 }
 
+/// The concrete type the vtable's function symbols agree on, corroborated
+/// against the size word the vtable carries, together with the type that
+/// name resolves to where it resolves to exactly one.
+///
+/// The caller needs both, and a name lookup is not cheap — it compares
+/// against every named type in the bundle that shares its hash — so the
+/// resolved type answers the size question too: a name that resolves has
+/// one id, hence one size. Only a name borne by several ids, which
+/// [`type_by_name`](DebugType::type_by_name) declines, still needs asking
+/// whether those ids at least agree on a size.
 fn infer_concrete_type<'a, T: DebugType<'a>>(
     ty: T,
     words: Option<&[u64]>,
     size_slot: u32,
     functions: &[VtableFunction],
-) -> Option<String> {
+) -> Option<(String, Option<T>)> {
     let mut concrete = functions
         .iter()
         .filter_map(|function| function.concrete.as_deref());
@@ -264,14 +277,17 @@ fn infer_concrete_type<'a, T: DebugType<'a>>(
     if concrete.any(|other| other != candidate) {
         return None;
     }
-    if let (Some(expected), Some(actual)) = (
-        ty.size_by_name(&candidate),
-        words?.get(size_slot as usize).copied(),
-    ) && expected != actual
+    let resolved = ty.type_by_name(&candidate);
+    let expected = match resolved {
+        Some(resolved) => Some(resolved.size()),
+        None => ty.size_by_name(&candidate),
+    };
+    if let (Some(expected), Some(actual)) = (expected, words?.get(size_slot as usize).copied())
+        && expected != actual
     {
         return None;
     }
-    Some(candidate)
+    Some((candidate, resolved))
 }
 
 #[cfg(test)]
