@@ -4809,6 +4809,7 @@ impl<'a> Emitter<'a> {
             types: self.defs,
             debug_formats: self.debug_formats,
             name_index,
+            ..Default::default()
         };
         let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);
         let states = drop_members_of_other_states(&mut types, &self.names);
@@ -5905,6 +5906,7 @@ mod tests {
             ],
             debug_formats: BTreeMap::new(),
             name_index: vec![],
+            ..Default::default()
         };
         let names = vec![
             Some("u32".to_owned()),
@@ -6012,6 +6014,7 @@ mod tests {
             ],
             debug_formats: BTreeMap::new(),
             name_index: vec![],
+            ..Default::default()
         };
         let names: Vec<Option<String>> = ["u32", "E::Unresumed", "E::Suspend0", "E::Suspend1"]
             .iter()

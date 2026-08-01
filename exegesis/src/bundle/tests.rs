@@ -50,6 +50,7 @@ fn tiny_bundle() -> Bundle {
             }],
             debug_formats: BTreeMap::new(),
             name_index: vec![(name, ty)],
+            ..Default::default()
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
@@ -282,6 +283,7 @@ fn random_bundle(seed: u64) -> Bundle {
             types,
             debug_formats: BTreeMap::new(),
             name_index,
+            ..Default::default()
         },
         tasks: TaskTable {
             by_symbol,
@@ -513,6 +515,7 @@ fn test_validate_accepts_selector_through_deref() {
                 },
             )]),
             name_index: vec![],
+            ..Default::default()
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
@@ -613,6 +616,7 @@ fn test_validate_rejects_out_of_range_member() {
                 },
             )]),
             name_index: vec![],
+            ..Default::default()
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
@@ -687,6 +691,7 @@ fn test_validate_requires_a_named_member_to_be_unique() {
                 },
             )]),
             name_index: vec![],
+            ..Default::default()
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
@@ -877,6 +882,7 @@ fn test_find_by_name() {
             (b_, BundleTypeId(1)),
             (b_, BundleTypeId(2)),
         ],
+        ..Default::default()
     };
     let table = strings.finish();
     let hits: Vec<_> = types.find_by_name(&table, "crate::B").collect();
@@ -982,6 +988,7 @@ mod view_tests {
             types,
             debug_formats: std::collections::BTreeMap::new(),
             name_index: vec![],
+            ..Default::default()
         };
         b.infra = InfraTypes {
             header: BundleTypeId(0),
@@ -1294,6 +1301,7 @@ mod view_tests {
             ],
             debug_formats: std::collections::BTreeMap::new(),
             name_index: vec![],
+            ..Default::default()
         };
         b.strings = strings.finish();
         b.validate().expect("test bundle must validate");
@@ -1482,6 +1490,7 @@ mod view_tests {
                 },
             )]),
             name_index: vec![],
+            ..Default::default()
         };
         b.strings = strings.finish();
         b.validate().expect("test bundle must validate");
@@ -1553,6 +1562,7 @@ mod view_tests {
             ],
             debug_formats: std::collections::BTreeMap::new(),
             name_index: vec![(point, BundleTypeId(1)), (u32n, BundleTypeId(0))],
+            ..Default::default()
         };
         b.validate().expect("test bundle must validate");
 

@@ -9,6 +9,7 @@ use crate::bundle::strip_llvm_suffix;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::BuildHasher;
 
 /// Raw v0 symbols grouped by a build-independent prototype key.
 pub type NormalizedSymbols = BTreeMap<String, Vec<String>>;
@@ -123,6 +124,16 @@ pub fn normalized_rust_type_name(name: &str) -> Cow<'_, str> {
     } else {
         Cow::Borrowed(name)
     }
+}
+
+/// A hash of `name`'s normalized form, equal for any two names
+/// [`rust_type_names_equal`] accepts.
+///
+/// Lets a name lookup be a hash lookup: the index groups candidates by this,
+/// and the comparison above still decides each one, so a collision costs a
+/// comparison rather than a wrong answer.
+pub fn rust_type_name_hash(name: &str) -> u64 {
+    foldhash::fast::FixedState::default().hash_one(normalized_rust_type_name(name))
 }
 
 /// The characters of `name`'s normalized form: whitespace dropped, and each

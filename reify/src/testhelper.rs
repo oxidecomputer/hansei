@@ -1872,6 +1872,7 @@ pub fn test_bundle() -> Bundle {
                 (WATCH_RECEIVER, watch_receiver_node),
             ]),
             name_index: vec![(pointn, POINT)],
+            ..Default::default()
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
@@ -2107,6 +2108,7 @@ pub fn node_bundle() -> Bundle {
                 (N_CHOICE, choice_node),
             ]),
             name_index: vec![],
+            ..Default::default()
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),

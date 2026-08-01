@@ -86,6 +86,48 @@ pub struct TypeTable {
     /// Multiple ids may share one name (e.g. identical instantiations from
     /// different CUs).
     pub name_index: Vec<(StrRef, BundleTypeId)>,
+    /// Derived index behind [`TypeTable::find_by_normalized_name`], built on
+    /// first use and never invalidated: reset it after mutating `name_index`.
+    #[serde(skip)]
+    pub by_normalized_name: NormalizedNames,
+}
+
+/// Positions in [`TypeTable::name_index`] grouped by
+/// [`rust_type_name_hash`](crate::symbols::rust_type_name_hash), built once
+/// on demand.
+///
+/// A lookup that compares normalized names cannot binary-search `name_index`,
+/// which is sorted by the raw spelling, and a bundle of a real program holds
+/// enough types (nexus: 166,564) that scanning all of them per lookup is the
+/// dominant cost of rendering a trait object. Grouping by a hash of the
+/// normalized name turns the scan into one hash lookup and a comparison per
+/// name that shares the hash.
+///
+/// This is derived state, not part of the bundle's value: serde skips it,
+/// two tables that differ only in whether it has been built compare equal,
+/// and a clone starts empty rather than carrying one that the copy might
+/// then invalidate.
+#[derive(Default)]
+pub struct NormalizedNames(std::sync::OnceLock<foldhash::HashMap<u64, Vec<u32>>>);
+
+impl Clone for NormalizedNames {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for NormalizedNames {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for NormalizedNames {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("NormalizedNames")
+            .field(&self.0.get().map_or(0, foldhash::HashMap::len))
+            .finish()
+    }
 }
 
 /// Which member of an aggregate a [`Step`] or a [`Field`] addresses.
@@ -671,6 +713,47 @@ impl TypeTable {
             .iter()
             .take_while(move |&&(r, _)| strings.get(r) == Some(name))
             .map(|&(_, id)| id)
+    }
+
+    /// All type ids whose name equals `name` under
+    /// [`rust_type_names_equal`](crate::symbols::rust_type_names_equal),
+    /// which accepts the spelling differences between DWARF and a demangler.
+    ///
+    /// Yields in `name_index` order, as a scan of it would.
+    ///
+    /// `strings` must be the same table the ids were interned into — the
+    /// index is built from whichever table asks for it first.
+    pub fn find_by_normalized_name<'a>(
+        &'a self,
+        strings: &'a StringTable,
+        name: &'a str,
+    ) -> impl Iterator<Item = BundleTypeId> + 'a {
+        self.normalized_index(strings)
+            .get(&crate::symbols::rust_type_name_hash(name))
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter_map(move |&position| {
+                let (r, id) = *self.name_index.get(position as usize)?;
+                let candidate = strings.get(r)?;
+                crate::symbols::rust_type_names_equal(candidate, name).then_some(id)
+            })
+    }
+
+    fn normalized_index(&self, strings: &StringTable) -> &foldhash::HashMap<u64, Vec<u32>> {
+        self.by_normalized_name.0.get_or_init(|| {
+            let mut index =
+                foldhash::HashMap::with_capacity_and_hasher(self.name_index.len(), <_>::default());
+            for (position, &(r, _)) in self.name_index.iter().enumerate() {
+                let Some(name) = strings.get(r) else {
+                    continue;
+                };
+                index
+                    .entry(crate::symbols::rust_type_name_hash(name))
+                    .or_insert_with(Vec::new)
+                    .push(position as u32);
+            }
+            index
+        })
     }
 }
 
