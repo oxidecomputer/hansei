@@ -43,7 +43,7 @@ pub(crate) fn eval_node<'a, T: DebugType<'a>>(
             word_size,
             decode,
         } => match read_unsigned_at(bytes, *offset, u64::from(*word_size)) {
-            Some(word) => write!(f, "{}", apply(decode, word)),
+            Some(word) => f.write_str(&apply(decode, word)),
             None => write!(f, "<truncated>"),
         },
         DisplayNode::Symbol { offset } => write_symbol(f, bytes, *offset, ctx.proc),
@@ -548,7 +548,8 @@ fn eval_struct<'a, T: DebugType<'a>>(
     // A `Pointer` re-roots the record at its target but titles it with the
     // enclosing type's name (a `Receiver` reads as its `Chan`); every other
     // caller titles it with the rendered type's own name.
-    write!(f, "{} {{", name.unwrap_or_else(|| ty.name()))?;
+    f.write_str(name.unwrap_or_else(|| ty.name()))?;
+    f.write_str(" {")?;
     for (i, field) in fields.iter().enumerate() {
         // Field prefix: pretty starts a fresh indented line; inline opens with
         // a space after `{` and separates subsequent fields with `, `.
@@ -566,7 +567,8 @@ fn eval_struct<'a, T: DebugType<'a>>(
                 ty: mem_ty,
                 offset,
             } => {
-                write!(f, "{name}: ")?;
+                f.write_str(name)?;
+                f.write_str(": ")?;
                 match byte_range(bytes, *offset, mem_ty.size()) {
                     Some(mem_bytes) => {
                         let child = TypeInfoRef {
@@ -581,7 +583,8 @@ fn eval_struct<'a, T: DebugType<'a>>(
                 }
             }
             Field::Computed { label, node } => {
-                write!(f, "{label}: ")?;
+                f.write_str(label)?;
+                f.write_str(": ")?;
                 eval_node(f, node, ty, bytes, addr, ctx.deeper(), pretty)?;
             }
         }

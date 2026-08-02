@@ -18,12 +18,15 @@ use super::{RenderCtx, write_display_value, write_hex_bytes, write_indent};
 /// field something other than `__i`, so one non-matching member rules it out.
 /// Detection runs on the *full* member list so a `(ZST, T)` tuple is still
 /// recognized even though the ZST is not displayed.
-fn is_tuple<'a, M: DebugMember<'a>>(members: &[M]) -> bool {
-    !members.is_empty()
-        && members
-            .iter()
-            .enumerate()
-            .all(|(i, m)| tuple_field_index(m.name()) == Some(i))
+fn is_tuple<'a, M: DebugMember<'a>>(members: impl Iterator<Item = M>) -> bool {
+    let mut any = false;
+    for (i, m) in members.enumerate() {
+        if tuple_field_index(m.name()) != Some(i) {
+            return false;
+        }
+        any = true;
+    }
+    any
 }
 
 /// The position a synthetic tuple-field name encodes, if it is one:
@@ -88,24 +91,26 @@ fn write_aggregate_body<'a, T: DebugType<'a>>(
     ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
-    let all: Vec<_> = ty.members().collect();
-    let tuple = is_tuple(&all);
-    let shown: Vec<_> = all.into_iter().filter(|m| m.ty().size() > 0).collect();
+    // Two cheap passes over the member slice rather than a collected
+    // Vec: this runs once per structurally-rendered value, and a deep
+    // trace renders millions of them.
+    let tuple = is_tuple(ty.members());
+    let mut shown = ty.members().filter(|m| m.ty().size() > 0).peekable();
 
-    if shown.is_empty() {
+    if shown.peek().is_none() {
         return Ok(());
     }
 
     if tuple {
         write!(f, "(")?;
-        for (i, member) in shown.iter().enumerate() {
+        for (i, member) in shown.enumerate() {
             if pretty {
                 writeln!(f)?;
                 write_indent(f, ctx.prefix, ctx.depth + 1)?;
             } else if i > 0 {
                 write!(f, ", ")?;
             }
-            write_member_value(f, member, bytes, addr, ctx, pretty)?;
+            write_member_value(f, &member, bytes, addr, ctx, pretty)?;
             if pretty {
                 write!(f, ",")?;
             }
@@ -117,7 +122,7 @@ fn write_aggregate_body<'a, T: DebugType<'a>>(
         write!(f, ")")
     } else {
         write!(f, " {{")?;
-        for (i, member) in shown.iter().enumerate() {
+        for (i, member) in shown.enumerate() {
             if pretty {
                 writeln!(f)?;
                 write_indent(f, ctx.prefix, ctx.depth + 1)?;
@@ -131,8 +136,9 @@ fn write_aggregate_body<'a, T: DebugType<'a>>(
                 }
                 write!(f, " ")?;
             }
-            write!(f, "{}: ", member.name())?;
-            write_member_value(f, member, bytes, addr, ctx, pretty)?;
+            f.write_str(member.name())?;
+            f.write_str(": ")?;
+            write_member_value(f, &member, bytes, addr, ctx, pretty)?;
             if pretty {
                 write!(f, ",")?;
             }
@@ -155,7 +161,7 @@ pub(crate) fn write_struct_fields<'a, T: DebugType<'a>>(
     ctx: RenderCtx<'_, 'a, T>,
 ) -> fmt::Result {
     if !name.is_empty() {
-        write!(f, "{}", name)?;
+        f.write_str(name)?;
     }
     write_aggregate_body(f, &info.ty, info.bytes, info.addr, ctx, pretty)
 }
@@ -196,9 +202,10 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
     .peel();
 
     if !name.is_empty() {
-        write!(f, "{}::", name)?;
+        f.write_str(name)?;
+        f.write_str("::")?;
     }
-    write!(f, "{}", variant_name)?;
+    f.write_str(variant_name)?;
 
     // Zero-sized variant (unit variant)
     if var_ty.size() == 0 {
