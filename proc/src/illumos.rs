@@ -24,11 +24,22 @@ use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{self, NonNull};
+use std::sync::Mutex;
 
 #[derive(Debug)]
 pub struct Proc {
     handle: NonNull<ps_prochandle>,
+    /// Serializes every libproc call. A `ps_prochandle` caches state
+    /// across calls and is not thread-safe, but it has no thread
+    /// affinity, so exclusive access is all its safety needs.
+    libproc: Mutex<()>,
 }
+
+// SAFETY: the raw handle is only ever dereferenced by libproc, and
+// every libproc call runs under the `libproc` mutex; between calls the
+// handle is just an address.
+unsafe impl Send for Proc {}
+unsafe impl Sync for Proc {}
 
 impl From<gregset_t> for Regs {
     fn from(regs: gregset_t) -> Self {
@@ -95,7 +106,10 @@ impl Proc {
 
             return Err(Error::grab_failed(msg));
         };
-        Ok(Proc { handle })
+        Ok(Proc {
+            handle,
+            libproc: Mutex::new(()),
+        })
     }
 
     pub fn open_core(core_path: &Path) -> Result<Self> {
@@ -116,10 +130,14 @@ impl Proc {
 
             return Err(Error::grab_failed(msg));
         };
-        Ok(Proc { handle })
+        Ok(Proc {
+            handle,
+            libproc: Mutex::new(()),
+        })
     }
 
     pub fn status(&self) -> Status {
+        let _libproc = self.libproc.lock().unwrap();
         let status = unsafe { Pstatus(self.handle.as_ptr()) };
 
         let status = match unsafe { status.as_ref() } {
@@ -143,6 +161,7 @@ impl Proc {
     }
 
     pub fn run(&self) -> Result<()> {
+        let _libproc = self.libproc.lock().unwrap();
         // Don't set any signals or flags.
         let ret = unsafe { Psetrun(self.handle.as_ptr(), 0, 0) };
         if ret != 0 {
@@ -153,6 +172,7 @@ impl Proc {
     }
 
     pub fn stop(&self, wait_ms: u32) -> Result<()> {
+        let _libproc = self.libproc.lock().unwrap();
         let ret = unsafe { Pstop(self.handle.as_ptr(), wait_ms) };
         if ret != 0 {
             return Err(Error::stop(ret));
@@ -162,6 +182,7 @@ impl Proc {
     }
 
     pub fn exec_name(&self) -> Result<PathBuf> {
+        let _libproc = self.libproc.lock().unwrap();
         let mut buf = vec![0u8; MAXPATHLEN as usize];
 
         let ret = unsafe {
@@ -183,6 +204,7 @@ impl Proc {
     }
 
     pub fn lwps(&self) -> Result<Vec<LwpInfo>> {
+        let _libproc = self.libproc.lock().unwrap();
         mod callback {
             use super::*;
 
@@ -248,6 +270,7 @@ impl Proc {
     }
 
     pub fn lwp_handle(&self, lwpid: u32) -> Result<Lwp> {
+        let _libproc = self.libproc.lock().unwrap();
         let mut perr: c_int = 0;
 
         // SAFETY: Our handle is valid.
@@ -268,6 +291,7 @@ impl Proc {
     }
 
     pub fn lwp_name(&self, lwpid: u32) -> Result<String> {
+        let _libproc = self.libproc.lock().unwrap();
         // This length includes the trailing NUL.
         const THREAD_NAME_MAX: usize = 32;
         let mut buf = [0; THREAD_NAME_MAX];
@@ -294,6 +318,7 @@ impl Proc {
     }
 
     pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
+        let _libproc = self.libproc.lock().unwrap();
         let ct = unsafe {
             Pread(
                 self.handle.as_ptr(),
@@ -342,6 +367,7 @@ impl Proc {
     }
 
     pub fn regs(&self, lwp: u32) -> Result<Regs> {
+        let _libproc = self.libproc.lock().unwrap();
         let mut regs: gregset_t = [0; 28];
         let ret = unsafe { Plwp_getregs(self.handle.as_ptr(), lwp, regs.as_mut_ptr()) };
         if ret == 0 {
@@ -367,6 +393,7 @@ impl Proc {
     }
 
     pub fn mappings(&self) -> Result<Mappings> {
+        let _libproc = self.libproc.lock().unwrap();
         mod callback {
             use super::*;
             pub extern "C" fn object_callback(
@@ -416,6 +443,7 @@ impl Proc {
     }
 
     pub fn addr_to_map(&self, address: u64) -> Option<LoadedObject> {
+        let _libproc = self.libproc.lock().unwrap();
         let prmap_ptr = unsafe { Paddr_to_map(self.handle.as_ptr(), address as usize) };
 
         let prmap = unsafe { prmap_ptr.as_ref() }?;
@@ -432,6 +460,7 @@ impl Proc {
     }
 
     fn symbols_with_mask(&self, type_mask: u32) -> Result<Vec<SymbolBuf>> {
+        let _libproc = self.libproc.lock().unwrap();
         mod callback {
             use super::*;
 
@@ -517,6 +546,7 @@ impl Proc {
     }
 
     pub fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {
+        let _libproc = self.libproc.lock().unwrap();
         let mut buf = vec![0u8; 4096];
         let mut sym = MaybeUninit::<GElf_Sym>::uninit();
 
@@ -552,6 +582,7 @@ impl Proc {
     }
 
     pub fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
+        let _libproc = self.libproc.lock().unwrap();
         const PR_OBJ_EXEC: *const c_char = ptr::null();
 
         let Ok(c_name) = CString::new(name) else {

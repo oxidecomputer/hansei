@@ -43,6 +43,14 @@ pub struct Bundle {
     pub provenance: ProvenanceTable,
 }
 
+// Parallel rendering shares one loaded bundle across worker threads:
+// everything here is immutable after load, and the lazy normalized-name
+// index is a OnceLock — which must stay true.
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<Bundle>();
+};
+
 /// Identity and validation data for the producing binary (§5.1).
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct Meta {

@@ -1053,6 +1053,14 @@ fn parse_psinfo_exec(desc: &[u8]) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
+// Parallel rendering shares one core across worker threads: reads
+// borrow from the mapping and the lazy by-name symbol index is a
+// OnceLock, so this holds by construction — and must keep holding.
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<Core>();
+};
+
 impl Target for Core {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; len as usize];

@@ -208,6 +208,14 @@ impl std::fmt::Debug for Proc {
     }
 }
 
+// The whole facade crosses threads during parallel rendering, live
+// variant included — libproc calls serialize behind that variant's
+// own mutex.
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<Proc>();
+};
+
 impl Target for Proc {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
         dispatch!(self, read_bytes(addr, len))

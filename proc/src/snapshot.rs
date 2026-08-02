@@ -18,11 +18,11 @@ use crate::{
 
 use serde::{Deserialize, Serialize};
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
+use std::sync::Mutex;
 
 /// Uncompressed file header: magic, then a little-endian format version,
 /// then a zstd frame containing the postcard-encoded [`Snapshot`].
@@ -137,6 +137,14 @@ impl Snapshot {
     }
 }
 
+// Snapshots replay and recorders capture under the same parallel
+// renderer as any other target.
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<Snapshot>();
+    send_sync::<Recorder<'_, Snapshot>>();
+};
+
 impl Target for Snapshot {
     fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<Vec<u8>> {
         // Merging made runs maximal, so any fully-captured read lies
@@ -208,20 +216,20 @@ pub struct Recorder<'a, T> {
     target: &'a T,
     /// Every successful read, in order; overlaps are resolved at
     /// [`Recorder::snapshot`] time (later reads win).
-    reads: RefCell<Vec<Segment>>,
-    by_addr: RefCell<BTreeMap<u64, Option<SymbolBuf>>>,
-    by_name: RefCell<BTreeMap<String, Option<SymbolBuf>>>,
-    tls: RefCell<BTreeMap<(u64, String), Option<u64>>>,
+    reads: Mutex<Vec<Segment>>,
+    by_addr: Mutex<BTreeMap<u64, Option<SymbolBuf>>>,
+    by_name: Mutex<BTreeMap<String, Option<SymbolBuf>>>,
+    tls: Mutex<BTreeMap<(u64, String), Option<u64>>>,
 }
 
 impl<'a, T: Target> Recorder<'a, T> {
     pub fn new(target: &'a T) -> Self {
         Self {
             target,
-            reads: RefCell::new(Vec::new()),
-            by_addr: RefCell::new(BTreeMap::new()),
-            by_name: RefCell::new(BTreeMap::new()),
-            tls: RefCell::new(BTreeMap::new()),
+            reads: Mutex::new(Vec::new()),
+            by_addr: Mutex::new(BTreeMap::new()),
+            by_name: Mutex::new(BTreeMap::new()),
+            tls: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -234,12 +242,12 @@ impl<'a, T: Target> Recorder<'a, T> {
         objects.sort_by_key(|s| s.st_value);
 
         Ok(Snapshot {
-            memory: merge_reads(&self.reads.borrow()),
+            memory: merge_reads(&self.reads.lock().unwrap()),
             functions,
             objects,
-            by_addr: self.by_addr.borrow().clone(),
-            by_name: self.by_name.borrow().clone(),
-            tls: self.tls.borrow().clone(),
+            by_addr: self.by_addr.lock().unwrap().clone(),
+            by_name: self.by_name.lock().unwrap().clone(),
+            tls: self.tls.lock().unwrap().clone(),
             mappings: self.target.mappings()?,
             lwps: self.target.lwps()?,
         })
@@ -288,7 +296,7 @@ fn merge_reads(reads: &[Segment]) -> Vec<Segment> {
 impl<T: Target> Target for Recorder<'_, T> {
     fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<Vec<u8>> {
         let bytes = self.target.read_bytes(addr, len)?;
-        self.reads.borrow_mut().push(Segment {
+        self.reads.lock().unwrap().push(Segment {
             addr,
             bytes: bytes.clone(),
         });
@@ -304,14 +312,15 @@ impl<T: Target> Target for Recorder<'_, T> {
 
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
         let sym = self.target.lookup_symbol_by_addr(addr);
-        self.by_addr.borrow_mut().insert(addr, sym.clone());
+        self.by_addr.lock().unwrap().insert(addr, sym.clone());
         sym
     }
 
     fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
         let sym = self.target.lookup_symbol_by_name(name);
         self.by_name
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .insert(name.to_string(), sym.clone());
         sym
     }
@@ -341,7 +350,8 @@ impl<T: Target> Target for Recorder<'_, T> {
         // differently.
         let addr = self.target.tls_var_addr(regs, sym)?;
         self.tls
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .insert((regs.fsbase, sym.name.clone()), addr);
         Ok(addr)
     }
@@ -495,7 +505,9 @@ mod tests {
 
     #[test]
     fn test_later_reads_win_overlaps() {
-        struct Changing(RefCell<u8>);
+        use std::cell::RefCell;
+
+    struct Changing(RefCell<u8>);
         impl Target for Changing {
             fn read_bytes(&self, _addr: u64, len: u64) -> TargetResult<Vec<u8>> {
                 let mut generation = self.0.borrow_mut();
