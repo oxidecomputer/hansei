@@ -16,8 +16,9 @@ use crate::target::ReadFromProc;
 
 use super::{FormatCache, RenderCtx};
 
+use foldhash::HashSet;
+
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::fmt;
 
 /// How many entries a collection must have before formatting them is

@@ -6,8 +6,9 @@ use crate::value::TypeInfoRef;
 
 use crate::target::ReadFromProc;
 
+use foldhash::HashSet;
+
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Write as _;
 
@@ -515,7 +516,7 @@ fn walk_map_entries<'a, T: DebugType<'a>>(
         layout,
         root_address,
         height,
-        &mut HashSet::new(),
+        &mut HashSet::default(),
         emit,
     )
 }
@@ -648,7 +649,7 @@ pub(crate) fn eval_list<'a, T: DebugType<'a>>(
 
     let mut cur = head;
     let mut any = false;
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut guard = 4096u32;
     while cur != 0 && guard > 0 {
         guard -= 1;

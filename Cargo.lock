@@ -684,6 +684,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "exegesis",
+ "foldhash 0.2.0",
  "proc",
  "regex",
  "reify",
@@ -1236,6 +1237,7 @@ name = "reify"
 version = "0.1.0"
 dependencies = [
  "exegesis",
+ "foldhash 0.2.0",
  "proc",
  "rustc-demangle",
  "thiserror 2.0.18",
