@@ -10,5 +10,6 @@ regex.workspace = true
 [dependencies]
 anyhow.workspace = true
 exegesis.workspace = true
+foldhash.workspace = true
 proc.workspace = true
 reify.workspace = true

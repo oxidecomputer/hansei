@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 exegesis = { workspace = true }
+foldhash.workspace = true
 proc = { workspace = true }
 rustc-demangle = { workspace = true }
 thiserror = { workspace = true }

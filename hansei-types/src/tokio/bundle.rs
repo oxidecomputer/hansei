@@ -24,7 +24,9 @@ use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::{ParseCtx, TypeInfo, TypeInfoRef};
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use foldhash::{HashMap, HashSet};
+
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// Hard bound on await-chain depth: anything deeper indicates corrupt
@@ -118,9 +120,9 @@ impl<'b, T: Target> Context<'b, T> {
             proc,
             view,
             mappings,
-            symbols: RefCell::new(HashMap::new()),
+            symbols: RefCell::new(HashMap::default()),
             object_symbols: RefCell::new(None),
-            vtables: RefCell::new(HashMap::new()),
+            vtables: RefCell::new(HashMap::default()),
             waker_vtable: RefCell::new(None),
         })
     }
@@ -161,7 +163,7 @@ impl<'b, T: Target> Context<'b, T> {
             return Ok(None);
         };
         if self.object_symbols.borrow().is_none() {
-            let mut index: HashMap<String, Vec<SymbolBuf>> = HashMap::new();
+            let mut index: HashMap<String, Vec<SymbolBuf>> = HashMap::default();
             for symbol in self.proc.object_symbols()? {
                 if let Some(key) = normalized_v0_key(&symbol.name) {
                     index.entry(key).or_default().push(symbol);
@@ -411,7 +413,7 @@ impl<'b, T: Target> Context<'b, T> {
         let mut errors = Vec::new();
         // Guards against cycles from corrupt memory, across shards: the
         // same Header must never appear twice.
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         let mut shard = 0usize;
 
         list.as_ref()
@@ -741,7 +743,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// (address, type) cycle guard.
     pub fn await_chain(&self, root: TypeInfo<'b, BundleType<'b>>) -> AwaitChain<'b> {
         let mut frames: Vec<AwaitFrame<'b>> = Vec::new();
-        let mut visited: HashSet<(u64, BundleTypeId)> = HashSet::new();
+        let mut visited: HashSet<(u64, BundleTypeId)> = HashSet::default();
         let mut cur = root;
         // The dyn-vtable symbol that identified `cur`, when it was not
         // reached structurally.
@@ -1115,7 +1117,7 @@ impl<'b, T: Target> Context<'b, T> {
             .ok_or_else(|| anyhow!("the wait-queue head is not pointer-shaped"))?;
 
         let mut waiters = Vec::new();
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         let mut cur = Some(head.parse::<u64, _>(self)?);
         while let Some(addr) = cur {
             ensure!(
@@ -1232,7 +1234,7 @@ impl<'b, T: Target> Context<'b, T> {
             let payload = state.payload.as_ref();
             // The same positional slicing as the locals display: a
             // coroutine state may alias an upvar and a saved local.
-            let mut seen = HashSet::new();
+            let mut seen = HashSet::default();
             for m in payload.ty.members() {
                 if m.ty().size() == 0
                     || m.name().starts_with("__")
@@ -1350,7 +1352,7 @@ impl<T: Target> ParseCtx for Context<'_, T> {
 fn normalized_key_set(symbols: &[SymbolBuf]) -> HashSet<String> {
     let workers = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let Some(chunk) = std::num::NonZeroUsize::new(symbols.len().div_ceil(workers)) else {
-        return HashSet::new();
+        return HashSet::default();
     };
     std::thread::scope(|scope| {
         let handles: Vec<_> = symbols

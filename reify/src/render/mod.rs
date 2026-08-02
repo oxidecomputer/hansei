@@ -23,8 +23,9 @@ use aggregate::{write_rust_enum, write_struct_fields};
 use node::eval_node;
 use par::WorkerCtx;
 
+use foldhash::{HashMap, HashSet};
+
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -145,7 +146,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             max_depth,
             ugly: false,
             elide: None,
-            visited: RefCell::new(HashSet::new()),
+            visited: RefCell::new(HashSet::default()),
             formats: FormatCache::default(),
         }
     }
