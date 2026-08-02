@@ -29,12 +29,11 @@ use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_LOAD, PT_TLS};
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT, STT_TLS};
 use memmap2::Mmap;
 
-use std::cell::OnceCell;
-use std::sync::OnceLock;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// The one note type a Linux core carries that goblin does not name;
 /// `NT_PRSTATUS` and `NT_FILE` come from there.
@@ -175,7 +174,7 @@ struct BackingFile {
     map: Mmap,
     /// The object's symbols, parsed on first use: a big executable's
     /// symtab is not worth reading for a caller that only wants memory.
-    symbols: OnceCell<Symbols>,
+    symbols: OnceLock<Symbols>,
 }
 
 impl BackingFile {
@@ -186,7 +185,7 @@ impl BackingFile {
         let map = unsafe { Mmap::map(&file) }.ok()?;
         Some(BackingFile {
             map,
-            symbols: OnceCell::new(),
+            symbols: OnceLock::new(),
         })
     }
 }
@@ -864,6 +863,14 @@ fn parse_nt_file(desc: &[u8], files: &mut Vec<FileMap>) -> Result<()> {
     }
     Ok(())
 }
+
+// Shared across worker threads the same way the illumos reader is;
+// the lazily-opened backing files are all mapped at open, so nothing
+// here mutates behind a shared reference.
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<Core>();
+};
 
 impl Target for Core {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
