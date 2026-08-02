@@ -623,6 +623,23 @@ impl Core {
         self.symbols.range(..=addr).next_back().map(|(_, s)| s)
     }
 
+    /// The bytes at `address`, borrowed straight from the mapped core —
+    /// for a read one dumped segment serves whole. A read the mapping
+    /// cannot serve in one piece (crossing a segment boundary, or
+    /// running into an undumped tail) is `None`; [`pread`](Core::pread)
+    /// assembles those into a caller's buffer instead.
+    pub fn pslice(&self, address: u64, len: u64) -> Option<&[u8]> {
+        let seg = self
+            .segment_at(address)
+            .filter(|s| s.dumped().contains(&address))?;
+        let skip = address - seg.vaddr;
+        if seg.filesz - skip < len {
+            return None;
+        }
+        let at = (seg.offset + skip) as usize;
+        self.core.get(at..at + len as usize)
+    }
+
     pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
         let mut done = 0usize;
         while done < buf.len() {
@@ -1041,6 +1058,10 @@ impl Target for Core {
         let mut buf = vec![0u8; len as usize];
         self.pread_exact(&mut buf, addr)?;
         Ok(buf)
+    }
+
+    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+        Core::pslice(self, addr, len)
     }
 
     fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {

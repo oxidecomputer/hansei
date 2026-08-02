@@ -187,6 +187,15 @@ pub trait Target {
     /// Read exactly `len` bytes at `addr`.
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>>;
 
+    /// The bytes at `addr`, borrowed from the target's own storage when
+    /// one piece of it serves the whole read — a mapped core segment or
+    /// backing file. `None` means the read needs assembling (or the
+    /// backend reads through a handle rather than a mapping); fall back
+    /// to [`read_bytes`](Target::read_bytes).
+    fn pslice(&self, _addr: u64, _len: u64) -> Option<&[u8]> {
+        None
+    }
+
     /// The symtab symbol covering `addr`, if any.
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf>;
 

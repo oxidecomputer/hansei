@@ -295,6 +295,13 @@ impl<T: Target> Target for Recorder<'_, T> {
         Ok(bytes)
     }
 
+    // Deliberately not forwarded: a borrowed read would bypass the
+    // recording above, and a snapshot must carry every byte the caller
+    // saw. Declining sends every read through `read_bytes`.
+    fn pslice(&self, _addr: u64, _len: u64) -> Option<&[u8]> {
+        None
+    }
+
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
         let sym = self.target.lookup_symbol_by_addr(addr);
         self.by_addr.borrow_mut().insert(addr, sym.clone());

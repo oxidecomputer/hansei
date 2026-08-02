@@ -51,7 +51,7 @@ pub(crate) fn eval_slice<'a, T: DebugType<'a>>(
     };
 
     let allocation = if element_size == 0 {
-        Vec::new()
+        std::borrow::Cow::Borrowed(&[][..])
     } else {
         if pointer == 0 {
             return write!(f, "<invalid slice: null data pointer>");

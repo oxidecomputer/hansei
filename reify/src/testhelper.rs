@@ -81,7 +81,9 @@ impl FakeMem {
 }
 
 impl crate::ReadFromProc for FakeMem {
-    fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<Vec<u8>> {
+    // Borrowed, like a mapped core lends its bytes: the tests then hold
+    // the renderer to the lifetimes the cheapest real reader produces.
+    fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<std::borrow::Cow<'_, [u8]>> {
         if self.all_reads_fail {
             return Err(crate::Error::invalid_addr(addr));
         }
@@ -95,7 +97,7 @@ impl crate::ReadFromProc for FakeMem {
             if let Some(end) = start.checked_add(len)
                 && end <= bytes.len()
             {
-                return Ok(bytes[start..end].to_vec());
+                return Ok(std::borrow::Cow::Borrowed(&bytes[start..end]));
             }
         }
         match self.unmapped {
