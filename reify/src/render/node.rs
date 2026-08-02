@@ -31,7 +31,7 @@ pub(crate) fn eval_node<'a, T: DebugType<'a>>(
     ty: &T,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     match node {
@@ -251,11 +251,11 @@ pub(crate) fn eval_node<'a, T: DebugType<'a>>(
 /// through `proc`. Empty `hops` is the common case: a borrowed local slice, no
 /// process read. On failure the `Err` carries the exact degradation marker to
 /// print in the value's place.
-fn read_place_bytes<'b>(
+fn read_place_bytes<'b, 'a, T: DebugType<'a>>(
     place: &Place,
     bytes: &'b [u8],
     addr: u64,
-    ctx: RenderCtx<'_, '_>,
+    ctx: RenderCtx<'_, 'a, T>,
     size: u64,
 ) -> std::result::Result<(u64, Cow<'b, [u8]>), &'static str> {
     if place.hops.is_empty() {
@@ -287,12 +287,12 @@ fn read_place_bytes<'b>(
 
 /// Evaluate a resolved [`ValueExpr`] against `bytes`, crossing pointer hops via
 /// `ctx.proc`. `Err` carries a degradation marker for a failed read.
-fn eval_expr(
+fn eval_expr<'a, T: DebugType<'a>>(
     expr: &ValueExpr,
     vars: &[u64],
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, '_>,
+    ctx: RenderCtx<'_, 'a, T>,
 ) -> std::result::Result<u64, &'static str> {
     Ok(match expr {
         ValueExpr::Const(value) => *value,
@@ -366,7 +366,7 @@ fn eval_custom_list<'a, T: DebugType<'a>>(
     element: &T,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     // Seeds read the value alone (no variables exist yet); a failed seed read
@@ -412,7 +412,7 @@ fn eval_stmts<'a, T: DebugType<'a>>(
     element: &T,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
     any: &mut bool,
 ) -> std::result::Result<Flow, fmt::Error> {
@@ -512,7 +512,7 @@ fn eval_variant<'a, T: DebugType<'a>>(
     ty: &T,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     let value = match eval_expr(discriminant, &[], bytes, addr, ctx) {
@@ -553,7 +553,7 @@ fn eval_struct<'a, T: DebugType<'a>>(
     name: Option<&str>,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     // A `Pointer` re-roots the record at its target but titles it with the

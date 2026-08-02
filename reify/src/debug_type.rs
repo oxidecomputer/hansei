@@ -102,6 +102,12 @@ pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug {
         None
     }
 
+    /// A key identifying this type within its backend, under which a render
+    /// pass caches its [`debug_format`](Self::debug_format) resolution — so
+    /// two types may share a key only when their resolved programs are
+    /// interchangeable. Bundle types use their table id.
+    fn format_cache_key(&self) -> u64;
+
     /// Whether this type's own [`debug_format`](Self::debug_format) renders it
     /// as a self-contained value that [`peel`](crate::TypeInfoRef::peel) must
     /// not unwrap into its representation (a `Str`, a `Slice`, a `Map`, …). A
@@ -532,6 +538,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             TypeDef::CEnum { .. } => TypeClass::CEnum,
             TypeDef::Opaque { .. } => TypeClass::Opaque,
         }
+    }
+
+    fn format_cache_key(&self) -> u64 {
+        u64::from(self.id().0)
     }
 
     fn debug_format(&self) -> Option<DisplayNode<Self>> {

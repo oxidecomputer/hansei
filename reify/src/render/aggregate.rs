@@ -56,7 +56,7 @@ fn write_member_value<'a, M: DebugMember<'a>>(
     member: &M,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, M::Type>,
     pretty: bool,
 ) -> fmt::Result {
     let mem_ty = member.ty();
@@ -92,7 +92,7 @@ fn write_aggregate_body<'a, T: DebugType<'a>>(
     ty: &T,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     let all: Vec<_> = ty.members().collect();
@@ -159,7 +159,7 @@ pub(crate) fn write_struct_fields<'a, T: DebugType<'a>>(
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     pretty: bool,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
 ) -> fmt::Result {
     if !name.is_empty() {
         write!(f, "{}", name)?;
@@ -172,7 +172,7 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
     info: &TypeInfoRef<'_, 'a, T>,
     name: &str,
     pretty: bool,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
 ) -> fmt::Result {
     let Ok((variant_name, var_ty, offset)) = info
         .ty
@@ -220,12 +220,13 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
     // renderer recurses per member. A payload carrying a format of its
     // own is left to the delegation below, which is what a `String`-like
     // wrapper needs, and a tuple variant's synthetic `__0` stays elided.
-    if (ctx.ugly || var_ty.debug_format().is_none()) && has_named_single_field(&var_ty) {
+    if (ctx.ugly || ctx.debug_format(&var_ty).is_none()) && has_named_single_field(&var_ty) {
         return write_aggregate_body(f, &var_ty, variant_bytes, variant_addr, ctx, pretty);
     }
 
     if !ctx.ugly
-        && let Some(node @ DisplayNode::DynPointer { .. }) = variant_info.ty.debug_format()
+        && let Some(node) = ctx.debug_format(&variant_info.ty)
+        && matches!(*node, DisplayNode::DynPointer { .. })
     {
         return eval_dyn_pointer(f, variant_info.ty, None, &node, variant_info.bytes, ctx);
     }
@@ -237,7 +238,7 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
     // formatter keeps this general across every known format (trait objects
     // are handled above, with their own layout). `--ugly` mode forgoes this
     // and renders the payload's raw fields.
-    if !ctx.ugly && variant_info.ty.debug_format().is_some() {
+    if !ctx.ugly && ctx.debug_format(&variant_info.ty).is_some() {
         // Peeling into the payload's own formatter is a representation detail,
         // so it stays at the same depth.
         let child = DisplayRecurse {
