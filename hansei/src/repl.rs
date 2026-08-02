@@ -176,16 +176,29 @@ fn execute_one(session: &Session<'_>, line: &str) -> Result<Flow> {
         Err(e) => return Err(anyhow!("{}", clap_message(e))),
     };
 
-    // Buffered rather than streamed so a pipeline gets the whole answer
-    // and a failed command prints nothing at all.
-    let mut buf = Vec::new();
-    let flow = dispatch(session, parsed.command, &mut buf)?;
-
+    // Either way the answer streams: a trace's output can run to
+    // gigabytes, and holding it whole just to copy it out doubles the
+    // traffic and the resident set. The writer buffers small pieces (a
+    // heading line) and passes big ones through; a command that fails
+    // mid-answer has printed what it printed.
     match shell {
-        Some(shell) => pipe_to_shell(shell.trim(), &buf)?,
-        None => io::stdout().write_all(&buf)?,
+        Some(shell) => {
+            let sink = ShellSink {
+                stdin: Some(Box::new(Exec::shell(shell.trim()).stream_stdin()?)),
+            };
+            let mut out = io::BufWriter::new(sink);
+            let flow = dispatch(session, parsed.command, &mut out)?;
+            out.flush()?;
+            Ok(flow)
+        }
+        None => {
+            let stdout = io::stdout();
+            let mut out = io::BufWriter::new(stdout.lock());
+            let flow = dispatch(session, parsed.command, &mut out)?;
+            out.flush()?;
+            Ok(flow)
+        }
     }
-    Ok(flow)
 }
 
 /// clap renders a parse failure with an `error: ` prefix of its own.
@@ -200,23 +213,45 @@ fn clap_message(e: clap::Error) -> String {
         .to_string()
 }
 
-/// Feed `output` to a shell command's stdin.
-fn pipe_to_shell(shell: &str, output: &[u8]) -> Result<()> {
-    let mut stdin = Exec::shell(shell).stream_stdin()?;
+/// A command's output on its way into a shell pipeline's stdin,
+/// written as the command renders. The first write failure quietly
+/// ends the feed — a broken pipe is normal, the child exiting early as
+/// `head(1)` does — and the rest of the answer is discarded rather
+/// than failing the command that produced it. Dropping this closes the
+/// pipe, which is the child's end-of-input.
+struct ShellSink {
+    /// The child's stdin; `None` once a write failed.
+    stdin: Option<Box<dyn Write>>,
+}
 
-    // `write_all` does not play nicely with the shell's group leader
-    // here, so the writes are looped by hand.
-    let mut written = 0;
-    while written < output.len() {
-        match stdin.write(&output[written..]) {
-            Ok(0) => break,
-            Ok(n) => written += n,
-            // A broken pipe is normal: the child exited early, as
-            // `head(1)` does.
-            Err(_) => break,
+impl Write for ShellSink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if let Some(stdin) = &mut self.stdin {
+            // `write_all` does not play nicely with the shell's group
+            // leader here, so the writes are looped by hand.
+            let mut written = 0;
+            while written < buf.len() {
+                match stdin.write(&buf[written..]) {
+                    Ok(0) | Err(_) => {
+                        self.stdin = None;
+                        break;
+                    }
+                    Ok(n) => written += n,
+                }
+            }
         }
+        // The feed never errors: a dead pipe swallows what remains.
+        Ok(buf.len())
     }
-    Ok(())
+
+    fn flush(&mut self) -> io::Result<()> {
+        if let Some(stdin) = &mut self.stdin
+            && stdin.flush().is_err()
+        {
+            self.stdin = None;
+        }
+        Ok(())
+    }
 }
 
 fn line_editor() -> Reedline {
