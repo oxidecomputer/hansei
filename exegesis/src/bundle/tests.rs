@@ -384,33 +384,41 @@ fn test_truncated_header_rejected() {
 
 #[test]
 fn test_truncated_payload_rejected() {
+    // A cut anywhere in the frame is a hash mismatch; a cut inside the
+    // stored hash itself fails the header read.
     let bytes = encode(&random_bundle(3));
-    let cut = 12 + (bytes.len() - 12) / 2;
+    let cut = 44 + (bytes.len() - 44) / 2;
     assert!(matches!(
         Bundle::read_from(&bytes[..cut]),
-        Err(Error::Io(_))
+        Err(Error::Corrupt(_))
     ));
+    assert!(matches!(Bundle::read_from(&bytes[..20]), Err(Error::Io(_))));
 }
 
 #[test]
-fn test_corrupt_zstd_frame_rejected() {
-    let mut bytes = encode(&tiny_bundle());
-    // clobber the zstd frame header, right after our 12-byte header
-    bytes[12] ^= 0xff;
-    bytes[13] ^= 0xff;
-    assert!(matches!(
-        Bundle::read_from(bytes.as_slice()),
-        Err(Error::Io(_))
-    ));
+fn test_damaged_payload_rejected() {
+    // One flipped bit anywhere — the frame or the stored hash — is a
+    // hash mismatch; the damage never reaches zstd or postcard.
+    for at in [12usize, 44, 60] {
+        let mut bytes = encode(&tiny_bundle());
+        bytes[at] ^= 0x01;
+        assert!(
+            matches!(Bundle::read_from(bytes.as_slice()), Err(Error::Corrupt(_))),
+            "flip at {at}"
+        );
+    }
 }
 
 #[test]
 fn test_payload_not_a_bundle_rejected() {
-    // valid framing + valid zstd, but the payload isn't a Bundle
+    // valid framing + hash + valid zstd, but the payload isn't a Bundle
+    let mut frame = Vec::new();
+    zstd::stream::copy_encode(&b"not a bundle"[..], &mut frame, 0).unwrap();
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&MAGIC);
     bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-    zstd::stream::copy_encode(&b"not a bundle"[..], &mut bytes, 0).unwrap();
+    bytes.extend_from_slice(blake3::hash(&frame).as_bytes());
+    bytes.extend_from_slice(&frame);
     assert!(matches!(
         Bundle::read_from(bytes.as_slice()),
         Err(Error::Decode(_))
@@ -421,11 +429,11 @@ fn test_payload_not_a_bundle_rejected() {
 fn test_validate_rejects_oob_type_id() {
     let mut b = tiny_bundle();
     b.infra.header = BundleTypeId(999);
-    // write_to skips validation on purpose; the reader must catch it
-    assert!(matches!(
-        Bundle::read_from(encode(&b).as_slice()),
-        Err(Error::Corrupt(_))
-    ));
+    // The reader trusts the payload hash: a semantically-broken bundle
+    // that was framed intact loads — save() is where validation gates —
+    // and validate() still names the corruption.
+    let loaded = Bundle::read_from(encode(&b).as_slice()).expect("well-framed bundle must load");
+    assert!(matches!(loaded.validate(), Err(Error::Corrupt(_))));
 }
 
 #[test]
@@ -436,10 +444,8 @@ fn test_validate_rejects_oob_str_ref() {
         size: 8,
         encoding: Encoding::Unsigned,
     };
-    assert!(matches!(
-        Bundle::read_from(encode(&b).as_slice()),
-        Err(Error::Corrupt(_))
-    ));
+    let loaded = Bundle::read_from(encode(&b).as_slice()).expect("well-framed bundle must load");
+    assert!(matches!(loaded.validate(), Err(Error::Corrupt(_))));
 }
 
 #[test]

@@ -252,6 +252,10 @@ fn stats(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let bundle = Bundle::load(path)?;
+    // Loading trusts the payload hash; the debugging tool re-checks the
+    // contents in depth, so a bad display program or cross-reference
+    // surfaces here rather than silently.
+    bundle.validate()?;
     let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>");
 
     println!("== types ({}) ==", bundle.types.types.len());
