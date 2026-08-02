@@ -836,12 +836,11 @@ impl Bundle {
         w.write_all(&MAGIC)?;
         w.write_all(&FORMAT_VERSION.to_le_bytes())?;
         let payload = postcard::to_allocvec(self).map_err(Error::Encode)?;
-        let mut frame = Vec::new();
-        zstd::stream::copy_encode(
-            payload.as_slice(),
-            &mut frame,
-            zstd::DEFAULT_COMPRESSION_LEVEL,
-        )?;
+        // Single-shot compression records the decompressed size in the
+        // frame header (a streaming encoder cannot know it), which is
+        // what lets the reader decode into a right-sized buffer instead
+        // of growing one across a hundred-fold inflation.
+        let frame = zstd::bulk::compress(&payload, zstd::DEFAULT_COMPRESSION_LEVEL)?;
         w.write_all(blake3::hash(&frame).as_bytes())?;
         w.write_all(&frame)?;
         Ok(())
@@ -893,7 +892,16 @@ impl Bundle {
                 computed.to_hex(),
             )));
         }
-        let payload = zstd::stream::decode_all(frame.as_slice())?;
+        // The hash has vouched for the frame, its recorded decompressed
+        // size included, so decode straight into a buffer of that size.
+        // A frame that records none — a streaming encoder wrote it —
+        // decodes the general, reallocating way.
+        let payload = match zstd::zstd_safe::get_frame_content_size(&frame) {
+            Ok(Some(size)) if usize::try_from(size).is_ok() => {
+                zstd::bulk::decompress(&frame, size as usize)?
+            }
+            _ => zstd::stream::decode_all(frame.as_slice())?,
+        };
         postcard::from_bytes(&payload).map_err(Error::Decode)
     }
 
