@@ -77,32 +77,58 @@ impl<'buf> WorkerCtx<'buf> {
 }
 
 /// Render `total` items into `f` in order, formatting contiguous chunks
-/// on worker threads. `render(range, out)` must write the items of
-/// `range` into `out` exactly as the sequential path would have,
+/// on rayon's worker threads. `render(range, out)` must write the items
+/// of `range` into `out` exactly as the sequential path would have,
 /// punctuation included.
 ///
-/// Waves bound the memory in flight: one chunk per worker is buffered
-/// at a time, and each wave is written out (and freed) before the next
-/// spawns. Chunks are a quarter of a worker's even share, so a straggler
-/// delays its own wave by at most that much.
+/// Chunks are an eighth of a worker's even share, small enough for work
+/// stealing to level uneven chunks (and uneven cores) instead of the
+/// whole render waiting on a straggler. Finished chunks stream back over
+/// a channel and are stitched into `f` in index order as they arrive, so
+/// writing overlaps rendering and a buffer lives only until its turn
+/// comes: the text in flight stays near one chunk per worker plus
+/// whatever finished ahead of turn.
+///
+/// The stitch loop blocks the calling thread, so this must not be
+/// reached from inside a rayon worker — a pool thread parked on the
+/// channel is lost to the very pool that has to produce into it. The
+/// one caller is the root of a target-backed render (the fan-out that
+/// spends `parallel`), which runs on the application's own thread.
 pub(crate) fn render_chunked<F>(f: &mut fmt::Formatter<'_>, total: usize, render: F) -> fmt::Result
 where
     F: Fn(std::ops::Range<usize>, &mut String) + Sync,
 {
-    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let chunk = total.div_ceil(workers * 4).max(1);
-    let starts: Vec<usize> = (0..total).step_by(chunk).collect();
-    for wave in starts.chunks(workers) {
-        let mut bufs = vec![String::new(); wave.len()];
-        std::thread::scope(|scope| {
-            for (buf, &start) in bufs.iter_mut().zip(wave) {
-                let render = &render;
-                scope.spawn(move || render(start..total.min(start + chunk), buf));
-            }
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+    let chunk = total.div_ceil(rayon::current_num_threads() * 8).max(1);
+    let count = total.div_ceil(chunk);
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, String)>();
+    let mut result = Ok(());
+    rayon::in_place_scope(|scope| {
+        let render = &render;
+        scope.spawn(move |_| {
+            (0..count).into_par_iter().for_each_with(tx, |tx, index| {
+                let start = index * chunk;
+                let mut buf = String::new();
+                render(start..total.min(start + chunk), &mut buf);
+                // The stitcher hanging up early (a write error) is fine.
+                let _ = tx.send((index, buf));
+            });
         });
-        for buf in &bufs {
-            f.write_str(buf)?;
+
+        let rx = rx; // moved in, so breaking early hangs up on the workers
+        let mut next = 0usize;
+        let mut held: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
+        for (index, buf) in rx {
+            held.insert(index, buf);
+            while let Some(buf) = held.remove(&next) {
+                result = f.write_str(&buf);
+                next += 1;
+                if result.is_err() {
+                    return;
+                }
+            }
         }
-    }
-    Ok(())
+    });
+    result
 }

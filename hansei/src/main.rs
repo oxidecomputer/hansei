@@ -302,6 +302,20 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
 fn main() {
     let args = Cli::parse();
 
+    // Cap the worker pool rendering fans out on: value rendering is
+    // memory-bound and stops scaling well before the 128-256 logical
+    // CPUs of a rack sled, and a debugging session should not
+    // commandeer a sled's worth of threads either.
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(16);
+    if let Err(e) = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(|i| format!("reify-render-{i}"))
+        .build_global()
+    {
+        let _ = writeln!(io::stderr(), "Error: {e:?}");
+        std::process::exit(1);
+    }
+
     let res = run(&args.session, &args.exec);
     if let Err(e) = res {
         if let Some(io_err) = e.downcast_ref::<io::Error>()
