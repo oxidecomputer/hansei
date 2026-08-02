@@ -227,7 +227,8 @@ pub(crate) fn eval_map<'a, T: DebugType<'a>>(
     let Some(map_length) = read_unsigned_at(bytes, length_offset, u64::from(length_size)) else {
         return write!(f, "<truncated>");
     };
-    write!(f, "{} {{", ty.name())?;
+    f.write_str(ty.name())?;
+    f.write_str(" {")?;
     if map_length == 0 {
         return write!(f, "}}");
     }

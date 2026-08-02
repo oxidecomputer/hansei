@@ -360,7 +360,7 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
     let bytes = info.bytes;
 
     if bytes.is_empty() && ty.size() == 0 {
-        return write!(f, "{}", ty.name());
+        return f.write_str(ty.name());
     }
 
     if ctx.depth >= ctx.max_depth {
@@ -391,7 +391,8 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
         // with the type name — `<name>: <decoded>`. Other nodes name (or
         // elide) themselves as they render.
         if let DisplayNode::Scalar { .. } = *node {
-            write!(f, "{}: ", ty.name())?;
+            f.write_str(ty.name())?;
+            f.write_str(": ")?;
         }
         return eval_node(f, &node, &ty, info.bytes, info.addr, ctx, pretty);
     }
@@ -599,10 +600,19 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
 /// per depth level. Every newline the renderer writes is followed by
 /// this, which is what lets a caller get final-form lines out of
 /// [`DisplayTargetValue::line_prefix`] instead of re-indenting them.
+/// The spaces come off a static run in slices as large as it allows,
+/// not a write per level.
 pub(crate) fn write_indent(f: &mut fmt::Formatter<'_>, prefix: &str, depth: usize) -> fmt::Result {
+    const SPACES: &str = match str::from_utf8(&[b' '; 256]) {
+        Ok(spaces) => spaces,
+        Err(_) => unreachable!(),
+    };
     f.write_str(prefix)?;
-    for _ in 0..depth {
-        write!(f, "    ")?;
+    let mut pending = depth * 4;
+    while pending > 0 {
+        let run = pending.min(SPACES.len());
+        f.write_str(&SPACES[..run])?;
+        pending -= run;
     }
     Ok(())
 }
