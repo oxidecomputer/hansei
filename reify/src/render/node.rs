@@ -15,7 +15,7 @@ use super::dyn_ptr::eval_dyn_pointer;
 use super::scalar::{
     apply, byte_range, eval_bytes, read_u64_at, read_unsigned_at, write_symbol, write_utf8_string,
 };
-use super::{DisplayRecurse, RenderCtx, write_indent, write_seq_close, write_seq_prefix};
+use super::{RenderCtx, write_display_value, write_indent, write_seq_close, write_seq_prefix};
 
 /// Interpret a resolved [`DisplayNode`] tree — the single generic evaluator
 /// that stands in for the per-type `write_*` renderers on node-based formats.
@@ -127,20 +127,13 @@ pub(crate) fn eval_node<'a, T: DebugType<'a>>(
             };
             match read_place_bytes(place, bytes, addr, child_ctx, target.size()) {
                 Ok((child_addr, child_bytes)) => {
-                    let child = DisplayRecurse {
-                        info: TypeInfoRef {
-                            ty: *target,
-                            addr: child_addr,
-                            bytes: child_bytes.as_ref(),
-                            _marker: std::marker::PhantomData,
-                        },
-                        ctx: child_ctx,
+                    let child = TypeInfoRef {
+                        ty: *target,
+                        addr: child_addr,
+                        bytes: child_bytes.as_ref(),
+                        _marker: std::marker::PhantomData,
                     };
-                    if pretty {
-                        write!(f, "{child:#}")
-                    } else {
-                        write!(f, "{child}")
-                    }
+                    write_display_value(f, &child, child_ctx, pretty)
                 }
                 Err(marker) => write!(f, "{marker}"),
             }
@@ -203,7 +196,7 @@ pub(crate) fn eval_node<'a, T: DebugType<'a>>(
             }
         }
         DisplayNode::DynPointer { .. } => {
-            eval_dyn_pointer(f, *ty, Some(ty.name()), node, bytes, ctx)
+            eval_dyn_pointer(f, *ty, Some(ty.name()), node, bytes, ctx, pretty)
         }
         DisplayNode::Map {
             length_offset,
@@ -479,19 +472,15 @@ fn eval_stmts<'a, T: DebugType<'a>>(
                 };
                 write_seq_prefix(f, pretty, ctx.depth, !*any)?;
                 *any = true;
-                let child = DisplayRecurse {
-                    info: TypeInfoRef {
-                        ty: *element,
-                        addr: target,
-                        bytes: &element_bytes,
-                        _marker: std::marker::PhantomData,
-                    },
-                    ctx: ctx.deeper(),
+                let child = TypeInfoRef {
+                    ty: *element,
+                    addr: target,
+                    bytes: &element_bytes,
+                    _marker: std::marker::PhantomData,
                 };
+                write_display_value(f, &child, ctx.deeper(), pretty)?;
                 if pretty {
-                    write!(f, "{child:#},")?;
-                } else {
-                    write!(f, "{child}")?;
+                    write!(f, ",")?;
                 }
             }
         }
@@ -580,20 +569,13 @@ fn eval_struct<'a, T: DebugType<'a>>(
                 write!(f, "{name}: ")?;
                 match byte_range(bytes, *offset, mem_ty.size()) {
                     Some(mem_bytes) => {
-                        let child = DisplayRecurse {
-                            info: TypeInfoRef {
-                                ty: *mem_ty,
-                                addr: addr + offset,
-                                bytes: mem_bytes,
-                                _marker: std::marker::PhantomData,
-                            },
-                            ctx: ctx.deeper(),
+                        let child = TypeInfoRef {
+                            ty: *mem_ty,
+                            addr: addr + offset,
+                            bytes: mem_bytes,
+                            _marker: std::marker::PhantomData,
                         };
-                        if pretty {
-                            write!(f, "{child:#}")?
-                        } else {
-                            write!(f, "{child}")?
-                        }
+                        write_display_value(f, &child, ctx.deeper(), pretty)?
                     }
                     None => write!(f, "<truncated>")?,
                 }

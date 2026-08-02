@@ -34,7 +34,7 @@ pub(crate) type FormatCache<T> = RefCell<HashMap<u64, Option<Rc<DisplayNode<T>>>
 
 impl<'a, T: DebugType<'a>> fmt::Display for TypeInfoRef<'_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, self, RenderCtx::plain(0, 16))
+        write_display_value(f, self, RenderCtx::plain(0, 16), f.alternate())
     }
 }
 
@@ -65,6 +65,7 @@ impl<'a, T: DebugType<'a>> fmt::Display for DisplayValue<'_, '_, 'a, T> {
             f,
             self.info,
             RenderCtx::plain(self.depth, self.max_depth).with_ugly(self.ugly),
+            f.alternate(),
         )
     }
 }
@@ -105,7 +106,7 @@ impl<'a, T: DebugType<'a>, P: ReadFromProc> fmt::Display for DisplayTargetValue<
             elide: self.elide,
             formats: Some(&self.formats),
         };
-        write_display_value(f, self.info, ctx)
+        write_display_value(f, self.info, ctx, f.alternate())
     }
 }
 
@@ -302,22 +303,16 @@ impl<'buf, 'a, T: DebugType<'a>> RenderCtx<'buf, 'a, T> {
     }
 }
 
-/// Wrapper that carries [`RenderCtx`] for recursive formatting.
-pub(crate) struct DisplayRecurse<'buf, 'a: 'buf, T: DebugType<'a>> {
-    info: TypeInfoRef<'buf, 'a, T>,
-    ctx: RenderCtx<'buf, 'a, T>,
-}
-
-impl<'a, T: DebugType<'a>> fmt::Display for DisplayRecurse<'_, 'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, &self.info, self.ctx)
-    }
-}
-
-fn write_display_value<'a, T: DebugType<'a>>(
+/// Render one value. This is also how a renderer recurses into a child:
+/// called directly, with `pretty` passed along rather than re-encoded as
+/// a `{:#}` format spec — re-entering `core::fmt::write` per child value
+/// costs an `Arguments` and several frames at every level of a tree this
+/// renders millions of nodes of.
+pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
     ctx: RenderCtx<'_, 'a, T>,
+    pretty: bool,
 ) -> fmt::Result {
     let ty = info.ty;
     let bytes = info.bytes;
@@ -356,7 +351,7 @@ fn write_display_value<'a, T: DebugType<'a>>(
         if let DisplayNode::Scalar { .. } = *node {
             write!(f, "{}: ", ty.name())?;
         }
-        return eval_node(f, &node, &ty, info.bytes, info.addr, ctx, f.alternate());
+        return eval_node(f, &node, &ty, info.bytes, info.addr, ctx, pretty);
     }
 
     match ty.classify() {
@@ -450,20 +445,14 @@ fn write_display_value<'a, T: DebugType<'a>>(
             }
             let result = match proc.read_bytes(addr, target.size()) {
                 Ok(pointee_bytes) => {
-                    let pointee = DisplayRecurse {
-                        info: TypeInfoRef {
-                            ty: target,
-                            addr,
-                            bytes: &pointee_bytes,
-                            _marker: std::marker::PhantomData,
-                        },
-                        ctx: ctx.deeper(),
+                    let pointee = TypeInfoRef {
+                        ty: target,
+                        addr,
+                        bytes: &pointee_bytes,
+                        _marker: std::marker::PhantomData,
                     };
-                    if f.alternate() {
-                        write!(f, "0x{addr:x} -> {pointee:#}")
-                    } else {
-                        write!(f, "0x{addr:x} -> {pointee}")
-                    }
+                    write!(f, "0x{addr:x} -> ")
+                        .and_then(|()| write_display_value(f, &pointee, ctx.deeper(), pretty))
                 }
                 Err(_) => write!(f, "0x{addr:x} -> <unreadable>"),
             };
@@ -473,7 +462,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
 
         TypeClass::Struct => {
             let name = ty.name();
-            let pretty = f.alternate();
             write_struct_fields(f, info, name, pretty, ctx)
         }
 
@@ -489,7 +477,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
 
         TypeClass::RustEnum => {
             let name = ty.name();
-            let pretty = f.alternate();
             write_rust_enum(f, info, name, pretty, ctx)
         }
 
@@ -505,7 +492,6 @@ fn write_display_value<'a, T: DebugType<'a>>(
         TypeClass::Array { element, count } => {
             let elem_size = element.size() as usize;
             let count = count as usize;
-            let pretty = f.alternate();
             let hex_elements = matches!(
                 element.classify(),
                 TypeClass::Integer {
@@ -527,19 +513,15 @@ fn write_display_value<'a, T: DebugType<'a>>(
                         write!(f, ", ")?;
                     }
 
-                    let child = DisplayRecurse {
-                        info: TypeInfoRef {
-                            ty: element,
-                            addr: info.addr + start as u64,
-                            bytes: elem_bytes,
-                            _marker: std::marker::PhantomData,
-                        },
-                        ctx: ctx.deeper().with_hex(hex_elements),
+                    let child = TypeInfoRef {
+                        ty: element,
+                        addr: info.addr + start as u64,
+                        bytes: elem_bytes,
+                        _marker: std::marker::PhantomData,
                     };
+                    write_display_value(f, &child, ctx.deeper().with_hex(hex_elements), pretty)?;
                     if pretty {
-                        write!(f, "{:#},", child)?;
-                    } else {
-                        write!(f, "{}", child)?;
+                        write!(f, ",")?;
                     }
                 } else {
                     // Unreachable for a backend whose array size agrees with
