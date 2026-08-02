@@ -79,6 +79,7 @@ pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromP
     max_depth: usize,
     ugly: bool,
     elide: Option<&'r ElideOverride>,
+    prefix: &'r str,
     visited: RefCell<HashSet<(u64, &'a str)>>,
     formats: FormatCache<T>,
 }
@@ -95,6 +96,16 @@ impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync> DisplayTarget
         self.elide = Some(elide);
         self
     }
+
+    /// Open every pretty-mode line after the first with `prefix`, ahead
+    /// of the renderer's own indentation — so a caller embedding the
+    /// value under a heading gets final-form lines instead of scanning
+    /// and re-copying the text to lay its margin in. The first line is
+    /// the caller's to place; the value never ends with a newline.
+    pub fn line_prefix(mut self, prefix: &'r str) -> Self {
+        self.prefix = prefix;
+        self
+    }
 }
 
 impl<'a, T: DebugType<'a>, P: ReadFromProc + Sync> fmt::Display for DisplayTargetValue<'_, '_, 'a, T, P> {
@@ -107,6 +118,7 @@ impl<'a, T: DebugType<'a>, P: ReadFromProc + Sync> fmt::Display for DisplayTarge
             hex_integers: false,
             ugly: self.ugly,
             elide: self.elide,
+            prefix: self.prefix,
             formats: Some(&self.formats),
             parallel: true,
         };
@@ -146,6 +158,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             max_depth,
             ugly: false,
             elide: None,
+            prefix: "",
             visited: RefCell::new(HashSet::default()),
             formats: FormatCache::default(),
         }
@@ -181,6 +194,10 @@ pub(crate) struct RenderCtx<'buf, 'a, T: DebugType<'a>> {
     /// Render-time adjustment of what renders as `<elided>`; `None` leaves
     /// the bundle's choices alone.
     elide: Option<&'buf ElideOverride>,
+    /// Text opening every pretty-mode line after the first, written by
+    /// [`write_indent`] ahead of the depth indentation; see
+    /// [`DisplayTargetValue::line_prefix`]. Empty for a bare display.
+    prefix: &'buf str,
 }
 
 /// A render-time adjustment of which types render as `<elided>`, layered
@@ -269,6 +286,7 @@ impl<'buf, 'a, T: DebugType<'a>> RenderCtx<'buf, 'a, T> {
             hex_integers: false,
             ugly: false,
             elide: None,
+            prefix: "",
         }
     }
 
@@ -282,6 +300,7 @@ impl<'buf, 'a, T: DebugType<'a>> RenderCtx<'buf, 'a, T> {
             hex_integers: self.hex_integers,
             ugly: self.ugly,
             elide: self.elide,
+            prefix: self.prefix,
         }
     }
 
@@ -531,7 +550,7 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
                 if let Some(elem_bytes) = bytes.get(start..end) {
                     if pretty {
                         writeln!(f)?;
-                        write_indent(f, ctx.depth + 1)?;
+                        write_indent(f, ctx.prefix, ctx.depth + 1)?;
                     } else if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -561,7 +580,7 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
             }
             if pretty && count > 0 {
                 writeln!(f)?;
-                write_indent(f, ctx.depth)?;
+                write_indent(f, ctx.prefix, ctx.depth)?;
             }
             write!(f, "]")
         }
@@ -576,7 +595,12 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
     }
 }
 
-pub(crate) fn write_indent(f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
+/// Open a pretty-mode line: the caller's line prefix, then four spaces
+/// per depth level. Every newline the renderer writes is followed by
+/// this, which is what lets a caller get final-form lines out of
+/// [`DisplayTargetValue::line_prefix`] instead of re-indenting them.
+pub(crate) fn write_indent(f: &mut fmt::Formatter<'_>, prefix: &str, depth: usize) -> fmt::Result {
+    f.write_str(prefix)?;
     for _ in 0..depth {
         write!(f, "    ")?;
     }
@@ -591,12 +615,13 @@ pub(crate) fn write_indent(f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Res
 pub(crate) fn write_seq_prefix(
     f: &mut fmt::Formatter<'_>,
     pretty: bool,
+    prefix: &str,
     depth: usize,
     first: bool,
 ) -> fmt::Result {
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth + 1)
+        write_indent(f, prefix, depth + 1)
     } else if first {
         Ok(())
     } else {
@@ -611,12 +636,13 @@ pub(crate) fn write_seq_prefix(
 pub(crate) fn write_seq_close(
     f: &mut fmt::Formatter<'_>,
     pretty: bool,
+    prefix: &str,
     depth: usize,
     any: bool,
 ) -> fmt::Result {
     if pretty && any {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, prefix, depth)?;
     }
     Ok(())
 }
@@ -1070,6 +1096,38 @@ mod tests {
             show(ARR, &u32s(&[1, 0xabcdef, u32::MAX])),
             "[0x00000001, 0x00abcdef, 0xffffffff]"
         );
+    }
+
+    /// `line_prefix` opens every pretty line after the first with the
+    /// caller's text, ahead of the renderer's own four-space grid — the
+    /// contract that lets hansei stream value lines through unmodified.
+    /// The first line stays bare (the caller places it), no line ends in
+    /// a trailing newline, and the prefix crosses the parallel fan-out:
+    /// a long slice renders the same lines chunked as streamed.
+    #[test]
+    fn test_line_prefix_opens_every_line_but_the_first() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+
+        let mem = FakeMem::new().at(0x2000, u32s(&[3, 4]));
+        let bytes = 0x2000u64.to_le_bytes();
+        let ptr = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{:#}", ptr.display_from_target(&mem, 8).line_prefix(">> ")),
+            "0x2000 -> Point {\n>>         x: 3,\n>>         y: 4,\n>>     }"
+        );
+
+        let values: Vec<u32> = (0..100).collect();
+        let mem = FakeMem::new().at(0x3000, u32s(&values));
+        let fat = u64s(&[0x3000, 100, 100]);
+        let vec = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &fat);
+        let shown = format!("{:#}", vec.display_from_target(&mem, 8).line_prefix(">> "));
+        let mut lines = shown.lines();
+        assert_eq!(lines.next(), Some("["));
+        for (i, line) in lines.enumerate() {
+            assert!(line.starts_with(">> "), "line {i} unprefixed: {line:?}");
+        }
+        assert!(shown.ends_with(">> ]"), "{shown}");
     }
 
     #[test]

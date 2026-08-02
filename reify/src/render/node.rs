@@ -390,7 +390,7 @@ fn eval_custom_list<'a, T: DebugType<'a>>(
             Flow::Stop => break,
         }
     }
-    write_seq_close(f, pretty, ctx.depth, any)?;
+    write_seq_close(f, pretty, ctx.prefix, ctx.depth, any)?;
     write!(f, "]")
 }
 
@@ -470,7 +470,7 @@ fn eval_stmts<'a, T: DebugType<'a>>(
                     write_seq_marker(f, "<unreadable>", *any)?;
                     return Ok(Flow::Stop);
                 };
-                write_seq_prefix(f, pretty, ctx.depth, !*any)?;
+                write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, !*any)?;
                 *any = true;
                 let child = TypeInfoRef {
                     ty: *element,
@@ -554,7 +554,7 @@ fn eval_struct<'a, T: DebugType<'a>>(
         // a space after `{` and separates subsequent fields with `, `.
         if pretty {
             writeln!(f)?;
-            write_indent(f, ctx.depth + 1)?;
+            write_indent(f, ctx.prefix, ctx.depth + 1)?;
         } else if i > 0 {
             write!(f, ", ")?;
         } else {
@@ -591,7 +591,7 @@ fn eval_struct<'a, T: DebugType<'a>>(
     }
     if pretty {
         writeln!(f)?;
-        write_indent(f, ctx.depth)?;
+        write_indent(f, ctx.prefix, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }

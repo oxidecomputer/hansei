@@ -134,7 +134,7 @@ pub(crate) fn eval_slice<'a, T: DebugType<'a>>(
             }
         }
     }
-    write_seq_close(f, pretty, ctx.depth, true)?;
+    write_seq_close(f, pretty, ctx.prefix, ctx.depth, true)?;
     write!(f, "]")
 }
 
@@ -154,7 +154,7 @@ fn write_slice_element<'a, T: DebugType<'a>>(
     ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> std::result::Result<bool, fmt::Error> {
-    write_seq_prefix(f, pretty, depth, index == 0)?;
+    write_seq_prefix(f, pretty, ctx.prefix, depth, index == 0)?;
     let Some(offset) = index.checked_mul(element_size) else {
         write!(f, "<invalid element offset>")?;
         return Ok(false);
@@ -259,7 +259,7 @@ pub(crate) fn eval_map<'a, T: DebugType<'a>>(
                     "tree contains more entries than length",
                 ));
             }
-            write_map_entry_prefix(f, pretty, ctx.depth, emitted)?;
+            write_map_entry_prefix(f, pretty, ctx.prefix, ctx.depth, emitted)?;
             let key = TypeInfoRef {
                 ty: key,
                 addr: key_addr,
@@ -283,7 +283,7 @@ pub(crate) fn eval_map<'a, T: DebugType<'a>>(
         },
     );
 
-    write_map_tail(f, walk, emitted, map_length, pretty, ctx.depth)
+    write_map_tail(f, ctx.prefix, walk, emitted, map_length, pretty, ctx.depth)
 }
 
 /// The accounting a map render closes with, shared by the streaming and
@@ -291,6 +291,7 @@ pub(crate) fn eval_map<'a, T: DebugType<'a>>(
 /// wrong number of entries, then the closing punctuation.
 fn write_map_tail(
     f: &mut fmt::Formatter<'_>,
+    prefix: &str,
     walk: std::result::Result<(), MapWalkError>,
     emitted: u64,
     map_length: u64,
@@ -300,15 +301,15 @@ fn write_map_tail(
     match walk {
         Ok(()) if emitted == map_length => {}
         Ok(()) => {
-            write_map_entry_prefix(f, pretty, depth, emitted)?;
+            write_map_entry_prefix(f, pretty, prefix, depth, emitted)?;
             write!(f, "<invalid: tree contains fewer entries than length>")?;
         }
         Err(MapWalkError::Invalid(reason)) => {
-            write_map_entry_prefix(f, pretty, depth, emitted)?;
+            write_map_entry_prefix(f, pretty, prefix, depth, emitted)?;
             write!(f, "<invalid: {reason}>")?;
         }
         Err(MapWalkError::Marker(marker)) => {
-            write_map_entry_prefix(f, pretty, depth, emitted)?;
+            write_map_entry_prefix(f, pretty, prefix, depth, emitted)?;
             write!(f, "{marker}")?;
         }
         Err(MapWalkError::Format) => return Err(fmt::Error),
@@ -316,7 +317,7 @@ fn write_map_tail(
 
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth)?;
+        write_indent(f, prefix, depth)?;
     } else {
         write!(f, " ")?;
     }
@@ -373,7 +374,7 @@ fn eval_map_parallel<'a, T: DebugType<'a>>(
             DisplayWith(|f: &mut fmt::Formatter<'_>| {
                 for index in range.clone() {
                     let (key_addr, value_addr) = entries_ref[index];
-                    write_map_entry_prefix(f, pretty, depth, index as u64)?;
+                    write_map_entry_prefix(f, pretty, task_ctx.prefix, depth, index as u64)?;
                     write_map_entry(f, key, key_addr, value, value_addr, task_ctx, pretty)?;
                 }
                 Ok(())
@@ -381,7 +382,7 @@ fn eval_map_parallel<'a, T: DebugType<'a>>(
         );
     })?;
 
-    write_map_tail(f, walk, collected.len() as u64, map_length, pretty, depth)
+    write_map_tail(f, ctx.prefix, walk, collected.len() as u64, map_length, pretty, depth)
 }
 
 /// One map entry — `key: value` and pretty's trailing comma — from the
@@ -430,12 +431,13 @@ fn write_map_entry<'a, T: DebugType<'a>>(
 fn write_map_entry_prefix(
     f: &mut fmt::Formatter<'_>,
     pretty: bool,
+    prefix: &str,
     depth: usize,
     entry: u64,
 ) -> fmt::Result {
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth + 1)
+        write_indent(f, prefix, depth + 1)
     } else if entry == 0 {
         write!(f, " ")
     } else {
@@ -660,7 +662,7 @@ pub(crate) fn eval_list<'a, T: DebugType<'a>>(
             write!(f, "{}<unreadable>", if any { ", " } else { "" })?;
             break;
         };
-        write_seq_prefix(f, pretty, ctx.depth, !any)?;
+        write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, !any)?;
         any = true;
         // Each element renders inline (`pretty = false`) even in pretty mode.
         eval_node(f, node, node_ty, &node_bytes, cur, ctx.deeper(), false)?;
@@ -672,7 +674,7 @@ pub(crate) fn eval_list<'a, T: DebugType<'a>>(
             None => break,
         }
     }
-    write_seq_close(f, pretty, ctx.depth, any)?;
+    write_seq_close(f, pretty, ctx.prefix, ctx.depth, any)?;
     write!(f, "]")
 }
 

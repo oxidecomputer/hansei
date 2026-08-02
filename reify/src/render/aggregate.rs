@@ -101,7 +101,7 @@ fn write_aggregate_body<'a, T: DebugType<'a>>(
         for (i, member) in shown.iter().enumerate() {
             if pretty {
                 writeln!(f)?;
-                write_indent(f, ctx.depth + 1)?;
+                write_indent(f, ctx.prefix, ctx.depth + 1)?;
             } else if i > 0 {
                 write!(f, ", ")?;
             }
@@ -112,7 +112,7 @@ fn write_aggregate_body<'a, T: DebugType<'a>>(
         }
         if pretty {
             writeln!(f)?;
-            write_indent(f, ctx.depth)?;
+            write_indent(f, ctx.prefix, ctx.depth)?;
         }
         write!(f, ")")
     } else {
@@ -120,7 +120,7 @@ fn write_aggregate_body<'a, T: DebugType<'a>>(
         for (i, member) in shown.iter().enumerate() {
             if pretty {
                 writeln!(f)?;
-                write_indent(f, ctx.depth + 1)?;
+                write_indent(f, ctx.prefix, ctx.depth + 1)?;
             } else {
                 // Inline, the space separates the field from the opening brace
                 // or from the preceding comma. Pretty has already indented, so
@@ -139,7 +139,7 @@ fn write_aggregate_body<'a, T: DebugType<'a>>(
         }
         if pretty {
             writeln!(f)?;
-            write_indent(f, ctx.depth)?;
+            write_indent(f, ctx.prefix, ctx.depth)?;
         } else {
             write!(f, " ")?;
         }
