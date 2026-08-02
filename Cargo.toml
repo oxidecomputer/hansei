@@ -19,6 +19,9 @@ blake3 = { version = "1", features = ["pure"] }
 clap = { version = "4.5.51", features = ["derive"] }
 exegesis = { path = "exegesis", version = "0.1.0", default-features = false }
 flate2 = "1.1.5"
+# The bundle format stores rust_type_name_hash values (TypeTable::
+# by_normalized_name); foldhash makes no cross-version hash stability
+# promise, so bumping it requires a bundle FORMAT_VERSION bump.
 foldhash = "0.2"
 gimli = { version = "0.32", features = ["fallible-iterator"] }
 goblin = "0.10.3"

@@ -4844,7 +4844,9 @@ impl<'a> Emitter<'a> {
             demoted,
             states,
         };
-        (types, self.interner.finish(), counts)
+        let strings = self.interner.finish();
+        types.build_normalized_index(&strings);
+        (types, strings, counts)
     }
 }
 
