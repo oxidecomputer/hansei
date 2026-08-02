@@ -1349,6 +1349,13 @@ impl<T: Target> ParseCtx for Context<'_, T> {
 /// with kilobyte-long names — which is the dominant cost of attaching to a
 /// target whose fingerprint does not match exactly. The keys land in one
 /// set, so the split carries no ordering to preserve.
+///
+/// Migrating this fan-out to the rayon pool was tested (2026-08-02) and
+/// found slower: rayon's parallel reduce is a tree over every split,
+/// whose extra merge levels cost +0.2 s of CPU on the nexus attach, and
+/// reshaping to hand-sized chunks with a linear merge only reached
+/// parity — the chunks are uniform enough that stealing has nothing to
+/// level. Scoped threads stay.
 fn normalized_key_set(symbols: &[SymbolBuf]) -> HashSet<String> {
     let workers = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let Some(chunk) = std::num::NonZeroUsize::new(symbols.len().div_ceil(workers)) else {
