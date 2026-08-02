@@ -11,7 +11,7 @@ use std::fmt;
 
 use super::node::eval_node;
 use super::scalar::{byte_range, read_u64_at, read_unsigned_at};
-use super::{DisplayRecurse, RenderCtx, write_indent, write_seq_close, write_seq_prefix};
+use super::{RenderCtx, write_display_value, write_indent, write_seq_close, write_seq_prefix};
 
 /// Follow a `(data, len)` fat pointer to a contiguous buffer and render its
 /// first `len` `element`s as `[e, e, …]`. `capacity`, when present, bounds
@@ -82,19 +82,15 @@ pub(crate) fn eval_slice<'a, T: DebugType<'a>>(
         let Some(address) = pointer.checked_add(offset) else {
             return write!(f, "<invalid element address>");
         };
-        let child = DisplayRecurse {
-            info: TypeInfoRef {
-                ty: *element,
-                addr: address,
-                bytes,
-                _marker: std::marker::PhantomData,
-            },
-            ctx: element_ctx,
+        let child = TypeInfoRef {
+            ty: *element,
+            addr: address,
+            bytes,
+            _marker: std::marker::PhantomData,
         };
+        write_display_value(f, &child, element_ctx, pretty)?;
         if pretty {
-            write!(f, "{child:#},")?;
-        } else {
-            write!(f, "{child}")?;
+            write!(f, ",")?;
         }
     }
     write_seq_close(f, pretty, ctx.depth, true)?;
@@ -168,28 +164,23 @@ pub(crate) fn eval_map<'a, T: DebugType<'a>>(
                 ));
             }
             write_map_entry_prefix(f, pretty, ctx.depth, emitted)?;
-            let key = DisplayRecurse {
-                info: TypeInfoRef {
-                    ty: key,
-                    addr: key_addr,
-                    bytes: key_bytes,
-                    _marker: std::marker::PhantomData,
-                },
-                ctx: entry_ctx,
+            let key = TypeInfoRef {
+                ty: key,
+                addr: key_addr,
+                bytes: key_bytes,
+                _marker: std::marker::PhantomData,
             };
-            let value = DisplayRecurse {
-                info: TypeInfoRef {
-                    ty: value,
-                    addr: value_addr,
-                    bytes: value_bytes,
-                    _marker: std::marker::PhantomData,
-                },
-                ctx: entry_ctx,
+            let value = TypeInfoRef {
+                ty: value,
+                addr: value_addr,
+                bytes: value_bytes,
+                _marker: std::marker::PhantomData,
             };
+            write_display_value(f, &key, entry_ctx, pretty)?;
+            write!(f, ": ")?;
+            write_display_value(f, &value, entry_ctx, pretty)?;
             if pretty {
-                write!(f, "{key:#}: {value:#},")?;
-            } else {
-                write!(f, "{key}: {value}")?;
+                write!(f, ",")?;
             }
             emitted += 1;
             Ok(())

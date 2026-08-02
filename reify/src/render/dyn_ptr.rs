@@ -8,7 +8,7 @@ use crate::value::TypeInfoRef;
 use std::fmt;
 
 use super::scalar::read_u64_at;
-use super::{DisplayRecurse, RenderCtx, write_indent};
+use super::{RenderCtx, write_display_value, write_indent};
 
 #[derive(Debug)]
 struct VtableFunction {
@@ -24,6 +24,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
     node: &DisplayNode<T>,
     bytes: &[u8],
     ctx: RenderCtx<'_, 'a, T>,
+    pretty: bool,
 ) -> fmt::Result {
     let DisplayNode::DynPointer {
         pointer_offset,
@@ -71,7 +72,6 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
         Some((name, resolved)) => (Some(name), resolved),
         None => (None, None),
     };
-    let pretty = f.alternate();
     if let Some(name) = name.filter(|name| !name.is_empty()) {
         write!(f, "{name}")?;
     }
@@ -98,20 +98,14 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
         } else {
             match proc.read_bytes(pointee_address, concrete_ty.size()) {
                 Ok(pointee_bytes) => {
-                    let pointee = DisplayRecurse {
-                        info: TypeInfoRef {
-                            ty: concrete_ty,
-                            addr: pointee_address,
-                            bytes: &pointee_bytes,
-                            _marker: std::marker::PhantomData,
-                        },
-                        ctx: ctx.deeper(),
+                    let pointee = TypeInfoRef {
+                        ty: concrete_ty,
+                        addr: pointee_address,
+                        bytes: &pointee_bytes,
+                        _marker: std::marker::PhantomData,
                     };
-                    if pretty {
-                        write!(f, " -> {pointee:#}")?;
-                    } else {
-                        write!(f, " -> {pointee}")?;
-                    }
+                    write!(f, " -> ")?;
+                    write_display_value(f, &pointee, ctx.deeper(), pretty)?;
                 }
                 Err(_) => write!(f, " -> <unreadable>")?,
             }

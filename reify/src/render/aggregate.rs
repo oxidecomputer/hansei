@@ -9,7 +9,7 @@ use crate::value::TypeInfoRef;
 use std::fmt;
 
 use super::dyn_ptr::eval_dyn_pointer;
-use super::{DisplayRecurse, RenderCtx, write_hex_bytes, write_indent};
+use super::{RenderCtx, write_display_value, write_hex_bytes, write_indent};
 
 /// True when `members` are a Rust tuple aggregate — a tuple struct or a tuple
 /// enum variant — whose fields rustc names `__0, __1, …` in declaration order.
@@ -64,20 +64,13 @@ fn write_member_value<'a, M: DebugMember<'a>>(
     let end = start + mem_ty.size() as usize;
     match bytes.get(start..end) {
         Some(mem_bytes) => {
-            let child = DisplayRecurse {
-                info: TypeInfoRef {
-                    ty: mem_ty,
-                    addr: addr + member.offset(),
-                    bytes: mem_bytes,
-                    _marker: std::marker::PhantomData,
-                },
-                ctx: ctx.deeper(),
+            let child = TypeInfoRef {
+                ty: mem_ty,
+                addr: addr + member.offset(),
+                bytes: mem_bytes,
+                _marker: std::marker::PhantomData,
             };
-            if pretty {
-                write!(f, "{:#}", child)
-            } else {
-                write!(f, "{}", child)
-            }
+            write_display_value(f, &child, ctx.deeper(), pretty)
         }
         None => write!(f, "<truncated>"),
     }
@@ -228,7 +221,7 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
         && let Some(node) = ctx.debug_format(&variant_info.ty)
         && matches!(*node, DisplayNode::DynPointer { .. })
     {
-        return eval_dyn_pointer(f, variant_info.ty, None, &node, variant_info.bytes, ctx);
+        return eval_dyn_pointer(f, variant_info.ty, None, &node, variant_info.bytes, ctx, pretty);
     }
 
     // A payload carrying a semantic display format (a `&str`/`String`, a
@@ -241,16 +234,8 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
     if !ctx.ugly && ctx.debug_format(&variant_info.ty).is_some() {
         // Peeling into the payload's own formatter is a representation detail,
         // so it stays at the same depth.
-        let child = DisplayRecurse {
-            info: variant_info,
-            ctx,
-        };
         write!(f, "(")?;
-        if pretty {
-            write!(f, "{child:#}")?;
-        } else {
-            write!(f, "{child}")?;
-        }
+        write_display_value(f, &variant_info, ctx, pretty)?;
         return write!(f, ")");
     }
 
@@ -270,16 +255,8 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
         variant_info.ty.kind(),
         TypeKind::Struct | TypeKind::Union | TypeKind::Other
     ) {
-        let child = DisplayRecurse {
-            info: variant_info,
-            ctx: ctx.deeper(),
-        };
         write!(f, "(")?;
-        if pretty {
-            write!(f, "{child:#}")?;
-        } else {
-            write!(f, "{child}")?;
-        }
+        write_display_value(f, &variant_info, ctx.deeper(), pretty)?;
         return write!(f, ")");
     }
 
