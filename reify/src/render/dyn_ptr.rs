@@ -77,7 +77,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
     }
     write!(f, " {{")?;
 
-    write_dyn_field_prefix(f, pretty, ctx.depth)?;
+    write_dyn_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
     write!(f, "pointer: 0x{pointer_address:x}")?;
     // The vtable resolves the erased *tail* type; when the pointer targets an
     // unsized wrapper (e.g. `ArcInner<dyn Trait>`) the value lives past a
@@ -113,19 +113,19 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
         }
     }
     write!(f, ",")?;
-    write_dyn_field_prefix(f, pretty, ctx.depth)?;
+    write_dyn_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
     write!(
         f,
         "concrete type: {},",
         concrete.as_deref().unwrap_or("<unknown>")
     )?;
-    write_dyn_field_prefix(f, pretty, ctx.depth)?;
+    write_dyn_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
     write!(f, "vtable: ")?;
 
     match words.as_deref() {
         Some(words) if ctx.depth + 1 < ctx.max_depth => {
             write!(f, "{{")?;
-            write_vtable_field_prefix(f, pretty, ctx.depth)?;
+            write_vtable_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
             let drop_address = words
                 .get(*drop_in_place_slot as usize)
                 .copied()
@@ -139,12 +139,12 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
             }
             write!(f, ",")?;
 
-            write_vtable_field_prefix(f, pretty, ctx.depth)?;
+            write_vtable_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
             match words.get(*size_slot as usize) {
                 Some(size) => write!(f, "size: {size},")?,
                 None => write!(f, "size: <unavailable>,")?,
             }
-            write_vtable_field_prefix(f, pretty, ctx.depth)?;
+            write_vtable_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
             match words.get(*align_slot as usize) {
                 Some(align) => write!(f, "align: {align},")?,
                 None => write!(f, "align: <unavailable>,")?,
@@ -155,7 +155,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
                 if slot == *drop_in_place_slot || slot == *size_slot || slot == *align_slot {
                     continue;
                 }
-                write_vtable_field_prefix(f, pretty, ctx.depth)?;
+                write_vtable_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
                 if let Some(function) = functions.iter().find(|function| function.slot == slot) {
                     write!(f, "method[{slot}]: 0x{address:x} -> {},", function.display)?;
                 } else {
@@ -165,7 +165,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
 
             if pretty {
                 writeln!(f)?;
-                write_indent(f, ctx.depth + 1)?;
+                write_indent(f, ctx.prefix, ctx.depth + 1)?;
             } else {
                 write!(f, " ")?;
             }
@@ -178,7 +178,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
 
     if pretty {
         writeln!(f)?;
-        write_indent(f, ctx.depth)?;
+        write_indent(f, ctx.prefix, ctx.depth)?;
     } else {
         write!(f, " ")?;
     }
@@ -201,10 +201,10 @@ pub(crate) fn resolve_function_symbol(
     )
 }
 
-fn write_dyn_field_prefix(f: &mut fmt::Formatter<'_>, pretty: bool, depth: usize) -> fmt::Result {
+fn write_dyn_field_prefix(f: &mut fmt::Formatter<'_>, pretty: bool, prefix: &str, depth: usize) -> fmt::Result {
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth + 1)
+        write_indent(f, prefix, depth + 1)
     } else {
         write!(f, " ")
     }
@@ -213,11 +213,12 @@ fn write_dyn_field_prefix(f: &mut fmt::Formatter<'_>, pretty: bool, depth: usize
 fn write_vtable_field_prefix(
     f: &mut fmt::Formatter<'_>,
     pretty: bool,
+    prefix: &str,
     depth: usize,
 ) -> fmt::Result {
     if pretty {
         writeln!(f)?;
-        write_indent(f, depth + 2)
+        write_indent(f, prefix, depth + 2)
     } else {
         write!(f, " ")
     }
