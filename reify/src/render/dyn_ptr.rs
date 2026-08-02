@@ -23,7 +23,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
     name: Option<&str>,
     node: &DisplayNode<T>,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
 ) -> fmt::Result {
     let DisplayNode::DynPointer {
         pointer_offset,

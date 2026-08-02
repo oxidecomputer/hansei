@@ -22,8 +22,15 @@ use aggregate::{write_rust_enum, write_struct_fields};
 use node::eval_node;
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::rc::Rc;
+
+/// Display programs a render pass has already resolved, keyed by
+/// [`DebugType::format_cache_key`]. A `None` entry records a type whose
+/// resolution declined (or that carries no format), which is asked for as
+/// often as one whose resolution succeeded.
+pub(crate) type FormatCache<T> = RefCell<HashMap<u64, Option<Rc<DisplayNode<T>>>>>;
 
 impl<'a, T: DebugType<'a>> fmt::Display for TypeInfoRef<'_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -69,6 +76,7 @@ pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromP
     ugly: bool,
     elide: Option<&'r ElideOverride>,
     visited: RefCell<HashSet<(u64, &'a str)>>,
+    formats: FormatCache<T>,
 }
 
 impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc> DisplayTargetValue<'r, 'buf, 'a, T, P> {
@@ -95,6 +103,7 @@ impl<'a, T: DebugType<'a>, P: ReadFromProc> fmt::Display for DisplayTargetValue<
             hex_integers: false,
             ugly: self.ugly,
             elide: self.elide,
+            formats: Some(&self.formats),
         };
         write_display_value(f, self.info, ctx)
     }
@@ -133,6 +142,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             ugly: false,
             elide: None,
             visited: RefCell::new(HashSet::new()),
+            formats: FormatCache::default(),
         }
     }
 }
@@ -144,11 +154,14 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
 /// structural view. Bundling these keeps the renderer signatures small (they
 /// otherwise take the same trailing arguments everywhere).
 #[derive(Copy, Clone)]
-pub(crate) struct RenderCtx<'buf, 'a> {
+pub(crate) struct RenderCtx<'buf, 'a, T: DebugType<'a>> {
     depth: usize,
     max_depth: usize,
     proc: Option<&'buf dyn ReadFromProc>,
     visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
+    /// Where this pass memoizes resolved display programs; `None` renders
+    /// resolve on every ask (the plain, targetless displays).
+    formats: Option<&'buf FormatCache<T>>,
     hex_integers: bool,
     /// Suppress every type's own [`debug_format`](DebugType::debug_format) and
     /// render purely through [`classify`](DebugType::classify) — the "ugly",
@@ -233,7 +246,7 @@ fn glob_match(pattern: &str, name: &str) -> bool {
     pattern[pi..].iter().all(|&ch| ch == b'*')
 }
 
-impl<'buf, 'a> RenderCtx<'buf, 'a> {
+impl<'buf, 'a, T: DebugType<'a>> RenderCtx<'buf, 'a, T> {
     /// A context with no target to read from (structural rendering only).
     fn plain(depth: usize, max_depth: usize) -> Self {
         Self {
@@ -241,10 +254,29 @@ impl<'buf, 'a> RenderCtx<'buf, 'a> {
             max_depth,
             proc: None,
             visited: None,
+            formats: None,
             hex_integers: false,
             ugly: false,
             elide: None,
         }
+    }
+
+    /// The type's resolved display program. Resolving reduces the bundle's
+    /// name-addressed selectors to byte offsets and allocates the resolved
+    /// tree, so a pass carrying a cache pays that once per type rather than
+    /// once per value — a map of ten thousand `String`s asks ten thousand
+    /// times and resolves once.
+    fn debug_format(&self, ty: &T) -> Option<Rc<DisplayNode<T>>> {
+        let Some(cache) = self.formats else {
+            return ty.debug_format().map(Rc::new);
+        };
+        let key = ty.format_cache_key();
+        if let Some(hit) = cache.borrow().get(&key) {
+            return hit.clone();
+        }
+        let resolved = ty.debug_format().map(Rc::new);
+        cache.borrow_mut().insert(key, resolved.clone());
+        resolved
     }
 
     /// The context for a value nested one level deeper.
@@ -273,7 +305,7 @@ impl<'buf, 'a> RenderCtx<'buf, 'a> {
 /// Wrapper that carries [`RenderCtx`] for recursive formatting.
 pub(crate) struct DisplayRecurse<'buf, 'a: 'buf, T: DebugType<'a>> {
     info: TypeInfoRef<'buf, 'a, T>,
-    ctx: RenderCtx<'buf, 'a>,
+    ctx: RenderCtx<'buf, 'a, T>,
 }
 
 impl<'a, T: DebugType<'a>> fmt::Display for DisplayRecurse<'_, 'a, T> {
@@ -285,7 +317,7 @@ impl<'a, T: DebugType<'a>> fmt::Display for DisplayRecurse<'_, 'a, T> {
 fn write_display_value<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     info: &TypeInfoRef<'_, 'a, T>,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
 ) -> fmt::Result {
     let ty = info.ty;
     let bytes = info.bytes;
@@ -314,14 +346,14 @@ fn write_display_value<'a, T: DebugType<'a>>(
     // its structural classification below; `--no-elide` skips only the
     // bundle's `Elided` formats, leaving the types under them structural.
     if !ctx.ugly
-        && let Some(node) = ty.debug_format()
-        && !(matches!(node, DisplayNode::Elided) && ctx.elide.is_some_and(|e| e.no_elide))
+        && let Some(node) = ctx.debug_format(&ty)
+        && !(matches!(*node, DisplayNode::Elided) && ctx.elide.is_some_and(|e| e.no_elide))
     {
         // A top-level `Scalar` formatter (e.g. a parking_lot `RawMutex`)
         // has no enclosing field label to give it context, so it is prefixed
         // with the type name — `<name>: <decoded>`. Other nodes name (or
         // elide) themselves as they render.
-        if let DisplayNode::Scalar { .. } = node {
+        if let DisplayNode::Scalar { .. } = *node {
             write!(f, "{}: ", ty.name())?;
         }
         return eval_node(f, &node, &ty, info.bytes, info.addr, ctx, f.alternate());

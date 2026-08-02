@@ -27,7 +27,7 @@ pub(crate) fn eval_slice<'a, T: DebugType<'a>>(
     element: &T,
     element_size: u32,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     let Some(len) = read_unsigned_at(bytes, length_offset, u64::from(length_size)) else {
@@ -137,7 +137,7 @@ pub(crate) fn eval_map<'a, T: DebugType<'a>>(
     f: &mut fmt::Formatter<'_>,
     ty: &T,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
     length_offset: u64,
     length_size: u32,
@@ -426,7 +426,7 @@ pub(crate) fn eval_list<'a, T: DebugType<'a>>(
     node_ty: &T,
     node_size: u32,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     let Some(head) = read_u64_at(bytes, head_offset) else {
