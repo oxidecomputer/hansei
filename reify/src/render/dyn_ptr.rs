@@ -186,7 +186,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
 }
 
 pub(crate) fn resolve_function_symbol(
-    proc: Option<&dyn ReadFromProc>,
+    proc: Option<&(dyn ReadFromProc + Sync)>,
     address: u64,
 ) -> Option<String> {
     if address == 0 {
@@ -226,7 +226,7 @@ fn write_vtable_field_prefix(
 fn read_vtable_words<'a, T: DebugType<'a>>(
     vtable: T,
     address: u64,
-    proc: Option<&dyn ReadFromProc>,
+    proc: Option<&(dyn ReadFromProc + Sync)>,
 ) -> Option<Vec<u64>> {
     if address == 0 {
         return None;

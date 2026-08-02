@@ -39,7 +39,10 @@ impl fmt::Display for TypeKind {
 ///
 /// `exegesis::bundle::BundleType<'a>` implements this, letting `TypeInfo`
 /// and `TypeInfoRef` render values described by a bundle.
-pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug {
+/// `Send + Sync` because rendering fans a value's collections out across
+/// worker threads, each holding copies of the type handles it renders;
+/// a backend handle is a shared reference into immutable loaded data.
+pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug + Send + Sync {
     type Member: DebugMember<'a, Type = Self>;
     type MemberIter: ExactSizeIterator<Item = Self::Member>;
 

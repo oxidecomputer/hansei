@@ -12,6 +12,7 @@ pub(crate) mod aggregate;
 pub(crate) mod collections;
 pub(crate) mod dyn_ptr;
 pub(crate) mod node;
+pub(crate) mod par;
 pub(crate) mod scalar;
 
 use crate::debug_type::{DebugType, DisplayNode, TypeClass};
@@ -20,6 +21,7 @@ use crate::value::{TypeInfo, TypeInfoRef};
 
 use aggregate::{write_rust_enum, write_struct_fields};
 use node::eval_node;
+use par::WorkerCtx;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -70,7 +72,7 @@ impl<'a, T: DebugType<'a>> fmt::Display for DisplayValue<'_, '_, 'a, T> {
     }
 }
 
-pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc> {
+pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync> {
     info: &'r TypeInfoRef<'buf, 'a, T>,
     proc: &'r P,
     max_depth: usize,
@@ -80,7 +82,7 @@ pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromP
     formats: FormatCache<T>,
 }
 
-impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc> DisplayTargetValue<'r, 'buf, 'a, T, P> {
+impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync> DisplayTargetValue<'r, 'buf, 'a, T, P> {
     /// Suppress custom formatters and render the base structural view.
     pub fn ugly(mut self) -> Self {
         self.ugly = true;
@@ -94,7 +96,7 @@ impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc> DisplayTargetValue<'
     }
 }
 
-impl<'a, T: DebugType<'a>, P: ReadFromProc> fmt::Display for DisplayTargetValue<'_, '_, 'a, T, P> {
+impl<'a, T: DebugType<'a>, P: ReadFromProc + Sync> fmt::Display for DisplayTargetValue<'_, '_, 'a, T, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ctx = RenderCtx {
             depth: 0,
@@ -105,6 +107,7 @@ impl<'a, T: DebugType<'a>, P: ReadFromProc> fmt::Display for DisplayTargetValue<
             ugly: self.ugly,
             elide: self.elide,
             formats: Some(&self.formats),
+            parallel: true,
         };
         write_display_value(f, self.info, ctx, f.alternate())
     }
@@ -131,7 +134,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
 
     /// Format this value while recursively reading typed pointees from a
     /// target. Pointer traversal consumes one level of the depth budget.
-    pub fn display_from_target<'r, P: ReadFromProc>(
+    pub fn display_from_target<'r, P: ReadFromProc + Sync>(
         &'r self,
         proc: &'r P,
         max_depth: usize,
@@ -158,11 +161,16 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
 pub(crate) struct RenderCtx<'buf, 'a, T: DebugType<'a>> {
     depth: usize,
     max_depth: usize,
-    proc: Option<&'buf dyn ReadFromProc>,
+    proc: Option<&'buf (dyn ReadFromProc + Sync)>,
     visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
     /// Where this pass memoizes resolved display programs; `None` renders
     /// resolve on every ask (the plain, targetless displays).
     formats: Option<&'buf FormatCache<T>>,
+    /// Whether a collection may fan its entries out across worker
+    /// threads. True at the root of a target-backed render; the
+    /// collection that spends it hands its workers `false`, so fan-out
+    /// happens once, at the outermost eligible sequence.
+    parallel: bool,
     hex_integers: bool,
     /// Suppress every type's own [`debug_format`](DebugType::debug_format) and
     /// render purely through [`classify`](DebugType::classify) — the "ugly",
@@ -256,9 +264,23 @@ impl<'buf, 'a, T: DebugType<'a>> RenderCtx<'buf, 'a, T> {
             proc: None,
             visited: None,
             formats: None,
+            parallel: false,
             hex_integers: false,
             ugly: false,
             elide: None,
+        }
+    }
+
+    /// The `Send + Sync` slice of this context, from which a worker
+    /// thread rebuilds a context of its own around task-local caches.
+    pub(crate) fn for_workers(&self) -> WorkerCtx<'buf> {
+        WorkerCtx {
+            depth: self.depth,
+            max_depth: self.max_depth,
+            proc: self.proc,
+            hex_integers: self.hex_integers,
+            ugly: self.ugly,
+            elide: self.elide,
         }
     }
 

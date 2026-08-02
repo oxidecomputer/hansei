@@ -72,7 +72,7 @@ pub(crate) fn write_symbol(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     offset: u64,
-    proc: Option<&dyn ReadFromProc>,
+    proc: Option<&(dyn ReadFromProc + Sync)>,
 ) -> fmt::Result {
     let Some(address) = read_u64_at(bytes, offset) else {
         return write!(f, "<truncated>");
@@ -96,7 +96,7 @@ pub(crate) fn write_utf8_string(
     length_offset: u64,
     length_size: u64,
     capacity: Option<(u64, u64)>,
-    proc: Option<&dyn ReadFromProc>,
+    proc: Option<&(dyn ReadFromProc + Sync)>,
 ) -> fmt::Result {
     let Some(len) = read_unsigned_at(bytes, length_offset, length_size) else {
         return write!(f, "<truncated string length>");

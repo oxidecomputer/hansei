@@ -444,7 +444,7 @@ fn exec_trace(
 /// frame indents follows from its predecessors' inventories rather than
 /// from its depth alone, and a state listed after the active one is
 /// printed once the subtree that grew out of the active one is closed.
-fn print_await_chain<'b, T: proc::Target>(
+fn print_await_chain<'b, T: proc::Target + Sync>(
     ctx: &bundle::Context<'b, T>,
     chain: &bundle::AwaitChain<'b>,
     verbose: bool,
@@ -1106,7 +1106,7 @@ fn discover_workers(proc: &Proc, ctx: &bundle::Context<'_, Proc>) -> Result<Vec<
 /// strip away). The two read slightly different page sets, so warming
 /// both keeps the snapshot faithful to either rendering path.
 #[cfg(feature = "snapshot")]
-fn warm_frame_values<T: proc::Target>(
+fn warm_frame_values<T: proc::Target + Sync>(
     ctx: &bundle::Context<'_, T>,
     chain: &bundle::AwaitChain<'_>,
 ) {
