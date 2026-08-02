@@ -425,6 +425,22 @@ fn test_payload_not_a_bundle_rejected() {
     ));
 }
 
+/// An older writer's streaming encoder records no decompressed size in
+/// its frame; the reader falls back to the general decode.
+#[test]
+fn test_streamed_frame_without_content_size_still_loads() {
+    let b = tiny_bundle();
+    let payload = postcard::to_allocvec(&b).unwrap();
+    let mut frame = Vec::new();
+    zstd::stream::copy_encode(payload.as_slice(), &mut frame, 0).unwrap();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&MAGIC);
+    bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    bytes.extend_from_slice(blake3::hash(&frame).as_bytes());
+    bytes.extend_from_slice(&frame);
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+}
+
 #[test]
 fn test_validate_rejects_oob_type_id() {
     let mut b = tiny_bundle();
