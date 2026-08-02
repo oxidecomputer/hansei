@@ -26,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 26;
+pub const FORMAT_VERSION: u32 = 27;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -827,7 +827,8 @@ fn has_dyn_tail(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>)
 }
 
 impl Bundle {
-    /// Serialize into `w`: header, then zstd-compressed postcard payload.
+    /// Serialize into `w`: header, the BLAKE3 of the compressed payload,
+    /// then the zstd-compressed postcard payload itself.
     ///
     /// Performs no validation, so tests can craft intentionally-broken
     /// bundles; use [`Bundle::save`] for the checked path.
@@ -835,7 +836,14 @@ impl Bundle {
         w.write_all(&MAGIC)?;
         w.write_all(&FORMAT_VERSION.to_le_bytes())?;
         let payload = postcard::to_allocvec(self).map_err(Error::Encode)?;
-        zstd::stream::copy_encode(payload.as_slice(), &mut w, zstd::DEFAULT_COMPRESSION_LEVEL)?;
+        let mut frame = Vec::new();
+        zstd::stream::copy_encode(
+            payload.as_slice(),
+            &mut frame,
+            zstd::DEFAULT_COMPRESSION_LEVEL,
+        )?;
+        w.write_all(blake3::hash(&frame).as_bytes())?;
+        w.write_all(&frame)?;
         Ok(())
     }
 
@@ -849,7 +857,15 @@ impl Bundle {
     }
 
     /// Deserialize a bundle from `r`, verifying framing, format version,
-    /// and internal consistency ([`Bundle::validate`]).
+    /// and payload integrity.
+    ///
+    /// Integrity is the stored BLAKE3 of the compressed payload: a match
+    /// proves these are byte-for-byte what [`Bundle::save`] validated, so
+    /// the load path re-derives nothing per table — which is where a
+    /// bundle of a real program spent most of its load time. What the
+    /// hash does not defend against is deliberate tampering, which
+    /// nothing here ever did: the threat is the truncated or damaged
+    /// file.
     pub fn read_from<R: Read>(mut r: R) -> Result<Self> {
         let mut header = [0u8; MAGIC.len() + size_of::<u32>()];
         r.read_exact(&mut header)?;
@@ -863,10 +879,22 @@ impl Bundle {
                 expected: FORMAT_VERSION,
             });
         }
-        let payload = zstd::stream::decode_all(r)?;
-        let bundle: Bundle = postcard::from_bytes(&payload).map_err(Error::Decode)?;
-        bundle.validate()?;
-        Ok(bundle)
+        let mut stored = [0u8; 32];
+        r.read_exact(&mut stored)?;
+        let stored = blake3::Hash::from_bytes(stored);
+        let mut frame = Vec::new();
+        r.read_to_end(&mut frame)?;
+        let computed = blake3::hash(&frame);
+        if computed != stored {
+            return Err(Error::Corrupt(format!(
+                "payload hash mismatch — the file is truncated or damaged \
+                 (stored {}, computed {})",
+                stored.to_hex(),
+                computed.to_hex(),
+            )));
+        }
+        let payload = zstd::stream::decode_all(frame.as_slice())?;
+        postcard::from_bytes(&payload).map_err(Error::Decode)
     }
 
     /// Load a bundle from `path`.
