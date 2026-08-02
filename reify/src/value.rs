@@ -21,7 +21,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfo<'a, T> {
     /// Read the type directly at the address provided.
     pub fn from_addr<Ctx: ParseCtx>(ctx: &Ctx, ty: T, addr: u64) -> Result<Self> {
         let vec = ctx.proc().read_bytes(addr, ty.size())?;
-        let buf = vec.into_boxed_slice();
+        let buf = vec.into_owned().into_boxed_slice();
 
         Ok(Self {
             ty,
@@ -39,7 +39,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfo<'a, T> {
     /// address.
     pub fn refresh<Ctx: ParseCtx>(&mut self, ctx: &Ctx) -> Result<()> {
         let vec = ctx.proc().read_bytes(self.addr, self.ty.size())?;
-        let buf = vec.into_boxed_slice();
+        let buf = vec.into_owned().into_boxed_slice();
 
         self.buf = buf;
         Ok(())
@@ -197,7 +197,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             // TODO return an error?
             return Ok(None);
         };
-        let buf = vec.into_boxed_slice();
+        let buf = vec.into_owned().into_boxed_slice();
 
         // Remove any wrapper types.
         let unwrapped = TypeInfoRef {

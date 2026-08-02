@@ -255,7 +255,7 @@ fn read_place_bytes<'b, 'a, T: DebugType<'a>>(
     place: &Place,
     bytes: &'b [u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'b, 'a, T>,
     size: u64,
 ) -> std::result::Result<(u64, Cow<'b, [u8]>), &'static str> {
     if place.hops.is_empty() {
@@ -278,11 +278,11 @@ fn read_place_bytes<'b, 'a, T: DebugType<'a>>(
     }
     let target = pointer.checked_add(*last).ok_or("<invalid address>")?;
     let read = if size == 0 {
-        Vec::new()
+        Cow::Borrowed(&[][..])
     } else {
         proc.read_bytes(target, size).map_err(|_| "<unreadable>")?
     };
-    Ok((target, Cow::Owned(read)))
+    Ok((target, read))
 }
 
 /// Evaluate a resolved [`ValueExpr`] against `bytes`, crossing pointer hops via

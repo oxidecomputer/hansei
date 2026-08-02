@@ -213,6 +213,16 @@ impl Target for Proc {
         dispatch!(self, read_bytes(addr, len))
     }
 
+    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+        match self {
+            // libproc reads through a handle; there is nothing to borrow.
+            #[cfg(target_os = "illumos")]
+            Proc::Libproc(_) => None,
+            Proc::LinuxCore(c) => c.pslice(addr, len),
+            Proc::IllumosCore(c) => c.pslice(addr, len),
+        }
+    }
+
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
         Proc::lookup_symbol_by_addr(self, addr)
     }

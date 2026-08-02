@@ -506,6 +506,28 @@ impl Core {
         Ok(take)
     }
 
+    /// The bytes at `addr`, borrowed straight from a mapping — the core's
+    /// own when the range is dumped, the backing file's when it is not.
+    /// A read no single source serves whole (crossing a boundary, or
+    /// straddling the dumped/on-disk seam) is `None`; [`pread`](Core::pread)
+    /// assembles those into a caller's buffer instead.
+    pub fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+        if let Some(seg) = self.segment_at(addr).filter(|s| s.dumped().contains(&addr)) {
+            let skip = addr - seg.vaddr;
+            if seg.filesz - skip < len {
+                return None;
+            }
+            let start = (seg.offset + skip) as usize;
+            return self.core.get(start..start + len as usize);
+        }
+        let file = self.file_at(addr)?;
+        if file.range.end - addr < len {
+            return None;
+        }
+        let start = (file.offset + (addr - file.range.start)) as usize;
+        self.backing(&file.path)?.map.get(start..start + len as usize)
+    }
+
     pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
         let mut done = 0usize;
         while done < buf.len() {
@@ -848,6 +870,10 @@ impl Target for Core {
         let mut buf = vec![0u8; len as usize];
         self.pread_exact(&mut buf, addr)?;
         Ok(buf)
+    }
+
+    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+        Core::pslice(self, addr, len)
     }
 
     fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {
@@ -1273,6 +1299,39 @@ mod tests {
         let got = p.read_bytes(BASE + PAGE - 4, 8).unwrap();
         assert_eq!(&got[..4], [0x5a; 4]);
         assert_eq!(&got[4..], &on_disk[PAGE as usize..PAGE as usize + 4]);
+    }
+
+    /// `pslice` borrows only what one source serves whole: inside the
+    /// dumped page that is the core's bytes, inside the undumped page
+    /// the backing file's, and across the seam — where `read_bytes`
+    /// quietly assembles from both — it declines.
+    #[test]
+    fn test_pslice_borrows_within_a_single_source() {
+        let exe = std::env::current_exe().unwrap();
+        let on_disk = std::fs::read(&exe).unwrap();
+        const BASE: u64 = 0x40_0000;
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(BASE, PF_R | PF_W, vec![0x5a; PAGE as usize])
+            .undumped(BASE + PAGE, PAGE, PF_R | PF_X)
+            .file(BASE..BASE + 2 * PAGE, 0, exe.to_str().unwrap())
+            .proc();
+
+        // A borrowed read answers exactly what read_bytes does.
+        assert_eq!(p.pslice(BASE, 4).unwrap(), [0x5a; 4]);
+        assert_eq!(p.pslice(BASE, PAGE).unwrap(), vec![0x5a; PAGE as usize]);
+        assert_eq!(
+            p.pslice(BASE + PAGE + 0x40, 32).unwrap(),
+            &on_disk[PAGE as usize + 0x40..PAGE as usize + 0x60]
+        );
+
+        // Across the dumped/on-disk seam there is no one slice to hand
+        // out; nor short of the mapping's end, nor where nothing is
+        // mapped at all.
+        assert!(p.pslice(BASE + PAGE - 4, 8).is_none());
+        assert!(p.pslice(BASE + 2 * PAGE - 4, 8).is_none());
+        assert!(p.pslice(0xdead_0000, 8).is_none());
     }
 
     /// A mapping the core mentions only in `NT_FILE`, with no program

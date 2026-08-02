@@ -2,10 +2,15 @@
 
 use crate::{Error, Result};
 
+use std::borrow::Cow;
+
 pub trait ReadFromProc {
     /// Read `len` bytes at address, returning an error if the address is
-    /// unmapped.
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>>;
+    /// unmapped. Borrowed straight from the target's own storage when it
+    /// serves the range in one piece (a mapped core segment); owned when
+    /// the read had to be assembled. The renderer holds these across its
+    /// recursion, so what a mapping can lend costs no allocation at all.
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<Cow<'_, [u8]>>;
 
     /// The mangled function symbol beginning exactly at `addr`, if one is
     /// available from the target. Display-only readers can leave this
@@ -16,8 +21,12 @@ pub trait ReadFromProc {
 }
 
 impl<T: proc::Target> ReadFromProc for T {
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<Cow<'_, [u8]>> {
+        if let Some(bytes) = self.pslice(addr, len) {
+            return Ok(Cow::Borrowed(bytes));
+        }
         proc::Target::read_bytes(self, addr, len)
+            .map(Cow::Owned)
             .map_err(|e| Error::invalid_addr(addr).with_source(e))
     }
 
