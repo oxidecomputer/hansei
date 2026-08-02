@@ -7,5 +7,6 @@ edition = "2024"
 exegesis = { workspace = true }
 foldhash.workspace = true
 proc = { workspace = true }
+rayon = { workspace = true }
 rustc-demangle = { workspace = true }
 thiserror = { workspace = true }
