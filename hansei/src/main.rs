@@ -322,10 +322,19 @@ fn main() {
 /// lets a session be held across many commands without a
 /// self-referential struct.
 fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
-    let proc = Proc::open_core(&args.core)
-        .with_context(|| format!("failed to open {}", args.core.display()))?;
-    let bundle = Bundle::load(&args.bundle)
-        .with_context(|| format!("failed to load bundle {}", args.bundle.display()))?;
+    // The two files are independent and each costs real time to read
+    // (the core indexes its symbol tables, the bundle decompresses and
+    // decodes), so one is opened on a second thread.
+    let (proc, bundle) = std::thread::scope(|scope| {
+        let bundle = scope.spawn(|| {
+            Bundle::load(&args.bundle)
+                .with_context(|| format!("failed to load bundle {}", args.bundle.display()))
+        });
+        let proc = Proc::open_core(&args.core)
+            .with_context(|| format!("failed to open {}", args.core.display()));
+        (proc, bundle.join().expect("bundle loader panicked"))
+    });
+    let (proc, bundle) = (proc?, bundle?);
     let session = Session::attach(&proc, &bundle, args)?;
 
     repl::run(&session, exec)
