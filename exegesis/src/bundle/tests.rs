@@ -36,22 +36,25 @@ fn tiny_bundle() -> Bundle {
     let mut strings = StringInterner::new();
     let name = strings.intern("u64");
     let ty = BundleTypeId(0);
+    let strings = strings.finish();
+    let mut types = TypeTable {
+        types: vec![TypeDef::Base {
+            name,
+            size: 8,
+            encoding: Encoding::Unsigned,
+        }],
+        debug_formats: BTreeMap::new(),
+        name_index: vec![(name, ty)],
+        ..Default::default()
+    };
+    types.build_normalized_index(&strings);
     Bundle {
         meta: Meta {
             format_version: FORMAT_VERSION,
             ..Default::default()
         },
-        strings: strings.finish(),
-        types: TypeTable {
-            types: vec![TypeDef::Base {
-                name,
-                size: 8,
-                encoding: Encoding::Unsigned,
-            }],
-            debug_formats: BTreeMap::new(),
-            name_index: vec![(name, ty)],
-            ..Default::default()
-        },
+        strings,
+        types,
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
         statics: StaticsTable::default(),
@@ -264,6 +267,13 @@ fn random_bundle(seed: u64) -> Bundle {
         .collect();
     let table = strings.finish();
     name_index.sort_by(|a, b| table.get(a.0).unwrap().cmp(table.get(b.0).unwrap()));
+    let mut type_table = TypeTable {
+        types,
+        debug_formats: BTreeMap::new(),
+        name_index,
+        ..Default::default()
+    };
+    type_table.build_normalized_index(&table);
 
     Bundle {
         meta: Meta {
@@ -279,12 +289,7 @@ fn random_bundle(seed: u64) -> Bundle {
             symbol_fingerprint: (0..rng.below(20)).map(|i| format!("_RINv_fp{i}")).collect(),
         },
         strings: table,
-        types: TypeTable {
-            types,
-            debug_formats: BTreeMap::new(),
-            name_index,
-            ..Default::default()
-        },
+        types: type_table,
         tasks: TaskTable {
             by_symbol,
             by_normalized_symbol: BTreeMap::new(),
@@ -1564,6 +1569,7 @@ mod view_tests {
             name_index: vec![(point, BundleTypeId(1)), (u32n, BundleTypeId(0))],
             ..Default::default()
         };
+        b.types.build_normalized_index(&b.strings);
         b.validate().expect("test bundle must validate");
 
         let view = BundleView::new(&b);

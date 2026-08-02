@@ -1512,7 +1512,7 @@ pub fn test_bundle() -> Bundle {
     let bool_decode =
         || BundleScalarDecode::Bits(vec![ebf(emptyl, 0, 0, vec![(0, falsel), (1, truel)])]);
 
-    let b = Bundle {
+    let mut b = Bundle {
         meta: Meta {
             format_version: FORMAT_VERSION,
             ..Default::default()
@@ -1891,6 +1891,7 @@ pub fn test_bundle() -> Bundle {
         },
         provenance: ProvenanceTable::default(),
     };
+    b.types.build_normalized_index(&b.strings);
     b.validate().expect("test bundle must validate");
     b
 }
@@ -2110,7 +2111,7 @@ pub fn node_bundle() -> Bundle {
         default: None,
     };
 
-    let b = Bundle {
+    let mut b = Bundle {
         meta: Meta {
             format_version: FORMAT_VERSION,
             ..Default::default()
@@ -2141,6 +2142,7 @@ pub fn node_bundle() -> Bundle {
         },
         provenance: ProvenanceTable::default(),
     };
+    b.types.build_normalized_index(&b.strings);
     b.validate().expect("node bundle must validate");
     b
 }

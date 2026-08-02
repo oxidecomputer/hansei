@@ -26,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 25;
+pub const FORMAT_VERSION: u32 = 26;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -971,6 +971,39 @@ impl Bundle {
                 return corrupt(format!("name index not sorted at {name:?}"));
             }
             prev = Some(name);
+        }
+
+        // The normalized-name index must cover `name_index` exactly: the
+        // same rows, sorted by hash, each position once. The hash values
+        // themselves ride on the format version, like every other derived
+        // table's keys.
+        if self.types.by_normalized_name.len() != self.types.name_index.len() {
+            return corrupt(format!(
+                "normalized name index covers {} of {} names",
+                self.types.by_normalized_name.len(),
+                self.types.name_index.len()
+            ));
+        }
+        let mut seen = vec![false; self.types.name_index.len()];
+        let mut prev_hash: Option<u64> = None;
+        for &(hash, position) in &self.types.by_normalized_name {
+            if prev_hash.is_some_and(|p| p > hash) {
+                return corrupt("normalized name index not sorted".to_string());
+            }
+            prev_hash = Some(hash);
+            match seen.get_mut(position as usize) {
+                Some(slot) if !*slot => *slot = true,
+                Some(_) => {
+                    return corrupt(format!(
+                        "normalized name index repeats position {position}"
+                    ));
+                }
+                None => {
+                    return corrupt(format!(
+                        "normalized name index position {position} out of range"
+                    ));
+                }
+            }
         }
 
         for (sym, id) in &self.tasks.by_symbol {
