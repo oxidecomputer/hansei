@@ -405,7 +405,7 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
             is_char,
         } => {
             if is_bool {
-                return write!(f, "{}", bytes[0] != 0);
+                return f.write_str(if bytes[0] != 0 { "true" } else { "false" });
             }
 
             if is_char {
@@ -413,27 +413,29 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
                 return if ch.is_ascii_graphic() || ch == b' ' {
                     write!(f, "'{}'", ch as char)
                 } else {
-                    write!(f, "'\\x{:02x}'", ch)
+                    f.write_str("'\\x")?;
+                    f.write_str(hex_pair(ch))?;
+                    f.write_str("'")
                 };
             }
 
             if ctx.hex_integers {
                 return match size {
-                    1 => write!(f, "0x{:02x}", bytes[0]),
-                    2 => write!(
+                    1 => write_hex_fixed(f, u64::from(bytes[0]), 1),
+                    2 => write_hex_fixed(
                         f,
-                        "0x{:04x}",
-                        u16::from_le_bytes(bytes[..2].try_into().unwrap())
+                        u64::from(u16::from_le_bytes(bytes[..2].try_into().unwrap())),
+                        2,
                     ),
-                    4 => write!(
+                    4 => write_hex_fixed(
                         f,
-                        "0x{:08x}",
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                        u64::from(u32::from_le_bytes(bytes[..4].try_into().unwrap())),
+                        4,
                     ),
-                    8 => write!(
+                    8 => write_hex_fixed(
                         f,
-                        "0x{:016x}",
-                        u64::from_le_bytes(bytes[..8].try_into().unwrap())
+                        u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                        8,
                     ),
                     _ => write_hex_bytes(f, bytes),
                 };
@@ -477,14 +479,15 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
             // would only ever print the type's name (`-> ()`). Show just the
             // address.
             if target.size() == 0 {
-                return write!(f, "0x{addr:x}");
+                return write_hex_u64(f, addr);
             }
             let (Some(proc), Some(visited)) = (ctx.proc, ctx.visited) else {
-                return write!(f, "0x{addr:x}");
+                return write_hex_u64(f, addr);
             };
             let key = (addr, target.name());
             if !visited.borrow_mut().insert(key) {
-                return write!(f, "0x{addr:x} -> <cycle>");
+                write_hex_u64(f, addr)?;
+                return f.write_str(" -> <cycle>");
             }
             let result = match proc.read_bytes(addr, target.size()) {
                 Ok(pointee_bytes) => {
@@ -494,10 +497,13 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
                         bytes: &pointee_bytes,
                         _marker: std::marker::PhantomData,
                     };
-                    write!(f, "0x{addr:x} -> ")
+                    write_hex_u64(f, addr)
+                        .and_then(|()| f.write_str(" -> "))
                         .and_then(|()| write_display_value(f, &pointee, ctx.deeper(), pretty))
                 }
-                Err(_) => write!(f, "0x{addr:x} -> <unreadable>"),
+                Err(_) => {
+                    write_hex_u64(f, addr).and_then(|()| f.write_str(" -> <unreadable>"))
+                }
             };
             visited.borrow_mut().remove(&key);
             result
@@ -657,15 +663,76 @@ pub(crate) fn write_seq_close(
     Ok(())
 }
 
-pub(crate) fn write_hex_bytes(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
-    write!(f, "[")?;
-    for (i, b) in bytes.iter().enumerate() {
-        if i > 0 {
-            write!(f, ", ")?;
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+/// All 256 byte values as two lowercase hex digits, concatenated:
+/// `"000102…feff"`. [`hex_pair`] slices it, so a byte's digits come off
+/// a static string instead of through the `fmt` integer machinery —
+/// hex is written per byte in enough loops for `LowerHex`'s share of
+/// render CPU to show in profiles.
+const HEX_PAIRS: &str = {
+    const BYTES: [u8; 512] = {
+        let mut table = [0u8; 512];
+        let mut i = 0;
+        while i < 256 {
+            table[i * 2] = HEX_DIGITS[i >> 4];
+            table[i * 2 + 1] = HEX_DIGITS[i & 0xf];
+            i += 1;
         }
-        write!(f, "0x{:02x}", b)?;
+        table
+    };
+    match str::from_utf8(&BYTES) {
+        Ok(pairs) => pairs,
+        Err(_) => unreachable!(),
     }
-    write!(f, "]")
+};
+
+/// The two lowercase hex digits of `byte`.
+pub(crate) fn hex_pair(byte: u8) -> &'static str {
+    &HEX_PAIRS[byte as usize * 2..byte as usize * 2 + 2]
+}
+
+/// `0x` and `value` in minimal-width lowercase hex — `0x{value:x}`
+/// without the `Arguments` interpreter and `pad_integral` behind
+/// `write!`, which every followed pointer would otherwise pay.
+pub(crate) fn write_hex_u64(f: &mut fmt::Formatter<'_>, value: u64) -> fmt::Result {
+    let mut buf = [0u8; 16];
+    let mut i = buf.len();
+    let mut v = value;
+    loop {
+        i -= 1;
+        buf[i] = HEX_DIGITS[(v & 0xf) as usize];
+        v >>= 4;
+        if v == 0 {
+            break;
+        }
+    }
+    f.write_str("0x")?;
+    f.write_str(str::from_utf8(&buf[i..]).unwrap_or("<bad hex>"))
+}
+
+/// `0x` and the low `width` bytes of `value` in zero-padded lowercase
+/// hex, most significant first — the `0x{value:04x}`-style spellings
+/// the fixed-width integer renderings use.
+pub(crate) fn write_hex_fixed(
+    f: &mut fmt::Formatter<'_>,
+    value: u64,
+    width: usize,
+) -> fmt::Result {
+    f.write_str("0x")?;
+    for i in (0..width).rev() {
+        f.write_str(hex_pair((value >> (i * 8)) as u8))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_hex_bytes(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    f.write_str("[")?;
+    for (i, b) in bytes.iter().enumerate() {
+        f.write_str(if i == 0 { "0x" } else { ", 0x" })?;
+        f.write_str(hex_pair(*b))?;
+    }
+    f.write_str("]")
 }
 
 // ---------------------------------------------------------------------------
