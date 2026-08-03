@@ -11,7 +11,7 @@
 //! boundary.
 
 use crate::debug_type::DebugType;
-use crate::render::ElideOverride;
+use crate::render::{AddrAnnotator, ElideOverride};
 use crate::target::ReadFromProc;
 
 use super::{FormatCache, RenderCtx};
@@ -47,6 +47,7 @@ pub(crate) struct WorkerCtx<'buf> {
     pub(super) hex_integers: bool,
     pub(super) ugly: bool,
     pub(super) elide: Option<&'buf ElideOverride>,
+    pub(super) annotate: Option<&'buf AddrAnnotator<'buf>>,
     pub(super) prefix: &'buf str,
 }
 
@@ -73,6 +74,7 @@ impl<'buf> WorkerCtx<'buf> {
             hex_integers: self.hex_integers,
             ugly: self.ugly,
             elide: self.elide,
+            annotate: self.annotate,
             prefix: self.prefix,
         }
     }
