@@ -772,6 +772,65 @@ Defined at: sleep-join.rs:15
     });
 }
 
+/// `trace -v` labels a pointer into another task's allocation with that
+/// task's id, and `task-at` resolves a raw address to its owning task —
+/// and the two agree: the labelled Header pointer inside the joiner's
+/// JoinHandle resolves back to the sleeper.
+#[test]
+fn test_task_at_acceptance() {
+    let bundle = fixtures().bundle("sleep-join");
+    with_core("sleep-join", |core| {
+        let rows = list_tasks(&bundle, core);
+        let sleeper = task_with_future(&rows, "sleep_join::sleeper::{async_fn_env#0}");
+        let joiner = task_with_future(&rows, "sleep_join::joiner::{async_fn_env#0}");
+
+        let verbose = trace(&bundle, core, &joiner.id, true);
+        let labelled = regex::Regex::new(r"(0x[0-9a-f]+) \(task (\d+)\)")
+            .unwrap()
+            .captures(&verbose)
+            .unwrap_or_else(|| panic!("no labelled pointer in:\n{verbose}"));
+        assert_eq!(&labelled[2], sleeper.id.as_str(), "{verbose}");
+
+        let header = &labelled[1];
+        let out = hansei_ok(&bundle, core, &format!("task-at {header}"));
+        assert!(
+            out.contains(&format!(
+                "{header} is in task {} at offset 0x0 (header {header})",
+                sleeper.id
+            )),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!(
+                "Task {}: sleep_join::sleeper::{{async_fn_env#0}} (idle)",
+                sleeper.id
+            )),
+            "{out}"
+        );
+
+        // An interior address resolves to the same task with its offset.
+        let interior = u64::from_str_radix(header.trim_start_matches("0x"), 16).unwrap() + 0x10;
+        let out = hansei_ok(&bundle, core, &format!("task-at {interior:#x}"));
+        assert!(
+            out.contains(&format!("is in task {} at offset 0x10", sleeper.id)),
+            "{out}"
+        );
+
+        // An address outside every allocation is a miss, not an error.
+        let out = hansei_ok(&bundle, core, "task-at 0x10");
+        assert_eq!(out, "no task's allocation contains 0x10\n");
+
+        // The 0x prefix is mandatory: a bare number is a parse error,
+        // which fails a scripted session.
+        let out = hansei(&bundle, core, "task-at 42");
+        assert!(
+            !out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Dependency graph and futurelock diagnosis (§3.6, §10)
 // ---------------------------------------------------------------------------

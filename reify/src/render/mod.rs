@@ -73,12 +73,19 @@ impl<'a, T: DebugType<'a>> fmt::Display for DisplayValue<'_, '_, 'a, T> {
     }
 }
 
+/// A caller-supplied label for addresses the renderer prints: a pointer
+/// whose address it returns `Some(label)` for renders as `0x… (label)`.
+/// `Sync` because the parallel fan-out shares it across worker threads;
+/// the lifetime lets it borrow the caller's lookup state.
+pub type AddrAnnotator<'r> = dyn Fn(u64) -> Option<String> + Sync + 'r;
+
 pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync> {
     info: &'r TypeInfoRef<'buf, 'a, T>,
     proc: &'r P,
     max_depth: usize,
     ugly: bool,
     elide: Option<&'r ElideOverride>,
+    annotate: Option<&'r AddrAnnotator<'r>>,
     prefix: &'r str,
     visited: RefCell<HashSet<(u64, &'a str)>>,
     formats: FormatCache<T>,
@@ -94,6 +101,14 @@ impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync> DisplayTarget
     /// Adjust which types render as `<elided>`; see [`ElideOverride`].
     pub fn elide_override(mut self, elide: &'r ElideOverride) -> Self {
         self.elide = Some(elide);
+        self
+    }
+
+    /// Label pointer addresses: one the annotator returns `Some(label)`
+    /// for renders as `0x… (label)`. What hansei uses to mark a pointer
+    /// into another task's allocation with that task's id.
+    pub fn annotate_addrs(mut self, annotate: &'r AddrAnnotator<'r>) -> Self {
+        self.annotate = Some(annotate);
         self
     }
 
@@ -118,6 +133,7 @@ impl<'a, T: DebugType<'a>, P: ReadFromProc + Sync> fmt::Display for DisplayTarge
             hex_integers: false,
             ugly: self.ugly,
             elide: self.elide,
+            annotate: self.annotate,
             prefix: self.prefix,
             formats: Some(&self.formats),
             parallel: true,
@@ -158,6 +174,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             max_depth,
             ugly: false,
             elide: None,
+            annotate: None,
             prefix: "",
             visited: RefCell::new(HashSet::default()),
             formats: FormatCache::default(),
@@ -194,6 +211,9 @@ pub(crate) struct RenderCtx<'buf, 'a, T: DebugType<'a>> {
     /// Render-time adjustment of what renders as `<elided>`; `None` leaves
     /// the bundle's choices alone.
     elide: Option<&'buf ElideOverride>,
+    /// Labels for pointer addresses; see
+    /// [`DisplayTargetValue::annotate_addrs`].
+    annotate: Option<&'buf AddrAnnotator<'buf>>,
     /// Text opening every pretty-mode line after the first, written by
     /// [`write_indent`] ahead of the depth indentation; see
     /// [`DisplayTargetValue::line_prefix`]. Empty for a bare display.
@@ -286,6 +306,7 @@ impl<'buf, 'a, T: DebugType<'a>> RenderCtx<'buf, 'a, T> {
             hex_integers: false,
             ugly: false,
             elide: None,
+            annotate: None,
             prefix: "",
         }
     }
@@ -300,6 +321,7 @@ impl<'buf, 'a, T: DebugType<'a>> RenderCtx<'buf, 'a, T> {
             hex_integers: self.hex_integers,
             ugly: self.ugly,
             elide: self.elide,
+            annotate: self.annotate,
             prefix: self.prefix,
         }
     }
@@ -479,14 +501,14 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
             // would only ever print the type's name (`-> ()`). Show just the
             // address.
             if target.size() == 0 {
-                return write_hex_u64(f, addr);
+                return write_annotated_addr(f, addr, ctx.annotate);
             }
             let (Some(proc), Some(visited)) = (ctx.proc, ctx.visited) else {
-                return write_hex_u64(f, addr);
+                return write_annotated_addr(f, addr, ctx.annotate);
             };
             let key = (addr, target.name());
             if !visited.borrow_mut().insert(key) {
-                write_hex_u64(f, addr)?;
+                write_annotated_addr(f, addr, ctx.annotate)?;
                 return f.write_str(" -> <cycle>");
             }
             let result = match proc.read_bytes(addr, target.size()) {
@@ -497,13 +519,12 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
                         bytes: &pointee_bytes,
                         _marker: std::marker::PhantomData,
                     };
-                    write_hex_u64(f, addr)
+                    write_annotated_addr(f, addr, ctx.annotate)
                         .and_then(|()| f.write_str(" -> "))
                         .and_then(|()| write_display_value(f, &pointee, ctx.deeper(), pretty))
                 }
-                Err(_) => {
-                    write_hex_u64(f, addr).and_then(|()| f.write_str(" -> <unreadable>"))
-                }
+                Err(_) => write_annotated_addr(f, addr, ctx.annotate)
+                    .and_then(|()| f.write_str(" -> <unreadable>")),
             };
             visited.borrow_mut().remove(&key);
             result
@@ -690,6 +711,22 @@ const HEX_PAIRS: &str = {
 /// The two lowercase hex digits of `byte`.
 pub(crate) fn hex_pair(byte: u8) -> &'static str {
     &HEX_PAIRS[byte as usize * 2..byte as usize * 2 + 2]
+}
+
+/// A pointer's address, with the caller's label after it when an
+/// annotator claims it: `0x… (label)`.
+pub(crate) fn write_annotated_addr(
+    f: &mut fmt::Formatter<'_>,
+    addr: u64,
+    annotate: Option<&AddrAnnotator<'_>>,
+) -> fmt::Result {
+    write_hex_u64(f, addr)?;
+    if let Some(label) = annotate.and_then(|annotate| annotate(addr)) {
+        f.write_str(" (")?;
+        f.write_str(&label)?;
+        f.write_str(")")?;
+    }
+    Ok(())
 }
 
 /// `0x` and `value` in minimal-width lowercase hex — `0x{value:x}`
@@ -1205,6 +1242,64 @@ mod tests {
             assert!(line.starts_with(">> "), "line {i} unprefixed: {line:?}");
         }
         assert!(shown.ends_with(">> ]"), "{shown}");
+    }
+
+    /// An address annotator labels the pointers it claims — followed,
+    /// unreadable, or bare — and leaves null and unclaimed ones alone.
+    #[test]
+    fn test_annotator_labels_the_addresses_it_claims() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let annotate = |addr: u64| (addr == 0x2000).then(|| "task 7".to_string());
+
+        // Followed: the label sits between the address and the pointee.
+        let mem = FakeMem::new().at(0x2000, u32s(&[3, 4]));
+        let bytes = 0x2000u64.to_le_bytes();
+        let ptr = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!(
+                "{}",
+                ptr.display_from_target(&mem, 8).annotate_addrs(&annotate)
+            ),
+            "0x2000 (task 7) -> Point { x: 3, y: 4 }"
+        );
+
+        // Unreadable: the label still identifies where the pointer aims.
+        let unreadable = FakeMem::new().unreadable();
+        assert_eq!(
+            format!(
+                "{}",
+                ptr.display_from_target(&unreadable, 8)
+                    .annotate_addrs(&annotate)
+            ),
+            "0x2000 (task 7) -> <unreadable>"
+        );
+
+        // An address the annotator does not claim renders bare, and null
+        // is never offered to it.
+        let elsewhere = FakeMem::new().at(0x3000, u32s(&[1, 2]));
+        let bytes = 0x3000u64.to_le_bytes();
+        let other = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!(
+                "{}",
+                other
+                    .display_from_target(&elsewhere, 8)
+                    .annotate_addrs(&annotate)
+            ),
+            "0x3000 -> Point { x: 1, y: 2 }"
+        );
+        let null = 0u64.to_le_bytes();
+        let null_ptr = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &null);
+        assert_eq!(
+            format!(
+                "{}",
+                null_ptr
+                    .display_from_target(&elsewhere, 8)
+                    .annotate_addrs(&|_| Some("never".to_string()))
+            ),
+            "null"
+        );
     }
 
     #[test]

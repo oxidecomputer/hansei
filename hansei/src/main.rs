@@ -117,6 +117,16 @@ pub enum Command {
         output: PathBuf,
     },
 
+    /// Find the task whose allocation contains an address. Any pointer
+    /// into a task — its Header, its future's state machine, its
+    /// Trailer — resolves to the owning task.
+    TaskAt {
+        /// The address to look up, written in hex with a required
+        /// leading `0x` (e.g. `0x7fffb1c26100`).
+        #[arg(value_parser = parse_hex_addr)]
+        addr: u64,
+    },
+
     /// List every task owned by the runtime: id, lifecycle state,
     /// concrete future type, spawn location, and where the future is
     /// defined.
@@ -203,6 +213,21 @@ pub enum Command {
     Exit,
 }
 
+/// Parse a target address: hex digits behind a required `0x`. The
+/// prefix is demanded rather than inferred so an address can never be
+/// mistaken for the decimal task ids the other commands select by.
+fn parse_hex_addr(s: &str) -> std::result::Result<u64, String> {
+    let digits = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .ok_or_else(|| {
+            format!(
+                "an address is written in hex with a leading 0x (e.g. 0x7fffb1c26100), got {s:?}"
+            )
+        })?;
+    u64::from_str_radix(digits, 16).map_err(|e| format!("invalid hex address {s:?}: {e}"))
+}
+
 /// Whether the session carries on after a command.
 pub enum Flow {
     Continue,
@@ -269,6 +294,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         }
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => exec_snapshot(session, &output, out)?,
+        Command::TaskAt { addr } => exec_task_at(session, addr, out)?,
         Command::Tasks => exec_tasks(session, out)?,
         Command::Threads {
             frames,
@@ -397,16 +423,7 @@ fn exec_trace(
         );
     };
 
-    let name = match &task.future {
-        bundle::FutureInfo::Known(known) => known.display_name.clone(),
-        bundle::FutureInfo::Unknown {
-            poll_symbol: Some(sym),
-        } => format!("<unknown: {:#}>", rustc_demangle::demangle(sym)),
-        bundle::FutureInfo::Unknown { poll_symbol: None } => "<unknown>".to_string(),
-        bundle::FutureInfo::Ambiguous { candidates, .. } => {
-            format!("<ambiguous: {}>", candidates.join(" | "))
-        }
-    };
+    let name = future_name(&task.future);
     writeln!(out, "Task {task_id}: {name} ({})", task.state.lifecycle())?;
     if let Some(loc) = &task.spawn_location {
         writeln!(out, "Spawned at: {loc}")?;
@@ -432,11 +449,32 @@ fn exec_trace(
         )?;
     }
 
+    // Values shown under --verbose may hold raw pointers into other
+    // tasks' allocations (wakers, JoinHandles); label those with the
+    // task id so the reader knows what to trace next. Pointers back
+    // into the task being traced say nothing and stay bare.
+    let extents = verbose.then(|| session.ctx.task_extents(list));
+    let self_addr = task.addr;
+    let annotate = extents.as_ref().map(|extents| {
+        move |ptr: u64| {
+            let (index, _) = extents.locate(ptr)?;
+            let other = &list.tasks[index];
+            if other.addr == self_addr {
+                return None;
+            }
+            Some(match other.task_id {
+                Some(id) => format!("task {id}"),
+                None => format!("task at {:?}", other.addr),
+            })
+        }
+    });
+
     writeln!(out)?;
     match ctx.task_stage(task)? {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
-            print_await_chain(ctx, &chain, verbose, depth, ugly, elide, out)?;
+            let annotate = annotate.as_ref().map(|a| a as &reify::AddrAnnotator<'_>);
+            print_await_chain(ctx, &chain, verbose, depth, ugly, elide, annotate, out)?;
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
@@ -467,6 +505,7 @@ fn exec_trace(
 /// frame indents follows from its predecessors' inventories rather than
 /// from its depth alone, and a state listed after the active one is
 /// printed once the subtree that grew out of the active one is closed.
+#[allow(clippy::too_many_arguments)]
 fn print_await_chain<'b, T: proc::Target + Sync>(
     ctx: &bundle::Context<'b, T>,
     chain: &bundle::AwaitChain<'b>,
@@ -474,6 +513,7 @@ fn print_await_chain<'b, T: proc::Target + Sync>(
     depth: usize,
     ugly: bool,
     elide: &reify::ElideOverride,
+    annotate: Option<&reify::AddrAnnotator<'_>>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let active_frame = chain.frames.len().checked_sub(1);
@@ -576,6 +616,9 @@ fn print_await_chain<'b, T: proc::Target + Sync>(
                             .display_from_target(ctx.proc, depth)
                             .elide_override(elide)
                             .line_prefix(&value_prefix);
+                        if let Some(annotate) = annotate {
+                            disp = disp.annotate_addrs(annotate);
+                        }
                         if ugly {
                             disp = disp.ugly();
                         }
@@ -1212,6 +1255,60 @@ fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) 
     Ok(())
 }
 
+/// The display name of a task's future, however well the symbol join
+/// resolved it.
+fn future_name(future: &bundle::FutureInfo) -> String {
+    match future {
+        bundle::FutureInfo::Known(known) => known.display_name.clone(),
+        bundle::FutureInfo::Unknown {
+            poll_symbol: Some(sym),
+        } => format!("<unknown: {:#}>", rustc_demangle::demangle(sym)),
+        bundle::FutureInfo::Unknown { poll_symbol: None } => "<unknown>".to_string(),
+        bundle::FutureInfo::Ambiguous { candidates, .. } => {
+            format!("<ambiguous: {}>", candidates.join(" | "))
+        }
+    }
+}
+
+fn exec_task_at(session: &Session<'_>, addr: u64, out: &mut dyn io::Write) -> Result<()> {
+    let extents = session.ctx.task_extents(&session.tasks);
+    report_task_at(&session.tasks, &extents, addr, out)
+}
+
+/// The `task-at` answer, apart from the session so the offline
+/// fixture tests can drive it.
+fn report_task_at(
+    list: &bundle::TaskList,
+    extents: &bundle::TaskExtents,
+    addr: u64,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let Some((index, offset)) = extents.locate(addr) else {
+        writeln!(out, "no task's allocation contains {addr:#x}")?;
+        return Ok(());
+    };
+    let task = &list.tasks[index];
+    let id = match task.task_id {
+        Some(id) => id.to_string(),
+        None => format!("{:?}", task.addr),
+    };
+    writeln!(
+        out,
+        "{addr:#x} is in task {id} at offset {offset:#x} (header {:?})",
+        task.addr
+    )?;
+    writeln!(
+        out,
+        "Task {id}: {} ({})",
+        future_name(&task.future),
+        task.state.lifecycle()
+    )?;
+    if let Some(loc) = &task.spawn_location {
+        writeln!(out, "Spawned at: {loc}")?;
+    }
+    Ok(())
+}
+
 fn exec_tasks(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
     let list = &session.tasks;
 
@@ -1661,6 +1758,119 @@ mod variable_format_tests {
     }
 }
 
+/// Offline `task-at` tests: address→task resolution over a real
+/// extracted bundle joined against a real captured snapshot.
+#[cfg(test)]
+mod task_at_tests {
+    use super::{parse_hex_addr, report_task_at};
+    use exegesis::bundle::{Bundle, BundleView};
+    use hansei_types::tokio::bundle::{Context, TaskExtents, TaskList};
+    use proc::Target;
+    use proc::snapshot::Snapshot;
+
+    use std::path::PathBuf;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("hansei-types/tests/fixtures")
+            .join(name)
+    }
+
+    fn with_tasks(program: &str, check: impl FnOnce(&TaskList, &TaskExtents)) {
+        let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
+            .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
+        let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
+            .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
+        let ctx = Context::new(&snapshot, BundleView::new(&bundle)).expect("snapshot has mappings");
+
+        let lwps = snapshot.lwps().unwrap();
+        let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+        let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
+        let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+        let extents = ctx.task_extents(&list);
+        check(&list, &extents);
+    }
+
+    fn report(list: &TaskList, extents: &TaskExtents, addr: u64) -> String {
+        let mut out = Vec::new();
+        report_task_at(list, extents, addr, &mut out).expect("the report renders");
+        String::from_utf8(out).expect("rendered output is UTF-8")
+    }
+
+    /// An address inside a task's allocation — its header, or any
+    /// offset short of the trailer's end — names that task; one
+    /// outside every allocation reports the miss.
+    #[test]
+    fn test_addresses_resolve_to_the_containing_task() {
+        with_tasks("sleep-join", |list, extents| {
+            let sleeper = list
+                .tasks
+                .iter()
+                .find(|t| t.task_id == Some(3))
+                .expect("the sleeper is task 3");
+            let header = sleeper.addr.0;
+
+            let shown = report(list, extents, header);
+            assert!(
+                shown.contains(&format!(
+                    "{header:#x} is in task 3 at offset 0x0 (header {header:#x})"
+                )),
+                "{shown}"
+            );
+            assert!(
+                shown.contains("Task 3: sleep_join::sleeper::{async_fn_env#0} (idle)"),
+                "{shown}"
+            );
+
+            let inside = report(list, extents, header + 0x10);
+            assert!(
+                inside.contains("is in task 3 at offset 0x10"),
+                "{inside}"
+            );
+
+            let miss = report(list, extents, 0x10);
+            assert_eq!(miss, "no task's allocation contains 0x10\n");
+        });
+    }
+
+    /// Every task claims its own header and nothing claims the word
+    /// before it: the extents tile the tasks without bleeding.
+    #[test]
+    fn test_extents_cover_each_task_exactly() {
+        with_tasks("dyn-future", |list, extents| {
+            for (index, task) in list.tasks.iter().enumerate() {
+                assert_eq!(
+                    extents.locate(task.addr.0),
+                    Some((index, 0)),
+                    "task {:?} does not claim its own header",
+                    task.addr
+                );
+                let before = extents.locate(task.addr.0 - 1);
+                assert_ne!(
+                    before.map(|(i, _)| i),
+                    Some(index),
+                    "task {:?} claims the byte before its header",
+                    task.addr
+                );
+            }
+        });
+    }
+
+    /// The `0x` prefix is required, and the digits behind it parse as
+    /// hex — the contract the command's help text states.
+    #[test]
+    fn test_addresses_parse_only_with_a_0x_prefix() {
+        assert_eq!(parse_hex_addr("0x7fffb1c26100"), Ok(0x7fffb1c26100));
+        assert_eq!(parse_hex_addr("0XFF"), Ok(0xff));
+        assert!(parse_hex_addr("7fffb1c26100").is_err());
+        assert!(parse_hex_addr("42").is_err());
+        assert!(parse_hex_addr("0x").is_err());
+        assert!(parse_hex_addr("0xzz").is_err());
+    }
+}
+
 /// Offline trace-rendering tests: the await tree as `trace` prints it,
 /// driven from a real extracted bundle joined against a real captured
 /// snapshot.
@@ -1726,6 +1936,7 @@ mod trace_render_tests {
             4,
             false,
             &Default::default(),
+            None,
             &mut out,
         )
         .expect("the chain renders");
@@ -1812,6 +2023,64 @@ mod trace_render_tests {
        Suspend1  dyn-future.rs:30  2 locals  tokio::task::join_set::{impl#1}::join_next::{async_fn_env#0}<u32>
 "
         );
+    }
+
+    /// Under `--verbose` a pointer into another task's allocation is
+    /// labelled with that task's id, the way `exec_trace` wires it up:
+    /// the joiner's `JoinHandle` holds the sleeper's `Header` pointer,
+    /// which must name the task a reader would trace next.
+    #[test]
+    fn test_verbose_labels_pointers_into_other_tasks() {
+        let bundle = Bundle::load(&fixture("sleep-join.bundle"))
+            .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
+        let snapshot = Snapshot::load(&fixture("sleep-join.snapshot"))
+            .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
+        let ctx = Context::new(&snapshot, BundleView::new(&bundle)).expect("snapshot has mappings");
+
+        let lwps = snapshot.lwps().unwrap();
+        let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+        let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
+        let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+
+        let joiner = list
+            .tasks
+            .iter()
+            .find(|t| t.task_id == Some(4))
+            .expect("the joiner is task 4");
+        let TaskStage::Running(root) = ctx.task_stage(joiner).expect("the joiner's stage decodes")
+        else {
+            panic!("the joiner is not running");
+        };
+
+        let extents = ctx.task_extents(&list);
+        let self_addr = joiner.addr;
+        let annotate = |ptr: u64| {
+            let (index, _) = extents.locate(ptr)?;
+            let other = &list.tasks[index];
+            if other.addr == self_addr {
+                return None;
+            }
+            other.task_id.map(|id| format!("task {id}"))
+        };
+
+        let chain = ctx.await_chain(root);
+        let mut out = Vec::new();
+        print_await_chain(
+            &ctx,
+            &chain,
+            true,
+            4,
+            false,
+            &Default::default(),
+            Some(&annotate),
+            &mut out,
+        )
+        .expect("the chain renders");
+        let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
+        assert!(rendered.contains("(task 3)"), "{rendered}");
+        // The pointer into the sleeper is the only annotated one: the
+        // joiner's own allocation stays bare.
+        assert!(!rendered.contains("(task 4)"), "{rendered}");
     }
 
     /// Under `--verbose` the marked row drops its count — the values it

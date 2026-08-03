@@ -1063,6 +1063,51 @@ impl<'b, T: Target> Context<'b, T> {
         Ok((raw_id != 0).then_some(raw_id))
     }
 
+    /// The memory a task's allocation covers: the `Cell<T, S>` holding
+    /// its Header, Core (the future), and Trailer, starting at the
+    /// Header address that identifies the task.
+    ///
+    /// A known future has the whole `Cell` layout in the bundle, tail
+    /// padding included. For any other the target's own vtable places
+    /// the Trailer, and the Trailer is the Cell's last member — short
+    /// of the allocation's true end only by any tail padding.
+    pub fn task_extent(&self, task: &Task) -> Result<std::ops::Range<u64>> {
+        if let FutureInfo::Known(known) = &task.future {
+            let entry = self.task_entry(known.entry);
+            if let Some(cell) = self.view.ty(entry.cell)
+                && !matches!(cell.def(), TypeDef::Opaque { .. })
+            {
+                return Ok(task.addr.0..task.addr.0 + cell.size());
+            }
+        }
+        let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
+        let header = TypeInfo::from_addr(self, header_ty, task.addr.0)
+            .with_context(|| format!("failed to read the task Header at {:?}", task.addr))?;
+        let vtable_addr: u64 = header.member("vtable")?.parse(self)?;
+        let vtable = self
+            .task_vtable(vtable_addr)
+            .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
+        let trailer = self.infra_ty(self.view.bundle().infra.trailer, "task Trailer")?;
+        Ok(task.addr.0..task.addr.0 + vtable.trailer_offset + trailer.size())
+    }
+
+    /// Index every task's allocation for address lookup — which task a
+    /// raw pointer points into. A task whose extent cannot be computed
+    /// is simply absent: it claims no address.
+    pub fn task_extents(&self, list: &TaskList) -> TaskExtents {
+        let mut spans: Vec<(u64, u64, usize)> = list
+            .tasks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, task)| {
+                let extent = self.task_extent(task).ok()?;
+                (extent.end > extent.start).then_some((extent.start, extent.end, index))
+            })
+            .collect();
+        spans.sort_unstable();
+        TaskExtents { spans }
+    }
+
     /// `batch_semaphore::Acquire`: queued on the semaphore that backs
     /// tokio's Mutex, RwLock, and Semaphore. The semaphore address
     /// identifies the contended resource; the frame that awaits the
@@ -1430,6 +1475,27 @@ pub struct TaskList {
     /// Per-shard walk failures; the shards that produced `tasks` are
     /// unaffected by these.
     pub errors: Vec<anyhow::Error>,
+}
+
+/// Every task's allocation, sorted by address, for resolving raw
+/// pointers — a queued waker's data word, the `NonNull<Header>` inside
+/// a `JoinHandle`, any address a value dump shows. Built by
+/// [`Context::task_extents`].
+#[derive(Debug)]
+pub struct TaskExtents {
+    /// `(start, end, index into the list this was built from)`.
+    spans: Vec<(u64, u64, usize)>,
+}
+
+impl TaskExtents {
+    /// The task whose allocation contains `addr`: its index in the
+    /// [`TaskList`] this was built from, and the offset inside the
+    /// allocation.
+    pub fn locate(&self, addr: u64) -> Option<(usize, u64)> {
+        let at = self.spans.partition_point(|&(start, _, _)| start <= addr);
+        let &(start, end, index) = self.spans.get(at.checked_sub(1)?)?;
+        (addr < end).then(|| (index, addr - start))
+    }
 }
 
 /// One enumerated task.
