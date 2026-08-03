@@ -174,12 +174,22 @@ pub fn mpsc_block(values: &[u32; 4], start_index: u64, next: u64) -> Vec<u8> {
 }
 
 /// Bytes for a tokio sync waiter -- `{ <state word>: usize @0, next: *Waiter
-/// @8 }` -- padded to the 32 bytes the fixture's waiter types declare, so a
-/// read of any prefix is served.
+/// @8, waker: Option<Waker> @16 }` -- filling the 32 bytes the fixture's
+/// waiter types declare. The waker's zeroed vtable word reads as `None`.
 pub fn sync_waiter(state: u64, next: u64) -> Vec<u8> {
     let mut bytes = vec![0u8; 32];
     bytes[..8].copy_from_slice(&state.to_le_bytes());
     bytes[8..16].copy_from_slice(&next.to_le_bytes());
+    bytes
+}
+
+/// A [`sync_waiter`] whose waker is armed: a nonzero vtable word selects the
+/// `Some` variant, and `data` is the word a task waker keeps there — the
+/// woken task's Header address.
+pub fn sync_waiter_waking(state: u64, next: u64, data: u64) -> Vec<u8> {
+    let mut bytes = sync_waiter(state, next);
+    bytes[16..24].copy_from_slice(&0x9990u64.to_le_bytes());
+    bytes[24..32].copy_from_slice(&data.to_le_bytes());
     bytes
 }
 
@@ -398,6 +408,10 @@ fixture_ids! {
     // A 32-byte digest: any length is hex, so it shares no length with the
     // notations that fix one.
     HASH_BYTES, HASH,
+    // The waker a parked sync waiter registered: `Option<Waker>` niched on
+    // the RawWaker's vtable word, whose `Waker` payload carries the alias
+    // format the real emission attaches (the bare `data` pointer).
+    UNIT_PTR, WAKER_VTABLE_PTR, TASK_RAW_WAKER, TASK_WAKER, OPT_WAKER,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -422,6 +436,12 @@ pub fn test_bundle() -> Bundle {
     let raw_waker_vtablen = s("core::task::wake::RawWakerVTable");
     let unresolvedn = s("<unresolved>");
     let (clonen, waken, wake_by_refn, dropn) = (s("clone"), s("wake"), s("wake_by_ref"), s("drop"));
+    let (task_wakern, task_raw_wakern, opt_wakern, wakern) = (
+        s("core::task::wake::Waker"),
+        s("core::task::wake::RawWaker"),
+        s("Option<Waker>"),
+        s("waker"),
+    );
     let (atomicn, storagen, vn) = (s("Atomic<u32>"), s("AtomicStorage<u32>"), s("v"));
     let atomic_ptrn = s("Atomic<*mut Point>");
     let (loom_atomicn, loom_celln, tuple0n) =
@@ -1163,13 +1183,18 @@ pub fn test_bundle() -> Bundle {
             members: vec![m(headn, WAITER_PTR, 0), m(tailn, WAITER_PTR, 8)],
         },
     );
-    // Waiter { state: usize @0 (permits needed), next: *Waiter @8 }.
+    // Waiter { state: usize @0 (permits needed), next: *Waiter @8,
+    // waker: Option<Waker> @16 }.
     types.add(
         WAITER,
         TypeDef::Struct {
             name: waitern,
             size: 32,
-            members: vec![m(staten, U64, 0), m(nextn, WAITER_PTR, 8)],
+            members: vec![
+                m(staten, U64, 0),
+                m(nextn, WAITER_PTR, 8),
+                m(wakern, OPT_WAKER, 16),
+            ],
         },
     );
     types.add(
@@ -1202,13 +1227,18 @@ pub fn test_bundle() -> Bundle {
             ],
         },
     );
-    // Waiter { notification: usize @0, next: *Waiter @8 }.
+    // Waiter { notification: usize @0, next: *Waiter @8,
+    // waker: Option<Waker> @16 }.
     types.add(
         NOTIFY_WAITER,
         TypeDef::Struct {
             name: notify_waitern,
             size: 32,
-            members: vec![m(notificationn, U64, 0), m(nextn, NOTIFY_WAITER_PTR, 8)],
+            members: vec![
+                m(notificationn, U64, 0),
+                m(nextn, NOTIFY_WAITER_PTR, 8),
+                m(wakern, OPT_WAKER, 16),
+            ],
         },
     );
     types.add(
@@ -1420,6 +1450,66 @@ pub fn test_bundle() -> Bundle {
             name: hashn,
             size: 32,
             members: vec![m(uuid_bytesn, HASH_BYTES, 0)],
+        },
+    );
+    // The waker a parked waiter registered, shaped the way std lays it out:
+    // `Option<Waker>` niched on the RawWaker's vtable word (0 = None), the
+    // Waker a single-member wrapper of RawWaker { vtable @0, data @8 }, and
+    // `data` a pointer to the zero-sized `()` so it renders as its address.
+    types.add(
+        UNIT_PTR,
+        TypeDef::Pointer {
+            name: None,
+            target: UNIT,
+        },
+    );
+    types.add(
+        WAKER_VTABLE_PTR,
+        TypeDef::Pointer {
+            name: None,
+            target: RAW_WAKER_VTABLE,
+        },
+    );
+    types.add(
+        TASK_RAW_WAKER,
+        TypeDef::Struct {
+            name: task_raw_wakern,
+            size: 16,
+            members: vec![m(vtablen, WAKER_VTABLE_PTR, 0), m(datan, UNIT_PTR, 8)],
+        },
+    );
+    types.add(
+        TASK_WAKER,
+        TypeDef::Struct {
+            name: task_wakern,
+            size: 16,
+            members: vec![m(wakern, TASK_RAW_WAKER, 0)],
+        },
+    );
+    types.add(
+        OPT_WAKER,
+        TypeDef::Enum {
+            name: opt_wakern,
+            size: 16,
+            shape: VariantShape {
+                discr: Some(DiscrDef { offset: 0, ty: U64 }),
+                variants: vec![
+                    VariantDef {
+                        name: nonen,
+                        discr_values: tag(0),
+                        payload: m(nonen, UNIT, 0),
+                        decl: None,
+                        await_site: None,
+                    },
+                    VariantDef {
+                        name: somen,
+                        discr_values: None,
+                        payload: m(somen, TASK_WAKER, 0),
+                        decl: None,
+                        await_site: None,
+                    },
+                ],
+            },
         },
     );
     let types = types.finish();
@@ -1670,6 +1760,24 @@ pub fn test_bundle() -> Bundle {
                         decode: mutex_decode(),
                     },
                 ),
+                // The way the real emission renders a Waker: the RawWaker's
+                // `data` word alone, addressed by name and not followed. The
+                // RawWaker carries the same reduction, since peeling an enum
+                // payload dissolves the Waker wrapper into it.
+                (
+                    TASK_WAKER,
+                    BundleNode::Alias {
+                        at: nsel(&[wakern, datan]),
+                        follow_pointers: false,
+                    },
+                ),
+                (
+                    TASK_RAW_WAKER,
+                    BundleNode::Alias {
+                        at: nsel(&[datan]),
+                        follow_pointers: false,
+                    },
+                ),
                 (
                     NOTIFY,
                     BundleNode::Struct {
@@ -1702,21 +1810,29 @@ pub fn test_bundle() -> Bundle {
                                     head: sel(&[1, 1, 0]),
                                     next: sel(&[1]),
                                     node: Box::new(BundleNode::Struct {
-                                        fields: vec![fsynth(
-                                            notificationn,
-                                            BundleNode::Scalar {
-                                                at: sel(&[0]),
-                                                decode: BundleScalarDecode::Bits(vec![
-                                                    ebf(
-                                                        kindl,
-                                                        0,
-                                                        2,
-                                                        vec![(0, nonel), (1, onel), (2, alll)],
-                                                    ),
-                                                    ebf(orderl, 2, 1, vec![(0, fifol), (1, lifol)]),
-                                                ]),
-                                            },
-                                        )],
+                                        fields: vec![
+                                            fsynth(
+                                                notificationn,
+                                                BundleNode::Scalar {
+                                                    at: sel(&[0]),
+                                                    decode: BundleScalarDecode::Bits(vec![
+                                                        ebf(
+                                                            kindl,
+                                                            0,
+                                                            2,
+                                                            vec![(0, nonel), (1, onel), (2, alll)],
+                                                        ),
+                                                        ebf(
+                                                            orderl,
+                                                            2,
+                                                            1,
+                                                            vec![(0, fifol), (1, lifol)],
+                                                        ),
+                                                    ]),
+                                                },
+                                            ),
+                                            BundleField::member(MemberRef::Named(wakern)),
+                                        ],
                                     }),
                                     node_ty: NOTIFY_WAITER,
                                 },
@@ -1857,13 +1973,16 @@ pub fn test_bundle() -> Bundle {
                                     head: sel(&[0, 0, 1, 0, 0]),
                                     next: sel(&[1]),
                                     node: Box::new(BundleNode::Struct {
-                                        fields: vec![fsynth(
-                                            permits_neededfl,
-                                            BundleNode::Scalar {
-                                                at: sel(&[0]),
-                                                decode: BundleScalarDecode::Raw,
-                                            },
-                                        )],
+                                        fields: vec![
+                                            fsynth(
+                                                permits_neededfl,
+                                                BundleNode::Scalar {
+                                                    at: sel(&[0]),
+                                                    decode: BundleScalarDecode::Raw,
+                                                },
+                                            ),
+                                            BundleField::member(MemberRef::Named(wakern)),
+                                        ],
                                     }),
                                     node_ty: WAITER,
                                 },

@@ -596,7 +596,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              queue: List { head=waiters.__1.data.value.head@+16, \
              node_ty=tokio::sync::notify::Waiter, \
              next=pointers.inner.value.next@+8, \
-             Struct { notification: notification.__0.inner.value.v.value.__0@+32 } } }",
+             Struct { notification: notification.__0.inner.value.v.value.__0@+32, \
+             waker: <structural> } } }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "core::task::wake::Waker",
+            "core::task::wake::Waker :: Node Alias { waker.data@+8 }",
         );
         assert_format(
             program,
@@ -735,7 +742,8 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              queue: List { head=semaphore.waiters.__1.data.value.queue.head@+8, \
              node_ty=tokio::sync::batch_semaphore::Waiter, \
              next=pointers.inner.value.next@+24, \
-             Struct { permits_needed: state.inner.value.v.value.__0@+32 } } }",
+             Struct { permits_needed: state.inner.value.v.value.__0@+32, \
+             waker: <structural> } } }",
         );
         assert_format(
             program,

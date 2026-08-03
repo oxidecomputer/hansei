@@ -449,22 +449,18 @@ fn exec_trace(
         )?;
     }
 
-    // Values shown under --verbose may hold raw pointers into other
-    // tasks' allocations (wakers, JoinHandles); label those with the
-    // task id so the reader knows what to trace next. Pointers back
-    // into the task being traced say nothing and stay bare.
+    // Values shown under --verbose may hold raw pointers into task
+    // allocations (wakers, JoinHandles); name those with the task id so
+    // the reader knows what to trace next. The traced task itself is
+    // named like any other: a wake-queue entry resolving back to it is a
+    // finding (the futurelock shape), not noise.
     let extents = verbose.then(|| session.ctx.task_extents(list));
-    let self_addr = task.addr;
     let annotate = extents.as_ref().map(|extents| {
         move |ptr: u64| {
             let (index, _) = extents.locate(ptr)?;
-            let other = &list.tasks[index];
-            if other.addr == self_addr {
-                return None;
-            }
-            Some(match other.task_id {
+            Some(match list.tasks[index].task_id {
                 Some(id) => format!("task {id}"),
-                None => format!("task at {:?}", other.addr),
+                None => format!("task at {:?}", list.tasks[index].addr),
             })
         }
     });
@@ -2053,14 +2049,9 @@ mod trace_render_tests {
         };
 
         let extents = ctx.task_extents(&list);
-        let self_addr = joiner.addr;
         let annotate = |ptr: u64| {
             let (index, _) = extents.locate(ptr)?;
-            let other = &list.tasks[index];
-            if other.addr == self_addr {
-                return None;
-            }
-            other.task_id.map(|id| format!("task {id}"))
+            list.tasks[index].task_id.map(|id| format!("task {id}"))
         };
 
         let chain = ctx.await_chain(root);
@@ -2078,9 +2069,6 @@ mod trace_render_tests {
         .expect("the chain renders");
         let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
         assert!(rendered.contains("(task 3)"), "{rendered}");
-        // The pointer into the sleeper is the only annotated one: the
-        // joiner's own allocation stays bare.
-        assert!(!rendered.contains("(task 4)"), "{rendered}");
     }
 
     /// Under `--verbose` the marked row drops its count — the values it

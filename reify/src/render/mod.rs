@@ -73,10 +73,13 @@ impl<'a, T: DebugType<'a>> fmt::Display for DisplayValue<'_, '_, 'a, T> {
     }
 }
 
-/// A caller-supplied label for addresses the renderer prints: a pointer
-/// whose address it returns `Some(label)` for renders as `0x… (label)`.
-/// `Sync` because the parallel fan-out shares it across worker threads;
-/// the lifetime lets it borrow the caller's lookup state.
+/// A caller-supplied label for addresses the renderer prints. A followed
+/// pointer keeps its address and gains the label — `0x… (label) -> …` —
+/// while a pointer shown only as its bare word (a zero-sized pointee, an
+/// alias snapshot) renders as the label itself, since the label *is* what
+/// that word means; the address remains the fallback when the annotator
+/// returns `None`. `Sync` because the parallel fan-out shares it across
+/// worker threads; the lifetime lets it borrow the caller's lookup state.
 pub type AddrAnnotator<'r> = dyn Fn(u64) -> Option<String> + Sync + 'r;
 
 pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync> {
@@ -104,9 +107,9 @@ impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync> DisplayTarget
         self
     }
 
-    /// Label pointer addresses: one the annotator returns `Some(label)`
-    /// for renders as `0x… (label)`. What hansei uses to mark a pointer
-    /// into another task's allocation with that task's id.
+    /// Label pointer addresses; see [`AddrAnnotator`] for how a label
+    /// lands on followed versus bare pointers. What hansei uses to mark
+    /// a pointer into a task's allocation with that task's id.
     pub fn annotate_addrs(mut self, annotate: &'r AddrAnnotator<'r>) -> Self {
         self.annotate = Some(annotate);
         self
@@ -499,12 +502,12 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
             // A pointer to a zero-sized type (e.g. `RawWaker`'s `*const ()`
             // data pointer) has no meaningful pointee to follow — reading it
             // would only ever print the type's name (`-> ()`). Show just the
-            // address.
+            // address, or the annotator's name for it.
             if target.size() == 0 {
-                return write_annotated_addr(f, addr, ctx.annotate);
+                return write_addr_or_label(f, addr, ctx.annotate);
             }
             let (Some(proc), Some(visited)) = (ctx.proc, ctx.visited) else {
-                return write_annotated_addr(f, addr, ctx.annotate);
+                return write_addr_or_label(f, addr, ctx.annotate);
             };
             let key = (addr, target.name());
             if !visited.borrow_mut().insert(key) {
@@ -713,8 +716,9 @@ pub(crate) fn hex_pair(byte: u8) -> &'static str {
     &HEX_PAIRS[byte as usize * 2..byte as usize * 2 + 2]
 }
 
-/// A pointer's address, with the caller's label after it when an
-/// annotator claims it: `0x… (label)`.
+/// A followed pointer's address, with the caller's label after it when an
+/// annotator claims it: `0x… (label)`. The address stays first because the
+/// pointee it introduces is about to be rendered against it.
 pub(crate) fn write_annotated_addr(
     f: &mut fmt::Formatter<'_>,
     addr: u64,
@@ -727,6 +731,21 @@ pub(crate) fn write_annotated_addr(
         f.write_str(")")?;
     }
     Ok(())
+}
+
+/// A pointer rendered as only its bare word — a zero-sized pointee, an
+/// alias snapshot. Here the label *is* the value's meaning (a task waker's
+/// data word means "that task"), so it replaces the hex; the address is
+/// the fallback when the annotator has no name for it.
+pub(crate) fn write_addr_or_label(
+    f: &mut fmt::Formatter<'_>,
+    addr: u64,
+    annotate: Option<&AddrAnnotator<'_>>,
+) -> fmt::Result {
+    match annotate.and_then(|annotate| annotate(addr)) {
+        Some(label) => f.write_str(&label),
+        None => write_hex_u64(f, addr),
+    }
 }
 
 /// `0x` and `value` in minimal-width lowercase hex — `0x{value:x}`

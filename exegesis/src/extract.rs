@@ -1516,7 +1516,9 @@ static BY_NAME: &[(&str, Detector)] = &[
     ("core::ptr::non_null::NonNull", non_null_node),
     ("core::ptr::unique::Unique", unique_node),
     ("core::sync::atomic::Atomic", atomic_node),
+    ("core::task::wake::RawWaker", raw_waker_node),
     ("core::task::wake::RawWakerVTable", raw_waker_vtable_node),
+    ("core::task::wake::Waker", waker_node),
     ("parking_lot::raw_mutex::RawMutex", raw_mutex_node),
     ("slog::Logger", elided_node),
     (
@@ -2546,6 +2548,29 @@ fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
         fields.push(Field::computed(at, node));
     }
     Some(DisplayNode::Struct { fields })
+}
+
+/// Render a `core::task::wake::Waker` as its RawWaker's `data` word — the one
+/// datum that identifies what it wakes. For a tokio task waker that is the
+/// task's Header pointer, which `hansei task-at` resolves and `trace -v`
+/// labels with the task id; the vtable it travels with is internal detail
+/// (`--ugly` shows both).
+fn waker_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    Some(DisplayNode::Alias {
+        at: emitter.walk(id, &reach![Named("waker"), Named("data")])?.0,
+        follow_pointers: false,
+    })
+}
+
+/// `RawWaker` reduces the same way as the `Waker` around it — and needs its
+/// own row: an enum payload (`Option<Waker>::Some`) is peeled before its
+/// formatter is looked up, which dissolves the single-member `Waker` into
+/// the `RawWaker` it wraps.
+fn raw_waker_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    Some(DisplayNode::Alias {
+        at: emitter.walk(id, &reach![Named("data")])?.0,
+        follow_pointers: false,
+    })
 }
 
 fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -4337,20 +4362,27 @@ impl<'a> Emitter<'a> {
         let node_ty = self.reserve(waiter);
         let payload_label = self.interner.intern(payload_label);
         let queue = self.interner.intern("queue");
+        let mut fields = vec![Field::Synth {
+            label: payload_label,
+            node: DisplayNode::Scalar {
+                at: payload,
+                decode: payload_decode,
+            },
+        }];
+        // The waker the parked task registered — for a tokio task waker its
+        // data word is that task's Header, so the queue names who will be
+        // woken. The member renders structurally: `Option<Waker>`'s own
+        // variant decode supplies the Some/None, and the `Waker` formatter
+        // reduces the payload to that data word.
+        if let Some(at) = self.member_named(waiter, "waker") {
+            fields.push(Field::member(at));
+        }
         Field::Synth {
             label: queue,
             node: DisplayNode::List {
                 head,
                 next: waiter_next,
-                node: Box::new(DisplayNode::Struct {
-                    fields: vec![Field::Synth {
-                        label: payload_label,
-                        node: DisplayNode::Scalar {
-                            at: payload,
-                            decode: payload_decode,
-                        },
-                    }],
-                }),
+                node: Box::new(DisplayNode::Struct { fields }),
                 node_ty,
             },
         }
