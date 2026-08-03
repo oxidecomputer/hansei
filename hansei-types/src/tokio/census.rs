@@ -182,7 +182,7 @@ pub fn census<T: Target + Sync>(ctx: &Context<'_, T>, list: &TaskList) -> Future
             continue;
         };
         let chain = ctx.await_chain(root);
-        walker.scan_chain(ctx, owner, None, &chain, 0);
+        walker.scan_chain(ctx, list, owner, None, &chain, 0);
     }
 
     walker.spans.sort_unstable();
@@ -198,9 +198,11 @@ impl Walker {
     /// Scan every frame of `chain` for sets and held futures, recursing
     /// through what it finds. `via` says how the census reached this
     /// chain when it is not a task's own.
+    #[allow(clippy::too_many_arguments)]
     fn scan_chain<'b, T: Target + Sync>(
         &mut self,
         ctx: &Context<'b, T>,
+        list: &TaskList,
         owner: usize,
         via: Option<&str>,
         chain: &AwaitChain<'b>,
@@ -227,7 +229,7 @@ impl Walker {
                 let mut found = Vec::new();
                 scan_value(&local, 0, &mut found);
                 for find in found {
-                    self.record(ctx, owner, frame_index, m.name(), via, find, nesting);
+                    self.record(ctx, list, owner, frame_index, m.name(), via, find, nesting);
                 }
             }
         }
@@ -238,6 +240,7 @@ impl Walker {
     fn record<'b, T: Target + Sync>(
         &mut self,
         ctx: &Context<'b, T>,
+        list: &TaskList,
         owner: usize,
         frame: usize,
         local: &str,
@@ -252,11 +255,13 @@ impl Walker {
             return;
         }
         match find {
-            Find::Set(value) => self.record_set(ctx, owner, frame, local, via, &value, nesting),
+            Find::Set(value) => {
+                self.record_set(ctx, list, owner, frame, local, via, &value, nesting)
+            }
             Find::Future(value) => {
                 let place = value.addr;
                 let chain = ctx.await_chain(value);
-                let summary = summarize(ctx, &chain);
+                let summary = summarize(ctx, list, &chain);
                 // The future itself when the chain decoded (behind a
                 // box, that is the heap allocation rather than the
                 // local's pointer slot); the slot when it did not.
@@ -273,7 +278,7 @@ impl Walker {
                 });
                 if nesting < MAX_NESTING {
                     let via = format!("held future at {addr:#x}");
-                    self.scan_chain(ctx, owner, Some(&via), &chain, nesting + 1);
+                    self.scan_chain(ctx, list, owner, Some(&via), &chain, nesting + 1);
                 }
             }
         }
@@ -285,6 +290,7 @@ impl Walker {
     fn record_set<'b, T: Target + Sync>(
         &mut self,
         ctx: &Context<'b, T>,
+        list: &TaskList,
         owner: usize,
         frame: usize,
         local: &str,
@@ -306,7 +312,7 @@ impl Walker {
         // keeps what it found: the children up to the failure are real,
         // and the error says the list is incomplete.
         let mut children = Vec::new();
-        if let Err(e) = walk_set(ctx, value, &mut children) {
+        if let Err(e) = walk_set(ctx, list, value, &mut children) {
             self.errors.push(e.context(format!(
                 "the FuturesUnordered at {:#x} lists only {} of its children",
                 value.addr,
@@ -320,7 +326,7 @@ impl Walker {
                 && nesting < MAX_NESTING
             {
                 let via = format!("set child at {:#x}", extent.0);
-                self.scan_chain(ctx, owner, Some(&via), &chain, nesting + 1);
+                self.scan_chain(ctx, list, owner, Some(&via), &chain, nesting + 1);
             }
         }
         self.sets.push(set);
@@ -402,7 +408,11 @@ struct Summary {
 /// Reduce a future's await chain to one listing row. An empty chain is
 /// a trait object the join could not resolve; the pointee is the most
 /// that can be said of it.
-fn summarize<'b, T: Target + Sync>(ctx: &Context<'b, T>, chain: &AwaitChain<'b>) -> Summary {
+fn summarize<'b, T: Target + Sync>(
+    ctx: &Context<'b, T>,
+    list: &TaskList,
+    chain: &AwaitChain<'b>,
+) -> Summary {
     let Some(first) = chain.frames.first() else {
         let future = match &chain.end {
             ChainEnd::UnknownDyn { pointee, .. } | ChainEnd::AmbiguousDyn { pointee, .. } => {
@@ -423,7 +433,7 @@ fn summarize<'b, T: Target + Sync>(ctx: &Context<'b, T>, chain: &AwaitChain<'b>)
             .unwrap_or_default();
         format!("{}{loc}", state.name)
     });
-    let waiting_on = match ctx.wait_target(chain) {
+    let waiting_on = match ctx.wait_target(chain, list) {
         Some(Ok(target)) => Some(target.to_string()),
         _ => None,
     };
@@ -443,6 +453,7 @@ type WalkedChild<'b> = (SetChild, Option<AwaitChain<'b>>, (u64, u64));
 /// walk found.
 fn walk_set<'b, T: Target + Sync>(
     ctx: &Context<'b, T>,
+    list: &TaskList,
     set: &TypeInfo<'b, BundleType<'b>>,
     children: &mut Vec<WalkedChild<'b>>,
 ) -> Result<()> {
@@ -482,7 +493,7 @@ fn walk_set<'b, T: Target + Sync>(
             // chain gives the concrete (dyn-resolved) identity, the
             // suspend state, and the recognized wait target.
             let chain = ctx.await_chain(payload.peel().to_owned());
-            let summary = summarize(ctx, &chain);
+            let summary = summarize(ctx, list, &chain);
             (
                 SetChild {
                     node: cur,

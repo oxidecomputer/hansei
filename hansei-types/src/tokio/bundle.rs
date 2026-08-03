@@ -12,7 +12,7 @@
 //! its value indexes each LWP's fast-TSD slots to find that thread's
 //! `tokio::runtime::context::Context`.
 
-use super::{Location, RawInstant, TaskAddr, TaskState};
+use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use exegesis::bundle::{
@@ -987,12 +987,17 @@ impl<'b, T: Target> Context<'b, T> {
     // -----------------------------------------------------------------------
 
     /// What the chain's leaf future is waiting on, when it is a
-    /// recognized primitive.
+    /// recognized primitive. `list` is the enumerated task list, so a
+    /// join edge can say whether its target is a task any listing shows.
     ///
     /// `None` for incomplete chains and unrecognized leaves; `Some(Err)`
     /// when the leaf was recognized but its innards could not be read
     /// (torn memory, or a tokio whose internals moved).
-    pub fn wait_target(&self, chain: &AwaitChain<'b>) -> Option<Result<WaitTarget>> {
+    pub fn wait_target(
+        &self,
+        chain: &AwaitChain<'b>,
+        list: &TaskList,
+    ) -> Option<Result<WaitTarget>> {
         if !matches!(chain.end, ChainEnd::Leaf) {
             return None;
         }
@@ -1000,7 +1005,7 @@ impl<'b, T: Target> Context<'b, T> {
         let kind = leaf_kind(leaf.future.ty.name())?;
         Some(match kind {
             LeafKind::Sleep => self.read_sleep(&leaf.future),
-            LeafKind::JoinHandle => self.read_join_handle(&leaf.future),
+            LeafKind::JoinHandle => self.read_join_handle(&leaf.future, list),
             LeafKind::SemaphoreAcquire => self.read_acquire(&leaf.future, chain),
         })
     }
@@ -1030,19 +1035,31 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// A `JoinHandle<T>`: the task being awaited — a dependency edge
     /// between tasks (§3.6).
-    fn read_join_handle(&self, handle: &TypeInfo<'b, BundleType<'b>>) -> Result<WaitTarget> {
+    fn read_join_handle(
+        &self,
+        handle: &TypeInfo<'b, BundleType<'b>>,
+        list: &TaskList,
+    ) -> Result<WaitTarget> {
         // JoinHandle.raw: RawTask, which peels to the NonNull<Header>.
         let addr: u64 = handle.member("raw")?.parse(self)?;
-        let task_id = self
-            .header_task_id(addr)
+        let (task_id, state) = self
+            .header_task_ref(addr)
             .context("failed to identify the joined task")?;
-        Ok(WaitTarget::Task { addr, task_id })
+        Ok(WaitTarget::Task {
+            addr,
+            task_id,
+            state,
+            listed: list.contains(addr),
+        })
     }
 
     /// Resolve a bare task `Header` pointer from target memory to its
-    /// task id, going through the task's own vtable for the id offset.
-    /// JoinHandles and task wakers both hand us such pointers.
-    fn header_task_id(&self, addr: u64) -> Result<Option<u64>> {
+    /// task id and state word, going through the task's own vtable for
+    /// the id offset. JoinHandles and task wakers both hand us such
+    /// pointers — including to a task that has already completed and
+    /// left the owned list (the handle's reference keeps the Header
+    /// alive), which only the state word reveals.
+    fn header_task_ref(&self, addr: u64) -> Result<(Option<u64>, TaskState)> {
         ensure!(
             self.mappings.contains_addr(addr),
             "task Header pointer {addr:#x} is unmapped"
@@ -1050,6 +1067,7 @@ impl<'b, T: Target> Context<'b, T> {
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
         let header = TypeInfo::from_addr(self, header_ty, addr)
             .with_context(|| format!("failed to read the task Header at {addr:#x}"))?;
+        let state = TaskState(header.member("state")?.parse(self)?);
         let vtable_addr: u64 = header.member("vtable")?.parse(self)?;
         let vtable = self
             .task_vtable(vtable_addr)
@@ -1060,7 +1078,7 @@ impl<'b, T: Target> Context<'b, T> {
                 vtable.id_offset
             ))
         })?;
-        Ok((raw_id != 0).then_some(raw_id))
+        Ok(((raw_id != 0).then_some(raw_id), state))
     }
 
     /// The memory a task's allocation covers: the `Cell<T, S>` holding
@@ -1201,8 +1219,8 @@ impl<'b, T: Target> Context<'b, T> {
         let data: u64 = raw.member("data")?.parse(self)?;
         let vtable: u64 = raw.member("vtable")?.parse(self)?;
         if self.task_waker_vtable()? == Some(vtable) {
-            let task_id = self
-                .header_task_id(data)
+            let (task_id, _) = self
+                .header_task_ref(data)
                 .context("failed to identify the task behind a queued waker")?;
             Ok(QueuedWaker::Task {
                 addr: data,
@@ -1477,6 +1495,16 @@ pub struct TaskList {
     pub errors: Vec<anyhow::Error>,
 }
 
+impl TaskList {
+    /// Whether the walk enumerated a task whose Header is at `addr`. A
+    /// live Header this returns false for belongs to something the
+    /// scheduler's owned list never carries: a `spawn_blocking` task,
+    /// or a task of some other runtime in the process.
+    pub fn contains(&self, addr: u64) -> bool {
+        self.tasks.iter().any(|t| t.addr.0 == addr)
+    }
+}
+
 /// Every task's allocation, sorted by address, for resolving raw
 /// pointers — a queued waker's data word, the `NonNull<Header>` inside
 /// a `JoinHandle`, any address a value dump shows. Built by
@@ -1628,7 +1656,20 @@ pub enum WaitTarget {
     Timer { deadline: RawInstant },
     /// A `JoinHandle`: waiting for another task to finish — a
     /// dependency edge between tasks.
-    Task { addr: u64, task_id: Option<u64> },
+    Task {
+        addr: u64,
+        task_id: Option<u64>,
+        /// The joined task's state word. A complete task has left the
+        /// owned list (no listing shows it; the handle's reference is
+        /// what keeps its Header alive), so the join is already
+        /// satisfied and its awaiter merely unpolled.
+        state: TaskState,
+        /// Whether the enumerated task list contains the target. False
+        /// with an incomplete state means the task is alive somewhere
+        /// this session cannot list: the blocking pool, or another
+        /// runtime.
+        listed: bool,
+    },
     /// `batch_semaphore::Acquire`: queued on the semaphore that backs
     /// tokio's Mutex, RwLock, and Semaphore.
     Semaphore {
@@ -1715,13 +1756,30 @@ impl fmt::Display for WaitTarget {
                 deadline.tv_nsec / 1_000_000
             ),
             Self::Task {
-                task_id: Some(id), ..
-            } => write!(f, "task {id} (JoinHandle)"),
-            Self::Task {
+                task_id,
                 addr,
-                task_id: None,
+                state,
+                listed,
             } => {
-                write!(f, "the task at {addr:#x} (JoinHandle)")
+                match task_id {
+                    Some(id) => write!(f, "task {id} (JoinHandle)")?,
+                    None => write!(f, "the task at {addr:#x} (JoinHandle)")?,
+                }
+                // Either way the listings cannot show it: complete
+                // means off the owned list, alive only through this
+                // handle; alive-but-unlisted means it runs somewhere
+                // this session does not enumerate.
+                if state.lifecycle() == Lifecycle::Complete {
+                    write!(f, " — already complete, awaiting consumption")?;
+                } else if !listed {
+                    write!(
+                        f,
+                        " — {}, but not in the scheduler's owned tasks \
+                         (a spawn_blocking task, or another runtime's)",
+                        state.lifecycle()
+                    )?;
+                }
+                Ok(())
             }
             Self::Semaphore {
                 addr,
