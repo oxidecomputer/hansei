@@ -61,13 +61,13 @@ const LEAF_FUTURES: &[(&str, LeafKind)] = &[
 ];
 
 #[derive(Copy, Clone, Debug)]
-enum LeafKind {
+pub(crate) enum LeafKind {
     Sleep,
     JoinHandle,
     SemaphoreAcquire,
 }
 
-fn leaf_kind(name: &str) -> Option<LeafKind> {
+pub(crate) fn leaf_kind(name: &str) -> Option<LeafKind> {
     LEAF_FUTURES
         .iter()
         .find(|(prefix, _)| name.starts_with(prefix))

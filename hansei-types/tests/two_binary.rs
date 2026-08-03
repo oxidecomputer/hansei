@@ -24,7 +24,7 @@
 
 use exegesis::bundle::{Bundle, BundleView};
 use hansei_types::tokio::bundle::{AwaitChain, ChainEnd, Context, FutureInfo, TaskStage};
-use hansei_types::tokio::graph;
+use hansei_types::tokio::{census, graph};
 use proc::Target;
 use proc::snapshot::Snapshot;
 
@@ -408,6 +408,45 @@ task 4 idle sleep_join::joiner::{async_fn_env#0}
   end leaf
   waiting on task 3 (JoinHandle)
 "#,
+    );
+}
+
+/// The future census, offline: the futurelock fixture's `future1` — a
+/// dyn-boxed lock future held across `do_stuff`'s suspension, the very
+/// future the futurelock diagnosis is about — is found as a held
+/// future, dyn-resolved to its concrete type, with the contended Mutex
+/// it waits on.
+#[test]
+fn test_futurelock_census_offline() {
+    let (bundle, snapshot) = load("futurelock");
+    let view = BundleView::new(&bundle);
+    let ctx = Context::new(&snapshot, view).expect("snapshot has mappings");
+
+    let lwps = snapshot.lwps().unwrap();
+    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+    let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
+    let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+
+    let census = census::census(&ctx, &list);
+    let future1 = census
+        .held
+        .iter()
+        .find(|h| h.local == "future1")
+        .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
+    assert!(
+        future1
+            .future
+            .contains("futurelock::do_async_thing::{async_fn_env#0}"),
+        "{future1:#?}"
+    );
+    assert_eq!(list.tasks[future1.owner].task_id, Some(5), "{future1:#?}");
+    assert!(
+        future1
+            .waiting_on
+            .as_deref()
+            .unwrap_or_default()
+            .contains("tokio::sync::Mutex"),
+        "{future1:#?}"
     );
 }
 

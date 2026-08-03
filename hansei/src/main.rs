@@ -1,12 +1,13 @@
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use exegesis::bundle::{Bundle, BundleMember, BundleType, BundleView};
-use hansei_types::tokio::{Lifecycle, bundle, graph};
+use hansei_types::tokio::{Lifecycle, bundle, census, graph};
 use proc::Proc;
 #[cfg(feature = "snapshot")]
 use proc::snapshot::Recorder;
 use reify::{TypeInfo, TypeInfoRef};
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io::{self, Write};
@@ -81,6 +82,15 @@ pub enum Command {
         /// The substring to look for.
         needle: String,
     },
+
+    /// List the futures no task listing shows, grouped by the task
+    /// that owns them: futures *held* in frames off the poll spine
+    /// (select!/join! arms in flight, a future stored across an await,
+    /// a futurelock's abandoned lock), and every FuturesUnordered with
+    /// its children. Found by value in each task's frames: coroutine
+    /// environments, future trait objects (resolved through the vtable
+    /// join), and the recognized leaf futures.
+    Futures,
 
     /// Print the waker-based task dependency graph: what every task is
     /// waiting on, and any futurelock — a lock future granted or queued
@@ -251,6 +261,11 @@ pub struct Session<'b> {
     /// the drivers both hang off it.
     handle: TypeInfo<'b, BundleType<'b>>,
     tasks: bundle::TaskList,
+    /// Task extents and the sub-executor census, built on first use: a
+    /// core does not change, so the address→task answers never do
+    /// either, and the census walks every chain — worth paying once.
+    extents: OnceCell<bundle::TaskExtents>,
+    census: OnceCell<census::FutureCensus>,
 }
 
 impl<'b> Session<'b> {
@@ -276,7 +291,19 @@ impl<'b> Session<'b> {
             workers,
             handle,
             tasks,
+            extents: OnceCell::new(),
+            census: OnceCell::new(),
         })
+    }
+
+    fn extents(&self) -> &bundle::TaskExtents {
+        self.extents
+            .get_or_init(|| self.ctx.task_extents(&self.tasks))
+    }
+
+    fn census(&self) -> &census::FutureCensus {
+        self.census
+            .get_or_init(|| census::census(&self.ctx, &self.tasks))
     }
 }
 
@@ -287,6 +314,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             exec_runtime_field(session, "driver", depth, ugly, out)?
         }
         Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
+        Command::Futures => exec_futures(session, out)?,
         Command::Graph => exec_graph(session, out)?,
         Command::Info => exec_info(session, out)?,
         Command::SharedState { depth, ugly } => {
@@ -453,15 +481,20 @@ fn exec_trace(
     // allocations (wakers, JoinHandles); name those with the task id so
     // the reader knows what to trace next. The traced task itself is
     // named like any other: a wake-queue entry resolving back to it is a
-    // finding (the futurelock shape), not noise.
-    let extents = verbose.then(|| session.ctx.task_extents(list));
-    let annotate = extents.as_ref().map(|extents| {
+    // finding (the futurelock shape), not noise. A pointer into a
+    // sub-executor's child node instead names the task that polls the
+    // set — the task a wake there would ultimately run.
+    let lookups = verbose.then(|| (session.extents(), session.census()));
+    let annotate = lookups.map(|(extents, census)| {
         move |ptr: u64| {
-            let (index, _) = extents.locate(ptr)?;
-            Some(match list.tasks[index].task_id {
-                Some(id) => format!("task {id}"),
-                None => format!("task at {:?}", list.tasks[index].addr),
-            })
+            if let Some((index, _)) = extents.locate(ptr) {
+                return Some(task_label(list, index));
+            }
+            let (set, _, _) = census.locate(ptr)?;
+            Some(format!(
+                "{} via FuturesUnordered",
+                task_label(list, census.sets[set].owner)
+            ))
         }
     });
 
@@ -1237,6 +1270,10 @@ fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) 
     // failures duplicate the per-task warnings above.
     let analysis = graph::analyze(&ctx, &list);
 
+    // And the sub-executor census, so the set node chains and child
+    // futures it reads replay offline as well.
+    let _ = census::census(&ctx, &list);
+
     let snapshot = recorder.snapshot().context("failed to assemble snapshot")?;
     snapshot
         .save(output)
@@ -1248,6 +1285,123 @@ fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) 
         analysis.futurelocks.len(),
         output.display()
     )?;
+    Ok(())
+}
+
+/// How a task is referred to in passing: by id, or by Header address
+/// when it has none.
+fn task_label(list: &bundle::TaskList, index: usize) -> String {
+    match list.tasks[index].task_id {
+        Some(id) => format!("task {id}"),
+        None => format!("task at {:?}", list.tasks[index].addr),
+    }
+}
+
+/// List every future the census found, grouped by the task that owns
+/// it: the futures held in frames off the poll spine, and each
+/// sub-executor with its children.
+fn exec_futures(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
+    let list = &session.tasks;
+    let census = session.census();
+    for err in &census.errors {
+        writeln!(io::stderr(), "warning: {err:#}")?;
+    }
+
+    // Group by owning task, keeping each group's entries in the order
+    // the census found them.
+    let mut by_owner: BTreeMap<usize, (Vec<&census::FutureSet>, Vec<&census::HeldFuture>)> =
+        BTreeMap::new();
+    for set in &census.sets {
+        by_owner.entry(set.owner).or_default().0.push(set);
+    }
+    for held in &census.held {
+        by_owner.entry(held.owner).or_default().1.push(held);
+    }
+
+    for (i, (&owner, (sets, held))) in by_owner.iter().enumerate() {
+        if i > 0 {
+            writeln!(out)?;
+        }
+        // How many futures the task has in flight beyond its spine:
+        // the held ones plus every resident set child (an empty slot
+        // is a future already gone, not one outstanding).
+        let futures: usize = held.len()
+            + sets
+                .iter()
+                .map(|s| s.children.iter().filter(|c| c.future.is_some()).count())
+                .sum::<usize>();
+        let plural = if futures == 1 { "" } else { "s" };
+        writeln!(
+            out,
+            "{}: {} — {futures} future{plural}",
+            task_label(list, owner),
+            future_name(&list.tasks[owner].future)
+        )?;
+        for h in held {
+            let via = h
+                .via
+                .as_ref()
+                .map(|v| format!(", via {v}"))
+                .unwrap_or_default();
+            let state = h
+                .state
+                .as_ref()
+                .map(|s| format!("  {s}"))
+                .unwrap_or_default();
+            writeln!(
+                out,
+                "  held (frame {}, `{}`{via}): {:#x}  {}{state}",
+                h.frame, h.local, h.addr, h.future
+            )?;
+            if let Some(waiting) = &h.waiting_on {
+                writeln!(out, "    waiting on {waiting}")?;
+            }
+        }
+        for set in sets {
+            let via = set
+                .via
+                .as_ref()
+                .map(|v| format!(", via {v}"))
+                .unwrap_or_default();
+            writeln!(
+                out,
+                "  {} at {:#x} (frame {}, `{}`{via}): {} child(ren)",
+                set.ty,
+                set.addr,
+                set.frame,
+                set.local,
+                set.children.len()
+            )?;
+            for child in &set.children {
+                let Some(future) = &child.future else {
+                    writeln!(out, "    {:#x}  <completed, not yet reaped>", child.node)?;
+                    continue;
+                };
+                let state = child
+                    .state
+                    .as_ref()
+                    .map(|s| format!("  {s}"))
+                    .unwrap_or_default();
+                writeln!(out, "    {:#x}  {future}{state}", child.node)?;
+                if let Some(waiting) = &child.waiting_on {
+                    writeln!(out, "      waiting on {waiting}")?;
+                }
+            }
+        }
+    }
+
+    if by_owner.is_empty() {
+        writeln!(out, "no futures found outside the task list")?;
+    } else {
+        let children: usize = census.sets.iter().map(|s| s.children.len()).sum();
+        writeln!(
+            out,
+            "\n{} held future(s); {} set(s) holding {} child future(s)",
+            census.held.len(),
+            census.sets.len(),
+            children
+        )?;
+    }
     Ok(())
 }
 
@@ -1267,8 +1421,13 @@ fn future_name(future: &bundle::FutureInfo) -> String {
 }
 
 fn exec_task_at(session: &Session<'_>, addr: u64, out: &mut dyn io::Write) -> Result<()> {
-    let extents = session.ctx.task_extents(&session.tasks);
-    report_task_at(&session.tasks, &extents, addr, out)
+    report_task_at(
+        &session.tasks,
+        session.extents(),
+        session.census(),
+        addr,
+        out,
+    )
 }
 
 /// The `task-at` answer, apart from the session so the offline
@@ -1276,11 +1435,46 @@ fn exec_task_at(session: &Session<'_>, addr: u64, out: &mut dyn io::Write) -> Re
 fn report_task_at(
     list: &bundle::TaskList,
     extents: &bundle::TaskExtents,
+    census: &census::FutureCensus,
     addr: u64,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let Some((index, offset)) = extents.locate(addr) else {
-        writeln!(out, "no task's allocation contains {addr:#x}")?;
+        // Not a task's memory — but a sub-executor's child node still
+        // names the task that polls it.
+        let Some((set_index, child, offset)) = census.locate(addr) else {
+            writeln!(out, "no task's allocation contains {addr:#x}")?;
+            return Ok(());
+        };
+        let set = &census.sets[set_index];
+        let owner = &list.tasks[set.owner];
+        writeln!(
+            out,
+            "{addr:#x} is at offset {offset:#x} in a FuturesUnordered child node \
+             (set at {:#x}), polled by {}",
+            set.addr,
+            task_label(list, set.owner)
+        )?;
+        if let Some(future) = &set.children[child].future {
+            let state = set.children[child]
+                .state
+                .as_ref()
+                .map(|s| format!(" ({s})"))
+                .unwrap_or_default();
+            writeln!(out, "child future: {future}{state}")?;
+        } else {
+            writeln!(out, "child future: <completed, not yet reaped>")?;
+        }
+        writeln!(
+            out,
+            "Task {}: {} ({})",
+            match owner.task_id {
+                Some(id) => id.to_string(),
+                None => format!("{:?}", owner.addr),
+            },
+            future_name(&owner.future),
+            owner.state.lifecycle()
+        )?;
         return Ok(());
     };
     let task = &list.tasks[index];
@@ -1761,6 +1955,7 @@ mod task_at_tests {
     use super::{parse_hex_addr, report_task_at};
     use exegesis::bundle::{Bundle, BundleView};
     use hansei_types::tokio::bundle::{Context, TaskExtents, TaskList};
+    use hansei_types::tokio::census::{self, FutureCensus};
     use proc::Target;
     use proc::snapshot::Snapshot;
 
@@ -1774,7 +1969,7 @@ mod task_at_tests {
             .join(name)
     }
 
-    fn with_tasks(program: &str, check: impl FnOnce(&TaskList, &TaskExtents)) {
+    fn with_tasks(program: &str, check: impl FnOnce(&TaskList, &TaskExtents, &FutureCensus)) {
         let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
             .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
         let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
@@ -1786,12 +1981,13 @@ mod task_at_tests {
         let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
         let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
         let extents = ctx.task_extents(&list);
-        check(&list, &extents);
+        let census = census::census(&ctx, &list);
+        check(&list, &extents, &census);
     }
 
-    fn report(list: &TaskList, extents: &TaskExtents, addr: u64) -> String {
+    fn report(list: &TaskList, extents: &TaskExtents, census: &FutureCensus, addr: u64) -> String {
         let mut out = Vec::new();
-        report_task_at(list, extents, addr, &mut out).expect("the report renders");
+        report_task_at(list, extents, census, addr, &mut out).expect("the report renders");
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
 
@@ -1800,7 +1996,7 @@ mod task_at_tests {
     /// outside every allocation reports the miss.
     #[test]
     fn test_addresses_resolve_to_the_containing_task() {
-        with_tasks("sleep-join", |list, extents| {
+        with_tasks("sleep-join", |list, extents, census| {
             let sleeper = list
                 .tasks
                 .iter()
@@ -1808,7 +2004,7 @@ mod task_at_tests {
                 .expect("the sleeper is task 3");
             let header = sleeper.addr.0;
 
-            let shown = report(list, extents, header);
+            let shown = report(list, extents, census, header);
             assert!(
                 shown.contains(&format!(
                     "{header:#x} is in task 3 at offset 0x0 (header {header:#x})"
@@ -1820,13 +2016,10 @@ mod task_at_tests {
                 "{shown}"
             );
 
-            let inside = report(list, extents, header + 0x10);
-            assert!(
-                inside.contains("is in task 3 at offset 0x10"),
-                "{inside}"
-            );
+            let inside = report(list, extents, census, header + 0x10);
+            assert!(inside.contains("is in task 3 at offset 0x10"), "{inside}");
 
-            let miss = report(list, extents, 0x10);
+            let miss = report(list, extents, census, 0x10);
             assert_eq!(miss, "no task's allocation contains 0x10\n");
         });
     }
@@ -1835,7 +2028,7 @@ mod task_at_tests {
     /// before it: the extents tile the tasks without bleeding.
     #[test]
     fn test_extents_cover_each_task_exactly() {
-        with_tasks("dyn-future", |list, extents| {
+        with_tasks("dyn-future", |list, extents, _census| {
             for (index, task) in list.tasks.iter().enumerate() {
                 assert_eq!(
                     extents.locate(task.addr.0),

@@ -116,6 +116,18 @@ suspended frame's locals — off its task's poll path, so it will never be polle
 queued for, a contended semaphore's permits. The diagnosis names the holding task, the local and frame
 the abandoned future is parked in, and the tasks blocked behind it.
 
+Beyond the tasks there are the futures no listing shows: `select!`/`join!` arms in flight, a future stored
+across an await (a futurelock's abandoned lock among them), and the children a `FuturesUnordered` polls.
+`futures` takes their census. Every task's frames are scanned by value for anything recognizably a future —
+a coroutine environment (`async fn`/`async block`), a `dyn Future` behind a pointer (resolved through the
+vtable join), a recognized leaf, or a `FuturesUnordered`, whose intrusive child list is then walked — and
+each find is reported under its owning task with its concrete type, suspend state, and recognized wait
+target, recursing through what it finds (a set inside a held future inside a set is reached). A hand-written
+combinator is not itself identified — DWARF records no trait impls — but the scan descends through it, so
+the coroutines inside it are. The wakers a set's children register carry the set's node addresses rather
+than a task Header; under `trace -v` those are labelled `task N via FuturesUnordered` (the task a wake would
+ultimately run), and `task-at` resolves one to the polling task and the child future in that slot.
+
 At attach time the bundle's symbol fingerprint is resolved against the target's symtab; anything less than a
 100% match is refused (`--force`/`-f` to override) so a wrong bundle can never silently misinterpret memory.
 
