@@ -53,6 +53,7 @@ const PROGRAMS: &[&str] = &[
     "futurelock",
     "many-tasks",
     "sleep-join",
+    "unordered",
 ];
 
 fn workspace_root() -> &'static Path {
@@ -844,6 +845,83 @@ fn test_task_at_acceptance() {
             !out.status.success(),
             "{}",
             String::from_utf8_lossy(&out.stdout)
+        );
+    });
+}
+
+/// The sub-executor census: a `FuturesUnordered`'s children are futures,
+/// not tasks — `futures` lists them under the task that polls the set,
+/// `trace -v` labels their queued wakers with that task, and `task-at`
+/// resolves a child node address to it.
+#[test]
+fn test_futures_acceptance() {
+    let bundle = fixtures().bundle("unordered");
+    with_core("unordered", |core| {
+        let rows = list_tasks(&bundle, core);
+        let driver = task_with_future(&rows, "unordered::driver::{async_fn_env#0}");
+
+        // Two held futures plus the set's three children.
+        let futures = hansei_ok(&bundle, core, "futures");
+        assert!(
+            futures.contains(&format!(
+                "task {}: unordered::driver::{{async_fn_env#0}} — 5 futures",
+                driver.id
+            )),
+            "{futures}"
+        );
+        assert!(
+            futures.contains(
+                "futures_util::stream::futures_unordered::FuturesUnordered\
+                 <unordered::set_member::{async_fn_env#0}> at 0x"
+            ),
+            "{futures}"
+        );
+        assert!(futures.contains("3 child(ren)"), "{futures}");
+        // Set-child rows sit one level deeper than the held rows.
+        let child =
+            regex::Regex::new(r"\n    (0x[0-9a-f]+)  unordered::set_member::\{async_fn_env#0\}")
+                .unwrap();
+        let nodes: Vec<String> = child
+            .captures_iter(&futures)
+            .map(|c| c[1].to_string())
+            .collect();
+        assert_eq!(nodes.len(), 3, "{futures}");
+
+        // The held futures — a bare coroutine and a dyn-boxed one, the
+        // census's other two detections — are listed off the driver's
+        // spine, never yet polled.
+        assert!(futures.contains("held (frame 0, `held`)"), "{futures}");
+        assert!(futures.contains("held (frame 0, `boxed`)"), "{futures}");
+        assert!(
+            futures.contains("unordered::set_member::{async_fn_env#0}  Unresumed"),
+            "{futures}"
+        );
+
+        // The children park in the shared Notify; rendering the driver's
+        // own `set` local deep enough reaches that wait queue, whose
+        // wakers carry the set's node addresses — named as the polling
+        // task rather than left as raw pointers.
+        let verbose = hansei_ok(
+            &bundle,
+            core,
+            &format!("trace {} --verbose --depth 12", driver.id),
+        );
+        assert!(
+            verbose.contains(&format!("task {} via FuturesUnordered", driver.id)),
+            "{verbose}"
+        );
+
+        // A child node address resolves to the polling task, with the
+        // child future named.
+        let out = hansei_ok(&bundle, core, &format!("task-at {}", nodes[0]));
+        assert!(out.contains("in a FuturesUnordered child node"), "{out}");
+        assert!(
+            out.contains(&format!("polled by task {}", driver.id)),
+            "{out}"
+        );
+        assert!(
+            out.contains("child future: unordered::set_member::{async_fn_env#0}"),
+            "{out}"
         );
     });
 }

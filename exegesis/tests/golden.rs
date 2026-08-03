@@ -837,6 +837,11 @@ fn test_golden_channels() {
     run_golden("channels");
 }
 
+#[test]
+fn test_golden_unordered() {
+    run_golden("unordered");
+}
+
 /// Two extractions of one binary agree byte for byte.
 ///
 /// The sweep resolves several fields first-wins, so whichever function

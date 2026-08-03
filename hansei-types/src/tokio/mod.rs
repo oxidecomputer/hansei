@@ -12,6 +12,7 @@
 //! no mirror struct here to be described.
 
 pub mod bundle;
+pub mod census;
 pub mod graph;
 
 use std::fmt;
