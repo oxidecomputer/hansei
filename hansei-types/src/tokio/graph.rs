@@ -92,7 +92,7 @@ pub fn analyze<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> Analysis {
             match ctx.task_stage(task) {
                 Ok(TaskStage::Running(future)) => {
                     let chain = ctx.await_chain(future);
-                    match ctx.wait_target(&chain) {
+                    match ctx.wait_target(&chain, list) {
                         Some(Ok(t)) => target = Some(t),
                         Some(Err(e)) => {
                             errors.push(e.context(format!("failed to read what {tref} waits on")))

@@ -503,7 +503,9 @@ fn exec_trace(
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
             let annotate = annotate.as_ref().map(|a| a as &reify::AddrAnnotator<'_>);
-            print_await_chain(ctx, &chain, verbose, depth, ugly, elide, annotate, out)?;
+            print_await_chain(
+                ctx, list, &chain, verbose, depth, ugly, elide, annotate, out,
+            )?;
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
@@ -537,6 +539,7 @@ fn exec_trace(
 #[allow(clippy::too_many_arguments)]
 fn print_await_chain<'b, T: proc::Target + Sync>(
     ctx: &bundle::Context<'b, T>,
+    list: &bundle::TaskList,
     chain: &bundle::AwaitChain<'b>,
     verbose: bool,
     depth: usize,
@@ -723,7 +726,7 @@ fn print_await_chain<'b, T: proc::Target + Sync>(
     // Name what the task is actually waiting on when the leaf is a
     // known primitive. It belongs to the deepest frame, so it goes out
     // before any inventory closes back over it.
-    match ctx.wait_target(chain) {
+    match ctx.wait_target(chain, list) {
         Some(Ok(target)) => writeln!(out, "{detail_indent}waiting on {target}")?,
         Some(Err(e)) => writeln!(
             io::stderr(),
@@ -1241,7 +1244,7 @@ fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) 
                 }
                 // Drive the leaf-future interpretation too, so its reads
                 // are in the snapshot for the offline tests.
-                if let Some(Err(e)) = ctx.wait_target(&chain) {
+                if let Some(Err(e)) = ctx.wait_target(&chain, &list) {
                     writeln!(
                         io::stderr(),
                         "warning: failed to read what task {:?} waits on: {e:#}",
@@ -2120,6 +2123,7 @@ mod trace_render_tests {
         let mut out = Vec::new();
         print_await_chain(
             &ctx,
+            &list,
             &chain,
             verbose,
             4,
@@ -2251,6 +2255,7 @@ mod trace_render_tests {
         let mut out = Vec::new();
         print_await_chain(
             &ctx,
+            &list,
             &chain,
             true,
             4,
