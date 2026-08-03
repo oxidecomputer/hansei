@@ -124,10 +124,40 @@ pub(crate) fn write_utf8_string(
     let Ok(bytes) = proc.read_bytes(pointer, len) else {
         return write!(f, "<unreadable string data>");
     };
-    let Ok(text) = std::str::from_utf8(&bytes) else {
-        return write!(f, "<invalid UTF-8 string>");
-    };
-    write!(f, "{text:?}")
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => write!(f, "{text:?}"),
+        // A corrupted string is most useful mostly-shown: the valid
+        // runs render escaped as usual and each bad byte renders as
+        // `\xNN`, so the salvageable text survives the damage instead
+        // of vanishing behind a marker. (Tried as a bstr single pass
+        // eliding the validation entirely: measured CPU parity — the
+        // validation's cost is first touch of the buffer, paid by
+        // whichever pass runs first — so the valid path stays `str`'s
+        // own `Debug`, and this arm stays the rare one.)
+        Err(_) => {
+            use std::fmt::Write as _;
+
+            f.write_str("\"")?;
+            for chunk in bytes.utf8_chunks() {
+                for ch in chunk.valid().chars() {
+                    // `escape_debug` would escape a bare `'`, which
+                    // `str`'s `Debug` on the valid path leaves alone;
+                    // keep the two spellings aligned.
+                    if ch == '\'' {
+                        f.write_char('\'')?;
+                    } else {
+                        for esc in ch.escape_debug() {
+                            f.write_char(esc)?;
+                        }
+                    }
+                }
+                for byte in chunk.invalid() {
+                    write!(f, "\\x{byte:02x}")?;
+                }
+            }
+            f.write_str("\"")
+        }
+    }
 }
 
 pub(crate) fn byte_range(bytes: &[u8], offset: u64, size: u64) -> Option<&[u8]> {
@@ -473,23 +503,29 @@ mod tests {
         );
     }
 
-    /// A string whose bytes are not valid UTF-8 is reported rather than
-    /// lossily transcoded.
+    /// A string whose bytes are not valid UTF-8 renders its valid runs
+    /// escaped as usual with each bad byte as `\xNN` — a corrupted
+    /// string survives mostly-shown rather than vanishing behind a
+    /// marker. Escapable characters inside the valid runs still escape,
+    /// and a string that is nothing but damage is just its bad bytes.
     #[test]
-    fn test_invalid_utf8_string_is_reported() {
-        let mem = FakeMem::new().at(0x3000, vec![0x68, 0x69, 0xff, 0xfe]);
+    fn test_invalid_utf8_string_degrades_per_byte() {
+        let mem = FakeMem::new()
+            .at(0x3000, vec![0x68, 0x69, 0xff, 0xfe, b'"', b'!'])
+            .at(0x4000, vec![0xff, 0x80])
+            .at(0x5000, vec![b'i', b't', b'\'', b's', 0xff]);
 
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let bytes: Vec<u8> = [0x3000u64, 4]
-            .into_iter()
-            .flat_map(u64::to_le_bytes)
-            .collect();
-        let value = TypeInfoRef::new(v.ty(STR).unwrap(), 0, &bytes);
-        assert_eq!(
-            format!("{}", value.display_from_target(&mem, 8)),
-            "<invalid UTF-8 string>"
-        );
+        let show = |addr: u64, len: u64| {
+            let bytes: Vec<u8> = [addr, len].into_iter().flat_map(u64::to_le_bytes).collect();
+            let value = TypeInfoRef::new(v.ty(STR).unwrap(), 0, &bytes);
+            format!("{}", value.display_from_target(&mem, 8))
+        };
+        assert_eq!(show(0x3000, 6), r#""hi\xff\xfe\"!""#);
+        assert_eq!(show(0x4000, 2), r#""\xff\x80""#);
+        // A bare `'` stays bare, as it does on the valid path.
+        assert_eq!(show(0x5000, 5), r#""it's\xff""#);
     }
 
     /// A code pointer the target cannot name keeps its address and says so.
