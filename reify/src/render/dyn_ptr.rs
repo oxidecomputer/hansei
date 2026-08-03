@@ -8,7 +8,7 @@ use crate::value::TypeInfoRef;
 use std::fmt;
 
 use super::scalar::read_u64_at;
-use super::{RenderCtx, write_display_value, write_indent};
+use super::{RenderCtx, write_display_value, write_hex_fixed, write_hex_u64, write_indent};
 
 #[derive(Debug)]
 struct VtableFunction {
@@ -78,7 +78,8 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
     write!(f, " {{")?;
 
     write_dyn_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
-    write!(f, "pointer: 0x{pointer_address:x}")?;
+    f.write_str("pointer: ")?;
+    write_hex_u64(f, pointer_address)?;
     // The vtable resolves the erased *tail* type; when the pointer targets an
     // unsized wrapper (e.g. `ArcInner<dyn Trait>`) the value lives past a
     // sized header, so read the pointee at the tail offset, not the raw
@@ -130,7 +131,8 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
                 .get(*drop_in_place_slot as usize)
                 .copied()
                 .unwrap_or(0);
-            write!(f, "drop_in_place: 0x{drop_address:x}")?;
+            f.write_str("drop_in_place: ")?;
+            write_hex_u64(f, drop_address)?;
             if let Some(function) = functions
                 .iter()
                 .find(|function| function.slot == *drop_in_place_slot)
@@ -157,9 +159,13 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
                 }
                 write_vtable_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
                 if let Some(function) = functions.iter().find(|function| function.slot == slot) {
-                    write!(f, "method[{slot}]: 0x{address:x} -> {},", function.display)?;
+                    write!(f, "method[{slot}]: ")?;
+                    write_hex_u64(f, address)?;
+                    write!(f, " -> {},", function.display)?;
                 } else {
-                    write!(f, "entry[{slot}]: 0x{address:016x},")?;
+                    write!(f, "entry[{slot}]: ")?;
+                    write_hex_fixed(f, address, 8)?;
+                    f.write_str(",")?;
                 }
             }
 
@@ -171,9 +177,15 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
             }
             write!(f, "}},")?;
         }
-        Some(_) => write!(f, "0x{vtable_address:x} -> ...,")?,
-        None if vtable_address == 0 => write!(f, "0x0,")?,
-        None => write!(f, "0x{vtable_address:x} -> <unreadable>,")?,
+        Some(_) => {
+            write_hex_u64(f, vtable_address)?;
+            f.write_str(" -> ...,")?;
+        }
+        None if vtable_address == 0 => f.write_str("0x0,")?,
+        None => {
+            write_hex_u64(f, vtable_address)?;
+            f.write_str(" -> <unreadable>,")?;
+        }
     }
 
     if pretty {

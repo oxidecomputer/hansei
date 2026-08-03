@@ -11,6 +11,7 @@ use exegesis::bundle::Notation;
 use std::fmt;
 
 use super::dyn_ptr::resolve_function_symbol;
+use super::{hex_pair, write_hex_u64};
 
 /// Render one machine `word` through a resolved [`ScalarDecode`], producing the
 /// canonical `field=value, …` form. Enforces the two "no silent state" rules:
@@ -80,7 +81,7 @@ pub(crate) fn write_symbol(
     if address == 0 {
         return write!(f, "null");
     }
-    write!(f, "0x{address:x}")?;
+    write_hex_u64(f, address)?;
     if let Some(symbol) = resolve_function_symbol(proc, address) {
         write!(f, " -> {symbol}")?;
     } else if proc.is_some() {
@@ -152,7 +153,8 @@ pub(crate) fn write_utf8_string(
                     }
                 }
                 for byte in chunk.invalid() {
-                    write!(f, "\\x{byte:02x}")?;
+                    f.write_str("\\x")?;
+                    f.write_str(hex_pair(*byte))?;
                 }
             }
             f.write_str("\"")
@@ -210,7 +212,7 @@ pub(crate) fn eval_bytes(
         },
         Notation::Hex => {
             for byte in bytes {
-                write!(f, "{byte:02x}")?;
+                f.write_str(hex_pair(*byte))?;
             }
             Ok(())
         }
@@ -224,9 +226,9 @@ pub(crate) fn eval_bytes(
 fn write_uuid(f: &mut fmt::Formatter<'_>, uuid: &[u8; 16]) -> fmt::Result {
     for (i, byte) in uuid.iter().enumerate() {
         if matches!(i, 4 | 6 | 8 | 10) {
-            write!(f, "-")?;
+            f.write_str("-")?;
         }
-        write!(f, "{byte:02x}")?;
+        f.write_str(hex_pair(*byte))?;
     }
     Ok(())
 }
