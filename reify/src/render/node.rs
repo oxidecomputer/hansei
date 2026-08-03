@@ -683,10 +683,12 @@ mod tests {
     #[test]
     fn test_notify_renders_compact_state_mutex_and_waiters() {
         // Two waiters live at 0x3000 and 0x3020: the first still parked (no
-        // notification), the second handed a `notify_one` notification.
+        // notification) with no waker registered yet, the second handed a
+        // `notify_one` notification with a task waker armed — its data word
+        // is the woken task's Header address.
         let mem = FakeMem::new()
             .at(0x3000, sync_waiter(0, 0x3020))
-            .at(0x3020, sync_waiter(1, 0))
+            .at(0x3020, sync_waiter_waking(1, 0, 0x77a0))
             .panic_on_unmapped();
 
         let b = test_bundle();
@@ -707,8 +709,23 @@ mod tests {
             format!("{}", value.display_from_target(&mem, 8)),
             "tokio::sync::notify::Notify { state: state=idle, generation=0, \
              mutex: locked=false, parked=false, queue: [\
-             tokio::sync::notify::Waiter { notification: kind=none, order=fifo }, \
-             tokio::sync::notify::Waiter { notification: kind=one, order=fifo }] }"
+             tokio::sync::notify::Waiter { notification: kind=none, order=fifo, \
+             waker: Option<Waker>::None }, \
+             tokio::sync::notify::Waiter { notification: kind=one, order=fifo, \
+             waker: Option<Waker>::Some(0x77a0) }] }"
+        );
+
+        // An address annotator reaches the armed waker's data word, and a
+        // bare pointer word renders as the label itself: the waker row
+        // names the task to be woken, with the address only as fallback.
+        let annotate = |addr: u64| (addr == 0x77a0).then(|| "task 7".to_string());
+        let shown = format!(
+            "{}",
+            value.display_from_target(&mem, 8).annotate_addrs(&annotate)
+        );
+        assert!(
+            shown.contains("waker: Option<Waker>::Some(task 7)"),
+            "{shown}"
         );
 
         // Notified with two notify_waiters calls, locked mutex, empty queue.
@@ -738,8 +755,10 @@ mod tests {
              \x20   state: state=idle, generation=0,\n\
              \x20   mutex: locked=false, parked=false,\n\
              \x20   queue: [\n\
-             \x20       tokio::sync::notify::Waiter { notification: kind=none, order=fifo },\n\
-             \x20       tokio::sync::notify::Waiter { notification: kind=one, order=fifo },\n\
+             \x20       tokio::sync::notify::Waiter { notification: kind=none, order=fifo, \
+             waker: Option<Waker>::None },\n\
+             \x20       tokio::sync::notify::Waiter { notification: kind=one, order=fifo, \
+             waker: Option<Waker>::Some(0x77a0) },\n\
              \x20   ],\n\
              }"
         );
@@ -945,8 +964,10 @@ mod tests {
             format!("{}", value.display_from_target(&mem, 8)),
             "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=false, parked=false, \
              closed: false, permits: closed=false, permits=10, bound: 16, queue: [\
-             tokio::sync::batch_semaphore::Waiter { permits_needed: 2 }, \
-             tokio::sync::batch_semaphore::Waiter { permits_needed: 1 }] }"
+             tokio::sync::batch_semaphore::Waiter { permits_needed: 2, \
+             waker: Option<Waker>::None }, \
+             tokio::sync::batch_semaphore::Waiter { permits_needed: 1, \
+             waker: Option<Waker>::None }] }"
         );
 
         // Locked, closed, no permits, empty queue (null head).
@@ -980,8 +1001,10 @@ mod tests {
              \x20   permits: closed=false, permits=10,\n\
              \x20   bound: 16,\n\
              \x20   queue: [\n\
-             \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 2 },\n\
-             \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 1 },\n\
+             \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 2, \
+             waker: Option<Waker>::None },\n\
+             \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 1, \
+             waker: Option<Waker>::None },\n\
              \x20   ],\n\
              }"
         );

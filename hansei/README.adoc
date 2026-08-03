@@ -85,8 +85,10 @@ hansei〉trace ${ID} -v
 ----
 
 This prints every future in the chain with its suspend state and the source line of the awaited expression;
-`-v` adds the live locals at each await point. A pointer in those values that lands in another task's
-allocation is labelled with that task's id — `0x7fffb1c26100 (task 3) -> …` — naming the task to trace next.
+`-v` adds the live locals at each await point. A pointer in those values that lands in a task's
+allocation is labelled with that task's id — `0x7fffb1c26100 (task 3) -> …` — naming the task to trace next,
+and a `Waker` (a wait queue's parked entry, say) renders as the task it would wake — `waker: …Some(task 3)`
+— falling back to its raw data address when no task claims it.
 `task-at` answers the same question for one address by hand: it resolves a raw address to the task whose
 allocation contains it. The address is written in hex and the leading `0x` is required, so an address can
 never be mistaken for the decimal task ids the other commands take:

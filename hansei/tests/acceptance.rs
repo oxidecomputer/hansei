@@ -680,6 +680,23 @@ Defined at: futurelock.rs:15
         // do_stuff's suspension — the futurelock signature.
         let verbose = trace(&bundle, core, &task.id, true);
         assert_locals(&verbose, &["lock", "future1", "disabled", "label"]);
+
+        // The contended Mutex renders its wait queue among the locals, and
+        // the parked waiter's waker resolves to the task it would wake —
+        // this task itself, the futurelock shape in the value dump. A depth
+        // generous enough to reach the waiter row is asked for explicitly.
+        let deep = hansei_ok(
+            &bundle,
+            core,
+            &format!("trace {} --verbose --depth 12", task.id),
+        );
+        assert!(
+            deep.contains(&format!(
+                "waker: core::option::Option<core::task::wake::Waker>::Some(task {})",
+                task.id
+            )),
+            "{deep}"
+        );
     });
 }
 
