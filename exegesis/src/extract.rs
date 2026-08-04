@@ -4093,7 +4093,7 @@ fn classify_future(
         && let (Some(file), Some(line)) = (loc.file.as_deref(), loc.line)
     {
         decl = Some(SourceLoc {
-            file: em.interner.intern(file),
+            file: em.interner.intern(&display_path(loc.dir.as_deref(), file)),
             line: line as u32,
         });
     }
@@ -4124,7 +4124,7 @@ fn classify_future(
                     && let (Some(file), Some(line)) = (loc.file(), loc.line())
                 {
                     decl = Some(SourceLoc {
-                        file: em.interner.intern(file),
+                        file: em.interner.intern(&display_path(loc.dir(), file)),
                         line: line.get() as u32,
                     });
                 }
@@ -4167,6 +4167,62 @@ fn tokio_version_of(loc: &OwnedLoc) -> Option<semver::Version> {
         }
     }
     None
+}
+
+/// The display path for a source location: the file joined onto its
+/// line-table directory, with the build-machine prefixes a reader cannot
+/// use stripped off.
+///
+/// rustc emits workspace files with directories relative to
+/// `DW_AT_comp_dir` (`nexus/src/bin`), which join cleanly as-is. Absolute
+/// directories name the build machine's crate cache or toolchain, so the
+/// path is cut down to its stable tail:
+/// `…/registry/src/<index>/tokio-1.50.0` keeps `tokio-1.50.0`,
+/// `…/git/checkouts/dendrite-<cache hash>/cc0c307` keeps
+/// `dendrite/cc0c307`, both
+/// `/rustc/<hash>/library/std/src` and a rustup toolchain's
+/// `…/lib/rustlib/src/rust/library/std/src` keep `library/std/src`, and
+/// prebuilt std's vendored `/rust/deps/hashbrown-0.15.5/src` keeps
+/// `hashbrown-0.15.5/src`. An unrecognized absolute directory is kept
+/// whole: wrong-but-complete beats truncated-and-ambiguous.
+fn display_path(dir: Option<&str>, file: &str) -> String {
+    let joined = match dir {
+        Some(dir) if !dir.is_empty() && !file.starts_with('/') => format!("{dir}/{file}"),
+        _ => file.to_owned(),
+    };
+    if !joined.starts_with('/') {
+        return joined;
+    }
+    if let Some((_, rest)) = joined.split_once("/registry/src/")
+        && let Some((_, rest)) = rest.split_once('/')
+    {
+        return rest.to_owned();
+    }
+    if let Some((_, rest)) = joined.split_once("/git/checkouts/") {
+        // `<name>-<cache hash>/<rev>/…` → `<name>/<rev>/…`; the cache
+        // hash disambiguates same-named checkouts on the build machine,
+        // which the rev already does for a reader.
+        if let Some((checkout, rest)) = rest.split_once('/')
+            && let Some((name, hash)) = checkout.rsplit_once('-')
+            && hash.len() == 16
+            && hash.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return format!("{name}/{rest}");
+        }
+        return rest.to_owned();
+    }
+    if let Some(rest) = joined.strip_prefix("/rustc/")
+        && let Some((_, rest)) = rest.split_once('/')
+    {
+        return rest.to_owned();
+    }
+    if let Some((_, rest)) = joined.split_once("/lib/rustlib/src/rust/") {
+        return rest.to_owned();
+    }
+    if let Some(rest) = joined.strip_prefix("/rust/deps/") {
+        return rest.to_owned();
+    }
+    joined
 }
 
 /// Converts reachable DWARF types into bundle [`TypeDef`]s: assigns dense
@@ -4584,7 +4640,8 @@ impl<'a> Emitter<'a> {
         let loc = m.source_loc.as_deref()?;
         let file = loc.file.map(|f| self.reader.strings.get(f))?;
         let line = loc.line?;
-        let file = self.interner.intern(file);
+        let dir = loc.dir.map(|d| self.reader.strings.get(d));
+        let file = self.interner.intern(&display_path(dir, file));
         Some(SourceLoc {
             file,
             line: line.get() as u32,
@@ -4694,7 +4751,9 @@ impl<'a> Emitter<'a> {
             let (Some(file), Some(line)) = (loc.file.as_deref(), loc.line) else {
                 continue;
             };
-            let file = self.interner.intern(file);
+            let file = self
+                .interner
+                .intern(&display_path(loc.dir.as_deref(), file));
             out[v] = Some(SourceLoc {
                 file,
                 line: line as u32,
@@ -5094,8 +5153,9 @@ fn demote_types_with_members_out_of_bounds(
 mod tests {
     use super::{
         Detector, Emitter, Named, StatePass, StaticRole, VtableTypeHint,
-        demote_types_with_members_out_of_bounds, drop_members_of_other_states, dyn_tail_offset,
-        has_dyn_tail, match_static_symbol, scalar_newtype_node, scan_vtable_section, str_node,
+        demote_types_with_members_out_of_bounds, display_path, drop_members_of_other_states,
+        dyn_tail_offset, has_dyn_tail, match_static_symbol, scalar_newtype_node,
+        scan_vtable_section, str_node,
     };
     use crate::bundle::{DisplayNode, MemberRef, Notation, POINTER_SIZE, Shape, Step};
     use crate::extract::ReachStep::PeelTo;
@@ -6117,5 +6177,99 @@ mod tests {
         let found = drop_members_of_other_states(&mut types, &renamed);
         assert_eq!(found.coroutines_seen, 1);
         assert_eq!(found.coroutines_matched, 0);
+    }
+
+    #[test]
+    fn test_display_path_plain() {
+        // No dir, an empty dir, or an absolute file passes through.
+        assert_eq!(display_path(None, "lib.rs"), "lib.rs");
+        assert_eq!(display_path(Some(""), "lib.rs"), "lib.rs");
+        assert_eq!(
+            display_path(Some("ignored"), "/abs/path/lib.rs"),
+            "/abs/path/lib.rs"
+        );
+    }
+
+    #[test]
+    fn test_display_path_relative_dir() {
+        assert_eq!(
+            display_path(Some("nexus/reconfigurator/preparation/src"), "lib.rs"),
+            "nexus/reconfigurator/preparation/src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn test_display_path_registry() {
+        // The file component may itself carry a path.
+        assert_eq!(
+            display_path(
+                Some("/home/wfc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.50.0"),
+                "src/sync/watch.rs"
+            ),
+            "tokio-1.50.0/src/sync/watch.rs"
+        );
+        assert_eq!(
+            display_path(
+                Some(
+                    "/home/wfc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/de"
+                ),
+                "mod.rs"
+            ),
+            "serde_core-1.0.228/src/de/mod.rs"
+        );
+    }
+
+    #[test]
+    fn test_display_path_git_checkout() {
+        assert_eq!(
+            display_path(
+                Some(
+                    "/home/wfc/.cargo/git/checkouts/dendrite-ae9f1715c17fc765/cc0c307/dpd-client/src"
+                ),
+                "lib.rs"
+            ),
+            "dendrite/cc0c307/dpd-client/src/lib.rs"
+        );
+        // A checkout dir that does not end in a cache hash is kept whole.
+        assert_eq!(
+            display_path(
+                Some("/home/x/.cargo/git/checkouts/odd-layout/src"),
+                "lib.rs"
+            ),
+            "odd-layout/src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn test_display_path_toolchain() {
+        assert_eq!(
+            display_path(
+                Some("/rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/thread"),
+                "mod.rs"
+            ),
+            "library/std/src/thread/mod.rs"
+        );
+        assert_eq!(
+            display_path(
+                Some(
+                    "/Users/wfc/.rustup/toolchains/1.97.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ptr"
+                ),
+                "non_null.rs"
+            ),
+            "library/core/src/ptr/non_null.rs"
+        );
+        assert_eq!(
+            display_path(Some("/rust/deps/hashbrown-0.15.5/src/raw"), "mod.rs"),
+            "hashbrown-0.15.5/src/raw/mod.rs"
+        );
+    }
+
+    #[test]
+    fn test_display_path_unknown_absolute() {
+        // Unrecognized absolute dirs join unmodified rather than truncate.
+        assert_eq!(
+            display_path(Some("/opt/vendored/foo/src"), "lib.rs"),
+            "/opt/vendored/foo/src/lib.rs"
+        );
     }
 }
