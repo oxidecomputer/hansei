@@ -26,7 +26,7 @@ use crate::bundle::{
     MemberRef, Meta, Notation, Provenance, ProvenanceTable, ScalarDecode, Selector, Shape,
     SourceLoc, StaticDef, StaticRole, StaticsTable, Step, Stmt, StrRef, StringInterner,
     TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef,
-    VariantShape,
+    VariantShape, strip_build_prefix,
 };
 use std::num::NonZeroU8;
 
@@ -4414,21 +4414,12 @@ fn tokio_version_of(loc: &OwnedLoc) -> Option<semver::Version> {
 }
 
 /// The display path for a source location: the file joined onto its
-/// line-table directory, with the build-machine prefixes a reader cannot
-/// use stripped off.
+/// line-table directory, cut down by [`strip_build_prefix`] to the tail a
+/// reader can use.
 ///
 /// rustc emits workspace files with directories relative to
-/// `DW_AT_comp_dir` (`nexus/src/bin`), which join cleanly as-is. Absolute
-/// directories name the build machine's crate cache or toolchain, so the
-/// path is cut down to its stable tail:
-/// `…/registry/src/<index>/tokio-1.50.0` keeps `tokio-1.50.0`,
-/// `…/git/checkouts/dendrite-<cache hash>/cc0c307` keeps
-/// `dendrite/cc0c307`, both
-/// `/rustc/<hash>/library/std/src` and a rustup toolchain's
-/// `…/lib/rustlib/src/rust/library/std/src` keep `library/std/src`, and
-/// prebuilt std's vendored `/rust/deps/hashbrown-0.15.5/src` keeps
-/// `hashbrown-0.15.5/src`. An unrecognized absolute directory is kept
-/// whole: wrong-but-complete beats truncated-and-ambiguous.
+/// `DW_AT_comp_dir` (`nexus/src/bin`), which join cleanly as-is and are
+/// kept whole; an absolute directory names the build machine.
 fn display_path(dir: Option<&str>, file: &str) -> String {
     let joined = match dir {
         Some(dir) if !dir.is_empty() && !file.starts_with('/') => format!("{dir}/{file}"),
@@ -4437,36 +4428,7 @@ fn display_path(dir: Option<&str>, file: &str) -> String {
     if !joined.starts_with('/') {
         return joined;
     }
-    if let Some((_, rest)) = joined.split_once("/registry/src/")
-        && let Some((_, rest)) = rest.split_once('/')
-    {
-        return rest.to_owned();
-    }
-    if let Some((_, rest)) = joined.split_once("/git/checkouts/") {
-        // `<name>-<cache hash>/<rev>/…` → `<name>/<rev>/…`; the cache
-        // hash disambiguates same-named checkouts on the build machine,
-        // which the rev already does for a reader.
-        if let Some((checkout, rest)) = rest.split_once('/')
-            && let Some((name, hash)) = checkout.rsplit_once('-')
-            && hash.len() == 16
-            && hash.bytes().all(|b| b.is_ascii_hexdigit())
-        {
-            return format!("{name}/{rest}");
-        }
-        return rest.to_owned();
-    }
-    if let Some(rest) = joined.strip_prefix("/rustc/")
-        && let Some((_, rest)) = rest.split_once('/')
-    {
-        return rest.to_owned();
-    }
-    if let Some((_, rest)) = joined.split_once("/lib/rustlib/src/rust/") {
-        return rest.to_owned();
-    }
-    if let Some(rest) = joined.strip_prefix("/rust/deps/") {
-        return rest.to_owned();
-    }
-    joined
+    strip_build_prefix(&joined).into_owned()
 }
 
 /// Converts reachable DWARF types into bundle [`TypeDef`]s: assigns dense

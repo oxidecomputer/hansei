@@ -17,7 +17,7 @@ use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use exegesis::bundle::{
     BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, SymbolLookup,
-    TaskEntryId, TaskFutureEntry, TypeDef, strip_llvm_suffix,
+    TaskEntryId, TaskFutureEntry, TypeDef, strip_build_prefix, strip_llvm_suffix,
 };
 use exegesis::symbols::normalized_v0_key;
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
@@ -688,11 +688,16 @@ impl<'b, T: Target> Context<'b, T> {
             // Pre-rename std spells the field `file`.
             None => info.member("file")?,
         };
-        let filename = file_info.parse(self)?;
+        // `file!()` records the path as rustc saw it on the build machine,
+        // so a registry crate names itself in full. Cut it down the same way
+        // extraction cuts a line-table path, or one file is spelled two ways
+        // in one listing (`tasks` prints a task's spawn site beside its
+        // future's declaration).
+        let filename: String = file_info.parse(self)?;
         let line = info.member("line")?.parse(self)?;
         let col = info.member("col")?.parse(self)?;
         Ok(Location {
-            filename,
+            filename: strip_build_prefix(&filename).into_owned(),
             line,
             col,
         })

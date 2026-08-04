@@ -1618,3 +1618,28 @@ mod view_tests {
         assert_eq!(a.size(), 12);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Source paths
+// ---------------------------------------------------------------------------
+
+mod source_path_tests {
+    use crate::bundle::strip_build_prefix;
+
+    /// A `file!()` string reaches the reader without a line-table directory
+    /// to join, so the same cut has to work on the whole path alone.
+    #[test]
+    fn test_strip_build_prefix_bare_path() {
+        assert_eq!(
+            strip_build_prefix(
+                "/home/build/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+                 qorb-0.4.1/src/pool.rs"
+            ),
+            "qorb-0.4.1/src/pool.rs"
+        );
+        assert_eq!(
+            strip_build_prefix("test-programs/src/bin/simple-await.rs"),
+            "test-programs/src/bin/simple-await.rs"
+        );
+    }
+}
