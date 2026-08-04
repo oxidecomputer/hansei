@@ -73,6 +73,14 @@ pub struct FutureCensus {
     /// Per-find walk failures; the finds that produced entries are
     /// unaffected by these.
     pub errors: Vec<anyhow::Error>,
+    /// How many times a hard limit — [`MAX_NESTING`] hops away from a
+    /// task's own frames, or [`MAX_SCAN_DEPTH`] levels into one value —
+    /// stopped the scan short of where it would otherwise have gone.
+    ///
+    /// Nonzero means the listing is incomplete in a way no error
+    /// reports, which is the only kind of incompleteness a reader cannot
+    /// otherwise see.
+    pub capped: usize,
 }
 
 /// How the census reached a chain that is not an enumerated task's own:
@@ -203,6 +211,7 @@ struct Walker {
     held: Vec<HeldFuture>,
     spans: Vec<(u64, u64, usize, usize)>,
     errors: Vec<anyhow::Error>,
+    capped: usize,
     /// Every find, by (address, type), so an aliased or re-reached
     /// future is recorded once.
     visited: HashSet<(u64, BundleTypeId)>,
@@ -219,6 +228,7 @@ pub fn census<T: Target + Sync>(ctx: &Context<'_, T>, list: &TaskList) -> Future
         held: Vec::new(),
         spans: Vec::new(),
         errors: Vec::new(),
+        capped: 0,
         visited: HashSet::default(),
     };
 
@@ -236,6 +246,7 @@ pub fn census<T: Target + Sync>(ctx: &Context<'_, T>, list: &TaskList) -> Future
         held: walker.held,
         spans: walker.spans,
         errors: walker.errors,
+        capped: walker.capped,
     }
 }
 
@@ -272,7 +283,7 @@ impl Walker {
                 };
                 let local = TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes);
                 let mut found = Vec::new();
-                scan_value(&local, 0, &mut found);
+                scan_value(&local, 0, &mut found, &mut self.capped);
                 for find in found {
                     self.record(ctx, list, owner, frame_index, m.name(), via, find, nesting);
                 }
@@ -336,6 +347,8 @@ impl Walker {
                         &chain,
                         nesting + 1,
                     );
+                } else {
+                    self.capped += 1;
                 }
             }
         }
@@ -380,6 +393,9 @@ impl Walker {
         for (child_index, (child, chain, extent)) in children.into_iter().enumerate() {
             self.spans.push((extent.0, extent.1, index, child_index));
             set.children.push(child);
+            if chain.is_some() && nesting >= MAX_NESTING {
+                self.capped += 1;
+            }
             if let Some(chain) = chain
                 && nesting < MAX_NESTING
             {
@@ -406,8 +422,10 @@ fn scan_value<'b>(
     value: &TypeInfoRef<'_, 'b, BundleType<'b>>,
     depth: usize,
     found: &mut Vec<Find<'b>>,
+    capped: &mut usize,
 ) {
     if depth > MAX_SCAN_DEPTH {
+        *capped += 1;
         return;
     }
     let name = value.ty.name();
@@ -449,14 +467,14 @@ fn scan_value<'b>(
                     continue;
                 };
                 let child = TypeInfoRef::new(m.ty(), value.addr + m.offset(), bytes);
-                scan_value(&child, depth + 1, found);
+                scan_value(&child, depth + 1, found, capped);
             }
         }
         TypeClass::RustEnum => {
             // Only the active variant's payload holds live values; the
             // other variants are the same storage misread.
             if let Ok((_, payload)) = value.active_variant() {
-                scan_value(&payload, depth + 1, found);
+                scan_value(&payload, depth + 1, found, capped);
             }
         }
         _ => {}
