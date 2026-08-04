@@ -1586,6 +1586,18 @@ fn exec_futures(session: &Session<'_>, task: Option<u64>, out: &mut dyn io::Writ
     for err in &census.errors {
         writeln!(io::stderr(), "warning: {err:#}")?;
     }
+    // A walk that failed says so above; one that hit a limit says so
+    // here, because it looks like completeness otherwise. The listing is
+    // a lower bound either way (`help futures`), but this is the part of
+    // it that varies by target rather than being inherent.
+    if census.capped > 0 {
+        writeln!(
+            io::stderr(),
+            "warning: the scan stopped at a depth limit in {} place(s); \
+             anything held deeper is not listed",
+            census.capped
+        )?;
+    }
     print_futures(&session.tasks, &census.held, &census.sets, task, out)
 }
 
