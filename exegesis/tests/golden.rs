@@ -295,6 +295,17 @@ fn summarize(program: &str, crate_str: &str, bundle: &Bundle) -> String {
         if !name.contains(crate_str) {
             continue;
         }
+        // futures_util's own stream adapters are skipped: whether one
+        // survives as a standalone monomorphization or is inlined away
+        // is the target's call, not extraction's — `unordered`'s
+        // `Next<FuturesUnordered<…>>` is emitted on ELF and absent from
+        // the Mach-O build — and a summary that varies by platform
+        // cannot be one golden file. The fixture's own futures and their
+        // tokio/core plumbing, which is what this canary is for, are
+        // unaffected.
+        if name.starts_with("futures_util::") || name.starts_with("futures_core::") {
+            continue;
+        }
         let e = dyn_types.entry(name).or_default();
         // drop_glue instantiations are recognizable in the v0 mangling.
         if sym.contains("9drop_glue") {
@@ -599,8 +610,15 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         //
         // The wheel path crosses the runtime's `driver::Handle`, whose io and
         // signal members embed OS-specific types, so — unlike every other
-        // offset these asserts pin — its terminal offset is per-platform.
-        let wheel_offset = if cfg!(target_os = "macos") { 648 } else { 632 };
+        // offset these asserts pin — its terminal offset is per-platform:
+        // one arm per system the suite runs on, since no two agree.
+        let wheel_offset = if cfg!(target_os = "macos") {
+            648
+        } else if cfg!(target_os = "linux") {
+            624
+        } else {
+            632
+        };
         assert_format(
             program,
             bundle,
