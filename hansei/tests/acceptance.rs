@@ -876,7 +876,7 @@ fn test_futures_acceptance() {
             ),
             "{futures}"
         );
-        assert!(futures.contains("3 child(ren)"), "{futures}");
+        assert!(futures.contains("3 child(ren) in flight"), "{futures}");
         // Set-child rows sit one level deeper than the held rows.
         let child =
             regex::Regex::new(r"\n    (0x[0-9a-f]+)  unordered::set_member::\{async_fn_env#0\}")
@@ -894,6 +894,22 @@ fn test_futures_acceptance() {
         assert!(futures.contains("held (frame 0, `boxed`)"), "{futures}");
         assert!(
             futures.contains("unordered::set_member::{async_fn_env#0}  Unresumed"),
+            "{futures}"
+        );
+
+        // The summary says where each population lives, not just how
+        // many there are: two futures the driver holds itself and three
+        // inside the set, which is what makes 5 add up.
+        assert!(
+            futures.contains("5 future(s) not on any task's await chain:"),
+            "{futures}"
+        );
+        assert!(
+            futures.contains("3 in flight as children of 1 FuturesUnordered set(s)"),
+            "{futures}"
+        );
+        assert!(
+            futures.contains("2 held in a frame local: 2 in a task's own frames"),
             "{futures}"
         );
 

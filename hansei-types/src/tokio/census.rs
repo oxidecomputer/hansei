@@ -75,6 +75,25 @@ pub struct FutureCensus {
     pub errors: Vec<anyhow::Error>,
 }
 
+/// How the census reached a chain that is not an enumerated task's own:
+/// the find whose frames were scanned to get there.
+///
+/// It refers to that find by *position* rather than by address, so it
+/// names one recorded entry exactly — an address would be ambiguous
+/// where the same memory was reached as two types. A listing can
+/// therefore print the census as the tree it is: a future held inside a
+/// set child belongs under that child, not beside the ones the task
+/// holds itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Via {
+    /// A held future's own chain, by its index in [`FutureCensus::held`].
+    Held(usize),
+    /// A resident set child's chain, by its set's index in
+    /// [`FutureCensus::sets`] and its own index among that set's
+    /// children.
+    SetChild { set: usize, child: usize },
+}
+
 /// One `FuturesUnordered`, in place: who polls it and what it holds.
 #[derive(Debug)]
 pub struct FutureSet {
@@ -86,7 +105,7 @@ pub struct FutureSet {
     pub local: String,
     /// How the census reached the frame when it is not one of the
     /// owning task's own; see [`HeldFuture::via`].
-    pub via: Option<String>,
+    pub via: Option<Via>,
     /// The set's address and full type name.
     pub addr: u64,
     pub ty: String,
@@ -137,7 +156,7 @@ pub struct HeldFuture {
     /// How the census reached the frame when it is not one of the
     /// owning task's own: through a held future's chain, or a set
     /// child's.
-    pub via: Option<String>,
+    pub via: Option<Via>,
     pub addr: u64,
     /// The bundle type `addr` decodes with — the chain root's when the
     /// chain decoded, the holding local's otherwise — so the future can
@@ -152,6 +171,17 @@ pub struct HeldFuture {
 }
 
 impl FutureCensus {
+    /// How a find was reached, spelled for a reader: what the parent is
+    /// and the address whose row prints it.
+    pub fn describe(&self, via: Via) -> String {
+        match via {
+            Via::Held(i) => format!("held future at {:#x}", self.held[i].addr),
+            Via::SetChild { set, child } => {
+                format!("set child at {:#x}", self.sets[set].children[child].node)
+            }
+        }
+    }
+
     /// The set child whose node allocation contains `addr`: the set and
     /// child indices, and the offset inside the node.
     pub fn locate(&self, addr: u64) -> Option<(usize, usize, u64)> {
@@ -219,7 +249,7 @@ impl Walker {
         ctx: &Context<'b, T>,
         list: &TaskList,
         owner: usize,
-        via: Option<&str>,
+        via: Option<Via>,
         chain: &AwaitChain<'b>,
         nesting: usize,
     ) {
@@ -259,7 +289,7 @@ impl Walker {
         owner: usize,
         frame: usize,
         local: &str,
-        via: Option<&str>,
+        via: Option<Via>,
         find: Find<'b>,
         nesting: usize,
     ) {
@@ -285,11 +315,12 @@ impl Walker {
                     .first()
                     .map(|f| (f.future.addr, f.future.ty.id()))
                     .unwrap_or(place);
+                let index = self.held.len();
                 self.held.push(HeldFuture {
                     owner,
                     frame,
                     local: local.to_string(),
-                    via: via.map(str::to_string),
+                    via,
                     addr,
                     ty,
                     future: summary.future,
@@ -297,8 +328,14 @@ impl Walker {
                     waiting_on: summary.waiting_on,
                 });
                 if nesting < MAX_NESTING {
-                    let via = format!("held future at {addr:#x}");
-                    self.scan_chain(ctx, list, owner, Some(&via), &chain, nesting + 1);
+                    self.scan_chain(
+                        ctx,
+                        list,
+                        owner,
+                        Some(Via::Held(index)),
+                        &chain,
+                        nesting + 1,
+                    );
                 }
             }
         }
@@ -314,7 +351,7 @@ impl Walker {
         owner: usize,
         frame: usize,
         local: &str,
-        via: Option<&str>,
+        via: Option<Via>,
         value: &TypeInfo<'b, BundleType<'b>>,
         nesting: usize,
     ) {
@@ -323,7 +360,7 @@ impl Walker {
             owner,
             frame,
             local: local.to_string(),
-            via: via.map(str::to_string),
+            via,
             addr: value.addr,
             ty: value.ty.name().to_string(),
             children: Vec::new(),
@@ -339,17 +376,25 @@ impl Walker {
                 children.len()
             )));
         }
+        let mut scan = Vec::new();
         for (child_index, (child, chain, extent)) in children.into_iter().enumerate() {
             self.spans.push((extent.0, extent.1, index, child_index));
             set.children.push(child);
             if let Some(chain) = chain
                 && nesting < MAX_NESTING
             {
-                let via = format!("set child at {:#x}", extent.0);
-                self.scan_chain(ctx, list, owner, Some(&via), &chain, nesting + 1);
+                scan.push((child_index, chain));
             }
         }
+        // Record the set before descending into its children, so the
+        // index reserved above is the one it keeps: a nested set the
+        // scan finds would otherwise take that slot first, and every
+        // `Via` naming this one would point at it instead.
         self.sets.push(set);
+        for (child, chain) in scan {
+            let via = Via::SetChild { set: index, child };
+            self.scan_chain(ctx, list, owner, Some(via), &chain, nesting + 1);
+        }
     }
 }
 

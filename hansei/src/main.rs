@@ -86,13 +86,16 @@ pub enum Command {
     },
 
     /// List the futures no task listing shows, grouped by the task
-    /// that owns them: futures *held* in frames off the poll spine
+    /// that owns them: futures *held* in frames off the await chain
     /// (select!/join! arms in flight, a future stored across an await,
     /// a futurelock's abandoned lock), and every FuturesUnordered with
     /// its children. Found by value in each task's frames: coroutine
     /// environments, future trait objects (resolved through the vtable
-    /// join), and the recognized leaf futures. The addresses printed
-    /// are what `trace` accepts to follow one future's own chain.
+    /// join), and the recognized leaf futures. The scan recurses, so a
+    /// future held inside a set child is listed indented under that
+    /// child rather than beside the ones its task holds itself. The
+    /// addresses printed are what `trace` accepts to follow one
+    /// future's own chain.
     Futures {
         /// Show only the futures this task owns, selected by its
         /// decimal id (see `tasks`).
@@ -582,8 +585,7 @@ fn exec_trace_future(
         FutureAt::Held(h) => {
             let via = h
                 .via
-                .as_ref()
-                .map(|v| format!(", via {v}"))
+                .map(|v| format!(", via {}", census.describe(v)))
                 .unwrap_or_default();
             writeln!(out, "Future {:#x}: {}", h.addr, h.future)?;
             writeln!(
@@ -605,8 +607,7 @@ fn exec_trace_future(
         FutureAt::Child { set, child, root } => {
             let via = set
                 .via
-                .as_ref()
-                .map(|v| format!(", via {v}"))
+                .map(|v| format!(", via {}", census.describe(v)))
                 .unwrap_or_default();
             let future = child.future.as_deref().unwrap_or("<undecoded>");
             writeln!(out, "Future {:#x}: {future}", child.node)?;
@@ -1547,7 +1548,7 @@ fn task_label(list: &bundle::TaskList, index: usize) -> String {
 }
 
 /// List every future the census found, grouped by the task that owns
-/// it: the futures held in frames off the poll spine, and each
+/// it: the futures held in frames off the await chain, and each
 /// sub-executor with its children. `task` narrows the listing to one
 /// task's futures.
 fn exec_futures(session: &Session<'_>, task: Option<u64>, out: &mut dyn io::Write) -> Result<()> {
@@ -1555,14 +1556,17 @@ fn exec_futures(session: &Session<'_>, task: Option<u64>, out: &mut dyn io::Writ
     for err in &census.errors {
         writeln!(io::stderr(), "warning: {err:#}")?;
     }
-    print_futures(&session.tasks, census, task, out)
+    print_futures(&session.tasks, &census.held, &census.sets, task, out)
 }
 
 /// Print that listing from what the census found, which is all it reads:
-/// the census is a walk of a target, but rendering it is not.
+/// the census is a walk of a target, but rendering it is not. It takes
+/// the two lists rather than the census itself so a test can lay out a
+/// shape no fixture happens to hold.
 fn print_futures(
     list: &bundle::TaskList,
-    census: &census::FutureCensus,
+    census_held: &[census::HeldFuture],
+    census_sets: &[census::FutureSet],
     task: Option<u64>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -1582,37 +1586,60 @@ fn print_futures(
         None => None,
     };
 
-    // Group by owning task, keeping each group's entries in the order
-    // the census found them.
-    let mut by_owner: BTreeMap<usize, (Vec<&census::FutureSet>, Vec<&census::HeldFuture>)> =
-        BTreeMap::new();
-    for set in census
-        .sets
+    // The census is a tree recorded as two flat lists that name their
+    // parent: a set can sit in a held future's frames, a future be held
+    // in a set child's. Rebuild it, so the listing shows what contains
+    // what rather than leaving the reader to match addresses across it.
+    // A find that named no parent is a root under its owning task.
+    let mut roots: BTreeMap<usize, Vec<Entry<'_>>> = BTreeMap::new();
+    let mut nested: HashMap<census::Via, Vec<Entry<'_>>> = HashMap::new();
+    let mut counts: BTreeMap<usize, Counts> = BTreeMap::new();
+    // Held first, then sets, so each level lists what a frame holds
+    // ahead of the sets it drives.
+    let held = census_held
         .iter()
-        .filter(|s| only.is_none_or(|i| i == s.owner))
-    {
-        by_owner.entry(set.owner).or_default().0.push(set);
-    }
-    for held in census
-        .held
+        .enumerate()
+        .map(|(i, h)| Entry::Held(i, h));
+    let sets = census_sets
         .iter()
-        .filter(|h| only.is_none_or(|i| i == h.owner))
-    {
-        by_owner.entry(held.owner).or_default().1.push(held);
+        .enumerate()
+        .map(|(i, s)| Entry::Set(i, s));
+    for entry in held.chain(sets) {
+        let owner = entry.owner();
+        if only.is_some_and(|i| i != owner) {
+            continue;
+        }
+        counts.entry(owner).or_default().add(entry);
+        match entry.via() {
+            Some(via) => nested.entry(via).or_default().push(entry),
+            None => roots.entry(owner).or_default().push(entry),
+        }
     }
 
-    for (i, (&owner, (sets, held))) in by_owner.iter().enumerate() {
+    if counts.is_empty() {
+        match task {
+            Some(id) => writeln!(out, "task {id} owns no futures outside the task list")?,
+            None => writeln!(out, "no futures found outside the task list")?,
+        }
+        return Ok(());
+    }
+
+    // What "held" means, once, so the listing does not assume a reader
+    // who already has the await-chain model in mind.
+    writeln!(
+        out,
+        "held = a future sitting in a frame's local, off its task's await chain: a\n       \
+         `select!`/`join!` arm, one stored across an await, or an abandoned one.\n"
+    )?;
+
+    for (i, (&owner, count)) in counts.iter().enumerate() {
         if i > 0 {
             writeln!(out)?;
         }
         // How many futures the task has in flight beyond its spine:
         // the held ones plus every resident set child (an empty slot
         // is a future already gone, not one outstanding).
-        let futures: usize = held.len()
-            + sets
-                .iter()
-                .map(|s| s.children.iter().filter(|c| c.future.is_some()).count())
-                .sum::<usize>();
+        let futures = count.in_flight();
         let plural = if futures == 1 { "" } else { "s" };
         writeln!(
             out,
@@ -1620,12 +1647,143 @@ fn print_futures(
             task_label(list, owner),
             future_name(&list.tasks[owner].future)
         )?;
-        for h in held {
-            let via = h
-                .via
-                .as_ref()
-                .map(|v| format!(", via {v}"))
-                .unwrap_or_default();
+        for entry in roots.get(&owner).into_iter().flatten() {
+            print_future_entry(*entry, &nested, 2, out)?;
+        }
+    }
+
+    // Counted over what was printed, so a narrowed listing's tally
+    // describes the task it showed rather than the whole census.
+    let total = counts.values().fold(Counts::default(), Counts::merge);
+    writeln!(
+        out,
+        "\n{} future(s) not on any task's await chain:",
+        total.in_flight()
+    )?;
+    if total.sets > 0 {
+        let reaped = match total.child_slots - total.children_live {
+            0 => String::new(),
+            n => format!(", plus {n} completed and not yet reaped"),
+        };
+        writeln!(
+            out,
+            "  {} in flight as children of {} FuturesUnordered set(s){reaped}",
+            total.children_live, total.sets
+        )?;
+    }
+    if total.held > 0 {
+        // Where the held ones were found is the whole point: those
+        // reached through a set child are *inside* a child counted
+        // above, not a second population beside them.
+        let mut found = Vec::new();
+        for (n, what) in [
+            (total.held_in_task, "in a task's own frames"),
+            (total.held_in_child, "inside a set child"),
+            (total.held_in_held, "inside another held future"),
+        ] {
+            if n > 0 {
+                found.push(format!("{n} {what}"));
+            }
+        }
+        writeln!(
+            out,
+            "  {} held in a frame local: {}",
+            total.held,
+            found.join(", ")
+        )?;
+    }
+    Ok(())
+}
+
+/// One find in the nested listing, with the census index that anything
+/// found inside it names as its parent.
+#[derive(Clone, Copy)]
+enum Entry<'a> {
+    Held(usize, &'a census::HeldFuture),
+    Set(usize, &'a census::FutureSet),
+}
+
+impl Entry<'_> {
+    fn owner(&self) -> usize {
+        match self {
+            Entry::Held(_, h) => h.owner,
+            Entry::Set(_, s) => s.owner,
+        }
+    }
+
+    fn via(&self) -> Option<census::Via> {
+        match self {
+            Entry::Held(_, h) => h.via,
+            Entry::Set(_, s) => s.via,
+        }
+    }
+}
+
+/// One task's share of the census, or a whole listing's once merged.
+#[derive(Clone, Copy, Default)]
+struct Counts {
+    sets: usize,
+    /// Every child slot, and the subset still holding a future: an empty
+    /// slot is a completed child the set has not reaped, not a future
+    /// outstanding.
+    child_slots: usize,
+    children_live: usize,
+    /// Held futures, split by where the census reached them from — the
+    /// distinction the summary exists to draw.
+    held: usize,
+    held_in_task: usize,
+    held_in_child: usize,
+    held_in_held: usize,
+}
+
+impl Counts {
+    fn add(&mut self, entry: Entry<'_>) {
+        match entry {
+            Entry::Held(_, h) => {
+                self.held += 1;
+                match h.via {
+                    None => self.held_in_task += 1,
+                    Some(census::Via::SetChild { .. }) => self.held_in_child += 1,
+                    Some(census::Via::Held(_)) => self.held_in_held += 1,
+                }
+            }
+            Entry::Set(_, s) => {
+                self.sets += 1;
+                self.child_slots += s.children.len();
+                self.children_live += s.children.iter().filter(|c| c.future.is_some()).count();
+            }
+        }
+    }
+
+    fn merge(mut self, other: &Counts) -> Counts {
+        self.sets += other.sets;
+        self.child_slots += other.child_slots;
+        self.children_live += other.children_live;
+        self.held += other.held;
+        self.held_in_task += other.held_in_task;
+        self.held_in_child += other.held_in_child;
+        self.held_in_held += other.held_in_held;
+        self
+    }
+
+    /// Futures actually outstanding: every held one plus every resident
+    /// set child.
+    fn in_flight(&self) -> usize {
+        self.held + self.children_live
+    }
+}
+
+/// Print one find and, indented under it, everything the census reached
+/// by scanning its frames.
+fn print_future_entry<'a>(
+    entry: Entry<'a>,
+    nested: &HashMap<census::Via, Vec<Entry<'a>>>,
+    indent: usize,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let pad = " ".repeat(indent);
+    match entry {
+        Entry::Held(index, h) => {
             let state = h
                 .state
                 .as_ref()
@@ -1633,31 +1791,30 @@ fn print_futures(
                 .unwrap_or_default();
             writeln!(
                 out,
-                "  held (frame {}, `{}`{via}): {:#x}  {}{state}",
+                "{pad}held (frame {}, `{}`): {:#x}  {}{state}",
                 h.frame, h.local, h.addr, h.future
             )?;
             if let Some(waiting) = &h.waiting_on {
-                writeln!(out, "    waiting on {waiting}")?;
+                writeln!(out, "{pad}  waiting on {waiting}")?;
+            }
+            for inner in nested.get(&census::Via::Held(index)).into_iter().flatten() {
+                print_future_entry(*inner, nested, indent + 2, out)?;
             }
         }
-        for set in sets {
-            let via = set
-                .via
-                .as_ref()
-                .map(|v| format!(", via {v}"))
-                .unwrap_or_default();
+        Entry::Set(index, set) => {
+            let live = set.children.iter().filter(|c| c.future.is_some()).count();
+            let reaped = match set.children.len() - live {
+                0 => String::new(),
+                n => format!(", {n} completed and not yet reaped"),
+            };
             writeln!(
                 out,
-                "  {} at {:#x} (frame {}, `{}`{via}): {} child(ren)",
-                set.ty,
-                set.addr,
-                set.frame,
-                set.local,
-                set.children.len()
+                "{pad}{} at {:#x} (frame {}, `{}`): {live} child(ren) in flight{reaped}",
+                set.ty, set.addr, set.frame, set.local
             )?;
-            for child in &set.children {
+            for (child_index, child) in set.children.iter().enumerate() {
                 let Some(future) = &child.future else {
-                    writeln!(out, "    {:#x}  <completed, not yet reaped>", child.node)?;
+                    writeln!(out, "{pad}  {:#x}  <completed, not yet reaped>", child.node)?;
                     continue;
                 };
                 let state = child
@@ -1665,32 +1822,19 @@ fn print_futures(
                     .as_ref()
                     .map(|s| format!("  {s}"))
                     .unwrap_or_default();
-                writeln!(out, "    {:#x}  {future}{state}", child.node)?;
+                writeln!(out, "{pad}  {:#x}  {future}{state}", child.node)?;
                 if let Some(waiting) = &child.waiting_on {
-                    writeln!(out, "      waiting on {waiting}")?;
+                    writeln!(out, "{pad}    waiting on {waiting}")?;
+                }
+                let via = census::Via::SetChild {
+                    set: index,
+                    child: child_index,
+                };
+                for inner in nested.get(&via).into_iter().flatten() {
+                    print_future_entry(*inner, nested, indent + 4, out)?;
                 }
             }
         }
-    }
-
-    if by_owner.is_empty() {
-        match task {
-            Some(id) => writeln!(out, "task {id} owns no futures outside the task list")?,
-            None => writeln!(out, "no futures found outside the task list")?,
-        }
-    } else {
-        // Counted over what was printed, so a narrowed listing's tally
-        // describes the task it showed rather than the whole census.
-        let (mut sets, mut held, mut children) = (0, 0, 0);
-        for (s, h) in by_owner.values() {
-            sets += s.len();
-            held += h.len();
-            children += s.iter().map(|s| s.children.len()).sum::<usize>();
-        }
-        writeln!(
-            out,
-            "\n{held} held future(s); {sets} set(s) holding {children} child future(s)"
-        )?;
     }
     Ok(())
 }
@@ -2021,7 +2165,10 @@ fn print_thread_context(
             out,
             "  ",
             field,
-            &format_args!("{:#}", render(session, &value, depth, ugly).line_prefix("    ")),
+            &format_args!(
+                "{:#}",
+                render(session, &value, depth, ugly).line_prefix("    ")
+            ),
         )?;
     }
     Ok(())
@@ -2048,7 +2195,10 @@ fn print_worker_state<'b>(
         out,
         "  ",
         "defer",
-        &format_args!("{:#}", render(session, &defer, depth, ugly).line_prefix("    ")),
+        &format_args!(
+            "{:#}",
+            render(session, &defer, depth, ugly).line_prefix("    ")
+        ),
     )?;
 
     // The core is moved out of the thread's context while the scheduler
@@ -2064,7 +2214,10 @@ fn print_worker_state<'b>(
         out,
         "  ",
         "core",
-        &format_args!("{:#}", render(session, &core.as_ref(), depth, ugly).line_prefix("    ")),
+        &format_args!(
+            "{:#}",
+            render(session, &core.as_ref(), depth, ugly).line_prefix("    ")
+        ),
     )?;
     Ok(())
 }
@@ -2541,17 +2694,104 @@ mod future_trace_tests {
             let id = list.tasks[owner].task_id.expect("the owner has an id");
 
             let mut out = Vec::new();
-            print_futures(list, census, Some(id), &mut out).expect("the listing renders");
+            print_futures(list, &census.held, &census.sets, Some(id), &mut out)
+                .expect("the listing renders");
             let narrowed = String::from_utf8(out).expect("rendered output is UTF-8");
 
             assert!(narrowed.contains(&format!("task {id}:")), "{narrowed}");
             assert!(narrowed.contains("`future1`"), "{narrowed}");
-            assert!(narrowed.contains("\n1 held future(s);"), "{narrowed}");
+            assert!(
+                narrowed.contains("\n1 future(s) not on any task's await chain:"),
+                "{narrowed}"
+            );
+            // The fixture's held future is one the task holds itself,
+            // so the summary says so rather than reporting a bare count.
+            assert!(
+                narrowed.contains("1 held in a frame local: 1 in a task's own frames"),
+                "{narrowed}"
+            );
 
             let mut out = Vec::new();
-            print_futures(list, census, None, &mut out).expect("the listing renders");
+            print_futures(list, &census.held, &census.sets, None, &mut out)
+                .expect("the listing renders");
             let all = String::from_utf8(out).expect("rendered output is UTF-8");
             assert_eq!(narrowed, all, "the fixture's only owner is task {id}");
+        });
+    }
+
+    /// A future the census reached through a set child is printed under
+    /// that child, and counted as being inside it — the distinction the
+    /// summary exists to draw, since a flat listing of the two
+    /// populations reads as twice as many futures as there are. No
+    /// fixture nests this way, so the shape is laid out by hand.
+    #[test]
+    fn test_futures_prints_a_nested_find_under_what_holds_it() {
+        with_target("futurelock", |_ctx, list, _extents, census| {
+            let owner = census.held[0].owner;
+            let ty = census.held[0].ty;
+            let sets = vec![census::FutureSet {
+                owner,
+                frame: 0,
+                local: "pending".to_string(),
+                via: None,
+                addr: 0x1000,
+                ty: "FuturesUnordered<step::{async_fn_env#0}>".to_string(),
+                children: vec![
+                    census::SetChild {
+                        node: 0x2000,
+                        future: Some("step::{async_fn_env#0}".to_string()),
+                        root: None,
+                        state: Some("Suspend0 — step.rs:9".to_string()),
+                        waiting_on: None,
+                    },
+                    census::SetChild {
+                        node: 0x2100,
+                        future: None,
+                        root: None,
+                        state: None,
+                        waiting_on: None,
+                    },
+                ],
+            }];
+            let held = vec![census::HeldFuture {
+                owner,
+                frame: 1,
+                local: "lock".to_string(),
+                via: Some(census::Via::SetChild { set: 0, child: 0 }),
+                addr: 0x3000,
+                ty,
+                future: "Mutex::lock::{async_fn_env#0}".to_string(),
+                state: None,
+                waiting_on: None,
+            }];
+
+            let mut out = Vec::new();
+            print_futures(list, &held, &sets, None, &mut out).expect("the listing renders");
+            let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
+
+            // The held row sits two columns right of the child it was
+            // found in, which is itself two right of the set.
+            assert!(
+                rendered.contains(
+                    "  FuturesUnordered<step::{async_fn_env#0}> at 0x1000 (frame 0, `pending`): \
+                     1 child(ren) in flight, 1 completed and not yet reaped\n    \
+                     0x2000  step::{async_fn_env#0}  Suspend0 — step.rs:9\n      \
+                     held (frame 1, `lock`): 0x3000  Mutex::lock::{async_fn_env#0}\n"
+                ),
+                "{rendered}"
+            );
+            // The reaped slot is not a future in flight, so the header
+            // counts one child and one held future, not three.
+            assert!(rendered.contains(" — 2 futures\n"), "{rendered}");
+            assert!(
+                rendered.contains(
+                    "\n2 future(s) not on any task's await chain:\n  \
+                     1 in flight as children of 1 FuturesUnordered set(s), \
+                     plus 1 completed and not yet reaped\n  \
+                     1 held in a frame local: 1 inside a set child\n"
+                ),
+                "{rendered}"
+            );
         });
     }
 
@@ -2562,7 +2802,8 @@ mod future_trace_tests {
         with_target("channels", |_ctx, list, _extents, census| {
             let id = list.tasks[0].task_id.expect("the first task has an id");
             let mut out = Vec::new();
-            print_futures(list, census, Some(id), &mut out).expect("the listing renders");
+            print_futures(list, &census.held, &census.sets, Some(id), &mut out)
+                .expect("the listing renders");
             let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
             assert_eq!(
                 rendered,
@@ -2584,7 +2825,7 @@ mod future_trace_tests {
                 .expect("some task has an id")
                 + 1;
             let mut out = Vec::new();
-            let err = print_futures(list, census, Some(unknown), &mut out)
+            let err = print_futures(list, &census.held, &census.sets, Some(unknown), &mut out)
                 .expect_err("no task owns that id")
                 .to_string();
             assert!(err.contains(&format!("id {unknown}")), "{err}");
