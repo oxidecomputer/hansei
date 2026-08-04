@@ -271,6 +271,11 @@ impl Selector {
 pub enum ScalarDecode {
     /// Render the whole word as an unsigned integer.
     Raw,
+    /// Render the word as a count of milliseconds, spelled as seconds the way
+    /// a duration is written: `12.721s`. The word is read as *signed*, so a
+    /// difference of two counters that lost a race renders `-0.004s` rather
+    /// than an astronomical wrapped value.
+    Millis,
     /// Decompose the word into named sub-fields, low bit first.
     Bits(Vec<BitField>),
 }

@@ -1515,6 +1515,35 @@ mod tests {
         assert!(shown.contains("queued: 3"), "{shown}");
     }
 
+    /// A `Millis` decode spells a millisecond count as seconds, reading the
+    /// word as signed so a raced difference degrades to a small negative
+    /// duration rather than a wrapped astronomical one.
+    #[test]
+    fn test_millis_decode_spells_milliseconds_as_seconds() {
+        let mut b = test_bundle();
+        b.types.debug_formats.insert(
+            CHAN,
+            BundleNode::Computed {
+                value: vsub(vread(sel(&[0])), vread(sel(&[1]))),
+                decode: ScalarDecode::Millis,
+            },
+        );
+        b.validate().expect("a millis decode must validate");
+        let v = BundleView::new(&b);
+
+        // Chan: tail usize @0, index usize @8.
+        let show = |tail: u64, index: u64| {
+            let bytes = u64s(&[tail, index, 0]);
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(CHAN).unwrap(), 0, &bytes).display()
+            )
+        };
+        assert_eq!(show(12_721, 0), "12.721s");
+        assert_eq!(show(500, 496), "0.004s");
+        assert_eq!(show(496, 500), "-0.004s");
+    }
+
     /// A `Computed` expression's reads carry the same degradation as any
     /// other: a guarded variant read that finds another variant live yields
     /// the marker, not arithmetic over dead bytes.
