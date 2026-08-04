@@ -21,6 +21,14 @@ use super::{hex_pair, write_hex_u64};
 pub(crate) fn apply(decode: &ScalarDecode, word: u64) -> String {
     let fields = match decode {
         ScalarDecode::Raw => return word.to_string(),
+        // A millisecond count, signed so a raced difference reads as a small
+        // negative duration rather than a wrapped one.
+        ScalarDecode::Millis => {
+            let ms = word as i64;
+            let sign = if ms < 0 { "-" } else { "" };
+            let ms = ms.unsigned_abs();
+            return format!("{sign}{}.{:03}s", ms / 1000, ms % 1000);
+        }
         ScalarDecode::Bits(fields) => fields,
     };
     let mut parts = Vec::with_capacity(fields.len() + 1);

@@ -607,14 +607,63 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "tokio::runtime::time::entry::TimerEntry",
             &format!(
                 "tokio::runtime::time::entry::TimerEntry :: Node Struct \
-                 {{ deadline: <structural>, state: Variant {{ discr=Read(registered@+104), \
-                 arms=[0=>unregistered], default=Variant {{ \
+                 {{ deadline: Variant {{ discr=Read(registered@+104), \
+                 arms=[0=>(Alias {{ deadline@+88, follow }})], default=Variant {{ \
                  discr=(Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) != 0xffffffffffffffff), \
-                 arms=[0=>elapsed, 1=>fires_in_ms(Computed(\
+                 arms=[0=>(Alias {{ deadline@+88, follow }}), 1=>(Computed(\
                  (Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) - \
                  Read(driver.{{MultiThread}}.__0.ptr.pointer.*.data.driver.time.{{Some}}.__0.inner.\
-                 {{Traditional}}.state.__1.data.value.wheel.elapsed@+{wheel_offset}))))] }} }} }}"
+                 {{Traditional}}.state.__1.data.value.wheel.elapsed@+{wheel_offset}))))] }} }}, \
+                 state: Variant {{ discr=Read(registered@+104), arms=[0=>unregistered], \
+                 default=Variant {{ \
+                 discr=(Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) != 0xffffffffffffffff), \
+                 arms=[0=>elapsed, 1=>registered] }} }} }}"
             ),
+        );
+        // The `Sleep` around the entry: the same program re-rooted across the
+        // `Timer` enum's `Traditional` variant.
+        assert_format(
+            program,
+            bundle,
+            "tokio::time::sleep::Sleep",
+            &format!(
+                "tokio::time::sleep::Sleep :: Node Struct \
+                 {{ deadline: Variant {{ discr=Read(entry.{{Traditional}}.__0.registered@+104), \
+                 arms=[0=>(Alias {{ entry.{{Traditional}}.__0.deadline@+88, follow }})], \
+                 default=Variant {{ \
+                 discr=(Read(entry.{{Traditional}}.__0.inner.{{Some}}.__0.state.state.v.value.__0@+48) \
+                 != 0xffffffffffffffff), \
+                 arms=[0=>(Alias {{ entry.{{Traditional}}.__0.deadline@+88, follow }}), \
+                 1=>(Computed(\
+                 (Read(entry.{{Traditional}}.__0.inner.{{Some}}.__0.state.state.v.value.__0@+48) - \
+                 Read(entry.{{Traditional}}.__0.driver.{{MultiThread}}.__0.ptr.pointer.*.data.driver.\
+                 time.{{Some}}.__0.inner.{{Traditional}}.state.__1.data.value.wheel.elapsed\
+                 @+{wheel_offset}))))] }} }}, \
+                 state: Variant {{ discr=Read(entry.{{Traditional}}.__0.registered@+104), \
+                 arms=[0=>unregistered], default=Variant {{ \
+                 discr=(Read(entry.{{Traditional}}.__0.inner.{{Some}}.__0.state.state.v.value.__0@+48) \
+                 != 0xffffffffffffffff), arms=[0=>elapsed, 1=>registered] }} }} }}"
+            ),
+        );
+        // The `Instant` chain each deadline sits behind: three transparent
+        // newtypes, each aliasing its sole member down to the `Timespec`.
+        assert_format(
+            program,
+            bundle,
+            "tokio::time::instant::Instant",
+            "tokio::time::instant::Instant :: Node Alias { std@+0, follow }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "std::time::Instant",
+            "std::time::Instant :: Node Alias { __0@+0, follow }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "std::sys::time::unix::Instant",
+            "std::sys::time::unix::Instant :: Node Alias { t@+0, follow }",
         );
     }
     if program == "channels" {

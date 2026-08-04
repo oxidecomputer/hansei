@@ -144,6 +144,9 @@ pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug + Send + Sync {
 pub enum ScalarDecode {
     /// Render the whole word as an unsigned integer.
     Raw,
+    /// Render the word as a signed count of milliseconds, spelled as seconds
+    /// (`12.721s`, `-0.004s`).
+    Millis,
     /// Decompose the word into named sub-fields, low bit first.
     Bits(Vec<BitField>),
 }
@@ -829,6 +832,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             use exegesis::bundle::{FieldRender as BundleRender, ScalarDecode as BundleDecode};
             match decode {
                 BundleDecode::Raw => ScalarDecode::Raw,
+                BundleDecode::Millis => ScalarDecode::Millis,
                 BundleDecode::Bits(fields) => ScalarDecode::Bits(
                     fields
                         .iter()
