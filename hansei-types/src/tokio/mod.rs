@@ -191,7 +191,8 @@ impl From<RawInstant> for Instant {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lifecycle, TaskState};
+    use super::bundle::WaitTarget;
+    use super::{Lifecycle, RawInstant, TaskState};
 
     const RUNNING: u64 = 0b0001;
     const COMPLETE: u64 = 0b0010;
@@ -245,5 +246,34 @@ mod tests {
         assert!(state.is_join_waker_set());
         assert!(state.is_cancelled());
         assert!(!state.is_notified());
+    }
+
+    /// Both spellings of a timer deadline. Which one a real target gets
+    /// depends on whether its lwps stamp a stop time — illumos does,
+    /// a Linux core does not — so the acceptance suite cannot pin
+    /// either; this covers both from constructed values instead.
+    #[test]
+    fn test_timer_deadline_spellings() {
+        let at = |tv_sec, tv_nsec| RawInstant { tv_sec, tv_nsec };
+        let timer = |deadline, stopped| WaitTarget::Timer { deadline, stopped }.to_string();
+
+        // Relative to the stop: the wait remaining at the moment the
+        // target was observed.
+        assert_eq!(
+            timer(at(1_042, 500_000_000), Some(at(1_030, 0))),
+            "the timer: deadline 12.500s"
+        );
+        // A deadline already passed reads as a small negative duration,
+        // never as a wrapped unsigned one.
+        assert_eq!(
+            timer(at(1_030, 0), Some(at(1_031, 250_000_000))),
+            "the timer: deadline -1.250s"
+        );
+        // With no stop time there is nothing to be relative to, so the
+        // absolute point is reported with its clock spelled out.
+        assert_eq!(
+            timer(at(42, 7_000_000), None),
+            "the timer: deadline 42.007s on the target's monotonic clock"
+        );
     }
 }
