@@ -923,6 +923,45 @@ fn test_futures_acceptance() {
             out.contains("child future: unordered::set_member::{async_fn_env#0}"),
             "{out}"
         );
+
+        // A child node address is also traceable on its own: `trace`
+        // re-roots at the resident future and renders its chain, headed
+        // by the set that owns the node and the task that polls the set.
+        let out = hansei_ok(&bundle, core, &format!("trace {}", nodes[0]));
+        assert!(
+            out.contains(&format!(
+                "Future {}: unordered::set_member::{{async_fn_env#0}}",
+                nodes[0]
+            )),
+            "{out}"
+        );
+        assert!(
+            out.contains("Child of: futures_util::stream::futures_unordered::FuturesUnordered"),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("polled by task {}", driver.id)),
+            "{out}"
+        );
+        assert!(
+            out.contains("0  async fn      unordered::set_member::{async_fn_env#0}"),
+            "{out}"
+        );
+
+        // And so is a held future, by the address its row prints.
+        let held = regex::Regex::new(r"held \(frame 0, `held`\): (0x[0-9a-f]+)")
+            .unwrap()
+            .captures(&futures)
+            .map(|c| c[1].to_string())
+            .expect("the held row prints an address");
+        let out = hansei_ok(&bundle, core, &format!("trace {held}"));
+        assert!(
+            out.contains(&format!(
+                "Held by: task {} — unordered::driver::{{async_fn_env#0}} (frame 0, `held`)",
+                driver.id
+            )),
+            "{out}"
+        );
     });
 }
 
