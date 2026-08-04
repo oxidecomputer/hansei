@@ -1049,6 +1049,7 @@ fn intern_var<'dw>(
         source_loc: SourceLoc {
             file: intern(var.source_loc.file),
             dir: intern(var.source_loc.dir),
+            comp_dir: intern(var.source_loc.comp_dir),
             line: var.source_loc.line,
             column: var.source_loc.column,
         },
@@ -1068,6 +1069,7 @@ fn intern_source_loc<'dw>(
     SourceLoc {
         file: intern_opt(strings, loc.file),
         dir: intern_opt(strings, loc.dir),
+        comp_dir: intern_opt(strings, loc.comp_dir),
         line: loc.line,
         column: loc.column,
     }

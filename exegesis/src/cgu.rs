@@ -2,7 +2,7 @@ use crate::raw_types::{
     CommonAttrs, Encoding, NamespaceTable, NsId, RawArray, RawAwaitee, RawBase, RawEnum,
     RawEnumerator, RawFunc, RawGenericParameter, RawInlinedSubroutine, RawMember, RawPointer,
     RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion, RawVariant, SourceLoc,
-    VariantShape,
+    VariantShape, resolve_file_index,
 };
 use crate::{Error, FuncId, Result, Slice, TypeId, VarId};
 
@@ -1138,23 +1138,7 @@ fn process_inlined_subroutine<'dw>(
                     debug!("unexpected call_file type: {:?}", attr.value());
                     continue;
                 };
-
-                let Some(lp) = &unit.line_program else {
-                    continue;
-                };
-
-                let Some(fent) = lp.header().file(f) else {
-                    debug!(file_index = f, "invalid call_file file index");
-                    continue;
-                };
-
-                let raw = unit.dwarf.attr_string(unit.unit, fent.path_name())?;
-                call_coord.file = str::from_utf8(raw.slice()).ok();
-
-                if let Some(dv) = fent.directory(lp.header()) {
-                    let raw_dir = unit.dwarf.attr_string(unit.unit, dv)?;
-                    call_coord.dir = str::from_utf8(raw_dir.slice()).ok();
-                }
+                resolve_file_index(unit, f, "call_file", &mut call_coord)?;
             }
             gimli::DW_AT_call_line => {
                 call_coord.line = NonZero::new(attr.value().udata_value().unwrap());
