@@ -19,6 +19,7 @@ use crate::symbols::normalized_v0_key;
 
 use serde::{Deserialize, Serialize};
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::num::NonZeroU8;
 
@@ -1112,4 +1113,56 @@ pub enum FutureKind {
 pub struct SourceLoc {
     pub file: StrRef,
     pub line: u32,
+}
+
+/// Cut an absolute source path down to the tail a reader can use.
+///
+/// Both source paths a reader sees pass through here, so that a file named
+/// twice is spelled the same way both times: DWARF line-table paths as a
+/// bundle is extracted, and the `file!()` string in a task's
+/// `core::panic::Location` as it is read out of the target.
+///
+/// An absolute path names the build machine's crate cache or toolchain, so
+/// `…/registry/src/<index>/tokio-1.50.0` keeps `tokio-1.50.0`,
+/// `…/git/checkouts/dendrite-<cache hash>/cc0c307` keeps `dendrite/cc0c307`,
+/// both `/rustc/<hash>/library/std/src` and a rustup toolchain's
+/// `…/lib/rustlib/src/rust/library/std/src` keep `library/std/src`, and
+/// prebuilt std's vendored `/rust/deps/hashbrown-0.15.5/src` keeps
+/// `hashbrown-0.15.5/src`. A relative path is already what a reader wants
+/// and is kept whole, as is an unrecognized absolute one: wrong-but-complete
+/// beats truncated-and-ambiguous.
+pub fn strip_build_prefix(path: &str) -> Cow<'_, str> {
+    if !path.starts_with('/') {
+        return Cow::Borrowed(path);
+    }
+    if let Some((_, rest)) = path.split_once("/registry/src/")
+        && let Some((_, rest)) = rest.split_once('/')
+    {
+        return Cow::Borrowed(rest);
+    }
+    if let Some((_, rest)) = path.split_once("/git/checkouts/") {
+        // `<name>-<cache hash>/<rev>/…` → `<name>/<rev>/…`; the cache
+        // hash disambiguates same-named checkouts on the build machine,
+        // which the rev already does for a reader.
+        if let Some((checkout, tail)) = rest.split_once('/')
+            && let Some((name, hash)) = checkout.rsplit_once('-')
+            && hash.len() == 16
+            && hash.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Cow::Owned(format!("{name}/{tail}"));
+        }
+        return Cow::Borrowed(rest);
+    }
+    if let Some(rest) = path.strip_prefix("/rustc/")
+        && let Some((_, rest)) = rest.split_once('/')
+    {
+        return Cow::Borrowed(rest);
+    }
+    if let Some((_, rest)) = path.split_once("/lib/rustlib/src/rust/") {
+        return Cow::Borrowed(rest);
+    }
+    if let Some(rest) = path.strip_prefix("/rust/deps/") {
+        return Cow::Borrowed(rest);
+    }
+    Cow::Borrowed(path)
 }

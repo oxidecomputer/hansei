@@ -142,7 +142,10 @@ impl fmt::Display for Lifecycle {
     }
 }
 
-/// Where a task was spawned, as `core::panic::Location` records it.
+/// Where a task was spawned, as `core::panic::Location` records it —
+/// with the build machine's path prefix already cut off
+/// (`exegesis::bundle::strip_build_prefix`), so the file is spelled the way
+/// a bundle spells the same file.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Location {
     pub filename: String,
