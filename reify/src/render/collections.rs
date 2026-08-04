@@ -383,7 +383,15 @@ fn eval_map_parallel<'a, T: DebugType<'a>>(
         );
     })?;
 
-    write_map_tail(f, ctx.prefix, walk, collected.len() as u64, map_length, pretty, depth)
+    write_map_tail(
+        f,
+        ctx.prefix,
+        walk,
+        collected.len() as u64,
+        map_length,
+        pretty,
+        depth,
+    )
 }
 
 /// One map entry — `key: value` and pretty's trailing comma — from the

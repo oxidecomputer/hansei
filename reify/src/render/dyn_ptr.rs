@@ -213,7 +213,12 @@ pub(crate) fn resolve_function_symbol(
     )
 }
 
-fn write_dyn_field_prefix(f: &mut fmt::Formatter<'_>, pretty: bool, prefix: &str, depth: usize) -> fmt::Result {
+fn write_dyn_field_prefix(
+    f: &mut fmt::Formatter<'_>,
+    pretty: bool,
+    prefix: &str,
+    depth: usize,
+) -> fmt::Result {
     if pretty {
         writeln!(f)?;
         write_indent(f, prefix, depth + 1)

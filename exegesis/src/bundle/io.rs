@@ -1125,9 +1125,7 @@ impl Bundle {
             match seen.get_mut(position as usize) {
                 Some(slot) if !*slot => *slot = true,
                 Some(_) => {
-                    return corrupt(format!(
-                        "normalized name index repeats position {position}"
-                    ));
+                    return corrupt(format!("normalized name index repeats position {position}"));
                 }
                 None => {
                     return corrupt(format!(
