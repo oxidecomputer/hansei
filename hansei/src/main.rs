@@ -66,6 +66,8 @@ struct SessionArgs {
 #[derive(Subcommand)]
 pub enum Command {
     /// Show the runtime's drivers: io, signal, time and the clock.
+    /// The bundle's elisions (which hide runtime internals inside user
+    /// values) never apply to this view.
     Drivers {
         /// Maximum depth to recurse when formatting values.
         #[arg(long, short, default_value_t = 4)]
@@ -104,6 +106,8 @@ pub enum Command {
 
     /// Show the scheduler state the workers share: the owned-task set,
     /// the injection queue, the idle set and the per-worker remotes.
+    /// The bundle's elisions (which hide runtime internals inside user
+    /// values) never apply to this view.
     SharedState {
         /// Maximum depth to recurse when formatting values.
         #[arg(long, short, default_value_t = 4)]
@@ -2033,7 +2037,19 @@ fn exec_runtime_field(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let value = session.handle.member(field)?;
-    writeln!(out, "{:#}", render(session, &value, depth, ugly))?;
+    // The bundle's `Elided` formats hide the runtime graph from *user*
+    // values; these commands exist to show the runtime's own insides, so
+    // they must never apply here — a new elided row must not be able to
+    // blank part of this output.
+    let no_elide = reify::ElideOverride {
+        no_elide: true,
+        types: Vec::new(),
+    };
+    writeln!(
+        out,
+        "{:#}",
+        render(session, &value, depth, ugly).elide_override(&no_elide)
+    )?;
     Ok(())
 }
 

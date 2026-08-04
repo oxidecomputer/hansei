@@ -1093,6 +1093,15 @@ fn test_shared_state_and_drivers() {
         assert!(drivers.contains("runtime::driver::Handle"), "{drivers}");
         assert!(drivers.contains("io:"), "{drivers}");
         assert!(drivers.contains("time:"), "{drivers}");
+
+        // Both views exist to show the runtime's insides, so the bundle's
+        // elisions never apply to them: however deep the sweep goes, no
+        // subtree may come back `<elided>` — a regression here means a new
+        // elided row leaked into runtime introspection.
+        for command in ["shared-state -d 64", "drivers -d 64"] {
+            let deep = hansei_ok(&bundle, core, command);
+            assert!(!deep.contains("<elided>"), "`{command}`: {deep}");
+        }
     });
 }
 
