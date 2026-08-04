@@ -22,8 +22,7 @@ async fn set_member(notify: Arc<Notify>) -> u32 {
 }
 
 async fn driver(ready: oneshot::Sender<()>, notify: Arc<Notify>) -> u32 {
-    let mut set: FuturesUnordered<_> =
-        (0..CHILDREN).map(|_| set_member(notify.clone())).collect();
+    let mut set: FuturesUnordered<_> = (0..CHILDREN).map(|_| set_member(notify.clone())).collect();
 
     // Held, never polled while the set is awaited: live across the
     // await below because both are consumed after it.

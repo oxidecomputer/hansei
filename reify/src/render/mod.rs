@@ -94,7 +94,9 @@ pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromP
     formats: FormatCache<T>,
 }
 
-impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync> DisplayTargetValue<'r, 'buf, 'a, T, P> {
+impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync>
+    DisplayTargetValue<'r, 'buf, 'a, T, P>
+{
     /// Suppress custom formatters and render the base structural view.
     pub fn ugly(mut self) -> Self {
         self.ugly = true;
@@ -126,7 +128,9 @@ impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync> DisplayTarget
     }
 }
 
-impl<'a, T: DebugType<'a>, P: ReadFromProc + Sync> fmt::Display for DisplayTargetValue<'_, '_, 'a, T, P> {
+impl<'a, T: DebugType<'a>, P: ReadFromProc + Sync> fmt::Display
+    for DisplayTargetValue<'_, '_, 'a, T, P>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ctx = RenderCtx {
             depth: 0,
@@ -457,11 +461,7 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
                         u64::from(u32::from_le_bytes(bytes[..4].try_into().unwrap())),
                         4,
                     ),
-                    8 => write_hex_fixed(
-                        f,
-                        u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-                        8,
-                    ),
+                    8 => write_hex_fixed(f, u64::from_le_bytes(bytes[..8].try_into().unwrap()), 8),
                     _ => write_hex_bytes(f, bytes),
                 };
             }
@@ -770,11 +770,7 @@ pub(crate) fn write_hex_u64(f: &mut fmt::Formatter<'_>, value: u64) -> fmt::Resu
 /// `0x` and the low `width` bytes of `value` in zero-padded lowercase
 /// hex, most significant first — the `0x{value:04x}`-style spellings
 /// the fixed-width integer renderings use.
-pub(crate) fn write_hex_fixed(
-    f: &mut fmt::Formatter<'_>,
-    value: u64,
-    width: usize,
-) -> fmt::Result {
+pub(crate) fn write_hex_fixed(f: &mut fmt::Formatter<'_>, value: u64, width: usize) -> fmt::Result {
     f.write_str("0x")?;
     for i in (0..width).rev() {
         f.write_str(hex_pair((value >> (i * 8)) as u8))?;

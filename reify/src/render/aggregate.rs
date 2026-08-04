@@ -228,7 +228,15 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
         && let Some(node) = ctx.debug_format(&variant_info.ty)
         && matches!(*node, DisplayNode::DynPointer { .. })
     {
-        return eval_dyn_pointer(f, variant_info.ty, None, &node, variant_info.bytes, ctx, pretty);
+        return eval_dyn_pointer(
+            f,
+            variant_info.ty,
+            None,
+            &node,
+            variant_info.bytes,
+            ctx,
+            pretty,
+        );
     }
 
     // A payload carrying a semantic display format (a `&str`/`String`, a

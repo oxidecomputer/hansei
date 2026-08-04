@@ -9,11 +9,11 @@ task: unordered::driver::{async_fn_env#0}
   stage: Stage<unordered::driver::{async_fn_env#0}>
   variants:
     Unresumed @ unordered.rs:24
-    Returned @ unordered.rs:39
-    Panicked @ unordered.rs:39
-    Suspend0 @ unordered.rs:35
-    Suspend1 @ unordered.rs:38
-    Suspend2 @ unordered.rs:38
+    Returned @ unordered.rs:38
+    Panicked @ unordered.rs:38
+    Suspend0 @ unordered.rs:34
+    Suspend1 @ unordered.rs:37
+    Suspend2 @ unordered.rs:37
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<unordered::main::{async_block_env#0}>> (poll)

@@ -507,7 +507,7 @@ mod tests {
     fn test_later_reads_win_overlaps() {
         use std::cell::RefCell;
 
-    struct Changing(RefCell<u8>);
+        struct Changing(RefCell<u8>);
         impl Target for Changing {
             fn read_bytes(&self, _addr: u64, len: u64) -> TargetResult<Vec<u8>> {
                 let mut generation = self.0.borrow_mut();

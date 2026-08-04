@@ -524,7 +524,9 @@ impl Core {
             return None;
         }
         let start = (file.offset + (addr - file.range.start)) as usize;
-        self.backing(&file.path)?.map.get(start..start + len as usize)
+        self.backing(&file.path)?
+            .map
+            .get(start..start + len as usize)
     }
 
     pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
