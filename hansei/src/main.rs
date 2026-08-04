@@ -85,17 +85,45 @@ pub enum Command {
         needle: String,
     },
 
-    /// List the futures no task listing shows, grouped by the task
-    /// that owns them: futures *held* in frames off the await chain
-    /// (select!/join! arms in flight, a future stored across an await,
-    /// a futurelock's abandoned lock), and every FuturesUnordered with
-    /// its children. Found by value in each task's frames: coroutine
+    /// List the futures no task listing shows, grouped by the task that
+    /// owns them.
+    ///
+    /// A task's own await chain is what `trace` prints: the future it is
+    /// suspended in, the one that is awaiting, and so on down to the leaf
+    /// it is parked on. That chain is the only thing the task polls when
+    /// it wakes. This lists what a program has in flight *beside* it.
+    ///
+    /// A row marked `held` is a future sitting in a frame's local, off
+    /// the await chain: a `select!`/`join!` arm mid-flight, one stored
+    /// across an await, or a futurelock's abandoned lock. Whether it will
+    /// ever be polled again is not knowable here — a select arm is polled
+    /// at every wakeup, a futurelock's never. `graph` is what decides
+    /// that.
+    ///
+    /// A FuturesUnordered is listed with the children it polls. A child
+    /// lives in a heap node rather than in a frame, so neither a task
+    /// listing nor a trace reaches it. An empty slot is a completed child
+    /// the set has not reaped yet — not a future outstanding, and counted
+    /// apart from the ones in flight.
+    ///
+    /// The scan recurses through what it finds, so a future held inside a
+    /// set child is listed indented under that child rather than beside
+    /// the ones its task holds itself. Read the indentation as
+    /// containment: the closing tally splits the held futures the same
+    /// way, since the two populations overlap rather than adding up.
+    ///
+    /// Every address printed — a held future's, a set child's node — is
+    /// what `trace <0xaddr>` accepts to follow that one future's own
+    /// chain, and what `task-at <0xaddr>` resolves back to its task.
+    ///
+    /// What is listed is found *by value* in a frame's bytes: coroutine
     /// environments, future trait objects (resolved through the vtable
-    /// join), and the recognized leaf futures. The scan recurses, so a
-    /// future held inside a set child is listed indented under that
-    /// child rather than beside the ones its task holds itself. The
-    /// addresses printed are what `trace` accepts to follow one
-    /// future's own chain.
+    /// join), and the recognized leaf futures. Ordinary pointers are
+    /// never followed, so a future reachable only behind an unrecognized
+    /// Box or Arc is not here, and DWARF cannot say whether a
+    /// hand-written combinator implements Future, so one is not listed
+    /// itself — though the scan descends through it and any coroutine
+    /// inside it is. Treat the listing as a lower bound.
     Futures {
         /// Show only the futures this task owns, selected by its
         /// decimal id (see `tasks`).
@@ -1625,14 +1653,6 @@ fn print_futures(
         }
         return Ok(());
     }
-
-    // What "held" means, once, so the listing does not assume a reader
-    // who already has the await-chain model in mind.
-    writeln!(
-        out,
-        "held = a future sitting in a frame's local, off its task's await chain: a\n       \
-         `select!`/`join!` arm, one stored across an await, or an abandoned one.\n"
-    )?;
 
     for (i, (&owner, count)) in counts.iter().enumerate() {
         if i > 0 {
