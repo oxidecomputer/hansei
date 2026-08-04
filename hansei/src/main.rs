@@ -93,7 +93,12 @@ pub enum Command {
     /// environments, future trait objects (resolved through the vtable
     /// join), and the recognized leaf futures. The addresses printed
     /// are what `trace` accepts to follow one future's own chain.
-    Futures,
+    Futures {
+        /// Show only the futures this task owns, selected by its
+        /// decimal id (see `tasks`).
+        #[arg(long, short)]
+        task: Option<u64>,
+    },
 
     /// Print the waker-based task dependency graph: what every task is
     /// waiting on, and any futurelock — a lock future granted or queued
@@ -349,7 +354,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             exec_runtime_field(session, "driver", depth, ugly, out)?
         }
         Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
-        Command::Futures => exec_futures(session, out)?,
+        Command::Futures { task } => exec_futures(session, task, out)?,
         Command::Graph => exec_graph(session, out)?,
         Command::Info => exec_info(session, out)?,
         Command::SharedState { depth, ugly } => {
@@ -1543,22 +1548,56 @@ fn task_label(list: &bundle::TaskList, index: usize) -> String {
 
 /// List every future the census found, grouped by the task that owns
 /// it: the futures held in frames off the poll spine, and each
-/// sub-executor with its children.
-fn exec_futures(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
-    let list = &session.tasks;
+/// sub-executor with its children. `task` narrows the listing to one
+/// task's futures.
+fn exec_futures(session: &Session<'_>, task: Option<u64>, out: &mut dyn io::Write) -> Result<()> {
     let census = session.census();
     for err in &census.errors {
         writeln!(io::stderr(), "warning: {err:#}")?;
     }
+    print_futures(&session.tasks, census, task, out)
+}
+
+/// Print that listing from what the census found, which is all it reads:
+/// the census is a walk of a target, but rendering it is not.
+fn print_futures(
+    list: &bundle::TaskList,
+    census: &census::FutureCensus,
+    task: Option<u64>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    // Resolve the selected id up front, so an id the runtime does not
+    // own says so rather than printing an empty listing.
+    let only = match task {
+        Some(id) => {
+            let Some(index) = list.tasks.iter().position(|t| t.task_id == Some(id)) else {
+                let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
+                anyhow::bail!(
+                    "the runtime owns no task with id {id}; it owns {} task(s): {ids:?}",
+                    list.tasks.len()
+                );
+            };
+            Some(index)
+        }
+        None => None,
+    };
 
     // Group by owning task, keeping each group's entries in the order
     // the census found them.
     let mut by_owner: BTreeMap<usize, (Vec<&census::FutureSet>, Vec<&census::HeldFuture>)> =
         BTreeMap::new();
-    for set in &census.sets {
+    for set in census
+        .sets
+        .iter()
+        .filter(|s| only.is_none_or(|i| i == s.owner))
+    {
         by_owner.entry(set.owner).or_default().0.push(set);
     }
-    for held in &census.held {
+    for held in census
+        .held
+        .iter()
+        .filter(|h| only.is_none_or(|i| i == h.owner))
+    {
         by_owner.entry(held.owner).or_default().1.push(held);
     }
 
@@ -1635,15 +1674,22 @@ fn exec_futures(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
     }
 
     if by_owner.is_empty() {
-        writeln!(out, "no futures found outside the task list")?;
+        match task {
+            Some(id) => writeln!(out, "task {id} owns no futures outside the task list")?,
+            None => writeln!(out, "no futures found outside the task list")?,
+        }
     } else {
-        let children: usize = census.sets.iter().map(|s| s.children.len()).sum();
+        // Counted over what was printed, so a narrowed listing's tally
+        // describes the task it showed rather than the whole census.
+        let (mut sets, mut held, mut children) = (0, 0, 0);
+        for (s, h) in by_owner.values() {
+            sets += s.len();
+            held += h.len();
+            children += s.iter().map(|s| s.children.len()).sum::<usize>();
+        }
         writeln!(
             out,
-            "\n{} held future(s); {} set(s) holding {} child future(s)",
-            census.held.len(),
-            census.sets.len(),
-            children
+            "\n{held} held future(s); {sets} set(s) holding {children} child future(s)"
         )?;
     }
     Ok(())
@@ -2321,7 +2367,9 @@ mod task_at_tests {
 /// extracted bundle joined against a real captured snapshot.
 #[cfg(test)]
 mod future_trace_tests {
-    use super::{FutureAt, TraceTarget, future_at, parse_trace_target, print_await_chain};
+    use super::{
+        FutureAt, TraceTarget, future_at, parse_trace_target, print_await_chain, print_futures,
+    };
     use exegesis::bundle::{Bundle, BundleView};
     use hansei_types::tokio::bundle::{Context, TaskExtents, TaskList};
     use hansei_types::tokio::census::{self, FutureCensus};
@@ -2476,6 +2524,71 @@ mod future_trace_tests {
                 rendered.contains("tokio::sync::batch_semaphore::Acquire"),
                 "{rendered}"
             );
+        });
+    }
+
+    /// `futures --task` selecting the task that owns the fixture's one
+    /// held future prints exactly what the whole listing prints — the
+    /// tally included, since it counts what was printed.
+    #[test]
+    fn test_futures_narrowed_to_the_owner_prints_its_futures() {
+        with_target("futurelock", |_ctx, list, _extents, census| {
+            let owner = census
+                .held
+                .first()
+                .unwrap_or_else(|| panic!("the fixture holds a future"))
+                .owner;
+            let id = list.tasks[owner].task_id.expect("the owner has an id");
+
+            let mut out = Vec::new();
+            print_futures(list, census, Some(id), &mut out).expect("the listing renders");
+            let narrowed = String::from_utf8(out).expect("rendered output is UTF-8");
+
+            assert!(narrowed.contains(&format!("task {id}:")), "{narrowed}");
+            assert!(narrowed.contains("`future1`"), "{narrowed}");
+            assert!(narrowed.contains("\n1 held future(s);"), "{narrowed}");
+
+            let mut out = Vec::new();
+            print_futures(list, census, None, &mut out).expect("the listing renders");
+            let all = String::from_utf8(out).expect("rendered output is UTF-8");
+            assert_eq!(narrowed, all, "the fixture's only owner is task {id}");
+        });
+    }
+
+    /// A task the census found nothing for says so, rather than
+    /// printing the listing it was narrowed away from.
+    #[test]
+    fn test_futures_narrowed_to_a_task_holding_none() {
+        with_target("channels", |_ctx, list, _extents, census| {
+            let id = list.tasks[0].task_id.expect("the first task has an id");
+            let mut out = Vec::new();
+            print_futures(list, census, Some(id), &mut out).expect("the listing renders");
+            let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
+            assert_eq!(
+                rendered,
+                format!("task {id} owns no futures outside the task list\n")
+            );
+        });
+    }
+
+    /// An id the runtime does not own is an error naming the ids it
+    /// does, not an empty listing.
+    #[test]
+    fn test_futures_rejects_an_unknown_task_id() {
+        with_target("futurelock", |_ctx, list, _extents, census| {
+            let unknown = list
+                .tasks
+                .iter()
+                .filter_map(|t| t.task_id)
+                .max()
+                .expect("some task has an id")
+                + 1;
+            let mut out = Vec::new();
+            let err = print_futures(list, census, Some(unknown), &mut out)
+                .expect_err("no task owns that id")
+                .to_string();
+            assert!(err.contains(&format!("id {unknown}")), "{err}");
+            assert!(out.is_empty(), "printed {out:?} before failing");
         });
     }
 }
