@@ -1528,6 +1528,7 @@ static BY_NAME: &[(&str, Detector)] = &[
     ("tokio::runtime::handle::Handle", elided_node),
     ("tokio::runtime::runtime::Runtime", elided_node),
     ("tokio::runtime::scheduler::Handle", elided_node),
+    ("tokio::runtime::time::entry::TimerEntry", timer_entry_node),
     (
         "tokio::sync::batch_semaphore::Semaphore",
         batch_semaphore_node,
@@ -2256,6 +2257,14 @@ enum ReachStep<'a> {
     Named(&'a str),
     /// Follow the pointer reached so far.
     Deref,
+    /// Enter the named variant's payload of a Rust enum — landing on the
+    /// per-variant struct rustc emits, whose members then address the
+    /// variant's fields. The step lowers statically (a payload's offset is
+    /// fixed either way); reify guards every read crossing it with the
+    /// enum's discriminant, so only a read that travels as a guarded place —
+    /// a value-expression `Read`, an `Alias` — may carry one (see
+    /// [`Step::Variant`]).
+    Variant(&'a str),
     /// Descend the zero-offset wrapper chain to the one value of this shape.
     ///
     /// tokio reaches an atomic's word through a different chain of loom,
@@ -2288,7 +2297,7 @@ type Reach<'a> = Vec<ReachStep<'a>>;
 
 // A path is written far more often than it is matched on, so the steps are
 // spelled bare: `reach![Named("head"), Deref]` reads as the path it describes.
-use ReachStep::{Deref, FindParam, Named, PeelTo, PeelToParam, Resolved};
+use ReachStep::{Deref, FindParam, Named, PeelTo, PeelToParam, Resolved, Variant};
 
 /// The shape of a `usize`, which most of what a path peels to is.
 const WORD: Shape = Shape::Uint(crate::bundle::POINTER_SIZE);
@@ -2345,6 +2354,24 @@ impl Emitter<'_> {
                     };
                     cur = self.reader.canonicalize(pointer.target_type_id);
                     steps.push(Step::Deref);
+                }
+                ReachStep::Variant(name) => {
+                    let Some(RawType::Enum(en)) = self.reader.canonical_type(cur) else {
+                        explain!(
+                            "  path enters variant `{name}`, but {} is not an enum",
+                            type_label(self.reader, cur),
+                        );
+                        return None;
+                    };
+                    let Some(variant) = raw_variant(self.reader, en, name) else {
+                        explain!(
+                            "  no unique variant `{name}` in {}",
+                            type_label(self.reader, cur),
+                        );
+                        return None;
+                    };
+                    cur = self.reader.canonicalize(variant.type_id);
+                    steps.push(Step::Variant(self.intern(name)));
                 }
                 ReachStep::PeelTo(shape) => {
                     let reader = self.reader;
@@ -2921,6 +2948,114 @@ fn watch_state_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode
     Some(DisplayNode::Scalar {
         at: emitter.walk(id, &reach![Named("__0"), PeelTo(WORD)])?.0,
         decode,
+    })
+}
+
+/// A `tokio::runtime::time::entry::TimerEntry` — the timer a `Sleep` (and so
+/// a `timeout`) parks on — reduced to when it fires. The entry's `StateCell`
+/// word holds the deadline as a *tick* (ms since the runtime's `TimeSource`
+/// epoch), or `u64::MAX` once the driver has fired it; the driver's wheel
+/// keeps its own clock in the same unit (`elapsed`, advanced each time the
+/// wheel is processed). Their difference is the remaining wait — computed
+/// from two reads of target memory, no host clock involved, so it means the
+/// same thing against a live process and a core.
+///
+/// The wheel is reached *through the entry's own scheduler handle*: driver →
+/// the `MultiThread` variant's `Arc` → the runtime's `driver::Handle` → the
+/// time handle → the `Traditional` driver's mutex-guarded `InnerState`. Every
+/// enum on that path is crossed with a guarded variant step, so a
+/// current-thread runtime (or an alternative timer) degrades the field to
+/// `<inactive variant>` rather than misreading; the mutex is not taken, the
+/// usual torn-read caveat for a live target.
+///
+/// Renders as `TimerEntry { deadline, state }` where `state` is
+/// `unregistered` (first poll pending — the deadline is not in the cell
+/// yet), `elapsed`, or `fires_in_ms(N)`.
+fn timer_entry_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    // The deadline tick, valid while the entry is registered.
+    let tick = emitter
+        .walk(
+            id,
+            &reach![
+                Named("inner"),
+                Variant("Some"),
+                Named("__0"),
+                Named("state"),
+                Named("state"),
+                PeelTo(WORD),
+            ],
+        )?
+        .0;
+    // The wheel's clock, as of the driver's last tick. `time` is an
+    // `Option<time::Handle>` (`None` only for a runtime built without a time
+    // driver) and the mutex spelling varies by feature set, so the guarded
+    // steps and the parameter search do the navigating.
+    let now = emitter
+        .walk(
+            id,
+            &reach![
+                Named("driver"),
+                Variant("MultiThread"),
+                Named("__0"),
+                Named("ptr"),
+                Named("pointer"),
+                Deref,
+                Named("data"),
+                Named("driver"),
+                Named("time"),
+                Variant("Some"),
+                Named("__0"),
+                Named("inner"),
+                Variant("Traditional"),
+                Named("state"),
+                FindParam,
+                Named("wheel"),
+                Named("elapsed"),
+            ],
+        )?
+        .0;
+    let registered = emitter.walk(id, &reach![Named("registered")])?.0;
+
+    let fired = Arm {
+        value: 0,
+        label: Some(emitter.intern("elapsed")),
+        payload: None,
+    };
+    let pending = Arm {
+        value: 1,
+        label: Some(emitter.intern("fires_in_ms")),
+        payload: Some(Box::new(DisplayNode::Computed {
+            value: ValueExpr::Sub(
+                Box::new(ValueExpr::Read(tick.clone())),
+                Box::new(ValueExpr::Read(now)),
+            ),
+            decode: ScalarDecode::Raw,
+        })),
+    };
+    let state = DisplayNode::Variant {
+        discriminant: ValueExpr::Read(registered),
+        arms: vec![Arm {
+            value: 0,
+            label: Some(emitter.intern("unregistered")),
+            payload: None,
+        }],
+        default: Some(Box::new(DisplayNode::Variant {
+            discriminant: ValueExpr::Ne(
+                Box::new(ValueExpr::Read(tick)),
+                Box::new(ValueExpr::Const(u64::MAX)),
+            ),
+            arms: vec![fired, pending],
+            default: None,
+        })),
+    };
+    Some(DisplayNode::Struct {
+        fields: vec![
+            Field::member(emitter.member_named(id, "deadline")?),
+            Field::Synth {
+                label: emitter.intern("state"),
+                node: state,
+            },
+        ],
     })
 }
 

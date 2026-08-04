@@ -86,7 +86,7 @@ alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
                 state: state=waiting, generation=0,
                 mutex: locked=false, parked=false,
                 queue: [
-                    tokio::sync::notify::Waiter { notification: kind=none, order=fifo },
+                    tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR) },
                 ],
             },
         },
