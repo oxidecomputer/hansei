@@ -561,23 +561,7 @@ impl<'dw> CommonAttrs<'dw> {
                         debug!("unexpected decl_file type: {:?}", attr.value());
                         continue;
                     };
-
-                    let Some(lp) = &unit.line_program else {
-                        continue;
-                    };
-
-                    let Some(fent) = lp.header().file(f) else {
-                        debug!(file_index = f, "invalid decl_file file index");
-                        continue;
-                    };
-
-                    let raw = unit.dwarf.attr_string(unit.unit, fent.path_name())?;
-                    source_loc.file = str::from_utf8(raw.slice()).ok();
-
-                    if let Some(dv) = fent.directory(lp.header()) {
-                        let raw_dir = unit.dwarf.attr_string(unit.unit, dv)?;
-                        source_loc.dir = str::from_utf8(raw_dir.slice()).ok();
-                    }
+                    resolve_file_index(unit, f, "decl_file", &mut source_loc)?;
                 }
                 gimli::DW_AT_decl_line => {
                     source_loc.line = NonZero::new(attr.value().udata_value().unwrap());
@@ -602,6 +586,40 @@ impl<'dw> CommonAttrs<'dw> {
     }
 }
 
+/// Fill a [`SourceLoc`]'s file, directory and compilation directory from a
+/// `DW_AT_decl_file`/`DW_AT_call_file` index into the unit's line program.
+///
+/// The compilation directory comes along because the directory alone does
+/// not always locate the file: rustc writes it relative to `DW_AT_comp_dir`
+/// for a file belonging to the crate the unit was compiled from, so for
+/// those everything above the crate's `src/` lives only in `comp_dir`.
+pub(crate) fn resolve_file_index<'dw>(
+    unit: &UnitRef<Slice<'dw>>,
+    index: u64,
+    what: &str,
+    loc: &mut SourceLoc<&'dw str>,
+) -> Result<()> {
+    let Some(lp) = &unit.line_program else {
+        return Ok(());
+    };
+    let Some(fent) = lp.header().file(index) else {
+        debug!(file_index = index, "invalid {what} file index");
+        return Ok(());
+    };
+
+    let raw = unit.dwarf.attr_string(unit.unit, fent.path_name())?;
+    loc.file = str::from_utf8(raw.slice()).ok();
+
+    if let Some(dv) = fent.directory(lp.header()) {
+        let raw_dir = unit.dwarf.attr_string(unit.unit, dv)?;
+        loc.dir = str::from_utf8(raw_dir.slice()).ok();
+    }
+    if let Some(cd) = unit.comp_dir {
+        loc.comp_dir = str::from_utf8(cd.slice()).ok();
+    }
+    Ok(())
+}
+
 /// Location in a source file for a type. Lines and columns are 1-indexed.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SourceLoc<S> {
@@ -609,6 +627,14 @@ pub struct SourceLoc<S> {
     pub file: Option<S>,
     /// Directory of source file, if available.
     pub dir: Option<S>,
+    /// The unit's `DW_AT_comp_dir`, which a relative `dir` is relative to.
+    ///
+    /// rustc compiles each crate with its own compilation directory — the
+    /// crate root for a dependency, the workspace root for a member — and
+    /// writes a `dir` relative to it whenever the file lives underneath.
+    /// So for a file in the crate the unit belongs to, this holds the only
+    /// copy of everything above the crate's `src/`.
+    pub comp_dir: Option<S>,
     /// Line number, if available.
     pub line: Option<NonZero<u64>>,
     /// Column number, if available.
@@ -620,6 +646,7 @@ impl<S> Default for SourceLoc<S> {
         Self {
             file: None,
             dir: None,
+            comp_dir: None,
             line: None,
             column: None,
         }
@@ -632,10 +659,11 @@ impl<S> SourceLoc<S> {
         let Self {
             file,
             dir,
+            comp_dir,
             line,
             column,
         } = self;
-        file.is_none() && dir.is_none() && line.is_none() && column.is_none()
+        file.is_none() && dir.is_none() && comp_dir.is_none() && line.is_none() && column.is_none()
     }
 }
 

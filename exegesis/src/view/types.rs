@@ -1389,6 +1389,12 @@ impl<'a> SourceLocView<'a> {
         self.raw.dir.map(|id| self.collector.strings.get(id))
     }
 
+    /// The compilation directory a relative [`dir`](Self::dir) is relative
+    /// to, if recorded.
+    pub fn comp_dir(&self) -> Option<&'a str> {
+        self.raw.comp_dir.map(|id| self.collector.strings.get(id))
+    }
+
     /// 1-indexed line number.
     pub fn line(&self) -> Option<NonZero<u64>> {
         self.raw.line

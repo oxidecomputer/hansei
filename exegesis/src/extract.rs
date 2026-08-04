@@ -806,6 +806,9 @@ fn sweep_function(
                                         dir: loc
                                             .and_then(|l| l.dir)
                                             .map(|d| reader.strings.get(d).to_owned()),
+                                        comp_dir: loc
+                                            .and_then(|l| l.comp_dir)
+                                            .map(|d| reader.strings.get(d).to_owned()),
                                         line: loc.and_then(|l| l.line).map(|n| n.get()),
                                     },
                                 )
@@ -1203,6 +1206,7 @@ struct TaskSeed {
 struct OwnedLoc {
     file: Option<String>,
     dir: Option<String>,
+    comp_dir: Option<String>,
     line: Option<u64>,
 }
 
@@ -1210,6 +1214,7 @@ fn owned_loc(l: &SourceLocView<'_>) -> OwnedLoc {
     OwnedLoc {
         file: l.file().map(str::to_owned),
         dir: l.dir().map(str::to_owned),
+        comp_dir: l.comp_dir().map(str::to_owned),
         line: l.line().map(|n| n.get()),
     }
 }
@@ -4337,7 +4342,11 @@ fn classify_future(
         && let (Some(file), Some(line)) = (loc.file.as_deref(), loc.line)
     {
         decl = Some(SourceLoc {
-            file: em.interner.intern(&display_path(loc.dir.as_deref(), file)),
+            file: em.interner.intern(&display_path(
+                loc.comp_dir.as_deref(),
+                loc.dir.as_deref(),
+                file,
+            )),
             line: line as u32,
         });
     }
@@ -4368,7 +4377,9 @@ fn classify_future(
                     && let (Some(file), Some(line)) = (loc.file(), loc.line())
                 {
                     decl = Some(SourceLoc {
-                        file: em.interner.intern(&display_path(loc.dir(), file)),
+                        file: em
+                            .interner
+                            .intern(&display_path(loc.comp_dir(), loc.dir(), file)),
                         line: line.get() as u32,
                     });
                 }
@@ -4417,18 +4428,35 @@ fn tokio_version_of(loc: &OwnedLoc) -> Option<semver::Version> {
 /// line-table directory, cut down by [`strip_build_prefix`] to the tail a
 /// reader can use.
 ///
-/// rustc emits workspace files with directories relative to
-/// `DW_AT_comp_dir` (`nexus/src/bin`), which join cleanly as-is and are
-/// kept whole; an absolute directory names the build machine.
-fn display_path(dir: Option<&str>, file: &str) -> String {
+/// A relative directory is relative to the unit's `DW_AT_comp_dir`, and
+/// rustc gives each crate its own: the crate root for a dependency, the
+/// workspace root for a member. Taking the directory alone therefore drops
+/// the crate a dependency's file belongs to — `src/resolvers/dns.rs` for a
+/// type emitted in qorb's own unit, where the same file reached from a
+/// crate that monomorphized it is named in full. So the path is rooted at
+/// `comp_dir` and offered to [`strip_build_prefix`], and the result is
+/// taken only if it recognized the root: a workspace root is nobody's
+/// crate cache, and `/data/omicron/nexus/src/app/…` is worse than the
+/// `nexus/src/app/…` the directory already gave.
+fn display_path(comp_dir: Option<&str>, dir: Option<&str>, file: &str) -> String {
     let joined = match dir {
         Some(dir) if !dir.is_empty() && !file.starts_with('/') => format!("{dir}/{file}"),
         _ => file.to_owned(),
     };
-    if !joined.starts_with('/') {
-        return joined;
+    if joined.starts_with('/') {
+        return strip_build_prefix(&joined).into_owned();
     }
-    strip_build_prefix(&joined).into_owned()
+    let Some(comp_dir) = comp_dir.filter(|d| d.starts_with('/')) else {
+        return joined;
+    };
+    let rooted = format!("{comp_dir}/{joined}");
+    let cut = strip_build_prefix(&rooted);
+    // Every root it knows takes something off, so an unchanged length is
+    // how "not recognized" comes back.
+    match cut.len() < rooted.len() {
+        true => cut.into_owned(),
+        false => joined,
+    }
 }
 
 /// Converts reachable DWARF types into bundle [`TypeDef`]s: assigns dense
@@ -4847,7 +4875,8 @@ impl<'a> Emitter<'a> {
         let file = loc.file.map(|f| self.reader.strings.get(f))?;
         let line = loc.line?;
         let dir = loc.dir.map(|d| self.reader.strings.get(d));
-        let file = self.interner.intern(&display_path(dir, file));
+        let comp_dir = loc.comp_dir.map(|d| self.reader.strings.get(d));
+        let file = self.interner.intern(&display_path(comp_dir, dir, file));
         Some(SourceLoc {
             file,
             line: line.get() as u32,
@@ -4957,9 +4986,11 @@ impl<'a> Emitter<'a> {
             let (Some(file), Some(line)) = (loc.file.as_deref(), loc.line) else {
                 continue;
             };
-            let file = self
-                .interner
-                .intern(&display_path(loc.dir.as_deref(), file));
+            let file = self.interner.intern(&display_path(
+                loc.comp_dir.as_deref(),
+                loc.dir.as_deref(),
+                file,
+            ));
             out[v] = Some(SourceLoc {
                 file,
                 line: line as u32,
@@ -6388,10 +6419,10 @@ mod tests {
     #[test]
     fn test_display_path_plain() {
         // No dir, an empty dir, or an absolute file passes through.
-        assert_eq!(display_path(None, "lib.rs"), "lib.rs");
-        assert_eq!(display_path(Some(""), "lib.rs"), "lib.rs");
+        assert_eq!(display_path(None, None, "lib.rs"), "lib.rs");
+        assert_eq!(display_path(None, Some(""), "lib.rs"), "lib.rs");
         assert_eq!(
-            display_path(Some("ignored"), "/abs/path/lib.rs"),
+            display_path(None, Some("ignored"), "/abs/path/lib.rs"),
             "/abs/path/lib.rs"
         );
     }
@@ -6399,7 +6430,7 @@ mod tests {
     #[test]
     fn test_display_path_relative_dir() {
         assert_eq!(
-            display_path(Some("nexus/reconfigurator/preparation/src"), "lib.rs"),
+            display_path(None, Some("nexus/reconfigurator/preparation/src"), "lib.rs"),
             "nexus/reconfigurator/preparation/src/lib.rs"
         );
     }
@@ -6409,6 +6440,7 @@ mod tests {
         // The file component may itself carry a path.
         assert_eq!(
             display_path(
+                None,
                 Some("/home/wfc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.50.0"),
                 "src/sync/watch.rs"
             ),
@@ -6416,6 +6448,7 @@ mod tests {
         );
         assert_eq!(
             display_path(
+                None,
                 Some(
                     "/home/wfc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/de"
                 ),
@@ -6429,6 +6462,7 @@ mod tests {
     fn test_display_path_git_checkout() {
         assert_eq!(
             display_path(
+                None,
                 Some(
                     "/home/wfc/.cargo/git/checkouts/dendrite-ae9f1715c17fc765/cc0c307/dpd-client/src"
                 ),
@@ -6439,6 +6473,7 @@ mod tests {
         // A checkout dir that does not end in a cache hash is kept whole.
         assert_eq!(
             display_path(
+                None,
                 Some("/home/x/.cargo/git/checkouts/odd-layout/src"),
                 "lib.rs"
             ),
@@ -6450,6 +6485,7 @@ mod tests {
     fn test_display_path_toolchain() {
         assert_eq!(
             display_path(
+                None,
                 Some("/rustc/ed61e7d7e242494fb7057f2657300d9e77bb4fcb/library/std/src/thread"),
                 "mod.rs"
             ),
@@ -6457,6 +6493,7 @@ mod tests {
         );
         assert_eq!(
             display_path(
+                None,
                 Some(
                     "/Users/wfc/.rustup/toolchains/1.97.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ptr"
                 ),
@@ -6465,7 +6502,7 @@ mod tests {
             "library/core/src/ptr/non_null.rs"
         );
         assert_eq!(
-            display_path(Some("/rust/deps/hashbrown-0.15.5/src/raw"), "mod.rs"),
+            display_path(None, Some("/rust/deps/hashbrown-0.15.5/src/raw"), "mod.rs"),
             "hashbrown-0.15.5/src/raw/mod.rs"
         );
     }
@@ -6474,8 +6511,48 @@ mod tests {
     fn test_display_path_unknown_absolute() {
         // Unrecognized absolute dirs join unmodified rather than truncate.
         assert_eq!(
-            display_path(Some("/opt/vendored/foo/src"), "lib.rs"),
+            display_path(None, Some("/opt/vendored/foo/src"), "lib.rs"),
             "/opt/vendored/foo/src/lib.rs"
+        );
+    }
+
+    /// Both spellings a dependency's file gets, from the two units that
+    /// name it in one nexus binary: qorb's own, which writes the directory
+    /// relative to its crate root, and the crate that monomorphized a qorb
+    /// generic, which has to write it in full. Rooting the first at its
+    /// compilation directory is what makes them agree.
+    #[test]
+    fn test_display_path_comp_dir_names_the_crate() {
+        const QORB: &str =
+            "/home/wfc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/qorb-0.4.1";
+        assert_eq!(
+            display_path(Some(QORB), Some("src/resolvers"), "dns.rs"),
+            "qorb-0.4.1/src/resolvers/dns.rs"
+        );
+        assert_eq!(
+            display_path(Some("/data/omicron"), Some(QORB), "src/pool.rs"),
+            "qorb-0.4.1/src/pool.rs"
+        );
+    }
+
+    /// A workspace member's compilation directory is the workspace root,
+    /// which names no crate cache — rooting there would only prepend the
+    /// build machine, so the directory's own answer stands.
+    #[test]
+    fn test_display_path_comp_dir_declined() {
+        assert_eq!(
+            display_path(Some("/data/omicron"), Some("nexus/src/app"), "mod.rs"),
+            "nexus/src/app/mod.rs"
+        );
+        // A relative compilation directory cannot root anything.
+        assert_eq!(
+            display_path(Some("omicron"), Some("nexus/src/app"), "mod.rs"),
+            "nexus/src/app/mod.rs"
+        );
+        // An absolute directory is already whole; comp_dir does not apply.
+        assert_eq!(
+            display_path(Some("/data/omicron"), Some("/opt/vendored/src"), "lib.rs"),
+            "/opt/vendored/src/lib.rs"
         );
     }
 }
