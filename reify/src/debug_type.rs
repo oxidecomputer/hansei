@@ -335,6 +335,52 @@ pub struct Place {
     /// Successive pointer hops; the last entry's offset reaches the final
     /// datum, earlier entries reach the next pointer word.
     pub(crate) hops: Vec<u64>,
+    /// Discriminant checks for every enum variant the path descends into —
+    /// the resolved form of a `Step::Variant`. A variant's payload offset is
+    /// fixed, so the *location* resolves statically; whether its bytes mean
+    /// anything depends on the live variant, so the read verifies each guard
+    /// and degrades to `<inactive variant>` when one fails.
+    pub(crate) guards: Vec<VariantGuard>,
+}
+
+/// One resolved variant descent: where the enum's discriminant lives and
+/// which raw values select the descended-into variant.
+#[derive(Clone, Debug)]
+pub struct VariantGuard {
+    /// Which stretch of the place the discriminant lives in: 0 is the
+    /// rendered value's own bytes, `k` the pointee the `k`-th pointer hop
+    /// reaches.
+    pub(crate) segment: usize,
+    /// The discriminant's byte offset within that segment.
+    pub(crate) at: u64,
+    /// The discriminant's byte width (1, 2, 4, 8, or 16).
+    pub(crate) size: u32,
+    /// The raw values that select the variant.
+    pub(crate) expect: GuardExpect,
+}
+
+/// How a [`VariantGuard`] decides the descended-into variant is live. Ranges
+/// are inclusive, over the discriminant's raw bits zero-extended to `u128` —
+/// the same representation the bundle's `DiscrValues` store.
+#[derive(Clone, Debug)]
+pub enum GuardExpect {
+    /// The variant has explicit discriminant values: live when the raw value
+    /// falls in one of these ranges.
+    Match(Vec<(u128, u128)>),
+    /// The variant is a niche encoding's default: live when the raw value
+    /// falls in *none* of these ranges (the other variants' values).
+    Niche(Vec<(u128, u128)>),
+}
+
+impl GuardExpect {
+    /// Whether `raw` (the discriminant's raw bits) selects the variant.
+    pub(crate) fn selects(&self, raw: u128) -> bool {
+        let hit = |ranges: &[(u128, u128)]| ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&raw));
+        match self {
+            GuardExpect::Match(ranges) => hit(ranges),
+            GuardExpect::Niche(ranges) => !hit(ranges),
+        }
+    }
 }
 
 /// One resolved [`DisplayNode::Variant`] arm.
@@ -574,9 +620,11 @@ impl<'a> DebugType<'a> for BundleType<'a> {
         ) -> Option<(BundleType<'a>, Place)> {
             let mut ty = root;
             let mut offset = 0u64;
+            let mut segment = 0usize;
             let mut place = Place {
                 root_offset: 0,
                 hops: Vec::new(),
+                guards: Vec::new(),
             };
             let mut before_first_deref = true;
             for step in sel.steps() {
@@ -595,6 +643,15 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         }
                         ty = ty.pointer_target()?;
                         offset = 0;
+                        segment += 1;
+                    }
+                    Step::Variant(name) => {
+                        let (variant, guard) = resolve_variant_step(ty, *name, segment, offset)?;
+                        if let Some(guard) = guard {
+                            place.guards.push(guard);
+                        }
+                        offset = offset.checked_add(variant.1)?;
+                        ty = variant.0;
                     }
                 }
             }
@@ -606,17 +663,73 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             Some((ty, place))
         }
 
+        /// Resolve one `Step::Variant` against the enum `ty` at `offset`
+        /// within `segment`: the named variant's `(payload type, payload
+        /// offset)` and the discriminant guard the read must verify — `None`
+        /// for a univariant enum, which has no discriminant to check.
+        fn resolve_variant_step(
+            ty: BundleType<'_>,
+            name: exegesis::bundle::StrRef,
+            segment: usize,
+            offset: u64,
+        ) -> Option<((BundleType<'_>, u64), Option<VariantGuard>)> {
+            use exegesis::bundle::{DiscrValue, VariantDef};
+
+            let shape = ty.variant_shape()?;
+            let mut matches = shape.variants.iter().filter(|v| v.name == name);
+            let variant = matches.next()?;
+            if matches.next().is_some() {
+                return None;
+            }
+            let payload = (ty.related_type(variant.payload.ty), variant.payload.offset);
+
+            let Some(discr) = &shape.discr else {
+                // Univariant: nothing to decode, so nothing to guard. More
+                // than one variant with no discriminant is undecodable.
+                return (shape.variants.len() == 1).then_some((payload, None));
+            };
+            let size = ty.related_type(discr.ty).size();
+            if !matches!(size, 1 | 2 | 4 | 8 | 16) {
+                return None;
+            }
+            let ranges = |v: &VariantDef| -> Vec<(u128, u128)> {
+                v.discr_values
+                    .iter()
+                    .flat_map(|dv| &dv.0)
+                    .map(|dv| match *dv {
+                        DiscrValue::Value(x) => (x, x),
+                        DiscrValue::Range(lo, hi) => (lo, hi),
+                    })
+                    .collect()
+            };
+            let expect = match &variant.discr_values {
+                Some(_) => GuardExpect::Match(ranges(variant)),
+                // The default (niche) variant is live when no other
+                // variant's explicit values match.
+                None => GuardExpect::Niche(shape.variants.iter().flat_map(&ranges).collect()),
+            };
+            let guard = VariantGuard {
+                segment,
+                at: offset.checked_add(discr.offset)?,
+                size: size as u32,
+                expect,
+            };
+            Some((payload, Some(guard)))
+        }
+
         /// Resolve a selector that stays within the value's own bytes to
         /// `(landed type, byte offset)`. Returns `None` if the selector
-        /// unexpectedly crosses a pointer — a fail-safe fallback to structural
-        /// display rather than a misread. Every node but `Variant`/`Alias`
-        /// reads locally and uses this.
+        /// unexpectedly crosses a pointer or descends into an enum variant —
+        /// a bare offset can carry neither the hop nor the discriminant
+        /// guard, so this is a fail-safe fallback to structural display
+        /// rather than a misread. Every node but `Variant`/`Alias` reads
+        /// locally and uses this.
         fn resolve_selector<'a>(
             root: BundleType<'a>,
             sel: &Selector,
         ) -> Option<(BundleType<'a>, u64)> {
             let (ty, place) = resolve_place(root, sel)?;
-            place.hops.is_empty().then_some((ty, place.root_offset))
+            (place.hops.is_empty() && place.guards.is_empty()).then_some((ty, place.root_offset))
         }
 
         /// Resolve a bundle [`exegesis::bundle::ValueExpr`] into reify's form,

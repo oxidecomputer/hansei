@@ -2163,6 +2163,13 @@ fn selector_lands(
                 };
                 reader.canonicalize(pointer.target_type_id)
             }
+            Step::Variant(name) => {
+                let RawType::Enum(en) = reader.canonical_type(cur)? else {
+                    return None;
+                };
+                let variant = raw_variant(reader, en, strings.get(*name)?)?;
+                reader.canonicalize(variant.type_id)
+            }
         };
     }
     Some(cur)
@@ -2496,6 +2503,15 @@ impl Emitter<'_> {
                     };
                     cur = self.reader.canonicalize(pointer.target_type_id);
                     steps.push(Step::Deref);
+                }
+                Step::Variant(name) => {
+                    // Already addressed by name; only the type advances.
+                    let RawType::Enum(en) = self.reader.canonical_type(cur)? else {
+                        return None;
+                    };
+                    let variant = raw_variant(self.reader, en, self.interner.get(*name)?)?;
+                    cur = self.reader.canonicalize(variant.type_id);
+                    steps.push(Step::Variant(*name));
                 }
             }
         }

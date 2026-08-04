@@ -130,8 +130,8 @@ pub enum MemberRef {
     Named(StrRef),
 }
 
-/// One step in a [`Selector`]: descend into an aggregate member, or follow a
-/// pointer to the value it points at.
+/// One step in a [`Selector`]: descend into an aggregate member, follow a
+/// pointer to the value it points at, or enter a Rust enum's named variant.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Step {
     /// Descend into a struct/union member; adds that member's byte offset and
@@ -140,6 +140,21 @@ pub enum Step {
     /// Follow the current pointer to its pointee, restarting the byte offset
     /// within the target type.
     Deref,
+    /// Descend into the named variant's payload of a Rust enum; adds the
+    /// payload's byte offset and continues in its type (the per-variant
+    /// struct rustc emits, whose members then address the variant's fields).
+    ///
+    /// The payload's offset is fixed whether or not the variant is active, so
+    /// the step *resolves* statically — but its bytes only mean anything when
+    /// the variant is the live one, so reify guards every read crossing this
+    /// step with the enum's discriminant and degrades to `<inactive variant>`
+    /// when another variant holds the storage. That check needs the read to
+    /// travel as a guarded place — a [`ValueExpr::Read`] or an
+    /// [`DisplayNode::Alias`] — so validation rejects this step in any
+    /// selector whose node resolves to a bare offset. Like a named member, a
+    /// name that no variant (or more than one) answers to resolves to
+    /// nothing.
+    Variant(StrRef),
 }
 
 impl MemberRef {
@@ -168,7 +183,8 @@ impl MemberRef {
 ///
 /// [`Step::Member`] steps descend through struct/union members (by name or by
 /// position — see [`MemberRef`]), accumulating byte offsets; a [`Step::Deref`]
-/// step crosses a pointer, restarting the offset inside the pointee. A
+/// step crosses a pointer, restarting the offset inside the pointee; a
+/// [`Step::Variant`] step enters a Rust enum's named variant payload. A
 /// `Selector` unifies what used to be recorded inconsistently as either a bare
 /// `u32` member index or a `Vec<u32>` member path, and subsumes the
 /// per-formatter "resolve a pointer, then continue against its target" special

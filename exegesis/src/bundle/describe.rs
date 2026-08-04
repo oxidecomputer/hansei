@@ -123,6 +123,32 @@ fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, Bu
                     return (names.join("."), offset, cur);
                 }
             },
+            Step::Variant(name) => {
+                let variant = match type_def(bundle, cur) {
+                    Some(TypeDef::Enum { shape, .. }) => {
+                        let mut matches = shape.variants.iter().filter(|v| v.name == *name);
+                        match (matches.next(), matches.next()) {
+                            (Some(variant), None) => Some(variant),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                match variant {
+                    // Braced, so a variant hop reads apart from the member
+                    // names around it; braces cannot occur in a member name.
+                    Some(v) => {
+                        names.push(format!("{{{}}}", s(v.name)));
+                        offset += v.payload.offset;
+                        cur = v.payload.ty;
+                    }
+                    None => {
+                        let name = bundle.strings.get(*name).unwrap_or("<bad strref>");
+                        names.push(format!("<no unique variant `{name}`>"));
+                        return (names.join("."), offset, cur);
+                    }
+                }
+            }
         }
     }
     (names.join("."), offset, cur)
