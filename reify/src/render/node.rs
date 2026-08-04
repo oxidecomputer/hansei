@@ -240,10 +240,53 @@ pub(crate) fn eval_node<'a, T: DebugType<'a>>(
     }
 }
 
+/// The discriminant's raw bits, zero-extended — the representation a
+/// [`Place`] guard's ranges are stated over.
+fn u128_from_le(bytes: &[u8]) -> u128 {
+    bytes
+        .iter()
+        .enumerate()
+        .fold(0u128, |raw, (i, b)| raw | ((*b as u128) << (8 * i)))
+}
+
+/// Verify every guard `place` recorded for `segment`: read each discriminant
+/// (from the local `bytes` for segment 0, else through `proc` at `base`) and
+/// check it selects the variant the path descended into. A live read that
+/// finds another variant degrades to `<inactive variant>` — the datum is not
+/// there, not unreadable.
+fn check_place_guards<'a, T: DebugType<'a>>(
+    place: &Place,
+    segment: usize,
+    base: Option<u64>,
+    bytes: &[u8],
+    ctx: RenderCtx<'_, 'a, T>,
+) -> std::result::Result<(), &'static str> {
+    for guard in place.guards.iter().filter(|g| g.segment == segment) {
+        let raw = match base {
+            None => u128_from_le(
+                byte_range(bytes, guard.at, u64::from(guard.size)).ok_or("<truncated>")?,
+            ),
+            Some(base) => {
+                let proc = ctx.proc.ok_or("<target unavailable>")?;
+                let at = base.checked_add(guard.at).ok_or("<invalid address>")?;
+                let word = proc
+                    .read_bytes(at, u64::from(guard.size))
+                    .map_err(|_| "<unreadable>")?;
+                u128_from_le(&word)
+            }
+        };
+        if !guard.expect.selects(raw) {
+            return Err("<inactive variant>");
+        }
+    }
+    Ok(())
+}
+
 /// Read the `size`-byte machine word at `place`, following any pointer hops
-/// through `proc`. Empty `hops` is the common case: a borrowed local slice, no
-/// process read. On failure the `Err` carries the exact degradation marker to
-/// print in the value's place.
+/// through `proc` and verifying any variant guards along the way. Empty
+/// `hops` is the common case: a borrowed local slice, no process read. On
+/// failure the `Err` carries the exact degradation marker to print in the
+/// value's place.
 fn read_place_bytes<'b, 'a, T: DebugType<'a>>(
     place: &Place,
     bytes: &'b [u8],
@@ -251,6 +294,7 @@ fn read_place_bytes<'b, 'a, T: DebugType<'a>>(
     ctx: RenderCtx<'b, 'a, T>,
     size: u64,
 ) -> std::result::Result<(u64, Cow<'b, [u8]>), &'static str> {
+    check_place_guards(place, 0, None, bytes, ctx)?;
     if place.hops.is_empty() {
         let slice = byte_range(bytes, place.root_offset, size).ok_or("<truncated>")?;
         return Ok((addr.wrapping_add(place.root_offset), Cow::Borrowed(slice)));
@@ -258,17 +302,21 @@ fn read_place_bytes<'b, 'a, T: DebugType<'a>>(
     let proc = ctx.proc.ok_or("<target unavailable>")?;
     let mut pointer = read_u64_at(bytes, place.root_offset).ok_or("<truncated>")?;
     let (last, intermediate) = place.hops.split_last().expect("hops is non-empty");
+    let mut segment = 1;
     for hop in intermediate {
         if pointer == 0 {
             return Err("<null>");
         }
+        check_place_guards(place, segment, Some(pointer), bytes, ctx)?;
         let addr = pointer.checked_add(*hop).ok_or("<invalid address>")?;
         let word = proc.read_bytes(addr, 8).map_err(|_| "<unreadable>")?;
         pointer = read_u64_at(&word, 0).ok_or("<unreadable>")?;
+        segment += 1;
     }
     if pointer == 0 {
         return Err("<null>");
     }
+    check_place_guards(place, segment, Some(pointer), bytes, ctx)?;
     let target = pointer.checked_add(*last).ok_or("<invalid address>")?;
     let read = if size == 0 {
         Cow::Borrowed(&[][..])
@@ -606,7 +654,10 @@ mod tests {
     use crate::TypeInfoRef;
     use crate::testhelper::*;
 
-    use exegesis::bundle::{BundleView, DisplayNode as BundleNode};
+    use exegesis::bundle::{
+        Arm, BundleView, DisplayNode as BundleNode, MemberRef, ScalarDecode, Selector, Step,
+        ValueExpr,
+    };
 
     #[test]
     fn test_transparent_debug_format_elides_wrapper() {
@@ -1255,5 +1306,222 @@ mod tests {
             format!("{:#}", value.display_from_target(&mem, 8)),
             "[\n    20,\n    30,\n]"
         );
+    }
+
+    /// A `Step::Variant` read yields the live variant's payload and degrades
+    /// to `<inactive variant>` — never a misread — when another variant
+    /// holds the storage.
+    #[test]
+    fn test_variant_step_reads_only_the_live_variant() {
+        let mut b = test_bundle();
+        let path = Selector(vec![
+            Step::Member(MemberRef::Named(strref(&b, "msg"))),
+            Step::Variant(strref(&b, "B")),
+        ]);
+        b.types.debug_formats.insert(
+            MSG_WRAP,
+            BundleNode::Alias {
+                at: path,
+                follow_pointers: true,
+            },
+        );
+        b.validate().expect("variant-stepped alias must validate");
+        let v = BundleView::new(&b);
+
+        // Tag 1: `B(u64)` is live, and the alias renders its payload word.
+        let bytes = msg_wrap(1, 42);
+        let value = TypeInfoRef::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "42");
+
+        // Tag 0: `A` holds the storage, so the same 42 bytes mean nothing.
+        let bytes = msg_wrap(0, 42);
+        let value = TypeInfoRef::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "<inactive variant>");
+    }
+
+    /// A niche enum's default variant guards on *no other* variant's value
+    /// matching — here `Opt`'s `Some(u64)`, live for any nonzero word.
+    #[test]
+    fn test_niche_variant_guard_checks_the_other_variants() {
+        let mut b = test_bundle();
+        let path = Selector(vec![
+            Step::Member(MemberRef::Named(strref(&b, "opt"))),
+            Step::Variant(strref(&b, "Some")),
+        ]);
+        b.types.debug_formats.insert(
+            GUARD_OUTER,
+            BundleNode::Alias {
+                at: path,
+                follow_pointers: true,
+            },
+        );
+        b.validate().expect("niche variant alias must validate");
+        let v = BundleView::new(&b);
+        let outer = |opt: u64| u64s(&[0, opt]);
+
+        let bytes = outer(0xdead_beef);
+        let value = TypeInfoRef::new(v.ty(GUARD_OUTER).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "3735928559");
+
+        // The zero word selects `None`, so `Some`'s payload is not there.
+        let bytes = outer(0);
+        let value = TypeInfoRef::new(v.ty(GUARD_OUTER).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "<inactive variant>");
+    }
+
+    /// A guard whose enum lives behind a pointer reads the discriminant from
+    /// the target process, degrading like any other cross-pointer read.
+    #[test]
+    fn test_variant_guard_checks_across_a_pointer() {
+        let mut b = test_bundle();
+        let path = Selector(vec![
+            Step::Member(MemberRef::Named(strref(&b, "wrap"))),
+            Step::Deref,
+            Step::Member(MemberRef::Named(strref(&b, "msg"))),
+            Step::Variant(strref(&b, "B")),
+        ]);
+        b.types.debug_formats.insert(
+            GUARD_OUTER,
+            BundleNode::Alias {
+                at: path,
+                follow_pointers: true,
+            },
+        );
+        b.validate()
+            .expect("cross-pointer variant alias must validate");
+        let v = BundleView::new(&b);
+        let outer = |wrap: u64| u64s(&[wrap, 0]);
+        let show = |mem: &FakeMem, bytes: &[u8]| {
+            format!(
+                "{}",
+                TypeInfoRef::new(v.ty(GUARD_OUTER).unwrap(), 0, bytes).display_from_target(mem, 8)
+            )
+        };
+
+        let mem = FakeMem::new()
+            .at(0x1000, msg_wrap(1, 7))
+            .panic_on_unmapped();
+        assert_eq!(show(&mem, &outer(0x1000)), "7");
+
+        // The pointee holds variant `C`: the guard reads the remote tag and
+        // degrades instead of reading `B`'s payload.
+        let mem = FakeMem::new()
+            .at(0x1000, msg_wrap(2, 7))
+            .panic_on_unmapped();
+        assert_eq!(show(&mem, &outer(0x1000)), "<inactive variant>");
+
+        // A null pointer degrades before any guard is consulted.
+        let mem = FakeMem::new().panic_on_unmapped();
+        assert_eq!(show(&mem, &outer(0)), "<null>");
+    }
+
+    /// A `ValueExpr::Read` crossing a variant step carries the same guard, so
+    /// a `Variant` node's discriminant degrades rather than computing from a
+    /// dead variant's bytes.
+    #[test]
+    fn test_value_expr_read_crosses_a_variant_step() {
+        let mut b = test_bundle();
+        let seven = strref(&b, "one");
+        let path = Selector(vec![
+            Step::Member(MemberRef::Named(strref(&b, "msg"))),
+            Step::Variant(strref(&b, "B")),
+        ]);
+        b.types.debug_formats.insert(
+            MSG_WRAP,
+            BundleNode::Variant {
+                discriminant: ValueExpr::Read(path),
+                arms: vec![Arm {
+                    value: 7,
+                    label: Some(seven),
+                    payload: None,
+                }],
+                default: None,
+            },
+        );
+        b.validate().expect("variant-stepped read must validate");
+        let v = BundleView::new(&b);
+
+        let bytes = msg_wrap(1, 7);
+        let value = TypeInfoRef::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "one");
+
+        let bytes = msg_wrap(0, 7);
+        let value = TypeInfoRef::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "<inactive variant>");
+    }
+
+    /// A node that resolves its selector to a bare offset cannot carry the
+    /// guard: validation rejects it, and reify's resolution independently
+    /// declines to structural display if such a bundle is ever loaded.
+    #[test]
+    fn test_unguardable_variant_step_is_rejected_and_declined() {
+        let mut b = test_bundle();
+        let path = Selector(vec![
+            Step::Member(MemberRef::Named(strref(&b, "msg"))),
+            Step::Variant(strref(&b, "B")),
+        ]);
+        b.types.debug_formats.insert(
+            MSG_WRAP,
+            BundleNode::Scalar {
+                at: path,
+                decode: ScalarDecode::Raw,
+            },
+        );
+        let err = b
+            .validate()
+            .expect_err("an unguardable step must not validate");
+        assert!(
+            format!("{err}").contains("crosses a variant its node cannot guard"),
+            "{err}"
+        );
+
+        let v = BundleView::new(&b);
+        let bytes = msg_wrap(1, 42);
+        let shown = format!(
+            "{}",
+            TypeInfoRef::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes).display()
+        );
+        assert!(shown.starts_with("MsgWrap {"), "{shown}");
+    }
+
+    /// Validation walks a variant step like any other: a non-enum type or an
+    /// unknown variant name is a corrupt program, not a render-time surprise.
+    #[test]
+    fn test_validate_rejects_bad_variant_steps() {
+        // `Point` is not an enum.
+        let mut b = test_bundle();
+        let path = Selector(vec![Step::Variant(strref(&b, "B"))]);
+        b.types.debug_formats.insert(
+            POINT,
+            BundleNode::Alias {
+                at: path,
+                follow_pointers: true,
+            },
+        );
+        let err = b
+            .validate()
+            .expect_err("a non-enum variant step must not validate");
+        assert!(
+            format!("{err}").contains("enters a variant of a non-enum type"),
+            "{err}"
+        );
+
+        // `Msg` has no variant named `x`.
+        let mut b = test_bundle();
+        let path = Selector(vec![
+            Step::Member(MemberRef::Named(strref(&b, "msg"))),
+            Step::Variant(strref(&b, "x")),
+        ]);
+        b.types.debug_formats.insert(
+            MSG_WRAP,
+            BundleNode::Alias {
+                at: path,
+                follow_pointers: true,
+            },
+        );
+        let err = b
+            .validate()
+            .expect_err("an unknown variant must not validate");
+        assert!(format!("{err}").contains("no unique variant"), "{err}");
     }
 }

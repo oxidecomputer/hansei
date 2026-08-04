@@ -63,6 +63,14 @@ pub struct Addressed<'a> {
     /// pointer. Every other node must navigate at least one step away from the
     /// value it renders.
     pub root_allowed: bool,
+    /// Whether the path may cross a [`Step::Variant`](super::Step::Variant).
+    /// Only a datum whose read travels as a guarded place — an `Alias`, or a
+    /// value-expression read — can check the enum's discriminant at render
+    /// time; every other node resolves its selector to a bare offset, which
+    /// would read a variant's storage without knowing it is live. Both
+    /// checking sides enforce this, so such a program declines instead of
+    /// silently falling back to structural display.
+    pub variants_allowed: bool,
 }
 
 impl<'a> Addressed<'a> {
@@ -72,11 +80,17 @@ impl<'a> Addressed<'a> {
             sel,
             shape,
             root_allowed: false,
+            variants_allowed: false,
         }
     }
 
     fn at_root(mut self) -> Self {
         self.root_allowed = true;
+        self
+    }
+
+    fn guarded(mut self) -> Self {
+        self.variants_allowed = true;
         self
     }
 }
@@ -133,8 +147,9 @@ impl DisplayNode {
             DisplayNode::Alias { at, .. } => {
                 // An aliased value may have any type — a peeled atomic is a
                 // plain integer, a pointer, or a small struct — so the only
-                // requirement is that the path resolves.
-                vec![Addressed::new("an aliased value", at, Shape::Any)]
+                // requirement is that the path resolves. An alias reads
+                // through a guarded place, so it may cross a variant step.
+                vec![Addressed::new("an aliased value", at, Shape::Any).guarded()]
             }
             DisplayNode::SlotCount { bitmap, slots } => vec![
                 Addressed::new("a readiness bitmap", bitmap, Shape::Uint(word)),

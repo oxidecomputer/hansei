@@ -26,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 27;
+pub const FORMAT_VERSION: u32 = 28;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -63,10 +63,23 @@ fn unresolved(at: &MemberRef) -> String {
     }
 }
 
+/// The unique variant a [`Step::Variant`] addresses in an enum's variant list.
+/// Uniqueness follows [`MemberRef`]'s rule: a name that no variant, or more
+/// than one, answers to resolves to nothing.
+fn variant_named(
+    shape: &crate::bundle::schema::VariantShape,
+    name: StrRef,
+) -> Option<&crate::bundle::schema::VariantDef> {
+    let mut matches = shape.variants.iter().filter(|v| v.name == name);
+    let found = matches.next()?;
+    matches.next().is_none().then_some(found)
+}
+
 /// Walk a [`Selector`] from `root`, returning the type it lands on.
 ///
 /// [`Step::Member`] descends a struct/union member; [`Step::Deref`] follows a
-/// pointer to its pointee. A cycle guard rejects a member run that revisits a
+/// pointer to its pointee; [`Step::Variant`] enters a Rust enum's named
+/// variant payload. A cycle guard rejects a member run that revisits a
 /// type (a nonsensical path); it resets across a `Deref`, since a legitimate
 /// cross-pointer reach may re-enter a type (e.g. a linked-list node pointing
 /// at its own type).
@@ -128,6 +141,32 @@ fn selector_target(
                     .expect("pointer target validated before formats");
                 seen = vec![current];
             }
+            Step::Variant(name) => {
+                let TypeDef::Enum { shape, .. } = def else {
+                    return Err(Error::Corrupt(format!(
+                        "{what} for type {}: step {step} enters a variant of a non-enum type",
+                        root.0
+                    )));
+                };
+                let variant = variant_named(shape, *name).ok_or_else(|| {
+                    Error::Corrupt(format!(
+                        "{what} for type {}: no unique variant with string ref {} at step {step}",
+                        root.0, name.0
+                    ))
+                })?;
+                if seen.contains(&variant.payload.ty) {
+                    return Err(Error::Corrupt(format!(
+                        "{what} for type {} contains a type cycle at step {step}",
+                        root.0
+                    )));
+                }
+                seen.push(variant.payload.ty);
+                current = variant.payload.ty;
+                def = bundle
+                    .types
+                    .get(variant.payload.ty)
+                    .expect("variant payload validated before formats");
+            }
         }
     }
     Ok(current)
@@ -140,16 +179,26 @@ fn selector_offset(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> Optio
     let mut def = bundle.types.get(root)?;
     let mut offset = 0u64;
     for step in sel.steps() {
-        let Step::Member(at) = step else {
-            return None;
+        let (member_offset, ty) = match step {
+            Step::Member(at) => {
+                let members = match def {
+                    TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
+                    _ => return None,
+                };
+                let member = member_at(members, at)?;
+                (member.offset, member.ty)
+            }
+            Step::Variant(name) => {
+                let TypeDef::Enum { shape, .. } = def else {
+                    return None;
+                };
+                let variant = variant_named(shape, *name)?;
+                (variant.payload.offset, variant.payload.ty)
+            }
+            Step::Deref => return None,
         };
-        let members = match def {
-            TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
-            _ => return None,
-        };
-        let member = member_at(members, at)?;
-        offset = offset.checked_add(member.offset)?;
-        def = bundle.types.get(member.ty)?;
+        offset = offset.checked_add(member_offset)?;
+        def = bundle.types.get(ty)?;
     }
     Some(offset)
 }
@@ -188,6 +237,7 @@ fn check_addressed(
         sel,
         shape,
         root_allowed,
+        variants_allowed,
     } = *addressed;
     if sel.is_empty() && root_allowed {
         if !shape_matches(bundle, scope, shape) {
@@ -198,18 +248,28 @@ fn check_addressed(
         }
         return Ok(());
     }
-    check_selector(bundle, scope, sel, shape, &format!("{what}: {datum}"))?;
+    check_selector(
+        bundle,
+        scope,
+        sel,
+        shape,
+        variants_allowed,
+        &format!("{what}: {datum}"),
+    )?;
     Ok(())
 }
 
 /// Resolve `sel` against `root` and check the landed type matches `expect`,
 /// returning it. Rejects an empty selector: every formatter selector must
-/// navigate at least one step away from the formatted value.
+/// navigate at least one step away from the formatted value. Rejects a
+/// [`Step::Variant`] unless `allow_variants`: only a read that travels as a
+/// guarded place can check the variant is live (see the shape table).
 fn check_selector(
     bundle: &Bundle,
     root: BundleTypeId,
     sel: &Selector,
     expect: Shape,
+    allow_variants: bool,
     what: &str,
 ) -> Result<BundleTypeId> {
     if sel.is_empty() {
@@ -218,6 +278,7 @@ fn check_selector(
             root.0
         )));
     }
+    forbid_variant_steps(sel, root, allow_variants, what)?;
     let target = selector_target(bundle, root, sel, what)?;
     if !shape_matches(bundle, target, expect) {
         return Err(Error::Corrupt(format!(
@@ -226,6 +287,28 @@ fn check_selector(
         )));
     }
     Ok(target)
+}
+
+/// Reject a [`Step::Variant`] in a selector whose read cannot carry the
+/// discriminant guard (`allow_variants` false).
+fn forbid_variant_steps(
+    sel: &Selector,
+    root: BundleTypeId,
+    allow_variants: bool,
+    what: &str,
+) -> Result<()> {
+    if !allow_variants
+        && sel
+            .steps()
+            .iter()
+            .any(|step| matches!(step, Step::Variant(_)))
+    {
+        return Err(Error::Corrupt(format!(
+            "{what} for type {} crosses a variant its node cannot guard",
+            root.0
+        )));
+    }
+    Ok(())
 }
 
 /// Validate a [`ScalarDecode`] table against a `word_bits`-wide word: every
@@ -371,7 +454,7 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             if bundle.types.get(*node_ty).is_none() {
                 return corrupt(format!("list node type id {} out of range", node_ty.0));
             }
-            check_selector(bundle, *node_ty, next, Shape::PointerSized, what)?;
+            check_selector(bundle, *node_ty, next, Shape::PointerSized, false, what)?;
             check_node(bundle, *node_ty, node, what)?;
         }
         DisplayNode::Str { .. } => {}
@@ -426,7 +509,7 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             else {
                 unreachable!("the shape table verified a pointer");
             };
-            let target = check_selector(bundle, *pointee, via, Shape::Any, what)?;
+            let target = check_selector(bundle, *pointee, via, Shape::Any, false, what)?;
             check_node(bundle, target, then, what)?;
         }
         DisplayNode::DynPointer {
@@ -581,11 +664,15 @@ fn check_value_expr(
     match expr {
         ValueExpr::Const(_) => Ok(()),
         ValueExpr::Read(sel) => {
+            // A read resolves to a guarded place, so it may cross a
+            // `Step::Variant`; the guard degrades an inactive variant's read
+            // at render time.
             check_selector(
                 bundle,
                 scope,
                 sel,
                 Shape::Word,
+                true,
                 &format!("{what}: a value-expression read"),
             )?;
             Ok(())
@@ -681,7 +768,7 @@ fn check_map_entries(
         edge,
     } = entries;
 
-    let root = check_selector(bundle, scope, root, Shape::Any, what)?;
+    let root = check_selector(bundle, scope, root, Shape::Any, false, what)?;
     let Some(TypeDef::Enum { shape, .. }) = bundle.types.get(root) else {
         return corrupt("B-tree root is not an enum".to_string());
     };
@@ -693,9 +780,10 @@ fn check_map_entries(
     // The `Some` payload may itself be the node-reference type, and an edge
     // element may itself be the pointer, so these auxiliary-root selectors
     // intentionally permit an empty path.
+    forbid_variant_steps(root_node, some.payload.ty, false, what)?;
     let node_ref = selector_target(bundle, some.payload.ty, root_node, what)?;
-    let height_ty = check_selector(bundle, node_ref, height, Shape::Any, what)?;
-    let node_ptr = check_selector(bundle, node_ref, node, Shape::Pointer, what)?;
+    let height_ty = check_selector(bundle, node_ref, height, Shape::Any, false, what)?;
+    let node_ptr = check_selector(bundle, node_ref, node, Shape::Pointer, false, what)?;
 
     for (kind, ty) in [("leaf", *leaf), ("internal", *internal)] {
         if bundle.types.get(ty).is_none() {
@@ -720,12 +808,12 @@ fn check_map_entries(
         return corrupt("B-tree node selector does not point to its leaf type".to_string());
     }
 
-    let len_ty = check_selector(bundle, *leaf, leaf_len, Shape::Any, what)?;
+    let len_ty = check_selector(bundle, *leaf, leaf_len, Shape::Any, false, what)?;
     if !is_unsigned(len_ty) {
         return corrupt("B-tree leaf length is not an unsigned integer".to_string());
     }
-    let keys_ty = check_selector(bundle, *leaf, leaf_keys, Shape::Array, what)?;
-    let values_ty = check_selector(bundle, *leaf, leaf_values, Shape::Array, what)?;
+    let keys_ty = check_selector(bundle, *leaf, leaf_keys, Shape::Array, false, what)?;
+    let values_ty = check_selector(bundle, *leaf, leaf_values, Shape::Array, false, what)?;
     let Some(TypeDef::Array {
         elem: key_slot,
         count: key_slots,
@@ -756,11 +844,11 @@ fn check_map_entries(
         return corrupt("B-tree has incompatible key/value slots".to_string());
     }
 
-    let data_ty = check_selector(bundle, *internal, internal_data, Shape::Any, what)?;
+    let data_ty = check_selector(bundle, *internal, internal_data, Shape::Any, false, what)?;
     if data_ty != *leaf || selector_offset(bundle, *internal, internal_data) != Some(0) {
         return corrupt("B-tree internal data is not its leaf prefix".to_string());
     }
-    let edges_ty = check_selector(bundle, *internal, internal_edges, Shape::Array, what)?;
+    let edges_ty = check_selector(bundle, *internal, internal_edges, Shape::Array, false, what)?;
     let Some(TypeDef::Array {
         elem: edge_elem,
         count: edge_slots,
@@ -771,6 +859,7 @@ fn check_map_entries(
     if *edge_slots != key_slots + 1 {
         return corrupt("B-tree has the wrong edge capacity".to_string());
     }
+    forbid_variant_steps(edge, *edge_elem, false, what)?;
     let edge_ptr = selector_target(bundle, *edge_elem, edge, what)?;
     if !matches!(bundle.types.get(edge_ptr), Some(TypeDef::Pointer { target, .. }) if target == leaf)
     {

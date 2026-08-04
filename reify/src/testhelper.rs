@@ -193,6 +193,26 @@ pub fn sync_waiter_waking(state: u64, next: u64, data: u64) -> Vec<u8> {
     bytes
 }
 
+/// Bytes for a [`MSG_WRAP`] value: the wrapped `Msg`'s tag byte and its
+/// 8-byte payload word (`B`'s u64; the other variants read their own shapes
+/// from the same storage).
+pub fn msg_wrap(tag: u8, payload: u64) -> Vec<u8> {
+    let mut bytes = vec![0u8; 16];
+    bytes[0] = tag;
+    bytes[8..].copy_from_slice(&payload.to_le_bytes());
+    bytes
+}
+
+/// The [`StrRef`] a finished bundle interned for `name` — for tests splicing
+/// a name-addressed selector into a built bundle, whose interner is gone.
+/// Panics when the fixture never interned it.
+pub fn strref(b: &Bundle, name: &str) -> StrRef {
+    (0..b.strings.len() as u32)
+        .map(StrRef)
+        .find(|&r| b.strings.get(r) == Some(name))
+        .unwrap_or_else(|| panic!("string {name:?} is not interned in the fixture bundle"))
+}
+
 /// Little-endian bytes for a sequence of `u32`s -- the shape most fixture
 /// values take.
 pub fn u32s(values: &[u32]) -> Vec<u8> {
@@ -412,6 +432,10 @@ fixture_ids! {
     // the RawWaker's vtable word, whose `Waker` payload carries the alias
     // format the real emission attaches (the bare `data` pointer).
     UNIT_PTR, WAKER_VTABLE_PTR, TASK_RAW_WAKER, TASK_WAKER, OPT_WAKER,
+    // Hosts for `Step::Variant` reads: a wrapper holding the tagged `Msg`,
+    // and an outer struct reaching one across a pointer (plus the niche
+    // `Opt` inline), so both local and cross-segment guards are exercised.
+    MSG_WRAP, MSG_WRAP_PTR, GUARD_OUTER,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -522,6 +546,8 @@ pub fn test_bundle() -> Bundle {
         s("chan"),
         s("semaphore"),
     );
+    let (msg_wrapn, msgn2, guard_outern, wrapn2, optn2) =
+        (s("MsgWrap"), s("msg"), s("GuardOuter"), s("wrap"), s("opt"));
 
     // Labels for the sync-primitive `ScalarDecode` tables. Interned here so
     // the decode-building closures below can assemble tables from `Copy`
@@ -1510,6 +1536,35 @@ pub fn test_bundle() -> Bundle {
                     },
                 ],
             },
+        },
+    );
+    // MsgWrap { msg: Msg @0 } — a struct a variant-stepped selector starts
+    // from, since a display program attaches to the wrapper rather than the
+    // enum itself.
+    types.add(
+        MSG_WRAP,
+        TypeDef::Struct {
+            name: msg_wrapn,
+            size: 16,
+            members: vec![m(msgn2, MSG, 0)],
+        },
+    );
+    types.add(
+        MSG_WRAP_PTR,
+        TypeDef::Pointer {
+            name: None,
+            target: MSG_WRAP,
+        },
+    );
+    // GuardOuter { wrap: *MsgWrap @0, opt: Opt @8 } — reaches a tagged enum
+    // across a pointer (a segment-1 guard) and a niche enum inline (a
+    // segment-0 guard).
+    types.add(
+        GUARD_OUTER,
+        TypeDef::Struct {
+            name: guard_outern,
+            size: 16,
+            members: vec![m(wrapn2, MSG_WRAP_PTR, 0), m(optn2, OPT, 8)],
         },
     );
     let types = types.finish();
