@@ -23,8 +23,8 @@ use exegesis::symbols::normalized_v0_key;
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::{ParseCtx, TypeInfo, TypeInfoRef};
 
-use std::cell::RefCell;
 use foldhash::{HashMap, HashSet};
+use std::cell::RefCell;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -111,6 +111,9 @@ pub struct Context<'b, T> {
     /// Memoized address of tokio's task `WAKER_VTABLE` static in the
     /// target, including a cached diagnostic when resolution is ambiguous.
     waker_vtable: RefCell<Option<std::result::Result<Option<u64>, String>>>,
+    /// Memoized stop time of the target on its own monotonic clock (see
+    /// [`Context::stopped_at`]).
+    stopped: RefCell<Option<Option<RawInstant>>>,
 }
 
 impl<'b, T: Target> Context<'b, T> {
@@ -124,6 +127,30 @@ impl<'b, T: Target> Context<'b, T> {
             object_symbols: RefCell::new(None),
             vtables: RefCell::new(HashMap::default()),
             waker_vtable: RefCell::new(None),
+            stopped: RefCell::new(None),
+        })
+    }
+
+    /// The target's monotonic clock at the moment it stopped: the latest lwp
+    /// stop timestamp (`pr_tstamp`, which illumos stamps from the same
+    /// `gethrtime` clock `Instant` reads). For a core that is the moment it
+    /// was dumped; for a live target, the moment the grab halted it — either
+    /// way, "now" as of everything else this session reads. `None` when no
+    /// lwp reports a usable stamp — a Linux core records no stop times, and
+    /// its reader fills the field with zero, which no real clock reads.
+    fn stopped_at(&self) -> Option<RawInstant> {
+        *self.stopped.borrow_mut().get_or_insert_with(|| {
+            let zero = proc::Timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            let lwps = self.proc.lwps().ok()?;
+            let latest = lwps
+                .iter()
+                .map(|lwp| lwp.tstamp)
+                .filter(|tstamp| *tstamp != zero)
+                .max()?;
+            RawInstant::try_from(latest).ok()
         })
     }
 
@@ -1030,6 +1057,7 @@ impl<'b, T: Target> Context<'b, T> {
                 tv_sec: tv_sec as u64,
                 tv_nsec,
             },
+            stopped: self.stopped_at(),
         })
     }
 
@@ -1652,8 +1680,14 @@ pub enum ChainEnd {
 #[derive(Clone, Debug)]
 pub enum WaitTarget {
     /// `tokio::time::Sleep`: parked on the timer wheel until a deadline
-    /// on the target's monotonic clock.
-    Timer { deadline: RawInstant },
+    /// on the target's monotonic clock. `stopped` is the same clock at the
+    /// moment the target stopped (the core was dumped, or the live grab
+    /// halted it), when the lwps report one — the deadline relative to it is
+    /// the wait remaining at that instant.
+    Timer {
+        deadline: RawInstant,
+        stopped: Option<RawInstant>,
+    },
     /// A `JoinHandle`: waiting for another task to finish — a
     /// dependency edge between tasks.
     Task {
@@ -1749,12 +1783,31 @@ pub enum QueuedWaker {
 impl fmt::Display for WaitTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Timer { deadline } => write!(
-                f,
-                "the timer: deadline {}.{:03}s on the target's monotonic clock",
-                deadline.tv_sec,
-                deadline.tv_nsec / 1_000_000
-            ),
+            Self::Timer { deadline, stopped } => {
+                // Relative to the stop instant when the lwps stamp one — the
+                // wait remaining as of the moment the target was observed
+                // (negative once the deadline has passed) — else the absolute
+                // point, which is all there is to say.
+                if let Some(stopped) = stopped {
+                    let ns = |i: &RawInstant| i.tv_sec as i128 * 1_000_000_000 + i.tv_nsec as i128;
+                    let delta = ns(deadline) - ns(stopped);
+                    let sign = if delta < 0 { "-" } else { "" };
+                    let delta = delta.unsigned_abs();
+                    write!(
+                        f,
+                        "the timer: deadline {sign}{}.{:03}s",
+                        delta / 1_000_000_000,
+                        (delta % 1_000_000_000) / 1_000_000
+                    )
+                } else {
+                    write!(
+                        f,
+                        "the timer: deadline {}.{:03}s on the target's monotonic clock",
+                        deadline.tv_sec,
+                        deadline.tv_nsec / 1_000_000
+                    )
+                }
+            }
             Self::Task {
                 task_id,
                 addr,

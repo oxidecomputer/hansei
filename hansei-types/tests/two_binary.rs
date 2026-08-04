@@ -115,10 +115,11 @@ fn load(program: &str) -> (Bundle, Snapshot) {
 }
 
 /// Mask the run-varying values the analysis output carries — heap
-/// addresses and timer deadlines — so goldens compare exactly.
+/// addresses and timer deadlines (relative to the stop instant, so they
+/// shift with how long the capture took) — so goldens compare exactly.
 fn mask(s: &str) -> String {
     let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
-    let deadlines = regex::Regex::new(r"deadline \d+\.\d{3}s").unwrap();
+    let deadlines = regex::Regex::new(r"deadline -?\d+\.\d{3}s").unwrap();
     deadlines
         .replace_all(&addrs.replace_all(s, "0xADDR"), "deadline TS")
         .into_owned()
@@ -399,7 +400,7 @@ task 3 idle sleep_join::sleeper::{async_fn_env#0}
   await sleep_join::sleeper::{async_fn_env#0} Suspend0 @ test-programs/src/bin/sleep-join.rs:11
   await tokio::time::sleep::Sleep
   end leaf
-  waiting on the timer: deadline TS on the target's monotonic clock
+  waiting on the timer: deadline TS
 task 4 idle sleep_join::joiner::{async_fn_env#0}
   spawned test-programs/src/bin/sleep-join.rs:29:23
   defined test-programs/src/bin/sleep-join.rs:15
