@@ -1527,6 +1527,7 @@ static BY_NAME: &[(&str, Detector)] = &[
     ),
     ("tokio::runtime::handle::Handle", elided_node),
     ("tokio::runtime::runtime::Runtime", elided_node),
+    ("tokio::runtime::scheduler::Handle", elided_node),
     (
         "tokio::sync::batch_semaphore::Semaphore",
         batch_semaphore_node,
@@ -2716,12 +2717,16 @@ fn buffer_node(
 /// ever what a debugging session is reading a value for, so they render as
 /// `<elided>`; `--ugly` shows them structurally like everything else.
 ///
-/// Deliberately *not* here: the inner driver and scheduler handles
-/// (`tokio::runtime::driver::Handle`, `io::driver::Handle`, the per-scheduler
-/// `Handle`s), which the `drivers` and `shared-state` commands render on
-/// purpose. Eliding the outer `handle::Handle` embedded in user futures does
-/// not touch them, since hansei reaches them through members, not through a
-/// `handle::Handle` value.
+/// The `scheduler::Handle` enum is here for the same reason as the outer
+/// `handle::Handle` it sits inside: tokio's timer entries and io registrations
+/// embed one directly, so any future holding a `Sleep` or a registered socket
+/// would otherwise render the whole runtime.
+///
+/// Deliberately *not* here: the handles *inside* the per-scheduler handle
+/// (`tokio::runtime::driver::Handle`, `multi_thread::worker::Shared`), which
+/// the `drivers` and `shared-state` commands render on purpose. Eliding the
+/// wrappers embedded in user futures does not touch them, since hansei reaches
+/// them by member navigation, never by rendering a wrapper value.
 fn elided_node(_emitter: &mut Emitter<'_>, _id: TypeId) -> Option<DisplayNode> {
     Some(DisplayNode::Elided)
 }
