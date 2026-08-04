@@ -26,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 28;
+pub const FORMAT_VERSION: u32 = 29;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -404,6 +404,12 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             let size =
                 type_size(bundle, landed, &mut Vec::new()).expect("a Word-shaped type is sized");
             check_scalar_decode(bundle, decode, (size * 8) as u8, what)?;
+        }
+        DisplayNode::Computed { value, decode } => {
+            // The expression yields a full 64-bit word whatever widths its
+            // reads had, so the decode is checked against that.
+            check_value_expr(bundle, scope, value, 0, what)?;
+            check_scalar_decode(bundle, decode, 64, what)?;
         }
         DisplayNode::Symbol { .. } => {}
         DisplayNode::Struct { fields } => {

@@ -198,6 +198,9 @@ fn array_elem(bundle: &Bundle, id: BundleTypeId) -> Option<BundleTypeId> {
 pub fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) -> String {
     match node {
         DisplayNode::Scalar { at, .. } => field(bundle, root, at),
+        DisplayNode::Computed { value, .. } => {
+            format!("Computed({})", describe_value_expr(bundle, root, value))
+        }
         DisplayNode::Symbol { at } => format!("Symbol {{ {} }}", field(bundle, root, at)),
         DisplayNode::Struct { fields } => {
             let parts: Vec<String> = fields
