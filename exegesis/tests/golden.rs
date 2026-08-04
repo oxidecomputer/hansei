@@ -589,6 +589,34 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              edge=value.value.__0.pointer@+0 } }",
         );
     }
+    if program == "futurelock" {
+        // The timer formatter behind `sleep`/`timeout`, resolved end to end:
+        // the deadline tick out of the entry's `StateCell` (crossing the
+        // `Option<TimerShared>` variant), and the wheel clock reached through
+        // the entry's own scheduler handle (crossing the handle enum, the
+        // `Option` time handle, and the `Traditional` driver variant). A
+        // wrong member anywhere on either path changes this string.
+        //
+        // The wheel path crosses the runtime's `driver::Handle`, whose io and
+        // signal members embed OS-specific types, so — unlike every other
+        // offset these asserts pin — its terminal offset is per-platform.
+        let wheel_offset = if cfg!(target_os = "macos") { 648 } else { 632 };
+        assert_format(
+            program,
+            bundle,
+            "tokio::runtime::time::entry::TimerEntry",
+            &format!(
+                "tokio::runtime::time::entry::TimerEntry :: Node Struct \
+                 {{ deadline: <structural>, state: Variant {{ discr=Read(registered@+104), \
+                 arms=[0=>unregistered], default=Variant {{ \
+                 discr=(Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) != 0xffffffffffffffff), \
+                 arms=[0=>elapsed, 1=>fires_in_ms(Computed(\
+                 (Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) - \
+                 Read(driver.{{MultiThread}}.__0.ptr.pointer.*.data.driver.time.{{Some}}.__0.inner.\
+                 {{Traditional}}.state.__1.data.value.wheel.elapsed@+{wheel_offset}))))] }} }} }}"
+            ),
+        );
+    }
     if program == "channels" {
         // The tokio-sync formatters have no fixture elsewhere, and are the
         // most intricate detectors (multi-path, cross-pointer, waiter queues).
