@@ -347,9 +347,20 @@ fn trace_opts(bundle: &Path, core: &Path, task_id: &str, verbose: bool, ugly: bo
 
 /// Mask the run-varying values a trace can carry — heap addresses and
 /// timer deadlines — so goldens compare exactly.
+/// Mask what a live target varies between runs: addresses, and a timer
+/// deadline.
+///
+/// A deadline is masked whole, trailing clock clause included, because
+/// which of its two spellings appears is a property of the system the
+/// suite is running on rather than of hansei: a deadline is reported
+/// relative to the moment the target stopped where the lwps stamp one
+/// (illumos) and as an absolute point on the monotonic clock where they
+/// do not (a Linux core). Both spellings are pinned deterministically by
+/// `hansei-types`' `test_timer_deadline_spellings`.
 fn normalize(trace: &str) -> String {
     let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
-    let deadlines = regex::Regex::new(r"deadline \d+\.\d{3}s").unwrap();
+    let deadlines =
+        regex::Regex::new(r"deadline -?\d+\.\d{3}s( on the target's monotonic clock)?").unwrap();
     let masked = addrs.replace_all(trace, "0xADDR");
     deadlines.replace_all(&masked, "deadline TS").into_owned()
 }
@@ -762,7 +773,7 @@ Defined at: test-programs/src/bin/sleep-join.rs:9
      suspends:
      ▸ Suspend0  test-programs/src/bin/sleep-join.rs:11
        └─* 1  future        tokio::time::sleep::Sleep
-          waiting on the timer: deadline TS on the target's monotonic clock
+          waiting on the timer: deadline TS
 ",
             id = sleeper.id
         );
@@ -1056,11 +1067,7 @@ fn test_sleep_join_graph() {
         let join_edge = format!("task {} (JoinHandle)", sleeper.id);
         let mut expected = graph_table(&[
             ["TASK", "STATE", "WAITING ON"],
-            [
-                &sleeper.id,
-                "idle",
-                "the timer: deadline TS on the target's monotonic clock",
-            ],
+            [&sleeper.id, "idle", "the timer: deadline TS"],
             [&joiner.id, "idle", &join_edge],
         ]);
         expected.push_str("\nno futurelock detected\n");
