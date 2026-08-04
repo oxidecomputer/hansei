@@ -336,6 +336,19 @@ pub enum DisplayNode {
     /// byte, …); the word's byte width is the size of the type `at` lands on.
     /// `decode` interprets its bits (see [`ScalarDecode`]).
     Scalar { at: Selector, decode: ScalarDecode },
+    /// Evaluate `value` (see [`ValueExpr`]) and print the resulting word,
+    /// decoded like a [`DisplayNode::Scalar`]'s.
+    ///
+    /// Where a `Scalar` reads one word at a selector, this renders a word the
+    /// program *computes* — a difference of two counters, a masked field —
+    /// the way a [`DisplayNode::Variant`] computes its discriminant. The
+    /// expression's reads may cross pointers and enum variants, so a failed
+    /// or guarded read degrades to its marker in the value's place. The
+    /// result is a full 64-bit word; `decode` is checked against that width.
+    Computed {
+        value: ValueExpr,
+        decode: ScalarDecode,
+    },
     /// Render the code pointer at `at` as its address and resolved symbol
     /// name, never following it as a data pointer.
     ///

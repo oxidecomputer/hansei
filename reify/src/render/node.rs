@@ -46,6 +46,10 @@ pub(crate) fn eval_node<'a, T: DebugType<'a>>(
             Some(word) => f.write_str(&apply(decode, word)),
             None => write!(f, "<truncated>"),
         },
+        DisplayNode::Computed { value, decode } => match eval_expr(value, &[], bytes, addr, ctx) {
+            Ok(word) => f.write_str(&apply(decode, word)),
+            Err(marker) => write!(f, "{marker}"),
+        },
         DisplayNode::Symbol { offset } => write_symbol(f, bytes, *offset, ctx.proc),
         DisplayNode::Struct { fields } => {
             eval_struct(f, fields, ty, None, bytes, addr, ctx, pretty)
@@ -1482,6 +1486,80 @@ mod tests {
             TypeInfoRef::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes).display()
         );
         assert!(shown.starts_with("MsgWrap {"), "{shown}");
+    }
+
+    /// A `Computed` node renders the word its expression yields — here a
+    /// difference of two counters no single selector could produce.
+    #[test]
+    fn test_computed_renders_an_expression_result() {
+        let mut b = test_bundle();
+        b.types.debug_formats.insert(
+            CHAN,
+            BundleNode::Struct {
+                fields: vec![fsynth(
+                    strref(&b, "queued"),
+                    BundleNode::Computed {
+                        value: vsub(vread(sel(&[0])), vread(sel(&[1]))),
+                        decode: ScalarDecode::Raw,
+                    },
+                )],
+            },
+        );
+        b.validate().expect("a computed field must validate");
+        let v = BundleView::new(&b);
+
+        // Chan: tail usize @0, index usize @8 — 5 written, 2 consumed.
+        let bytes = u64s(&[5, 2, 0]);
+        let value = TypeInfoRef::new(v.ty(CHAN).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display());
+        assert!(shown.contains("queued: 3"), "{shown}");
+    }
+
+    /// A `Computed` expression's reads carry the same degradation as any
+    /// other: a guarded variant read that finds another variant live yields
+    /// the marker, not arithmetic over dead bytes.
+    #[test]
+    fn test_computed_read_degrades_through_a_guard() {
+        let mut b = test_bundle();
+        let path = Selector(vec![
+            Step::Member(MemberRef::Named(strref(&b, "msg"))),
+            Step::Variant(strref(&b, "B")),
+        ]);
+        b.types.debug_formats.insert(
+            MSG_WRAP,
+            BundleNode::Computed {
+                value: vsub(vread(path), vconst(2)),
+                decode: ScalarDecode::Raw,
+            },
+        );
+        b.validate().expect("a guarded computed read must validate");
+        let v = BundleView::new(&b);
+
+        let bytes = msg_wrap(1, 44);
+        let value = TypeInfoRef::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "42");
+
+        let bytes = msg_wrap(0, 44);
+        let value = TypeInfoRef::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "<inactive variant>");
+    }
+
+    /// A `Computed` discriminant declares no loop variables, so a `Var` in
+    /// its expression is a corrupt program.
+    #[test]
+    fn test_computed_declares_no_variables() {
+        let mut b = test_bundle();
+        b.types.debug_formats.insert(
+            MSG_WRAP,
+            BundleNode::Computed {
+                value: vvar(0),
+                decode: ScalarDecode::Raw,
+            },
+        );
+        let err = b
+            .validate()
+            .expect_err("a Var in a Computed must not validate");
+        assert!(format!("{err}").contains("out of range"), "{err}");
     }
 
     /// Validation walks a variant step like any other: a non-enum type or an

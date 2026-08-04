@@ -183,6 +183,13 @@ pub enum DisplayNode<T> {
         word_size: u32,
         decode: ScalarDecode,
     },
+    /// Evaluate `value` and print the resulting 64-bit word via `decode` —
+    /// a computed [`DisplayNode::Scalar`]. A failed or guarded read degrades
+    /// to its marker in the value's place.
+    Computed {
+        value: ValueExpr,
+        decode: ScalarDecode,
+    },
     /// Render the pointer word at `offset` as a code symbol, without ever
     /// following it as a data pointer.
     Symbol { offset: u64 },
@@ -861,6 +868,10 @@ impl<'a> DebugType<'a> for BundleType<'a> {
                         decode: resolve_decode(scope, decode),
                     })
                 }
+                BundleNode::Computed { value, decode } => Some(DisplayNode::Computed {
+                    value: resolve_value_expr(scope, value)?,
+                    decode: resolve_decode(scope, decode),
+                }),
                 BundleNode::Symbol { at } => {
                     let (_, offset) = resolve_selector(scope, at)?;
                     Some(DisplayNode::Symbol { offset })

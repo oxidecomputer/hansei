@@ -173,12 +173,14 @@ impl DisplayNode {
                     Addressed::new("a B-tree root", root, Shape::Any),
                 ]
             }
-            // A `Struct`'s fields address members by index, not by selector; a
-            // `Variant` and a `CustomList` address through value expressions,
-            // whose reads are checked as they are walked. `Elided` renders
-            // nothing, so there is nothing for it to address.
+            // A `Struct`'s fields address members by index, not by selector;
+            // a `Variant`, a `Computed`, and a `CustomList` address through
+            // value expressions, whose reads are checked as they are walked.
+            // `Elided` renders nothing, so there is nothing for it to
+            // address.
             DisplayNode::Struct { .. }
             | DisplayNode::Variant { .. }
+            | DisplayNode::Computed { .. }
             | DisplayNode::CustomList { .. }
             | DisplayNode::Elided => Vec::new(),
         }
