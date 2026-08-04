@@ -93,6 +93,14 @@ pub struct FutureSet {
     pub children: Vec<SetChild>,
 }
 
+/// Where a census future can be re-rooted for tracing: the address its
+/// await chain decodes from and the bundle type it decodes with.
+#[derive(Debug, Clone, Copy)]
+pub struct FutureRoot {
+    pub addr: u64,
+    pub ty: BundleTypeId,
+}
+
 /// One child slot of a set: a heap `Task` node holding the future.
 #[derive(Debug)]
 pub struct SetChild {
@@ -103,6 +111,9 @@ pub struct SetChild {
     /// be), or `None` for an empty slot: a completed child the set has
     /// not reaped yet.
     pub future: Option<String>,
+    /// Where the resident future's chain roots, so the child can be
+    /// traced on its own; `None` exactly when `future` is.
+    pub root: Option<FutureRoot>,
     /// The child's own suspend state, `Suspend1 — file:line` style.
     pub state: Option<String>,
     /// What the child's chain bottoms out in, when it is a recognized
@@ -128,6 +139,10 @@ pub struct HeldFuture {
     /// child's.
     pub via: Option<String>,
     pub addr: u64,
+    /// The bundle type `addr` decodes with — the chain root's when the
+    /// chain decoded, the holding local's otherwise — so the future can
+    /// be traced on its own.
+    pub ty: BundleTypeId,
     /// The concrete future type, dyn-resolved when it had to be.
     pub future: String,
     /// Its suspend state, `Suspend1 — file:line` style.
@@ -259,19 +274,24 @@ impl Walker {
                 self.record_set(ctx, list, owner, frame, local, via, &value, nesting)
             }
             Find::Future(value) => {
-                let place = value.addr;
+                let place = (value.addr, value.ty.id());
                 let chain = ctx.await_chain(value);
                 let summary = summarize(ctx, list, &chain);
                 // The future itself when the chain decoded (behind a
                 // box, that is the heap allocation rather than the
                 // local's pointer slot); the slot when it did not.
-                let addr = chain.frames.first().map(|f| f.future.addr).unwrap_or(place);
+                let (addr, ty) = chain
+                    .frames
+                    .first()
+                    .map(|f| (f.future.addr, f.future.ty.id()))
+                    .unwrap_or(place);
                 self.held.push(HeldFuture {
                     owner,
                     frame,
                     local: local.to_string(),
                     via: via.map(str::to_string),
                     addr,
+                    ty,
                     future: summary.future,
                     state: summary.state,
                     waiting_on: summary.waiting_on,
@@ -492,12 +512,29 @@ fn walk_set<'b, T: Target + Sync>(
             // The payload peels to the future itself, whose own await
             // chain gives the concrete (dyn-resolved) identity, the
             // suspend state, and the recognized wait target.
-            let chain = ctx.await_chain(payload.peel().to_owned());
+            let fut = payload.peel().to_owned();
+            let slot_root = FutureRoot {
+                addr: fut.addr,
+                ty: fut.ty.id(),
+            };
+            let chain = ctx.await_chain(fut);
             let summary = summarize(ctx, list, &chain);
+            // As for a held future: the chain root itself when the
+            // chain decoded (past a dyn wide pointer, that is the heap
+            // future), the slot when it did not.
+            let root = chain
+                .frames
+                .first()
+                .map(|f| FutureRoot {
+                    addr: f.future.addr,
+                    ty: f.future.ty.id(),
+                })
+                .unwrap_or(slot_root);
             (
                 SetChild {
                     node: cur,
                     future: Some(summary.future),
+                    root: Some(root),
                     state: summary.state,
                     waiting_on: summary.waiting_on,
                 },
@@ -508,6 +545,7 @@ fn walk_set<'b, T: Target + Sync>(
                 SetChild {
                     node: cur,
                     future: None,
+                    root: None,
                     state: None,
                     waiting_on: None,
                 },

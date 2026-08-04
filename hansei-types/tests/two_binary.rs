@@ -448,6 +448,19 @@ fn test_futurelock_census_offline() {
             .contains("tokio::sync::Mutex"),
         "{future1:#?}"
     );
+
+    // The recorded root re-roots the future: reading it back by
+    // (addr, ty) and chaining again reproduces the identity the census
+    // summarized — the contract tracing a future by address rests on.
+    let ty = ctx
+        .view
+        .ty(future1.ty)
+        .expect("the root type is in the bundle");
+    let root =
+        reify::TypeInfo::from_addr(&ctx, ty, future1.addr).expect("the recorded root reads back");
+    let chain = ctx.await_chain(root);
+    let first = chain.frames.first().expect("the re-rooted chain decodes");
+    assert_eq!(first.future.ty.name(), future1.future, "{future1:#?}");
 }
 
 /// The wrong-bundle failure mode (§5.1, §11.5): a bundle from a

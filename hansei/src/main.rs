@@ -89,7 +89,8 @@ pub enum Command {
     /// a futurelock's abandoned lock), and every FuturesUnordered with
     /// its children. Found by value in each task's frames: coroutine
     /// environments, future trait objects (resolved through the vtable
-    /// join), and the recognized leaf futures.
+    /// join), and the recognized leaf futures. The addresses printed
+    /// are what `trace` accepts to follow one future's own chain.
     Futures,
 
     /// Print the waker-based task dependency graph: what every task is
@@ -159,12 +160,17 @@ pub enum Command {
         ugly: bool,
     },
 
-    /// Print a task's await chain. Tasks are selected by id (see
-    /// `tasks`) and the future type is resolved automatically via the
-    /// symbol join.
+    /// Print an await chain: a task's, selected by its decimal id
+    /// (see `tasks`), or a lone future's, selected by the hex address
+    /// the `futures` listing prints — a held future's address or a
+    /// set child's node address; any pointer into either resolves.
+    /// Either way the future type is resolved automatically, via the
+    /// symbol join for a task and via the census for an address.
     Trace {
-        /// The id of the task to trace, from `tasks`.
-        task_id: u64,
+        /// What to trace: a decimal task id from `tasks`, or a future
+        /// address from `futures`, in hex with a required leading `0x`.
+        #[arg(value_parser = parse_trace_target)]
+        target: TraceTarget,
 
         /// Show the variables present at each await point.
         #[arg(long, short)]
@@ -236,6 +242,31 @@ fn parse_hex_addr(s: &str) -> std::result::Result<u64, String> {
             )
         })?;
     u64::from_str_radix(digits, 16).map_err(|e| format!("invalid hex address {s:?}: {e}"))
+}
+
+/// What `trace` was pointed at: a task, by decimal id, or a future, by
+/// the hex address the `futures` listing prints.
+#[derive(Clone, Copy)]
+pub enum TraceTarget {
+    Task(u64),
+    Future(u64),
+}
+
+/// Parse a trace target. The split follows the spelling the listings
+/// print — task ids in decimal, future addresses always `0x`-prefixed
+/// hex — so either identifier pastes back in unchanged and neither can
+/// be mistaken for the other.
+fn parse_trace_target(s: &str) -> std::result::Result<TraceTarget, String> {
+    if s.starts_with("0x") || s.starts_with("0X") {
+        parse_hex_addr(s).map(TraceTarget::Future)
+    } else {
+        s.parse().map(TraceTarget::Task).map_err(|_| {
+            format!(
+                "a trace target is a decimal task id (see `tasks`) or a future \
+                 address in hex with a leading 0x (see `futures`), got {s:?}"
+            )
+        })
+    }
 }
 
 /// Whether the session carries on after a command.
@@ -330,7 +361,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             ugly,
         } => exec_threads(session, frames, depth, ugly, out)?,
         Command::Trace {
-            task_id,
+            target,
             verbose,
             depth,
             ugly,
@@ -341,7 +372,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
                 no_elide,
                 types: elide,
             };
-            exec_trace(session, task_id, verbose, depth, ugly, &elide, out)?
+            exec_trace(session, target, verbose, depth, ugly, &elide, out)?
         }
         Command::Type {
             name,
@@ -433,6 +464,23 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
 
 fn exec_trace(
     session: &Session<'_>,
+    target: TraceTarget,
+    verbose: bool,
+    depth: usize,
+    ugly: bool,
+    elide: &reify::ElideOverride,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    match target {
+        TraceTarget::Task(id) => exec_trace_task(session, id, verbose, depth, ugly, elide, out),
+        TraceTarget::Future(addr) => {
+            exec_trace_future(session, addr, verbose, depth, ugly, elide, out)
+        }
+    }
+}
+
+fn exec_trace_task(
+    session: &Session<'_>,
     task_id: u64,
     verbose: bool,
     depth: usize,
@@ -477,35 +525,11 @@ fn exec_trace(
         )?;
     }
 
-    // Values shown under --verbose may hold raw pointers into task
-    // allocations (wakers, JoinHandles); name those with the task id so
-    // the reader knows what to trace next. The traced task itself is
-    // named like any other: a wake-queue entry resolving back to it is a
-    // finding (the futurelock shape), not noise. A pointer into a
-    // sub-executor's child node instead names the task that polls the
-    // set — the task a wake there would ultimately run.
-    let lookups = verbose.then(|| (session.extents(), session.census()));
-    let annotate = lookups.map(|(extents, census)| {
-        move |ptr: u64| {
-            if let Some((index, _)) = extents.locate(ptr) {
-                return Some(task_label(list, index));
-            }
-            let (set, _, _) = census.locate(ptr)?;
-            Some(format!(
-                "{} via FuturesUnordered",
-                task_label(list, census.sets[set].owner)
-            ))
-        }
-    });
-
     writeln!(out)?;
     match ctx.task_stage(task)? {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
-            let annotate = annotate.as_ref().map(|a| a as &reify::AddrAnnotator<'_>);
-            print_await_chain(
-                ctx, list, &chain, verbose, depth, ugly, elide, annotate, out,
-            )?;
+            print_trace_chain(session, &chain, verbose, depth, ugly, elide, out)?;
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
@@ -526,6 +550,219 @@ fn exec_trace(
         }
     }
     Ok(())
+}
+
+/// Trace one future by address: resolve the address against the census
+/// (`futures` prints the addresses this accepts), say where the future
+/// lives, and render its await chain the way a task's is rendered.
+fn exec_trace_future(
+    session: &Session<'_>,
+    addr: u64,
+    verbose: bool,
+    depth: usize,
+    ugly: bool,
+    elide: &reify::ElideOverride,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let ctx = &session.ctx;
+    let list = &session.tasks;
+    let census = session.census();
+
+    let found = future_at(&ctx.view, list, session.extents(), census, addr)?;
+    let (root, owner) = match found {
+        FutureAt::Held(h) => {
+            let via = h
+                .via
+                .as_ref()
+                .map(|v| format!(", via {v}"))
+                .unwrap_or_default();
+            writeln!(out, "Future {:#x}: {}", h.addr, h.future)?;
+            writeln!(
+                out,
+                "Held by: {} — {} (frame {}, `{}`{via})",
+                task_label(list, h.owner),
+                future_name(&list.tasks[h.owner].future),
+                h.frame,
+                h.local
+            )?;
+            (
+                census::FutureRoot {
+                    addr: h.addr,
+                    ty: h.ty,
+                },
+                h.owner,
+            )
+        }
+        FutureAt::Child { set, child, root } => {
+            let via = set
+                .via
+                .as_ref()
+                .map(|v| format!(", via {v}"))
+                .unwrap_or_default();
+            let future = child.future.as_deref().unwrap_or("<undecoded>");
+            writeln!(out, "Future {:#x}: {future}", child.node)?;
+            writeln!(
+                out,
+                "Child of: {} at {:#x} (frame {}, `{}`{via}), polled by {} — {}",
+                set.ty,
+                set.addr,
+                set.frame,
+                set.local,
+                task_label(list, set.owner),
+                future_name(&list.tasks[set.owner].future)
+            )?;
+            (root, set.owner)
+        }
+    };
+
+    // The owning task mid-poll is mutating its frames — and this future
+    // with them — while we read; anything below may be torn.
+    let task = &list.tasks[owner];
+    if task.state.lifecycle() == Lifecycle::Running {
+        let lwp = task
+            .task_id
+            .and_then(|id| {
+                session
+                    .workers
+                    .iter()
+                    .find(|w| w.current_task_id == Some(id))
+            })
+            .map(|w| format!(" on LWP {}", w.tid))
+            .unwrap_or_default();
+        writeln!(
+            io::stderr(),
+            "warning: {} is running{lwp}; the future's state may be torn",
+            task_label(list, owner)
+        )?;
+    }
+
+    let ty = ctx
+        .view
+        .ty(root.ty)
+        .context("the census recorded a type the bundle does not carry")?;
+    let value = TypeInfo::from_addr(ctx, ty, root.addr)
+        .with_context(|| format!("failed to read the future at {:#x}", root.addr))?;
+
+    writeln!(out)?;
+    let chain = ctx.await_chain(value);
+    print_trace_chain(session, &chain, verbose, depth, ugly, elide, out)
+}
+
+/// What a future address resolved to: the census row that names it,
+/// and — for a set child — the chain root to trace it from.
+#[derive(Debug)]
+enum FutureAt<'c> {
+    Held(&'c census::HeldFuture),
+    Child {
+        set: &'c census::FutureSet,
+        child: &'c census::SetChild,
+        root: census::FutureRoot,
+    },
+}
+
+/// Resolve `addr` to the census future it names: a held future's
+/// address, a set child's node address, or any pointer into either —
+/// an interior pointer picks the tightest containing future, since a
+/// by-value awaitee sits inside the future holding it. A miss says
+/// what the address *is* whenever that can be said: a set itself, a
+/// completed child, a task's own allocation.
+fn future_at<'c>(
+    view: &BundleView<'_>,
+    list: &bundle::TaskList,
+    extents: &bundle::TaskExtents,
+    census: &'c census::FutureCensus,
+    addr: u64,
+) -> Result<FutureAt<'c>> {
+    if let Some(h) = census.held.iter().find(|h| h.addr == addr) {
+        return Ok(FutureAt::Held(h));
+    }
+    if let Some((set_index, child_index, _)) = census.locate(addr) {
+        let set = &census.sets[set_index];
+        let child = &set.children[child_index];
+        let Some(root) = child.root else {
+            anyhow::bail!(
+                "the child at {:#x} of the {} at {:#x} has completed; \
+                 there is no future left to trace",
+                child.node,
+                set.ty,
+                set.addr
+            );
+        };
+        return Ok(FutureAt::Child { set, child, root });
+    }
+    if let Some(set) = census.sets.iter().find(|s| s.addr == addr) {
+        anyhow::bail!(
+            "{addr:#x} is the {} polled by {}, not one future; \
+             trace one of its {} child node(s) (`futures` lists them)",
+            set.ty,
+            task_label(list, set.owner),
+            set.children.len()
+        );
+    }
+    let containing = census
+        .held
+        .iter()
+        .filter_map(|h| {
+            let size = view.ty(h.ty)?.size();
+            (h.addr <= addr && addr < h.addr + size).then_some((size, h))
+        })
+        .min_by_key(|&(size, _)| size);
+    if let Some((_, h)) = containing {
+        return Ok(FutureAt::Held(h));
+    }
+    if let Some((index, offset)) = extents.locate(addr) {
+        anyhow::bail!(
+            "no census future contains {addr:#x}; it is in {} at offset {offset:#x} \
+             — `trace <id>` prints a task's own chain",
+            task_label(list, index)
+        );
+    }
+    anyhow::bail!("nothing the census found contains {addr:#x}; `futures` lists what can be traced")
+}
+
+/// Render an await chain the way `trace` prints one. Values shown
+/// under --verbose may hold raw pointers into task allocations
+/// (wakers, JoinHandles); name those with the task id so the reader
+/// knows what to trace next. The traced task itself is named like any
+/// other: a wake-queue entry resolving back to it is a finding (the
+/// futurelock shape), not noise. A pointer into a sub-executor's child
+/// node instead names the task that polls the set — the task a wake
+/// there would ultimately run.
+fn print_trace_chain<'b>(
+    session: &Session<'b>,
+    chain: &bundle::AwaitChain<'b>,
+    verbose: bool,
+    depth: usize,
+    ugly: bool,
+    elide: &reify::ElideOverride,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let list = &session.tasks;
+    let lookups = verbose.then(|| (session.extents(), session.census()));
+    let annotate = lookups.map(|(extents, census)| {
+        move |ptr: u64| {
+            if let Some((index, _)) = extents.locate(ptr) {
+                return Some(task_label(list, index));
+            }
+            let (set, _, _) = census.locate(ptr)?;
+            Some(format!(
+                "{} via FuturesUnordered",
+                task_label(list, census.sets[set].owner)
+            ))
+        }
+    });
+    let annotate = annotate.as_ref().map(|a| a as &reify::AddrAnnotator<'_>);
+    print_await_chain(
+        &session.ctx,
+        list,
+        chain,
+        verbose,
+        depth,
+        ugly,
+        elide,
+        annotate,
+        out,
+    )
 }
 
 /// Render an await chain, one line per future, each coroutine frame
@@ -2060,6 +2297,170 @@ mod task_at_tests {
         assert!(parse_hex_addr("42").is_err());
         assert!(parse_hex_addr("0x").is_err());
         assert!(parse_hex_addr("0xzz").is_err());
+    }
+}
+
+/// Offline future-trace tests: what `trace <0x-address>` resolves an
+/// address to, and the chain it renders from there, over a real
+/// extracted bundle joined against a real captured snapshot.
+#[cfg(test)]
+mod future_trace_tests {
+    use super::{FutureAt, TraceTarget, future_at, parse_trace_target, print_await_chain};
+    use exegesis::bundle::{Bundle, BundleView};
+    use hansei_types::tokio::bundle::{Context, TaskExtents, TaskList};
+    use hansei_types::tokio::census::{self, FutureCensus};
+    use proc::Target;
+    use proc::snapshot::Snapshot;
+    use reify::TypeInfo;
+
+    use std::path::PathBuf;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("hansei-types/tests/fixtures")
+            .join(name)
+    }
+
+    fn with_target(
+        program: &str,
+        check: impl FnOnce(&Context<'_, Snapshot>, &TaskList, &TaskExtents, &FutureCensus),
+    ) {
+        let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
+            .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
+        let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
+            .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
+        let ctx = Context::new(&snapshot, BundleView::new(&bundle)).expect("snapshot has mappings");
+
+        let lwps = snapshot.lwps().unwrap();
+        let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+        let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
+        let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+        let extents = ctx.task_extents(&list);
+        let census = census::census(&ctx, &list);
+        check(&ctx, &list, &extents, &census);
+    }
+
+    /// The two spellings split on the `0x` prefix and nothing else —
+    /// the contract the command's help text states.
+    #[test]
+    fn test_trace_targets_parse_by_prefix() {
+        assert!(matches!(
+            parse_trace_target("42"),
+            Ok(TraceTarget::Task(42))
+        ));
+        assert!(matches!(
+            parse_trace_target("0x7fffb1c26100"),
+            Ok(TraceTarget::Future(0x7fffb1c26100))
+        ));
+        assert!(matches!(
+            parse_trace_target("0XFF"),
+            Ok(TraceTarget::Future(0xff))
+        ));
+        // Hex digits without the prefix are not silently a huge id.
+        assert!(parse_trace_target("7fffb1c26100").is_err());
+        assert!(parse_trace_target("0x").is_err());
+        assert!(parse_trace_target("-3").is_err());
+    }
+
+    /// A held future's printed address resolves to that future, and an
+    /// interior pointer resolves to a future containing it.
+    #[test]
+    fn test_future_addresses_resolve_to_the_held_future() {
+        with_target("futurelock", |ctx, list, extents, census| {
+            let future1 = census
+                .held
+                .iter()
+                .find(|h| h.local == "future1")
+                .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
+
+            let found = future_at(&ctx.view, list, extents, census, future1.addr)
+                .expect("the printed address resolves");
+            let FutureAt::Held(h) = found else {
+                panic!("future1 did not resolve as a held future");
+            };
+            assert_eq!(h.addr, future1.addr);
+
+            let found = future_at(&ctx.view, list, extents, census, future1.addr + 1)
+                .expect("an interior pointer resolves");
+            let FutureAt::Held(h) = found else {
+                panic!("the interior pointer did not resolve as a held future");
+            };
+            let size = ctx.view.ty(h.ty).expect("the root type resolves").size();
+            assert!(
+                h.addr <= future1.addr + 1 && future1.addr + 1 < h.addr + size,
+                "resolved to {:#x} (size {size:#x}), which does not contain {:#x}",
+                h.addr,
+                future1.addr + 1
+            );
+        });
+    }
+
+    /// A miss says what the address is when that can be said: a task's
+    /// own allocation points back at `trace <id>`, and an address
+    /// nothing contains points at `futures`.
+    #[test]
+    fn test_future_misses_explain_the_address() {
+        with_target("futurelock", |ctx, list, extents, census| {
+            let header = list.tasks[0].addr.0;
+            let err = future_at(&ctx.view, list, extents, census, header)
+                .expect_err("a task header is not a census future")
+                .to_string();
+            assert!(err.contains("trace <id>"), "{err}");
+            assert!(err.contains("task"), "{err}");
+
+            let err = future_at(&ctx.view, list, extents, census, 0x10)
+                .expect_err("nothing contains 0x10")
+                .to_string();
+            assert!(err.contains("`futures`"), "{err}");
+        });
+    }
+
+    /// The chain rendered from a held future's recorded root: the
+    /// futurelock fixture's abandoned `future1`, traced on its own,
+    /// shows the lock acquisition it is parked in — the very chain the
+    /// task listing hides.
+    #[test]
+    fn test_held_future_renders_its_own_chain() {
+        with_target("futurelock", |ctx, list, _extents, census| {
+            let future1 = census
+                .held
+                .iter()
+                .find(|h| h.local == "future1")
+                .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
+
+            let ty = ctx
+                .view
+                .ty(future1.ty)
+                .expect("the root type is in the bundle");
+            let root =
+                TypeInfo::from_addr(ctx, ty, future1.addr).expect("the recorded root reads back");
+            let chain = ctx.await_chain(root);
+
+            let mut out = Vec::new();
+            print_await_chain(
+                ctx,
+                list,
+                &chain,
+                false,
+                4,
+                false,
+                &Default::default(),
+                None,
+                &mut out,
+            )
+            .expect("the chain renders");
+            let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
+            assert!(
+                rendered.contains("futurelock::do_async_thing::{async_fn_env#0}"),
+                "{rendered}"
+            );
+            assert!(
+                rendered.contains("tokio::sync::batch_semaphore::Acquire"),
+                "{rendered}"
+            );
+        });
     }
 }
 
