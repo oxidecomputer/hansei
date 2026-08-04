@@ -489,6 +489,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         "tokio::runtime::handle::Handle",
         "tokio::runtime::handle::Handle :: Node Elided",
     );
+    // The scheduler::Handle enum is embedded directly in timer entries and
+    // io registrations, so it hides its insides the same way.
+    assert_format(
+        program,
+        bundle,
+        "tokio::runtime::scheduler::Handle",
+        "tokio::runtime::scheduler::Handle :: Node Elided",
+    );
     if program == "simple-await" {
         for prefix in [
             "core::ptr::unique::Unique<",
