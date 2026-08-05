@@ -965,7 +965,11 @@ fn test_futures_acceptance() {
         // finds and the same tally — the tally counts what was printed,
         // and every one of them is the driver's.
         let narrowed = hansei_ok(&bundle, core, &format!("tasks -f -t {}", driver.id));
-        assert!(narrowed.contains("\n1 task\n"), "{narrowed}");
+        assert!(
+            narrowed.starts_with(&format!("Task {}: ", driver.id)),
+            "{narrowed}"
+        );
+        assert!(!narrowed.contains("\n1 task\n"), "{narrowed}");
         assert!(narrowed.contains("3 child(ren) in flight"), "{narrowed}");
         assert!(
             narrowed.contains("5 future(s) not on any task's await chain:"),
