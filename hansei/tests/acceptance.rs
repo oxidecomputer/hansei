@@ -829,11 +829,11 @@ Defined at: test-programs/src/bin/sleep-join.rs:15
 }
 
 /// `trace -v` labels a pointer into another task's allocation with that
-/// task's id, and `task-at` resolves a raw address to its owning task —
-/// and the two agree: the labelled Header pointer inside the joiner's
-/// JoinHandle resolves back to the sleeper.
+/// task's id, and `whatis` says what a raw address is — and the two
+/// agree: the labelled Header pointer inside the joiner's JoinHandle
+/// resolves back to the sleeper.
 #[test]
-fn test_task_at_acceptance() {
+fn test_whatis_acceptance() {
     let bundle = fixtures().bundle("sleep-join");
     with_core("sleep-join", |core| {
         let rows = list_tasks(&bundle, core);
@@ -848,37 +848,41 @@ fn test_task_at_acceptance() {
         assert_eq!(&labelled[2], sleeper.id.as_str(), "{verbose}");
 
         let header = &labelled[1];
-        let out = hansei_ok(&bundle, core, &format!("task-at {header}"));
+        let out = hansei_ok(&bundle, core, &format!("whatis {header}"));
         assert!(
             out.contains(&format!(
-                "{header} is in task {} at offset 0x0 (header {header})",
+                "Task {}: sleep_join::sleeper::{{async_fn_env#0}}\n",
                 sleeper.id
             )),
             "{out}"
         );
         assert!(
             out.contains(&format!(
-                "Task {}: sleep_join::sleeper::{{async_fn_env#0}} (idle)",
-                sleeper.id
+                "    At: offset 0x0 in the task's allocation (header {header})"
             )),
             "{out}"
         );
+        assert!(out.contains("    State: idle"), "{out}");
 
         // An interior address resolves to the same task with its offset.
         let interior = u64::from_str_radix(header.trim_start_matches("0x"), 16).unwrap() + 0x10;
-        let out = hansei_ok(&bundle, core, &format!("task-at {interior:#x}"));
+        let out = hansei_ok(&bundle, core, &format!("whatis {interior:#x}"));
+        assert!(out.contains(&format!("Task {}: ", sleeper.id)), "{out}");
         assert!(
-            out.contains(&format!("is in task {} at offset 0x10", sleeper.id)),
+            out.contains("    At: offset 0x10 in the task's allocation"),
             "{out}"
         );
 
         // An address outside every allocation is a miss, not an error.
-        let out = hansei_ok(&bundle, core, "task-at 0x10");
-        assert_eq!(out, "no task's allocation contains 0x10\n");
+        let out = hansei_ok(&bundle, core, "whatis 0x10");
+        assert_eq!(
+            out,
+            "no task's allocation and no future the census found contains 0x10\n"
+        );
 
         // The 0x prefix is mandatory: a bare number is a parse error,
         // which fails a scripted session.
-        let out = hansei(&bundle, core, "task-at 42");
+        let out = hansei(&bundle, core, "whatis 42");
         assert!(
             !out.status.success(),
             "{}",
@@ -890,7 +894,7 @@ fn test_task_at_acceptance() {
 /// The sub-executor census: a `FuturesUnordered`'s children are futures,
 /// not tasks — `tasks --futures` lists them under the task that polls
 /// the set, `trace -v` labels their queued wakers with that task, and
-/// `task-at` resolves a child node address to it.
+/// `whatis` resolves a child node address to it.
 #[test]
 fn test_futures_acceptance() {
     let bundle = fixtures().bundle("unordered");
@@ -988,16 +992,46 @@ fn test_futures_acceptance() {
             "{verbose}"
         );
 
-        // A child node address resolves to the polling task, with the
-        // child future named.
-        let out = hansei_ok(&bundle, core, &format!("task-at {}", nodes[0]));
-        assert!(out.contains("in a FuturesUnordered child node"), "{out}");
+        // A child node address names the child future and the task that
+        // polls the set holding it. The node is its own heap
+        // allocation, so no task's allocation claims it and the block
+        // naming the set is the only thing that says whose it is.
+        let out = hansei_ok(&bundle, core, &format!("whatis {}", nodes[0]));
         assert!(
-            out.contains(&format!("polled by task {}", driver.id)),
+            out.contains(&format!(
+                "Future {}: unordered::set_member::{{async_fn_env#0}}",
+                nodes[0]
+            )),
             "{out}"
         );
         assert!(
-            out.contains("child future: unordered::set_member::{async_fn_env#0}"),
+            out.contains("    At: offset 0x0 in a FuturesUnordered child node"),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("    Polled by: task {} — ", driver.id)),
+            "{out}"
+        );
+
+        // The set's own address says what the set is, and — since it
+        // sits in a frame local of the driver's own allocation — says
+        // the driver holds it, outermost answer first.
+        let set = regex::Regex::new(r"FuturesUnordered<[^>]+> at (0x[0-9a-f]+)")
+            .unwrap()
+            .captures(&futures)
+            .map(|c| c[1].to_string())
+            .expect("the set row prints an address");
+        let out = hansei_ok(&bundle, core, &format!("whatis {set}"));
+        let task_block = out
+            .find(&format!("Task {}: ", driver.id))
+            .unwrap_or_else(|| panic!("the set's holder is not reported:\n{out}"));
+        let set_block = out
+            .find(&format!("Set {set}: "))
+            .unwrap_or_else(|| panic!("the set itself is not reported:\n{out}"));
+        assert!(task_block < set_block, "{out}");
+        assert!(out.contains("    Children: 3 in flight"), "{out}");
+        assert!(
+            out.contains(&format!("    Driven by: task {} — ", driver.id)),
             "{out}"
         );
 
@@ -1035,6 +1069,33 @@ fn test_futures_acceptance() {
         assert!(
             out.contains(&format!(
                 "Held by: task {} — unordered::driver::{{async_fn_env#0}} (frame 0, `held`)",
+                driver.id
+            )),
+            "{out}"
+        );
+
+        // That future is held by value in a frame, so it lives inside
+        // the driver's own allocation and one address belongs to both:
+        // `whatis` answers with the task and then the future, rather
+        // than stopping at whichever it found first.
+        let out = hansei_ok(&bundle, core, &format!("whatis {held}"));
+        let task_block = out
+            .find(&format!(
+                "Task {}: unordered::driver::{{async_fn_env#0}}",
+                driver.id
+            ))
+            .unwrap_or_else(|| panic!("the task holding the future is not reported:\n{out}"));
+        assert!(out.contains("in the task's allocation (header 0x"), "{out}");
+        assert!(out.contains("    At: offset 0x0 in the future"), "{out}");
+        let future_block = out
+            .find(&format!(
+                "Future {held}: unordered::set_member::{{async_fn_env#0}}"
+            ))
+            .unwrap_or_else(|| panic!("the held future itself is not reported:\n{out}"));
+        assert!(task_block < future_block, "{out}");
+        assert!(
+            out.contains(&format!(
+                "    Held by: task {} — unordered::driver::{{async_fn_env#0}} (frame 0, `held`)",
                 driver.id
             )),
             "{out}"
