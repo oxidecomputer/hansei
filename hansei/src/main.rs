@@ -124,12 +124,15 @@ pub enum Command {
 
     /// List every task owned by the runtime: id, lifecycle state,
     /// concrete future type, spawn location, where the future is
-    /// defined, and how many futures it has in flight beside its own
-    /// await chain.
+    /// defined, how many futures it holds in its own frames beside its
+    /// await chain, and how many task sets it drives.
     ///
-    /// That last count is of the futures no task listing otherwise
-    /// shows — a FuturesUnordered's children, a `select!` arm held in a
-    /// frame. `--futures` lists them under it.
+    /// Those last two are of what no task listing otherwise shows — a
+    /// `select!` arm held in a frame, a FuturesUnordered's children.
+    /// `--futures` lists each under its own count. They are counted
+    /// apart because a set is a container rather than a future in
+    /// flight: what it holds are its children, the number beside it,
+    /// and the two counts add up rather than overlapping.
     ///
     /// A task's own await chain is what `trace` prints: the future it is
     /// suspended in, the one that is awaiting, and so on down to the leaf
@@ -144,17 +147,24 @@ pub enum Command {
     /// at every wakeup, a futurelock's never. `graph` is what decides
     /// that.
     ///
-    /// A FuturesUnordered is listed with the children it polls. A child
-    /// lives in a heap node rather than in a frame, so neither a task
-    /// listing nor a trace reaches it. An empty slot is a completed child
-    /// the set has not reaped yet — not a future outstanding, and counted
-    /// apart from the ones in flight.
+    /// A task set — a FuturesUnordered — is listed under `Task sets`
+    /// with the children it polls. A child lives in a heap node rather
+    /// than in a frame, so neither a task listing nor a trace reaches
+    /// it. An empty slot is a completed child the set has not reaped
+    /// yet — not a future outstanding, and counted apart from the ones
+    /// in flight.
     ///
     /// The scan recurses through what it finds, so a future held inside a
     /// set child is listed indented under that child rather than beside
     /// the ones its task holds itself. Read the indentation as
     /// containment: a future under a set child is *inside* it, so the
     /// rows nested under a find are not a population beside it.
+    ///
+    /// Both counts are of the finds at the top of their listing, for the
+    /// same reason: a future the census reached through a set child is
+    /// already inside something counted, and counting it again would
+    /// make a task driving 3075 children of which each holds one future
+    /// report both numbers as if they were populations to add up.
     ///
     /// Every address printed — a held future's, a set child's node — is
     /// what `trace <0xaddr>` accepts to follow that one future's own
@@ -169,8 +179,8 @@ pub enum Command {
     /// itself — though the scan descends through it and any coroutine
     /// inside it is. Treat the listing as a lower bound.
     Tasks {
-        /// List each task's futures under its `Futures` count, rather
-        /// than only counting them.
+        /// List each task's futures and task sets under their counts,
+        /// rather than only counting them.
         #[arg(long, short)]
         futures: bool,
 
@@ -1634,8 +1644,11 @@ fn census_tree<'a>(
 
 /// The closing tally of a `--futures` listing: how many futures are
 /// outstanding beside the await chains of the tasks that were printed.
-/// It is the sum of their `Futures` rows, so a narrowed listing's tally
-/// describes what it showed rather than the whole census.
+/// It is the sum of their `Held futures` rows and of the children their
+/// task sets hold, so a narrowed listing's tally describes what it
+/// showed rather than the whole census — and, like those rows, it
+/// counts the finds at the top of each listing rather than the ones
+/// nested inside them.
 ///
 /// One number and no breakdown. Where each find sits is what the
 /// listing itself says, block by block and by indentation; splitting
@@ -1670,14 +1683,21 @@ fn census_entries<'a>(
 }
 
 /// What the census found for each task, keyed by its index in the task
-/// list. The count each block carries and the tally the `--futures`
-/// listing closes with are both this, so they cannot disagree.
+/// list. The two counts each block carries and the tally the `--futures`
+/// listing closes with are all this, so they cannot disagree.
+///
+/// Only a find at the top of a listing is counted — one the census
+/// reached through another is inside it, and the listing says so by
+/// indenting it. Counting those too made a task driving a set of 3075
+/// children, each holding the future it was spawned with, say it held
+/// 3075 futures *and* drove sets of 3075: two rows for one population,
+/// which is what the caller asked apart in the first place.
 fn census_counts(
     census_held: &[census::HeldFuture],
     census_sets: &[census::FutureSet],
 ) -> BTreeMap<usize, Counts> {
     let mut counts: BTreeMap<usize, Counts> = BTreeMap::new();
-    for entry in census_entries(census_held, census_sets) {
+    for entry in census_entries(census_held, census_sets).filter(|e| e.via().is_none()) {
         counts.entry(entry.owner()).or_default().add(entry);
     }
     counts
@@ -1705,16 +1725,26 @@ impl Entry<'_> {
             Entry::Set(_, s) => s.via,
         }
     }
+
+    /// Which of a block's two listings this find belongs under. Only a
+    /// root is sorted this way: a find inside another is printed under
+    /// what holds it, wherever that is.
+    fn is_set(&self) -> bool {
+        matches!(self, Entry::Set(_, _))
+    }
 }
 
 /// One task's share of the census, or a whole listing's once merged.
 #[derive(Clone, Copy, Default)]
 struct Counts {
-    /// Futures held in a frame local, wherever the census reached them
-    /// from.
+    /// Futures held in one of the task's own frames.
     held: usize,
-    /// Set children still holding a future: an empty slot is a completed
-    /// child the set has not reaped, not a future outstanding.
+    /// Task sets it drives from one of those frames. A set is a
+    /// container rather than a future outstanding in its own right, so
+    /// it is counted apart from both.
+    sets: usize,
+    /// Children of those sets still holding a future: an empty slot is a
+    /// completed child the set has not reaped, not a future outstanding.
     children_live: usize,
 }
 
@@ -1723,6 +1753,7 @@ impl Counts {
         match entry {
             Entry::Held(_, _) => self.held += 1,
             Entry::Set(_, s) => {
+                self.sets += 1;
                 self.children_live += s.children.iter().filter(|c| c.future.is_some()).count();
             }
         }
@@ -1730,8 +1761,28 @@ impl Counts {
 
     fn merge(mut self, other: &Counts) -> Counts {
         self.held += other.held;
+        self.sets += other.sets;
         self.children_live += other.children_live;
         self
+    }
+
+    /// The `Task sets` row's value: how many sets, and — for a task
+    /// that drives any — how many children they hold between them,
+    /// which is the whole reason a reader cares that they are there.
+    ///
+    /// `child`, not `future`, so the row cannot be read as a second
+    /// count of what `Held futures` counts: what a set holds is what
+    /// its own row calls a child, and the two numbers add up rather
+    /// than overlapping.
+    fn sets_summary(&self) -> String {
+        if self.sets == 0 {
+            return "0".to_string();
+        }
+        let plural = if self.children_live == 1 { "" } else { "ren" };
+        format!(
+            "{} ({} child{plural} in flight)",
+            self.sets, self.children_live
+        )
     }
 
     /// Futures actually outstanding: every held one plus every resident
@@ -2051,7 +2102,8 @@ fn exec_tasks(
 }
 
 /// Print the task listing: a block per task, and — under `futures` —
-/// the census's finds for it, listed beneath its `Futures` count.
+/// the census's finds for it, listed beneath the count each belongs
+/// under.
 /// `tasks` narrows the listing to the named tasks, and is empty for the
 /// whole list.
 ///
@@ -2122,15 +2174,28 @@ fn print_tasks(
             _ => "-".to_string(),
         };
         writeln!(out, "    Defined at: {defined}")?;
-        // How many futures the task has in flight beyond its spine: the
-        // held ones plus every resident set child (an empty slot is a
-        // future already gone, not one outstanding). Last in the block,
-        // since what `--futures` lists under it is as long as the census
-        // found it to be.
+        // What the task has off its spine, in two rows rather than one:
+        // the futures held in its own frames, and the task sets it
+        // drives from them. A set is a container, so counting it among
+        // the futures made a row saying `Futures: 2` list three finds;
+        // keeping the two apart lets each number say what the listing
+        // under it shows. Each row is named for the rows beneath it —
+        // `held` and `child(ren) in flight` — so neither reads as a
+        // restatement of the other, and neither counts what the census
+        // reached through the other. Last in the block, since what
+        // `--futures` lists under them is as long as the census found it
+        // to be.
         let count = census.counts.get(&index).copied().unwrap_or_default();
-        writeln!(out, "    Futures: {}", count.in_flight())?;
+        let roots = || census.roots.get(&index).into_iter().flatten();
+        writeln!(out, "    Held futures: {}", count.held)?;
         if futures {
-            for entry in census.roots.get(&index).into_iter().flatten() {
+            for entry in roots().filter(|e| !e.is_set()) {
+                print_future_entry(*entry, &census.nested, 8, out)?;
+            }
+        }
+        writeln!(out, "    Task sets: {}", count.sets_summary())?;
+        if futures {
+            for entry in roots().filter(|e| e.is_set()) {
                 print_future_entry(*entry, &census.nested, 8, out)?;
             }
         }
@@ -3046,12 +3111,15 @@ mod future_trace_tests {
 
             let rendered = render(list, &held, &sets, true, &[]);
 
-            // The find sits under the owning task's `Futures` row, the
+            // The set sits under the owning task's `Task sets` row, the
             // held row two columns right of the child it was found in,
-            // which is itself two right of the set.
+            // which is itself two right of the set. The task holds
+            // nothing in its own frames, so `Held futures` is zero and
+            // its listing empty: the one held future is inside the
+            // child, which the child's own row counts.
             assert!(
                 rendered.contains(
-                    "    Futures: 2\n        \
+                    "    Held futures: 0\n    Task sets: 1 (1 child in flight)\n        \
                      FuturesUnordered<step::{async_fn_env#0}> at 0x1000 (frame 0, `pending`): \
                      1 child(ren) in flight, 1 completed and not yet reaped\n          \
                      0x2000  step::{async_fn_env#0}  Suspend0 — step.rs:9\n            \
@@ -3059,24 +3127,29 @@ mod future_trace_tests {
                 ),
                 "{rendered}"
             );
-            // The reaped slot is not a future in flight, so the count
-            // row says one child and one held future, not three — and it
-            // says it with or without the listing under it.
+            // The reaped slot is not a future in flight, so the rows say
+            // one child, not two — and they say it with or without the
+            // listing under them.
             let counted = render(list, &held, &sets, false, &[]);
-            assert!(counted.contains("    Futures: 2\n"), "{counted}");
+            assert!(counted.contains("    Held futures: 0\n"), "{counted}");
+            assert!(
+                counted.contains("    Task sets: 1 (1 child in flight)\n"),
+                "{counted}"
+            );
             assert!(!counted.contains("FuturesUnordered"), "{counted}");
             assert!(!counted.contains("await chains"), "{counted}");
-            // The tally is that same count over every task shown, so the
-            // reaped slot is left out of it too.
+            // The tally is those same counts over every task shown, so
+            // neither the reaped slot nor the future inside the child is
+            // added to the one child in flight.
             assert!(
-                rendered.ends_with("\n2 futures off the listed tasks' await chains\n"),
+                rendered.ends_with("\n1 future off the listed tasks' await chains\n"),
                 "{rendered}"
             );
         });
     }
 
     /// A task the census found nothing for still prints its block, with
-    /// a zero count and a tally saying there was nothing to list —
+    /// both counts zero and a tally saying there was nothing to list —
     /// silence would read as a listing that failed.
     #[test]
     fn test_futures_narrowed_to_a_task_holding_none() {
@@ -3084,7 +3157,10 @@ mod future_trace_tests {
             let id = list.tasks[0].task_id.expect("the first task has an id");
             let rendered = render(list, &census.held, &census.sets, true, &[id]);
             assert!(rendered.starts_with(&format!("Task {id}: ")), "{rendered}");
-            assert!(rendered.contains("    Futures: 0\n"), "{rendered}");
+            assert!(rendered.contains("    Held futures: 0\n"), "{rendered}");
+            // A task that drives no set says so with a bare zero: what
+            // futures the sets it does not have would hold is noise.
+            assert!(rendered.contains("    Task sets: 0\n"), "{rendered}");
             assert!(
                 rendered.ends_with("\n\nno futures off the listed tasks' await chains\n"),
                 "{rendered}"

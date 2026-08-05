@@ -263,9 +263,12 @@ struct TaskRow {
     id: String,
     state: String,
     future: String,
-    /// How many futures the task drives beside its own await chain,
-    /// `0` when it drives none.
+    /// How many futures the task holds in its own frames beside its
+    /// await chain, `0` when it holds none.
     futures: String,
+    /// How many task sets it drives and how many children they hold,
+    /// `0` when it drives none.
+    sets: String,
     /// The two source locations, `-` when the target did not record one.
     spawned: String,
     defined: String,
@@ -294,6 +297,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             state: String::new(),
             future: future.to_string(),
             futures: String::new(),
+            sets: String::new(),
             spawned: String::new(),
             defined: String::new(),
         };
@@ -311,7 +315,8 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 .unwrap_or_else(|| panic!("unexpected tasks line {line:?}"));
             let field = match label {
                 "State" => &mut row.state,
-                "Futures" => &mut row.futures,
+                "Held futures" => &mut row.futures,
+                "Task sets" => &mut row.sets,
                 "Spawned at" => &mut row.spawned,
                 "Defined at" => &mut row.defined,
                 _ => panic!("unexpected tasks attribute {line:?}"),
@@ -321,7 +326,8 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
         }
         for (label, value) in [
             ("State", &row.state),
-            ("Futures", &row.futures),
+            ("Held futures", &row.futures),
+            ("Task sets", &row.sets),
             ("Spawned at", &row.spawned),
             ("Defined at", &row.defined),
         ] {
@@ -902,20 +908,29 @@ fn test_futures_acceptance() {
         let rows = list_tasks(&bundle, core);
         let driver = task_with_future(&rows, "unordered::driver::{async_fn_env#0}");
 
-        // Two held futures plus the set's three children. The plain
-        // listing carries that count, and says `0` for a task the census
-        // found nothing for rather than staying silent; `--futures`
-        // lists what it counted, under the same row.
-        assert_eq!(driver.futures, "5", "{rows:?}");
+        // Two held futures, and one set holding three children. The
+        // plain listing carries both counts, and says `0` for a task the
+        // census found nothing for rather than staying silent;
+        // `--futures` lists what each counted, under its own row.
+        assert_eq!(driver.futures, "2", "{rows:?}");
+        assert_eq!(driver.sets, "1 (3 children in flight)", "{rows:?}");
         for row in rows.iter().filter(|row| row.id != driver.id) {
             assert_eq!(row.futures, "0", "{row:?}");
+            assert_eq!(row.sets, "0", "{row:?}");
         }
         let futures = hansei_ok(&bundle, core, "tasks --futures");
         assert!(
             futures.contains(&format!("Task {}: ", driver.id)),
             "{futures}"
         );
-        assert!(futures.contains("    Futures: 5\n        "), "{futures}");
+        assert!(
+            futures.contains("    Held futures: 2\n        "),
+            "{futures}"
+        );
+        assert!(
+            futures.contains("    Task sets: 1 (3 children in flight)\n        "),
+            "{futures}"
+        );
         assert!(
             futures.contains(
                 "futures_util::stream::futures_unordered::FuturesUnordered\
