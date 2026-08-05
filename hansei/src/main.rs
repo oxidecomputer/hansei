@@ -153,8 +153,8 @@ pub enum Command {
     /// The scan recurses through what it finds, so a future held inside a
     /// set child is listed indented under that child rather than beside
     /// the ones its task holds itself. Read the indentation as
-    /// containment: the closing tally splits the held futures the same
-    /// way, since the two populations overlap rather than adding up.
+    /// containment: a future under a set child is *inside* it, so the
+    /// rows nested under a find are not a population beside it.
     ///
     /// Every address printed — a held future's, a set child's node — is
     /// what `trace <0xaddr>` accepts to follow that one future's own
@@ -1633,52 +1633,22 @@ fn census_tree<'a>(
 }
 
 /// The closing tally of a `--futures` listing: how many futures are
-/// outstanding beside the tasks' own await chains, and where each
-/// population lives. `total` is counted over the tasks that were
-/// printed, so a narrowed listing's tally describes the task it showed
-/// rather than the whole census.
+/// outstanding beside the await chains of the tasks that were printed.
+/// It is the sum of their `Futures` rows, so a narrowed listing's tally
+/// describes what it showed rather than the whole census.
+///
+/// One number and no breakdown. Where each find sits is what the
+/// listing itself says, block by block and by indentation; splitting
+/// the total the same way read as populations to be added up, which is
+/// exactly what they are not.
 fn print_census_summary(total: Counts, out: &mut dyn io::Write) -> Result<()> {
-    if total.sets == 0 && total.held == 0 {
-        writeln!(out, "\nno futures outside the task list")?;
+    let n = total.in_flight();
+    if n == 0 {
+        writeln!(out, "no futures off the listed tasks' await chains")?;
         return Ok(());
     }
-    writeln!(
-        out,
-        "\n{} future(s) not on any task's await chain:",
-        total.in_flight()
-    )?;
-    if total.sets > 0 {
-        let reaped = match total.child_slots - total.children_live {
-            0 => String::new(),
-            n => format!(", plus {n} completed and not yet reaped"),
-        };
-        writeln!(
-            out,
-            "  {} in flight as children of {} FuturesUnordered set(s){reaped}",
-            total.children_live, total.sets
-        )?;
-    }
-    if total.held > 0 {
-        // Where the held ones were found is the whole point: those
-        // reached through a set child are *inside* a child counted
-        // above, not a second population beside them.
-        let mut found = Vec::new();
-        for (n, what) in [
-            (total.held_in_task, "in a task's own frames"),
-            (total.held_in_child, "inside a set child"),
-            (total.held_in_held, "inside another held future"),
-        ] {
-            if n > 0 {
-                found.push(format!("{n} {what}"));
-            }
-        }
-        writeln!(
-            out,
-            "  {} held in a frame local: {}",
-            total.held,
-            found.join(", ")
-        )?;
-    }
+    let plural = if n == 1 { "" } else { "s" };
+    writeln!(out, "{n} future{plural} off the listed tasks' await chains")?;
     Ok(())
 }
 
@@ -1740,47 +1710,27 @@ impl Entry<'_> {
 /// One task's share of the census, or a whole listing's once merged.
 #[derive(Clone, Copy, Default)]
 struct Counts {
-    sets: usize,
-    /// Every child slot, and the subset still holding a future: an empty
-    /// slot is a completed child the set has not reaped, not a future
-    /// outstanding.
-    child_slots: usize,
-    children_live: usize,
-    /// Held futures, split by where the census reached them from — the
-    /// distinction the summary exists to draw.
+    /// Futures held in a frame local, wherever the census reached them
+    /// from.
     held: usize,
-    held_in_task: usize,
-    held_in_child: usize,
-    held_in_held: usize,
+    /// Set children still holding a future: an empty slot is a completed
+    /// child the set has not reaped, not a future outstanding.
+    children_live: usize,
 }
 
 impl Counts {
     fn add(&mut self, entry: Entry<'_>) {
         match entry {
-            Entry::Held(_, h) => {
-                self.held += 1;
-                match h.via {
-                    None => self.held_in_task += 1,
-                    Some(census::Via::SetChild { .. }) => self.held_in_child += 1,
-                    Some(census::Via::Held(_)) => self.held_in_held += 1,
-                }
-            }
+            Entry::Held(_, _) => self.held += 1,
             Entry::Set(_, s) => {
-                self.sets += 1;
-                self.child_slots += s.children.len();
                 self.children_live += s.children.iter().filter(|c| c.future.is_some()).count();
             }
         }
     }
 
     fn merge(mut self, other: &Counts) -> Counts {
-        self.sets += other.sets;
-        self.child_slots += other.child_slots;
-        self.children_live += other.children_live;
         self.held += other.held;
-        self.held_in_task += other.held_in_task;
-        self.held_in_child += other.held_in_child;
-        self.held_in_held += other.held_in_held;
+        self.children_live += other.children_live;
         self
     }
 
@@ -2192,6 +2142,11 @@ fn print_tasks(
     if tasks.is_empty() {
         let plural = if shown == 1 { "" } else { "s" };
         writeln!(out, "{shown} task{plural}")?;
+        // The blank line the tally below sits behind; a narrowed
+        // listing's last block already ends with one.
+        if futures {
+            writeln!(out)?;
+        }
     }
 
     if futures {
@@ -2958,9 +2913,13 @@ mod future_trace_tests {
     /// The tally a `--futures` listing closes with.
     fn tally(listing: &str) -> &str {
         let at = listing
-            .find("future(s) not on any task's await chain:")
+            .find("off the listed tasks' await chains")
             .unwrap_or_else(|| panic!("no tally in {listing}"));
-        &listing[at..]
+        let start = listing[..at]
+            .rfind('\n')
+            .expect("the tally is its own line")
+            + 1;
+        &listing[start..]
     }
 
     /// `tasks --futures --task` selecting the task that owns the
@@ -2986,13 +2945,7 @@ mod future_trace_tests {
             assert_eq!(narrowed.matches("\nTask ").count() + 1, 1, "{narrowed}");
             assert!(!narrowed.contains("\n1 task\n"), "{narrowed}");
             assert!(
-                narrowed.contains("\n1 future(s) not on any task's await chain:"),
-                "{narrowed}"
-            );
-            // The fixture's held future is one the task holds itself,
-            // so the summary says so rather than reporting a bare count.
-            assert!(
-                narrowed.contains("1 held in a frame local: 1 in a task's own frames"),
+                narrowed.contains("\n1 future off the listed tasks' await chains\n"),
                 "{narrowed}"
             );
 
@@ -3112,14 +3065,11 @@ mod future_trace_tests {
             let counted = render(list, &held, &sets, false, &[]);
             assert!(counted.contains("    Futures: 2\n"), "{counted}");
             assert!(!counted.contains("FuturesUnordered"), "{counted}");
-            assert!(!counted.contains("await chain:"), "{counted}");
+            assert!(!counted.contains("await chains"), "{counted}");
+            // The tally is that same count over every task shown, so the
+            // reaped slot is left out of it too.
             assert!(
-                rendered.contains(
-                    "\n2 future(s) not on any task's await chain:\n  \
-                     1 in flight as children of 1 FuturesUnordered set(s), \
-                     plus 1 completed and not yet reaped\n  \
-                     1 held in a frame local: 1 inside a set child\n"
-                ),
+                rendered.ends_with("\n2 futures off the listed tasks' await chains\n"),
                 "{rendered}"
             );
         });
@@ -3136,7 +3086,7 @@ mod future_trace_tests {
             assert!(rendered.starts_with(&format!("Task {id}: ")), "{rendered}");
             assert!(rendered.contains("    Futures: 0\n"), "{rendered}");
             assert!(
-                rendered.ends_with("\n\nno futures outside the task list\n"),
+                rendered.ends_with("\n\nno futures off the listed tasks' await chains\n"),
                 "{rendered}"
             );
         });

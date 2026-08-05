@@ -945,19 +945,11 @@ fn test_futures_acceptance() {
             "{futures}"
         );
 
-        // The summary says where each population lives, not just how
-        // many there are: two futures the driver holds itself and three
-        // inside the set, which is what makes 5 add up.
+        // The summary counts what the listing showed: two futures the
+        // driver holds itself and three inside the set, and neither the
+        // set's reaped slot nor the tasks' own await chains.
         assert!(
-            futures.contains("5 future(s) not on any task's await chain:"),
-            "{futures}"
-        );
-        assert!(
-            futures.contains("3 in flight as children of 1 FuturesUnordered set(s)"),
-            "{futures}"
-        );
-        assert!(
-            futures.contains("2 held in a frame local: 2 in a task's own frames"),
+            futures.contains("\n5 futures off the listed tasks' await chains\n"),
             "{futures}"
         );
 
@@ -972,7 +964,7 @@ fn test_futures_acceptance() {
         assert!(!narrowed.contains("\n1 task\n"), "{narrowed}");
         assert!(narrowed.contains("3 child(ren) in flight"), "{narrowed}");
         assert!(
-            narrowed.contains("5 future(s) not on any task's await chain:"),
+            narrowed.contains("\n5 futures off the listed tasks' await chains\n"),
             "{narrowed}"
         );
         for row in rows.iter().filter(|row| row.id != driver.id) {
