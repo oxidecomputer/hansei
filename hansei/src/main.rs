@@ -85,52 +85,6 @@ pub enum Command {
         needle: String,
     },
 
-    /// List the futures no task listing shows, grouped by the task that
-    /// owns them.
-    ///
-    /// A task's own await chain is what `trace` prints: the future it is
-    /// suspended in, the one that is awaiting, and so on down to the leaf
-    /// it is parked on. That chain is the only thing the task polls when
-    /// it wakes. This lists what a program has in flight *beside* it.
-    ///
-    /// A row marked `held` is a future sitting in a frame's local, off
-    /// the await chain: a `select!`/`join!` arm mid-flight, one stored
-    /// across an await, or a futurelock's abandoned lock. Whether it will
-    /// ever be polled again is not knowable here — a select arm is polled
-    /// at every wakeup, a futurelock's never. `graph` is what decides
-    /// that.
-    ///
-    /// A FuturesUnordered is listed with the children it polls. A child
-    /// lives in a heap node rather than in a frame, so neither a task
-    /// listing nor a trace reaches it. An empty slot is a completed child
-    /// the set has not reaped yet — not a future outstanding, and counted
-    /// apart from the ones in flight.
-    ///
-    /// The scan recurses through what it finds, so a future held inside a
-    /// set child is listed indented under that child rather than beside
-    /// the ones its task holds itself. Read the indentation as
-    /// containment: the closing tally splits the held futures the same
-    /// way, since the two populations overlap rather than adding up.
-    ///
-    /// Every address printed — a held future's, a set child's node — is
-    /// what `trace <0xaddr>` accepts to follow that one future's own
-    /// chain, and what `task-at <0xaddr>` resolves back to its task.
-    ///
-    /// What is listed is found *by value* in a frame's bytes: coroutine
-    /// environments, future trait objects (resolved through the vtable
-    /// join), and the recognized leaf futures. Ordinary pointers are
-    /// never followed, so a future reachable only behind an unrecognized
-    /// Box or Arc is not here, and DWARF cannot say whether a
-    /// hand-written combinator implements Future, so one is not listed
-    /// itself — though the scan descends through it and any coroutine
-    /// inside it is. Treat the listing as a lower bound.
-    Futures {
-        /// Show only the futures this task owns, selected by its
-        /// decimal id (see `tasks`).
-        #[arg(long, short)]
-        task: Option<u64>,
-    },
-
     /// Print the waker-based task dependency graph: what every task is
     /// waiting on, and any futurelock — a lock future granted or queued
     /// on a contended semaphore that its task stopped polling and so can
@@ -179,14 +133,61 @@ pub enum Command {
     },
 
     /// List every task owned by the runtime: id, lifecycle state,
-    /// concrete future type, spawn location, and where the future is
-    /// defined.
+    /// concrete future type, spawn location, where the future is
+    /// defined, and how many futures it has in flight beside its own
+    /// await chain.
     ///
-    /// Each task also carries how many futures it has in flight beside
-    /// its own await chain — a FuturesUnordered's children, a `select!`
-    /// arm held in a frame. It is the count `futures` reports for the
-    /// task, subject to the same caveats: `futures` is what lists them.
-    Tasks,
+    /// That last count is of the futures no task listing otherwise
+    /// shows — a FuturesUnordered's children, a `select!` arm held in a
+    /// frame. `--futures` lists them under it.
+    ///
+    /// A task's own await chain is what `trace` prints: the future it is
+    /// suspended in, the one that is awaiting, and so on down to the leaf
+    /// it is parked on. That chain is the only thing the task polls when
+    /// it wakes. `--futures` lists what a program has in flight *beside*
+    /// it.
+    ///
+    /// A row marked `held` is a future sitting in a frame's local, off
+    /// the await chain: a `select!`/`join!` arm mid-flight, one stored
+    /// across an await, or a futurelock's abandoned lock. Whether it will
+    /// ever be polled again is not knowable here — a select arm is polled
+    /// at every wakeup, a futurelock's never. `graph` is what decides
+    /// that.
+    ///
+    /// A FuturesUnordered is listed with the children it polls. A child
+    /// lives in a heap node rather than in a frame, so neither a task
+    /// listing nor a trace reaches it. An empty slot is a completed child
+    /// the set has not reaped yet — not a future outstanding, and counted
+    /// apart from the ones in flight.
+    ///
+    /// The scan recurses through what it finds, so a future held inside a
+    /// set child is listed indented under that child rather than beside
+    /// the ones its task holds itself. Read the indentation as
+    /// containment: the closing tally splits the held futures the same
+    /// way, since the two populations overlap rather than adding up.
+    ///
+    /// Every address printed — a held future's, a set child's node — is
+    /// what `trace <0xaddr>` accepts to follow that one future's own
+    /// chain, and what `task-at <0xaddr>` resolves back to its task.
+    ///
+    /// What is listed is found *by value* in a frame's bytes: coroutine
+    /// environments, future trait objects (resolved through the vtable
+    /// join), and the recognized leaf futures. Ordinary pointers are
+    /// never followed, so a future reachable only behind an unrecognized
+    /// Box or Arc is not here, and DWARF cannot say whether a
+    /// hand-written combinator implements Future, so one is not listed
+    /// itself — though the scan descends through it and any coroutine
+    /// inside it is. Treat the listing as a lower bound.
+    Tasks {
+        /// List each task's futures under its `Futures` count, rather
+        /// than only counting them.
+        #[arg(long, short)]
+        futures: bool,
+
+        /// Show only this task, selected by its decimal id.
+        #[arg(long, short)]
+        task: Option<u64>,
+    },
 
     /// Show every thread running the runtime: the task it is polling,
     /// the worker core it holds, and its stack.
@@ -207,13 +208,14 @@ pub enum Command {
 
     /// Print an await chain: a task's, selected by its decimal id
     /// (see `tasks`), or a lone future's, selected by the hex address
-    /// the `futures` listing prints — a held future's address or a
+    /// `tasks --futures` prints — a held future's address or a
     /// set child's node address; any pointer into either resolves.
     /// Either way the future type is resolved automatically, via the
     /// symbol join for a task and via the census for an address.
     Trace {
         /// What to trace: a decimal task id from `tasks`, or a future
-        /// address from `futures`, in hex with a required leading `0x`.
+        /// address from `tasks --futures`, in hex with a required
+        /// leading `0x`.
         #[arg(value_parser = parse_trace_target)]
         target: TraceTarget,
 
@@ -290,7 +292,7 @@ fn parse_hex_addr(s: &str) -> std::result::Result<u64, String> {
 }
 
 /// What `trace` was pointed at: a task, by decimal id, or a future, by
-/// the hex address the `futures` listing prints.
+/// the hex address `tasks --futures` prints.
 #[derive(Clone, Copy)]
 pub enum TraceTarget {
     Task(u64),
@@ -308,7 +310,8 @@ fn parse_trace_target(s: &str) -> std::result::Result<TraceTarget, String> {
         s.parse().map(TraceTarget::Task).map_err(|_| {
             format!(
                 "a trace target is a decimal task id (see `tasks`) or a future \
-                 address in hex with a leading 0x (see `futures`), got {s:?}"
+                 address in hex with a leading 0x (see `tasks --futures`), \
+                 got {s:?}"
             )
         })
     }
@@ -390,7 +393,6 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             exec_runtime_field(session, "driver", depth, ugly, out)?
         }
         Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
-        Command::Futures { task } => exec_futures(session, task, out)?,
         Command::Graph => exec_graph(session, out)?,
         Command::Info => exec_info(session, out)?,
         Command::SharedState { depth, ugly } => {
@@ -399,7 +401,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => exec_snapshot(session, &output, out)?,
         Command::TaskAt { addr } => exec_task_at(session, addr, out)?,
-        Command::Tasks => exec_tasks(session, out)?,
+        Command::Tasks { futures, task } => exec_tasks(session, futures, task, out)?,
         Command::Threads {
             frames,
             depth,
@@ -600,8 +602,8 @@ fn exec_trace_task(
 }
 
 /// Trace one future by address: resolve the address against the census
-/// (`futures` prints the addresses this accepts), say where the future
-/// lives, and render its await chain the way a task's is rendered.
+/// (`tasks --futures` prints the addresses this accepts), say where the
+/// future lives, and render its await chain the way a task's is rendered.
 fn exec_trace_future(
     session: &Session<'_>,
     addr: u64,
@@ -738,7 +740,7 @@ fn future_at<'c>(
     if let Some(set) = census.sets.iter().find(|s| s.addr == addr) {
         anyhow::bail!(
             "{addr:#x} is the {} polled by {}, not one future; \
-             trace one of its {} child node(s) (`futures` lists them)",
+             trace one of its {} child node(s) (`tasks --futures` lists them)",
             set.ty,
             task_label(list, set.owner),
             set.children.len()
@@ -762,7 +764,10 @@ fn future_at<'c>(
             task_label(list, index)
         );
     }
-    anyhow::bail!("nothing the census found contains {addr:#x}; `futures` lists what can be traced")
+    anyhow::bail!(
+        "nothing the census found contains {addr:#x}; \
+         `tasks --futures` lists what can be traced"
+    )
 }
 
 /// Render an await chain the way `trace` prints one. Values shown
@@ -1582,108 +1587,53 @@ fn task_label(list: &bundle::TaskList, index: usize) -> String {
     }
 }
 
-/// List every future the census found, grouped by the task that owns
-/// it: the futures held in frames off the await chain, and each
-/// sub-executor with its children. `task` narrows the listing to one
-/// task's futures.
-fn exec_futures(session: &Session<'_>, task: Option<u64>, out: &mut dyn io::Write) -> Result<()> {
-    let census = session.census();
-    for err in &census.errors {
-        writeln!(io::stderr(), "warning: {err:#}")?;
-    }
-    // A walk that failed says so above; one that hit a limit says so
-    // here, because it looks like completeness otherwise. The listing is
-    // a lower bound either way (`help futures`), but this is the part of
-    // it that varies by target rather than being inherent.
-    if census.capped > 0 {
-        writeln!(
-            io::stderr(),
-            "warning: the scan stopped at a depth limit in {} place(s); \
-             anything held deeper is not listed",
-            census.capped
-        )?;
-    }
-    print_futures(&session.tasks, &census.held, &census.sets, task, out)
+/// The census as a tree, which is what a listing shows: two flat lists
+/// naming their parent leave the reader matching addresses across them.
+struct CensusTree<'a> {
+    /// Each task's finds that named no parent, keyed by its index in
+    /// the task list.
+    roots: BTreeMap<usize, Vec<Entry<'a>>>,
+    /// Everything else, keyed by the find it was reached through: a set
+    /// can sit in a held future's frames, a future be held in a set
+    /// child's.
+    nested: HashMap<census::Via, Vec<Entry<'a>>>,
+    /// What each task owns, tallied.
+    counts: BTreeMap<usize, Counts>,
 }
 
-/// Print that listing from what the census found, which is all it reads:
+/// Rebuild that tree from what the census found, which is all it reads:
 /// the census is a walk of a target, but rendering it is not. It takes
 /// the two lists rather than the census itself so a test can lay out a
 /// shape no fixture happens to hold.
-fn print_futures(
-    list: &bundle::TaskList,
-    census_held: &[census::HeldFuture],
-    census_sets: &[census::FutureSet],
-    task: Option<u64>,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    // Resolve the selected id up front, so an id the runtime does not
-    // own says so rather than printing an empty listing.
-    let only = match task {
-        Some(id) => {
-            let Some(index) = list.tasks.iter().position(|t| t.task_id == Some(id)) else {
-                let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
-                anyhow::bail!(
-                    "the runtime owns no task with id {id}; it owns {} task(s): {ids:?}",
-                    list.tasks.len()
-                );
-            };
-            Some(index)
-        }
-        None => None,
-    };
-
-    // The census is a tree recorded as two flat lists that name their
-    // parent: a set can sit in a held future's frames, a future be held
-    // in a set child's. Rebuild it, so the listing shows what contains
-    // what rather than leaving the reader to match addresses across it.
-    // A find that named no parent is a root under its owning task.
-    let mut roots: BTreeMap<usize, Vec<Entry<'_>>> = BTreeMap::new();
-    let mut nested: HashMap<census::Via, Vec<Entry<'_>>> = HashMap::new();
-    let mut counts = census_counts(census_held, census_sets);
-    counts.retain(|owner, _| only.is_none_or(|i| i == *owner));
+fn census_tree<'a>(
+    census_held: &'a [census::HeldFuture],
+    census_sets: &'a [census::FutureSet],
+) -> CensusTree<'a> {
+    let mut roots: BTreeMap<usize, Vec<Entry<'a>>> = BTreeMap::new();
+    let mut nested: HashMap<census::Via, Vec<Entry<'a>>> = HashMap::new();
     for entry in census_entries(census_held, census_sets) {
-        let owner = entry.owner();
-        if only.is_some_and(|i| i != owner) {
-            continue;
-        }
         match entry.via() {
             Some(via) => nested.entry(via).or_default().push(entry),
-            None => roots.entry(owner).or_default().push(entry),
+            None => roots.entry(entry.owner()).or_default().push(entry),
         }
     }
+    CensusTree {
+        roots,
+        nested,
+        counts: census_counts(census_held, census_sets),
+    }
+}
 
-    if counts.is_empty() {
-        match task {
-            Some(id) => writeln!(out, "task {id} owns no futures outside the task list")?,
-            None => writeln!(out, "no futures found outside the task list")?,
-        }
+/// The closing tally of a `--futures` listing: how many futures are
+/// outstanding beside the tasks' own await chains, and where each
+/// population lives. `total` is counted over the tasks that were
+/// printed, so a narrowed listing's tally describes the task it showed
+/// rather than the whole census.
+fn print_census_summary(total: Counts, out: &mut dyn io::Write) -> Result<()> {
+    if total.sets == 0 && total.held == 0 {
+        writeln!(out, "\nno futures outside the task list")?;
         return Ok(());
     }
-
-    for (i, (&owner, count)) in counts.iter().enumerate() {
-        if i > 0 {
-            writeln!(out)?;
-        }
-        // How many futures the task has in flight beyond its spine:
-        // the held ones plus every resident set child (an empty slot
-        // is a future already gone, not one outstanding).
-        let futures = count.in_flight();
-        let plural = if futures == 1 { "" } else { "s" };
-        writeln!(
-            out,
-            "{}: {} — {futures} future{plural}",
-            task_label(list, owner),
-            future_name(&list.tasks[owner].future)
-        )?;
-        for entry in roots.get(&owner).into_iter().flatten() {
-            print_future_entry(*entry, &nested, 2, out)?;
-        }
-    }
-
-    // Counted over what was printed, so a narrowed listing's tally
-    // describes the task it showed rather than the whole census.
-    let total = counts.values().fold(Counts::default(), Counts::merge);
     writeln!(
         out,
         "\n{} future(s) not on any task's await chain:",
@@ -1742,8 +1692,8 @@ fn census_entries<'a>(
 }
 
 /// What the census found for each task, keyed by its index in the task
-/// list. Both listings tally through this, so the count `tasks` prints
-/// for a task is the one `futures` prints for it.
+/// list. The count each block carries and the tally the `--futures`
+/// listing closes with are both this, so they cannot disagree.
 fn census_counts(
     census_held: &[census::HeldFuture],
     census_sets: &[census::FutureSet],
@@ -1993,7 +1943,12 @@ fn report_task_at(
     Ok(())
 }
 
-fn exec_tasks(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
+fn exec_tasks(
+    session: &Session<'_>,
+    futures: bool,
+    task: Option<u64>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     let list = &session.tasks;
 
     // Which LWP is polling which task right now (§3.2).
@@ -2003,16 +1958,87 @@ fn exec_tasks(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         .filter_map(|w| w.current_task_id.map(|id| (id, w.tid)))
         .collect();
 
-    // What each task has in flight beside its own await chain, counted
-    // the way `futures` counts it — the same census, through the same
-    // tally, so the two listings never disagree about a task.
+    // What each task has in flight beside its own await chain: the
+    // count every block carries, and — under `--futures` — the finds
+    // listed beneath it.
     let census = session.census();
-    let children = census_counts(&census.held, &census.sets);
+    if futures {
+        for err in &census.errors {
+            writeln!(io::stderr(), "warning: {err:#}")?;
+        }
+        // A walk that failed says so above; one that hit a limit says so
+        // here, because it looks like completeness otherwise. The listing
+        // is a lower bound either way (`help tasks`), but this is the part
+        // of it that varies by target rather than being inherent.
+        if census.capped > 0 {
+            writeln!(
+                io::stderr(),
+                "warning: the scan stopped at a depth limit in {} place(s); \
+                 anything held deeper is not listed",
+                census.capped
+            )?;
+        }
+    }
+
+    print_tasks(
+        list,
+        &polling,
+        &census.held,
+        &census.sets,
+        futures,
+        task,
+        out,
+    )?;
+
+    for err in &list.errors {
+        writeln!(io::stderr(), "warning: {err:#}")?;
+    }
+
+    Ok(())
+}
+
+/// Print the task listing: a block per task, and — under `futures` —
+/// the census's finds for it, listed beneath its `Futures` count.
+/// `task` narrows the listing to one task.
+///
+/// It takes what it prints rather than a session so the offline tests
+/// can drive it, the census as its two flat lists so a test can lay out
+/// a shape no fixture happens to hold.
+fn print_tasks(
+    list: &bundle::TaskList,
+    polling: &HashMap<u64, u32>,
+    census_held: &[census::HeldFuture],
+    census_sets: &[census::FutureSet],
+    futures: bool,
+    task: Option<u64>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    // Resolve the selected id up front, so an id the runtime does not
+    // own says so rather than printing an empty listing.
+    let only = match task {
+        Some(id) => {
+            let Some(index) = list.tasks.iter().position(|t| t.task_id == Some(id)) else {
+                let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
+                anyhow::bail!(
+                    "the runtime owns no task with id {id}; it owns {} task(s): {ids:?}",
+                    list.tasks.len()
+                );
+            };
+            Some(index)
+        }
+        None => None,
+    };
+    let census = census_tree(census_held, census_sets);
 
     // A block per task rather than a row: a future type is long enough
     // that column-aligning it pushes the two source locations off the
     // right of any terminal.
+    let mut shown = 0;
     for (index, task) in list.tasks.iter().enumerate() {
+        if only.is_some_and(|i| i != index) {
+            continue;
+        }
+        shown += 1;
         let id = match task.task_id {
             Some(id) => id.to_string(),
             None => format!("{:?}", task.addr),
@@ -2025,8 +2051,6 @@ fn exec_tasks(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         };
         writeln!(out, "Task {id}: {}", future_name(&task.future))?;
         writeln!(out, "    State: {state}")?;
-        let futures = children.get(&index).map_or(0, Counts::in_flight);
-        writeln!(out, "    Futures: {futures}")?;
         // Every block carries every row, so the two source locations sit
         // at the same place in each and a missing one reads as a gap in
         // what the target recorded rather than as a shorter block.
@@ -2043,14 +2067,32 @@ fn exec_tasks(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
             _ => "-".to_string(),
         };
         writeln!(out, "    Defined at: {defined}")?;
+        // How many futures the task has in flight beyond its spine: the
+        // held ones plus every resident set child (an empty slot is a
+        // future already gone, not one outstanding). Last in the block,
+        // since what `--futures` lists under it is as long as the census
+        // found it to be.
+        let count = census.counts.get(&index).copied().unwrap_or_default();
+        writeln!(out, "    Futures: {}", count.in_flight())?;
+        if futures {
+            for entry in census.roots.get(&index).into_iter().flatten() {
+                print_future_entry(*entry, &census.nested, 8, out)?;
+            }
+        }
         writeln!(out)?;
     }
-    writeln!(out, "{} tasks", list.tasks.len())?;
+    let plural = if shown == 1 { "" } else { "s" };
+    writeln!(out, "{shown} task{plural}")?;
 
-    for err in &list.errors {
-        writeln!(io::stderr(), "warning: {err:#}")?;
+    if futures {
+        let total = census
+            .counts
+            .iter()
+            .filter(|(owner, _)| only.is_none_or(|i| i == **owner))
+            .map(|(_, count)| count)
+            .fold(Counts::default(), Counts::merge);
+        print_census_summary(total, out)?;
     }
-
     Ok(())
 }
 
@@ -2557,7 +2599,7 @@ mod task_at_tests {
 #[cfg(test)]
 mod future_trace_tests {
     use super::{
-        FutureAt, TraceTarget, future_at, parse_trace_target, print_await_chain, print_futures,
+        FutureAt, TraceTarget, future_at, parse_trace_target, print_await_chain, print_tasks,
     };
     use exegesis::bundle::{Bundle, BundleView};
     use hansei_types::tokio::bundle::{Context, TaskExtents, TaskList};
@@ -2566,6 +2608,7 @@ mod future_trace_tests {
     use proc::snapshot::Snapshot;
     use reify::TypeInfo;
 
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn fixture(name: &str) -> PathBuf {
@@ -2652,7 +2695,7 @@ mod future_trace_tests {
 
     /// A miss says what the address is when that can be said: a task's
     /// own allocation points back at `trace <id>`, and an address
-    /// nothing contains points at `futures`.
+    /// nothing contains points at `tasks --futures`.
     #[test]
     fn test_future_misses_explain_the_address() {
         with_target("futurelock", |ctx, list, extents, census| {
@@ -2666,7 +2709,7 @@ mod future_trace_tests {
             let err = future_at(&ctx.view, list, extents, census, 0x10)
                 .expect_err("nothing contains 0x10")
                 .to_string();
-            assert!(err.contains("`futures`"), "{err}");
+            assert!(err.contains("`tasks --futures`"), "{err}");
         });
     }
 
@@ -2716,9 +2759,34 @@ mod future_trace_tests {
         });
     }
 
-    /// `futures --task` selecting the task that owns the fixture's one
-    /// held future prints exactly what the whole listing prints — the
-    /// tally included, since it counts what was printed.
+    /// Render the task listing the way `tasks` does, with no worker
+    /// polling anything: what LWP holds a task is the session's to say,
+    /// and no listing test turns on it.
+    fn render(
+        list: &TaskList,
+        held: &[census::HeldFuture],
+        sets: &[census::FutureSet],
+        futures: bool,
+        task: Option<u64>,
+    ) -> String {
+        let mut out = Vec::new();
+        print_tasks(list, &HashMap::new(), held, sets, futures, task, &mut out)
+            .expect("the listing renders");
+        String::from_utf8(out).expect("rendered output is UTF-8")
+    }
+
+    /// The tally a `--futures` listing closes with.
+    fn tally(listing: &str) -> &str {
+        let at = listing
+            .find("future(s) not on any task's await chain:")
+            .unwrap_or_else(|| panic!("no tally in {listing}"));
+        &listing[at..]
+    }
+
+    /// `tasks --futures --task` selecting the task that owns the
+    /// fixture's one held future prints that future under it, and the
+    /// same tally the whole listing prints — the fixture's only owner is
+    /// that task, and the tally counts what was printed.
     #[test]
     fn test_futures_narrowed_to_the_owner_prints_its_futures() {
         with_target("futurelock", |_ctx, list, _extents, census| {
@@ -2729,13 +2797,11 @@ mod future_trace_tests {
                 .owner;
             let id = list.tasks[owner].task_id.expect("the owner has an id");
 
-            let mut out = Vec::new();
-            print_futures(list, &census.held, &census.sets, Some(id), &mut out)
-                .expect("the listing renders");
-            let narrowed = String::from_utf8(out).expect("rendered output is UTF-8");
-
-            assert!(narrowed.contains(&format!("task {id}:")), "{narrowed}");
+            let narrowed = render(list, &census.held, &census.sets, true, Some(id));
+            assert!(narrowed.contains(&format!("Task {id}:")), "{narrowed}");
             assert!(narrowed.contains("`future1`"), "{narrowed}");
+            // Narrowing narrows the listing itself, not just its futures.
+            assert!(narrowed.contains("\n1 task\n"), "{narrowed}");
             assert!(
                 narrowed.contains("\n1 future(s) not on any task's await chain:"),
                 "{narrowed}"
@@ -2747,11 +2813,18 @@ mod future_trace_tests {
                 "{narrowed}"
             );
 
-            let mut out = Vec::new();
-            print_futures(list, &census.held, &census.sets, None, &mut out)
-                .expect("the listing renders");
-            let all = String::from_utf8(out).expect("rendered output is UTF-8");
-            assert_eq!(narrowed, all, "the fixture's only owner is task {id}");
+            // The whole listing carries every task, and closes with the
+            // same tally: what the census found is all this task's.
+            let all = render(list, &census.held, &census.sets, true, None);
+            for task in &list.tasks {
+                let id = task.task_id.expect("every fixture task has an id");
+                assert!(all.contains(&format!("Task {id}: ")), "{all}");
+            }
+            assert_eq!(
+                tally(&narrowed),
+                tally(&all),
+                "the fixture's only owner is task {id}"
+            );
         });
     }
 
@@ -2801,24 +2874,28 @@ mod future_trace_tests {
                 waiting_on: None,
             }];
 
-            let mut out = Vec::new();
-            print_futures(list, &held, &sets, None, &mut out).expect("the listing renders");
-            let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
+            let rendered = render(list, &held, &sets, true, None);
 
-            // The held row sits two columns right of the child it was
-            // found in, which is itself two right of the set.
+            // The find sits under the owning task's `Futures` row, the
+            // held row two columns right of the child it was found in,
+            // which is itself two right of the set.
             assert!(
                 rendered.contains(
-                    "  FuturesUnordered<step::{async_fn_env#0}> at 0x1000 (frame 0, `pending`): \
-                     1 child(ren) in flight, 1 completed and not yet reaped\n    \
-                     0x2000  step::{async_fn_env#0}  Suspend0 — step.rs:9\n      \
+                    "    Futures: 2\n        \
+                     FuturesUnordered<step::{async_fn_env#0}> at 0x1000 (frame 0, `pending`): \
+                     1 child(ren) in flight, 1 completed and not yet reaped\n          \
+                     0x2000  step::{async_fn_env#0}  Suspend0 — step.rs:9\n            \
                      held (frame 1, `lock`): 0x3000  Mutex::lock::{async_fn_env#0}\n"
                 ),
                 "{rendered}"
             );
-            // The reaped slot is not a future in flight, so the header
-            // counts one child and one held future, not three.
-            assert!(rendered.contains(" — 2 futures\n"), "{rendered}");
+            // The reaped slot is not a future in flight, so the count
+            // row says one child and one held future, not three — and it
+            // says it with or without the listing under it.
+            let counted = render(list, &held, &sets, false, None);
+            assert!(counted.contains("    Futures: 2\n"), "{counted}");
+            assert!(!counted.contains("FuturesUnordered"), "{counted}");
+            assert!(!counted.contains("await chain:"), "{counted}");
             assert!(
                 rendered.contains(
                     "\n2 future(s) not on any task's await chain:\n  \
@@ -2831,19 +2908,19 @@ mod future_trace_tests {
         });
     }
 
-    /// A task the census found nothing for says so, rather than
-    /// printing the listing it was narrowed away from.
+    /// A task the census found nothing for still prints its block, with
+    /// a zero count and a tally saying there was nothing to list —
+    /// silence would read as a listing that failed.
     #[test]
     fn test_futures_narrowed_to_a_task_holding_none() {
         with_target("channels", |_ctx, list, _extents, census| {
             let id = list.tasks[0].task_id.expect("the first task has an id");
-            let mut out = Vec::new();
-            print_futures(list, &census.held, &census.sets, Some(id), &mut out)
-                .expect("the listing renders");
-            let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
-            assert_eq!(
-                rendered,
-                format!("task {id} owns no futures outside the task list\n")
+            let rendered = render(list, &census.held, &census.sets, true, Some(id));
+            assert!(rendered.starts_with(&format!("Task {id}: ")), "{rendered}");
+            assert!(rendered.contains("    Futures: 0\n"), "{rendered}");
+            assert!(
+                rendered.ends_with("\n1 task\n\nno futures outside the task list\n"),
+                "{rendered}"
             );
         });
     }
@@ -2861,9 +2938,17 @@ mod future_trace_tests {
                 .expect("some task has an id")
                 + 1;
             let mut out = Vec::new();
-            let err = print_futures(list, &census.held, &census.sets, Some(unknown), &mut out)
-                .expect_err("no task owns that id")
-                .to_string();
+            let err = print_tasks(
+                list,
+                &HashMap::new(),
+                &census.held,
+                &census.sets,
+                true,
+                Some(unknown),
+                &mut out,
+            )
+            .expect_err("no task owns that id")
+            .to_string();
             assert!(err.contains(&format!("id {unknown}")), "{err}");
             assert!(out.is_empty(), "printed {out:?} before failing");
         });
