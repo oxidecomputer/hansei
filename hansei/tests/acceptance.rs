@@ -331,9 +331,10 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
     }
 
     let footer = lines.next().expect("tasks output has a count footer");
+    let plural = if rows.len() == 1 { "" } else { "s" };
     assert_eq!(
         footer,
-        format!("{} tasks", rows.len()),
+        format!("{} task{plural}", rows.len()),
         "footer disagrees with the task count"
     );
     rows
@@ -887,9 +888,9 @@ fn test_task_at_acceptance() {
 }
 
 /// The sub-executor census: a `FuturesUnordered`'s children are futures,
-/// not tasks — `futures` lists them under the task that polls the set,
-/// `trace -v` labels their queued wakers with that task, and `task-at`
-/// resolves a child node address to it.
+/// not tasks — `tasks --futures` lists them under the task that polls
+/// the set, `trace -v` labels their queued wakers with that task, and
+/// `task-at` resolves a child node address to it.
 #[test]
 fn test_futures_acceptance() {
     let bundle = fixtures().bundle("unordered");
@@ -897,21 +898,20 @@ fn test_futures_acceptance() {
         let rows = list_tasks(&bundle, core);
         let driver = task_with_future(&rows, "unordered::driver::{async_fn_env#0}");
 
-        // Two held futures plus the set's three children.
-        let futures = hansei_ok(&bundle, core, "futures");
-        assert!(
-            futures.contains(&format!(
-                "task {}: unordered::driver::{{async_fn_env#0}} — 5 futures",
-                driver.id
-            )),
-            "{futures}"
-        );
-        // The task listing carries that same count, and says `0` for a
-        // task the census found nothing for rather than staying silent.
+        // Two held futures plus the set's three children. The plain
+        // listing carries that count, and says `0` for a task the census
+        // found nothing for rather than staying silent; `--futures`
+        // lists what it counted, under the same row.
         assert_eq!(driver.futures, "5", "{rows:?}");
         for row in rows.iter().filter(|row| row.id != driver.id) {
             assert_eq!(row.futures, "0", "{row:?}");
         }
+        let futures = hansei_ok(&bundle, core, "tasks --futures");
+        assert!(
+            futures.contains(&format!("Task {}: ", driver.id)),
+            "{futures}"
+        );
+        assert!(futures.contains("    Futures: 5\n        "), "{futures}");
         assert!(
             futures.contains(
                 "futures_util::stream::futures_unordered::FuturesUnordered\
@@ -921,9 +921,10 @@ fn test_futures_acceptance() {
         );
         assert!(futures.contains("3 child(ren) in flight"), "{futures}");
         // Set-child rows sit one level deeper than the held rows.
-        let child =
-            regex::Regex::new(r"\n    (0x[0-9a-f]+)  unordered::set_member::\{async_fn_env#0\}")
-                .unwrap();
+        let child = regex::Regex::new(
+            r"\n          (0x[0-9a-f]+)  unordered::set_member::\{async_fn_env#0\}",
+        )
+        .unwrap();
         let nodes: Vec<String> = child
             .captures_iter(&futures)
             .map(|c| c[1].to_string())
@@ -955,6 +956,23 @@ fn test_futures_acceptance() {
             futures.contains("2 held in a frame local: 2 in a task's own frames"),
             "{futures}"
         );
+
+        // Narrowing to the driver shows its block alone, with the same
+        // finds and the same tally — the tally counts what was printed,
+        // and every one of them is the driver's.
+        let narrowed = hansei_ok(&bundle, core, &format!("tasks -f -t {}", driver.id));
+        assert!(narrowed.contains("\n1 task\n"), "{narrowed}");
+        assert!(narrowed.contains("3 child(ren) in flight"), "{narrowed}");
+        assert!(
+            narrowed.contains("5 future(s) not on any task's await chain:"),
+            "{narrowed}"
+        );
+        for row in rows.iter().filter(|row| row.id != driver.id) {
+            assert!(
+                !narrowed.contains(&format!("Task {}: ", row.id)),
+                "{narrowed}"
+            );
+        }
 
         // The children park in the shared Notify; rendering the driver's
         // own `set` local deep enough reaches that wait queue, whose
@@ -1307,7 +1325,7 @@ fn test_exec_asks_from_the_command_line() {
         );
         assert!(stdout.contains("symbols resolved:"), "{stdout}");
         assert!(stdout.contains("runtime::driver::Handle"), "{stdout}");
-        assert!(stdout.contains("1 tasks"), "{stdout}");
+        assert!(stdout.contains("\n1 task\n"), "{stdout}");
 
         // A failure is fatal, as it is in a script.
         let out = hansei_exec(&bundle, core, &["trace 99999"]);

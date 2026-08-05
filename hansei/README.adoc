@@ -77,8 +77,9 @@ the script against a question it could not answer.
 
 Cores can be read cross-platform, e.g., read an illumos core on Linux, a Linux core on macOS.
 
-Each task is listed with its id, lifecycle state, concrete future type, spawn location, and where the future is
-defined. `trace` prints one task's await chain, selecting it by the id from `tasks`:
+Each task is listed with its id, lifecycle state, concrete future type, spawn location, where the future is
+defined, and how many futures it has in flight beside its own await chain. `-t`/`--task` narrows the listing
+to one task. `trace` prints one task's await chain, selecting it by the id from `tasks`:
 
 ----
 hansei〉trace ${ID} -v
@@ -118,8 +119,8 @@ the abandoned future is parked in, and the tasks blocked behind it.
 
 Beyond the tasks there are the futures no listing shows: `select!`/`join!` arms in flight, a future stored
 across an await (a futurelock's abandoned lock among them), and the children a `FuturesUnordered` polls.
-`futures` takes their census. Every task's frames are scanned by value for anything recognizably a future —
-a coroutine environment (`async fn`/`async block`), a `dyn Future` behind a pointer (resolved through the
+`tasks --futures`/`-f` takes their census and lists it under each task's count. Every task's frames are
+scanned by value for anything recognizably a future — a coroutine environment (`async fn`/`async block`), a `dyn Future` behind a pointer (resolved through the
 vtable join), a recognized leaf, or a `FuturesUnordered`, whose intrusive child list is then walked — and
 each find is reported under its owning task with its concrete type, suspend state, and recognized wait
 target, recursing through what it finds (a set inside a held future inside a set is reached). A hand-written
