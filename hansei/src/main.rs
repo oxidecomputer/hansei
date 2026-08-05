@@ -174,9 +174,9 @@ pub enum Command {
         #[arg(long, short)]
         futures: bool,
 
-        /// Show only this task, selected by its decimal id. Repeat the
-        /// flag to show several.
-        #[arg(long, short)]
+        /// Show only these tasks, each selected by its decimal id. The
+        /// whole list is printed when none is named.
+        #[arg(value_name = "TASK")]
         task: Vec<u64>,
     },
 
