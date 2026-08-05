@@ -956,7 +956,7 @@ fn test_futures_acceptance() {
         // Narrowing to the driver shows its block alone, with the same
         // finds and the same tally — the tally counts what was printed,
         // and every one of them is the driver's.
-        let narrowed = hansei_ok(&bundle, core, &format!("tasks -f -t {}", driver.id));
+        let narrowed = hansei_ok(&bundle, core, &format!("tasks -f {}", driver.id));
         assert!(
             narrowed.starts_with(&format!("Task {}: ", driver.id)),
             "{narrowed}"
