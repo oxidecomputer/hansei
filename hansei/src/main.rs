@@ -181,6 +181,11 @@ pub enum Command {
     /// List every task owned by the runtime: id, lifecycle state,
     /// concrete future type, spawn location, and where the future is
     /// defined.
+    ///
+    /// Each task also carries how many futures it has in flight beside
+    /// its own await chain — a FuturesUnordered's children, a `select!`
+    /// arm held in a frame. It is the count `futures` reports for the
+    /// task, subject to the same caveats: `futures` is what lists them.
     Tasks,
 
     /// Show every thread running the runtime: the task it is polling,
@@ -1635,23 +1640,13 @@ fn print_futures(
     // A find that named no parent is a root under its owning task.
     let mut roots: BTreeMap<usize, Vec<Entry<'_>>> = BTreeMap::new();
     let mut nested: HashMap<census::Via, Vec<Entry<'_>>> = HashMap::new();
-    let mut counts: BTreeMap<usize, Counts> = BTreeMap::new();
-    // Held first, then sets, so each level lists what a frame holds
-    // ahead of the sets it drives.
-    let held = census_held
-        .iter()
-        .enumerate()
-        .map(|(i, h)| Entry::Held(i, h));
-    let sets = census_sets
-        .iter()
-        .enumerate()
-        .map(|(i, s)| Entry::Set(i, s));
-    for entry in held.chain(sets) {
+    let mut counts = census_counts(census_held, census_sets);
+    counts.retain(|owner, _| only.is_none_or(|i| i == *owner));
+    for entry in census_entries(census_held, census_sets) {
         let owner = entry.owner();
         if only.is_some_and(|i| i != owner) {
             continue;
         }
-        counts.entry(owner).or_default().add(entry);
         match entry.via() {
             Some(via) => nested.entry(via).or_default().push(entry),
             None => roots.entry(owner).or_default().push(entry),
@@ -1727,6 +1722,37 @@ fn print_futures(
         )?;
     }
     Ok(())
+}
+
+/// Every census find as an [`Entry`]. Held first, then sets, so each
+/// level lists what a frame holds ahead of the sets it drives.
+fn census_entries<'a>(
+    census_held: &'a [census::HeldFuture],
+    census_sets: &'a [census::FutureSet],
+) -> impl Iterator<Item = Entry<'a>> {
+    let held = census_held
+        .iter()
+        .enumerate()
+        .map(|(i, h)| Entry::Held(i, h));
+    let sets = census_sets
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Entry::Set(i, s));
+    held.chain(sets)
+}
+
+/// What the census found for each task, keyed by its index in the task
+/// list. Both listings tally through this, so the count `tasks` prints
+/// for a task is the one `futures` prints for it.
+fn census_counts(
+    census_held: &[census::HeldFuture],
+    census_sets: &[census::FutureSet],
+) -> BTreeMap<usize, Counts> {
+    let mut counts: BTreeMap<usize, Counts> = BTreeMap::new();
+    for entry in census_entries(census_held, census_sets) {
+        counts.entry(entry.owner()).or_default().add(entry);
+    }
+    counts
 }
 
 /// One find in the nested listing, with the census index that anything
@@ -1977,14 +2003,16 @@ fn exec_tasks(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         .filter_map(|w| w.current_task_id.map(|id| (id, w.tid)))
         .collect();
 
-    let mut rows = vec![[
-        "TASK".to_string(),
-        "STATE".to_string(),
-        "FUTURE".to_string(),
-        "SPAWNED AT".to_string(),
-        "DEFINED AT".to_string(),
-    ]];
-    for task in &list.tasks {
+    // What each task has in flight beside its own await chain, counted
+    // the way `futures` counts it — the same census, through the same
+    // tally, so the two listings never disagree about a task.
+    let census = session.census();
+    let children = census_counts(&census.held, &census.sets);
+
+    // A block per task rather than a row: a future type is long enough
+    // that column-aligning it pushes the two source locations off the
+    // right of any terminal.
+    for (index, task) in list.tasks.iter().enumerate() {
         let id = match task.task_id {
             Some(id) => id.to_string(),
             None => format!("{:?}", task.addr),
@@ -1995,55 +2023,29 @@ fn exec_tasks(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
             }
             (lifecycle, _) => lifecycle.to_string(),
         };
-        let (future, defined) = match &task.future {
-            bundle::FutureInfo::Known(known) => (
-                known.display_name.clone(),
-                known
-                    .decl
-                    .as_ref()
-                    .map(|(file, line)| format!("{file}:{line}"))
-                    .unwrap_or_else(|| "-".to_string()),
-            ),
-            bundle::FutureInfo::Unknown {
-                poll_symbol: Some(sym),
-            } => (
-                format!("<unknown: {:#}>", rustc_demangle::demangle(sym)),
-                "-".to_string(),
-            ),
-            bundle::FutureInfo::Unknown { poll_symbol: None } => {
-                ("<unknown>".to_string(), "-".to_string())
-            }
-            bundle::FutureInfo::Ambiguous { candidates, .. } => (
-                format!("<ambiguous: {}>", candidates.join(" | ")),
-                "-".to_string(),
-            ),
+        writeln!(out, "Task {id}: {}", future_name(&task.future))?;
+        writeln!(out, "    State: {state}")?;
+        let futures = children.get(&index).map_or(0, Counts::in_flight);
+        writeln!(out, "    Futures: {futures}")?;
+        // Every block carries every row, so the two source locations sit
+        // at the same place in each and a missing one reads as a gap in
+        // what the target recorded rather than as a shorter block.
+        let spawned = match &task.spawn_location {
+            Some(loc) => loc.to_string(),
+            None => "-".to_string(),
         };
-        let spawned = task
-            .spawn_location
-            .as_ref()
-            .map(|loc| loc.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        rows.push([id, state, future, spawned, defined]);
+        writeln!(out, "    Spawned at: {spawned}")?;
+        let defined = match &task.future {
+            bundle::FutureInfo::Known(known) => match &known.decl {
+                Some((file, line)) => format!("{file}:{line}"),
+                None => "-".to_string(),
+            },
+            _ => "-".to_string(),
+        };
+        writeln!(out, "    Defined at: {defined}")?;
+        writeln!(out)?;
     }
-
-    let mut widths = [0usize; 5];
-    for row in &rows {
-        for (w, cell) in widths.iter_mut().zip(row) {
-            *w = (*w).max(cell.len());
-        }
-    }
-    for row in &rows {
-        let [id, state, future, spawned, defined] = row;
-        writeln!(
-            out,
-            "{id:<w0$}  {state:<w1$}  {future:<w2$}  {spawned:<w3$}  {defined}",
-            w0 = widths[0],
-            w1 = widths[1],
-            w2 = widths[2],
-            w3 = widths[3],
-        )?;
-    }
-    writeln!(out, "\n{} tasks", list.tasks.len())?;
+    writeln!(out, "{} tasks", list.tasks.len())?;
 
     for err in &list.errors {
         writeln!(io::stderr(), "warning: {err:#}")?;

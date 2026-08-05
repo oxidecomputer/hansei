@@ -263,52 +263,78 @@ struct TaskRow {
     id: String,
     state: String,
     future: String,
+    /// How many futures the task drives beside its own await chain,
+    /// `0` when it drives none.
+    futures: String,
+    /// The two source locations, `-` when the target did not record one.
     spawned: String,
     defined: String,
 }
 
-/// Cells are padded with runs of two or more spaces; values themselves
-/// contain at most single spaces.
-fn split_columns(line: &str) -> Vec<&str> {
-    line.split("  ")
-        .map(str::trim)
-        .filter(|cell| !cell.is_empty())
-        .collect()
-}
-
-/// Run the `tasks` command and parse the listing.
+/// Run the `tasks` command and parse the listing: a `Task <id>: <future>`
+/// header per task, then one indented `<label>: <value>` line per
+/// attribute, then a blank line. Every block carries every attribute, so
+/// a field left empty here is a row the listing failed to print.
 fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
     let out = hansei_ok(bundle, core, "tasks");
 
-    let mut lines = out.lines();
-    let header = lines.next().expect("tasks output has a header");
-    assert_eq!(
-        split_columns(header),
-        ["TASK", "STATE", "FUTURE", "SPAWNED AT", "DEFINED AT"],
-        "unexpected tasks header"
-    );
-
-    let mut rows = Vec::new();
-    for line in &mut lines {
-        if line.is_empty() {
+    let mut lines = out.lines().peekable();
+    let mut rows: Vec<TaskRow> = Vec::new();
+    while let Some(line) = lines.peek() {
+        let Some(header) = line.strip_prefix("Task ") else {
             break;
+        };
+        // The id holds no `: `, so the first one separates it from a
+        // future name that may well hold more (`<ambiguous: a | b>`).
+        let (id, future) = header
+            .split_once(": ")
+            .unwrap_or_else(|| panic!("unexpected tasks header {line:?}"));
+        let mut row = TaskRow {
+            id: id.to_string(),
+            state: String::new(),
+            future: future.to_string(),
+            futures: String::new(),
+            spawned: String::new(),
+            defined: String::new(),
+        };
+        lines.next();
+
+        for line in &mut lines {
+            if line.is_empty() {
+                break;
+            }
+            let attr = line
+                .strip_prefix("    ")
+                .unwrap_or_else(|| panic!("unexpected tasks line {line:?}"));
+            let (label, value) = attr
+                .split_once(": ")
+                .unwrap_or_else(|| panic!("unexpected tasks line {line:?}"));
+            let field = match label {
+                "State" => &mut row.state,
+                "Futures" => &mut row.futures,
+                "Spawned at" => &mut row.spawned,
+                "Defined at" => &mut row.defined,
+                _ => panic!("unexpected tasks attribute {line:?}"),
+            };
+            assert!(field.is_empty(), "repeated tasks attribute {line:?}");
+            *field = value.to_string();
         }
-        let cells = split_columns(line);
-        assert_eq!(cells.len(), 5, "unexpected tasks row {line:?}");
-        rows.push(TaskRow {
-            id: cells[0].to_string(),
-            state: cells[1].to_string(),
-            future: cells[2].to_string(),
-            spawned: cells[3].to_string(),
-            defined: cells[4].to_string(),
-        });
+        for (label, value) in [
+            ("State", &row.state),
+            ("Futures", &row.futures),
+            ("Spawned at", &row.spawned),
+            ("Defined at", &row.defined),
+        ] {
+            assert!(!value.is_empty(), "task {} has no {label} row", row.id);
+        }
+        rows.push(row);
     }
 
     let footer = lines.next().expect("tasks output has a count footer");
     assert_eq!(
         footer,
         format!("{} tasks", rows.len()),
-        "footer disagrees with the row count"
+        "footer disagrees with the task count"
     );
     rows
 }
@@ -880,6 +906,12 @@ fn test_futures_acceptance() {
             )),
             "{futures}"
         );
+        // The task listing carries that same count, and says `0` for a
+        // task the census found nothing for rather than staying silent.
+        assert_eq!(driver.futures, "5", "{rows:?}");
+        for row in rows.iter().filter(|row| row.id != driver.id) {
+            assert_eq!(row.futures, "0", "{row:?}");
+        }
         assert!(
             futures.contains(
                 "futures_util::stream::futures_unordered::FuturesUnordered\
