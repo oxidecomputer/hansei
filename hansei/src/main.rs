@@ -8,7 +8,7 @@ use proc::snapshot::Recorder;
 use reify::{TypeInfo, TypeInfoRef};
 
 use std::cell::OnceCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -174,9 +174,10 @@ pub enum Command {
         #[arg(long, short)]
         futures: bool,
 
-        /// Show only this task, selected by its decimal id.
+        /// Show only this task, selected by its decimal id. Repeat the
+        /// flag to show several.
         #[arg(long, short)]
-        task: Option<u64>,
+        task: Vec<u64>,
     },
 
     /// Show every thread running the runtime: the task it is polling,
@@ -413,7 +414,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         }
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => exec_snapshot(session, &output, out)?,
-        Command::Tasks { futures, task } => exec_tasks(session, futures, task, out)?,
+        Command::Tasks { futures, task } => exec_tasks(session, futures, &task, out)?,
         Command::Threads {
             frames,
             depth,
@@ -2048,7 +2049,7 @@ fn via_suffix(census: &census::FutureCensus, via: Option<census::Via>) -> String
 fn exec_tasks(
     session: &Session<'_>,
     futures: bool,
-    task: Option<u64>,
+    tasks: &[u64],
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let list = &session.tasks;
@@ -2088,7 +2089,7 @@ fn exec_tasks(
         &census.held,
         &census.sets,
         futures,
-        task,
+        tasks,
         out,
     )?;
 
@@ -2101,7 +2102,8 @@ fn exec_tasks(
 
 /// Print the task listing: a block per task, and — under `futures` —
 /// the census's finds for it, listed beneath its `Futures` count.
-/// `task` narrows the listing to one task.
+/// `tasks` narrows the listing to the named tasks, and is empty for the
+/// whole list.
 ///
 /// It takes what it prints rather than a session so the offline tests
 /// can drive it, the census as its two flat lists so a test can lay out
@@ -2112,24 +2114,25 @@ fn print_tasks(
     census_held: &[census::HeldFuture],
     census_sets: &[census::FutureSet],
     futures: bool,
-    task: Option<u64>,
+    tasks: &[u64],
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    // Resolve the selected id up front, so an id the runtime does not
-    // own says so rather than printing an empty listing.
-    let only = match task {
-        Some(id) => {
-            let Some(index) = list.tasks.iter().position(|t| t.task_id == Some(id)) else {
-                let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
-                anyhow::bail!(
-                    "the runtime owns no task with id {id}; it owns {} task(s): {ids:?}",
-                    list.tasks.len()
-                );
-            };
-            Some(index)
-        }
-        None => None,
-    };
+    // Resolve every selected id up front, so an id the runtime does not
+    // own says so rather than printing a listing short of a block. A set
+    // rather than the ids as given: repeating one asks for it once, and
+    // the blocks come out in the listing's own order either way.
+    let mut only = BTreeSet::new();
+    for &id in tasks {
+        let Some(index) = list.tasks.iter().position(|t| t.task_id == Some(id)) else {
+            let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
+            anyhow::bail!(
+                "the runtime owns no task with id {id}; it owns {} task(s): {ids:?}",
+                list.tasks.len()
+            );
+        };
+        only.insert(index);
+    }
+    let selected = |index: usize| tasks.is_empty() || only.contains(&index);
     let census = census_tree(census_held, census_sets);
 
     // A block per task rather than a row: a future type is long enough
@@ -2137,7 +2140,7 @@ fn print_tasks(
     // right of any terminal.
     let mut shown = 0;
     for (index, task) in list.tasks.iter().enumerate() {
-        if only.is_some_and(|i| i != index) {
+        if !selected(index) {
             continue;
         }
         shown += 1;
@@ -2183,14 +2186,19 @@ fn print_tasks(
         }
         writeln!(out)?;
     }
-    let plural = if shown == 1 { "" } else { "s" };
-    writeln!(out, "{shown} task{plural}")?;
+    // How many tasks the runtime owns is the listing's own answer; a
+    // listing narrowed to ids the caller named already knows how many
+    // it asked for, so the count would only restate the command line.
+    if tasks.is_empty() {
+        let plural = if shown == 1 { "" } else { "s" };
+        writeln!(out, "{shown} task{plural}")?;
+    }
 
     if futures {
         let total = census
             .counts
             .iter()
-            .filter(|(owner, _)| only.is_none_or(|i| i == **owner))
+            .filter(|(owner, _)| selected(**owner))
             .map(|(_, count)| count)
             .fold(Counts::default(), Counts::merge);
         print_census_summary(total, out)?;
@@ -2939,10 +2947,10 @@ mod future_trace_tests {
         held: &[census::HeldFuture],
         sets: &[census::FutureSet],
         futures: bool,
-        task: Option<u64>,
+        tasks: &[u64],
     ) -> String {
         let mut out = Vec::new();
-        print_tasks(list, &HashMap::new(), held, sets, futures, task, &mut out)
+        print_tasks(list, &HashMap::new(), held, sets, futures, tasks, &mut out)
             .expect("the listing renders");
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
@@ -2969,11 +2977,14 @@ mod future_trace_tests {
                 .owner;
             let id = list.tasks[owner].task_id.expect("the owner has an id");
 
-            let narrowed = render(list, &census.held, &census.sets, true, Some(id));
+            let narrowed = render(list, &census.held, &census.sets, true, &[id]);
             assert!(narrowed.contains(&format!("Task {id}:")), "{narrowed}");
             assert!(narrowed.contains("`future1`"), "{narrowed}");
-            // Narrowing narrows the listing itself, not just its futures.
-            assert!(narrowed.contains("\n1 task\n"), "{narrowed}");
+            // Narrowing narrows the listing itself, not just its
+            // futures — and the block it leaves is the whole answer, so
+            // there is no count under it restating the ids asked for.
+            assert_eq!(narrowed.matches("\nTask ").count() + 1, 1, "{narrowed}");
+            assert!(!narrowed.contains("\n1 task\n"), "{narrowed}");
             assert!(
                 narrowed.contains("\n1 future(s) not on any task's await chain:"),
                 "{narrowed}"
@@ -2987,7 +2998,7 @@ mod future_trace_tests {
 
             // The whole listing carries every task, and closes with the
             // same tally: what the census found is all this task's.
-            let all = render(list, &census.held, &census.sets, true, None);
+            let all = render(list, &census.held, &census.sets, true, &[]);
             for task in &list.tasks {
                 let id = task.task_id.expect("every fixture task has an id");
                 assert!(all.contains(&format!("Task {id}: ")), "{all}");
@@ -2997,6 +3008,40 @@ mod future_trace_tests {
                 tally(&all),
                 "the fixture's only owner is task {id}"
             );
+        });
+    }
+
+    /// Several ids print several blocks, in the listing's order rather
+    /// than the order asked for, and an id asked for twice prints once.
+    #[test]
+    fn test_tasks_narrowed_to_several_ids() {
+        with_target("channels", |_ctx, list, _extents, census| {
+            let ids: Vec<u64> = list
+                .tasks
+                .iter()
+                .map(|t| t.task_id.expect("every fixture task has an id"))
+                .collect();
+            assert!(ids.len() >= 2, "the fixture owns several tasks: {ids:?}");
+            let (first, second) = (ids[0], ids[1]);
+
+            let rendered = render(
+                list,
+                &census.held,
+                &census.sets,
+                false,
+                &[second, first, second],
+            );
+            assert!(
+                rendered.starts_with(&format!("Task {first}: ")),
+                "{rendered}"
+            );
+            assert_eq!(rendered.matches("\nTask ").count() + 1, 2, "{rendered}");
+            assert!(
+                rendered.contains(&format!("\nTask {second}: ")),
+                "{rendered}"
+            );
+            // Two blocks are still not a listing, so nothing counts them.
+            assert!(!rendered.contains("\n2 tasks\n"), "{rendered}");
         });
     }
 
@@ -3046,7 +3091,7 @@ mod future_trace_tests {
                 waiting_on: None,
             }];
 
-            let rendered = render(list, &held, &sets, true, None);
+            let rendered = render(list, &held, &sets, true, &[]);
 
             // The find sits under the owning task's `Futures` row, the
             // held row two columns right of the child it was found in,
@@ -3064,7 +3109,7 @@ mod future_trace_tests {
             // The reaped slot is not a future in flight, so the count
             // row says one child and one held future, not three — and it
             // says it with or without the listing under it.
-            let counted = render(list, &held, &sets, false, None);
+            let counted = render(list, &held, &sets, false, &[]);
             assert!(counted.contains("    Futures: 2\n"), "{counted}");
             assert!(!counted.contains("FuturesUnordered"), "{counted}");
             assert!(!counted.contains("await chain:"), "{counted}");
@@ -3087,11 +3132,11 @@ mod future_trace_tests {
     fn test_futures_narrowed_to_a_task_holding_none() {
         with_target("channels", |_ctx, list, _extents, census| {
             let id = list.tasks[0].task_id.expect("the first task has an id");
-            let rendered = render(list, &census.held, &census.sets, true, Some(id));
+            let rendered = render(list, &census.held, &census.sets, true, &[id]);
             assert!(rendered.starts_with(&format!("Task {id}: ")), "{rendered}");
             assert!(rendered.contains("    Futures: 0\n"), "{rendered}");
             assert!(
-                rendered.ends_with("\n1 task\n\nno futures outside the task list\n"),
+                rendered.ends_with("\n\nno futures outside the task list\n"),
                 "{rendered}"
             );
         });
@@ -3116,7 +3161,7 @@ mod future_trace_tests {
                 &census.held,
                 &census.sets,
                 true,
-                Some(unknown),
+                &[unknown],
                 &mut out,
             )
             .expect_err("no task owns that id")
