@@ -2605,7 +2605,7 @@ fn raw_waker_vtable_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
 
 /// Render a `core::task::wake::Waker` as its RawWaker's `data` word — the one
 /// datum that identifies what it wakes. For a tokio task waker that is the
-/// task's Header pointer, which `hansei task-at` resolves and `trace -v`
+/// task's Header pointer, which `hansei whatis` resolves and `trace -v`
 /// labels with the task id; the vtable it travels with is internal detail
 /// (`--ugly` shows both).
 fn waker_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {

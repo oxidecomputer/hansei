@@ -122,16 +122,6 @@ pub enum Command {
         output: PathBuf,
     },
 
-    /// Find the task whose allocation contains an address. Any pointer
-    /// into a task — its Header, its future's state machine, its
-    /// Trailer — resolves to the owning task.
-    TaskAt {
-        /// The address to look up, written in hex with a required
-        /// leading `0x` (e.g. `0x7fffb1c26100`).
-        #[arg(value_parser = parse_hex_addr)]
-        addr: u64,
-    },
-
     /// List every task owned by the runtime: id, lifecycle state,
     /// concrete future type, spawn location, where the future is
     /// defined, and how many futures it has in flight beside its own
@@ -168,7 +158,7 @@ pub enum Command {
     ///
     /// Every address printed — a held future's, a set child's node — is
     /// what `trace <0xaddr>` accepts to follow that one future's own
-    /// chain, and what `task-at <0xaddr>` resolves back to its task.
+    /// chain, and what `whatis <0xaddr>` says the whereabouts of.
     ///
     /// What is listed is found *by value* in a frame's bytes: coroutine
     /// environments, future trait objects (resolved through the vtable
@@ -263,6 +253,29 @@ pub enum Command {
         /// than this shows is marked with a `…`.
         #[arg(long, short, default_value_t = 4, requires = "recursive")]
         depth: usize,
+    },
+
+    /// Say what an address is: the task whose allocation contains it,
+    /// and every future the census found that claims it.
+    ///
+    /// More than one answer is the normal case rather than an
+    /// ambiguity, since the things an address can belong to nest: a
+    /// future a frame holds lives inside its task's allocation, one
+    /// awaited by value lives inside the future awaiting it, and a
+    /// `FuturesUnordered` lives inside whichever of those drives it.
+    /// The report names each claim outermost first, so reading down it
+    /// is reading inward.
+    ///
+    /// Any pointer into a thing resolves to it, not just its first
+    /// byte: a task's Header, its future's state machine and its
+    /// Trailer all name the task, and every address `tasks --futures`
+    /// prints — a held future's, a set's, a set child's node — names
+    /// what it was printed for.
+    Whatis {
+        /// The address to look up, written in hex with a required
+        /// leading `0x` (e.g. `0x7fffb1c26100`).
+        #[arg(value_parser = parse_hex_addr)]
+        addr: u64,
     },
 
     // Last rather than alphabetical: it is not a question to ask of a
@@ -400,7 +413,6 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         }
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => exec_snapshot(session, &output, out)?,
-        Command::TaskAt { addr } => exec_task_at(session, addr, out)?,
         Command::Tasks { futures, task } => exec_tasks(session, futures, task, out)?,
         Command::Threads {
             frames,
@@ -426,6 +438,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             recursive,
             depth,
         } => types::describe(&session.ctx.view, &name, recursive, depth, out)?,
+        Command::Whatis { addr } => exec_whatis(session, addr, out)?,
         Command::Quit | Command::Exit => return Ok(Flow::Quit),
     }
     Ok(Flow::Continue)
@@ -620,10 +633,7 @@ fn exec_trace_future(
     let found = future_at(&ctx.view, list, session.extents(), census, addr)?;
     let (root, owner) = match found {
         FutureAt::Held(h) => {
-            let via = h
-                .via
-                .map(|v| format!(", via {}", census.describe(v)))
-                .unwrap_or_default();
+            let via = via_suffix(census, h.via);
             writeln!(out, "Future {:#x}: {}", h.addr, h.future)?;
             writeln!(
                 out,
@@ -642,10 +652,7 @@ fn exec_trace_future(
             )
         }
         FutureAt::Child { set, child, root } => {
-            let via = set
-                .via
-                .map(|v| format!(", via {}", census.describe(v)))
-                .unwrap_or_default();
+            let via = via_suffix(census, set.via);
             let future = child.future.as_deref().unwrap_or("<undecoded>");
             writeln!(out, "Future {:#x}: {future}", child.node)?;
             writeln!(
@@ -1864,8 +1871,9 @@ fn future_name(future: &bundle::FutureInfo) -> String {
     }
 }
 
-fn exec_task_at(session: &Session<'_>, addr: u64, out: &mut dyn io::Write) -> Result<()> {
-    report_task_at(
+fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Write) -> Result<()> {
+    report_whatis(
+        &session.ctx.view,
         &session.tasks,
         session.extents(),
         session.census(),
@@ -1874,73 +1882,167 @@ fn exec_task_at(session: &Session<'_>, addr: u64, out: &mut dyn io::Write) -> Re
     )
 }
 
-/// The `task-at` answer, apart from the session so the offline
-/// fixture tests can drive it.
-fn report_task_at(
+/// The `whatis` answer, apart from the session so the offline fixture
+/// tests can drive it.
+///
+/// An address belongs to whatever contains it, and those things nest:
+/// a held future lives in a frame of its task's allocation, a set in a
+/// frame of whatever drives it, a set child in a heap node of its own.
+/// So this reports every claim rather than the first one it finds, in
+/// containment order — the task's allocation, then a set child's node,
+/// then the held futures from widest to narrowest, then a set — which
+/// makes reading down the report reading inward.
+fn report_whatis(
+    view: &BundleView<'_>,
     list: &bundle::TaskList,
     extents: &bundle::TaskExtents,
     census: &census::FutureCensus,
     addr: u64,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let Some((index, offset)) = extents.locate(addr) else {
-        // Not a task's memory — but a sub-executor's child node still
-        // names the task that polls it.
-        let Some((set_index, child, offset)) = census.locate(addr) else {
-            writeln!(out, "no task's allocation contains {addr:#x}")?;
-            return Ok(());
+    let mut blocks = 0;
+
+    if let Some((index, offset)) = extents.locate(addr) {
+        let task = &list.tasks[index];
+        let id = match task.task_id {
+            Some(id) => id.to_string(),
+            None => format!("{:?}", task.addr),
         };
-        let set = &census.sets[set_index];
-        let owner = &list.tasks[set.owner];
+        separate(&mut blocks, out)?;
+        writeln!(out, "Task {id}: {}", future_name(&task.future))?;
         writeln!(
             out,
-            "{addr:#x} is at offset {offset:#x} in a FuturesUnordered child node \
-             (set at {:#x}), polled by {}",
-            set.addr,
-            task_label(list, set.owner)
+            "    At: offset {offset:#x} in the task's allocation (header {:?})",
+            task.addr
         )?;
-        if let Some(future) = &set.children[child].future {
-            let state = set.children[child]
-                .state
-                .as_ref()
-                .map(|s| format!(" ({s})"))
-                .unwrap_or_default();
-            writeln!(out, "child future: {future}{state}")?;
-        } else {
-            writeln!(out, "child future: <completed, not yet reaped>")?;
+        writeln!(out, "    State: {}", task.state.lifecycle())?;
+        if let Some(loc) = &task.spawn_location {
+            writeln!(out, "    Spawned at: {loc}")?;
+        }
+    }
+
+    // A set child's node is its own heap allocation, outside every
+    // task's — but the task that polls the set is what a wake there
+    // ultimately runs, so the block names it.
+    if let Some((set_index, child_index, offset)) = census.locate(addr) {
+        let set = &census.sets[set_index];
+        let child = &set.children[child_index];
+        separate(&mut blocks, out)?;
+        let future = child
+            .future
+            .as_deref()
+            .unwrap_or("<completed, not yet reaped>");
+        writeln!(out, "Future {:#x}: {future}", child.node)?;
+        writeln!(
+            out,
+            "    At: offset {offset:#x} in a FuturesUnordered child node"
+        )?;
+        if let Some(state) = &child.state {
+            writeln!(out, "    State: {state}")?;
+        }
+        if let Some(waiting) = &child.waiting_on {
+            writeln!(out, "    Waiting on: {waiting}")?;
         }
         writeln!(
             out,
-            "Task {}: {} ({})",
-            match owner.task_id {
-                Some(id) => id.to_string(),
-                None => format!("{:?}", owner.addr),
-            },
-            future_name(&owner.future),
-            owner.state.lifecycle()
+            "    Child of: {} at {:#x} (frame {}, `{}`{})",
+            set.ty,
+            set.addr,
+            set.frame,
+            set.local,
+            via_suffix(census, set.via)
         )?;
-        return Ok(());
-    };
-    let task = &list.tasks[index];
-    let id = match task.task_id {
-        Some(id) => id.to_string(),
-        None => format!("{:?}", task.addr),
-    };
-    writeln!(
-        out,
-        "{addr:#x} is in task {id} at offset {offset:#x} (header {:?})",
-        task.addr
-    )?;
-    writeln!(
-        out,
-        "Task {id}: {} ({})",
-        future_name(&task.future),
-        task.state.lifecycle()
-    )?;
-    if let Some(loc) = &task.spawn_location {
-        writeln!(out, "Spawned at: {loc}")?;
+        writeln!(
+            out,
+            "    Polled by: {} — {}",
+            task_label(list, set.owner),
+            future_name(&list.tasks[set.owner].future)
+        )?;
+    }
+
+    // Widest first: a future awaited by value sits inside the one
+    // awaiting it, so an interior address is claimed by each of them
+    // and the narrowest is the future the address is really in.
+    let mut held: Vec<(u64, &census::HeldFuture)> = census
+        .held
+        .iter()
+        .filter_map(|h| {
+            // A size the bundle does not carry leaves the future's own
+            // address, which is what a reader pastes in anyway.
+            let size = view.ty(h.ty).map_or(0, |ty| ty.size());
+            let extent = h.addr..h.addr.saturating_add(size);
+            (h.addr == addr || extent.contains(&addr)).then_some((size, h))
+        })
+        .collect();
+    held.sort_by_key(|&(size, h)| (std::cmp::Reverse(size), h.addr));
+    for (_, h) in held {
+        separate(&mut blocks, out)?;
+        writeln!(out, "Future {:#x}: {}", h.addr, h.future)?;
+        writeln!(out, "    At: offset {:#x} in the future", addr - h.addr)?;
+        if let Some(state) = &h.state {
+            writeln!(out, "    State: {state}")?;
+        }
+        if let Some(waiting) = &h.waiting_on {
+            writeln!(out, "    Waiting on: {waiting}")?;
+        }
+        writeln!(
+            out,
+            "    Held by: {} — {} (frame {}, `{}`{})",
+            task_label(list, h.owner),
+            future_name(&list.tasks[h.owner].future),
+            h.frame,
+            h.local,
+            via_suffix(census, h.via)
+        )?;
+    }
+
+    // A set is claimed by its own address alone: the census records
+    // where one starts but not how long it is, so an address inside one
+    // is reported as whatever frame holds it instead.
+    for set in census.sets.iter().filter(|s| s.addr == addr) {
+        separate(&mut blocks, out)?;
+        let live = set.children.iter().filter(|c| c.future.is_some()).count();
+        let reaped = match set.children.len() - live {
+            0 => String::new(),
+            n => format!(", {n} completed and not yet reaped"),
+        };
+        writeln!(out, "Set {addr:#x}: {}", set.ty)?;
+        writeln!(out, "    Children: {live} in flight{reaped}")?;
+        writeln!(
+            out,
+            "    Driven by: {} — {} (frame {}, `{}`{})",
+            task_label(list, set.owner),
+            future_name(&list.tasks[set.owner].future),
+            set.frame,
+            set.local,
+            via_suffix(census, set.via)
+        )?;
+    }
+
+    if blocks == 0 {
+        writeln!(
+            out,
+            "no task's allocation and no future the census found contains {addr:#x}"
+        )?;
     }
     Ok(())
+}
+
+/// Open a block, with a blank line between it and the one before.
+fn separate(blocks: &mut usize, out: &mut dyn io::Write) -> Result<()> {
+    if *blocks > 0 {
+        writeln!(out)?;
+    }
+    *blocks += 1;
+    Ok(())
+}
+
+/// How the census reached a find, for the line that says where it
+/// lives: empty when it was found in a task's own frames, and naming
+/// the future or set child whose frames it was found in otherwise.
+fn via_suffix(census: &census::FutureCensus, via: Option<census::Via>) -> String {
+    via.map(|v| format!(", via {}", census.describe(v)))
+        .unwrap_or_default()
 }
 
 fn exec_tasks(
@@ -2481,11 +2583,11 @@ mod variable_format_tests {
     }
 }
 
-/// Offline `task-at` tests: address→task resolution over a real
+/// Offline `whatis` tests: what an address resolves to over a real
 /// extracted bundle joined against a real captured snapshot.
 #[cfg(test)]
-mod task_at_tests {
-    use super::{parse_hex_addr, report_task_at};
+mod whatis_tests {
+    use super::{parse_hex_addr, report_whatis};
     use exegesis::bundle::{Bundle, BundleView};
     use hansei_types::tokio::bundle::{Context, TaskExtents, TaskList};
     use hansei_types::tokio::census::{self, FutureCensus};
@@ -2502,7 +2604,10 @@ mod task_at_tests {
             .join(name)
     }
 
-    fn with_tasks(program: &str, check: impl FnOnce(&TaskList, &TaskExtents, &FutureCensus)) {
+    fn with_tasks(
+        program: &str,
+        check: impl FnOnce(&BundleView<'_>, &TaskList, &TaskExtents, &FutureCensus),
+    ) {
         let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
             .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
         let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
@@ -2515,12 +2620,18 @@ mod task_at_tests {
         let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
         let extents = ctx.task_extents(&list);
         let census = census::census(&ctx, &list);
-        check(&list, &extents, &census);
+        check(&ctx.view, &list, &extents, &census);
     }
 
-    fn report(list: &TaskList, extents: &TaskExtents, census: &FutureCensus, addr: u64) -> String {
+    fn report(
+        view: &BundleView<'_>,
+        list: &TaskList,
+        extents: &TaskExtents,
+        census: &FutureCensus,
+        addr: u64,
+    ) -> String {
         let mut out = Vec::new();
-        report_task_at(list, extents, census, addr, &mut out).expect("the report renders");
+        report_whatis(view, list, extents, census, addr, &mut out).expect("the report renders");
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
 
@@ -2529,7 +2640,7 @@ mod task_at_tests {
     /// outside every allocation reports the miss.
     #[test]
     fn test_addresses_resolve_to_the_containing_task() {
-        with_tasks("sleep-join", |list, extents, census| {
+        with_tasks("sleep-join", |view, list, extents, census| {
             let sleeper = list
                 .tasks
                 .iter()
@@ -2537,23 +2648,84 @@ mod task_at_tests {
                 .expect("the sleeper is task 3");
             let header = sleeper.addr.0;
 
-            let shown = report(list, extents, census, header);
+            let shown = report(view, list, extents, census, header);
+            assert!(
+                shown.contains("Task 3: sleep_join::sleeper::{async_fn_env#0}\n"),
+                "{shown}"
+            );
             assert!(
                 shown.contains(&format!(
-                    "{header:#x} is in task 3 at offset 0x0 (header {header:#x})"
+                    "    At: offset 0x0 in the task's allocation (header {header:#x})"
                 )),
                 "{shown}"
             );
+            assert!(shown.contains("    State: idle"), "{shown}");
+
+            let inside = report(view, list, extents, census, header + 0x10);
+            assert!(inside.contains("Task 3: "), "{inside}");
             assert!(
-                shown.contains("Task 3: sleep_join::sleeper::{async_fn_env#0} (idle)"),
-                "{shown}"
+                inside.contains("    At: offset 0x10 in the task's allocation"),
+                "{inside}"
             );
 
-            let inside = report(list, extents, census, header + 0x10);
-            assert!(inside.contains("is in task 3 at offset 0x10"), "{inside}");
+            let miss = report(view, list, extents, census, 0x10);
+            assert_eq!(
+                miss,
+                "no task's allocation and no future the census found contains 0x10\n"
+            );
+        });
+    }
 
-            let miss = report(list, extents, census, 0x10);
-            assert_eq!(miss, "no task's allocation contains 0x10\n");
+    /// An address is reported against the futures the census found as
+    /// well as against the tasks, and a pointer *into* a future
+    /// resolves to it the way one into a task's allocation does. This
+    /// future is `.boxed()`, so it is a heap allocation of its own and
+    /// no task's allocation claims it — the block naming what holds it
+    /// is the only thing that says whose it is.
+    #[test]
+    fn test_addresses_resolve_to_the_containing_future() {
+        with_tasks("futurelock", |view, list, extents, census| {
+            let future1 = census
+                .held
+                .iter()
+                .find(|h| h.local == "future1")
+                .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
+            let owner = list.tasks[future1.owner]
+                .task_id
+                .expect("the holder is an owned task");
+            let size = view
+                .ty(future1.ty)
+                .expect("the bundle carries the held future's type")
+                .size();
+            assert!(
+                size > 0x10,
+                "the fixture's future is too small to point into"
+            );
+
+            for offset in [0, 0x10] {
+                let shown = report(view, list, extents, census, future1.addr + offset);
+                assert!(
+                    shown.contains(&format!("Future {:#x}: {}", future1.addr, future1.future)),
+                    "{shown}"
+                );
+                assert!(
+                    shown.contains(&format!("    At: offset {offset:#x} in the future")),
+                    "{shown}"
+                );
+                assert!(
+                    shown.contains(&format!("    Held by: task {owner} — ")),
+                    "{shown}"
+                );
+                assert!(shown.contains("(frame 1, `future1`)"), "{shown}");
+            }
+
+            // Past its end it is somebody else's memory, and this
+            // heap allocation is nobody's as far as hansei can say.
+            let past = report(view, list, extents, census, future1.addr + size);
+            assert!(
+                past.starts_with("no task's allocation and no future"),
+                "{past}"
+            );
         });
     }
 
@@ -2561,7 +2733,7 @@ mod task_at_tests {
     /// before it: the extents tile the tasks without bleeding.
     #[test]
     fn test_extents_cover_each_task_exactly() {
-        with_tasks("dyn-future", |list, extents, _census| {
+        with_tasks("dyn-future", |_view, list, extents, _census| {
             for (index, task) in list.tasks.iter().enumerate() {
                 assert_eq!(
                     extents.locate(task.addr.0),
