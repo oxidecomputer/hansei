@@ -967,17 +967,8 @@ fn test_futures_acceptance() {
             "{futures}"
         );
 
-        // The summary counts what the listing showed: two futures the
-        // driver holds itself and three inside the set, and neither the
-        // set's reaped slot nor the tasks' own await chains.
-        assert!(
-            futures.contains("\n5 futures off the listed tasks' await chains\n"),
-            "{futures}"
-        );
-
         // Narrowing to the driver shows its block alone, with the same
-        // finds and the same tally — the tally counts what was printed,
-        // and every one of them is the driver's.
+        // finds under it: every one of them is the driver's.
         let narrowed = hansei_ok(&bundle, core, &format!("tasks -f {}", driver.id));
         assert!(
             narrowed.starts_with(&format!("Task {}: ", driver.id)),
@@ -986,7 +977,7 @@ fn test_futures_acceptance() {
         assert!(!narrowed.contains("\n1 task\n"), "{narrowed}");
         assert!(narrowed.contains("3 children in flight"), "{narrowed}");
         assert!(
-            narrowed.contains("\n5 futures off the listed tasks' await chains\n"),
+            narrowed.contains("    Join sets: 1 (3 futures)\n"),
             "{narrowed}"
         );
         for row in rows.iter().filter(|row| row.id != driver.id) {
@@ -1171,13 +1162,6 @@ fn test_join_set_acceptance() {
                 "{traced}"
             );
         }
-
-        // The members are tasks, so the tally counts none of them: the
-        // fixture has nothing off any await chain.
-        assert!(
-            futures.contains("\nno futures off the listed tasks' await chains\n"),
-            "{futures}"
-        );
     });
 }
 

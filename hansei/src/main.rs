@@ -136,10 +136,10 @@ pub enum Command {
     ///
     /// The `Join sets` row counts what its sets hold in two parts where
     /// it drives both kinds, because they are two populations: a JoinSet
-    /// holds *tasks*, which this listing already carries blocks for and
-    /// no futures tally counts, and a FuturesUnordered holds futures,
-    /// which nothing else shows at all. A kind it drives none of goes
-    /// unmentioned rather than counted at zero.
+    /// holds *tasks*, which this listing already carries blocks for, and
+    /// a FuturesUnordered holds futures, which nothing else shows at
+    /// all. A kind it drives none of goes unmentioned rather than
+    /// counted at zero.
     ///
     /// A task's own await chain is what `trace` prints: the future it is
     /// suspended in, the one that is awaiting, and so on down to the leaf
@@ -1662,29 +1662,6 @@ fn census_tree<'a>(
     }
 }
 
-/// The closing tally of a `--futures` listing: how many futures are
-/// outstanding beside the await chains of the tasks that were printed.
-/// It is the sum of their `Held futures` rows and of the children their
-/// task sets hold, so a narrowed listing's tally describes what it
-/// showed rather than the whole census — and, like those rows, it
-/// counts the finds at the top of each listing rather than the ones
-/// nested inside them.
-///
-/// One number and no breakdown. Where each find sits is what the
-/// listing itself says, block by block and by indentation; splitting
-/// the total the same way read as populations to be added up, which is
-/// exactly what they are not.
-fn print_census_summary(total: Counts, out: &mut dyn io::Write) -> Result<()> {
-    let n = total.in_flight();
-    if n == 0 {
-        writeln!(out, "no futures off the listed tasks' await chains")?;
-        return Ok(());
-    }
-    let plural = if n == 1 { "" } else { "s" };
-    writeln!(out, "{n} future{plural} off the listed tasks' await chains")?;
-    Ok(())
-}
-
 /// Every census find as an [`Entry`]. Held first, then sets, then join
 /// sets, so each level lists what a frame holds ahead of what it drives.
 fn census_entries<'a>(
@@ -1705,8 +1682,8 @@ fn census_entries<'a>(
 }
 
 /// What the census found for each task, keyed by its index in the task
-/// list. The counts each block carries and the tally the `--futures`
-/// listing closes with are all this, so they cannot disagree.
+/// list. Every count a block carries is this, so no two of them can
+/// disagree.
 ///
 /// Only a find at the top of a listing is counted — one the census
 /// reached through another is inside it, and the listing says so by
@@ -1771,7 +1748,7 @@ fn counted(n: usize, noun: &str) -> String {
     format!("{n} {noun}{plural}")
 }
 
-/// One task's share of the census, or a whole listing's once merged.
+/// One task's share of the census.
 #[derive(Clone, Copy, Default)]
 struct Counts {
     /// Futures held in one of the task's own frames.
@@ -1806,15 +1783,6 @@ impl Counts {
         }
     }
 
-    fn merge(mut self, other: &Counts) -> Counts {
-        self.held += other.held;
-        self.sets += other.sets;
-        self.children_live += other.children_live;
-        self.join_sets += other.join_sets;
-        self.joined += other.joined;
-        self
-    }
-
     /// The `Join sets` row's value: how many sets the task drives, of
     /// either kind, and what they hold between them.
     ///
@@ -1825,9 +1793,8 @@ impl Counts {
     /// zero about the sets themselves, when it is really about the kind
     /// of set that is not there.
     ///
-    /// Neither number is a second count of `Held futures` — what a set
-    /// holds is inside it — and the tasks are no part of the futures
-    /// tally at all, having await chains of their own.
+    /// Neither number is a second count of `Held futures`: what a set
+    /// holds is inside it.
     fn sets_summary(&self) -> String {
         let sets = self.sets + self.join_sets;
         if sets == 0 {
@@ -1841,13 +1808,6 @@ impl Counts {
             holds.push(counted(self.children_live, "future"));
         }
         format!("{sets} ({})", holds.join(" and "))
-    }
-
-    /// Futures actually outstanding: every held one plus every resident
-    /// set child. A join set's tasks are not among them — they are the
-    /// listing's own rows, not futures off anyone's chain.
-    fn in_flight(&self) -> usize {
-        self.held + self.children_live
     }
 }
 
@@ -2352,21 +2312,6 @@ fn print_tasks(
     if tasks.is_empty() {
         let plural = if shown == 1 { "" } else { "s" };
         writeln!(out, "{shown} task{plural}")?;
-        // The blank line the tally below sits behind; a narrowed
-        // listing's last block already ends with one.
-        if futures {
-            writeln!(out)?;
-        }
-    }
-
-    if futures {
-        let total = census
-            .counts
-            .iter()
-            .filter(|(owner, _)| selected(**owner))
-            .map(|(_, count)| count)
-            .fold(Counts::default(), Counts::merge);
-        print_census_summary(total, out)?;
     }
     Ok(())
 }
@@ -3144,22 +3089,8 @@ mod future_trace_tests {
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
 
-    /// The tally a `--futures` listing closes with.
-    fn tally(listing: &str) -> &str {
-        let at = listing
-            .find("off the listed tasks' await chains")
-            .unwrap_or_else(|| panic!("no tally in {listing}"));
-        let start = listing[..at]
-            .rfind('\n')
-            .expect("the tally is its own line")
-            + 1;
-        &listing[start..]
-    }
-
-    /// `tasks --futures --task` selecting the task that owns the
-    /// fixture's one held future prints that future under it, and the
-    /// same tally the whole listing prints — the fixture's only owner is
-    /// that task, and the tally counts what was printed.
+    /// `tasks --futures` narrowed to the task that owns the fixture's
+    /// one held future prints that future under it.
     #[test]
     fn test_futures_narrowed_to_the_owner_prints_its_futures() {
         with_target("futurelock", |_ctx, list, _extents, census| {
@@ -3182,23 +3113,17 @@ mod future_trace_tests {
             // there is no count under it restating the ids asked for.
             assert_eq!(narrowed.matches("\nTask ").count() + 1, 1, "{narrowed}");
             assert!(!narrowed.contains("\n1 task\n"), "{narrowed}");
-            assert!(
-                narrowed.contains("\n1 future off the listed tasks' await chains\n"),
-                "{narrowed}"
-            );
+            assert!(narrowed.contains("    Held futures: 1\n"), "{narrowed}");
 
-            // The whole listing carries every task, and closes with the
-            // same tally: what the census found is all this task's.
+            // The whole listing carries every task, and the same find
+            // under the same block: what the census found is all this
+            // task's.
             let all = render(list, &census.held, &census.sets, true, &[]);
             for task in &list.tasks {
                 let id = task.task_id.expect("every fixture task has an id");
                 assert!(all.contains(&format!("Task {id}: ")), "{all}");
             }
-            assert_eq!(
-                tally(&narrowed),
-                tally(&all),
-                "the fixture's only owner is task {id}"
-            );
+            assert!(all.contains(", `future1`): 0x"), "{all}");
         });
     }
 
@@ -3310,21 +3235,13 @@ mod future_trace_tests {
                 "{counted}"
             );
             assert!(!counted.contains("FuturesUnordered"), "{counted}");
-            assert!(!counted.contains("await chains"), "{counted}");
-            // The tally is those same counts over every task shown, so
-            // neither the reaped slot nor the future inside the child is
-            // added to the one child in flight.
-            assert!(
-                rendered.ends_with("\n1 future off the listed tasks' await chains\n"),
-                "{rendered}"
-            );
         });
     }
 
     /// A join set lists the tasks it holds by the ids `trace` takes,
     /// under a count of its own — its members are tasks the listing
-    /// already carries, so the futures tally leaves them alone. No
-    /// fixture spawns onto a join set, so the shape is laid out by hand.
+    /// already carries. No fixture spawns onto a join set, so the shape
+    /// is laid out by hand.
     #[test]
     fn test_futures_lists_a_join_set_by_task() {
         with_target("channels", |_ctx, list, _extents, _census| {
@@ -3375,18 +3292,11 @@ mod future_trace_tests {
                 joined[1].state.lifecycle(),
             );
             assert!(rendered.contains(&expected), "{rendered}");
-            // Joined tasks are tasks, so nothing the census counts as a
-            // future off an await chain moved.
-            assert!(
-                rendered.ends_with("\n\nno futures off the listed tasks' await chains\n"),
-                "{rendered}"
-            );
         });
     }
 
     /// A task the census found nothing for still prints its block, with
-    /// every count zero and a tally saying there was nothing to list —
-    /// silence would read as a listing that failed.
+    /// every count zero — silence would read as a listing that failed.
     #[test]
     fn test_futures_narrowed_to_a_task_holding_none() {
         with_target("channels", |_ctx, list, _extents, census| {
@@ -3397,10 +3307,6 @@ mod future_trace_tests {
             // A task that drives no set says so with a bare zero: what
             // the sets it does not have would hold is noise.
             assert!(rendered.contains("    Join sets: 0\n"), "{rendered}");
-            assert!(
-                rendered.ends_with("\n\nno futures off the listed tasks' await chains\n"),
-                "{rendered}"
-            );
         });
     }
 
