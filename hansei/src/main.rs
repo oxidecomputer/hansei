@@ -2513,7 +2513,6 @@ fn exec_census(session: &Session<'_>, top: usize, out: &mut dyn io::Write) -> Re
         waits: &analysis.waits,
         held: &census.held,
         sets: &census.sets,
-        join_sets: &census.join_sets,
     };
     summary::print(&facts, top, out)
 }

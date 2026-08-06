@@ -23,7 +23,7 @@ use hansei_types::tokio::Lifecycle;
 use hansei_types::tokio::bundle::{
     BlockingPool, FutureInfo, ParkState, ParkStates, TaskList, WaitKind,
 };
-use hansei_types::tokio::census::{FutureSet, HeldFuture, JoinSet};
+use hansei_types::tokio::census::{FutureSet, HeldFuture};
 use hansei_types::tokio::graph::TaskWait;
 
 use std::collections::BTreeMap;
@@ -56,12 +56,13 @@ pub struct Facts<'a> {
     pub tasks: &'a TaskList,
     /// One wait per task, in task-list order.
     pub waits: &'a [TaskWait],
-    /// The census as its three flat lists rather than as itself, so a
-    /// test can lay out a shape no fixture happens to hold — the same
-    /// reason `print_tasks` takes them that way.
+    /// The census as flat lists rather than as itself, so a test can
+    /// lay out a shape no fixture happens to hold — the same reason
+    /// `print_tasks` takes them that way. Its join sets are not among
+    /// them: their members are tasks the section above counts, so a
+    /// census of futures has nothing to say about them.
     pub held: &'a [HeldFuture],
     pub sets: &'a [FutureSet],
-    pub join_sets: &'a [JoinSet],
 }
 
 /// Print the census.
@@ -437,14 +438,6 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
         slots += set.children.len();
         live += set.children.iter().filter(|c| c.future.is_some()).count();
     }
-    let joined: usize = facts.join_sets.iter().map(|s| s.children.len()).sum();
-    let unlisted: usize = facts
-        .join_sets
-        .iter()
-        .flat_map(|s| &s.children)
-        .filter(|c| !c.listed)
-        .count();
-
     // The three populations are disjoint by construction — a task's own
     // spine, what its frames hold beside it, and what its sets hold —
     // so this total is a sum and not a re-count. They are a block of
@@ -501,31 +494,6 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
     }
     rows("Waiting on", &waits.rows(top), out)?;
     rows("Future types", &ranked(types, top, "type"), out)?;
-
-    // Last, and outside both blocks, because a JoinSet's members are
-    // not futures in flight at all: each is a task with a block of its
-    // own in the section above, polled by whatever worker picks it up.
-    if !facts.join_sets.is_empty() {
-        // A member the runtime has dropped is in neither count: the set
-        // holds it alive to be joined, and the task listing above is of
-        // what the runtime owns.
-        let missing = match unlisted {
-            0 => String::new(),
-            n => format!(", except {n} the runtime no longer owns"),
-        };
-        let holds = if facts.join_sets.len() == 1 {
-            "holds"
-        } else {
-            "hold"
-        };
-        writeln!(
-            out,
-            "    {} {holds} {} besides — spawned tasks, counted under Tasks \
-             above rather than as futures here{missing}",
-            counted(facts.join_sets.len(), "JoinSet"),
-            counted(joined, "task"),
-        )?;
-    }
     Ok(())
 }
 
@@ -590,7 +558,7 @@ mod tests {
 
     use exegesis::bundle::{BundleTypeId, FutureKind, TaskEntryId};
     use hansei_types::tokio::bundle::{KnownFuture, Task, WaitTarget};
-    use hansei_types::tokio::census::{JoinedTask, SetChild};
+    use hansei_types::tokio::census::SetChild;
     use hansei_types::tokio::graph::TaskRef;
     use hansei_types::tokio::{Location, RawInstant, TaskAddr, TaskState};
 
@@ -713,7 +681,6 @@ mod tests {
             waits,
             held: &[],
             sets: &[],
-            join_sets: &[],
         }
     }
 
@@ -975,7 +942,7 @@ mod tests {
 
     /// The three future populations are disjoint, so the headline is
     /// their sum: a set's children are not also held futures, and a
-    /// JoinSet's members are tasks rather than either.
+    /// reaped slot is neither.
     #[test]
     fn test_future_populations_do_not_overlap() {
         let list = empty();
@@ -993,43 +960,16 @@ mod tests {
                 child(None, None),
             ],
         }];
-        let join_sets = vec![JoinSet {
-            owner: 0,
-            frame: 0,
-            local: "set".to_string(),
-            via: None,
-            addr: 0x6000,
-            ty: "JoinSet<()>".to_string(),
-            length: 2,
-            children: vec![
-                JoinedTask {
-                    entry: 0x7000,
-                    task: 0x7100,
-                    id: Some(9),
-                    state: TaskState(REF_ONE),
-                    listed: true,
-                },
-                JoinedTask {
-                    entry: 0x7200,
-                    task: 0x7300,
-                    id: Some(10),
-                    state: TaskState(REF_ONE),
-                    listed: false,
-                },
-            ],
-        }];
         let mut facts = facts(&list, &waits);
         facts.held = &held;
         facts.sets = &sets;
-        facts.join_sets = &join_sets;
 
         let page = census(&facts, 5);
         let futures = page.split("\n\n").nth(2).unwrap();
         assert_eq!(
             futures,
             // 5 on the chains, 1 held, 1 resident set child: the
-            // reaped slot and the joined tasks are counted, and
-            // deliberately not added in.
+            // reaped slot is counted, and deliberately not added in.
             "Futures: 7 in flight\n    \
              Where they are:\n        \
              5  on task await chains (3 deep at the deepest)\n        \
@@ -1040,10 +980,7 @@ mod tests {
              1  another task (JoinHandle)\n    \
              Future types:\n        \
              1  child::fut\n        \
-             1  held::fut\n    \
-             1 JoinSet holds 2 tasks besides — spawned tasks, counted under \
-             Tasks above rather than as futures here, except 1 the runtime \
-             no longer owns\n"
+             1  held::fut\n"
         );
     }
 
