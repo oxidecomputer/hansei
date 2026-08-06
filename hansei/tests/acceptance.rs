@@ -54,6 +54,7 @@ const PROGRAMS: &[&str] = &[
     "many-tasks",
     "sleep-join",
     "unordered",
+    "joinset",
 ];
 
 fn workspace_root() -> &'static Path {
@@ -266,8 +267,8 @@ struct TaskRow {
     /// How many futures the task holds in its own frames beside its
     /// await chain, `0` when it holds none.
     futures: String,
-    /// How many task sets it drives and how many children they hold,
-    /// `0` when it drives none.
+    /// How many sets it drives and how many tasks and futures they
+    /// hold, `0` when it drives none.
     sets: String,
     /// The two source locations, `-` when the target did not record one.
     spawned: String,
@@ -316,7 +317,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             let field = match label {
                 "State" => &mut row.state,
                 "Held futures" => &mut row.futures,
-                "Task sets" => &mut row.sets,
+                "Join sets" => &mut row.sets,
                 "Spawned at" => &mut row.spawned,
                 "Defined at" => &mut row.defined,
                 _ => panic!("unexpected tasks attribute {line:?}"),
@@ -327,7 +328,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
         for (label, value) in [
             ("State", &row.state),
             ("Held futures", &row.futures),
-            ("Task sets", &row.sets),
+            ("Join sets", &row.sets),
             ("Spawned at", &row.spawned),
             ("Defined at", &row.defined),
         ] {
@@ -913,7 +914,7 @@ fn test_futures_acceptance() {
         // census found nothing for rather than staying silent;
         // `--futures` lists what each counted, under its own row.
         assert_eq!(driver.futures, "2", "{rows:?}");
-        assert_eq!(driver.sets, "1 (3 children in flight)", "{rows:?}");
+        assert_eq!(driver.sets, "1 (3 futures)", "{rows:?}");
         for row in rows.iter().filter(|row| row.id != driver.id) {
             assert_eq!(row.futures, "0", "{row:?}");
             assert_eq!(row.sets, "0", "{row:?}");
@@ -928,7 +929,7 @@ fn test_futures_acceptance() {
             "{futures}"
         );
         assert!(
-            futures.contains("    Task sets: 1 (3 children in flight)\n        "),
+            futures.contains("    Join sets: 1 (3 futures)\n        - "),
             "{futures}"
         );
         assert!(
@@ -941,9 +942,10 @@ fn test_futures_acceptance() {
         // The set's own row says the same, spelled for one set rather
         // than for the block's total.
         assert!(futures.contains("`): 3 children in flight"), "{futures}");
-        // Set-child rows sit one level deeper than the held rows.
+        // Set-child rows sit one indent step deeper than the set's own
+        // bulleted row.
         let child = regex::Regex::new(
-            r"\n          (0x[0-9a-f]+)  unordered::set_member::\{async_fn_env#0\}",
+            r"\n            (0x[0-9a-f]+)  unordered::set_member::\{async_fn_env#0\}",
         )
         .unwrap();
         let nodes: Vec<String> = child
@@ -1115,6 +1117,66 @@ fn test_futures_acceptance() {
                 driver.id
             )),
             "{out}"
+        );
+    });
+}
+
+/// A `JoinSet` holds tasks rather than futures: `tasks --futures` lists
+/// them under the task that drives the set, by the ids each has a block
+/// of its own under — and no futures count moves, because a spawned task
+/// is on its own await chain rather than off anybody's.
+#[test]
+fn test_join_set_acceptance() {
+    let bundle = fixtures().bundle("joinset");
+    with_core("joinset", |core| {
+        let rows = list_tasks(&bundle, core);
+        let driver = task_with_future(&rows, "joinset::driver::{async_fn_env#0}");
+
+        // One set holding the three members it spawned — tasks, counted
+        // apart from the futures a set of futures would hold — and
+        // nothing held in the driver's own frames.
+        assert_eq!(driver.sets, "1 (3 tasks)", "{rows:?}");
+        assert_eq!(driver.futures, "0", "{rows:?}");
+        for row in rows.iter().filter(|row| row.id != driver.id) {
+            assert_eq!(row.sets, "0", "{row:?}");
+        }
+
+        let futures = hansei_ok(&bundle, core, "tasks --futures");
+        assert!(
+            futures.contains("    Join sets: 1 (3 tasks)\n        - "),
+            "{futures}"
+        );
+        assert!(
+            futures.contains("tokio::task::join_set::JoinSet<u32> at 0x"),
+            "{futures}"
+        );
+        assert!(futures.contains("`): 3 tasks\n"), "{futures}");
+
+        // Every member is named by the id its own block carries, so the
+        // set reads as an edge into the listing rather than as a
+        // population beside it.
+        let member =
+            regex::Regex::new(r"\n            task (\d+)  joinset::member::\{async_fn_env#0\}")
+                .unwrap();
+        let ids: Vec<String> = member
+            .captures_iter(&futures)
+            .map(|c| c[1].to_string())
+            .collect();
+        assert_eq!(ids.len(), 3, "{futures}");
+        for id in &ids {
+            assert!(rows.iter().any(|row| &row.id == id), "{rows:?}");
+            let traced = hansei_ok(&bundle, core, &format!("trace {id}"));
+            assert!(
+                traced.contains("joinset::member::{async_fn_env#0}"),
+                "{traced}"
+            );
+        }
+
+        // The members are tasks, so the tally counts none of them: the
+        // fixture has nothing off any await chain.
+        assert!(
+            futures.contains("\nno futures off the listed tasks' await chains\n"),
+            "{futures}"
         );
     });
 }

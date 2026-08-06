@@ -125,14 +125,21 @@ pub enum Command {
     /// List every task owned by the runtime: id, lifecycle state,
     /// concrete future type, spawn location, where the future is
     /// defined, how many futures it holds in its own frames beside its
-    /// await chain, and how many task sets it drives.
+    /// await chain, and how many sets it drives from them.
     ///
-    /// Those last two are of what no task listing otherwise shows — a
-    /// `select!` arm held in a frame, a FuturesUnordered's children.
-    /// `--futures` lists each under its own count. They are counted
-    /// apart because a set is a container rather than a future in
-    /// flight: what it holds are its children, the number beside it,
-    /// and the two counts add up rather than overlapping.
+    /// Those two are of what no task listing otherwise shows — a
+    /// `select!` arm held in a frame, a FuturesUnordered's children, a
+    /// JoinSet's tasks. `--futures` lists each under its own count. They
+    /// are counted apart because a set is a container rather than a
+    /// future in flight: what it holds is the count beside it, and the
+    /// numbers add up rather than overlapping.
+    ///
+    /// The `Join sets` row counts what its sets hold in two parts where
+    /// it drives both kinds, because they are two populations: a JoinSet
+    /// holds *tasks*, which this listing already carries blocks for and
+    /// no futures tally counts, and a FuturesUnordered holds futures,
+    /// which nothing else shows at all. A kind it drives none of goes
+    /// unmentioned rather than counted at zero.
     ///
     /// A task's own await chain is what `trace` prints: the future it is
     /// suspended in, the one that is awaiting, and so on down to the leaf
@@ -149,20 +156,30 @@ pub enum Command {
     /// frames is printed under that child and marked `held`, since no
     /// heading over it says so.
     ///
-    /// A task set — a FuturesUnordered — is listed under `Task sets`
-    /// with the children it polls. A child lives in a heap node rather
-    /// than in a frame, so neither a task listing nor a trace reaches
-    /// it. An empty slot is a completed child the set has not reaped
-    /// yet — not a future outstanding, and counted apart from the ones
-    /// in flight.
+    /// A FuturesUnordered is listed under `Join sets` with the children
+    /// it polls. A child lives in a heap node rather than in a frame, so
+    /// neither a task listing nor a trace reaches it. An empty slot is a
+    /// completed child the set has not reaped yet — not a future
+    /// outstanding, and counted apart from the ones in flight.
+    ///
+    /// A JoinSet — and so anything built on one, such as omicron's
+    /// `ParallelTaskSet` — is listed there too, with the tasks it holds,
+    /// by the ids `trace` takes. Those are spawned tasks: each has a
+    /// block of its own here, runs on whatever worker picks it up, and
+    /// keeps running whether or not the task holding the set ever wakes. So the set says *what this task is waiting to join*, not
+    /// what it is polling. A member the listing has no block for is one
+    /// the runtime no longer owns: complete and waiting to be joined, or
+    /// running where this session cannot enumerate it.
     ///
     /// The scan recurses through what it finds, so a future held inside a
     /// set child is listed indented under that child rather than beside
     /// the ones its task holds itself. Read the indentation as
     /// containment: a future under a set child is *inside* it, so the
-    /// rows nested under a find are not a population beside it.
+    /// rows nested under a find are not a population beside it. A joined
+    /// task's own frames are not scanned from here at all — they are
+    /// scanned under its own block, where they belong.
     ///
-    /// Both counts are of the finds at the top of their listing, for the
+    /// Every count is of the finds at the top of its listing, for the
     /// same reason: a future the census reached through a set child is
     /// already inside something counted, and counting it again would
     /// make a task driving 3075 children of which each holds one future
@@ -1623,15 +1640,16 @@ struct CensusTree<'a> {
 
 /// Rebuild that tree from what the census found, which is all it reads:
 /// the census is a walk of a target, but rendering it is not. It takes
-/// the two lists rather than the census itself so a test can lay out a
+/// the find lists rather than the census itself so a test can lay out a
 /// shape no fixture happens to hold.
 fn census_tree<'a>(
     census_held: &'a [census::HeldFuture],
     census_sets: &'a [census::FutureSet],
+    census_join_sets: &'a [census::JoinSet],
 ) -> CensusTree<'a> {
     let mut roots: BTreeMap<usize, Vec<Entry<'a>>> = BTreeMap::new();
     let mut nested: HashMap<census::Via, Vec<Entry<'a>>> = HashMap::new();
-    for entry in census_entries(census_held, census_sets) {
+    for entry in census_entries(census_held, census_sets, census_join_sets) {
         match entry.via() {
             Some(via) => nested.entry(via).or_default().push(entry),
             None => roots.entry(entry.owner()).or_default().push(entry),
@@ -1640,7 +1658,7 @@ fn census_tree<'a>(
     CensusTree {
         roots,
         nested,
-        counts: census_counts(census_held, census_sets),
+        counts: census_counts(census_held, census_sets, census_join_sets),
     }
 }
 
@@ -1667,11 +1685,12 @@ fn print_census_summary(total: Counts, out: &mut dyn io::Write) -> Result<()> {
     Ok(())
 }
 
-/// Every census find as an [`Entry`]. Held first, then sets, so each
-/// level lists what a frame holds ahead of the sets it drives.
+/// Every census find as an [`Entry`]. Held first, then sets, then join
+/// sets, so each level lists what a frame holds ahead of what it drives.
 fn census_entries<'a>(
     census_held: &'a [census::HeldFuture],
     census_sets: &'a [census::FutureSet],
+    census_join_sets: &'a [census::JoinSet],
 ) -> impl Iterator<Item = Entry<'a>> {
     let held = census_held
         .iter()
@@ -1681,11 +1700,12 @@ fn census_entries<'a>(
         .iter()
         .enumerate()
         .map(|(i, s)| Entry::Set(i, s));
-    held.chain(sets)
+    let join_sets = census_join_sets.iter().map(Entry::JoinSet);
+    held.chain(sets).chain(join_sets)
 }
 
 /// What the census found for each task, keyed by its index in the task
-/// list. The two counts each block carries and the tally the `--futures`
+/// list. The counts each block carries and the tally the `--futures`
 /// listing closes with are all this, so they cannot disagree.
 ///
 /// Only a find at the top of a listing is counted — one the census
@@ -1697,20 +1717,26 @@ fn census_entries<'a>(
 fn census_counts(
     census_held: &[census::HeldFuture],
     census_sets: &[census::FutureSet],
+    census_join_sets: &[census::JoinSet],
 ) -> BTreeMap<usize, Counts> {
     let mut counts: BTreeMap<usize, Counts> = BTreeMap::new();
-    for entry in census_entries(census_held, census_sets).filter(|e| e.via().is_none()) {
+    for entry in
+        census_entries(census_held, census_sets, census_join_sets).filter(|e| e.via().is_none())
+    {
         counts.entry(entry.owner()).or_default().add(entry);
     }
     counts
 }
 
 /// One find in the nested listing, with the census index that anything
-/// found inside it names as its parent.
+/// found inside it names as its parent. A join set carries no index:
+/// its members are tasks, scanned as the tasks they are, so nothing is
+/// ever reached *through* one.
 #[derive(Clone, Copy)]
 enum Entry<'a> {
     Held(usize, &'a census::HeldFuture),
     Set(usize, &'a census::FutureSet),
+    JoinSet(&'a census::JoinSet),
 }
 
 impl Entry<'_> {
@@ -1718,6 +1744,7 @@ impl Entry<'_> {
         match self {
             Entry::Held(_, h) => h.owner,
             Entry::Set(_, s) => s.owner,
+            Entry::JoinSet(j) => j.owner,
         }
     }
 
@@ -1725,15 +1752,23 @@ impl Entry<'_> {
         match self {
             Entry::Held(_, h) => h.via,
             Entry::Set(_, s) => s.via,
+            Entry::JoinSet(j) => j.via,
         }
     }
 
-    /// Which of a block's two listings this find belongs under. Only a
-    /// root is sorted this way: a find inside another is printed under
-    /// what holds it, wherever that is.
+    /// Which of a block's two listings this find belongs under: the
+    /// futures the task holds itself, or the sets it drives, of either
+    /// kind. Only a root is sorted this way — a find inside another is
+    /// printed under what holds it, wherever that is.
     fn is_set(&self) -> bool {
-        matches!(self, Entry::Set(_, _))
+        matches!(self, Entry::Set(_, _) | Entry::JoinSet(_))
     }
+}
+
+/// A count and the noun it counts, pluralized.
+fn counted(n: usize, noun: &str) -> String {
+    let plural = if n == 1 { "" } else { "s" };
+    format!("{n} {noun}{plural}")
 }
 
 /// One task's share of the census, or a whole listing's once merged.
@@ -1741,13 +1776,19 @@ impl Entry<'_> {
 struct Counts {
     /// Futures held in one of the task's own frames.
     held: usize,
-    /// Task sets it drives from one of those frames. A set is a
+    /// Sets of futures it drives from one of those frames. A set is a
     /// container rather than a future outstanding in its own right, so
     /// it is counted apart from both.
     sets: usize,
     /// Children of those sets still holding a future: an empty slot is a
     /// completed child the set has not reaped, not a future outstanding.
     children_live: usize,
+    /// Join sets it drives from those frames, and the tasks they hold.
+    /// A joined task is not a future off anyone's await chain — it is a
+    /// task with a chain of its own, and a block in this same listing —
+    /// so it is counted here and nowhere else.
+    join_sets: usize,
+    joined: usize,
 }
 
 impl Counts {
@@ -1758,6 +1799,10 @@ impl Counts {
                 self.sets += 1;
                 self.children_live += s.children.iter().filter(|c| c.future.is_some()).count();
             }
+            Entry::JoinSet(j) => {
+                self.join_sets += 1;
+                self.joined += j.children.len();
+            }
         }
     }
 
@@ -1765,37 +1810,65 @@ impl Counts {
         self.held += other.held;
         self.sets += other.sets;
         self.children_live += other.children_live;
+        self.join_sets += other.join_sets;
+        self.joined += other.joined;
         self
     }
 
-    /// The `Task sets` row's value: how many sets, and — for a task
-    /// that drives any — how many children they hold between them,
-    /// which is the whole reason a reader cares that they are there.
+    /// The `Join sets` row's value: how many sets the task drives, of
+    /// either kind, and what they hold between them.
     ///
-    /// `child`, not `future`, so the row cannot be read as a second
-    /// count of what `Held futures` counts: what a set holds is what
-    /// its own row calls a child, and the two numbers add up rather
-    /// than overlapping.
+    /// The two populations are named apart because they are not the
+    /// same thing — a JoinSet holds tasks and a FuturesUnordered holds
+    /// futures — but only where a set of that kind is listed. `2 (0
+    /// tasks and 7126 futures)` over two sets of futures reads as a
+    /// zero about the sets themselves, when it is really about the kind
+    /// of set that is not there.
+    ///
+    /// Neither number is a second count of `Held futures` — what a set
+    /// holds is inside it — and the tasks are no part of the futures
+    /// tally at all, having await chains of their own.
     fn sets_summary(&self) -> String {
-        if self.sets == 0 {
+        let sets = self.sets + self.join_sets;
+        if sets == 0 {
             return "0".to_string();
         }
-        let plural = if self.children_live == 1 { "" } else { "ren" };
-        format!(
-            "{} ({} child{plural} in flight)",
-            self.sets, self.children_live
-        )
+        let mut holds = Vec::new();
+        if self.join_sets > 0 {
+            holds.push(counted(self.joined, "task"));
+        }
+        if self.sets > 0 {
+            holds.push(counted(self.children_live, "future"));
+        }
+        format!("{sets} ({})", holds.join(" and "))
     }
 
     /// Futures actually outstanding: every held one plus every resident
-    /// set child.
+    /// set child. A join set's tasks are not among them — they are the
+    /// listing's own rows, not futures off anyone's chain.
     fn in_flight(&self) -> usize {
         self.held + self.children_live
     }
 }
 
+/// What printing a find needs beyond the find itself: the tree it sits
+/// in, and the task listing a joined task is named from — a join set
+/// holds tasks the listing already carries, so its rows say what those
+/// blocks say rather than something of their own.
+struct Listing<'a> {
+    nested: &'a HashMap<census::Via, Vec<Entry<'a>>>,
+    list: &'a bundle::TaskList,
+    polling: &'a HashMap<u64, u32>,
+}
+
 /// Print one find and, indented under it, everything the census reached
 /// by scanning its frames.
+///
+/// A set's row opens with a `-`, and everything it holds is indented one
+/// four-space step under it — the same step the block's own rows take
+/// from their heading. A listing running to thousands of children is
+/// otherwise a wall with nothing marking where one set ends and the next
+/// begins.
 ///
 /// `mark_held` prefixes a held future's row with `held`. A row under
 /// `Held futures` needs no such word — the heading is it — but one
@@ -1804,12 +1877,13 @@ impl Counts {
 /// nothing turns it off.
 fn print_future_entry<'a>(
     entry: Entry<'a>,
-    nested: &HashMap<census::Via, Vec<Entry<'a>>>,
+    listing: &Listing<'a>,
     indent: usize,
     mark_held: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let pad = " ".repeat(indent);
+    let nested = listing.nested;
     match entry {
         Entry::Held(index, h) => {
             let state = h
@@ -1827,7 +1901,7 @@ fn print_future_entry<'a>(
                 writeln!(out, "{pad}  waiting on {waiting}")?;
             }
             for inner in nested.get(&census::Via::Held(index)).into_iter().flatten() {
-                print_future_entry(*inner, nested, indent + 2, mark_held, out)?;
+                print_future_entry(*inner, listing, indent + 4, mark_held, out)?;
             }
         }
         Entry::Set(index, set) => {
@@ -1839,12 +1913,16 @@ fn print_future_entry<'a>(
             };
             writeln!(
                 out,
-                "{pad}{} at {:#x} (frame {}, `{}`): {live} child{plural} in flight{reaped}",
+                "{pad}- {} at {:#x} (frame {}, `{}`): {live} child{plural} in flight{reaped}",
                 set.ty, set.addr, set.frame, set.local
             )?;
             for (child_index, child) in set.children.iter().enumerate() {
                 let Some(future) = &child.future else {
-                    writeln!(out, "{pad}  {:#x}  <completed, not yet reaped>", child.node)?;
+                    writeln!(
+                        out,
+                        "{pad}    {:#x}  <completed, not yet reaped>",
+                        child.node
+                    )?;
                     continue;
                 };
                 let state = child
@@ -1852,21 +1930,76 @@ fn print_future_entry<'a>(
                     .as_ref()
                     .map(|s| format!("  {s}"))
                     .unwrap_or_default();
-                writeln!(out, "{pad}  {:#x}  {future}{state}", child.node)?;
+                writeln!(out, "{pad}    {:#x}  {future}{state}", child.node)?;
                 if let Some(waiting) = &child.waiting_on {
-                    writeln!(out, "{pad}    waiting on {waiting}")?;
+                    writeln!(out, "{pad}      waiting on {waiting}")?;
                 }
                 let via = census::Via::SetChild {
                     set: index,
                     child: child_index,
                 };
                 for inner in nested.get(&via).into_iter().flatten() {
-                    print_future_entry(*inner, nested, indent + 4, true, out)?;
+                    print_future_entry(*inner, listing, indent + 8, true, out)?;
                 }
+            }
+        }
+        Entry::JoinSet(set) => {
+            let held = set.children.len();
+            let plural = if held == 1 { "" } else { "s" };
+            // The set keeps its own count; a walk that reached fewer
+            // entries than that says so here, since the error saying
+            // why is on stderr and this is the row it belongs to.
+            let short = match set.length {
+                len if len != held as u64 => format!(" (the set records {len})"),
+                _ => String::new(),
+            };
+            writeln!(
+                out,
+                "{pad}- {} at {:#x} (frame {}, `{}`): {held} task{plural}{short}",
+                set.ty, set.addr, set.frame, set.local
+            )?;
+            for child in &set.children {
+                writeln!(out, "{pad}    {}", joined_task(child, listing))?;
             }
         }
     }
     Ok(())
+}
+
+/// A task's lifecycle as a listing spells it: the worker holding it
+/// where the runtime says one is, since `running` alone leaves a reader
+/// asking where.
+fn task_state(task: &bundle::Task, polling: &HashMap<u64, u32>) -> String {
+    match (task.state.lifecycle(), task.task_id) {
+        (Lifecycle::Running, Some(id)) if polling.contains_key(&id) => {
+            format!("running (lwp {})", polling[&id])
+        }
+        (lifecycle, _) => lifecycle.to_string(),
+    }
+}
+
+/// One joined task's row: how the task listing names it, or — for a
+/// task no listing can show — why it is not there to name.
+fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>) -> String {
+    let who = match child.id {
+        Some(id) => format!("task {id}"),
+        None => format!("the task at {:#x}", child.task),
+    };
+    if let Some(task) = listing.list.tasks.iter().find(|t| t.addr.0 == child.task) {
+        let state = task_state(task, listing.polling);
+        return format!("{who}  {}  {state}", future_name(&task.future));
+    }
+    // Complete means off the runtime's owned list, alive only through
+    // the set's entry until its output is taken; alive but unlisted
+    // means it runs where this session does not enumerate tasks.
+    if child.state.lifecycle() == Lifecycle::Complete {
+        format!("{who}  <complete, awaiting join>")
+    } else {
+        format!(
+            "{who}  <{}, not in the scheduler's owned tasks>",
+            child.state.lifecycle()
+        )
+    }
 }
 
 /// The display name of a task's future, however well the symbol join
@@ -2100,6 +2233,7 @@ fn exec_tasks(
         &polling,
         &census.held,
         &census.sets,
+        &census.join_sets,
         futures,
         tasks,
         out,
@@ -2119,13 +2253,15 @@ fn exec_tasks(
 /// whole list.
 ///
 /// It takes what it prints rather than a session so the offline tests
-/// can drive it, the census as its two flat lists so a test can lay out
-/// a shape no fixture happens to hold.
+/// can drive it, the census as its flat lists so a test can lay out a
+/// shape no fixture happens to hold.
+#[allow(clippy::too_many_arguments)]
 fn print_tasks(
     list: &bundle::TaskList,
     polling: &HashMap<u64, u32>,
     census_held: &[census::HeldFuture],
     census_sets: &[census::FutureSet],
+    census_join_sets: &[census::JoinSet],
     futures: bool,
     tasks: &[u64],
     out: &mut dyn io::Write,
@@ -2146,7 +2282,12 @@ fn print_tasks(
         only.insert(index);
     }
     let selected = |index: usize| tasks.is_empty() || only.contains(&index);
-    let census = census_tree(census_held, census_sets);
+    let census = census_tree(census_held, census_sets, census_join_sets);
+    let listing = Listing {
+        nested: &census.nested,
+        list,
+        polling,
+    };
 
     // A block per task rather than a row: a future type is long enough
     // that column-aligning it pushes the two source locations off the
@@ -2161,14 +2302,8 @@ fn print_tasks(
             Some(id) => id.to_string(),
             None => format!("{:?}", task.addr),
         };
-        let state = match (task.state.lifecycle(), task.task_id) {
-            (Lifecycle::Running, Some(id)) if polling.contains_key(&id) => {
-                format!("running (lwp {})", polling[&id])
-            }
-            (lifecycle, _) => lifecycle.to_string(),
-        };
         writeln!(out, "Task {id}: {}", future_name(&task.future))?;
-        writeln!(out, "    State: {state}")?;
+        writeln!(out, "    State: {}", task_state(task, polling))?;
         // Every block carries every row, so the two source locations sit
         // at the same place in each and a missing one reads as a gap in
         // what the target recorded rather than as a shorter block.
@@ -2186,28 +2321,27 @@ fn print_tasks(
         };
         writeln!(out, "    Defined at: {defined}")?;
         // What the task has off its spine, in two rows rather than one:
-        // the futures held in its own frames, and the task sets it
-        // drives from them. A set is a container, so counting it among
-        // the futures made a row saying `Futures: 2` list three finds;
+        // the futures held in its own frames, and the sets it drives
+        // from them. A set is a container, so counting it among the
+        // futures made a row saying `Futures: 2` list three finds;
         // keeping the two apart lets each number say what the listing
-        // under it shows. Each row is named for what it lists — held
-        // futures, and children in flight — so neither reads as a
-        // restatement of the other, and neither counts what the census
-        // reached through the other. Last in the block, since what
+        // under it shows. The sets are one row whichever kind they are —
+        // a listing of what this task drives is one thing to read — with
+        // the tasks and the futures they hold counted apart, since those
+        // are not the same population. Last in the block, since what
         // `--futures` lists under them is as long as the census found it
         // to be.
         let count = census.counts.get(&index).copied().unwrap_or_default();
         let roots = || census.roots.get(&index).into_iter().flatten();
-        writeln!(out, "    Held futures: {}", count.held)?;
-        if futures {
-            for entry in roots().filter(|e| !e.is_set()) {
-                print_future_entry(*entry, &census.nested, 8, false, out)?;
-            }
-        }
-        writeln!(out, "    Task sets: {}", count.sets_summary())?;
-        if futures {
-            for entry in roots().filter(|e| e.is_set()) {
-                print_future_entry(*entry, &census.nested, 8, false, out)?;
+        for (label, value, sets) in [
+            ("Held futures", count.held.to_string(), false),
+            ("Join sets", count.sets_summary(), true),
+        ] {
+            writeln!(out, "    {label}: {value}")?;
+            if futures {
+                for entry in roots().filter(|e| e.is_set() == sets) {
+                    print_future_entry(*entry, &listing, 8, false, out)?;
+                }
             }
         }
         writeln!(out)?;
@@ -2810,10 +2944,12 @@ mod whatis_tests {
 #[cfg(test)]
 mod future_trace_tests {
     use super::{
-        FutureAt, TraceTarget, future_at, parse_trace_target, print_await_chain, print_tasks,
+        FutureAt, TraceTarget, future_at, future_name, parse_trace_target, print_await_chain,
+        print_tasks,
     };
     use exegesis::bundle::{Bundle, BundleView};
-    use hansei_types::tokio::bundle::{Context, TaskExtents, TaskList};
+    use hansei_types::tokio::TaskState;
+    use hansei_types::tokio::bundle::{self, Context, TaskExtents, TaskList};
     use hansei_types::tokio::census::{self, FutureCensus};
     use proc::Target;
     use proc::snapshot::Snapshot;
@@ -2980,9 +3116,31 @@ mod future_trace_tests {
         futures: bool,
         tasks: &[u64],
     ) -> String {
-        let mut out = Vec::new();
-        print_tasks(list, &HashMap::new(), held, sets, futures, tasks, &mut out)
-            .expect("the listing renders");
+        render_joining(list, held, sets, &[], futures, tasks)
+    }
+
+    /// The same, for the tests that lay out join sets: no fixture
+    /// spawns onto one, so they are built by hand.
+    fn render_joining(
+        list: &TaskList,
+        held: &[census::HeldFuture],
+        sets: &[census::FutureSet],
+        join_sets: &[census::JoinSet],
+        futures: bool,
+        tasks: &[u64],
+    ) -> String {
+        let mut out: Vec<u8> = Vec::new();
+        print_tasks(
+            list,
+            &HashMap::new(),
+            held,
+            sets,
+            join_sets,
+            futures,
+            tasks,
+            &mut out,
+        )
+        .expect("the listing renders");
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
 
@@ -3126,7 +3284,7 @@ mod future_trace_tests {
 
             let rendered = render(list, &held, &sets, true, &[]);
 
-            // The set sits under the owning task's `Task sets` row, the
+            // The set sits under the owning task's `Join sets` row, the
             // held row two columns right of the child it was found in,
             // which is itself two right of the set. The task holds
             // nothing in its own frames, so `Held futures` is zero and
@@ -3134,10 +3292,10 @@ mod future_trace_tests {
             // child, which the child's own row counts.
             assert!(
                 rendered.contains(
-                    "    Held futures: 0\n    Task sets: 1 (1 child in flight)\n        \
-                     FuturesUnordered<step::{async_fn_env#0}> at 0x1000 (frame 0, `pending`): \
-                     1 child in flight, 1 completed and not yet reaped\n          \
-                     0x2000  step::{async_fn_env#0}  Suspend0 — step.rs:9\n            \
+                    "    Held futures: 0\n    Join sets: 1 (1 future)\n        \
+                     - FuturesUnordered<step::{async_fn_env#0}> at 0x1000 (frame 0, `pending`): \
+                     1 child in flight, 1 completed and not yet reaped\n            \
+                     0x2000  step::{async_fn_env#0}  Suspend0 — step.rs:9\n                \
                      held (frame 1, `lock`): 0x3000  Mutex::lock::{async_fn_env#0}\n"
                 ),
                 "{rendered}"
@@ -3148,7 +3306,7 @@ mod future_trace_tests {
             let counted = render(list, &held, &sets, false, &[]);
             assert!(counted.contains("    Held futures: 0\n"), "{counted}");
             assert!(
-                counted.contains("    Task sets: 1 (1 child in flight)\n"),
+                counted.contains("    Join sets: 1 (1 future)\n"),
                 "{counted}"
             );
             assert!(!counted.contains("FuturesUnordered"), "{counted}");
@@ -3163,8 +3321,71 @@ mod future_trace_tests {
         });
     }
 
+    /// A join set lists the tasks it holds by the ids `trace` takes,
+    /// under a count of its own — its members are tasks the listing
+    /// already carries, so the futures tally leaves them alone. No
+    /// fixture spawns onto a join set, so the shape is laid out by hand.
+    #[test]
+    fn test_futures_lists_a_join_set_by_task() {
+        with_target("channels", |_ctx, list, _extents, _census| {
+            // The set holds two of the fixture's own tasks and one the
+            // runtime no longer owns, which is what a complete-but-not
+            // yet-joined member looks like.
+            let joined: Vec<&bundle::Task> = list.tasks.iter().take(2).collect();
+            let owner = list.tasks.len() - 1;
+            let mut children: Vec<census::JoinedTask> = joined
+                .iter()
+                .map(|task| census::JoinedTask {
+                    entry: task.addr.0 + 0x40,
+                    task: task.addr.0,
+                    id: task.task_id,
+                    state: task.state,
+                    listed: true,
+                })
+                .collect();
+            children.push(census::JoinedTask {
+                entry: 0x5040,
+                task: 0x5000,
+                id: Some(99),
+                state: TaskState(0b0010),
+                listed: false,
+            });
+            let join_sets = vec![census::JoinSet {
+                owner,
+                frame: 0,
+                local: "set".to_string(),
+                via: None,
+                addr: 0x4000,
+                ty: "JoinSet<()>".to_string(),
+                length: 3,
+                children,
+            }];
+
+            let rendered = render_joining(list, &[], &[], &join_sets, true, &[]);
+            let expected = format!(
+                "    Held futures: 0\n    Join sets: 1 (3 tasks)\n        \
+                 - JoinSet<()> at 0x4000 (frame 0, `set`): 3 tasks\n            \
+                 task {}  {}  {}\n            task {}  {}  {}\n            \
+                 task 99  <complete, awaiting join>\n",
+                joined[0].task_id.expect("the fixture's tasks have ids"),
+                future_name(&joined[0].future),
+                joined[0].state.lifecycle(),
+                joined[1].task_id.expect("the fixture's tasks have ids"),
+                future_name(&joined[1].future),
+                joined[1].state.lifecycle(),
+            );
+            assert!(rendered.contains(&expected), "{rendered}");
+            // Joined tasks are tasks, so nothing the census counts as a
+            // future off an await chain moved.
+            assert!(
+                rendered.ends_with("\n\nno futures off the listed tasks' await chains\n"),
+                "{rendered}"
+            );
+        });
+    }
+
     /// A task the census found nothing for still prints its block, with
-    /// both counts zero and a tally saying there was nothing to list —
+    /// every count zero and a tally saying there was nothing to list —
     /// silence would read as a listing that failed.
     #[test]
     fn test_futures_narrowed_to_a_task_holding_none() {
@@ -3174,8 +3395,8 @@ mod future_trace_tests {
             assert!(rendered.starts_with(&format!("Task {id}: ")), "{rendered}");
             assert!(rendered.contains("    Held futures: 0\n"), "{rendered}");
             // A task that drives no set says so with a bare zero: what
-            // futures the sets it does not have would hold is noise.
-            assert!(rendered.contains("    Task sets: 0\n"), "{rendered}");
+            // the sets it does not have would hold is noise.
+            assert!(rendered.contains("    Join sets: 0\n"), "{rendered}");
             assert!(
                 rendered.ends_with("\n\nno futures off the listed tasks' await chains\n"),
                 "{rendered}"
@@ -3201,6 +3422,7 @@ mod future_trace_tests {
                 &HashMap::new(),
                 &census.held,
                 &census.sets,
+                &census.join_sets,
                 true,
                 &[unknown],
                 &mut out,

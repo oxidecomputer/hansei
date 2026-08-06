@@ -31,6 +31,7 @@
 //! behind an unrecognized `Box`/`Arc` is not found (the dyn wide
 //! pointer and a set's node list are the deliberate exceptions).
 
+use super::TaskState;
 use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, leaf_kind};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
@@ -43,6 +44,13 @@ use reify::{TypeInfo, TypeInfoRef};
 /// The by-value type every set is recognized as. The trailing `<` keeps
 /// the match on the real generic, not a lookalike suffix.
 const FUTURES_UNORDERED: &str = "futures_util::stream::futures_unordered::FuturesUnordered<";
+
+/// The by-value type every join set is recognized as. A `JoinSet` holds
+/// *tasks* rather than futures, so it is walked and reported apart from
+/// a set of futures; anything built on one (omicron's `ParallelTaskSet`,
+/// which pairs it with a semaphore) is reached by the same scan, since
+/// it holds its `JoinSet` by value.
+const JOIN_SET: &str = "tokio::task::join_set::JoinSet<";
 
 /// The spelling of a future trait object's pointee, which is what makes
 /// a wide pointer worth chaining even before the vtable join names the
@@ -66,6 +74,7 @@ const MAX_NESTING: usize = 8;
 #[derive(Debug)]
 pub struct FutureCensus {
     pub sets: Vec<FutureSet>,
+    pub join_sets: Vec<JoinSet>,
     pub held: Vec<HeldFuture>,
     /// `(start, end, set, child)` per child node, sorted by start, so a
     /// raw pointer into a node resolves to the set that owns it.
@@ -118,6 +127,54 @@ pub struct FutureSet {
     pub addr: u64,
     pub ty: String,
     pub children: Vec<SetChild>,
+}
+
+/// One `JoinSet`, in place: who drives it and which tasks it holds.
+///
+/// Its members are spawned tasks, so — unlike a set of futures — every
+/// one of them is already a row in the task listing, polled by whatever
+/// worker picks it up rather than by the task holding the set. What the
+/// census adds is the edge: which listed tasks this one is waiting to
+/// join. Their own frames are therefore *not* scanned from here; each is
+/// scanned as the task it is.
+#[derive(Debug)]
+pub struct JoinSet {
+    /// Index into the [`TaskList`] the census was built from.
+    pub owner: usize,
+    /// The await-chain frame the set was found in, and the local (the
+    /// frame member the scan entered through) that holds it.
+    pub frame: usize,
+    pub local: String,
+    /// How the census reached the frame when it is not one of the
+    /// owning task's own; see [`HeldFuture::via`].
+    pub via: Option<Via>,
+    /// The set's address and full type name.
+    pub addr: u64,
+    pub ty: String,
+    /// The count the set keeps for itself, which the walk is checked
+    /// against: they disagree only if the walk stopped early, and the
+    /// error that says so is on the census.
+    pub length: u64,
+    pub children: Vec<JoinedTask>,
+}
+
+/// One task a [`JoinSet`] holds, as the set's own list entry names it.
+#[derive(Debug)]
+pub struct JoinedTask {
+    /// The set's `ListEntry` for this task — the allocation whose waker
+    /// the task notifies on completion, not the task itself.
+    pub entry: u64,
+    /// The joined task's `Header`, which is the address a task listing
+    /// identifies it by.
+    pub task: u64,
+    /// Its id, when the header carries one.
+    pub id: Option<u64>,
+    /// Its state word. A complete task has left the runtime's owned
+    /// list — no listing shows it, and the set's entry is what keeps it
+    /// alive until it is joined.
+    pub state: TaskState,
+    /// Whether the enumerated task list contains it.
+    pub listed: bool,
 }
 
 /// Where a census future can be re-rooted for tracing: the address its
@@ -202,12 +259,14 @@ impl FutureCensus {
 /// What one scan hit is; [`Walker::record`] decides what to do with it.
 enum Find<'b> {
     Set(TypeInfo<'b, BundleType<'b>>),
+    JoinSet(TypeInfo<'b, BundleType<'b>>),
     Future(TypeInfo<'b, BundleType<'b>>),
 }
 
 /// The census walker's running state.
 struct Walker {
     sets: Vec<FutureSet>,
+    join_sets: Vec<JoinSet>,
     held: Vec<HeldFuture>,
     spans: Vec<(u64, u64, usize, usize)>,
     errors: Vec<anyhow::Error>,
@@ -225,6 +284,7 @@ struct Walker {
 pub fn census<T: Target + Sync>(ctx: &Context<'_, T>, list: &TaskList) -> FutureCensus {
     let mut walker = Walker {
         sets: Vec::new(),
+        join_sets: Vec::new(),
         held: Vec::new(),
         spans: Vec::new(),
         errors: Vec::new(),
@@ -243,6 +303,7 @@ pub fn census<T: Target + Sync>(ctx: &Context<'_, T>, list: &TaskList) -> Future
     walker.spans.sort_unstable();
     FutureCensus {
         sets: walker.sets,
+        join_sets: walker.join_sets,
         held: walker.held,
         spans: walker.spans,
         errors: walker.errors,
@@ -305,7 +366,7 @@ impl Walker {
         nesting: usize,
     ) {
         let value = match &find {
-            Find::Set(value) | Find::Future(value) => value,
+            Find::Set(value) | Find::JoinSet(value) | Find::Future(value) => value,
         };
         if !self.visited.insert((value.addr, value.ty.id())) {
             return;
@@ -313,6 +374,9 @@ impl Walker {
         match find {
             Find::Set(value) => {
                 self.record_set(ctx, list, owner, frame, local, via, &value, nesting)
+            }
+            Find::JoinSet(value) => {
+                self.record_join_set(ctx, list, owner, frame, local, via, &value)
             }
             Find::Future(value) => {
                 let place = (value.addr, value.ty.id());
@@ -412,6 +476,49 @@ impl Walker {
             self.scan_chain(ctx, list, owner, Some(via), &chain, nesting + 1);
         }
     }
+
+    /// Record one join set: walk its two entry lists for the tasks it
+    /// holds.
+    ///
+    /// Nothing recurses out of here. A member is a task the runtime owns
+    /// and the listing already carries, so its frames are scanned as its
+    /// own — a second scan from here would report every future it holds
+    /// twice, under a task that does not poll it.
+    #[allow(clippy::too_many_arguments)]
+    fn record_join_set<'b, T: Target + Sync>(
+        &mut self,
+        ctx: &Context<'b, T>,
+        list: &TaskList,
+        owner: usize,
+        frame: usize,
+        local: &str,
+        via: Option<Via>,
+        value: &TypeInfo<'b, BundleType<'b>>,
+    ) {
+        // As for a set of futures: a walk that fails part-way keeps the
+        // members it reached, and the error says the list is short. The
+        // length is read before the walk and kept either way, so a short
+        // list is visible in the listing and not only on stderr.
+        let mut children = Vec::new();
+        let mut length = 0;
+        if let Err(e) = walk_join_set(ctx, list, value, &mut children, &mut length) {
+            self.errors.push(e.context(format!(
+                "the JoinSet at {:#x} lists only {} of its tasks",
+                value.addr,
+                children.len()
+            )));
+        }
+        self.join_sets.push(JoinSet {
+            owner,
+            frame,
+            local: local.to_string(),
+            via,
+            addr: value.addr,
+            ty: value.ty.name().to_string(),
+            length,
+            children,
+        });
+    }
 }
 
 /// Find every by-value future inside `value`: the value itself, or one
@@ -431,6 +538,10 @@ fn scan_value<'b>(
     let name = value.ty.name();
     if name.starts_with(FUTURES_UNORDERED) {
         found.push(Find::Set(value.to_owned()));
+        return;
+    }
+    if name.starts_with(JOIN_SET) {
+        found.push(Find::JoinSet(value.to_owned()));
         return;
     }
     // A coroutine env, a known leaf, or a future trait object is a
@@ -618,6 +729,101 @@ fn walk_set<'b, T: Target + Sync>(
         children.push((child, chain, (cur, cur + node_ty.size())));
 
         cur = node.member("next_all")?.parse(ctx)?;
+    }
+    Ok(())
+}
+
+/// Walk one join set's two entry lists for the tasks it holds, returning
+/// the length the set keeps for itself.
+///
+/// A `JoinSet<T>` is an `IdleNotifiedSet<JoinHandle<T>>`: a `length` in
+/// the frame beside an `Arc` to a mutex over *two* intrusive lists, one
+/// of entries whose task has woken and one of the rest. Which list an
+/// entry is in says nothing about the task — a completed task waits in
+/// `notified` for its output to be taken — so both are walked and the
+/// tasks reported together, in the order the lists hold them.
+///
+/// Every entry's `value` is live by construction: an entry leaves the
+/// two lists before its `JoinHandle` is consumed.
+fn walk_join_set<'b, T: Target + Sync>(
+    ctx: &Context<'b, T>,
+    list: &TaskList,
+    set: &TypeInfo<'b, BundleType<'b>>,
+    tasks: &mut Vec<JoinedTask>,
+    length: &mut u64,
+) -> Result<()> {
+    let inner = set.member("inner")?;
+    *length = inner.member("length")?.parse(ctx)?;
+    // The lists live behind an Arc, whose target is the `ArcInner`
+    // header the payload follows; `data` is the mutex, and its own
+    // `data` the guarded value, however the loom shim spells the lock.
+    let lists = inner
+        .member("lists")?
+        .deref_ptr(ctx)
+        .context("failed to read the join set's shared lists")?
+        .member("data")?
+        .member("data")?
+        .to_owned();
+
+    let mut visited = HashSet::default();
+    for name in ["notified", "idle"] {
+        let queue = lists.member(name)?;
+        let Some(head) = queue.member("head")?.try_select_variant("Some")? else {
+            continue;
+        };
+        // The Some payload peels through the NonNull to the raw entry
+        // pointer: its target is the layout each entry decodes with.
+        let entry_ty = head
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("the {name} list head is not pointer-shaped"))?;
+        let mut cur = Some(head.parse::<u64, _>(ctx)?);
+        while let Some(addr) = cur {
+            ensure!(
+                ctx.mappings.contains_addr(addr),
+                "join set entry pointer {addr:#x} is unmapped"
+            );
+            ensure!(visited.insert(addr), "join set entry cycle at {addr:#x}");
+            ensure!(
+                tasks.len() < MAX_CHILDREN,
+                "the walk stopped at {MAX_CHILDREN} entries"
+            );
+
+            let entry = TypeInfo::from_addr(ctx, entry_ty, addr)
+                .with_context(|| format!("failed to read the join set entry at {addr:#x}"))?;
+            // ListEntry.value is the joined task's `JoinHandle`, behind
+            // a cell and a `ManuallyDrop`. Every wrapper from the cell
+            // down to the `Header` pointer holds one value, the handle
+            // included, so peeling lands on that pointer — the same word
+            // a `JoinHandle` leaf is read through. Asking for a member
+            // by name in there would peel first and look afterwards,
+            // which is to say look past what it asked for.
+            let handle = entry.member("value")?.peel();
+            ensure!(
+                handle.ty.pointer_target().is_some(),
+                "the join set entry at {addr:#x} does not peel to a task pointer, \
+                 but to {}",
+                handle.ty.name()
+            );
+            let task: u64 = handle.parse(ctx)?;
+            let (id, state) = ctx
+                .header_task_ref(task)
+                .with_context(|| format!("failed to identify the task joined at {addr:#x}"))?;
+            tasks.push(JoinedTask {
+                entry: addr,
+                task,
+                id,
+                state,
+                listed: list.contains(task),
+            });
+
+            cur = entry
+                .member("pointers")?
+                .member("next")?
+                .try_select_variant("Some")?
+                .map(|ptr| ptr.parse(ctx))
+                .transpose()?;
+        }
     }
     Ok(())
 }

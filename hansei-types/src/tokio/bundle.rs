@@ -1092,7 +1092,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// pointers — including to a task that has already completed and
     /// left the owned list (the handle's reference keeps the Header
     /// alive), which only the state word reveals.
-    fn header_task_ref(&self, addr: u64) -> Result<(Option<u64>, TaskState)> {
+    pub(crate) fn header_task_ref(&self, addr: u64) -> Result<(Option<u64>, TaskState)> {
         ensure!(
             self.mappings.contains_addr(addr),
             "task Header pointer {addr:#x} is unmapped"
