@@ -1273,6 +1273,87 @@ fn test_threads_shows_workers_and_stacks() {
     });
 }
 
+/// The census counts the same target every other listing walks: the
+/// threads by what their parkers say — including the one asleep in the
+/// driver on the whole runtime's behalf — the tasks by lifecycle and by
+/// what each waits on, and the futures on their await chains.
+#[test]
+fn test_census_counts_the_target() {
+    let bundle = fixtures().bundle("sleep-join");
+    with_core("sleep-join", |core| {
+        let out = hansei_ok(&bundle, core, "census");
+
+        assert!(out.contains(" in the scheduler's run loop"), "{out}");
+        assert!(out.contains("1 parked in the io driver"), "{out}");
+        // The `block_on` thread is in the runtime without running the
+        // worker loop, as `threads` says of it too — and it is counted
+        // apart from the pool's own threads, which the runtime's two
+        // workers are otherwise counted among.
+        assert!(
+            out.contains("in the runtime, outside the run loop\n"),
+            "{out}"
+        );
+        assert!(out.contains(" in the blocking pool ("), "{out}");
+        assert!(
+            out.contains("1 that entered the runtime another way (a block_on caller)"),
+            "{out}"
+        );
+
+        // The task total is the task listing's, and the two waits are
+        // the two leaves the graph names: the sleeper on the timer, the
+        // joiner on the sleeper.
+        let rows = list_tasks(&bundle, core);
+        assert!(
+            out.contains(&format!("Tasks: {} owned by the runtime\n", rows.len())),
+            "{out}"
+        );
+        assert!(out.contains("    Lifecycle: 2 idle\n"), "{out}");
+        assert!(out.contains("\n        1  a timer\n"), "{out}");
+        assert!(
+            out.contains("\n        1  another task (JoinHandle)\n"),
+            "{out}"
+        );
+
+        // Two two-frame chains — each an async fn over its leaf — and
+        // nothing at all off them.
+        assert!(
+            out.contains(
+                "    Where they are:\n        \
+                 4  on task await chains (2 deep at the deepest)\n        \
+                 0  held in frames, off any await chain\n        \
+                 0  in 0 FuturesUnordered\n"
+            ),
+            "{out}"
+        );
+    });
+}
+
+/// What a set holds is counted apart from what a frame holds, with the
+/// same split `tasks --futures` lists: three children in flight, and
+/// two futures held off the driver's chain beside them.
+#[test]
+fn test_census_counts_a_set_and_what_is_held_beside_it() {
+    let bundle = fixtures().bundle("unordered");
+    with_core("unordered", |core| {
+        let out = hansei_ok(&bundle, core, "census");
+        assert!(
+            out.contains(
+                "        2  held in frames, off any await chain\n        \
+                 3  in 1 FuturesUnordered\n"
+            ),
+            "{out}"
+        );
+        // The children park in the shared Notify, which is no primitive
+        // hansei decodes into a wait target — so the tally names the
+        // leaf their chains reached rather than counting them as
+        // something it could not identify.
+        assert!(
+            out.contains("        3  tokio::sync::notify::Notified\n"),
+            "{out}"
+        );
+    });
+}
+
 /// The scheduler state and the drivers, both read out of the target
 /// through the bundle's layouts rather than a mirror of tokio's structs.
 #[test]

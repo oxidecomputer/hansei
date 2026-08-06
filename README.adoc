@@ -70,6 +70,7 @@ When stdin is a terminal that is a prompt, with history, tab completion, and
 errors that end the command rather than the session:
 
 ----
+hansei〉census                   # how many threads, tasks and futures, and their states
 hansei〉tasks                    # every task: id, state, future type, spawn site
 hansei〉trace 42 -v              # one task's await chain, with its live locals
 hansei〉graph                    # the dependency graph, and any futurelock
