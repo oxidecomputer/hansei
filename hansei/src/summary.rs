@@ -470,18 +470,29 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
     ];
     rows("Where they are", &places, out)?;
 
-    // The same tally as the tasks', over the futures no task listing
-    // shows: they park on the same things, and a set of ten thousand
-    // children all waiting on one of them is the shape this row exists
-    // to make visible. A reaped slot waits on nothing and is counted
-    // above rather than here.
+    // The same two tallies as the tasks', over the futures no task
+    // listing shows: they park on the same things and are as worth
+    // naming, and a set of ten thousand children all of one type all
+    // waiting on one semaphore is the shape these rows exist to make
+    // visible. Both run over what the census *names* — a chain frame is
+    // not among them, since this section counts its depth and nothing
+    // else, and the future its task runs is already a row of the tasks'
+    // own type tally. A reaped slot is a future no longer, counted above
+    // rather than in either row here.
     let mut waits = Waits::default();
-    let children = facts.sets.iter().flat_map(|s| &s.children);
-    for (wait, leaf) in facts.held.iter().map(|h| (h.wait, &h.leaf)).chain(
-        children
-            .filter(|c| c.future.is_some())
-            .map(|c| (c.wait, &c.leaf)),
-    ) {
+    let mut types: BTreeMap<String, usize> = BTreeMap::new();
+    let children = facts
+        .sets
+        .iter()
+        .flat_map(|s| &s.children)
+        .filter_map(|c| Some((c.future.as_ref()?, c.wait, &c.leaf)));
+    for (future, wait, leaf) in facts
+        .held
+        .iter()
+        .map(|h| (&h.future, h.wait, &h.leaf))
+        .chain(children)
+    {
+        *types.entry(future.clone()).or_default() += 1;
         match (wait, leaf) {
             (Some(wait), _) => waits.add(wait),
             (None, Some(leaf)) => *waits.leaves.entry(leaf.clone()).or_default() += 1,
@@ -489,14 +500,18 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
         }
     }
     rows("Waiting on", &waits.rows(top), out)?;
+    rows("Future types", &ranked(types, top, "type"), out)?;
 
     // Last, and outside both blocks, because a JoinSet's members are
     // not futures in flight at all: each is a task with a block of its
     // own in the section above, polled by whatever worker picks it up.
     if !facts.join_sets.is_empty() {
+        // A member the runtime has dropped is in neither count: the set
+        // holds it alive to be joined, and the task listing above is of
+        // what the runtime owns.
         let missing = match unlisted {
             0 => String::new(),
-            n => format!(" ({n} no longer owned by the runtime)"),
+            n => format!(", except {n} the runtime no longer owns"),
         };
         let holds = if facts.join_sets.len() == 1 {
             "holds"
@@ -505,7 +520,8 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
         };
         writeln!(
             out,
-            "    {} {holds} {} besides, counted above as the tasks they are{missing}",
+            "    {} {holds} {} besides — spawned tasks, counted under Tasks \
+             above rather than as futures here{missing}",
             counted(facts.join_sets.len(), "JoinSet"),
             counted(joined, "task"),
         )?;
@@ -646,6 +662,22 @@ mod tests {
             available: 0,
             closed: false,
             waiters: Vec::new(),
+        }
+    }
+
+    fn held(future: &str, wait: Option<WaitKind>) -> HeldFuture {
+        HeldFuture {
+            owner: 0,
+            frame: 0,
+            local: "arm".to_string(),
+            via: None,
+            addr: 0x4000,
+            ty: BundleTypeId(0),
+            future: future.to_string(),
+            state: None,
+            waiting_on: wait.map(|_| "something".to_string()),
+            wait,
+            leaf: None,
         }
     }
 
@@ -948,19 +980,7 @@ mod tests {
     fn test_future_populations_do_not_overlap() {
         let list = empty();
         let waits = vec![wait(1, None, 3), wait(2, None, 2)];
-        let held = vec![HeldFuture {
-            owner: 0,
-            frame: 0,
-            local: "arm".to_string(),
-            via: None,
-            addr: 0x4000,
-            ty: BundleTypeId(0),
-            future: "held::fut".to_string(),
-            state: None,
-            waiting_on: None,
-            wait: Some(WaitKind::Task { addr: 0x7100 }),
-            leaf: None,
-        }];
+        let held = vec![held("held::fut", Some(WaitKind::Task { addr: 0x7100 }))];
         let sets = vec![FutureSet {
             owner: 0,
             frame: 0,
@@ -1018,8 +1038,49 @@ mod tests {
              Waiting on:\n        \
              1  a timer\n        \
              1  another task (JoinHandle)\n    \
-             1 JoinSet holds 2 tasks besides, counted above as the tasks \
-             they are (1 no longer owned by the runtime)\n"
+             Future types:\n        \
+             1  child::fut\n        \
+             1  held::fut\n    \
+             1 JoinSet holds 2 tasks besides — spawned tasks, counted under \
+             Tasks above rather than as futures here, except 1 the runtime \
+             no longer owns\n"
+        );
+    }
+
+    /// The futures' type tally spans both populations the census names,
+    /// bounds itself by `--top` as the tasks' does, and leaves the reaped
+    /// slots — which are no future's type — out.
+    #[test]
+    fn test_future_types_tally_the_held_and_the_resident() {
+        let list = empty();
+        let held: Vec<HeldFuture> = (0..3).map(|_| held("hot::fut", None)).collect();
+        let sets = vec![FutureSet {
+            owner: 0,
+            frame: 0,
+            local: "pending".to_string(),
+            via: None,
+            addr: 0x5000,
+            ty: "FuturesUnordered<f>".to_string(),
+            children: vec![
+                child(Some("hot::fut"), None),
+                child(Some("cold::fut"), None),
+                child(Some("rare::fut"), None),
+                child(None, None),
+            ],
+        }];
+        let mut facts = facts(&list, &[]);
+        facts.held = &held;
+        facts.sets = &sets;
+
+        let page = census(&facts, 2);
+        assert!(
+            page.contains(
+                "    Future types:\n        \
+                 4  hot::fut\n        \
+                 1  cold::fut\n        \
+                 1  across 1 more type\n"
+            ),
+            "{page}"
         );
     }
 }

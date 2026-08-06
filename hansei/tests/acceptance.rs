@@ -1383,6 +1383,13 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
             out.contains("        3  tokio::sync::notify::Notified\n"),
             "{out}"
         );
+        // And what all five of them are — the set's children and the
+        // two held beside them are the same async fn, the boxed one
+        // named through the dyn join rather than by its pointer.
+        assert!(
+            out.contains("        5  unordered::set_member::{async_fn_env#0}\n"),
+            "{out}"
+        );
     });
 }
 
