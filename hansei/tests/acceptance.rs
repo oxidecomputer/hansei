@@ -938,7 +938,9 @@ fn test_futures_acceptance() {
             ),
             "{futures}"
         );
-        assert!(futures.contains("3 child(ren) in flight"), "{futures}");
+        // The set's own row says the same, spelled for one set rather
+        // than for the block's total.
+        assert!(futures.contains("`): 3 children in flight"), "{futures}");
         // Set-child rows sit one level deeper than the held rows.
         let child = regex::Regex::new(
             r"\n          (0x[0-9a-f]+)  unordered::set_member::\{async_fn_env#0\}",
@@ -953,8 +955,11 @@ fn test_futures_acceptance() {
         // The held futures — a bare coroutine and a dyn-boxed one, the
         // census's other two detections — are listed off the driver's
         // spine, never yet polled.
-        assert!(futures.contains("held (frame 0, `held`)"), "{futures}");
-        assert!(futures.contains("held (frame 0, `boxed`)"), "{futures}");
+        assert!(futures.contains("\n        (frame 0, `held`)"), "{futures}");
+        assert!(
+            futures.contains("\n        (frame 0, `boxed`)"),
+            "{futures}"
+        );
         assert!(
             futures.contains("unordered::set_member::{async_fn_env#0}  Unresumed"),
             "{futures}"
@@ -977,7 +982,7 @@ fn test_futures_acceptance() {
             "{narrowed}"
         );
         assert!(!narrowed.contains("\n1 task\n"), "{narrowed}");
-        assert!(narrowed.contains("3 child(ren) in flight"), "{narrowed}");
+        assert!(narrowed.contains("3 children in flight"), "{narrowed}");
         assert!(
             narrowed.contains("\n5 futures off the listed tasks' await chains\n"),
             "{narrowed}"
@@ -1071,7 +1076,7 @@ fn test_futures_acceptance() {
         );
 
         // And so is a held future, by the address its row prints.
-        let held = regex::Regex::new(r"held \(frame 0, `held`\): (0x[0-9a-f]+)")
+        let held = regex::Regex::new(r"\n        \(frame 0, `held`\): (0x[0-9a-f]+)")
             .unwrap()
             .captures(&futures)
             .map(|c| c[1].to_string())

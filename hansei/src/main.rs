@@ -140,12 +140,14 @@ pub enum Command {
     /// it wakes. `--futures` lists what a program has in flight *beside*
     /// it.
     ///
-    /// A row marked `held` is a future sitting in a frame's local, off
-    /// the await chain: a `select!`/`join!` arm mid-flight, one stored
-    /// across an await, or a futurelock's abandoned lock. Whether it will
-    /// ever be polled again is not knowable here — a select arm is polled
-    /// at every wakeup, a futurelock's never. `graph` is what decides
-    /// that.
+    /// A row under `Held futures` is a future sitting in a frame's
+    /// local, off the await chain: a `select!`/`join!` arm mid-flight,
+    /// one stored across an await, or a futurelock's abandoned lock.
+    /// Whether it will ever be polled again is not knowable here — a
+    /// select arm is polled at every wakeup, a futurelock's never.
+    /// `graph` is what decides that. The same find in a set child's
+    /// frames is printed under that child and marked `held`, since no
+    /// heading over it says so.
     ///
     /// A task set — a FuturesUnordered — is listed under `Task sets`
     /// with the children it polls. A child lives in a heap node rather
@@ -1794,10 +1796,17 @@ impl Counts {
 
 /// Print one find and, indented under it, everything the census reached
 /// by scanning its frames.
+///
+/// `mark_held` prefixes a held future's row with `held`. A row under
+/// `Held futures` needs no such word — the heading is it — but one
+/// found in a set child's frames sits under a listing of children, so
+/// there it says what it is. Descending into a child turns the mark on;
+/// nothing turns it off.
 fn print_future_entry<'a>(
     entry: Entry<'a>,
     nested: &HashMap<census::Via, Vec<Entry<'a>>>,
     indent: usize,
+    mark_held: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let pad = " ".repeat(indent);
@@ -1808,27 +1817,29 @@ fn print_future_entry<'a>(
                 .as_ref()
                 .map(|s| format!("  {s}"))
                 .unwrap_or_default();
+            let mark = if mark_held { "held " } else { "" };
             writeln!(
                 out,
-                "{pad}held (frame {}, `{}`): {:#x}  {}{state}",
+                "{pad}{mark}(frame {}, `{}`): {:#x}  {}{state}",
                 h.frame, h.local, h.addr, h.future
             )?;
             if let Some(waiting) = &h.waiting_on {
                 writeln!(out, "{pad}  waiting on {waiting}")?;
             }
             for inner in nested.get(&census::Via::Held(index)).into_iter().flatten() {
-                print_future_entry(*inner, nested, indent + 2, out)?;
+                print_future_entry(*inner, nested, indent + 2, mark_held, out)?;
             }
         }
         Entry::Set(index, set) => {
             let live = set.children.iter().filter(|c| c.future.is_some()).count();
+            let plural = if live == 1 { "" } else { "ren" };
             let reaped = match set.children.len() - live {
                 0 => String::new(),
                 n => format!(", {n} completed and not yet reaped"),
             };
             writeln!(
                 out,
-                "{pad}{} at {:#x} (frame {}, `{}`): {live} child(ren) in flight{reaped}",
+                "{pad}{} at {:#x} (frame {}, `{}`): {live} child{plural} in flight{reaped}",
                 set.ty, set.addr, set.frame, set.local
             )?;
             for (child_index, child) in set.children.iter().enumerate() {
@@ -1850,7 +1861,7 @@ fn print_future_entry<'a>(
                     child: child_index,
                 };
                 for inner in nested.get(&via).into_iter().flatten() {
-                    print_future_entry(*inner, nested, indent + 4, out)?;
+                    print_future_entry(*inner, nested, indent + 4, true, out)?;
                 }
             }
         }
@@ -2179,8 +2190,8 @@ fn print_tasks(
         // drives from them. A set is a container, so counting it among
         // the futures made a row saying `Futures: 2` list three finds;
         // keeping the two apart lets each number say what the listing
-        // under it shows. Each row is named for the rows beneath it —
-        // `held` and `child(ren) in flight` — so neither reads as a
+        // under it shows. Each row is named for what it lists — held
+        // futures, and children in flight — so neither reads as a
         // restatement of the other, and neither counts what the census
         // reached through the other. Last in the block, since what
         // `--futures` lists under them is as long as the census found it
@@ -2190,13 +2201,13 @@ fn print_tasks(
         writeln!(out, "    Held futures: {}", count.held)?;
         if futures {
             for entry in roots().filter(|e| !e.is_set()) {
-                print_future_entry(*entry, &census.nested, 8, out)?;
+                print_future_entry(*entry, &census.nested, 8, false, out)?;
             }
         }
         writeln!(out, "    Task sets: {}", count.sets_summary())?;
         if futures {
             for entry in roots().filter(|e| e.is_set()) {
-                print_future_entry(*entry, &census.nested, 8, out)?;
+                print_future_entry(*entry, &census.nested, 8, false, out)?;
             }
         }
         writeln!(out)?;
@@ -3003,7 +3014,11 @@ mod future_trace_tests {
 
             let narrowed = render(list, &census.held, &census.sets, true, &[id]);
             assert!(narrowed.contains(&format!("Task {id}:")), "{narrowed}");
-            assert!(narrowed.contains("`future1`"), "{narrowed}");
+            // The row names the local it was found in and nothing more:
+            // under `Held futures`, `held` would only repeat the
+            // heading.
+            assert!(narrowed.contains(", `future1`): 0x"), "{narrowed}");
+            assert!(!narrowed.contains("held (frame"), "{narrowed}");
             // Narrowing narrows the listing itself, not just its
             // futures — and the block it leaves is the whole answer, so
             // there is no count under it restating the ids asked for.
@@ -3121,7 +3136,7 @@ mod future_trace_tests {
                 rendered.contains(
                     "    Held futures: 0\n    Task sets: 1 (1 child in flight)\n        \
                      FuturesUnordered<step::{async_fn_env#0}> at 0x1000 (frame 0, `pending`): \
-                     1 child(ren) in flight, 1 completed and not yet reaped\n          \
+                     1 child in flight, 1 completed and not yet reaped\n          \
                      0x2000  step::{async_fn_env#0}  Suspend0 — step.rs:9\n            \
                      held (frame 1, `lock`): 0x3000  Mutex::lock::{async_fn_env#0}\n"
                 ),
