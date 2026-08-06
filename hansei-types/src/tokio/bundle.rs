@@ -425,6 +425,71 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(Some(mt.to_owned()))
     }
 
+    /// Which worker of the scheduler a thread is running, as the
+    /// scheduler numbers them, from the context
+    /// [`Context::worker_context`] returned.
+    pub fn worker_index(&self, worker_ctx: &TypeInfo<'b, BundleType<'b>>) -> Result<u64> {
+        let worker = worker_ctx.member("worker")?.deref_ptr(self)?;
+        Ok(worker.member("data")?.member("index")?.parse(self)?)
+    }
+
+    /// What every worker's parker says, in worker-index order.
+    ///
+    /// A parked worker's `Parker` is a stack local — the run loop moves
+    /// it out of the `Core` before parking — so it is not reachable from
+    /// the thread. The `Unparker` in the worker's `Remote` shares the
+    /// same allocation, though, and that hangs off the shared scheduler
+    /// state, so every worker's state word is readable from one place
+    /// whether or not the thread holding it can be walked.
+    pub fn park_states(&self, handle: &TypeInfo<'b, BundleType<'b>>) -> Result<ParkStates> {
+        let shared = handle.member("shared")?;
+        let remotes = shared.member("remotes")?;
+        // The driver's lock lives under the parkers' own shared state,
+        // which every `Inner` points at; the first one answers for all.
+        let mut driver_held = None;
+        let workers = remotes
+            .boxed_slice_elements(self, |remote| {
+                let arc = remote.member("unpark")?.deref_ptr(self)?;
+                let inner = arc.member("data")?;
+                if driver_held.is_none() {
+                    let park_shared = inner.member("shared")?.deref_ptr(self)?;
+                    // The parkers' `Shared` holds the driver's lock and
+                    // nothing else, so reaching for it lands *past* it,
+                    // on the lock — a single-member struct is peeled
+                    // away by the member that names it. Take the lock
+                    // however the member landed.
+                    let shared = park_shared.member("data")?;
+                    let lock = match shared.try_member("driver")? {
+                        Some(lock) => lock,
+                        None => shared,
+                    };
+                    driver_held = Some(lock.member("locked")?.parse(self)?);
+                }
+                Ok(ParkState::from_word(inner.member("state")?.parse(self)?))
+            })
+            .context("failed to read the workers' park state")?;
+        Ok(ParkStates {
+            workers,
+            driver_held: driver_held.unwrap_or(false),
+        })
+    }
+
+    /// The blocking pool's own counters: the threads it runs, how many
+    /// of them are idle, and how much work is queued for them.
+    ///
+    /// These are the pool's, not a walk of the target's threads: a
+    /// blocking thread carries no scheduler state to be recognized by,
+    /// so what the pool says about itself is all there is to say.
+    pub fn blocking_pool(&self, handle: &TypeInfo<'b, BundleType<'b>>) -> Result<BlockingPool> {
+        let arc = handle.member("blocking_spawner")?.deref_ptr(self)?;
+        let metrics = arc.member("data")?.member("metrics")?;
+        Ok(BlockingPool {
+            threads: metrics.member("num_threads")?.parse(self)?,
+            idle: metrics.member("num_idle_threads")?.parse(self)?,
+            queued: metrics.member("queue_depth")?.parse(self)?,
+        })
+    }
+
     // -----------------------------------------------------------------------
     // Task enumeration (§3.1–§3.4)
     // -----------------------------------------------------------------------
@@ -1504,6 +1569,83 @@ pub struct Worker {
     pub current_task_id: Option<u64>,
 }
 
+/// What every worker's parker says, and whether the io driver is held
+/// at all; see [`Context::park_states`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ParkStates {
+    /// One state per worker, in worker-index order.
+    pub workers: Vec<ParkState>,
+    /// Whether some thread holds the driver. A driver held with no
+    /// worker parked in it is a thread polling it without parking —
+    /// a zero-duration park, or one already notified out of its sleep.
+    pub driver_held: bool,
+}
+
+impl ParkStates {
+    /// The worker parked in the io driver, if one is. At most one can
+    /// be: parking there means holding the driver's lock.
+    pub fn in_driver(&self) -> Option<usize> {
+        self.workers.iter().position(|s| *s == ParkState::Driver)
+    }
+}
+
+/// A worker thread's park state, as its `Parker`'s state word records
+/// it. The words are tokio's own constants, folded into its code at
+/// compile time and so — as with [`TaskState`](super::TaskState)'s bits
+/// — knowable only from its source.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ParkState {
+    /// Not parked: in the run loop, or polling a task.
+    Awake,
+    /// Parked on the parker's own condvar, with no driver to park in
+    /// because another worker holds it.
+    Condvar,
+    /// Parked *in* the driver: blocked in the system's readiness call
+    /// on the whole runtime's behalf. There is no io thread in a
+    /// multi_thread runtime — the driver rotates between workers — so
+    /// this is whichever worker held it when the target stopped.
+    Driver,
+    /// Unparked but not yet awake: something called `unpark` and the
+    /// worker has not consumed the notification. One parked in the
+    /// driver stays blocked there until the readiness call returns.
+    Notified,
+    /// A word tokio does not define, which means its constants or this
+    /// layout have moved.
+    Unknown(u64),
+}
+
+impl ParkState {
+    fn from_word(word: u64) -> Self {
+        match word {
+            0 => Self::Awake,
+            1 => Self::Condvar,
+            2 => Self::Driver,
+            3 => Self::Notified,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for ParkState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Awake => f.write_str("awake"),
+            Self::Condvar => f.write_str("parked"),
+            Self::Driver => f.write_str("parked in the io driver"),
+            Self::Notified => f.write_str("notified, waking"),
+            Self::Unknown(word) => write!(f, "an unknown park state ({word})"),
+        }
+    }
+}
+
+/// The blocking pool's own counters; see [`Context::blocking_pool`].
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct BlockingPool {
+    pub threads: u64,
+    pub idle: u64,
+    pub queued: u64,
+}
+
 /// A task vtable decoded from target memory (bundle layout, target values).
 #[derive(Clone, Debug)]
 struct TaskVtable {
@@ -1624,6 +1766,23 @@ pub struct AwaitChain<'b> {
     pub end: ChainEnd,
 }
 
+impl AwaitChain<'_> {
+    /// The type this chain bottoms out in — the future actually parked
+    /// on, whether or not it is one of the primitives
+    /// [`Context::wait_target`] decodes.
+    ///
+    /// `None` where the walk stopped short of a leaf, since the last
+    /// frame it did reach is then a future awaiting something unread
+    /// rather than the thing being waited on, and reporting it as the
+    /// leaf would say the chain ended where it was merely cut off.
+    pub fn leaf(&self) -> Option<&str> {
+        match self.end {
+            ChainEnd::Leaf => self.frames.last().map(|f| f.future.ty.name()),
+            _ => None,
+        }
+    }
+}
+
 /// One future in an await chain.
 #[derive(Debug)]
 pub struct AwaitFrame<'b> {
@@ -1721,6 +1880,39 @@ pub enum WaitTarget {
         /// The semaphore's wait queue, in wake order.
         waiters: Vec<SemaphoreWaiter>,
     },
+}
+
+/// The bucket a wait falls in: what a tally counts, without the
+/// addresses and the wake queue a [`WaitTarget`] spells out for one
+/// row. Small and `Copy`, so a census that finds a thousand futures
+/// waiting on one contended semaphore does not carry a thousand copies
+/// of its queue around to count them.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum WaitKind {
+    /// The timer wheel. `past_due` says whether the deadline had
+    /// already passed when the target stopped, and is `None` where the
+    /// target stamps no stop time to compare against.
+    Timer { past_due: Option<bool> },
+    /// Another task, through its `JoinHandle`.
+    Task,
+    /// A semaphore, named by the primitive wrapping it where the frame
+    /// awaiting it says which (`tokio::sync::Mutex`, …).
+    Semaphore { owner: Option<&'static str> },
+}
+
+impl WaitTarget {
+    /// This wait as a tally counts it.
+    pub fn kind(&self) -> WaitKind {
+        match self {
+            Self::Timer { deadline, stopped } => WaitKind::Timer {
+                past_due: stopped.map(|stopped| {
+                    (deadline.tv_sec, deadline.tv_nsec) < (stopped.tv_sec, stopped.tv_nsec)
+                }),
+            },
+            Self::Task { .. } => WaitKind::Task,
+            Self::Semaphore { owner, .. } => WaitKind::Semaphore { owner: *owner },
+        }
+    }
 }
 
 /// One node in a semaphore's wait queue.

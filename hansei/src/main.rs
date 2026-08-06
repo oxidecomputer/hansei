@@ -14,6 +14,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub mod repl;
+pub mod summary;
 pub mod types;
 
 /// The command line names a target; what to ask of it comes from
@@ -65,6 +66,69 @@ struct SessionArgs {
 /// grammar of a typed line rather than of an argv.
 #[derive(Subcommand)]
 pub enum Command {
+    /// Count what the target holds: its threads, its tasks and its
+    /// futures, with what most of each is doing.
+    ///
+    /// This is the listing to read first. Every other command answers a
+    /// question about one thing — this task, that address, those
+    /// threads — and each number here is one a named command expands:
+    /// `threads` for a thread, `tasks` for the task blocks behind a
+    /// tally, `tasks --futures` for the futures counted off the await
+    /// chains, `graph` for what waits on what.
+    ///
+    /// The thread section splits the target's lwps three ways: the
+    /// workers running the scheduler's loop, the threads that have
+    /// merely entered the runtime, and everything else. Each split is a
+    /// share of the line above it and never a second count of the same
+    /// threads — which takes one correction, because the runtime
+    /// launches every worker with `spawn_blocking` and its pool
+    /// therefore counts the workers among its own threads. They are
+    /// netted out, so the pool's row is the threads doing blocking work
+    /// and nothing else.
+    ///
+    /// The workers are broken down by what their parkers say, and the
+    /// one parked *in* the driver is named — that is the thread blocked
+    /// in the system's readiness call on the whole runtime's behalf.
+    /// There is no io thread as such in a multi_thread runtime: the
+    /// driver rotates between workers, so what is reported is whichever
+    /// held it when the target stopped.
+    ///
+    /// The task section counts every task the runtime owns by
+    /// lifecycle, by what it is waiting on, and by the future types and
+    /// spawn sites most of them share. A wait is named by the primitive
+    /// it is where hansei decodes one — a timer, a `JoinHandle`, the
+    /// semaphore behind a `Mutex` — and by the type its await chain
+    /// bottoms out in otherwise, which is most of them on any real
+    /// target: the io readiness a socket is parked on, the channel a
+    /// loop is receiving from, the `poll_fn` a hand-written future
+    /// sits in. A task that is mid-poll, finished, or whose chain
+    /// stopped before reaching any leaf has its own row saying so,
+    /// rather than being counted as waiting on something.
+    ///
+    /// Only what is out of the ordinary is called out beside those.
+    /// That nearly every task is detached is true of every target and
+    /// says nothing about this one; that some are cancelled and not yet
+    /// complete, or that the bundle cannot name what some are running,
+    /// is worth knowing.
+    ///
+    /// The future section counts three populations that do not overlap:
+    /// the futures on the tasks' own await chains, the ones their
+    /// frames hold beside those chains, and the ones their
+    /// `FuturesUnordered` hold. A `JoinSet`'s members are counted with
+    /// the tasks instead, because that is what they are.
+    ///
+    /// Taking a census walks every task's await chain twice over — once
+    /// for what each waits on, once for the futures off those chains —
+    /// so on a large target it is the slowest command here. Both walks
+    /// are kept, though, so a `tasks --futures`, `graph` or `whatis`
+    /// after it costs nothing.
+    Census {
+        /// How many entries each "most of them are this" listing shows
+        /// before the rest are summed into a final row.
+        #[arg(long, short, default_value_t = 5)]
+        top: usize,
+    },
+
     /// Show the runtime's drivers: io, signal, time and the clock.
     /// The bundle's elisions (which hide runtime internals inside user
     /// values) never apply to this view.
@@ -379,15 +443,21 @@ pub struct Session<'b> {
     core: &'b Path,
     bundle_path: &'b Path,
     workers: Vec<bundle::Worker>,
+    /// How many lwps the target has, whatever they are doing. The
+    /// workers above are the ones holding a tokio `Context`; the
+    /// difference is what the runtime is *not* running.
+    lwps: usize,
     /// The multi_thread scheduler's `Handle`: the scheduler state and
     /// the drivers both hang off it.
     handle: TypeInfo<'b, BundleType<'b>>,
     tasks: bundle::TaskList,
-    /// Task extents and the sub-executor census, built on first use: a
-    /// core does not change, so the address→task answers never do
-    /// either, and the census walks every chain — worth paying once.
+    /// Task extents, the sub-executor census and the wait analysis,
+    /// built on first use: a core does not change, so the address→task
+    /// answers never do either, and the two walks cover every chain —
+    /// worth paying once.
     extents: OnceCell<bundle::TaskExtents>,
     census: OnceCell<census::FutureCensus>,
+    analysis: OnceCell<graph::Analysis>,
 }
 
 impl<'b> Session<'b> {
@@ -395,7 +465,8 @@ impl<'b> Session<'b> {
         let ctx = bundle::Context::new(proc, BundleView::new(bundle))?;
         check_fingerprint(&ctx, args.force)?;
 
-        let workers = discover_workers(proc, &ctx)?;
+        let lwps = proc.lwps().context("failed to read lwps")?;
+        let workers = discover_workers(&lwps, &ctx)?;
         let handle = ctx.find_handle(&workers)?;
         let shared = handle.member("shared")?.to_owned();
         let tasks = ctx.enumerate_tasks(&shared)?;
@@ -411,10 +482,12 @@ impl<'b> Session<'b> {
             core: &args.core,
             bundle_path: &args.bundle,
             workers,
+            lwps: lwps.len(),
             handle,
             tasks,
             extents: OnceCell::new(),
             census: OnceCell::new(),
+            analysis: OnceCell::new(),
         })
     }
 
@@ -427,11 +500,17 @@ impl<'b> Session<'b> {
         self.census
             .get_or_init(|| census::census(&self.ctx, &self.tasks))
     }
+
+    fn analysis(&self) -> &graph::Analysis {
+        self.analysis
+            .get_or_init(|| graph::analyze(&self.ctx, &self.tasks))
+    }
 }
 
 /// Run one command against an attached session.
 pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write) -> Result<Flow> {
     match command {
+        Command::Census { top } => exec_census(session, top, out)?,
         Command::Drivers { depth, ugly } => {
             exec_runtime_field(session, "driver", depth, ugly, out)?
         }
@@ -1470,9 +1549,11 @@ fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool)
 
 /// Find the LWPs holding a tokio `Context`, through the thread-local
 /// the bundle names (§3.0).
-fn discover_workers(proc: &Proc, ctx: &bundle::Context<'_, Proc>) -> Result<Vec<bundle::Worker>> {
-    let lwps = proc.lwps().context("failed to read lwps")?;
-    let workers = ctx.find_workers(&lwps)?;
+fn discover_workers(
+    lwps: &[proc::LwpInfo],
+    ctx: &bundle::Context<'_, Proc>,
+) -> Result<Vec<bundle::Worker>> {
+    let workers = ctx.find_workers(lwps)?;
     anyhow::ensure!(
         !workers.is_empty(),
         "no LWP has a tokio Context in thread-local storage; is this a tokio program?"
@@ -1964,7 +2045,7 @@ fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>) -> String {
 
 /// The display name of a task's future, however well the symbol join
 /// resolved it.
-fn future_name(future: &bundle::FutureInfo) -> String {
+pub fn future_name(future: &bundle::FutureInfo) -> String {
     match future {
         bundle::FutureInfo::Known(known) => known.display_name.clone(),
         bundle::FutureInfo::Unknown {
@@ -2316,9 +2397,102 @@ fn print_tasks(
     Ok(())
 }
 
+/// Gather what a census counts and print it.
+///
+/// The two analyses it rests on — what every task waits on, and the
+/// futures off those tasks' chains — are the session's cached ones, so
+/// a census pays for both walks and every later command that wants
+/// either pays for neither.
+fn exec_census(session: &Session<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
+    let analysis = session.analysis();
+    let census = session.census();
+    for err in analysis.errors.iter().chain(&census.errors) {
+        writeln!(io::stderr(), "warning: {err:#}")?;
+    }
+    // As `tasks --futures`: a walk that hit a depth limit looks like
+    // completeness in a count, so it says so.
+    if census.capped > 0 {
+        writeln!(
+            io::stderr(),
+            "warning: the scan stopped at a depth limit in {} place(s); \
+             anything held deeper is not counted",
+            census.capped
+        )?;
+    }
+
+    // The two reads a census makes of its own: which worker each thread
+    // is running, and what every worker's parker says. Neither is worth
+    // failing the command over — a census without them still counts
+    // everything else — so a failure costs its own line and warns.
+    let mut runtime = Vec::new();
+    for worker in &session.workers {
+        let index = match session.ctx.worker_context(worker) {
+            Ok(Some(ctx)) => match session.ctx.worker_index(&ctx) {
+                Ok(index) => Some(index),
+                Err(e) => {
+                    writeln!(
+                        io::stderr(),
+                        "warning: cannot read which worker lwp {} runs: {e:#}",
+                        worker.tid
+                    )?;
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(e) => {
+                writeln!(
+                    io::stderr(),
+                    "warning: cannot read the scheduler context of lwp {}: {e:#}",
+                    worker.tid
+                )?;
+                None
+            }
+        };
+        runtime.push(summary::Thread {
+            tid: worker.tid,
+            worker: index,
+            polling: worker.current_task_id.filter(|id| {
+                session
+                    .tasks
+                    .tasks
+                    .iter()
+                    .any(|t| t.task_id == Some(*id) && t.state.lifecycle() == Lifecycle::Running)
+            }),
+        });
+    }
+    let parks = optional(session.ctx.park_states(&session.handle), "park state")?;
+    let pool = optional(session.ctx.blocking_pool(&session.handle), "blocking pool")?;
+
+    let facts = summary::Facts {
+        lwps: session.lwps,
+        runtime,
+        parks,
+        pool,
+        tasks: &session.tasks,
+        waits: &analysis.waits,
+        held: &census.held,
+        sets: &census.sets,
+        join_sets: &census.join_sets,
+    };
+    summary::print(&facts, top, out)
+}
+
+/// A census section that is worth having and not worth failing over:
+/// the value if it read, and a warning naming what is missing from the
+/// listing if it did not.
+fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
+    match read {
+        Ok(value) => Ok(Some(value)),
+        Err(e) => {
+            writeln!(io::stderr(), "warning: cannot read the {what}: {e:#}")?;
+            Ok(None)
+        }
+    }
+}
+
 fn exec_graph(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
     let list = &session.tasks;
-    let analysis = graph::analyze(&session.ctx, list);
+    let analysis = session.analysis();
     for err in &analysis.errors {
         writeln!(io::stderr(), "warning: {err:#}")?;
     }
@@ -2484,9 +2658,7 @@ fn print_worker_state<'b>(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let ctx = &session.ctx;
-    let worker = worker_ctx.member("worker")?.deref_ptr(ctx)?;
-    let index: u64 = worker.member("data")?.member("index")?.parse(ctx)?;
-    writeln!(out, "  worker {index}")?;
+    writeln!(out, "  worker {}", ctx.worker_index(worker_ctx)?)?;
 
     let defer = worker_ctx.member("defer")?;
     print_variable(
@@ -3185,6 +3357,8 @@ mod future_trace_tests {
                         root: None,
                         state: Some("Suspend0 — step.rs:9".to_string()),
                         waiting_on: None,
+                        wait: None,
+                        leaf: None,
                     },
                     census::SetChild {
                         node: 0x2100,
@@ -3192,6 +3366,8 @@ mod future_trace_tests {
                         root: None,
                         state: None,
                         waiting_on: None,
+                        wait: None,
+                        leaf: None,
                     },
                 ],
             }];
@@ -3205,6 +3381,8 @@ mod future_trace_tests {
                 future: "Mutex::lock::{async_fn_env#0}".to_string(),
                 state: None,
                 waiting_on: None,
+                wait: None,
+                leaf: None,
             }];
 
             let rendered = render(list, &held, &sets, true, &[]);

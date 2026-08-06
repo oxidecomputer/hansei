@@ -47,6 +47,17 @@ pub struct TaskWait {
     /// What the task's await chain bottoms out in, when it is running
     /// and the leaf is a recognized primitive.
     pub target: Option<WaitTarget>,
+    /// How many futures deep the task's await chain runs — the future
+    /// it was spawned with, plus everything it is awaiting through, so
+    /// a task awaiting nothing is 1. Zero where there is no resident
+    /// chain to walk: a finished task, or one whose stage did not
+    /// decode.
+    pub depth: usize,
+    /// The type the chain bottoms out in, however ordinary a future it
+    /// is; see [`AwaitChain::leaf`]. `target` says what that leaf *is*
+    /// for the few primitives hansei decodes, so this is what a task
+    /// waits on where nothing decoded it.
+    pub leaf: Option<String>,
 }
 
 /// A diagnosed futurelock (RFD 609): an abandoned acquire clogging a
@@ -86,12 +97,16 @@ pub fn analyze<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> Analysis {
             task_id: task.task_id,
         };
         let mut target = None;
+        let mut depth = 0;
+        let mut leaf = None;
         // Unknown futures cannot be traced (the task listing already
         // calls them out); finished tasks wait on nothing.
         if matches!(task.future, FutureInfo::Known(_)) {
             match ctx.task_stage(task) {
                 Ok(TaskStage::Running(future)) => {
                     let chain = ctx.await_chain(future);
+                    depth = chain.frames.len();
+                    leaf = chain.leaf().map(str::to_string);
                     match ctx.wait_target(&chain, list) {
                         Some(Ok(t)) => target = Some(t),
                         Some(Err(e)) => {
@@ -109,7 +124,12 @@ pub fn analyze<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> Analysis {
                 }
             }
         }
-        waits.push(TaskWait { task: tref, target });
+        waits.push(TaskWait {
+            task: tref,
+            target,
+            depth,
+            leaf,
+        });
     }
 
     // Who is actively blocked on which semaphore.

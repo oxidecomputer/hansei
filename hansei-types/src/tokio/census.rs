@@ -32,7 +32,7 @@
 //! pointer and a set's node list are the deliberate exceptions).
 
 use super::TaskState;
-use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, leaf_kind};
+use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind, leaf_kind};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use exegesis::bundle::{BundleType, BundleTypeId};
@@ -203,6 +203,12 @@ pub struct SetChild {
     /// What the child's chain bottoms out in, when it is a recognized
     /// wait primitive.
     pub waiting_on: Option<String>,
+    /// The same wait as a tally counts it, so a summary over thousands
+    /// of children need not read the line back.
+    pub wait: Option<WaitKind>,
+    /// The type the child's chain bottoms out in, whether or not it is
+    /// a primitive `wait` names; see [`AwaitChain::leaf`].
+    pub leaf: Option<String>,
 }
 
 /// A future a frame holds off its task's active `__awaitee` spine: a
@@ -233,6 +239,10 @@ pub struct HeldFuture {
     pub state: Option<String>,
     /// What its chain bottoms out in, when recognized.
     pub waiting_on: Option<String>,
+    /// The same wait as a tally counts it; see [`SetChild::wait`].
+    pub wait: Option<WaitKind>,
+    /// The type its chain bottoms out in; see [`SetChild::leaf`].
+    pub leaf: Option<String>,
 }
 
 impl FutureCensus {
@@ -401,6 +411,8 @@ impl Walker {
                     future: summary.future,
                     state: summary.state,
                     waiting_on: summary.waiting_on,
+                    wait: summary.wait,
+                    leaf: summary.leaf,
                 });
                 if nesting < MAX_NESTING {
                     self.scan_chain(
@@ -597,6 +609,8 @@ struct Summary {
     future: String,
     state: Option<String>,
     waiting_on: Option<String>,
+    wait: Option<WaitKind>,
+    leaf: Option<String>,
 }
 
 /// Reduce a future's await chain to one listing row. An empty chain is
@@ -618,6 +632,8 @@ fn summarize<'b, T: Target + Sync>(
             future,
             state: None,
             waiting_on: None,
+            wait: None,
+            leaf: None,
         };
     };
     let state = first.state.as_ref().map(|state| {
@@ -627,14 +643,16 @@ fn summarize<'b, T: Target + Sync>(
             .unwrap_or_default();
         format!("{}{loc}", state.name)
     });
-    let waiting_on = match ctx.wait_target(chain, list) {
-        Some(Ok(target)) => Some(target.to_string()),
+    let target = match ctx.wait_target(chain, list) {
+        Some(Ok(target)) => Some(target),
         _ => None,
     };
     Summary {
         future: first.future.ty.name().to_string(),
         state,
-        waiting_on,
+        waiting_on: target.as_ref().map(|t| t.to_string()),
+        wait: target.as_ref().map(|t| t.kind()),
+        leaf: chain.leaf().map(str::to_string),
     }
 }
 
@@ -711,6 +729,8 @@ fn walk_set<'b, T: Target + Sync>(
                     root: Some(root),
                     state: summary.state,
                     waiting_on: summary.waiting_on,
+                    wait: summary.wait,
+                    leaf: summary.leaf,
                 },
                 Some(chain),
             )
@@ -722,6 +742,8 @@ fn walk_set<'b, T: Target + Sync>(
                     root: None,
                     state: None,
                     waiting_on: None,
+                    wait: None,
+                    leaf: None,
                 },
                 None,
             )
