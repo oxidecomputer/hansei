@@ -374,7 +374,7 @@ impl Waits {
                 self.timer += 1;
                 self.timer_past_due += usize::from(past_due.unwrap_or(false));
             }
-            WaitKind::Task => self.task += 1,
+            WaitKind::Task { .. } => self.task += 1,
             WaitKind::Semaphore { owner } => *self.semaphores.entry(owner).or_default() += 1,
         }
     }
@@ -958,7 +958,7 @@ mod tests {
             future: "held::fut".to_string(),
             state: None,
             waiting_on: None,
-            wait: Some(WaitKind::Task),
+            wait: Some(WaitKind::Task { addr: 0x7100 }),
             leaf: None,
         }];
         let sets = vec![FutureSet {

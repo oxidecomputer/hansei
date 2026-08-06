@@ -1893,8 +1893,10 @@ pub enum WaitKind {
     /// already passed when the target stopped, and is `None` where the
     /// target stamps no stop time to compare against.
     Timer { past_due: Option<bool> },
-    /// Another task, through its `JoinHandle`.
-    Task,
+    /// Another task, through its `JoinHandle`, by the address of the
+    /// `Header` that identifies it — so a find that merely holds a
+    /// handle still names the task on the other end of it.
+    Task { addr: u64 },
     /// A semaphore, named by the primitive wrapping it where the frame
     /// awaiting it says which (`tokio::sync::Mutex`, …).
     Semaphore { owner: Option<&'static str> },
@@ -1909,7 +1911,7 @@ impl WaitTarget {
                     (deadline.tv_sec, deadline.tv_nsec) < (stopped.tv_sec, stopped.tv_nsec)
                 }),
             },
-            Self::Task { .. } => WaitKind::Task,
+            Self::Task { addr, .. } => WaitKind::Task { addr: *addr },
             Self::Semaphore { owner, .. } => WaitKind::Semaphore { owner: *owner },
         }
     }
