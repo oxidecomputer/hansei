@@ -945,6 +945,11 @@ fn test_golden_unordered() {
     run_golden("unordered");
 }
 
+#[test]
+fn test_golden_joinset() {
+    run_golden("joinset");
+}
+
 /// Two extractions of one binary agree byte for byte.
 ///
 /// The sweep resolves several fields first-wins, so whichever function
