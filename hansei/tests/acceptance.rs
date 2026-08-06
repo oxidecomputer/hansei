@@ -1162,6 +1162,23 @@ fn test_join_set_acceptance() {
                 "{traced}"
             );
         }
+
+        // The same edge is what the wait graph nests on. Nothing about
+        // the driver's own wait names these tasks — it is parked in
+        // `join_next`, not on any one member's `JoinHandle` — so the
+        // set is the only thing that says the driver is waiting for
+        // them.
+        let graph = graph(&bundle, core);
+        assert!(
+            graph.contains(&format!("\n{} ", driver.id)),
+            "the driver is not at the margin: {graph}"
+        );
+        for id in &ids {
+            assert!(
+                graph.contains(&format!("─ {id} [in the JoinSet above]")),
+                "{id} is not nested under the driver: {graph}"
+            );
+        }
     });
 }
 
@@ -1180,7 +1197,9 @@ fn graph_table(rows: &[[&str; 3]]) -> String {
     let mut widths = [0usize; 2];
     for row in rows {
         for (w, cell) in widths.iter_mut().zip(row.iter()) {
-            *w = (*w).max(cell.len());
+            // Characters, not bytes: a nested row's branch is drawn
+            // with box-drawing characters, as the table itself counts.
+            *w = (*w).max(cell.chars().count());
         }
     }
     rows.iter()
@@ -1213,7 +1232,15 @@ fn test_futurelock_graph() {
             "a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, \
              0 available; wake queue: task {id}"
         );
-        let mut expected = graph_table(&[["TASK", "STATE", "WAITING ON"], [id, "idle", &wait]]);
+        // The lock's holder is the blocked task itself, so the graph's
+        // one edge closes straight back on its own row: the
+        // self-deadlock shape, drawn.
+        let cycle = format!("└─ {id} ← cycle");
+        let mut expected = graph_table(&[
+            ["TASK", "STATE", "WAITING ON"],
+            [id, "idle", &wait],
+            [&cycle, "idle", ""],
+        ]);
         expected.push_str(&format!(
             "\nfuturelock: task {id} holds 1 granted permit of a tokio::sync::Mutex \
              (semaphore 0xADDR) in a future it stopped polling:\n  \
@@ -1237,13 +1264,18 @@ fn test_sleep_join_graph() {
         let sleeper = task_with_future(&rows, "sleep_join::sleeper::{async_fn_env#0}");
         let joiner = task_with_future(&rows, "sleep_join::joiner::{async_fn_env#0}");
 
+        // The joiner is waiting for the sleeper, so the sleeper's row
+        // hangs under it rather than standing beside it, and the
+        // sleeper's own wait — the timer — is what the chain ends on.
         let join_edge = format!("task {} (JoinHandle)", sleeper.id);
-        let mut expected = graph_table(&[
+        let joined = format!("└─ {}", sleeper.id);
+        let expected = graph_table(&[
             ["TASK", "STATE", "WAITING ON"],
-            [&sleeper.id, "idle", "the timer: deadline TS"],
             [&joiner.id, "idle", &join_edge],
+            [&joined, "idle", "the timer: deadline TS"],
         ]);
-        expected.push_str("\nno futurelock detected\n");
+        // Nothing follows the table: a target with no futurelock says
+        // nothing about futurelocks.
         assert_eq!(normalize(&graph(&bundle, core)), expected);
     });
 }
