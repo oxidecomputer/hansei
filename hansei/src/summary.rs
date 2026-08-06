@@ -461,7 +461,7 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
             format!("in {} FuturesUnordered{reaped}", facts.sets.len()),
         ),
     ];
-    rows("Where they are", &places, out)?;
+    rows("Location", &places, out)?;
 
     // The same two tallies as the tasks', over the futures no task
     // listing shows: they park on the same things and are as worth
@@ -971,7 +971,7 @@ mod tests {
             // 5 on the chains, 1 held, 1 resident set child: the
             // reaped slot is counted, and deliberately not added in.
             "Futures: 7 in flight\n    \
-             Where they are:\n        \
+             Location:\n        \
              5  on task await chains (3 deep at the deepest)\n        \
              1  held in frames, off any await chain\n        \
              1  in 1 FuturesUnordered, and 1 completed and not yet reaped\n    \

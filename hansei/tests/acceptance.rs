@@ -1350,7 +1350,7 @@ fn test_census_counts_the_target() {
         // nothing at all off them.
         assert!(
             out.contains(
-                "    Where they are:\n        \
+                "    Location:\n        \
                  4  on task await chains (2 deep at the deepest)\n        \
                  0  held in frames, off any await chain\n        \
                  0  in 0 FuturesUnordered\n"
