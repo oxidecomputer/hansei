@@ -111,6 +111,25 @@ impl<'a> BundleView<'a> {
     pub fn dyn_future_ids_for_symbol(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
         self.bundle.dyn_futures.lookup_id(symbol)
     }
+
+    /// Every type extraction found a `<T as Future>::poll` impl for.
+    ///
+    /// The dyn-future table is keyed by symbol because resolving a trait
+    /// object asks "which type is this vtable's"; this is the same table
+    /// read the other way, as the set of types that implement `Future`.
+    /// A consumer that needs to ask repeatedly should collect it once.
+    ///
+    /// It is a *floor*, not a census: a `poll` rustc inlined away
+    /// entirely leaves no symbol and so no entry, which is why a caller
+    /// must degrade rather than conclude a missing type is not a future.
+    pub fn future_type_ids(&self) -> impl Iterator<Item = BundleTypeId> + 'a {
+        let table = &self.bundle.dyn_futures;
+        table
+            .by_symbol
+            .values()
+            .copied()
+            .chain(table.by_normalized_symbol.values().flatten().copied())
+    }
 }
 
 impl fmt::Debug for BundleView<'_> {

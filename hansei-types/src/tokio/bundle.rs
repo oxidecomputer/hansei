@@ -34,6 +34,11 @@ use std::fmt;
 /// rather than hang (§3.5).
 const MAX_AWAIT_DEPTH: usize = 64;
 
+/// How far to unwrap a member's type looking for the future inside it
+/// (see [`Context::is_future`]). Real wrapper stacks are two or three
+/// deep; the bound is what keeps a recursive type from spinning.
+const MAX_WRAPPER_DEPTH: usize = 8;
+
 /// Rust vtables place the drop-in-place glue in slot 0, size and align
 /// in slots 1 and 2, and the trait's methods after; `Future`'s only
 /// method is `poll`, so it is slot 3.
@@ -82,10 +87,16 @@ const SEMAPHORE_OWNERS: &[(&str, &str)] = &[
     ("tokio::sync::semaphore", "tokio::sync::Semaphore"),
 ];
 
-/// The primitive wrapping an acquired semaphore, when the frame that
-/// awaits the `Acquire` leaf names it.
+/// The primitive wrapping an acquired semaphore, when a frame above the
+/// `Acquire` leaf names it.
+///
+/// The search runs up the chain rather than reading the frame directly
+/// above the leaf: a wrapper the walk now follows (`Instrumented`, a
+/// `Map`) can sit between `Mutex::lock`'s coroutine and the `Acquire` it
+/// awaits, and a fixed offset would read that wrapper and report a
+/// semaphore nobody owns.
 fn semaphore_owner(chain: &AwaitChain<'_>) -> Option<&'static str> {
-    chain.frames.iter().rev().nth(1).and_then(|frame| {
+    chain.frames.iter().rev().skip(1).find_map(|frame| {
         let name = frame.future.ty.name();
         SEMAPHORE_OWNERS
             .iter()
@@ -114,6 +125,11 @@ pub struct Context<'b, T> {
     /// Memoized stop time of the target on its own monotonic clock (see
     /// [`Context::stopped_at`]).
     stopped: RefCell<Option<Option<RawInstant>>>,
+    /// Every type the bundle recorded a `Future::poll` impl for, which is
+    /// what lets the await chain tell a wrapper's inner future from the
+    /// rest of its members. Collected once: the walk asks per member of
+    /// per frame of per task.
+    futures: HashSet<BundleTypeId>,
 }
 
 impl<'b, T: Target> Context<'b, T> {
@@ -128,6 +144,7 @@ impl<'b, T: Target> Context<'b, T> {
             vtables: RefCell::new(HashMap::default()),
             waker_vtable: RefCell::new(None),
             stopped: RefCell::new(None),
+            futures: view.future_type_ids().collect(),
         })
     }
 
@@ -853,6 +870,10 @@ impl<'b, T: Target> Context<'b, T> {
             if !visited.insert((cur.addr, cur.ty.id())) {
                 break ChainEnd::Cycle { addr: cur.addr };
             }
+            // A recognized wait primitive is where the chain ends
+            // whatever it holds inside, since [`Context::wait_target`]
+            // reads it as the thing being waited on.
+            let is_primitive = leaf_kind(cur.ty.name()).is_some();
 
             // A future that *is* a dyn wide pointer (a spawned
             // `Pin<Box<dyn Future>>`): resolve the concrete type through
@@ -881,16 +902,32 @@ impl<'b, T: Target> Context<'b, T> {
                 }
             }
 
-            // Decode the coroutine state. Non-enums are leaf futures:
-            // sync primitives, I/O futures, combinator structs.
+            // Decode the coroutine state. Non-enums are sync primitives,
+            // I/O futures and combinator structs: none has a suspend
+            // state, so none names an awaitee. A wrapper holding exactly
+            // one future is still a step of the chain — see
+            // [`Context::sole_inner_future`] — so it is followed; a
+            // genuine leaf ends the walk.
             let decoded = match cur.ty.active_variant(&cur.buf) {
                 None => {
+                    let inner = self.sole_inner_future(&cur).filter(|_| !is_primitive);
                     frames.push(AwaitFrame {
                         future: cur,
                         state: None,
-                        dyn_symbol,
+                        dyn_symbol: dyn_symbol.take(),
+                        inner: inner.as_ref().map(|(name, _)| *name),
                     });
-                    break ChainEnd::Leaf;
+                    let Some((_, inner)) = inner else {
+                        break ChainEnd::Leaf;
+                    };
+                    match inner {
+                        Follow::Next { future, symbol } => {
+                            cur = future;
+                            dyn_symbol = symbol;
+                            continue;
+                        }
+                        Follow::Stop(end) => break end,
+                    }
                 }
                 Some(Ok(v)) => v,
                 Some(Err(e)) => {
@@ -903,16 +940,17 @@ impl<'b, T: Target> Context<'b, T> {
                         future: cur,
                         state: None,
                         dyn_symbol,
+                        inner: None,
                     });
                     break ChainEnd::Error(err);
                 }
             };
 
             // Coroutine variant members are numbered; their state names
-            // live on the payload structs (§5.5). Ordinary enums (sync
-            // primitives, combinators like MaybeDone) are leaves: an
-            // await chain is linear, while a combinator may hold several
-            // pending futures — per-combinator knowledge is §9 scope.
+            // live on the payload structs (§5.5). An ordinary enum is a
+            // combinator written by hand — `futures_util`'s `Map` is an
+            // `Incomplete { future, f }` — so it names no awaitee, and
+            // what it holds decides whether the chain goes on.
             let is_coroutine_state =
                 !decoded.name.is_empty() && decoded.name.bytes().all(|b| b.is_ascii_digit());
 
@@ -932,6 +970,7 @@ impl<'b, T: Target> Context<'b, T> {
                     future: cur,
                     state: None,
                     dyn_symbol,
+                    inner: None,
                 });
                 break ChainEnd::Error(err);
             };
@@ -944,9 +983,26 @@ impl<'b, T: Target> Context<'b, T> {
                     payload,
                 }),
                 dyn_symbol: dyn_symbol.take(),
+                inner: None,
             });
             if !is_coroutine_state {
-                break ChainEnd::Leaf;
+                // The variant's payload holds the combinator's live
+                // futures, so the same arity rule decides: one and the
+                // chain goes on through it, none or several and it ends
+                // here.
+                let frame = frames.last_mut().unwrap();
+                let payload = &frame.state.as_ref().unwrap().payload;
+                let inner = self.sole_inner_future(payload).filter(|_| !is_primitive);
+                frame.inner = inner.as_ref().map(|(name, _)| *name);
+                match inner {
+                    Some((_, Follow::Next { future, symbol })) => {
+                        cur = future;
+                        dyn_symbol = symbol;
+                        continue;
+                    }
+                    Some((_, Follow::Stop(end))) => break end,
+                    None => break ChainEnd::Leaf,
+                }
             }
 
             // A suspended coroutine stores what it awaits in the
@@ -969,54 +1025,153 @@ impl<'b, T: Target> Context<'b, T> {
             };
             let awaitee = TypeInfoRef::new(member.ty(), payload.addr + member.offset(), bytes);
 
-            // Wrappers (Pin, mainly) hide what the pointer-shaped
-            // awaitees really are; plain awaitees keep their own type so
-            // the chain reports e.g. `oneshot::Receiver<u32>` rather than
-            // whatever its innards peel down to.
-            let peeled = awaitee.clone().peel();
-            if let Some(dp) = peeled.ty.dyn_pointer() {
-                // A boxed trait object: only its vtable knows the
-                // concrete type (§3.5).
-                match self.resolve_dyn_future(&peeled, &dp) {
-                    Ok(DynAwaitee::Resolved { future, symbol }) => {
-                        cur = future;
-                        dyn_symbol = Some(symbol);
-                    }
-                    Ok(DynAwaitee::Unknown { poll_symbol }) => {
-                        break ChainEnd::UnknownDyn {
-                            pointee: dp.pointee.name().to_owned(),
-                            poll_symbol,
-                        };
-                    }
-                    Ok(DynAwaitee::Ambiguous { symbol, candidates }) => {
-                        break ChainEnd::AmbiguousDyn {
-                            pointee: dp.pointee.name().to_owned(),
-                            symbol,
-                            candidates,
-                        };
-                    }
-                    Err(e) => break ChainEnd::Error(e),
+            match self.follow(awaitee) {
+                Follow::Next { future, symbol } => {
+                    cur = future;
+                    dyn_symbol = symbol;
                 }
-            } else if leaf_kind(awaitee.ty.name()).is_some() {
-                // A recognized wait primitive is a leaf regardless of its
-                // shape; [`Context::wait_target`] interprets it.
-                cur = awaitee.to_owned();
-            } else if peeled.ty.pointer_target().is_some() {
-                // `(&mut fut).await`, `Box<fut>`: follow the thin pointer.
-                match peeled.deref_ptr(self) {
-                    Ok(info) => cur = info,
-                    Err(e) => {
-                        break ChainEnd::Error(
-                            anyhow!(e).context("failed to follow an awaited pointer"),
-                        );
-                    }
-                }
-            } else {
-                cur = awaitee.to_owned();
+                Follow::Stop(end) => break end,
             }
         };
 
         AwaitChain { frames, end }
+    }
+
+    /// Follow one future the chain reached to the frame it stands for.
+    ///
+    /// Wrappers (`Pin`, mainly) hide what the pointer-shaped ones really
+    /// are; plain ones keep their own type so the chain reports e.g.
+    /// `oneshot::Receiver<u32>` rather than whatever its innards peel
+    /// down to.
+    fn follow(&self, awaitee: TypeInfoRef<'_, 'b, BundleType<'b>>) -> Follow<'b> {
+        let peeled = awaitee.clone().peel();
+        if let Some(dp) = peeled.ty.dyn_pointer() {
+            // A boxed trait object: only its vtable knows the concrete
+            // type (§3.5).
+            return match self.resolve_dyn_future(&peeled, &dp) {
+                Ok(DynAwaitee::Resolved { future, symbol }) => Follow::Next {
+                    future,
+                    symbol: Some(symbol),
+                },
+                Ok(DynAwaitee::Unknown { poll_symbol }) => Follow::Stop(ChainEnd::UnknownDyn {
+                    pointee: dp.pointee.name().to_owned(),
+                    poll_symbol,
+                }),
+                Ok(DynAwaitee::Ambiguous { symbol, candidates }) => {
+                    Follow::Stop(ChainEnd::AmbiguousDyn {
+                        pointee: dp.pointee.name().to_owned(),
+                        symbol,
+                        candidates,
+                    })
+                }
+                Err(e) => Follow::Stop(ChainEnd::Error(e)),
+            };
+        }
+        if leaf_kind(awaitee.ty.name()).is_none() && peeled.ty.pointer_target().is_some()
+        // A recognized wait primitive is a leaf regardless of its
+        // shape; [`Context::wait_target`] interprets it.
+        {
+            // `(&mut fut).await`, `Box<fut>`: follow the thin pointer.
+            return match peeled.deref_ptr(self) {
+                Ok(future) => Follow::Next {
+                    future,
+                    symbol: None,
+                },
+                Err(e) => Follow::Stop(ChainEnd::Error(
+                    anyhow!(e).context("failed to follow an awaited pointer"),
+                )),
+            };
+        }
+        Follow::Next {
+            future: awaitee.to_owned(),
+            symbol: None,
+        }
+    }
+
+    /// The one future a non-coroutine frame holds, where holding exactly
+    /// one is what it means.
+    ///
+    /// A future that is not a coroutine has no suspend state and so names
+    /// no `__awaitee`, but that does not make it the end of the chain: a
+    /// wrapper written by hand — `Instrumented`, `Map`, `MapErr`, the
+    /// `poll` that delegates to one inner future — is as much a step as a
+    /// suspended `async fn`, and stopping at one leaves a task reported as
+    /// waiting on a combinator rather than on whatever it wraps.
+    ///
+    /// What separates a wrapper from a leaf is arity, not spelling, so
+    /// nothing here is keyed by name: a wrapper holds exactly one member
+    /// that is itself a future, while a real leaf (`Notified`, an io
+    /// readiness future) holds none and a combinator that polls several
+    /// (`select!`, `Timeout`, a stream fold) holds more than one. Only the
+    /// first can extend a chain that is a list, so the other two end it.
+    ///
+    /// `scan` is the value whose members are the candidates: the future
+    /// itself where it is a plain struct, and the active variant's
+    /// payload where it is an enum, since that is where a combinator's
+    /// live futures sit.
+    ///
+    /// A type whose `poll` rustc inlined out of the symtab is not in the
+    /// bundle's future set, so a wrapper around it declines and the chain
+    /// ends exactly where it did before — the miss costs the old
+    /// behaviour, not a wrong one.
+    fn sole_inner_future(
+        &self,
+        scan: &TypeInfo<'b, BundleType<'b>>,
+    ) -> Option<(&'b str, Follow<'b>)> {
+        let mut sole = None;
+        for member in scan.ty.members() {
+            if !self.is_future(member.ty()) {
+                continue;
+            }
+            if sole.is_some() {
+                return None;
+            }
+            sole = Some(member);
+        }
+        let member = sole?;
+        let start = member.offset() as usize;
+        let bytes = scan.buf.get(start..start + member.ty().size() as usize)?;
+        let follow = self.follow(TypeInfoRef::new(
+            member.ty(),
+            scan.addr + member.offset(),
+            bytes,
+        ));
+        Some((member.name(), follow))
+    }
+
+    /// Whether a type is a future: one whose `poll` extraction recorded,
+    /// a coroutine (whose `poll` may be inlined away, but whose numbered
+    /// variants say what it is), a recognized wait primitive, or a boxed
+    /// `dyn Future` whose concrete type only its vtable knows.
+    ///
+    /// A member is often wrapped before the future is reached
+    /// (`ManuallyDrop<Pin<Box<dyn Future>>>`, `IntoFuture<Conn>`), so the
+    /// wrapper chain is walked a step at a time and the *first* level
+    /// that is a future decides. Testing only the fully unwrapped type
+    /// would walk past `IntoFuture` and the connection inside it alike,
+    /// and land on the `Option` at the bottom of both.
+    fn is_future(&self, ty: BundleType<'b>) -> bool {
+        let mut ty = ty;
+        for _ in 0..MAX_WRAPPER_DEPTH {
+            if let Some(dp) = ty.dyn_pointer() {
+                return dp.pointee.name().contains("core::future::future::Future");
+            }
+            if self.futures.contains(&ty.id())
+                || ty.is_coroutine()
+                || leaf_kind(ty.name()).is_some()
+            {
+                return true;
+            }
+            // Not one itself: unwrap one layer, the way `peel` does, and
+            // ask again. Anything that is not a single-field wrapper
+            // ends the search.
+            let mut sized = ty.members().map(|m| m.ty()).filter(|t| t.size() > 0);
+            match (sized.next(), sized.next()) {
+                (Some(inner), None) => ty = inner,
+                _ => return false,
+            }
+        }
+        false
     }
 
     /// Resolve a `dyn Future` wide pointer (§3.5): read its data and
@@ -1793,6 +1948,14 @@ pub struct AwaitFrame<'b> {
     /// The mangled symbol that identified this frame, when it was
     /// reached through a `dyn Future` vtable in target memory.
     pub dyn_symbol: Option<String>,
+    /// The member the chain descended through, when this frame is a
+    /// wrapper whose one inner future is the next frame rather than a
+    /// suspended coroutine naming an `__awaitee`.
+    ///
+    /// A consumer walking a frame's locals must skip it for the same
+    /// reason it skips `__awaitee`: it is the next frame, counted there,
+    /// not a future held beside the chain.
+    pub inner: Option<&'b str>,
 }
 
 /// A coroutine frame's decoded state.
@@ -2074,6 +2237,18 @@ impl fmt::Display for WaitTarget {
             }
         }
     }
+}
+
+/// Where following one step of an await chain led: the next frame, or
+/// the reason there is not one.
+enum Follow<'b> {
+    Next {
+        future: TypeInfo<'b, BundleType<'b>>,
+        /// The dyn-vtable symbol that identified `future`, when it was
+        /// not reached structurally.
+        symbol: Option<String>,
+    },
+    Stop(ChainEnd),
 }
 
 /// The outcome of resolving one `dyn Future` awaitee.

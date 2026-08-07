@@ -342,9 +342,14 @@ impl Walker {
             };
             // A frame's own locals only: the `__…` slots are the
             // compiler's (the `__awaitee` is the next frame, scanned as
-            // itself), and zero-sized members hold nothing.
+            // itself), and zero-sized members hold nothing. A wrapper's
+            // inner future is the next frame for the same reason, and is
+            // skipped for the same reason — counting it here would put
+            // it in two of the three populations the census calls
+            // disjoint.
             for m in payload.as_ref().ty.members() {
-                if m.name().starts_with("__") || m.ty().size() == 0 {
+                if m.name().starts_with("__") || m.ty().size() == 0 || frame.inner == Some(m.name())
+                {
                     continue;
                 }
                 let start = m.offset() as usize;
