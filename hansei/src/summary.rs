@@ -447,31 +447,52 @@ impl Waits {
 // ---------------------------------------------------------------------
 
 fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
-    let frames: usize = facts.waits.iter().map(|w| w.depth).sum();
-    let deepest = facts.waits.iter().map(|w| w.depth).max().unwrap_or(0);
+    // Every count here is of *chains*, not of the frames they stand on:
+    // a chain is one future making progress on its own, and the frames
+    // under it are that one future's stack. Counting frames instead
+    // would make a task whose wrappers run eight deep read as eight
+    // things in flight, and would answer "how many futures are running
+    // here" with a number that grows when a library adds a combinator.
+    // The depth is not lost — it is the second number on the heading,
+    // where it reads as the size of what is in flight rather than as
+    // more of it.
+    let tasks = facts.tasks.tasks.len();
     let held = facts.held.len();
-
     let mut slots = 0;
     let mut live = 0;
     for set in facts.sets {
         slots += set.children.len();
         live += set.children.iter().filter(|c| c.future.is_some()).count();
     }
+
+    let depths = || {
+        facts
+            .waits
+            .iter()
+            .map(|w| w.depth)
+            .chain(facts.held.iter().map(|h| h.depth))
+            .chain(facts.sets.iter().flat_map(|s| &s.children).map(|c| c.depth))
+    };
+    let frames: usize = depths().sum();
+    let deepest = depths().max().unwrap_or(0);
+
     // The three populations are disjoint by construction — a task's own
     // spine, what its frames hold beside it, and what its sets hold —
     // so this total is a sum and not a re-count. They are a block of
     // their own rather than three rows under the heading, so that the
     // tally below cannot be read as a fourth place a future can be.
-    writeln!(out, "Futures: {} in flight", frames + held + live)?;
+    writeln!(
+        out,
+        "Futures: {} in flight, on {} ({deepest} deep at the deepest)",
+        tasks + held + live,
+        counted(frames, "await-chain frame"),
+    )?;
     let reaped = match slots - live {
         0 => String::new(),
         n => format!(", and {n} completed and not yet reaped"),
     };
     let places = [
-        Row::new(
-            frames,
-            format!("on task await chains ({deepest} deep at the deepest)"),
-        ),
+        Row::new(tasks, "polled as tasks by the runtime"),
         Row::new(held, "held in frames, off any await chain"),
         // `FuturesUnordered` names one set however many there are, so
         // it is spelled as tokio spells it rather than pluralized.
@@ -729,7 +750,14 @@ mod tests {
     }
 
     fn held(future: &str, wait: Option<WaitKind>) -> HeldFuture {
+        held_deep(future, wait, 1)
+    }
+
+    /// A held future whose own chain ran `depth` frames, for the counts
+    /// that must not confuse a future with the frames under it.
+    fn held_deep(future: &str, wait: Option<WaitKind>, depth: usize) -> HeldFuture {
         HeldFuture {
+            depth,
             owner: 0,
             frame: 0,
             local: "arm".to_string(),
@@ -745,8 +773,13 @@ mod tests {
     }
 
     fn child(future: Option<&str>, wait: Option<WaitKind>) -> SetChild {
+        child_deep(future, wait, if future.is_some() { 1 } else { 0 })
+    }
+
+    fn child_deep(future: Option<&str>, wait: Option<WaitKind>, depth: usize) -> SetChild {
         SetChild {
             node: 0x2000,
+            depth,
             future: future.map(str::to_string),
             root: None,
             state: None,
@@ -1079,9 +1112,21 @@ mod tests {
     /// The three future populations are disjoint, so the headline is
     /// their sum: a set's children are not also held futures, and a
     /// reaped slot is neither.
+    ///
+    /// Every one of them counts *futures*, never the frames they stand
+    /// on — the two tasks here run three and two frames deep, and are
+    /// two futures in flight, not five. The frames are the heading's
+    /// second number, where they read as the size of what is in flight
+    /// rather than as more of it.
     #[test]
     fn test_future_populations_do_not_overlap() {
-        let list = empty();
+        let list = TaskList {
+            tasks: vec![
+                task(1, JOIN_INTEREST, "a::fut", "a.rs"),
+                task(2, JOIN_INTEREST, "b::fut", "b.rs"),
+            ],
+            errors: Vec::new(),
+        };
         let waits = vec![wait(1, None, 3), wait(2, None, 2)];
         let held = vec![held("held::fut", Some(WaitKind::Task { addr: 0x7100 }))];
         let sets = vec![FutureSet {
@@ -1104,11 +1149,12 @@ mod tests {
         let futures = page.split("\n\n").nth(2).unwrap();
         assert_eq!(
             futures,
-            // 5 on the chains, 1 held, 1 resident set child: the
-            // reaped slot is counted, and deliberately not added in.
-            "Futures: 7 in flight\n    \
+            // 2 tasks, 1 held, 1 resident set child: the reaped slot is
+            // counted, and deliberately not added in. Their chains run
+            // 3 + 2 + 1 + 1 frames.
+            "Futures: 4 in flight, on 7 await-chain frames (3 deep at the deepest)\n    \
              Location:\n        \
-             5  on task await chains (3 deep at the deepest)\n        \
+             2  polled as tasks by the runtime\n        \
              1  held in frames, off any await chain\n        \
              1  in 1 FuturesUnordered, and 1 completed and not yet reaped\n    \
              Future types with await chains:\n        \

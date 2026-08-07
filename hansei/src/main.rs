@@ -3648,6 +3648,7 @@ mod future_trace_tests {
                 ty: "FuturesUnordered<step::{async_fn_env#0}>".to_string(),
                 children: vec![
                     census::SetChild {
+                        depth: 1,
                         node: 0x2000,
                         future: Some("step::{async_fn_env#0}".to_string()),
                         root: None,
@@ -3657,6 +3658,7 @@ mod future_trace_tests {
                         leaf: None,
                     },
                     census::SetChild {
+                        depth: 1,
                         node: 0x2100,
                         future: None,
                         root: None,
@@ -3668,6 +3670,7 @@ mod future_trace_tests {
                 ],
             }];
             let held = vec![census::HeldFuture {
+                depth: 1,
                 owner,
                 frame: 1,
                 local: "lock".to_string(),
@@ -4208,6 +4211,7 @@ mod graph_tests {
     /// await chain.
     fn held_handle(owner: usize, id: u64) -> census::HeldFuture {
         census::HeldFuture {
+            depth: 1,
             owner,
             frame: 0,
             local: "cancel_task".to_string(),
