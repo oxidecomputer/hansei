@@ -1363,7 +1363,7 @@ fn test_census_counts_the_target() {
         // things running.
         assert!(
             out.contains(
-                "Futures: 2 in flight, on 4 await-chain frames (2 deep at the deepest)\n    \
+                "Futures: 2 in flight, on 4 await-chain frames (up to 2 deep)\n    \
                  Location:\n        \
                  2  polled as tasks by the runtime\n        \
                  0  held in frames, off any await chain\n        \
