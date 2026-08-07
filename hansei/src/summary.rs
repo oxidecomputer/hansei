@@ -21,7 +21,7 @@ use crate::future_name;
 use anyhow::Result;
 use hansei_types::tokio::Lifecycle;
 use hansei_types::tokio::bundle::{
-    BlockingPool, FutureInfo, ParkState, ParkStates, TaskList, WaitKind,
+    BlockingPool, FutureInfo, ParkState, ParkStates, Task, TaskList, WaitKind,
 };
 use hansei_types::tokio::census::{FutureSet, HeldFuture};
 use hansei_types::tokio::graph::TaskWait;
@@ -309,40 +309,31 @@ fn tasks(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
         writeln!(out, "    Of note: {}", notable.join(", "))?;
     }
 
-    // What they are blocked on. A task with no wait target is not one
-    // more thing to wait on: it is mid-poll, finished, or parked on an
-    // ordinary future — and that last one is most of them on any real
-    // target, so it is named by the leaf its chain reached rather than
-    // lumped under a bucket saying only that hansei has no primitive
-    // for it.
-    let mut waits = Waits::default();
-    for (task, wait) in list.tasks.iter().zip(facts.waits) {
-        match wait.target.as_ref() {
-            Some(target) => waits.add(target.kind()),
-            None => match (task.state.lifecycle(), &wait.leaf) {
-                (Lifecycle::Running, _) => waits.running += 1,
-                (Lifecycle::Complete, _) => waits.complete += 1,
-                (_, Some(leaf)) => *waits.leaves.entry(leaf.clone()).or_default() += 1,
-                (_, None) => waits.undecoded += 1,
-            },
-        }
-    }
-    rows("Waiting on", &waits.rows(top), out)?;
-
     // What the runtime is full of, by the two names a reader can act
-    // on: the future a task runs, and the line that spawned it.
-    let mut types: BTreeMap<String, usize> = BTreeMap::new();
+    // on: the future a task runs, and the line that spawned it. What
+    // the tasks of a type are blocked on hangs off the type rather than
+    // being tallied beside it: a thousand tasks on one semaphore is a
+    // different target from a thousand types with one waiter each, and
+    // only the breakdown under the type tells them apart.
+    let mut types: BTreeMap<String, (usize, Waits)> = BTreeMap::new();
     let mut sites: BTreeMap<String, usize> = BTreeMap::new();
-    for task in &list.tasks {
-        *types.entry(future_name(&task.future)).or_default() += 1;
+    for (index, task) in list.tasks.iter().enumerate() {
+        let (count, waits) = types.entry(future_name(&task.future)).or_default();
+        *count += 1;
+        if let Some(wait) = facts.waits.get(index) {
+            waits.add_task(task, wait);
+        }
         let site = match &task.spawn_location {
             Some(loc) => loc.to_string(),
             None => "<no spawn location recorded>".to_string(),
         };
         *sites.entry(site).or_default() += 1;
     }
-    rows("Future types", &ranked(types, top, "type"), out)?;
-    rows("Spawned at", &ranked(sites, top, "site"), out)
+    let futures = types
+        .into_iter()
+        .map(|(name, (count, waits))| chained(name, count, &waits, top));
+    rows(FUTURE_TYPES, ranked(futures, top, "type"), out)?;
+    rows("Spawned at", ranked(tally(sites), top, "site"), out)
 }
 
 /// The wait tally: one bucket per thing a task or a future can be
@@ -369,6 +360,37 @@ struct Waits {
 }
 
 impl Waits {
+    /// Bucket one task by what it is parked on. A task with no wait
+    /// target is not one more thing to wait on: it is mid-poll,
+    /// finished, or parked on an ordinary future — and that last one is
+    /// most of them on any real target, so it is named by the leaf its
+    /// chain reached rather than lumped under a bucket saying only that
+    /// hansei has no primitive for it.
+    fn add_task(&mut self, task: &Task, wait: &TaskWait) {
+        match wait.target.as_ref() {
+            Some(target) => self.add(target.kind()),
+            None => match (task.state.lifecycle(), &wait.leaf) {
+                (Lifecycle::Running, _) => self.running += 1,
+                (Lifecycle::Complete, _) => self.complete += 1,
+                (_, Some(leaf)) => *self.leaves.entry(leaf.clone()).or_default() += 1,
+                (_, None) => self.undecoded += 1,
+            },
+        }
+    }
+
+    /// Bucket one future the census named — held in a frame, or a set's
+    /// child — by what it is parked on. It has no lifecycle of its own
+    /// to be mid-poll or finished by, so the two buckets that reason
+    /// about one cannot arise: what is left is the primitive, the leaf,
+    /// or a chain that reached neither.
+    fn add_future(&mut self, wait: Option<WaitKind>, leaf: &Option<String>) {
+        match (wait, leaf) {
+            (Some(wait), _) => self.add(wait),
+            (None, Some(leaf)) => *self.leaves.entry(leaf.clone()).or_default() += 1,
+            (None, None) => self.undecoded += 1,
+        }
+    }
+
     fn add(&mut self, kind: WaitKind) {
         match kind {
             WaitKind::Timer { past_due } => {
@@ -387,7 +409,7 @@ impl Waits {
     /// to say — so cutting one would drop a fact rather than a long
     /// tail, while the leaves run to as many types as the target has
     /// ways of waiting.
-    fn rows(&self, top: usize) -> Vec<(usize, String)> {
+    fn rows(&self, top: usize) -> Vec<Row> {
         // A deadline already passed at the moment the target stopped is
         // a wakeup that was owed and had not been delivered, which is
         // worth saying wherever the timer count is said.
@@ -396,23 +418,20 @@ impl Waits {
             n => format!("a timer ({n} already past due)"),
         };
         let mut rows = vec![
-            (self.timer, timer),
-            (self.task, "another task (JoinHandle)".to_string()),
-            (self.running, "nothing — mid-poll on a worker".to_string()),
-            (self.complete, "nothing — finished".to_string()),
-            (
-                self.undecoded,
-                "a chain that stopped before any leaf".to_string(),
-            ),
+            Row::new(self.timer, timer),
+            Row::new(self.task, "another task (JoinHandle)"),
+            Row::new(self.running, "nothing — mid-poll on a worker"),
+            Row::new(self.complete, "nothing — finished"),
+            Row::new(self.undecoded, "a chain that stopped before any leaf"),
         ];
         for (owner, count) in &self.semaphores {
             let what = match owner {
                 Some(owner) => format!("a {owner}"),
                 None => "a semaphore no frame names the owner of".to_string(),
             };
-            rows.push((*count, what));
+            rows.push(Row::new(*count, what));
         }
-        let mut leaves = ranked(self.leaves.clone(), top, "leaf type");
+        let mut leaves = ranked(tally(self.leaves.clone()), top, "leaf type");
         // The `across N more` row ranking left last stays last, under
         // the rows it summarizes rather than sorted in among them.
         let rest = (self.leaves.len() > top).then(|| leaves.pop()).flatten();
@@ -449,31 +468,30 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
         n => format!(", and {n} completed and not yet reaped"),
     };
     let places = [
-        (
+        Row::new(
             frames,
             format!("on task await chains ({deepest} deep at the deepest)"),
         ),
-        (held, "held in frames, off any await chain".to_string()),
+        Row::new(held, "held in frames, off any await chain"),
         // `FuturesUnordered` names one set however many there are, so
         // it is spelled as tokio spells it rather than pluralized.
-        (
+        Row::new(
             live,
             format!("in {} FuturesUnordered{reaped}", facts.sets.len()),
         ),
     ];
-    rows("Location", &places, out)?;
+    rows("Location", places, out)?;
 
-    // The same two tallies as the tasks', over the futures no task
-    // listing shows: they park on the same things and are as worth
-    // naming, and a set of ten thousand children all of one type all
-    // waiting on one semaphore is the shape these rows exist to make
-    // visible. Both run over what the census *names* — a chain frame is
-    // not among them, since this section counts its depth and nothing
-    // else, and the future its task runs is already a row of the tasks'
-    // own type tally. A reaped slot is a future no longer, counted above
-    // rather than in either row here.
-    let mut waits = Waits::default();
-    let mut types: BTreeMap<String, usize> = BTreeMap::new();
+    // The same tally as the tasks', over the futures no task listing
+    // shows: they park on the same things and are as worth naming, and
+    // a set of ten thousand children all of one type all waiting on one
+    // semaphore is the shape this row exists to make visible — which is
+    // why what they wait on hangs off the type here too. It runs over
+    // what the census *names* — a chain frame is not among them, since
+    // this section counts its depth and nothing else, and the future its
+    // task runs is already a row of the tasks' own type tally. A reaped
+    // slot is a future no longer, counted above rather than here.
+    let mut types: BTreeMap<String, (usize, Waits)> = BTreeMap::new();
     let children = facts
         .sets
         .iter()
@@ -485,15 +503,14 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
         .map(|h| (&h.future, h.wait, &h.leaf))
         .chain(children)
     {
-        *types.entry(future.clone()).or_default() += 1;
-        match (wait, leaf) {
-            (Some(wait), _) => waits.add(wait),
-            (None, Some(leaf)) => *waits.leaves.entry(leaf.clone()).or_default() += 1,
-            (None, None) => waits.undecoded += 1,
-        }
+        let (count, waits) = types.entry(future.clone()).or_default();
+        *count += 1;
+        waits.add_future(wait, leaf);
     }
-    rows("Waiting on", &waits.rows(top), out)?;
-    rows("Future types", &ranked(types, top, "type"), out)?;
+    let futures = types
+        .into_iter()
+        .map(|(name, (count, waits))| chained(name, count, &waits, top));
+    rows(FUTURE_TYPES, ranked(futures, top, "type"), out)?;
     Ok(())
 }
 
@@ -501,31 +518,85 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
 // Shared shaping
 // ---------------------------------------------------------------------
 
+/// The heading both type tallies print under. It carries what the
+/// branches are, since a branch is a whole chain collapsed to its far
+/// end rather than the next frame down — which is `trace`'s listing,
+/// and what a reader goes to when a row here is the one they came for.
+const FUTURE_TYPES: &str = "Future types with await chains";
+
+/// One future type as a row, with what the chains rooted at it reach
+/// hanging off it.
+///
+/// A type whose chains all reached no further than that same type has
+/// nothing to hang: a lone branch repeating the name above it says only
+/// that, at the width of the name. Where there is more to say the row
+/// stays, itself among the rest.
+fn chained(name: String, count: usize, waits: &Waits, top: usize) -> Row {
+    let under = waits.rows(top);
+    let under = match under.as_slice() {
+        [only] if only.what == name => Vec::new(),
+        _ => under,
+    };
+    Row::new(count, name).under(under)
+}
+
 /// A count and the noun it counts, pluralized.
 fn counted(n: usize, noun: &str) -> String {
     let plural = if n == 1 { "" } else { "s" };
     format!("{n} {noun}{plural}")
 }
 
+/// One row of a listing: how many, of what, and — where the census has
+/// more to say about that row than a number — the tally that breaks it
+/// down, drawn as branches beneath it.
+struct Row {
+    count: usize,
+    what: String,
+    under: Vec<Row>,
+}
+
+impl Row {
+    fn new(count: usize, what: impl Into<String>) -> Self {
+        Self {
+            count,
+            what: what.into(),
+            under: Vec::new(),
+        }
+    }
+
+    fn under(mut self, under: Vec<Row>) -> Self {
+        self.under = under;
+        self
+    }
+}
+
+/// A name-keyed tally as rows.
+fn tally(tally: BTreeMap<String, usize>) -> Vec<Row> {
+    tally
+        .into_iter()
+        .map(|(what, count)| Row::new(count, what))
+        .collect()
+}
+
 /// Order a tally commonest first, dropping the empty buckets — a zero
 /// says nothing a reader needs, and a page of them buries what does.
 /// Ties keep their label order, so two runs of the same target print
 /// the same page.
-fn rank(mut rows: Vec<(usize, String)>) -> Vec<(usize, String)> {
-    rows.retain(|(n, _)| *n > 0);
-    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+fn rank(mut rows: Vec<Row>) -> Vec<Row> {
+    rows.retain(|row| row.count > 0);
+    rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.what.cmp(&b.what)));
     rows
 }
 
 /// The `top` commonest entries of a tally, with whatever it leaves out
 /// counted rather than dropped in silence.
-fn ranked(tally: BTreeMap<String, usize>, top: usize, noun: &str) -> Vec<(usize, String)> {
-    let total = tally.len();
-    let mut rows = rank(tally.into_iter().map(|(k, n)| (n, k)).collect());
+fn ranked(tally: impl IntoIterator<Item = Row>, top: usize, noun: &str) -> Vec<Row> {
+    let mut rows = rank(tally.into_iter().collect());
+    let total = rows.len();
     if total > top {
-        let rest: usize = rows[top..].iter().map(|(n, _)| n).sum();
+        let rest: usize = rows[top..].iter().map(|row| row.count).sum();
         rows.truncate(top);
-        rows.push((
+        rows.push(Row::new(
             rest,
             format!("across {}", counted(total - top, &format!("more {noun}"))),
         ));
@@ -533,21 +604,45 @@ fn ranked(tally: BTreeMap<String, usize>, top: usize, noun: &str) -> Vec<(usize,
     rows
 }
 
-/// Print a labelled block of counted rows, the counts right-aligned so
-/// the magnitudes line up. A block with nothing in it is not printed:
-/// a heading over no rows reads as data missing rather than absent.
-fn rows(label: &str, rows: &[(usize, String)], out: &mut dyn io::Write) -> Result<()> {
+/// Print a labelled block of counted rows. A block with nothing in it
+/// is not printed: a heading over no rows reads as data missing rather
+/// than absent.
+fn rows(label: &str, rows: impl IntoIterator<Item = Row>, out: &mut dyn io::Write) -> Result<()> {
+    let rows: Vec<Row> = rows.into_iter().collect();
     if rows.is_empty() {
         return Ok(());
     }
     writeln!(out, "    {label}:")?;
+    level(&rows, "        ", false, out)
+}
+
+/// Print one level of a listing, the counts right-aligned within the
+/// level so the magnitudes line up, and each row's breakdown hanging
+/// off the label above it.
+///
+/// `branch` says whether these rows *are* a breakdown, and so are drawn
+/// as branches of the row they hang from rather than as a listing in
+/// their own right.
+fn level(rows: &[Row], indent: &str, branch: bool, out: &mut dyn io::Write) -> Result<()> {
     let width = rows
         .iter()
-        .map(|(n, _)| n.to_string().len())
+        .map(|row| row.count.to_string().len())
         .max()
         .unwrap_or(1);
-    for (n, what) in rows {
-        writeln!(out, "        {n:>width$}  {what}")?;
+    for (i, row) in rows.iter().enumerate() {
+        let (stem, run) = match (branch, i + 1 == rows.len()) {
+            (false, _) => ("", ""),
+            (true, true) => ("└─ ", "   "),
+            (true, false) => ("├─ ", "│  "),
+        };
+        writeln!(out, "{indent}{stem}{:>width$}  {}", row.count, row.what)?;
+        if !row.under.is_empty() {
+            // Indented to where this row's label starts, so what breaks
+            // it down reads as hanging from the name and not from the
+            // count.
+            let under = format!("{indent}{run}{}", " ".repeat(width + 2));
+            level(&row.under, &under, true, out)?;
+        }
     }
     Ok(())
 }
@@ -817,7 +912,8 @@ mod tests {
 
     /// Every task lands in exactly one lifecycle bucket and exactly one
     /// wait bucket, so both rows add up to the total over them. A task
-    /// with no wait target is bucketed by why it has none.
+    /// with no wait target is bucketed by why it has none, and the wait
+    /// buckets hang off the future type whose tasks they count.
     #[test]
     fn test_task_tallies_count_every_task_once() {
         let list = TaskList {
@@ -859,12 +955,15 @@ mod tests {
         );
         assert!(
             page.contains(
-                "    Waiting on:\n        \
-                 2  a timer (1 already past due)\n        \
-                 2  tokio::runtime::io::scheduled_io::Readiness\n        \
-                 1  a chain that stopped before any leaf\n        \
-                 1  a tokio::sync::Mutex\n        \
-                 1  nothing — mid-poll on a worker\n"
+                "    Future types with await chains:\n        \
+                 3  c::fut\n           \
+                 ├─ 2  tokio::runtime::io::scheduled_io::Readiness\n           \
+                 └─ 1  a chain that stopped before any leaf\n        \
+                 2  a::fut\n           \
+                 └─ 2  a timer (1 already past due)\n        \
+                 2  b::fut\n           \
+                 ├─ 1  a tokio::sync::Mutex\n           \
+                 └─ 1  nothing — mid-poll on a worker\n"
             ),
             "{page}"
         );
@@ -897,11 +996,48 @@ mod tests {
         let page = census(&facts(&list, &waits), 2);
         assert!(
             page.contains(
-                "    Waiting on:\n        \
-                 4  leaf3\n        \
-                 3  leaf2\n        \
-                 1  a timer\n        \
-                 3  across 2 more leaf types\n"
+                "    Future types with await chains:\n        \
+                 11  f\n            \
+                 ├─ 4  leaf3\n            \
+                 ├─ 3  leaf2\n            \
+                 ├─ 1  a timer\n            \
+                 └─ 3  across 2 more leaf types\n"
+            ),
+            "{page}"
+        );
+    }
+
+    /// A type whose every task is parked on that same type gets no
+    /// breakdown: the chains reached no further than the future the
+    /// task runs, and a lone branch repeating the name above it says
+    /// only that. A type with more than one thing to say keeps them
+    /// all, itself among them.
+    #[test]
+    fn test_a_type_parked_on_itself_gets_no_breakdown() {
+        let list = TaskList {
+            tasks: vec![
+                task(1, JOIN_INTEREST, "a::fut", "a.rs"),
+                task(2, JOIN_INTEREST, "a::fut", "a.rs"),
+                task(3, JOIN_INTEREST, "b::fut", "b.rs"),
+                task(4, JOIN_INTEREST, "b::fut", "b.rs"),
+            ],
+            errors: Vec::new(),
+        };
+        let waits = vec![
+            leaf_wait(1, None, 1, Some("a::fut")),
+            leaf_wait(2, None, 1, Some("a::fut")),
+            leaf_wait(3, None, 1, Some("b::fut")),
+            wait(4, Some(timer(10, 4)), 1),
+        ];
+        let page = census(&facts(&list, &waits), 5);
+
+        assert!(
+            page.contains(
+                "    Future types with await chains:\n        \
+                 2  a::fut\n        \
+                 2  b::fut\n           \
+                 ├─ 1  a timer\n           \
+                 └─ 1  b::fut\n"
             ),
             "{page}"
         );
@@ -930,7 +1066,7 @@ mod tests {
 
         assert!(
             page.contains(
-                "    Future types:\n         \
+                "    Future types with await chains:\n         \
                  6  f5\n         \
                  5  f4\n        \
                  10  across 4 more types\n"
@@ -975,12 +1111,11 @@ mod tests {
              5  on task await chains (3 deep at the deepest)\n        \
              1  held in frames, off any await chain\n        \
              1  in 1 FuturesUnordered, and 1 completed and not yet reaped\n    \
-             Waiting on:\n        \
-             1  a timer\n        \
-             1  another task (JoinHandle)\n    \
-             Future types:\n        \
-             1  child::fut\n        \
-             1  held::fut\n"
+             Future types with await chains:\n        \
+             1  child::fut\n           \
+             └─ 1  a timer\n        \
+             1  held::fut\n           \
+             └─ 1  another task (JoinHandle)\n"
         );
     }
 
@@ -1012,9 +1147,11 @@ mod tests {
         let page = census(&facts, 2);
         assert!(
             page.contains(
-                "    Future types:\n        \
-                 4  hot::fut\n        \
-                 1  cold::fut\n        \
+                "    Future types with await chains:\n        \
+                 4  hot::fut\n           \
+                 └─ 4  a chain that stopped before any leaf\n        \
+                 1  cold::fut\n           \
+                 └─ 1  a chain that stopped before any leaf\n        \
                  1  across 1 more type\n"
             ),
             "{page}"

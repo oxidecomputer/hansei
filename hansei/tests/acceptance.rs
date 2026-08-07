@@ -1333,16 +1333,26 @@ fn test_census_counts_the_target() {
 
         // The task total is the task listing's, and the two waits are
         // the two leaves the graph names: the sleeper on the timer, the
-        // joiner on the sleeper.
+        // joiner on the sleeper — each hanging off the future type
+        // whose task waits that way rather than tallied on its own.
         let rows = list_tasks(&bundle, core);
         assert!(
             out.contains(&format!("Tasks: {} owned by the runtime\n", rows.len())),
             "{out}"
         );
         assert!(out.contains("    Lifecycle: 2 idle\n"), "{out}");
-        assert!(out.contains("\n        1  a timer\n"), "{out}");
         assert!(
-            out.contains("\n        1  another task (JoinHandle)\n"),
+            out.contains(
+                "        1  sleep_join::sleeper::{async_fn_env#0}\n           \
+                 └─ 1  a timer\n"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "        1  sleep_join::joiner::{async_fn_env#0}\n           \
+                 └─ 1  another task (JoinHandle)\n"
+            ),
             "{out}"
         );
 
@@ -1375,19 +1385,20 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
             ),
             "{out}"
         );
-        // The children park in the shared Notify, which is no primitive
-        // hansei decodes into a wait target — so the tally names the
-        // leaf their chains reached rather than counting them as
-        // something it could not identify.
+        // What all five of them are — the set's children and the two
+        // held beside them are the same async fn, the boxed one named
+        // through the dyn join rather than by its pointer — and, under
+        // it, what those five chains reach. The children park in the
+        // shared Notify, which is no primitive hansei decodes into a
+        // wait target, so the branch names the leaf their chains
+        // reached rather than counting them as something it could not
+        // identify; the two held beside them reach elsewhere, which is
+        // what leaves this branch at three of the five.
         assert!(
-            out.contains("        3  tokio::sync::notify::Notified\n"),
-            "{out}"
-        );
-        // And what all five of them are — the set's children and the
-        // two held beside them are the same async fn, the boxed one
-        // named through the dyn join rather than by its pointer.
-        assert!(
-            out.contains("        5  unordered::set_member::{async_fn_env#0}\n"),
+            out.contains(
+                "        5  unordered::set_member::{async_fn_env#0}\n           \
+                 ├─ 3  tokio::sync::notify::Notified\n"
+            ),
             "{out}"
         );
     });
