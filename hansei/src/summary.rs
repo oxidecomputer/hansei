@@ -483,7 +483,7 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
     // tally below cannot be read as a fourth place a future can be.
     writeln!(
         out,
-        "Futures: {} in flight, on {} ({deepest} deep at the deepest)",
+        "Futures: {} in flight, on {} (up to {deepest} deep)",
         tasks + held + live,
         counted(frames, "await-chain frame"),
     )?;
@@ -1152,7 +1152,7 @@ mod tests {
             // 2 tasks, 1 held, 1 resident set child: the reaped slot is
             // counted, and deliberately not added in. Their chains run
             // 3 + 2 + 1 + 1 frames.
-            "Futures: 4 in flight, on 7 await-chain frames (3 deep at the deepest)\n    \
+            "Futures: 4 in flight, on 7 await-chain frames (up to 3 deep)\n    \
              Location:\n        \
              2  polled as tasks by the runtime\n        \
              1  held in frames, off any await chain\n        \
