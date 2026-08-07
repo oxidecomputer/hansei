@@ -1,4 +1,4 @@
-= Durin
+= Hansei
 
 A suite of tools for extracting DWARF-derived *debug bundles* from Rust
 binaries and using them to reconstruct the runtime state of a live (or cored)
