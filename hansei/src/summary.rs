@@ -543,7 +543,12 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
 /// branches are, since a branch is a whole chain collapsed to its far
 /// end rather than the next frame down — which is `trace`'s listing,
 /// and what a reader goes to when a row here is the one they came for.
-const FUTURE_TYPES: &str = "Future types with await chains";
+///
+/// It says "what they await" rather than naming the chain: the branches
+/// under a row are the several places the futures *of that type* ended
+/// up, one per group of them, and calling them a chain invites reading
+/// the list downward as one chain's frames.
+const FUTURE_TYPES: &str = "Future types and what they await";
 
 /// One future type as a row, with what the chains rooted at it reach
 /// hanging off it.
@@ -988,7 +993,7 @@ mod tests {
         );
         assert!(
             page.contains(
-                "    Future types with await chains:\n        \
+                "    Future types and what they await:\n        \
                  3  c::fut\n           \
                  ├─ 2  tokio::runtime::io::scheduled_io::Readiness\n           \
                  └─ 1  a chain that stopped before any leaf\n        \
@@ -1029,7 +1034,7 @@ mod tests {
         let page = census(&facts(&list, &waits), 2);
         assert!(
             page.contains(
-                "    Future types with await chains:\n        \
+                "    Future types and what they await:\n        \
                  11  f\n            \
                  ├─ 4  leaf3\n            \
                  ├─ 3  leaf2\n            \
@@ -1066,7 +1071,7 @@ mod tests {
 
         assert!(
             page.contains(
-                "    Future types with await chains:\n        \
+                "    Future types and what they await:\n        \
                  2  a::fut\n        \
                  2  b::fut\n           \
                  ├─ 1  a timer\n           \
@@ -1099,7 +1104,7 @@ mod tests {
 
         assert!(
             page.contains(
-                "    Future types with await chains:\n         \
+                "    Future types and what they await:\n         \
                  6  f5\n         \
                  5  f4\n        \
                  10  across 4 more types\n"
@@ -1157,7 +1162,7 @@ mod tests {
              2  polled as tasks by the runtime\n        \
              1  held in frames, off any await chain\n        \
              1  in 1 FuturesUnordered, and 1 completed and not yet reaped\n    \
-             Future types with await chains:\n        \
+             Future types and what they await:\n        \
              1  child::fut\n           \
              └─ 1  a timer\n        \
              1  held::fut\n           \
@@ -1193,7 +1198,7 @@ mod tests {
         let page = census(&facts, 2);
         assert!(
             page.contains(
-                "    Future types with await chains:\n        \
+                "    Future types and what they await:\n        \
                  4  hot::fut\n           \
                  └─ 4  a chain that stopped before any leaf\n        \
                  1  cold::fut\n           \
