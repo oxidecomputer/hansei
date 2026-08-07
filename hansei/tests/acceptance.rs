@@ -1357,11 +1357,15 @@ fn test_census_counts_the_target() {
         );
 
         // Two two-frame chains — each an async fn over its leaf — and
-        // nothing at all off them.
+        // nothing at all off them. Two futures in flight, standing on
+        // four frames: the heading counts the futures and the frames
+        // apart, so a chain that grows deeper does not read as more
+        // things running.
         assert!(
             out.contains(
-                "    Location:\n        \
-                 4  on task await chains (2 deep at the deepest)\n        \
+                "Futures: 2 in flight, on 4 await-chain frames (2 deep at the deepest)\n    \
+                 Location:\n        \
+                 2  polled as tasks by the runtime\n        \
                  0  held in frames, off any await chain\n        \
                  0  in 0 FuturesUnordered\n"
             ),

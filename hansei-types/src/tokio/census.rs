@@ -191,6 +191,10 @@ pub struct SetChild {
     /// The node's address — what the child's registered wakers carry as
     /// their data word.
     pub node: u64,
+    /// How many frames the child's own chain ran to. A census counts
+    /// this child as one future in flight however deep it runs, so this
+    /// is what a reader needs to tell the two apart.
+    pub depth: usize,
     /// The child's concrete future type (dyn-resolved when it had to
     /// be), or `None` for an empty slot: a completed child the set has
     /// not reaped yet.
@@ -233,6 +237,8 @@ pub struct HeldFuture {
     /// chain decoded, the holding local's otherwise — so the future can
     /// be traced on its own.
     pub ty: BundleTypeId,
+    /// How many frames its own chain ran to; see [`SetChild::depth`].
+    pub depth: usize,
     /// The concrete future type, dyn-resolved when it had to be.
     pub future: String,
     /// Its suspend state, `Suspend1 — file:line` style.
@@ -413,6 +419,7 @@ impl Walker {
                     via,
                     addr,
                     ty,
+                    depth: summary.depth,
                     future: summary.future,
                     state: summary.state,
                     waiting_on: summary.waiting_on,
@@ -611,6 +618,9 @@ fn scan_value<'b>(
 
 /// One find's listing row, reduced from its await chain.
 struct Summary {
+    /// How many frames the chain ran to, which is what lets a count of
+    /// futures be told apart from a count of the frames they stand on.
+    depth: usize,
     future: String,
     state: Option<String>,
     waiting_on: Option<String>,
@@ -634,6 +644,7 @@ fn summarize<'b, T: Target + Sync>(
             _ => "<undecoded>".to_string(),
         };
         return Summary {
+            depth: 0,
             future,
             state: None,
             waiting_on: None,
@@ -653,6 +664,7 @@ fn summarize<'b, T: Target + Sync>(
         _ => None,
     };
     Summary {
+        depth: chain.frames.len(),
         future: first.future.ty.name().to_string(),
         state,
         waiting_on: target.as_ref().map(|t| t.to_string()),
@@ -730,6 +742,7 @@ fn walk_set<'b, T: Target + Sync>(
             (
                 SetChild {
                     node: cur,
+                    depth: summary.depth,
                     future: Some(summary.future),
                     root: Some(root),
                     state: summary.state,
@@ -743,6 +756,9 @@ fn walk_set<'b, T: Target + Sync>(
             (
                 SetChild {
                     node: cur,
+                    // A reaped slot holds no future, so it stands on no
+                    // frames either.
+                    depth: 0,
                     future: None,
                     root: None,
                     state: None,
