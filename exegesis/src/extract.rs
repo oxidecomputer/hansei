@@ -27,7 +27,7 @@ use crate::bundle::{
     TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
     strip_build_prefix,
 };
-use crate::detect::{FormatExplanation, struct_of, trace, unique_member};
+use crate::detect::{Family, FormatExplanation, struct_of, trace, unique_member};
 use crate::raw_types::{NsId, RawType, VariantShape as RawVariantShape};
 use crate::symbols::normalized_value_index;
 use crate::view::{DwView, Func, SourceLocView};
@@ -177,6 +177,11 @@ pub struct ExtractStats {
     /// nothing has ever been verified against an older toolchain, so
     /// the caller is warned rather than left to find out downstream.
     pub rustc_below_floor: Option<String>,
+    /// The family name version-dependent formatters ran as when no tokio
+    /// version could be recovered from the target — the newest supported
+    /// family, a guess worth a warning. `None` when the version was
+    /// recovered or no versioned detector was consulted.
+    pub tokio_family_guessed: Option<String>,
 }
 
 /// The oldest rustc whose output the extraction contracts are held
@@ -269,6 +274,13 @@ impl fmt::Display for ExtractStats {
             writeln!(
                 f,
                 "  WARNING: producer rustc {v} predates the supported floor {RUSTC_FLOOR}"
+            )?;
+        }
+        if let Some(family) = &self.tokio_family_guessed {
+            writeln!(
+                f,
+                "  WARNING: no tokio version recovered; version-dependent \
+                 formatters assumed the newest family ({family})"
             )?;
         }
         Ok(())
@@ -1082,7 +1094,20 @@ fn extract_from_view_with_vtable_types(
 
     // --- Phase 3: transitive closure and emission (§7.3). ---
 
-    let mut em = Emitter::new(reader, resume_awaitees, opts.explain_format.clone());
+    // The recovered tokio version selects the detector family before any
+    // type is emitted, so every versioned dispatch in this bundle answers
+    // from one coherent family.
+    let tokio_version = bound
+        .iter()
+        .filter_map(|t| t.poll_func_loc.as_ref())
+        .find_map(tokio_version_of);
+
+    let mut em = Emitter::new(
+        reader,
+        resume_awaitees,
+        opts.explain_format.clone(),
+        tokio_version.clone(),
+    );
 
     let mut entries: Vec<TaskFutureEntry> = Vec::new();
     let mut provenance: Vec<Provenance> = Vec::new();
@@ -1172,10 +1197,6 @@ fn extract_from_view_with_vtable_types(
         .unwrap_or_default();
     let rustc_version = rustc_version_of(producer);
     stats.rustc_below_floor = rustc_below_floor(&rustc_version);
-    let tokio_version = bound
-        .iter()
-        .filter_map(|t| t.poll_func_loc.as_ref())
-        .find_map(tokio_version_of);
 
     let meta = Meta {
         format_version: crate::bundle::FORMAT_VERSION,
@@ -1190,6 +1211,8 @@ fn extract_from_view_with_vtable_types(
     stats.unresolved_refs = em.unresolved_refs;
     stats.cenum_synth_repr = em.cenum_synth_repr;
     stats.format_explanations = std::mem::take(&mut em.explanations);
+    stats.tokio_family_guessed = (em.versioned_dispatch && em.tokio_version.is_none())
+        .then(|| Family::select(None).name().to_owned());
     let (types, strings, counts) = em.finish();
     stats.types_emitted = types.types.len();
     stats.opaque_types = counts.opaque;
@@ -1678,6 +1701,16 @@ pub(crate) struct Emitter<'a> {
     /// Report formatter attachment for types whose name contains this
     /// substring; see [`crate::detect::trace`].
     pub(crate) explain_format: Option<String>,
+    /// The tokio version recovered from the target's DWARF, as the family
+    /// dispatch and its `--explain-format` lines report it.
+    pub(crate) tokio_version: Option<semver::Version>,
+    /// The [`Family`] the version selects, applied to every versioned
+    /// dispatch row for this target.
+    pub(crate) family: Family,
+    /// Whether any versioned row was consulted — what turns an unrecovered
+    /// tokio version into a warning, since only then did the family guess
+    /// affect output.
+    pub(crate) versioned_dispatch: bool,
     /// One trace per explained type, in emission order.
     explanations: Vec<FormatExplanation>,
     ids: BTreeMap<TypeId, BundleTypeId>,
@@ -1696,12 +1729,16 @@ impl<'a> Emitter<'a> {
         reader: &'a DwReader<'a>,
         resume_awaitees: BTreeMap<TypeId, Vec<(Option<TypeId>, OwnedLoc)>>,
         explain_format: Option<String>,
+        tokio_version: Option<semver::Version>,
     ) -> Self {
         Self {
             reader,
             resume_awaitees,
             interner: StringInterner::new(),
             explain_format,
+            family: Family::select(tokio_version.as_ref()),
+            tokio_version,
+            versioned_dispatch: false,
             explanations: Vec::new(),
             ids: BTreeMap::new(),
             defs: Vec::new(),

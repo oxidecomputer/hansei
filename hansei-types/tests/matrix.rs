@@ -50,6 +50,7 @@
 //! needs them.
 
 use exegesis::bundle::{Bundle, BundleView, describe_debug_format, portable_summary};
+use exegesis::detect::Family;
 use exegesis::extract::{ExtractOptions, extract_file};
 use hansei_types::tokio::contract::verify_walk_contract;
 
@@ -323,8 +324,22 @@ fn walk_report(bundles: &[(&str, Bundle)]) -> String {
 /// stripped. A type two programs describe differently keeps both
 /// renderings, each annotated with its programs — agreement is the
 /// expected case, so the annotation itself is a diff to read.
+///
+/// The header line pins which detector [`Family`] the cell's bundles
+/// selected — recomputed from each bundle's recorded tokio version by
+/// the same selection extraction ran — so a release that shifts the
+/// family boundary is a golden diff here, not a silent re-dispatch.
 fn formats_report(bundles: &[(&str, Bundle)]) -> String {
     let offsets = regex::Regex::new(r"@\+\d+").unwrap();
+
+    // family description -> programs. One line when all agree.
+    let mut families: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+    for (program, bundle) in bundles {
+        families
+            .entry(Family::describe(bundle.meta.tokio_version.as_ref()))
+            .or_default()
+            .insert(program);
+    }
     // type name -> rendering -> programs with that rendering.
     let mut catalog: BTreeMap<String, BTreeMap<String, BTreeSet<&str>>> = BTreeMap::new();
     for (program, bundle) in bundles {
@@ -350,6 +365,15 @@ fn formats_report(bundles: &[(&str, Bundle)]) -> String {
     }
 
     let mut out = String::new();
+    for (family, programs) in &families {
+        if families.len() == 1 {
+            writeln!(out, "family: {family}").unwrap();
+        } else {
+            let programs: Vec<&str> = programs.iter().copied().collect();
+            writeln!(out, "family: {family} [{}]", programs.join(", ")).unwrap();
+        }
+    }
+    writeln!(out).unwrap();
     for renderings in catalog.values() {
         for (rendering, programs) in renderings {
             if renderings.len() == 1 {
