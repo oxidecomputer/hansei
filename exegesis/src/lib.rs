@@ -1,5 +1,6 @@
 pub mod bundle;
 mod cgu;
+pub mod detect;
 pub mod extract;
 mod parallel_fold;
 pub mod raw_types;
