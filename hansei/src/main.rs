@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use exegesis::bundle::{Bundle, BundleMember, BundleType, BundleView};
-use hansei_types::tokio::{Lifecycle, bundle, census, graph};
+use hansei_types::tokio::{Lifecycle, bundle, census, contract, graph};
 use proc::Proc;
 #[cfg(feature = "snapshot")]
 use proc::snapshot::Recorder;
@@ -59,6 +59,12 @@ struct SessionArgs {
     /// Proceed even if the bundle's symbols don't all resolve in the target.
     #[arg(long, short)]
     force: bool,
+
+    /// Attach even if non-essential walk paths are broken against this
+    /// tokio's layouts, degrading whatever reads them. By default any
+    /// broken path refuses the attach with a report of what moved.
+    #[arg(long)]
+    best_effort: bool,
 }
 
 /// Everything a session can be asked. These are read from stdin, never
@@ -481,6 +487,9 @@ pub struct Session<'b> {
     /// Read again under a recording target when a snapshot is captured.
     #[cfg(feature = "snapshot")]
     bundle: &'b Bundle,
+    /// How the session attached, so the capture attaches the same way.
+    #[cfg(feature = "snapshot")]
+    policy: contract::WalkPolicy,
     core: &'b Path,
     bundle_path: &'b Path,
     workers: Vec<bundle::Worker>,
@@ -503,13 +512,40 @@ pub struct Session<'b> {
 
 impl<'b> Session<'b> {
     fn attach(proc: &'b Proc, bundle: &'b Bundle, args: &'b SessionArgs) -> Result<Self> {
-        let ctx = bundle::Context::new(proc, BundleView::new(bundle))?;
+        let policy = if args.best_effort {
+            contract::WalkPolicy::BestEffort
+        } else {
+            contract::WalkPolicy::Strict
+        };
+        let ctx = match bundle::Context::with_policy(proc, BundleView::new(bundle), policy) {
+            Ok(ctx) => ctx,
+            // The hint is only true when a laxer policy would in fact
+            // have attached: required breakage refuses either way.
+            Err(e)
+                if !args.best_effort
+                    && bundle::Context::with_policy(
+                        proc,
+                        BundleView::new(bundle),
+                        contract::WalkPolicy::BestEffort,
+                    )
+                    .is_ok() =>
+            {
+                return Err(e.context(
+                    "only non-essential walk paths are broken; --best-effort \
+                     attaches anyway, degrading whatever reads them",
+                ));
+            }
+            Err(e) => return Err(e),
+        };
+        for line in ctx.contract_report().degraded(policy) {
+            writeln!(io::stderr(), "warning: degraded: {line}")?;
+        }
         check_fingerprint(&ctx, args.force)?;
 
         let lwps = proc.lwps().context("failed to read lwps")?;
         let workers = discover_workers(&lwps, &ctx)?;
         let handle = ctx.find_handle(&workers)?;
-        let shared = handle.member("shared")?.to_owned();
+        let shared = contract::HANDLE_SHARED.walk_at(&ctx, handle.as_ref())?;
         let tasks = ctx.enumerate_tasks(&shared)?;
         for err in &tasks.errors {
             writeln!(io::stderr(), "warning: {err:#}")?;
@@ -520,6 +556,8 @@ impl<'b> Session<'b> {
             proc,
             #[cfg(feature = "snapshot")]
             bundle,
+            #[cfg(feature = "snapshot")]
+            policy,
             core: &args.core,
             bundle_path: &args.bundle,
             workers,
@@ -1655,7 +1693,8 @@ fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) 
     // whole analysis is therefore driven a second time.
     let proc = session.proc;
     let recorder = Recorder::new(proc);
-    let ctx = bundle::Context::new(&recorder, BundleView::new(session.bundle))?;
+    let ctx =
+        bundle::Context::with_policy(&recorder, BundleView::new(session.bundle), session.policy)?;
     // Not a policy check — the session already made it, and refused if it
     // failed. This is for the reads it makes, which belong in the
     // snapshot like any other.
