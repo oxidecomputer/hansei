@@ -1,0 +1,670 @@
+program: futurelock
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 10 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  ok      Context.handle
+  ok      Context.scheduler
+  ok      worker::Context.index
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (alternative 1 of 2)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (5 cells)
+  ok      Cell.stage_running (5 cells)
+  ok      Cell.stage_finished (5 cells)
+  ok      Cell.stage_consumed (5 cells)
+  ok      Cell.trailer (5 cells)
+  ok      Cell.task_id (5 cells)
+  ok      Sleep.deadline (alternative 2 of 2)
+  ok      Sleep.deadline.tv_sec
+  ok      Sleep.deadline.tv_nsec
+  ok      JoinHandle.raw
+  ok      Acquire.semaphore
+  ok      Acquire.num_permits
+  ok      Acquire.node
+  ok      Acquire.node.state
+  ok      Acquire.queued
+  ok      Semaphore.permits
+  ok      Semaphore.queue_head
+  ok      Waiter.state
+  ok      Waiter.next
+  ok      Waiter.waker
+  ok      RawWaker.data
+  ok      RawWaker.vtable
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+
+program: simple-await
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 25 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  ok      Context.handle
+  ok      Context.scheduler
+  ok      worker::Context.index
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (alternative 1 of 2)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (3 cells)
+  ok      Cell.stage_running (3 cells)
+  ok      Cell.stage_finished (3 cells)
+  ok      Cell.stage_consumed (3 cells)
+  ok      Cell.trailer (3 cells)
+  ok      Cell.task_id (3 cells)
+  absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  ok      JoinHandle.raw
+  absent  Acquire.semaphore — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.num_permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.queued — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.queue_head — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+
+program: nested-await
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 25 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  ok      Context.handle
+  ok      Context.scheduler
+  ok      worker::Context.index
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (alternative 1 of 2)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (3 cells)
+  ok      Cell.stage_running (3 cells)
+  ok      Cell.stage_finished (3 cells)
+  ok      Cell.stage_consumed (3 cells)
+  ok      Cell.trailer (3 cells)
+  ok      Cell.task_id (3 cells)
+  absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  ok      JoinHandle.raw
+  absent  Acquire.semaphore — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.num_permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.queued — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.queue_head — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+
+program: dyn-future
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 19 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  ok      Context.handle
+  ok      Context.scheduler
+  ok      worker::Context.index
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (alternative 1 of 2)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (5 cells)
+  ok      Cell.stage_running (5 cells)
+  ok      Cell.stage_finished (5 cells)
+  ok      Cell.stage_consumed (5 cells)
+  ok      Cell.trailer (5 cells)
+  ok      Cell.task_id (5 cells)
+  absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  ok      JoinHandle.raw
+  absent  Acquire.semaphore — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.num_permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.queued — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.queue_head — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  ok      JoinSet.length
+  ok      JoinSet.lists
+  ok      JoinSet.notified_head
+  ok      JoinSet.idle_head
+  ok      ListEntry.value
+  ok      ListEntry.next
+
+program: select-combinator
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 25 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  ok      Context.handle
+  ok      Context.scheduler
+  ok      worker::Context.index
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (alternative 1 of 2)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (5 cells)
+  ok      Cell.stage_running (5 cells)
+  ok      Cell.stage_finished (5 cells)
+  ok      Cell.stage_consumed (5 cells)
+  ok      Cell.trailer (5 cells)
+  ok      Cell.task_id (5 cells)
+  absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  ok      JoinHandle.raw
+  absent  Acquire.semaphore — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.num_permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.queued — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.queue_head — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+
+program: many-tasks
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 26 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  ok      Context.handle
+  ok      Context.scheduler
+  ok      worker::Context.index
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (alternative 1 of 2)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (3 cells)
+  ok      Cell.stage_running (3 cells)
+  ok      Cell.stage_finished (3 cells)
+  ok      Cell.stage_consumed (3 cells)
+  ok      Cell.trailer (3 cells)
+  ok      Cell.task_id (3 cells)
+  absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  JoinHandle.raw — no tokio::runtime::task::join::JoinHandle<… type in the bundle (the target does not reach one)
+  absent  Acquire.semaphore — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.num_permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.queued — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.queue_head — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+
+program: sleep-join
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 22 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  ok      Context.handle
+  ok      Context.scheduler
+  ok      worker::Context.index
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (alternative 1 of 2)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (5 cells)
+  ok      Cell.stage_running (5 cells)
+  ok      Cell.stage_finished (5 cells)
+  ok      Cell.stage_consumed (5 cells)
+  ok      Cell.trailer (5 cells)
+  ok      Cell.task_id (5 cells)
+  ok      Sleep.deadline (alternative 2 of 2)
+  ok      Sleep.deadline.tv_sec
+  ok      Sleep.deadline.tv_nsec
+  ok      JoinHandle.raw
+  absent  Acquire.semaphore — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.num_permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.queued — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.queue_head — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+
+program: channels
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 13 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  ok      Context.handle
+  ok      Context.scheduler
+  ok      worker::Context.index
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (alternative 1 of 2)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (5 cells)
+  ok      Cell.stage_running (5 cells)
+  ok      Cell.stage_finished (5 cells)
+  ok      Cell.stage_consumed (5 cells)
+  ok      Cell.trailer (5 cells)
+  ok      Cell.task_id (5 cells)
+  absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  ok      JoinHandle.raw (2 types)
+  ok      Acquire.semaphore
+  ok      Acquire.num_permits
+  ok      Acquire.node
+  ok      Acquire.node.state
+  ok      Acquire.queued
+  ok      Semaphore.permits
+  ok      Semaphore.queue_head
+  ok      Waiter.state
+  ok      Waiter.next
+  ok      Waiter.waker
+  ok      RawWaker.data
+  ok      RawWaker.vtable
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+
+program: unordered
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 22 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  ok      Context.handle
+  ok      Context.scheduler
+  ok      worker::Context.index
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (alternative 1 of 2)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (3 cells)
+  ok      Cell.stage_running (3 cells)
+  ok      Cell.stage_finished (3 cells)
+  ok      Cell.stage_consumed (3 cells)
+  ok      Cell.trailer (3 cells)
+  ok      Cell.task_id (3 cells)
+  absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  ok      JoinHandle.raw
+  absent  Acquire.semaphore — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.num_permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.node.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Acquire.queued — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.permits — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Semaphore.queue_head — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  ok      FuturesUnordered.head_all
+  ok      SetNode.future
+  ok      SetNode.next_all
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+
+program: joinset
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 7 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  ok      Context.handle
+  ok      Context.scheduler
+  ok      worker::Context.index
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (alternative 1 of 2)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (5 cells)
+  ok      Cell.stage_running (5 cells)
+  ok      Cell.stage_finished (5 cells)
+  ok      Cell.stage_consumed (5 cells)
+  ok      Cell.trailer (5 cells)
+  ok      Cell.task_id (5 cells)
+  absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
+  ok      JoinHandle.raw
+  ok      Acquire.semaphore
+  ok      Acquire.num_permits
+  ok      Acquire.node
+  ok      Acquire.node.state
+  ok      Acquire.queued
+  ok      Semaphore.permits
+  ok      Semaphore.queue_head
+  ok      Waiter.state
+  ok      Waiter.next
+  ok      Waiter.waker
+  ok      RawWaker.data
+  ok      RawWaker.vtable
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  ok      JoinSet.length
+  ok      JoinSet.lists
+  ok      JoinSet.notified_head
+  ok      JoinSet.idle_head
+  ok      ListEntry.value
+  ok      ListEntry.next
+
