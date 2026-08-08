@@ -123,6 +123,7 @@ fn test_a_moved_layout_is_loud() {
         alts: &[&[Nav::Member("owned_by_a_future_tokio")]],
         terminal: Terminal::Any,
         class: Class::Required,
+        needs: None,
     };
     let Outcome::Broken { errors } = moved.check(&view) else {
         panic!(
@@ -142,12 +143,57 @@ fn test_a_moved_layout_is_loud() {
         alts: &[&[Nav::Member("state")]],
         terminal: Terminal::Pointer,
         class: Class::Required,
+        needs: None,
     };
     assert!(
         matches!(misshapen.check(&view), Outcome::Broken { .. }),
         "{:?}",
         misshapen.check(&view)
     );
+}
+
+/// An instrumentation member a plain build never has is expected
+/// absence when the bundle records the cfg as off — and stays loud
+/// drift when the bundle says the cfg was on (the member should have
+/// been there) or cannot say.
+#[test]
+fn test_missing_instrumentation_is_absent_only_when_recorded_off() {
+    let mut bundle = fixture_bundle("simple-await");
+
+    // Give the vtable the shape of a plain build: no
+    // spawn_location_offset member.
+    let vtable = bundle.infra.vtable;
+    let exegesis::bundle::TypeDef::Struct { members, .. } =
+        &mut bundle.types.types[vtable.0 as usize]
+    else {
+        panic!("the vtable is a struct");
+    };
+    let before = members.len();
+    let strings = bundle.strings.clone();
+    members.retain(|m| strings.get(m.name) != Some("spawn_location_offset"));
+    assert_eq!(members.len(), before - 1, "the fixture had the member");
+
+    for (recorded, expect_absent) in [(Some(false), true), (Some(true), false), (None, false)] {
+        bundle.meta.tokio_unstable = recorded;
+        let view = BundleView::new(&bundle);
+        let report = verify_walk_contract(&view);
+        let entry = report
+            .entry("Vtable.spawn_location_offset")
+            .expect("in table");
+        if expect_absent {
+            assert!(
+                matches!(entry.outcome, Outcome::Absent { .. }),
+                "{recorded:?}: {:?}",
+                entry.outcome
+            );
+        } else {
+            assert!(
+                matches!(entry.outcome, Outcome::Broken { .. }),
+                "{recorded:?}: {:?}",
+                entry.outcome
+            );
+        }
+    }
 }
 
 /// Every fixture records the statics the walk resolves through the

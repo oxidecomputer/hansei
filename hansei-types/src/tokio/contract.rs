@@ -109,6 +109,19 @@ pub enum Terminal {
     Any,
 }
 
+/// A build capability a path's datum exists under. A path that `needs`
+/// one is checked normally when the bundle records the capability as
+/// present — but when the bundle records it *off*, the path failing to
+/// resolve is the expected shape of that target
+/// ([`Outcome::Absent`]), not drift. An unrecorded capability keeps
+/// breakage loud: absence is only expected when the bundle can say so.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Capability {
+    /// `--cfg tokio_unstable` task instrumentation, recorded by the
+    /// bundle's `Meta::tokio_unstable`.
+    TokioUnstable,
+}
+
 /// What a path failing means for the walk.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Class {
@@ -163,12 +176,26 @@ pub struct WalkPath {
     pub alts: &'static [&'static [Nav]],
     pub terminal: Terminal,
     pub class: Class,
+    /// The capability the datum exists under, for the ones that are
+    /// build-conditional; `None` for the paths every build has.
+    pub needs: Option<Capability>,
 }
 
 use Class::{Optional, Required};
 use Nav::{ActiveVariant, Deref, Member as M, Variant as V};
 
 macro_rules! path {
+    ($(#[$meta:meta])* $vis:vis $ident:ident = $name:literal, $root:expr, $terminal:ident, $class:ident, needs $cap:ident, $($alt:expr),+ $(,)?) => {
+        $(#[$meta])*
+        $vis static $ident: WalkPath = WalkPath {
+            name: $name,
+            root: $root,
+            alts: &[$(&$alt),+],
+            terminal: Terminal::$terminal,
+            class: $class,
+            needs: Some(Capability::$cap),
+        };
+    };
     ($(#[$meta:meta])* $vis:vis $ident:ident = $name:literal, $root:expr, $terminal:ident, $class:ident, $($alt:expr),+ $(,)?) => {
         $(#[$meta])*
         $vis static $ident: WalkPath = WalkPath {
@@ -177,6 +204,7 @@ macro_rules! path {
             alts: &[$(&$alt),+],
             terminal: Terminal::$terminal,
             class: $class,
+            needs: None,
         };
     };
 }
@@ -313,11 +341,11 @@ path!(pub VTABLE_SHUTDOWN = "Vtable.shutdown",
     [M("shutdown")]);
 
 path!(
-    /// Present only under `tokio_unstable` task instrumentation; its
-    /// absence is the expected shape of a plain build, which is why this
-    /// one is [`Class::Optional`] with a member the walk `try_read`s.
+    /// Present only under `tokio_unstable` task instrumentation; the
+    /// walk `try_read`s it, and a bundle recording the cfg as off makes
+    /// its absence expected rather than broken.
 pub VTABLE_SPAWN_LOCATION_OFFSET = "Vtable.spawn_location_offset",
-    Root::Infra(InfraRoot::Vtable), Word, Optional,
+    Root::Infra(InfraRoot::Vtable), Word, Optional, needs TokioUnstable,
     [M("spawn_location_offset")]);
 
 // `core::panic::Location`, for spawn locations.
@@ -874,6 +902,9 @@ fn check_path(view: &BundleView<'_>, path: &WalkPath) -> Outcome {
         }
     }
     if !errors.is_empty() {
+        if let Some(reason) = expected_absence(view, path) {
+            return Outcome::Absent { reason };
+        }
         return Outcome::Broken { errors };
     }
     let mut note = root_note;
@@ -888,6 +919,19 @@ fn check_path(view: &BundleView<'_>, path: &WalkPath) -> Outcome {
         alternative: bound.unwrap_or(0),
         alternatives: path.alts.len(),
         note,
+    }
+}
+
+/// Why breakage on this path is the expected shape of the target
+/// rather than drift: the capability its datum exists under is
+/// recorded as off. An unrecorded capability returns `None` — absence
+/// is only expected when the bundle can vouch for it.
+fn expected_absence(view: &BundleView<'_>, path: &WalkPath) -> Option<String> {
+    match path.needs? {
+        Capability::TokioUnstable => match view.bundle().meta.tokio_unstable {
+            Some(false) => Some("the target was built without tokio_unstable".to_owned()),
+            Some(true) | None => None,
+        },
     }
 }
 
