@@ -23,7 +23,13 @@ primary = { tokio = "1.50.0", toolchain = "1.97.0" }
 
 [tokio]
 floor = "1.50.0"
-versions = ["1.50.0", "1.51.4", "1.52.4", "1.53.1"]
+# 1.53 is deliberately excluded: it restructured the timer (the entry
+# holds its TimerShared directly, the registered flag and cached
+# deadline are gone, Sleep carries the deadline itself behind an
+# Option<Timer>). Supporting a second timer spelling needs per-version
+# code, not another probe branch in the detectors — add 1.53 here once
+# that versioning structure exists.
+versions = ["1.50.0", "1.51.4", "1.52.4"]
 
 [toolchain]
 floor = "1.97.0"
