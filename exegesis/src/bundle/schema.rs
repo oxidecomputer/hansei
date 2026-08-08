@@ -62,6 +62,14 @@ pub struct Meta {
     pub rustc_version: String,
     /// Tokio version, when recoverable from DWARF.
     pub tokio_version: Option<semver::Version>,
+    /// Whether the target was built with `--cfg tokio_unstable`, when
+    /// decidable from DWARF: the task `Vtable`'s `spawn_location_offset`
+    /// member exists only under that cfg. `None` when the vtable type
+    /// itself was not found (a non-tokio binary under
+    /// `--allow-missing-infra`). Downstream capability logic reads this
+    /// to tell "instrumentation absent because the target has none"
+    /// from "instrumentation path broken".
+    pub tokio_unstable: Option<bool>,
     /// Identity of the debug binary the bundle was extracted from.
     pub debug_binary: BinaryIdent,
     /// Command line of the extraction, for provenance.

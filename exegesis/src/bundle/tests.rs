@@ -280,6 +280,7 @@ fn random_bundle(seed: u64) -> Bundle {
             format_version: FORMAT_VERSION,
             rustc_version: "rustc 1.97.0 (2d8144b78 2026-07-07)".into(),
             tokio_version: Some(semver::Version::new(1, 52, 3)),
+            tokio_unstable: Some(true),
             debug_binary: BinaryIdent {
                 basename: "futurelock".into(),
                 build_id: Some(vec![0xab; 20]),

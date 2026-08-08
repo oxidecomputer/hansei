@@ -183,6 +183,11 @@ fn stats(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         Some(v) => println!("  tokio:           {v}"),
         None => println!("  tokio:           (unknown)"),
     }
+    match m.tokio_unstable {
+        Some(true) => println!("  tokio_unstable:  yes"),
+        Some(false) => println!("  tokio_unstable:  no"),
+        None => println!("  tokio_unstable:  (unknown)"),
+    }
     println!("  debug binary:    {}", m.debug_binary.basename);
     println!("  extract args:    {}", m.extract_args);
     println!("  fingerprint:     {} symbols", m.symbol_fingerprint.len());

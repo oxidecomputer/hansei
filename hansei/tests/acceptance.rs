@@ -425,19 +425,19 @@ fn test_simple_await_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, "test-programs/src/bin/simple-await.rs:67:21");
-        assert_eq!(task.defined, "test-programs/src/bin/simple-await.rs:16");
+        assert_eq!(task.spawned, "src/bin/simple-await.rs:67:21");
+        assert_eq!(task.defined, "src/bin/simple-await.rs:16");
 
         let expected = format!(
             "\
 Task {id}: simple_await::work::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/simple-await.rs:67:21
-Defined at: test-programs/src/bin/simple-await.rs:16
+Spawned at: src/bin/simple-await.rs:67:21
+Defined at: src/bin/simple-await.rs:16
 
   0  async fn      simple_await::work::{{async_fn_env#0}}
      suspends:
-       Suspend0  test-programs/src/bin/simple-await.rs:32  11 locals  simple_await::ready_value::{{async_fn_env#0}}
-     ▸ Suspend1  test-programs/src/bin/simple-await.rs:34  10 locals
+       Suspend0  src/bin/simple-await.rs:32  11 locals  simple_await::ready_value::{{async_fn_env#0}}
+     ▸ Suspend1  src/bin/simple-await.rs:34  10 locals
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
             id = task.id
@@ -587,24 +587,24 @@ fn test_nested_await_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "nested_await::outer::{async_fn_env#0}");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, "test-programs/src/bin/nested-await.rs:32:21");
-        assert_eq!(task.defined, "test-programs/src/bin/nested-await.rs:16");
+        assert_eq!(task.spawned, "src/bin/nested-await.rs:32:21");
+        assert_eq!(task.defined, "src/bin/nested-await.rs:16");
 
         let expected = format!(
             "\
 Task {id}: nested_await::outer::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/nested-await.rs:32:21
-Defined at: test-programs/src/bin/nested-await.rs:16
+Spawned at: src/bin/nested-await.rs:32:21
+Defined at: src/bin/nested-await.rs:16
 
   0  async fn      nested_await::outer::{{async_fn_env#0}}
      suspends:
-     ▸ Suspend0  test-programs/src/bin/nested-await.rs:18
+     ▸ Suspend0  src/bin/nested-await.rs:18
        └─  1  async fn      nested_await::middle::{{async_fn_env#0}}
           suspends:
-          ▸ Suspend0  test-programs/src/bin/nested-await.rs:12
+          ▸ Suspend0  src/bin/nested-await.rs:12
             └─  2  async fn      nested_await::leaf::{{async_fn_env#0}}
                suspends:
-               ▸ Suspend0  test-programs/src/bin/nested-await.rs:8
+               ▸ Suspend0  src/bin/nested-await.rs:8
                  └─* 3  future        tokio::sync::oneshot::Receiver<u32>
 ",
             id = task.id
@@ -626,22 +626,22 @@ fn test_dyn_future_acceptance() {
 
         let driver = task_with_future(&rows, "dyn_future::driver::{async_fn_env#0}");
         assert_eq!(driver.state, "idle");
-        assert_eq!(driver.spawned, "test-programs/src/bin/dyn-future.rs:46:21");
-        assert_eq!(driver.defined, "test-programs/src/bin/dyn-future.rs:22");
+        assert_eq!(driver.spawned, "src/bin/dyn-future.rs:46:21");
+        assert_eq!(driver.defined, "src/bin/dyn-future.rs:22");
         let expected = format!(
             "\
 Task {id}: dyn_future::driver::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/dyn-future.rs:46:21
-Defined at: test-programs/src/bin/dyn-future.rs:22
+Spawned at: src/bin/dyn-future.rs:46:21
+Defined at: src/bin/dyn-future.rs:22
 
   0  async fn      dyn_future::driver::{{async_fn_env#0}}
      suspends:
-     ▸ Suspend0  test-programs/src/bin/dyn-future.rs:29  1 local
+     ▸ Suspend0  src/bin/dyn-future.rs:29  1 local
        └─  1  async fn      dyn_future::boxed_leaf::{{async_fn_env#0}} [dyn]
           suspends:
-          ▸ Suspend0  test-programs/src/bin/dyn-future.rs:11
+          ▸ Suspend0  src/bin/dyn-future.rs:11
             └─* 2  future        tokio::sync::oneshot::Receiver<u32>
-       Suspend1  test-programs/src/bin/dyn-future.rs:30  2 locals  tokio::task::join_set::{{impl#1}}::join_next::{{async_fn_env#0}}<u32>
+       Suspend1  src/bin/dyn-future.rs:30  2 locals  tokio::task::join_set::{{impl#1}}::join_next::{{async_fn_env#0}}<u32>
 ",
             id = driver.id
         );
@@ -649,17 +649,17 @@ Defined at: test-programs/src/bin/dyn-future.rs:22
 
         let member = task_with_future(&rows, "dyn_future::set_member::{async_fn_env#0}");
         assert_eq!(member.state, "idle");
-        assert_eq!(member.spawned, "test-programs/src/bin/dyn-future.rs:26:9");
-        assert_eq!(member.defined, "test-programs/src/bin/dyn-future.rs:14");
+        assert_eq!(member.spawned, "src/bin/dyn-future.rs:26:9");
+        assert_eq!(member.defined, "src/bin/dyn-future.rs:14");
         let expected = format!(
             "\
 Task {id}: dyn_future::set_member::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/dyn-future.rs:26:9
-Defined at: test-programs/src/bin/dyn-future.rs:14
+Spawned at: src/bin/dyn-future.rs:26:9
+Defined at: src/bin/dyn-future.rs:14
 
   0  async fn      dyn_future::set_member::{{async_fn_env#0}}
      suspends:
-     ▸ Suspend0  test-programs/src/bin/dyn-future.rs:15
+     ▸ Suspend0  src/bin/dyn-future.rs:15
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
             id = member.id
@@ -685,26 +685,26 @@ fn test_futurelock_acceptance() {
             "futurelock::main::{async_block#0}::{async_block_env#0}",
         );
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, "test-programs/src/bin/futurelock.rs:15:17");
-        assert_eq!(task.defined, "test-programs/src/bin/futurelock.rs:15");
+        assert_eq!(task.spawned, "src/bin/futurelock.rs:15:17");
+        assert_eq!(task.defined, "src/bin/futurelock.rs:15");
 
         let expected = format!(
             "\
 Task {id}: futurelock::main::{{async_block#0}}::{{async_block_env#0}} (idle)
-Spawned at: test-programs/src/bin/futurelock.rs:15:17
-Defined at: test-programs/src/bin/futurelock.rs:15
+Spawned at: src/bin/futurelock.rs:15:17
+Defined at: src/bin/futurelock.rs:15
 
   0  async block   futurelock::main::{{async_block#0}}::{{async_block_env#0}}
      suspends:
-       Suspend0  test-programs/src/bin/futurelock.rs:22  1 local  futurelock::start_background_task::{{async_fn_env#0}}
-     ▸ Suspend1  test-programs/src/bin/futurelock.rs:25  1 local
+       Suspend0  src/bin/futurelock.rs:22  1 local  futurelock::start_background_task::{{async_fn_env#0}}
+     ▸ Suspend1  src/bin/futurelock.rs:25  1 local
        └─  1  async fn      futurelock::do_stuff::{{async_fn_env#0}}
           suspends:
-            Suspend0  test-programs/src/bin/futurelock.rs:59  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{{async_fn#0}}::{{closure_env#0}}>
-          ▸ Suspend1  test-programs/src/bin/futurelock.rs:64  3 locals
+            Suspend0  src/bin/futurelock.rs:59  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{{async_fn#0}}::{{closure_env#0}}>
+          ▸ Suspend1  src/bin/futurelock.rs:64  3 locals
             └─  2  async fn      futurelock::do_async_thing::{{async_fn_env#0}}
                suspends:
-               ▸ Suspend0  test-programs/src/bin/futurelock.rs:72  2 locals
+               ▸ Suspend0  src/bin/futurelock.rs:72  2 locals
                  └─  3  async fn      tokio::sync::mutex::{{impl#10}}::lock::{{async_fn_env#0}}<()>
                     suspends:
                     ▸ Suspend0  tokio-1.50.0/src/sync/mutex.rs:455
@@ -758,8 +758,8 @@ fn test_many_tasks_acceptance() {
         for row in &rows {
             assert_eq!(row.state, "idle", "{row:#?}");
             assert_eq!(row.future, "many_tasks::park_task::{async_fn_env#0}");
-            assert_eq!(row.spawned, "test-programs/src/bin/many-tasks.rs:27:13");
-            assert_eq!(row.defined, "test-programs/src/bin/many-tasks.rs:9");
+            assert_eq!(row.spawned, "src/bin/many-tasks.rs:27:13");
+            assert_eq!(row.defined, "src/bin/many-tasks.rs:9");
         }
         let ids: HashSet<&str> = rows.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(ids.len(), rows.len(), "task ids are unique");
@@ -768,12 +768,12 @@ fn test_many_tasks_acceptance() {
         let expected = format!(
             "\
 Task {id}: many_tasks::park_task::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/many-tasks.rs:27:13
-Defined at: test-programs/src/bin/many-tasks.rs:9
+Spawned at: src/bin/many-tasks.rs:27:13
+Defined at: src/bin/many-tasks.rs:9
 
   0  async fn      many_tasks::park_task::{{async_fn_env#0}}
      suspends:
-     ▸ Suspend0  test-programs/src/bin/many-tasks.rs:11
+     ▸ Suspend0  src/bin/many-tasks.rs:11
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
             id = task.id
@@ -800,12 +800,12 @@ fn test_sleep_join_acceptance() {
         let expected = format!(
             "\
 Task {id}: sleep_join::sleeper::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/sleep-join.rs:28:22
-Defined at: test-programs/src/bin/sleep-join.rs:9
+Spawned at: src/bin/sleep-join.rs:28:22
+Defined at: src/bin/sleep-join.rs:9
 
   0  async fn      sleep_join::sleeper::{{async_fn_env#0}}
      suspends:
-     ▸ Suspend0  test-programs/src/bin/sleep-join.rs:11
+     ▸ Suspend0  src/bin/sleep-join.rs:11
        └─* 1  future        tokio::time::sleep::Sleep
           waiting on the timer: deadline TS
 ",
@@ -819,12 +819,12 @@ Defined at: test-programs/src/bin/sleep-join.rs:9
         let expected = format!(
             "\
 Task {id}: sleep_join::joiner::{{async_fn_env#0}} (idle)
-Spawned at: test-programs/src/bin/sleep-join.rs:29:23
-Defined at: test-programs/src/bin/sleep-join.rs:15
+Spawned at: src/bin/sleep-join.rs:29:23
+Defined at: src/bin/sleep-join.rs:15
 
   0  async fn      sleep_join::joiner::{{async_fn_env#0}}
      suspends:
-     ▸ Suspend0  test-programs/src/bin/sleep-join.rs:17
+     ▸ Suspend0  src/bin/sleep-join.rs:17
        └─* 1  future        tokio::runtime::task::join::JoinHandle<u32>
           waiting on task {sleeper_id} (JoinHandle)
 ",
@@ -1246,7 +1246,7 @@ fn test_futurelock_graph() {
              (semaphore 0xADDR) in a future it stopped polling:\n  \
              `future1` (futurelock::do_async_thing::{{async_fn_env#0}})\n  \
              held across futurelock::do_stuff::{{async_fn_env#0}} state Suspend1 \
-             — test-programs/src/bin/futurelock.rs:64\n  \
+             — src/bin/futurelock.rs:64\n  \
              blocked behind it: task {id}\n"
         ));
         assert_eq!(normalize(&graph(&bundle, core)), expected);
@@ -1452,7 +1452,7 @@ fn test_type_and_find_types() {
         // recorded for it — the same line the trace prints.
         assert!(out.contains("Suspend1"), "{out}");
         assert!(
-            out.contains("test-programs/src/bin/simple-await.rs:34"),
+            out.contains("src/bin/simple-await.rs:34"),
             "{out}"
         );
 
