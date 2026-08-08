@@ -39,7 +39,7 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
-  ok      Sleep.deadline (alternative 2 of 2)
+  ok      Sleep.deadline (alternative 2 of 3)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
   ok      JoinHandle.raw
@@ -441,7 +441,7 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
-  ok      Sleep.deadline (alternative 2 of 2)
+  ok      Sleep.deadline (alternative 2 of 3)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
   ok      JoinHandle.raw
