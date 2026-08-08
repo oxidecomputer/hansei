@@ -8,6 +8,7 @@ mod io;
 mod schema;
 mod shape;
 mod strings;
+mod summary;
 mod view;
 
 pub use describe::{describe_debug_format, describe_node};
@@ -22,6 +23,7 @@ pub use schema::{
 };
 pub use shape::{Addressed, Shape};
 pub use strings::{StrRef, StringInterner, StringTable};
+pub use summary::portable_summary;
 pub use view::{
     ActiveVariant, BundleMember, BundleMemberIter, BundleType, BundleVariant, BundleView,
     DynPointer, POINTER_SIZE, TypeClass, TypeKind, VariantError, variant_name,
