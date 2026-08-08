@@ -3947,8 +3947,8 @@ mod trace_render_tests {
             ),
             "  0  async fn      simple_await::work::{async_fn_env#0}
      suspends:
-       Suspend0  test-programs/src/bin/simple-await.rs:32  11 locals  simple_await::ready_value::{async_fn_env#0}
-     ▸ Suspend1  test-programs/src/bin/simple-await.rs:34  10 locals
+       Suspend0  src/bin/simple-await.rs:32  11 locals  simple_await::ready_value::{async_fn_env#0}
+     ▸ Suspend1  src/bin/simple-await.rs:34  10 locals
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 "
         );
@@ -3968,15 +3968,15 @@ mod trace_render_tests {
             rendered,
             "  0  async block   futurelock::main::{async_block#0}::{async_block_env#0}
      suspends:
-       Suspend0  test-programs/src/bin/futurelock.rs:22  1 local  futurelock::start_background_task::{async_fn_env#0}
-     ▸ Suspend1  test-programs/src/bin/futurelock.rs:25  1 local
+       Suspend0  src/bin/futurelock.rs:22  1 local  futurelock::start_background_task::{async_fn_env#0}
+     ▸ Suspend1  src/bin/futurelock.rs:25  1 local
        └─  1  async fn      futurelock::do_stuff::{async_fn_env#0}
           suspends:
-            Suspend0  test-programs/src/bin/futurelock.rs:59  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}>
-          ▸ Suspend1  test-programs/src/bin/futurelock.rs:64  3 locals
+            Suspend0  src/bin/futurelock.rs:59  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}>
+          ▸ Suspend1  src/bin/futurelock.rs:64  3 locals
             └─  2  async fn      futurelock::do_async_thing::{async_fn_env#0}
                suspends:
-               ▸ Suspend0  test-programs/src/bin/futurelock.rs:72  2 locals
+               ▸ Suspend0  src/bin/futurelock.rs:72  2 locals
                  └─  3  async fn      tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()>
                     suspends:
                     ▸ Suspend0  tokio-1.50.0/src/sync/mutex.rs:455
@@ -4002,12 +4002,12 @@ mod trace_render_tests {
             trace("dyn-future", "dyn_future::driver::{async_fn_env#0}", false),
             "  0  async fn      dyn_future::driver::{async_fn_env#0}
      suspends:
-     ▸ Suspend0  test-programs/src/bin/dyn-future.rs:29  1 local
+     ▸ Suspend0  src/bin/dyn-future.rs:29  1 local
        └─  1  async fn      dyn_future::boxed_leaf::{async_fn_env#0} [dyn]
           suspends:
-          ▸ Suspend0  test-programs/src/bin/dyn-future.rs:11
+          ▸ Suspend0  src/bin/dyn-future.rs:11
             └─* 2  future        tokio::sync::oneshot::Receiver<u32>
-       Suspend1  test-programs/src/bin/dyn-future.rs:30  2 locals  tokio::task::join_set::{impl#1}::join_next::{async_fn_env#0}<u32>
+       Suspend1  src/bin/dyn-future.rs:30  2 locals  tokio::task::join_set::{impl#1}::join_next::{async_fn_env#0}<u32>
 "
         );
     }
@@ -4071,7 +4071,7 @@ mod trace_render_tests {
         let rendered = trace("simple-await", "simple_await::work::{async_fn_env#0}", true);
         assert!(
             rendered.contains(
-                "     ▸ Suspend1  test-programs/src/bin/simple-await.rs:34\n       locals:\n"
+                "     ▸ Suspend1  src/bin/simple-await.rs:34\n       locals:\n"
             ),
             "{rendered}"
         );
@@ -4079,7 +4079,7 @@ mod trace_render_tests {
         // enum's storage, so its locals cannot be read at all.
         assert!(
             rendered
-                .contains("       Suspend0  test-programs/src/bin/simple-await.rs:32  11 locals  "),
+                .contains("       Suspend0  src/bin/simple-await.rs:32  11 locals  "),
             "{rendered}"
         );
         assert!(rendered.contains("\n         count: 3\n"), "{rendered}");

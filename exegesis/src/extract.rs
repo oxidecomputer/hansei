@@ -1041,6 +1041,23 @@ fn extract_from_view_with_vtable_types(
         }
     }
 
+    // Whether the target was built with `--cfg tokio_unstable`, decided
+    // structurally: the task `Vtable`'s `spawn_location_offset` member is
+    // behind that cfg (tokio 1.50 through 1.53), so its presence in an
+    // otherwise-resolved vtable is the build flavor. Unknown when the
+    // vtable type itself is missing.
+    let vtable_slot = infra_paths
+        .iter()
+        .position(|(key, _)| *key == "vtable")
+        .expect("infra_paths names a vtable slot");
+    let tokio_unstable = infra_ids[vtable_slot].map(|vtable| {
+        struct_of(reader, vtable).is_some_and(|st| {
+            st.members
+                .iter()
+                .any(|m| m.name.map(|n| reader.strings.get(n)) == Some("spawn_location_offset"))
+        })
+    });
+
     let statics = find_statics(view, symbols, &mut stats);
 
     if !opts.allow_missing_infra
@@ -1166,6 +1183,7 @@ fn extract_from_view_with_vtable_types(
         format_version: crate::bundle::FORMAT_VERSION,
         rustc_version,
         tokio_version,
+        tokio_unstable,
         debug_binary: ident,
         extract_args: opts.extract_args.clone(),
         symbol_fingerprint: fingerprint.into_iter().collect(),
