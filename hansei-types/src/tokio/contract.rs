@@ -398,14 +398,16 @@ pub CELL_TASK_ID = "Cell.task_id",
 // Leaf readers (§3.6): what a recognized wait primitive is waiting on.
 
 path!(
-    /// The registered deadline: on a `TimerEntry` member directly, or —
-    /// since tokio 1.52's `runtime::Timer` enum over the two timer
-    /// implementations — on whichever variant is live, both of which carry
-    /// it. Lands on the `Timespec` tokio's `Instant` peels to.
+    /// The registered deadline: on a `TimerEntry` member directly; on
+    /// whichever variant of tokio 1.52's `runtime::Timer` enum over the
+    /// two timer implementations is live, both of which carry it; or —
+    /// since tokio 1.53 moved the deadline out of the entry — on the
+    /// `Sleep` itself. Lands on the `Timespec` tokio's `Instant` peels to.
 pub SLEEP_DEADLINE = "Sleep.deadline",
     Root::Leaf(SLEEP), Aggregate, Optional,
     [M("entry"), M("deadline")],
-    [M("entry"), ActiveVariant, M("deadline")]);
+    [M("entry"), ActiveVariant, M("deadline")],
+    [M("deadline")]);
 
 path!(pub DEADLINE_TV_SEC = "Sleep.deadline.tv_sec",
     Root::End(&SLEEP_DEADLINE), Word, Optional,
