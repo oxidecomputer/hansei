@@ -8,9 +8,12 @@ members = [
     "libproc-sys",
     "proc",
     "reify",
-    "test-programs",
     "unwind",
 ]
+# A fixture crate, not product code: it owns its Cargo.lock so the
+# fixture matrix can pin tokio per cell independently of the workspace
+# resolution. Built only through test-programs/regen.sh.
+exclude = ["test-programs"]
 
 [workspace.dependencies]
 anyhow = "1.0"
@@ -43,12 +46,8 @@ serde = { version = "1.0", features = ["derive"] }
 subprocess = "1.0.0"
 tempfile = "3.14"
 thiserror = "2.0.17"
-tokio = "1.47.0"
 unwind = { path = "unwind" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zstd = "0.13"
 zstd-sys = "2.0"
-
-[profile.release.package.test-programs]
-debug = true
