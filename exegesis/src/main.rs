@@ -115,6 +115,13 @@ fn extract(
             exegesis::extract::RUSTC_FLOOR
         );
     }
+    if let Some(family) = &stats.tokio_family_guessed {
+        eprintln!(
+            "warning: no tokio version could be recovered from this binary \
+             (vendored or forked tokio?); version-dependent formatters \
+             assumed the newest supported family ({family})"
+        );
+    }
     bundle.save(output)?;
     println!(
         "wrote {} ({} types, {} task entries, {} dyn futures)",

@@ -14,9 +14,9 @@
 //!   moving on its own release cadence;
 //! - [`tokio`]: tokio types whose layout has held across every supported
 //!   tokio version;
-//! - [`tokio_v1_50`]: the timer detectors, kept apart from the invariant
-//!   tokio detectors because tokio has restructured the timer across
-//!   releases.
+//! - [`tokio_v1_50`]: a family module — only the detectors a tokio
+//!   restructure moved, dispatched per target by the recovered tokio
+//!   version (see [`Family`]).
 
 mod crates;
 mod std;
@@ -203,68 +203,189 @@ impl FormatExplanation {
 /// does not have to move.
 type Detector = fn(&mut Emitter<'_>, TypeId) -> Option<DisplayNode>;
 
+/// A tokio version family: a contiguous range of tokio releases whose
+/// layouts share detector code, named by the floor of the range. Families
+/// exist for divergence too large for a structural alternative to absorb —
+/// a respelled member is an ordered fallback inside one detector, but a
+/// restructure gets a `tokio_v<floor>` module of its own, holding only the
+/// detectors that moved.
+///
+/// Selection is by version, once per target: the tokio version recovered
+/// from the target's DWARF (`Meta::tokio_version`) picks the family with
+/// the highest floor at or below it, so every versioned row in one bundle
+/// answers coherently. Two structural nets stay underneath the version
+/// check: the selected detector still validates the layout it describes
+/// and declines on any mismatch, and the per-cell matrix goldens pin which
+/// family actually attached.
+///
+/// Declaration order is floor order, oldest first; [`Family::ALL`] and the
+/// derived `Ord` both rely on it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Family {
+    /// tokio 1.50 through 1.52: the timer entry keeps a `registered` flag
+    /// and a cached `deadline` instant beside a lazily-registered
+    /// `Option<TimerShared>`.
+    V1_50,
+}
+
+impl Family {
+    /// Every family, oldest floor first.
+    pub const ALL: &'static [Family] = &[Family::V1_50];
+
+    /// The lowest tokio `(major, minor)` the family covers; its range runs
+    /// to the next family's floor.
+    fn floor(self) -> (u64, u64) {
+        match self {
+            Family::V1_50 => (1, 50),
+        }
+    }
+
+    /// The tag `--explain-format` and the matrix goldens name the family by.
+    pub fn name(self) -> &'static str {
+        match self {
+            Family::V1_50 => "v1_50",
+        }
+    }
+
+    /// Select the family for a target: the one with the highest floor at or
+    /// below the recovered tokio version. A version older than every floor
+    /// takes the oldest family, and a version newer than every family — or
+    /// none recovered at all, as for a vendored or forked tokio with no
+    /// registry path — takes the newest: the latest supported layouts are
+    /// the best guess, and the detectors decline structurally wherever the
+    /// guess is wrong.
+    pub fn select(version: Option<&semver::Version>) -> Family {
+        let newest = *Family::ALL.last().expect("at least one family");
+        let Some(version) = version else {
+            return newest;
+        };
+        Family::ALL
+            .iter()
+            .rev()
+            .find(|family| (version.major, version.minor) >= family.floor())
+            .copied()
+            .unwrap_or(Family::ALL[0])
+    }
+
+    /// The selection and why, as the per-cell detector catalog pins it:
+    /// `v1_50 (tokio 1.50.0)`, or `v1_50 (version unrecovered)` for the
+    /// newest-family guess.
+    pub fn describe(version: Option<&semver::Version>) -> String {
+        let family = Family::select(version);
+        match version {
+            Some(version) => format!("{} (tokio {version})", family.name()),
+            None => format!("{} (version unrecovered)", family.name()),
+        }
+    }
+}
+
+/// One [`BY_NAME`]/[`BY_PREFIX`] row: how a name maps to detector code.
+///
+/// Nearly every row is [`Row::All`] — one detector for every supported
+/// tokio version, which is also the only sensible spelling for the std and
+/// third-party detectors that no tokio release can move. A tokio
+/// restructure turns its row [`Row::Versioned`]: one detector per
+/// [`Family`], oldest first, and the target's selected family takes the
+/// entry with the highest floor at or below it — so the newest entry keeps
+/// serving every later version until a restructure adds a newer one. A row
+/// with no entry old enough for the target declines to the structural
+/// chain, the same fail-safe as any other mismatch.
+#[derive(Copy, Clone)]
+enum Row {
+    /// One detector for every version.
+    All(Detector),
+    /// Family-keyed detectors, oldest first.
+    Versioned(&'static [(Family, Detector)]),
+}
+
+use Row::{All, Versioned};
+
 /// Detectors keyed by fully-qualified type name with generic arguments
 /// stripped. Screening on the name means only the one matching detector runs
 /// rather than each in turn, and it is what `--explain-format` reports as the
 /// detector it selected — so a detector belongs here whenever a name selects
 /// it, and its body then validates only the *structure*. A type named by
 /// neither this table nor [`BY_PREFIX`] falls through to [`STRUCTURAL`].
-static BY_NAME: &[(&str, Detector)] = &[
-    ("&camino::Utf8Path", utf8_path_node),
-    ("&str", str_node),
-    ("alloc::collections::btree::map::BTreeMap", btree_map_node),
-    ("alloc::string::String", string_node),
-    ("alloc::vec::Vec", vec_node),
-    ("allocator_api2::stable::vec::Vec", vec_node),
-    ("camino::Utf8PathBuf", utf8_path_buf_node),
-    ("core::cell::UnsafeCell", unsafe_cell_node),
-    ("core::net::ip_addr::Ipv4Addr", ip_address_node),
-    ("core::net::ip_addr::Ipv6Addr", ip_address_node),
+static BY_NAME: &[(&str, Row)] = &[
+    ("&camino::Utf8Path", All(utf8_path_node)),
+    ("&str", All(str_node)),
+    (
+        "alloc::collections::btree::map::BTreeMap",
+        All(btree_map_node),
+    ),
+    ("alloc::string::String", All(string_node)),
+    ("alloc::vec::Vec", All(vec_node)),
+    ("allocator_api2::stable::vec::Vec", All(vec_node)),
+    ("camino::Utf8PathBuf", All(utf8_path_buf_node)),
+    ("core::cell::UnsafeCell", All(unsafe_cell_node)),
+    ("core::net::ip_addr::Ipv4Addr", All(ip_address_node)),
+    ("core::net::ip_addr::Ipv6Addr", All(ip_address_node)),
     (
         "core::num::niche_types::UsizeNoHighBit",
-        usize_no_high_bit_node,
+        All(usize_no_high_bit_node),
     ),
-    ("core::num::nonzero::NonZero", nonzero_node),
-    ("core::ptr::non_null::NonNull", non_null_node),
-    ("core::ptr::unique::Unique", unique_node),
-    ("core::sync::atomic::Atomic", atomic_node),
-    ("core::task::wake::RawWaker", raw_waker_node),
-    ("core::task::wake::RawWakerVTable", raw_waker_vtable_node),
-    ("core::task::wake::Waker", waker_node),
-    ("parking_lot::raw_mutex::RawMutex", raw_mutex_node),
-    ("slog::Logger", elided_node),
-    ("std::sys::time::unix::Instant", instant_alias_node),
-    ("std::time::Instant", instant_alias_node),
+    ("core::num::nonzero::NonZero", All(nonzero_node)),
+    ("core::ptr::non_null::NonNull", All(non_null_node)),
+    ("core::ptr::unique::Unique", All(unique_node)),
+    ("core::sync::atomic::Atomic", All(atomic_node)),
+    ("core::task::wake::RawWaker", All(raw_waker_node)),
+    (
+        "core::task::wake::RawWakerVTable",
+        All(raw_waker_vtable_node),
+    ),
+    ("core::task::wake::Waker", All(waker_node)),
+    ("parking_lot::raw_mutex::RawMutex", All(raw_mutex_node)),
+    ("slog::Logger", All(elided_node)),
+    ("std::sys::time::unix::Instant", All(instant_alias_node)),
+    ("std::time::Instant", All(instant_alias_node)),
     (
         "tokio::loom::std::unsafe_cell::UnsafeCell",
-        loom_unsafe_cell_node,
+        All(loom_unsafe_cell_node),
     ),
-    ("tokio::runtime::handle::Handle", elided_node),
-    ("tokio::runtime::runtime::Runtime", elided_node),
-    ("tokio::runtime::scheduler::Handle", elided_node),
-    ("tokio::runtime::time::entry::TimerEntry", timer_entry_node),
+    ("tokio::runtime::handle::Handle", All(elided_node)),
+    ("tokio::runtime::runtime::Runtime", All(elided_node)),
+    ("tokio::runtime::scheduler::Handle", All(elided_node)),
+    (
+        "tokio::runtime::time::entry::TimerEntry",
+        Versioned(&[(Family::V1_50, timer_entry_node)]),
+    ),
     (
         "tokio::sync::batch_semaphore::Semaphore",
-        batch_semaphore_node,
+        All(batch_semaphore_node),
     ),
-    ("tokio::sync::mpsc::block::Block", mpsc_block_node),
-    ("tokio::sync::mpsc::bounded::Receiver", mpsc_handle_node),
-    ("tokio::sync::mpsc::bounded::Sender", mpsc_handle_node),
+    ("tokio::sync::mpsc::block::Block", All(mpsc_block_node)),
+    (
+        "tokio::sync::mpsc::bounded::Receiver",
+        All(mpsc_handle_node),
+    ),
+    ("tokio::sync::mpsc::bounded::Sender", All(mpsc_handle_node)),
     (
         "tokio::sync::mpsc::bounded::Semaphore",
-        bounded_semaphore_node,
+        All(bounded_semaphore_node),
     ),
-    ("tokio::sync::mpsc::chan::Chan", mpsc_chan_node),
-    ("tokio::sync::notify::Notify", notify_node),
-    ("tokio::sync::watch::Receiver", watch_receiver_node),
-    ("tokio::sync::watch::Sender", watch_sender_node),
-    ("tokio::sync::watch::Shared", watch_shared_node),
-    ("tokio::sync::watch::state::AtomicState", watch_state_node),
-    ("tokio::time::instant::Instant", instant_alias_node),
-    ("tokio::time::sleep::Sleep", sleep_node),
-    ("tokio::util::cacheline::CachePadded", cache_padded_node),
-    ("tufaceous_artifact::artifact::ArtifactHash", hex_bytes_node),
-    ("uuid::Uuid", uuid_node),
+    ("tokio::sync::mpsc::chan::Chan", All(mpsc_chan_node)),
+    ("tokio::sync::notify::Notify", All(notify_node)),
+    ("tokio::sync::watch::Receiver", All(watch_receiver_node)),
+    ("tokio::sync::watch::Sender", All(watch_sender_node)),
+    ("tokio::sync::watch::Shared", All(watch_shared_node)),
+    (
+        "tokio::sync::watch::state::AtomicState",
+        All(watch_state_node),
+    ),
+    ("tokio::time::instant::Instant", All(instant_alias_node)),
+    (
+        "tokio::time::sleep::Sleep",
+        Versioned(&[(Family::V1_50, sleep_node)]),
+    ),
+    (
+        "tokio::util::cacheline::CachePadded",
+        All(cache_padded_node),
+    ),
+    (
+        "tufaceous_artifact::artifact::ArtifactHash",
+        All(hex_bytes_node),
+    ),
+    ("uuid::Uuid", All(uuid_node)),
 ];
 
 /// Detectors keyed by a prefix of the *full* name, for a family no single base
@@ -275,12 +396,15 @@ static BY_NAME: &[(&str, Detector)] = &[
 /// than a name, so these detectors keep the residual check the key cannot
 /// express — `NonZeroU32Inner` ends in `Inner`, a loom atomic module has a
 /// single segment.
-static BY_PREFIX: &[(&str, Detector)] = &[
-    ("&[", slice_node),
-    ("alloc::boxed::Box<[", slice_node),
-    ("core::num::niche_types::NonZero", nonzero_inner_node),
-    ("tokio::loom::std::atomic_", loom_atomic_node),
-    ("tokio::loom::std::parking_lot::", loom_parking_lot_node),
+static BY_PREFIX: &[(&str, Row)] = &[
+    ("&[", All(slice_node)),
+    ("alloc::boxed::Box<[", All(slice_node)),
+    ("core::num::niche_types::NonZero", All(nonzero_inner_node)),
+    ("tokio::loom::std::atomic_", All(loom_atomic_node)),
+    (
+        "tokio::loom::std::parking_lot::",
+        All(loom_parking_lot_node),
+    ),
 ];
 
 /// Detectors that recognize a type by *shape* alone, tried in order from most
@@ -1018,11 +1142,40 @@ impl Emitter<'_> {
                 .iter()
                 .find(|&&(prefix, _)| full.starts_with(prefix))
         });
-        let Some(&(key, detector)) = matched else {
+        let Some(&(key, row)) = matched else {
             explain!("  no name-keyed detector for `{base}`; trying the structural chain");
             return None;
         };
-        explain!("  name-keyed detector for `{key}` selected");
+        let detector = match row {
+            All(detector) => {
+                explain!("  name-keyed detector for `{key}` selected");
+                detector
+            }
+            Versioned(families) => {
+                self.versioned_dispatch = true;
+                let Some(&(family, detector)) = families
+                    .iter()
+                    .rev()
+                    .find(|&&(family, _)| family <= self.family)
+                else {
+                    explain!(
+                        "  name-keyed detector for `{key}` has no entry as old as \
+                         family {}; trying the structural chain",
+                        self.family.name(),
+                    );
+                    return None;
+                };
+                let why = match &self.tokio_version {
+                    Some(version) => format!("tokio {version}"),
+                    None => "version unrecovered".to_owned(),
+                };
+                explain!(
+                    "  name-keyed detector for `{key}` selected (family {}: {why})",
+                    family.name(),
+                );
+                detector
+            }
+        };
         detector(self, tid)
     }
 }
@@ -1140,7 +1293,7 @@ fn transparent(
 mod tests {
     use super::ReachStep::{Named, PeelTo};
     use super::std::{dyn_tail_offset, has_dyn_tail, scalar_newtype_node, str_node};
-    use super::{Detector, reach, trace};
+    use super::{Detector, Family, trace};
     use crate::bundle::{DisplayNode, MemberRef, Notation, POINTER_SIZE, Shape, Step};
     use crate::extract::Emitter;
     use crate::raw_types::{NsId, RawBase, RawMember, RawPointer, RawStruct, RawType};
@@ -1154,17 +1307,33 @@ mod tests {
         TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
     }
 
+    /// Version-keyed family selection: highest floor at or below the
+    /// version, the newest family for anything newer or unrecovered, and
+    /// the oldest for anything below every floor.
+    #[test]
+    fn test_family_selection() {
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+        let newest = *Family::ALL.last().unwrap();
+        assert_eq!(Family::select(None), newest);
+        assert_eq!(Family::select(Some(&v("1.50.0"))), Family::V1_50);
+        assert_eq!(Family::select(Some(&v("1.52.4"))), Family::V1_50);
+        assert_eq!(Family::select(Some(&v("1.99.0"))), newest);
+        assert_eq!(Family::select(Some(&v("1.49.9"))), Family::ALL[0]);
+        assert_eq!(Family::describe(Some(&v("1.50.0"))), "v1_50 (tokio 1.50.0)");
+        assert_eq!(Family::describe(None), "v1_50 (version unrecovered)");
+    }
+
     /// Run one detector directly. Every detector takes an `Emitter` whether or
     /// not it uses one, so a test that only navigates DWARF still needs one.
     fn detect(reader: &DwReader<'_>, detector: Detector, id: TypeId) -> Option<DisplayNode> {
-        detector(&mut Emitter::new(reader, BTreeMap::new(), None), id)
+        detector(&mut Emitter::new(reader, BTreeMap::new(), None, None), id)
     }
 
     /// Dispatch `id` the way the emitter does, by the name it would carry. This
     /// covers the [`super::BY_NAME`]/[`super::BY_PREFIX`] row as well as the
     /// detector, which is where the name screening now lives.
     fn detect_by_name(reader: &DwReader<'_>, id: TypeId, name: &str) -> Option<DisplayNode> {
-        Emitter::new(reader, BTreeMap::new(), None).specific_debug_format(id, Some(name))
+        Emitter::new(reader, BTreeMap::new(), None, None).specific_debug_format(id, Some(name))
     }
 
     /// The member a transparent wrapper aliases, spelled the way the detector
@@ -1191,14 +1360,14 @@ mod tests {
 
     /// [`aliased`] over one detector run directly.
     fn detect_alias(reader: &DwReader<'_>, detector: Detector, id: TypeId) -> Option<String> {
-        let mut emitter = Emitter::new(reader, BTreeMap::new(), None);
+        let mut emitter = Emitter::new(reader, BTreeMap::new(), None, None);
         let node = detector(&mut emitter, id);
         aliased(node, &emitter)
     }
 
     /// [`aliased`] over one dispatch by name.
     fn detect_alias_by_name(reader: &DwReader<'_>, id: TypeId, name: &str) -> Option<String> {
-        let mut emitter = Emitter::new(reader, BTreeMap::new(), None);
+        let mut emitter = Emitter::new(reader, BTreeMap::new(), None, None);
         let node = emitter.specific_debug_format(id, Some(name));
         aliased(node, &emitter)
     }
@@ -1320,7 +1489,7 @@ mod tests {
 
         let walk = |path| {
             trace::capture(|| {
-                Emitter::new(&reader, BTreeMap::new(), None)
+                Emitter::new(&reader, BTreeMap::new(), None, None)
                     .walk(notify, &path)
                     .map(|(at, _)| at)
             })
@@ -1409,7 +1578,8 @@ mod tests {
 
         let peel = |shape| {
             trace::capture(|| {
-                Emitter::new(&reader, BTreeMap::new(), None).walk(holder, &reach![PeelTo(shape)])
+                Emitter::new(&reader, BTreeMap::new(), None, None)
+                    .walk(holder, &reach![PeelTo(shape)])
             })
         };
         let (got, trace) = peel(Shape::Uint(POINTER_SIZE));
@@ -1518,7 +1688,7 @@ mod tests {
         );
 
         let format_of = |reader: &DwReader<'_>, id| {
-            Emitter::new(reader, BTreeMap::new(), None).debug_format_of(id, Some("&str"))
+            Emitter::new(reader, BTreeMap::new(), None, None).debug_format_of(id, Some("&str"))
         };
         assert!(matches!(
             format_of(&reader, good_id),

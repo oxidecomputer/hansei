@@ -1,3 +1,5 @@
+family: v1_50 (tokio 1.52.4)
+
 &[u32] :: Node Slice { pointer=data_ptr, length=length, element=u32 }
 &str :: Node Str { pointer=data_ptr, length=length }
 *const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_offset=16 }
