@@ -13,6 +13,7 @@
 
 pub mod bundle;
 pub mod census;
+pub mod contract;
 pub mod graph;
 
 use std::fmt;

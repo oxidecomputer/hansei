@@ -33,23 +33,19 @@
 
 use super::TaskState;
 use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind, leaf_kind};
+// The by-value types sets and join sets are recognized as; the trailing
+// `<` keeps each match on the real generic, not a lookalike suffix. A
+// `JoinSet` holds *tasks* rather than futures, so it is walked and
+// reported apart from a set of futures; anything built on one
+// (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
+// reached by the same scan, since it holds its `JoinSet` by value.
+use super::contract::{self, FUTURES_UNORDERED, JOIN_SET};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use exegesis::bundle::{BundleTypeId, TypeClass};
 use foldhash::HashSet;
 use proc::Target;
 use reify::{TypeInfo, TypeInfoRef};
-
-/// The by-value type every set is recognized as. The trailing `<` keeps
-/// the match on the real generic, not a lookalike suffix.
-const FUTURES_UNORDERED: &str = "futures_util::stream::futures_unordered::FuturesUnordered<";
-
-/// The by-value type every join set is recognized as. A `JoinSet` holds
-/// *tasks* rather than futures, so it is walked and reported apart from
-/// a set of futures; anything built on one (omicron's `ParallelTaskSet`,
-/// which pairs it with a semaphore) is reached by the same scan, since
-/// it holds its `JoinSet` by value.
-const JOIN_SET: &str = "tokio::task::join_set::JoinSet<";
 
 /// The spelling of a future trait object's pointee, which is what makes
 /// a wide pointer worth chaining even before the vtable join names the
@@ -685,12 +681,11 @@ fn walk_set<'b, T: Target + Sync>(
     set: &TypeInfo<'b>,
     children: &mut Vec<WalkedChild<'b>>,
 ) -> Result<()> {
-    let head_member = set.member("head_all")?;
+    let head_member = contract::SET_HEAD_ALL.walk_at(ctx, set.as_ref())?;
     let head: u64 = head_member.parse(ctx)?;
     // The node layout is the pointer's target, reached by peeling the
     // atomic shims off the `head_all` word.
     let node_ty = head_member
-        .peel()
         .ty
         .pointer_target()
         .ok_or_else(|| anyhow!("head_all does not peel to a pointer"))?;
@@ -712,7 +707,8 @@ fn walk_set<'b, T: Target + Sync>(
             .with_context(|| format!("failed to read the set node at {cur:#x}"))?;
         // Task.future: UnsafeCell<Option<Fut>>; `None` is a completed
         // child the set has not reaped.
-        let slot = node.member("future")?.peel();
+        let slot = contract::SET_NODE_FUTURE.walk_at(ctx, node.as_ref())?;
+        let slot = slot.as_ref();
         let (variant, payload) = slot
             .active_variant()
             .with_context(|| format!("failed to decode the child slot at {cur:#x}"))?;
@@ -770,7 +766,7 @@ fn walk_set<'b, T: Target + Sync>(
         };
         children.push((child, chain, (cur, cur + node_ty.size())));
 
-        cur = node.member("next_all")?.parse(ctx)?;
+        cur = contract::SET_NODE_NEXT.read(ctx, node.as_ref())?;
     }
     Ok(())
 }
@@ -794,23 +790,20 @@ fn walk_join_set<'b, T: Target + Sync>(
     tasks: &mut Vec<JoinedTask>,
     length: &mut u64,
 ) -> Result<()> {
-    let inner = set.member("inner")?;
-    *length = inner.member("length")?.parse(ctx)?;
+    *length = contract::JOIN_SET_LENGTH.read(ctx, set.as_ref())?;
     // The lists live behind an Arc, whose target is the `ArcInner`
     // header the payload follows; `data` is the mutex, and its own
     // `data` the guarded value, however the loom shim spells the lock.
-    let lists = inner
-        .member("lists")?
-        .deref_ptr(ctx)
-        .context("failed to read the join set's shared lists")?
-        .member("data")?
-        .member("data")?
-        .to_owned();
+    let lists = contract::JOIN_SET_LISTS
+        .walk_at(ctx, set.as_ref())
+        .context("failed to read the join set's shared lists")?;
 
     let mut visited = HashSet::default();
-    for name in ["notified", "idle"] {
-        let queue = lists.member(name)?;
-        let Some(head) = queue.member("head")?.try_select_variant("Some")? else {
+    for queue in [
+        &contract::JOIN_SET_NOTIFIED_HEAD,
+        &contract::JOIN_SET_IDLE_HEAD,
+    ] {
+        let Some(head) = queue.walk(ctx, lists.as_ref())?.optional() else {
             continue;
         };
         // The Some payload peels through the NonNull to the raw entry
@@ -818,7 +811,7 @@ fn walk_join_set<'b, T: Target + Sync>(
         let entry_ty = head
             .ty
             .pointer_target()
-            .ok_or_else(|| anyhow!("the {name} list head is not pointer-shaped"))?;
+            .ok_or_else(|| anyhow!("the {} list head is not pointer-shaped", queue.name))?;
         let mut cur = Some(head.parse::<u64, _>(ctx)?);
         while let Some(addr) = cur {
             ensure!(
@@ -840,7 +833,7 @@ fn walk_join_set<'b, T: Target + Sync>(
             // a `JoinHandle` leaf is read through. Asking for a member
             // by name in there would peel first and look afterwards,
             // which is to say look past what it asked for.
-            let handle = entry.member("value")?.peel();
+            let handle = contract::JOIN_SET_ENTRY_VALUE.walk_at(ctx, entry.as_ref())?;
             ensure!(
                 handle.ty.pointer_target().is_some(),
                 "the join set entry at {addr:#x} does not peel to a task pointer, \
@@ -859,11 +852,10 @@ fn walk_join_set<'b, T: Target + Sync>(
                 listed: list.contains(task),
             });
 
-            cur = entry
-                .member("pointers")?
-                .member("next")?
-                .try_select_variant("Some")?
-                .map(|ptr| ptr.parse(ctx))
+            cur = contract::JOIN_SET_ENTRY_NEXT
+                .walk(ctx, entry.as_ref())?
+                .optional()
+                .map(|ptr| ptr.parse(ctx).map_err(anyhow::Error::from))
                 .transpose()?;
         }
     }
