@@ -174,6 +174,25 @@ pub struct ExtractStats {
     pub state_members_deduplicated: usize,
     /// Task entries whose provenance carries declaration coordinates.
     pub provenance_located: usize,
+    /// The producer's rustc version when it predates [`RUSTC_FLOOR`].
+    /// Extraction proceeds — the layouts may well still line up — but
+    /// nothing has ever been verified against an older toolchain, so
+    /// the caller is warned rather than left to find out downstream.
+    pub rustc_below_floor: Option<String>,
+}
+
+/// The oldest rustc whose output the extraction contracts are held
+/// against. Binaries from older toolchains extract with a warning, not
+/// a refusal.
+pub const RUSTC_FLOOR: &str = "1.97.0";
+
+/// `Some(version)` when the producer string names a rustc older than
+/// [`RUSTC_FLOOR`]. A producer that carries no parseable version (a
+/// non-rustc binary, say) is not "below" anything — no warning.
+fn rustc_below_floor(rustc_version: &str) -> Option<String> {
+    let floor = semver::Version::parse(RUSTC_FLOOR).expect("RUSTC_FLOOR parses");
+    let ver = semver::Version::parse(rustc_version.split_whitespace().next()?).ok()?;
+    (ver < floor).then(|| ver.to_string())
 }
 
 impl fmt::Display for ExtractStats {
@@ -247,6 +266,12 @@ impl fmt::Display for ExtractStats {
         }
         if self.statics_from_symtab > 0 {
             writeln!(f, "  statics via symtab:     {}", self.statics_from_symtab)?;
+        }
+        if let Some(v) = &self.rustc_below_floor {
+            writeln!(
+                f,
+                "  WARNING: producer rustc {v} predates the supported floor {RUSTC_FLOOR}"
+            )?;
         }
         Ok(())
     }
@@ -1131,6 +1156,7 @@ fn extract_from_view_with_vtable_types(
         .map(|id| reader.strings.get(id))
         .unwrap_or_default();
     let rustc_version = rustc_version_of(producer);
+    stats.rustc_below_floor = rustc_below_floor(&rustc_version);
     let tokio_version = bound
         .iter()
         .filter_map(|t| t.poll_func_loc.as_ref())
@@ -5403,6 +5429,23 @@ mod tests {
 
     fn type_id(offset: usize) -> TypeId {
         TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    #[test]
+    fn test_rustc_floor_warning() {
+        use super::rustc_below_floor;
+        // The version as `rustc_version_of` records it: number first,
+        // hash and date trailing.
+        assert_eq!(
+            rustc_below_floor("1.96.0 (0000aaaa 2026-01-01)"),
+            Some("1.96.0".to_owned())
+        );
+        assert_eq!(rustc_below_floor("1.97.0 (2d8144b78 2026-07-07)"), None);
+        assert_eq!(rustc_below_floor("1.97.1 (8bab26f4f 2026-07-14)"), None);
+        assert_eq!(rustc_below_floor("1.98.0"), None);
+        // A producer that names no rustc version is unknown, not old.
+        assert_eq!(rustc_below_floor("GNU C 12.2.0"), None);
+        assert_eq!(rustc_below_floor(""), None);
     }
 
     /// Run one detector directly. Every detector takes an `Emitter` whether or

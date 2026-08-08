@@ -107,6 +107,14 @@ fn extract(
         explain_format,
     };
     let (bundle, stats) = exegesis::extract::extract_file(binary, &opts)?;
+    if let Some(v) = &stats.rustc_below_floor {
+        eprintln!(
+            "warning: this binary was produced by rustc {v}, older than the \
+             supported floor {}; extraction proceeds but is untested against \
+             older toolchains",
+            exegesis::extract::RUSTC_FLOOR
+        );
+    }
     bundle.save(output)?;
     println!(
         "wrote {} ({} types, {} task entries, {} dyn futures)",
