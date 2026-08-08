@@ -198,7 +198,7 @@ task: select_combinator::selector::{async_fn_env#0}
     Unresumed @ select-combinator.rs:15
     Returned @ select-combinator.rs:21
     Panicked @ select-combinator.rs:21
-    Suspend0 @ select.rs:741 (awaited at select-combinator.rs:17)
+    Suspend0 @ select.rs:746 (awaited at select-combinator.rs:17)
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<select_combinator::joiner::{async_fn#0}::{closure_env#0}> (poll)
