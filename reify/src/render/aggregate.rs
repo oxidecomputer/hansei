@@ -2,9 +2,10 @@
 //! including the `__N` tuple-field elision that makes a tuple struct render as
 //! `Name(v0, v1)` rather than `Name { __0: v0, __1: v1 }`.
 
-use crate::Error;
-use crate::debug_type::{DebugMember, DebugType, DisplayNode, TypeKind};
+use crate::debug_type::{DisplayNode, TypeKind};
 use crate::value::TypeInfoRef;
+
+use exegesis::bundle::{BundleMember, BundleType};
 
 use std::fmt;
 
@@ -18,7 +19,7 @@ use super::{RenderCtx, write_display_value, write_hex_bytes, write_indent};
 /// field something other than `__i`, so one non-matching member rules it out.
 /// Detection runs on the *full* member list so a `(ZST, T)` tuple is still
 /// recognized even though the ZST is not displayed.
-fn is_tuple<'a, M: DebugMember<'a>>(members: impl Iterator<Item = M>) -> bool {
+fn is_tuple<'a>(members: impl Iterator<Item = BundleMember<'a>>) -> bool {
     let mut any = false;
     for (i, m) in members.enumerate() {
         if tuple_field_index(m.name()) != Some(i) {
@@ -41,7 +42,7 @@ fn tuple_field_index(name: &str) -> Option<usize> {
 /// source-level name. This is the shape peeling dissolves — a struct
 /// variant declared with a single field — and the name goes with it
 /// unless the body is written from the payload as declared.
-fn has_named_single_field<'a, T: DebugType<'a>>(ty: &T) -> bool {
+fn has_named_single_field<'a>(ty: &BundleType<'a>) -> bool {
     if ty.kind() != TypeKind::Struct {
         return false;
     }
@@ -54,12 +55,12 @@ fn has_named_single_field<'a, T: DebugType<'a>>(ty: &T) -> bool {
 
 /// Render one member's value (or `<truncated>`) at its offset, recursing with
 /// the deeper context. Shared by the tuple and named aggregate bodies.
-fn write_member_value<'a, M: DebugMember<'a>>(
+fn write_member_value<'a>(
     f: &mut fmt::Formatter<'_>,
-    member: &M,
+    member: &BundleMember<'a>,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a, M::Type>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     let mem_ty = member.ty();
@@ -71,7 +72,6 @@ fn write_member_value<'a, M: DebugMember<'a>>(
                 ty: mem_ty,
                 addr: addr + member.offset(),
                 bytes: mem_bytes,
-                _marker: std::marker::PhantomData,
             };
             write_display_value(f, &child, ctx.deeper(), pretty)
         }
@@ -83,12 +83,12 @@ fn write_member_value<'a, M: DebugMember<'a>>(
 /// has been written: a tuple aggregate as `(v0, v1)` (labels elided), a named
 /// aggregate as ` { field: v, … }`, and an empty/all-ZST aggregate as nothing
 /// (a unit). Zero-sized members are never displayed.
-fn write_aggregate_body<'a, T: DebugType<'a>>(
+fn write_aggregate_body<'a>(
     f: &mut fmt::Formatter<'_>,
-    ty: &T,
+    ty: &BundleType<'a>,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     // Two cheap passes over the member slice rather than a collected
@@ -153,12 +153,12 @@ fn write_aggregate_body<'a, T: DebugType<'a>>(
     }
 }
 
-pub(crate) fn write_struct_fields<'a, T: DebugType<'a>>(
+pub(crate) fn write_struct_fields<'a>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
+    info: &TypeInfoRef<'_, 'a>,
     name: &str,
     pretty: bool,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     if !name.is_empty() {
         f.write_str(name)?;
@@ -166,24 +166,20 @@ pub(crate) fn write_struct_fields<'a, T: DebugType<'a>>(
     write_aggregate_body(f, &info.ty, info.bytes, info.addr, ctx, pretty)
 }
 
-pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
+pub(crate) fn write_rust_enum<'a>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
+    info: &TypeInfoRef<'_, 'a>,
     name: &str,
     pretty: bool,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
-    let Ok((variant_name, var_ty, offset)) = info
-        .ty
-        .active_variant(info.bytes)
-        .unwrap_or_else(|| Err(Error::not_an_enum(name.to_string())))
-    else {
+    let Some(Ok(active)) = info.ty.active_variant(info.bytes) else {
         if !name.is_empty() {
             write!(f, "{} ", name)?;
         }
         return write_hex_bytes(f, info.bytes);
     };
-
+    let (variant_name, var_ty, offset) = (active.name, active.ty, active.offset);
     let start = offset as usize;
     let end = start + var_ty.size() as usize;
     let Some(variant_bytes) = info.bytes.get(start..end) else {
@@ -197,7 +193,6 @@ pub(crate) fn write_rust_enum<'a, T: DebugType<'a>>(
         ty: var_ty,
         addr: variant_addr,
         bytes: variant_bytes,
-        _marker: std::marker::PhantomData,
     }
     .peel();
 

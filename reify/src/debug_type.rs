@@ -1,140 +1,15 @@
-use crate::Result;
+//! The resolved form of a bundle's display programs.
+//!
+//! A bundle addresses the data a [`DisplayNode`] reads with name-based
+//! [`Selector`](exegesis::bundle::Selector)s, which say nothing about layout.
+//! [`DisplayNode::resolve`] reduces those to byte offsets against a concrete
+//! [`BundleType`], once per type, and `render::node` interprets the result.
 
-pub use exegesis::bundle::Notation;
+use exegesis::bundle::{BundleMember, BundleType, VariantError};
 
-use std::fmt;
 use std::num::NonZeroU8;
 
-/// Reify's own TypeKind — the union of kinds reify cares about.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum TypeKind {
-    Integer,
-    Float,
-    Pointer,
-    Array,
-    Struct,
-    Union,
-    Enum,
-    /// Typedef, const, volatile, restrict, forward, unknown, etc.
-    Other,
-}
-
-impl fmt::Display for TypeKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let desc = match self {
-            Self::Integer => "integer",
-            Self::Float => "float",
-            Self::Pointer => "pointer",
-            Self::Array => "array",
-            Self::Struct => "struct",
-            Self::Union => "union",
-            Self::Enum => "enum",
-            Self::Other => "other",
-        };
-        f.write_str(desc)
-    }
-}
-
-/// Core trait: a type from debug information.
-///
-/// `exegesis::bundle::BundleType<'a>` implements this, letting `TypeInfo`
-/// and `TypeInfoRef` render values described by a bundle.
-/// `Send + Sync` because rendering fans a value's collections out across
-/// worker threads, each holding copies of the type handles it renders;
-/// a backend handle is a shared reference into immutable loaded data.
-pub trait DebugType<'a>: Copy + Clone + Sized + fmt::Debug + Send + Sync {
-    type Member: DebugMember<'a, Type = Self>;
-    type MemberIter: ExactSizeIterator<Item = Self::Member>;
-
-    // --- Core metadata ---
-
-    fn size(&self) -> u64;
-
-    fn name(&self) -> &'a str;
-
-    fn kind(&self) -> TypeKind;
-
-    // --- Structural access (struct/union members) ---
-
-    /// Look up a member by name. Returns `None` if this type has no members
-    /// or if no member with the given name exists.
-    fn member(&self, name: &str) -> Option<Self::Member>;
-
-    /// Iterate over members. Returns an empty iterator for non-struct/union
-    /// types.
-    fn members(&self) -> Self::MemberIter;
-
-    // --- Pointer: get the target type ---
-
-    /// If this is a pointer type, return the type it points to.
-    fn pointer_target(&self) -> Option<Self>;
-
-    // --- Array: get element type and count ---
-
-    /// If this is an array type, return `(element_type, count)`.
-    fn array_info(&self) -> Option<(Self, u64)>;
-
-    // --- Enum variant operations ---
-    //
-    // These abstract the bundle's VariantShape encoding of Rust enums
-    // behind a common interface.
-
-    /// If this type represents a Rust enum, determine the active variant
-    /// from `bytes`. Returns `(variant_name, variant_payload_type,
-    /// payload_byte_offset)`.
-    ///
-    /// Returns `None` if this is not an enum-like type.
-    /// Returns `Some(Err(..))` if it is an enum but the discriminant is
-    /// invalid.
-    fn active_variant(&self, bytes: &[u8]) -> Option<Result<(&'a str, Self, u64)>>;
-
-    /// If this type represents a Rust enum, check whether the named variant
-    /// is active. Returns `(payload_type, payload_byte_offset)` if active,
-    /// `Ok(None)` if a different variant is active.
-    ///
-    /// Returns `None` (outer) if this is not an enum-like type.
-    fn check_variant(&self, bytes: &[u8], name: &str) -> Option<Result<Option<(Self, u64)>>>;
-
-    // --- Display support ---
-
-    /// Classify this type for display formatting.
-    fn classify(&self) -> TypeClass<Self>;
-
-    /// Custom display instructions supplied by the debug-info backend.
-    fn debug_format(&self) -> Option<DisplayNode<Self>> {
-        None
-    }
-
-    /// A key identifying this type within its backend, under which a render
-    /// pass caches its [`debug_format`](Self::debug_format) resolution — so
-    /// two types may share a key only when their resolved programs are
-    /// interchangeable. Bundle types use their table id.
-    fn format_cache_key(&self) -> u64;
-
-    /// Whether this type's own [`debug_format`](Self::debug_format) renders it
-    /// as a self-contained value that [`peel`](crate::TypeInfoRef::peel) must
-    /// not unwrap into its representation (a `Str`, a `Slice`, a `Map`, …). A
-    /// transparent `Alias` format (an atomic, a newtype wrapper) is *not* a
-    /// leaf — it renders as an inner member — so peeling continues through it.
-    /// The default resolves the full node; backends that can answer more
-    /// cheaply should override it.
-    fn is_display_leaf(&self) -> bool {
-        !matches!(self.debug_format(), None | Some(DisplayNode::Alias { .. }))
-    }
-
-    /// Look up the unique byte size of a fully-qualified type name in the
-    /// same debug-info backend. Used only to corroborate a concrete type
-    /// recovered from a vtable function symbol.
-    fn size_by_name(&self, _name: &str) -> Option<u64> {
-        None
-    }
-
-    /// Look up an unambiguous concrete type by its fully-qualified name in
-    /// the same debug-info backend.
-    fn type_by_name(&self, _name: &str) -> Option<Self> {
-        None
-    }
-}
+pub use exegesis::bundle::{Notation, TypeClass, TypeKind};
 
 /// Resolved form of a bundle [`exegesis::bundle::ScalarDecode`]: the bit layout
 /// of one machine word, with labels resolved from the bundle's string table to
@@ -176,10 +51,10 @@ pub enum FieldRender {
 /// Resolved form of a bundle [`exegesis::bundle::DisplayNode`]: the same tree
 /// shape, but every [`exegesis::bundle::Selector`] is reduced to a byte offset
 /// (relative to the value the node is rendered against) and every related type
-/// id is resolved to a concrete `T`. reify's `eval_node` walks it with one
-/// generic interpreter.
+/// id is resolved to a concrete [`BundleType`]. reify's `eval_node` walks it
+/// with one generic interpreter.
 #[derive(Clone, Debug)]
-pub enum DisplayNode<T> {
+pub enum DisplayNode<'a> {
     /// Decode the `word_size`-byte word at `offset` via `decode`.
     Scalar {
         offset: u64,
@@ -197,7 +72,7 @@ pub enum DisplayNode<T> {
     /// following it as a data pointer.
     Symbol { offset: u64 },
     /// Render a record of the listed [`Field`]s in order.
-    Struct { fields: Vec<Field<T>> },
+    Struct { fields: Vec<Field<'a>> },
     /// Walk an intrusive linked list: read the head word at `head_offset`
     /// (0 = empty), then for each node read `node_size` bytes of `node_ty` from
     /// the target, render it with `node`, and follow the successor word at
@@ -205,8 +80,8 @@ pub enum DisplayNode<T> {
     List {
         head_offset: u64,
         next_offset: u64,
-        node: Box<DisplayNode<T>>,
-        node_ty: T,
+        node: Box<DisplayNode<'a>>,
+        node_ty: BundleType<'a>,
         node_size: u32,
     },
     /// Follow a `(data, len)` string slice and render its bytes as a quoted,
@@ -230,7 +105,7 @@ pub enum DisplayNode<T> {
         length_offset: u64,
         length_size: u32,
         capacity: Option<(u64, u32)>,
-        element: T,
+        element: BundleType<'a>,
         element_size: u32,
     },
     /// Render the inline `size`-byte array at `offset` in `notation`: an IPv4
@@ -247,7 +122,7 @@ pub enum DisplayNode<T> {
     /// `Arc`. `follow_pointers` mirrors the bundle node: when false a pointer
     /// alias (an atomic's stored address) is shown without being dereferenced.
     Alias {
-        target: T,
+        target: BundleType<'a>,
         place: Place,
         follow_pointers: bool,
     },
@@ -266,15 +141,15 @@ pub enum DisplayNode<T> {
     Pointer {
         pointer_offset: u64,
         via_offset: u64,
-        target: T,
-        then: Box<DisplayNode<T>>,
+        target: BundleType<'a>,
+        then: Box<DisplayNode<'a>>,
     },
     /// Display a Rust trait-object data pointer and vtable. `tail_offset` is
     /// added to the data-pointer address before reading the concrete pointee,
     /// skipping the sized header of an unsized wrapper such as `ArcInner`.
     DynPointer {
         pointer_offset: u64,
-        vtable: T,
+        vtable: BundleType<'a>,
         vtable_offset: u64,
         drop_in_place: u32,
         size: u32,
@@ -286,17 +161,17 @@ pub enum DisplayNode<T> {
     Map {
         length_offset: u64,
         length_size: u32,
-        key: T,
-        value: T,
-        entries: Box<MapEntries<T>>,
+        key: BundleType<'a>,
+        value: BundleType<'a>,
+        entries: Box<MapEntries<'a>>,
     },
     /// Select one of `arms` (else `default`) by matching the value the
     /// `discriminant` expression computes. See the bundle
     /// [`exegesis::bundle::DisplayNode::Variant`] for the model.
     Variant {
         discriminant: ValueExpr,
-        arms: Vec<Arm<T>>,
-        default: Option<Box<DisplayNode<T>>>,
+        arms: Vec<Arm<'a>>,
+        default: Option<Box<DisplayNode<'a>>>,
     },
     /// Interpret a small imperative program to generate a `[e, e, …]` sequence:
     /// the resolved form of the bundle
@@ -308,7 +183,7 @@ pub enum DisplayNode<T> {
         vars: Vec<ValueExpr>,
         condition: ValueExpr,
         body: Vec<Stmt>,
-        element: T,
+        element: BundleType<'a>,
     },
     /// Render the value as the single token `<elided>`, reading nothing.
     Elided,
@@ -336,7 +211,8 @@ pub enum Stmt {
 /// A resolved location that may cross pointer hops, read at render time. An
 /// empty `hops` is a plain local offset (the common case); each hop follows the
 /// pointer word located so far and advances into the pointee. This is the
-/// resolved form of a [`Selector`] that contains a [`Step::Deref`].
+/// resolved form of an [`exegesis::bundle::Selector`] that contains a
+/// [`exegesis::bundle::Step::Deref`].
 #[derive(Clone, Debug)]
 pub struct Place {
     /// Offset from the enclosing value's base to the first pointer word (when
@@ -395,10 +271,10 @@ impl GuardExpect {
 
 /// One resolved [`DisplayNode::Variant`] arm.
 #[derive(Clone, Debug)]
-pub struct Arm<T> {
+pub struct Arm<'a> {
     pub(crate) value: u64,
     pub(crate) label: Option<String>,
-    pub(crate) payload: Option<Box<DisplayNode<T>>>,
+    pub(crate) payload: Option<Box<DisplayNode<'a>>>,
 }
 
 /// Resolved [`exegesis::bundle::ValueExpr`]: a `Read` carries its resolved
@@ -426,25 +302,25 @@ pub enum ValueExpr {
 
 /// Resolved storage-specific entry traversal for [`DisplayNode::Map`].
 #[derive(Clone, Debug)]
-pub enum MapEntries<T> {
+pub enum MapEntries<'a> {
     /// Resolved B-tree node layout and root location.
     BTree {
-        root: T,
+        root: BundleType<'a>,
         root_offset: u64,
-        root_node: T,
+        root_node: BundleType<'a>,
         root_node_offset: u64,
-        height: T,
+        height: BundleType<'a>,
         height_offset: u64,
         node_offset: u64,
-        leaf: T,
-        leaf_len: T,
+        leaf: BundleType<'a>,
+        leaf_len: BundleType<'a>,
         leaf_len_offset: u64,
         keys_offset: u64,
         key_slots: u64,
         values_offset: u64,
-        internal: T,
+        internal: BundleType<'a>,
         edges_offset: u64,
-        edge: T,
+        edge: BundleType<'a>,
         edge_pointer_offset: u64,
     },
 }
@@ -454,156 +330,24 @@ pub enum MapEntries<T> {
 /// differ only in where the label comes from; a plain member resolves to
 /// `Structural`.
 #[derive(Clone, Debug)]
-pub enum Field<T> {
+pub enum Field<'a> {
     /// A real member rendered with reify's ordinary structural display.
-    Structural { name: String, ty: T, offset: u64 },
-    /// A label whose value is produced by a nested node.
-    Computed { label: String, node: DisplayNode<T> },
-}
-
-/// A member (field) of a struct, union, or enum variant payload.
-pub trait DebugMember<'a>: Copy + Clone + Sized {
-    type Type: DebugType<'a>;
-
-    fn name(&self) -> &'a str;
-    fn ty(&self) -> Self::Type;
-    /// The byte offset of this member within its parent type.
-    fn offset(&self) -> u64;
-}
-
-/// Classification of a debug type for display formatting.
-///
-/// Reify's display code matches on this instead of backend-specific type
-/// enums.
-pub enum TypeClass<T> {
-    /// An integer type with encoding info for display.
-    Integer {
-        size: u64,
-        is_signed: bool,
-        is_bool: bool,
-        is_char: bool,
+    Structural {
+        name: String,
+        ty: BundleType<'a>,
+        offset: u64,
     },
-    /// A floating point type.
-    Float { size: u64 },
-    /// A pointer. `target` is the pointee type.
-    Pointer { target: T },
-    /// A fixed-size array.
-    Array { element: T, count: u64 },
-    /// A plain struct — display its fields.
-    Struct,
-    /// A plain union — hex dump.
-    Union,
-    /// A Rust discriminated enum — use active_variant() for display.
-    RustEnum,
-    /// A C-style enum (named integer constants).
-    CEnum,
-    /// Opaque / unknown — hex dump.
-    Opaque,
+    /// A label whose value is produced by a nested node.
+    Computed {
+        label: String,
+        node: DisplayNode<'a>,
+    },
 }
 
-// ---------------------------------------------------------------------------
-// Bundle implementation
-// ---------------------------------------------------------------------------
-
-use exegesis::Encoding;
-use exegesis::bundle::{BundleMember, BundleMemberIter, BundleType, TypeDef, VariantError};
-
-impl<'a> DebugType<'a> for BundleType<'a> {
-    type Member = BundleMember<'a>;
-    type MemberIter = BundleMemberIter<'a>;
-
-    fn size(&self) -> u64 {
-        BundleType::size(self)
-    }
-
-    fn name(&self) -> &'a str {
-        BundleType::name(self)
-    }
-
-    fn kind(&self) -> TypeKind {
-        match self.def() {
-            TypeDef::Base { encoding, .. } => match encoding {
-                Encoding::Float => TypeKind::Float,
-                _ => TypeKind::Integer,
-            },
-            TypeDef::Pointer { .. } => TypeKind::Pointer,
-            TypeDef::Array { .. } => TypeKind::Array,
-            TypeDef::Struct { .. } => TypeKind::Struct,
-            TypeDef::Union { .. } => TypeKind::Union,
-            TypeDef::Enum { .. } | TypeDef::CEnum { .. } => TypeKind::Enum,
-            TypeDef::Opaque { .. } => TypeKind::Other,
-        }
-    }
-
-    fn member(&self, name: &str) -> Option<Self::Member> {
-        BundleType::member(self, name)
-    }
-
-    fn members(&self) -> Self::MemberIter {
-        BundleType::members(self)
-    }
-
-    fn pointer_target(&self) -> Option<Self> {
-        BundleType::pointer_target(self)
-    }
-
-    fn array_info(&self) -> Option<(Self, u64)> {
-        BundleType::array_info(self)
-    }
-
-    fn active_variant(&self, bytes: &[u8]) -> Option<Result<(&'a str, Self, u64)>> {
-        let decoded = BundleType::active_variant(self, bytes)?;
-        Some(
-            decoded
-                .map(|v| (v.name, v.ty, v.offset))
-                .map_err(|e| bundle_variant_error(self, e)),
-        )
-    }
-
-    fn check_variant(&self, bytes: &[u8], name: &str) -> Option<Result<Option<(Self, u64)>>> {
-        let checked = BundleType::check_variant(self, bytes, name)?;
-        Some(checked.map_err(|e| match e {
-            VariantError::NoSuchVariant => {
-                crate::Error::no_enumerator(self.name().to_string(), name.to_string())
-            }
-            other => bundle_variant_error(self, other),
-        }))
-    }
-
-    fn classify(&self) -> TypeClass<Self> {
-        match self.def() {
-            TypeDef::Base { size, encoding, .. } => match encoding {
-                Encoding::Float => TypeClass::Float { size: *size },
-                _ => TypeClass::Integer {
-                    size: *size,
-                    is_signed: matches!(encoding, Encoding::Signed | Encoding::SignedChar),
-                    is_bool: matches!(encoding, Encoding::Boolean),
-                    is_char: matches!(
-                        encoding,
-                        Encoding::SignedChar | Encoding::UnsignedChar | Encoding::UtfChar
-                    ),
-                },
-            },
-            TypeDef::Pointer { .. } => TypeClass::Pointer {
-                target: self.pointer_target().expect("pointer has a target"),
-            },
-            TypeDef::Array { .. } => {
-                let (element, count) = self.array_info().expect("array has element info");
-                TypeClass::Array { element, count }
-            }
-            TypeDef::Struct { .. } => TypeClass::Struct,
-            TypeDef::Union { .. } => TypeClass::Union,
-            TypeDef::Enum { .. } => TypeClass::RustEnum,
-            TypeDef::CEnum { .. } => TypeClass::CEnum,
-            TypeDef::Opaque { .. } => TypeClass::Opaque,
-        }
-    }
-
-    fn format_cache_key(&self) -> u64 {
-        u64::from(self.id().0)
-    }
-
-    fn debug_format(&self) -> Option<DisplayNode<Self>> {
+impl<'a> DisplayNode<'a> {
+    /// Resolve `ty`'s bundle display program into this offset-carrying form —
+    /// the selector→offset reduction a render pass performs once per type.
+    pub fn resolve(ty: BundleType<'a>) -> Option<Self> {
         use exegesis::bundle::{MemberRef, Selector, Step};
 
         /// The member a [`MemberRef`] addresses in `ty`, resolved the way the
@@ -861,7 +605,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
         fn resolve_node<'a>(
             scope: BundleType<'a>,
             node: &exegesis::bundle::DisplayNode,
-        ) -> Option<DisplayNode<BundleType<'a>>> {
+        ) -> Option<DisplayNode<'a>> {
             use exegesis::bundle::DisplayNode as BundleNode;
             match node {
                 BundleNode::Scalar { at, decode } => {
@@ -1090,7 +834,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             key: BundleType<'a>,
             value: BundleType<'a>,
             entries: &exegesis::bundle::MapEntries,
-        ) -> Option<MapEntries<BundleType<'a>>> {
+        ) -> Option<MapEntries<'a>> {
             let exegesis::bundle::MapEntries::BTree {
                 root,
                 root_node,
@@ -1164,7 +908,7 @@ impl<'a> DebugType<'a> for BundleType<'a> {
         fn resolve_field<'a>(
             scope: BundleType<'a>,
             field: &exegesis::bundle::Field,
-        ) -> Option<Field<BundleType<'a>>> {
+        ) -> Option<Field<'a>> {
             use exegesis::bundle::Field as BundleField;
             match field {
                 BundleField::Member { at, node } => {
@@ -1188,45 +932,12 @@ impl<'a> DebugType<'a> for BundleType<'a> {
             }
         }
 
-        resolve_node(*self, BundleType::debug_format(self)?)
-    }
-
-    fn is_display_leaf(&self) -> bool {
-        // A raw map lookup — no `resolve_node`, so `peel` can call it per step.
-        use exegesis::bundle::DisplayNode as BundleNode;
-        matches!(
-            BundleType::debug_format(self),
-            Some(node) if !matches!(node, BundleNode::Alias { .. })
-        )
-    }
-
-    fn size_by_name(&self, name: &str) -> Option<u64> {
-        BundleType::size_by_name(self, name)
-    }
-
-    fn type_by_name(&self, name: &str) -> Option<Self> {
-        BundleType::type_by_name(self, name)
-    }
-}
-
-impl<'a> DebugMember<'a> for BundleMember<'a> {
-    type Type = BundleType<'a>;
-
-    fn name(&self) -> &'a str {
-        BundleMember::name(self)
-    }
-
-    fn ty(&self) -> BundleType<'a> {
-        BundleMember::ty(self)
-    }
-
-    fn offset(&self) -> u64 {
-        BundleMember::offset(self)
+        resolve_node(ty, ty.debug_format()?)
     }
 }
 
 /// Map a bundle variant-decode failure onto reify's error type.
-fn bundle_variant_error(ty: &BundleType<'_>, e: VariantError) -> crate::Error {
+pub(crate) fn bundle_variant_error(ty: &BundleType<'_>, e: VariantError) -> crate::Error {
     match e {
         VariantError::ShortBuffer { needed, len } => {
             crate::Error::unexpected_len(len as u32, needed as u32)
@@ -1240,7 +951,6 @@ fn bundle_variant_error(ty: &BundleType<'_>, e: VariantError) -> crate::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::testhelper::*;
     use crate::{TypeInfoRef, TypeKind};
 
@@ -1361,7 +1071,7 @@ mod tests {
         let v = BundleView::new(&b);
         let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
         let peeled = TypeInfoRef::new(v.ty(WRAP).unwrap(), 0, &bytes).peel();
-        assert_eq!(DebugType::name(&peeled.ty), "Point");
+        assert_eq!(peeled.ty.name(), "Point");
         assert_eq!(format!("{}", peeled.member("y").unwrap().display()), "4");
     }
 

@@ -369,7 +369,7 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// The thread-local `tokio::runtime::context::Context` at `addr`, as
     /// [`Context::find_workers`] located it.
-    pub fn context_info(&self, addr: u64) -> Result<TypeInfo<'b, BundleType<'b>>> {
+    pub fn context_info(&self, addr: u64) -> Result<TypeInfo<'b>> {
         let ty = self.infra_ty(
             self.view.bundle().infra.context,
             "tokio::runtime::context::Context",
@@ -386,7 +386,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// The handle is the root of everything the runtime shares: the
     /// scheduler state under `shared`, the io/time/signal drivers under
     /// `driver`.
-    pub fn find_handle(&self, workers: &[Worker]) -> Result<TypeInfo<'b, BundleType<'b>>> {
+    pub fn find_handle(&self, workers: &[Worker]) -> Result<TypeInfo<'b>> {
         let mut saw_other_scheduler = false;
         for worker in workers {
             let info = self.context_info(worker.context_addr)?;
@@ -410,7 +410,7 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// The scheduler state the workers share, from the runtime handle
     /// [`Context::find_handle`] reaches.
-    pub fn find_shared(&self, workers: &[Worker]) -> Result<TypeInfo<'b, BundleType<'b>>> {
+    pub fn find_shared(&self, workers: &[Worker]) -> Result<TypeInfo<'b>> {
         let handle = self.find_handle(workers)?;
         let shared = handle.member("shared")?.to_owned();
         Ok(shared)
@@ -424,7 +424,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// scheduler — the pointer is set only for the duration of a
     /// worker's run loop — or when it runs a scheduler hansei does not
     /// read.
-    pub fn worker_context(&self, worker: &Worker) -> Result<Option<TypeInfo<'b, BundleType<'b>>>> {
+    pub fn worker_context(&self, worker: &Worker) -> Result<Option<TypeInfo<'b>>> {
         let info = self.context_info(worker.context_addr)?;
         // `Scoped` and the `Cell` inside it are single-member wrappers,
         // so the member lands straight on the pointer they hold. It is
@@ -445,7 +445,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// Which worker of the scheduler a thread is running, as the
     /// scheduler numbers them, from the context
     /// [`Context::worker_context`] returned.
-    pub fn worker_index(&self, worker_ctx: &TypeInfo<'b, BundleType<'b>>) -> Result<u64> {
+    pub fn worker_index(&self, worker_ctx: &TypeInfo<'b>) -> Result<u64> {
         let worker = worker_ctx.member("worker")?.deref_ptr(self)?;
         Ok(worker.member("data")?.member("index")?.parse(self)?)
     }
@@ -458,7 +458,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// same allocation, though, and that hangs off the shared scheduler
     /// state, so every worker's state word is readable from one place
     /// whether or not the thread holding it can be walked.
-    pub fn park_states(&self, handle: &TypeInfo<'b, BundleType<'b>>) -> Result<ParkStates> {
+    pub fn park_states(&self, handle: &TypeInfo<'b>) -> Result<ParkStates> {
         let shared = handle.member("shared")?;
         let remotes = shared.member("remotes")?;
         // The driver's lock lives under the parkers' own shared state,
@@ -497,7 +497,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// These are the pool's, not a walk of the target's threads: a
     /// blocking thread carries no scheduler state to be recognized by,
     /// so what the pool says about itself is all there is to say.
-    pub fn blocking_pool(&self, handle: &TypeInfo<'b, BundleType<'b>>) -> Result<BlockingPool> {
+    pub fn blocking_pool(&self, handle: &TypeInfo<'b>) -> Result<BlockingPool> {
         let arc = handle.member("blocking_spawner")?.deref_ptr(self)?;
         let metrics = arc.member("data")?.member("metrics")?;
         Ok(BlockingPool {
@@ -515,7 +515,7 @@ impl<'b, T: Target> Context<'b, T> {
     ///
     /// Corrupt memory degrades per shard: the failing shard contributes an
     /// error, the rest of the listing is unaffected (§11.5).
-    pub fn enumerate_tasks(&self, shared: &TypeInfo<'b, BundleType<'b>>) -> Result<TaskList> {
+    pub fn enumerate_tasks(&self, shared: &TypeInfo<'b>) -> Result<TaskList> {
         let list = shared.member("owned")?.member("list")?.to_owned();
 
         let mut tasks = Vec::new();
@@ -855,7 +855,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// [`AwaitChain::frames`], and [`AwaitChain::end`] says why it
     /// stopped. Corrupt memory is contained by the depth bound and an
     /// (address, type) cycle guard.
-    pub fn await_chain(&self, root: TypeInfo<'b, BundleType<'b>>) -> AwaitChain<'b> {
+    pub fn await_chain(&self, root: TypeInfo<'b>) -> AwaitChain<'b> {
         let mut frames: Vec<AwaitFrame<'b>> = Vec::new();
         let mut visited: HashSet<(u64, BundleTypeId)> = HashSet::default();
         let mut cur = root;
@@ -1043,7 +1043,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// are; plain ones keep their own type so the chain reports e.g.
     /// `oneshot::Receiver<u32>` rather than whatever its innards peel
     /// down to.
-    fn follow(&self, awaitee: TypeInfoRef<'_, 'b, BundleType<'b>>) -> Follow<'b> {
+    fn follow(&self, awaitee: TypeInfoRef<'_, 'b>) -> Follow<'b> {
         let peeled = awaitee.clone().peel();
         if let Some(dp) = peeled.ty.dyn_pointer() {
             // A boxed trait object: only its vtable knows the concrete
@@ -1114,10 +1114,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// bundle's future set, so a wrapper around it declines and the chain
     /// ends exactly where it did before — the miss costs the old
     /// behaviour, not a wrong one.
-    fn sole_inner_future(
-        &self,
-        scan: &TypeInfo<'b, BundleType<'b>>,
-    ) -> Option<(&'b str, Follow<'b>)> {
+    fn sole_inner_future(&self, scan: &TypeInfo<'b>) -> Option<(&'b str, Follow<'b>)> {
         let mut sole = None;
         for member in scan.ty.members() {
             if !self.is_future(member.ty()) {
@@ -1181,7 +1178,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// symbol against the bundle's dyn-future table. Never guesses.
     fn resolve_dyn_future(
         &self,
-        ptr: &TypeInfoRef<'_, 'b, BundleType<'b>>,
+        ptr: &TypeInfoRef<'_, 'b>,
         dp: &DynPointer<'b>,
     ) -> Result<DynAwaitee<'b>> {
         let word = |off: u64| -> Result<u64> {
@@ -1263,7 +1260,7 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// `tokio::time::Sleep`: the deadline its timer entry registered.
-    fn read_sleep(&self, sleep: &TypeInfo<'b, BundleType<'b>>) -> Result<WaitTarget> {
+    fn read_sleep(&self, sleep: &TypeInfo<'b>) -> Result<WaitTarget> {
         let entry = sleep.member("entry")?;
         let deadline = match entry.try_member("deadline")? {
             // Older tokios: `entry` is the TimerEntry itself.
@@ -1288,11 +1285,7 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// A `JoinHandle<T>`: the task being awaited — a dependency edge
     /// between tasks (§3.6).
-    fn read_join_handle(
-        &self,
-        handle: &TypeInfo<'b, BundleType<'b>>,
-        list: &TaskList,
-    ) -> Result<WaitTarget> {
+    fn read_join_handle(&self, handle: &TypeInfo<'b>, list: &TaskList) -> Result<WaitTarget> {
         // JoinHandle.raw: RawTask, which peels to the NonNull<Header>.
         let addr: u64 = handle.member("raw")?.parse(self)?;
         let (task_id, state) = self
@@ -1383,11 +1376,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// tokio's Mutex, RwLock, and Semaphore. The semaphore address
     /// identifies the contended resource; the frame that awaits the
     /// Acquire names which primitive wraps it.
-    fn read_acquire(
-        &self,
-        acquire: &TypeInfo<'b, BundleType<'b>>,
-        chain: &AwaitChain<'b>,
-    ) -> Result<WaitTarget> {
+    fn read_acquire(&self, acquire: &TypeInfo<'b>, chain: &AwaitChain<'b>) -> Result<WaitTarget> {
         let semaphore = acquire.member("semaphore")?;
         let addr: u64 = semaphore.parse(self)?;
         let num_permits: u64 = acquire.member("num_permits")?.parse(self)?;
@@ -1414,10 +1403,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// Walk a semaphore's wait queue: who its permits will wake, in wake
     /// order. tokio enqueues waiters at the list head and wakes from the
     /// tail, so the walk runs front-to-back and is reversed at the end.
-    fn semaphore_waiters(
-        &self,
-        sem: &TypeInfo<'b, BundleType<'b>>,
-    ) -> Result<Vec<SemaphoreWaiter>> {
+    fn semaphore_waiters(&self, sem: &TypeInfo<'b>) -> Result<Vec<SemaphoreWaiter>> {
         // Semaphore.waiters is a loom Mutex over the Waitlist; both the
         // parking_lot and std mutexes beneath it spell the payload
         // member `data`.
@@ -1463,7 +1449,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// recognized by their vtable: tokio builds them as `(data = the
     /// task's Header, vtable = &WAKER_VTABLE)`, and the bundle names that
     /// static (§3.6).
-    fn read_queued_waker(&self, node: &TypeInfo<'b, BundleType<'b>>) -> Result<QueuedWaker> {
+    fn read_queued_waker(&self, node: &TypeInfo<'b>) -> Result<QueuedWaker> {
         // Waiter.waker: UnsafeCell<Option<Waker>>; the Some payload
         // peels through the Waker to its RawWaker.
         let Some(raw) = node.member("waker")?.try_select_variant("Some")? else {
@@ -1592,7 +1578,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// chain bottoms out in a semaphore acquire.
     fn local_acquire(
         &self,
-        local: &TypeInfoRef<'_, 'b, BundleType<'b>>,
+        local: &TypeInfoRef<'_, 'b>,
     ) -> Option<(String, Option<&'static str>, AcquireFields)> {
         let peeled = local.clone().peel();
         let root = if let Some(dp) = peeled.ty.dyn_pointer() {
@@ -1622,7 +1608,7 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// The raw fields of a `batch_semaphore::Acquire`, read in place.
-    fn read_acquire_fields(&self, acquire: &TypeInfo<'b, BundleType<'b>>) -> Result<AcquireFields> {
+    fn read_acquire_fields(&self, acquire: &TypeInfo<'b>) -> Result<AcquireFields> {
         let node = acquire.member("node")?;
         Ok(AcquireFields {
             semaphore: acquire.member("semaphore")?.parse(self)?,
@@ -1904,10 +1890,10 @@ pub struct KnownFuture {
 pub enum TaskStage<'b> {
     /// The state machine is resident; walk it with
     /// [`Context::await_chain`].
-    Running(TypeInfo<'b, BundleType<'b>>),
+    Running(TypeInfo<'b>),
     /// `Result<T::Output, JoinError>`: the task returned, panicked, or
     /// was cancelled, and the output has not been consumed yet.
-    Finished(TypeInfo<'b, BundleType<'b>>),
+    Finished(TypeInfo<'b>),
     /// The output was already taken through the join handle.
     Consumed,
 }
@@ -1942,7 +1928,7 @@ impl AwaitChain<'_> {
 #[derive(Debug)]
 pub struct AwaitFrame<'b> {
     /// The future being polled at this depth.
-    pub future: TypeInfo<'b, BundleType<'b>>,
+    pub future: TypeInfo<'b>,
     /// The decoded coroutine state; `None` for plain (leaf) futures.
     pub state: Option<FrameState<'b>>,
     /// The mangled symbol that identified this frame, when it was
@@ -1968,7 +1954,7 @@ pub struct FrameState<'b> {
     pub await_loc: Option<(&'b str, u32)>,
     /// The active variant's payload: the state's live locals, including
     /// compiler-generated `__…` slots and the `__awaitee` itself.
-    pub payload: TypeInfo<'b, BundleType<'b>>,
+    pub payload: TypeInfo<'b>,
 }
 
 /// Why an await-chain walk stopped.
@@ -2243,7 +2229,7 @@ impl fmt::Display for WaitTarget {
 /// the reason there is not one.
 enum Follow<'b> {
     Next {
-        future: TypeInfo<'b, BundleType<'b>>,
+        future: TypeInfo<'b>,
         /// The dyn-vtable symbol that identified `future`, when it was
         /// not reached structurally.
         symbol: Option<String>,
@@ -2256,7 +2242,7 @@ enum DynAwaitee<'b> {
     /// The vtable joined: the concrete future, read from target memory,
     /// and the symbol that identified it.
     Resolved {
-        future: TypeInfo<'b, BundleType<'b>>,
+        future: TypeInfo<'b>,
         symbol: String,
     },
     /// No vtable symbol joined the bundle's dyn-future table.

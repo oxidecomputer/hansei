@@ -10,7 +10,6 @@
 //! cache); [`WorkerCtx`] is the context slice that crosses the thread
 //! boundary.
 
-use crate::debug_type::DebugType;
 use crate::render::{AddrAnnotator, ElideOverride};
 use crate::target::ReadFromProc;
 
@@ -56,11 +55,11 @@ impl<'buf> WorkerCtx<'buf> {
     /// cycle guard and format cache, with no further fan-out — the
     /// entries of the collection that spawned the worker are the one
     /// level that parallelizes.
-    pub(crate) fn ctx<'x, 'a, T: DebugType<'a>>(
+    pub(crate) fn ctx<'x, 'a>(
         &self,
         visited: &'x RefCell<HashSet<(u64, &'a str)>>,
-        formats: &'x FormatCache<T>,
-    ) -> RenderCtx<'x, 'a, T>
+        formats: &'x FormatCache<'a>,
+    ) -> RenderCtx<'x, 'a>
     where
         'buf: 'x,
     {

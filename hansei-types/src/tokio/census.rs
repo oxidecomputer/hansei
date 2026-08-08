@@ -35,10 +35,9 @@ use super::TaskState;
 use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind, leaf_kind};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
-use exegesis::bundle::{BundleType, BundleTypeId};
+use exegesis::bundle::{BundleTypeId, TypeClass};
 use foldhash::HashSet;
 use proc::Target;
-use reify::debug_type::{DebugType as _, TypeClass};
 use reify::{TypeInfo, TypeInfoRef};
 
 /// The by-value type every set is recognized as. The trailing `<` keeps
@@ -274,9 +273,9 @@ impl FutureCensus {
 
 /// What one scan hit is; [`Walker::record`] decides what to do with it.
 enum Find<'b> {
-    Set(TypeInfo<'b, BundleType<'b>>),
-    JoinSet(TypeInfo<'b, BundleType<'b>>),
-    Future(TypeInfo<'b, BundleType<'b>>),
+    Set(TypeInfo<'b>),
+    JoinSet(TypeInfo<'b>),
+    Future(TypeInfo<'b>),
 }
 
 /// The census walker's running state.
@@ -453,7 +452,7 @@ impl Walker {
         frame: usize,
         local: &str,
         via: Option<Via>,
-        value: &TypeInfo<'b, BundleType<'b>>,
+        value: &TypeInfo<'b>,
         nesting: usize,
     ) {
         let index = self.sets.len();
@@ -517,7 +516,7 @@ impl Walker {
         frame: usize,
         local: &str,
         via: Option<Via>,
-        value: &TypeInfo<'b, BundleType<'b>>,
+        value: &TypeInfo<'b>,
     ) {
         // As for a set of futures: a walk that fails part-way keeps the
         // members it reached, and the error says the list is short. The
@@ -550,7 +549,7 @@ impl Walker {
 /// pointers are never followed, so the scan stays inside the frame's
 /// own bytes and terminates.
 fn scan_value<'b>(
-    value: &TypeInfoRef<'_, 'b, BundleType<'b>>,
+    value: &TypeInfoRef<'_, 'b>,
     depth: usize,
     found: &mut Vec<Find<'b>>,
     capped: &mut usize,
@@ -683,7 +682,7 @@ type WalkedChild<'b> = (SetChild, Option<AwaitChain<'b>>, (u64, u64));
 fn walk_set<'b, T: Target + Sync>(
     ctx: &Context<'b, T>,
     list: &TaskList,
-    set: &TypeInfo<'b, BundleType<'b>>,
+    set: &TypeInfo<'b>,
     children: &mut Vec<WalkedChild<'b>>,
 ) -> Result<()> {
     let head_member = set.member("head_all")?;
@@ -791,7 +790,7 @@ fn walk_set<'b, T: Target + Sync>(
 fn walk_join_set<'b, T: Target + Sync>(
     ctx: &Context<'b, T>,
     list: &TaskList,
-    set: &TypeInfo<'b, BundleType<'b>>,
+    set: &TypeInfo<'b>,
     tasks: &mut Vec<JoinedTask>,
     length: &mut u64,
 ) -> Result<()> {

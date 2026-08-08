@@ -4,7 +4,7 @@
 //! (zero-sized, depth budget, short buffer), hands a type carrying its own
 //! [`DisplayNode`](crate::debug_type::DisplayNode) format to [`node`], and
 //! otherwise renders structurally through
-//! [`classify`](crate::debug_type::DebugType::classify). [`RenderCtx`] carries
+//! [`classify`](exegesis::bundle::BundleType::classify). [`RenderCtx`] carries
 //! depth, the optional target reader, the pointer cycle guard, and the `ugly`
 //! override down every recursion.
 
@@ -15,9 +15,11 @@ pub(crate) mod node;
 pub(crate) mod par;
 pub(crate) mod scalar;
 
-use crate::debug_type::{DebugType, DisplayNode, TypeClass};
+use crate::debug_type::{DisplayNode, TypeClass};
 use crate::target::ReadFromProc;
 use crate::value::{TypeInfo, TypeInfoRef};
+
+use exegesis::bundle::{BundleType, BundleTypeId};
 
 use aggregate::{write_rust_enum, write_struct_fields};
 use node::eval_node;
@@ -29,32 +31,32 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
-/// Display programs a render pass has already resolved, keyed by
-/// [`DebugType::format_cache_key`]. A `None` entry records a type whose
-/// resolution declined (or that carries no format), which is asked for as
-/// often as one whose resolution succeeded.
-pub(crate) type FormatCache<T> = RefCell<HashMap<u64, Option<Rc<DisplayNode<T>>>>>;
+/// Display programs a render pass has already resolved, keyed by bundle type
+/// id. A `None` entry records a type whose resolution declined (or that
+/// carries no format), which is asked for as often as one whose resolution
+/// succeeded.
+pub(crate) type FormatCache<'a> = RefCell<HashMap<BundleTypeId, Option<Rc<DisplayNode<'a>>>>>;
 
-impl<'a, T: DebugType<'a>> fmt::Display for TypeInfoRef<'_, 'a, T> {
+impl<'a> fmt::Display for TypeInfoRef<'_, 'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_display_value(f, self, RenderCtx::plain(0, 16), f.alternate())
     }
 }
 
-impl<'a, T: DebugType<'a>> fmt::Display for TypeInfo<'a, T> {
+impl<'a> fmt::Display for TypeInfo<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.as_ref(), f)
     }
 }
 
-pub struct DisplayValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>> {
-    info: &'r TypeInfoRef<'buf, 'a, T>,
+pub struct DisplayValue<'r, 'buf, 'a: 'buf> {
+    info: &'r TypeInfoRef<'buf, 'a>,
     depth: usize,
     max_depth: usize,
     ugly: bool,
 }
 
-impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>> DisplayValue<'r, 'buf, 'a, T> {
+impl<'r, 'buf, 'a: 'buf> DisplayValue<'r, 'buf, 'a> {
     /// Suppress custom formatters and render the base structural view.
     pub fn ugly(mut self) -> Self {
         self.ugly = true;
@@ -62,7 +64,7 @@ impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>> DisplayValue<'r, 'buf, 'a, T> {
     }
 }
 
-impl<'a, T: DebugType<'a>> fmt::Display for DisplayValue<'_, '_, 'a, T> {
+impl<'a> fmt::Display for DisplayValue<'_, '_, 'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_display_value(
             f,
@@ -82,8 +84,8 @@ impl<'a, T: DebugType<'a>> fmt::Display for DisplayValue<'_, '_, 'a, T> {
 /// worker threads; the lifetime lets it borrow the caller's lookup state.
 pub type AddrAnnotator<'r> = dyn Fn(u64) -> Option<String> + Sync + 'r;
 
-pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync> {
-    info: &'r TypeInfoRef<'buf, 'a, T>,
+pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, P: ReadFromProc + Sync> {
+    info: &'r TypeInfoRef<'buf, 'a>,
     proc: &'r P,
     max_depth: usize,
     ugly: bool,
@@ -91,12 +93,10 @@ pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromP
     annotate: Option<&'r AddrAnnotator<'r>>,
     prefix: &'r str,
     visited: RefCell<HashSet<(u64, &'a str)>>,
-    formats: FormatCache<T>,
+    formats: FormatCache<'a>,
 }
 
-impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync>
-    DisplayTargetValue<'r, 'buf, 'a, T, P>
-{
+impl<'r, 'buf, 'a: 'buf, P: ReadFromProc + Sync> DisplayTargetValue<'r, 'buf, 'a, P> {
     /// Suppress custom formatters and render the base structural view.
     pub fn ugly(mut self) -> Self {
         self.ugly = true;
@@ -128,9 +128,7 @@ impl<'r, 'buf, 'a: 'buf, T: DebugType<'a>, P: ReadFromProc + Sync>
     }
 }
 
-impl<'a, T: DebugType<'a>, P: ReadFromProc + Sync> fmt::Display
-    for DisplayTargetValue<'_, '_, 'a, T, P>
-{
+impl<'a, P: ReadFromProc + Sync> fmt::Display for DisplayTargetValue<'_, '_, 'a, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ctx = RenderCtx {
             depth: 0,
@@ -149,8 +147,8 @@ impl<'a, T: DebugType<'a>, P: ReadFromProc + Sync> fmt::Display
     }
 }
 
-impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
-    pub fn display(&self) -> DisplayValue<'_, 'buf, 'a, T> {
+impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
+    pub fn display(&self) -> DisplayValue<'_, 'buf, 'a> {
         DisplayValue {
             info: self,
             depth: 0,
@@ -159,7 +157,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
         }
     }
 
-    pub fn display_with_depth(&self, max_depth: usize) -> DisplayValue<'_, 'buf, 'a, T> {
+    pub fn display_with_depth(&self, max_depth: usize) -> DisplayValue<'_, 'buf, 'a> {
         DisplayValue {
             info: self,
             depth: 0,
@@ -174,7 +172,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
         &'r self,
         proc: &'r P,
         max_depth: usize,
-    ) -> DisplayTargetValue<'r, 'buf, 'a, T, P> {
+    ) -> DisplayTargetValue<'r, 'buf, 'a, P> {
         DisplayTargetValue {
             info: self,
             proc,
@@ -196,22 +194,22 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
 /// structural view. Bundling these keeps the renderer signatures small (they
 /// otherwise take the same trailing arguments everywhere).
 #[derive(Copy, Clone)]
-pub(crate) struct RenderCtx<'buf, 'a, T: DebugType<'a>> {
+pub(crate) struct RenderCtx<'buf, 'a> {
     depth: usize,
     max_depth: usize,
     proc: Option<&'buf (dyn ReadFromProc + Sync)>,
     visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
     /// Where this pass memoizes resolved display programs; `None` renders
     /// resolve on every ask (the plain, targetless displays).
-    formats: Option<&'buf FormatCache<T>>,
+    formats: Option<&'buf FormatCache<'a>>,
     /// Whether a collection may fan its entries out across worker
     /// threads. True at the root of a target-backed render; the
     /// collection that spends it hands its workers `false`, so fan-out
     /// happens once, at the outermost eligible sequence.
     parallel: bool,
     hex_integers: bool,
-    /// Suppress every type's own [`debug_format`](DebugType::debug_format) and
-    /// render purely through [`classify`](DebugType::classify) — the "ugly",
+    /// Suppress every type's own [`DisplayNode::resolve`] and
+    /// render purely through [`classify`](BundleType::classify) — the "ugly",
     /// structural view. Propagates to nested values, so a whole subtree
     /// renders without custom formatters once set.
     ugly: bool,
@@ -300,7 +298,7 @@ fn glob_match(pattern: &str, name: &str) -> bool {
     pattern[pi..].iter().all(|&ch| ch == b'*')
 }
 
-impl<'buf, 'a, T: DebugType<'a>> RenderCtx<'buf, 'a, T> {
+impl<'buf, 'a> RenderCtx<'buf, 'a> {
     /// A context with no target to read from (structural rendering only).
     fn plain(depth: usize, max_depth: usize) -> Self {
         Self {
@@ -338,15 +336,15 @@ impl<'buf, 'a, T: DebugType<'a>> RenderCtx<'buf, 'a, T> {
     /// tree, so a pass carrying a cache pays that once per type rather than
     /// once per value — a map of ten thousand `String`s asks ten thousand
     /// times and resolves once.
-    fn debug_format(&self, ty: &T) -> Option<Rc<DisplayNode<T>>> {
+    fn debug_format(&self, ty: &BundleType<'a>) -> Option<Rc<DisplayNode<'a>>> {
         let Some(cache) = self.formats else {
-            return ty.debug_format().map(Rc::new);
+            return DisplayNode::resolve(*ty).map(Rc::new);
         };
-        let key = ty.format_cache_key();
+        let key = ty.id();
         if let Some(hit) = cache.borrow().get(&key) {
             return hit.clone();
         }
-        let resolved = ty.debug_format().map(Rc::new);
+        let resolved = DisplayNode::resolve(*ty).map(Rc::new);
         cache.borrow_mut().insert(key, resolved.clone());
         resolved
     }
@@ -379,10 +377,10 @@ impl<'buf, 'a, T: DebugType<'a>> RenderCtx<'buf, 'a, T> {
 /// a `{:#}` format spec — re-entering `core::fmt::write` per child value
 /// costs an `Arguments` and several frames at every level of a tree this
 /// renders millions of nodes of.
-pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
+pub(crate) fn write_display_value<'a>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a, T>,
-    ctx: RenderCtx<'_, 'a, T>,
+    info: &TypeInfoRef<'_, 'a>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     let ty = info.ty;
@@ -520,7 +518,6 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
                         ty: target,
                         addr,
                         bytes: &pointee_bytes,
-                        _marker: std::marker::PhantomData,
                     };
                     write_annotated_addr(f, addr, ctx.annotate)
                         .and_then(|()| f.write_str(" -> "))
@@ -555,8 +552,8 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
 
         TypeClass::CEnum => {
             // For C-style enums, try to find the active variant name.
-            if let Some(Ok((name, _, _))) = ty.active_variant(bytes) {
-                write!(f, "{}", name)
+            if let Some(Ok(active)) = ty.active_variant(bytes) {
+                write!(f, "{}", active.name)
             } else {
                 write_hex_bytes(f, bytes)
             }
@@ -590,7 +587,6 @@ pub(crate) fn write_display_value<'a, T: DebugType<'a>>(
                         ty: element,
                         addr: info.addr + start as u64,
                         bytes: elem_bytes,
-                        _marker: std::marker::PhantomData,
                     };
                     write_display_value(f, &child, ctx.deeper().with_hex(hex_elements), pretty)?;
                     if pretty {
@@ -940,7 +936,7 @@ mod tests {
     /// A C enumeration dumps its bytes rather than naming the enumerator. The
     /// `CEnum` arm asks `active_variant`, which is only implemented for a Rust
     /// enum's `VariantShape` and returns `None` for every `TypeDef::CEnum`, so
-    /// the name lookup can never succeed through the current `DebugType`
+    /// the name lookup can never succeed through the current `BundleType`
     /// interface.
     #[test]
     fn test_c_enum_falls_back_to_hex_bytes() {

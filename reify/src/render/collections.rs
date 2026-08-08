@@ -1,8 +1,10 @@
 //! Sequence and map renderers: contiguous slices, intrusive linked lists, and
 //! associative collections with their storage-specific entry walks.
 
-use crate::debug_type::{DebugType, DisplayNode, MapEntries};
+use crate::debug_type::{DisplayNode, MapEntries};
 use crate::value::TypeInfoRef;
+
+use exegesis::bundle::BundleType;
 
 use crate::target::ReadFromProc;
 
@@ -24,16 +26,16 @@ use super::{
 /// `len` (skipped for a zero-sized element, whose buffer is not read). Unlike
 /// [`eval_list`] the elements are contiguous, read in one target access.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn eval_slice<'a, T: DebugType<'a>>(
+pub(crate) fn eval_slice<'a>(
     f: &mut fmt::Formatter<'_>,
     pointer_offset: u64,
     length_offset: u64,
     length_size: u32,
     capacity: Option<(u64, u32)>,
-    element: &T,
+    element: &BundleType<'a>,
     element_size: u32,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     let Some(len) = read_unsigned_at(bytes, length_offset, u64::from(length_size)) else {
@@ -143,15 +145,15 @@ pub(crate) fn eval_slice<'a, T: DebugType<'a>>(
 /// value's place and the slice must stop where it stands, bracket
 /// unclosed — exactly what the streaming path has always done.
 #[allow(clippy::too_many_arguments)]
-fn write_slice_element<'a, T: DebugType<'a>>(
+fn write_slice_element<'a>(
     f: &mut fmt::Formatter<'_>,
     index: u64,
     pointer: u64,
     allocation: &[u8],
-    element: T,
+    element: BundleType<'a>,
     element_size: u64,
     depth: usize,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> std::result::Result<bool, fmt::Error> {
     write_seq_prefix(f, pretty, ctx.prefix, depth, index == 0)?;
@@ -171,7 +173,6 @@ fn write_slice_element<'a, T: DebugType<'a>>(
         ty: element,
         addr: address,
         bytes,
-        _marker: std::marker::PhantomData,
     };
     write_display_value(f, &child, ctx, pretty)?;
     if pretty {
@@ -181,18 +182,18 @@ fn write_slice_element<'a, T: DebugType<'a>>(
 }
 
 #[derive(Copy, Clone)]
-struct BTreeNodeLayout<T> {
-    key: T,
-    value: T,
-    leaf: T,
-    leaf_len: T,
+struct BTreeNodeLayout<'a> {
+    key: BundleType<'a>,
+    value: BundleType<'a>,
+    leaf: BundleType<'a>,
+    leaf_len: BundleType<'a>,
     leaf_len_offset: u64,
     keys_offset: u64,
     key_slots: u64,
     values_offset: u64,
-    internal: T,
+    internal: BundleType<'a>,
     edges_offset: u64,
-    edge: T,
+    edge: BundleType<'a>,
     edge_pointer_offset: u64,
 }
 
@@ -212,17 +213,17 @@ impl From<fmt::Error> for MapWalkError {
 /// owns storage traversal; this function owns recursive key/value display,
 /// exact-length accounting, and inline/pretty punctuation.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn eval_map<'a, T: DebugType<'a>>(
+pub(crate) fn eval_map<'a>(
     f: &mut fmt::Formatter<'_>,
-    ty: &T,
+    ty: &BundleType<'a>,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
     length_offset: u64,
     length_size: u32,
-    key: T,
-    value: T,
-    entries: &MapEntries<T>,
+    key: BundleType<'a>,
+    value: BundleType<'a>,
+    entries: &MapEntries<'a>,
 ) -> fmt::Result {
     let Some(map_length) = read_unsigned_at(bytes, length_offset, u64::from(length_size)) else {
         return write!(f, "<truncated>");
@@ -265,13 +266,11 @@ pub(crate) fn eval_map<'a, T: DebugType<'a>>(
                 ty: key,
                 addr: key_addr,
                 bytes: key_bytes,
-                _marker: std::marker::PhantomData,
             };
             let value = TypeInfoRef {
                 ty: value,
                 addr: value_addr,
                 bytes: value_bytes,
-                _marker: std::marker::PhantomData,
             };
             write_display_value(f, &key, entry_ctx, pretty)?;
             write!(f, ": ")?;
@@ -332,17 +331,17 @@ fn write_map_tail(
 /// core — and format chunks of entries into buffers stitched back in
 /// walk order.
 #[allow(clippy::too_many_arguments)]
-fn eval_map_parallel<'a, T: DebugType<'a>>(
+fn eval_map_parallel<'a>(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a, T>,
-    entry_ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
+    entry_ctx: RenderCtx<'_, 'a>,
     visited: &RefCell<HashSet<(u64, &'a str)>>,
     pretty: bool,
     map_length: u64,
-    key: T,
-    value: T,
-    entries: &MapEntries<T>,
+    key: BundleType<'a>,
+    value: BundleType<'a>,
+    entries: &MapEntries<'a>,
 ) -> fmt::Result {
     let mut collected: Vec<(u64, u64)> = Vec::new();
     let walk = walk_map_entries(
@@ -398,13 +397,13 @@ fn eval_map_parallel<'a, T: DebugType<'a>>(
 /// addresses the collect pass recorded. The walk had these very bytes in
 /// hand; a target that stops answering between the walk and the format
 /// degrades like any other failed read.
-fn write_map_entry<'a, T: DebugType<'a>>(
+fn write_map_entry<'a>(
     f: &mut fmt::Formatter<'_>,
-    key: T,
+    key: BundleType<'a>,
     key_addr: u64,
-    value: T,
+    value: BundleType<'a>,
     value_addr: u64,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     let Some(proc) = ctx.proc else {
@@ -420,13 +419,11 @@ fn write_map_entry<'a, T: DebugType<'a>>(
         ty: key,
         addr: key_addr,
         bytes: &key_bytes,
-        _marker: std::marker::PhantomData,
     };
     let value = TypeInfoRef {
         ty: value,
         addr: value_addr,
         bytes: &value_bytes,
-        _marker: std::marker::PhantomData,
     };
     write_display_value(f, &key, ctx, pretty)?;
     write!(f, ": ")?;
@@ -454,12 +451,12 @@ fn write_map_entry_prefix(
     }
 }
 
-fn walk_map_entries<'a, T: DebugType<'a>>(
+fn walk_map_entries<'a>(
     bytes: &[u8],
     proc: Option<&(dyn ReadFromProc + Sync)>,
-    key: T,
-    value: T,
-    entries: &MapEntries<T>,
+    key: BundleType<'a>,
+    value: BundleType<'a>,
+    entries: &MapEntries<'a>,
     emit: &mut impl FnMut(u64, &[u8], u64, &[u8]) -> std::result::Result<(), MapWalkError>,
 ) -> std::result::Result<(), MapWalkError> {
     let MapEntries::BTree {
@@ -532,9 +529,9 @@ fn walk_map_entries<'a, T: DebugType<'a>>(
     )
 }
 
-fn walk_btree_node<'a, T: DebugType<'a>>(
+fn walk_btree_node<'a>(
     proc: &(dyn ReadFromProc + Sync),
-    layout: BTreeNodeLayout<T>,
+    layout: BTreeNodeLayout<'a>,
     address: u64,
     height: u64,
     visited: &mut HashSet<u64>,
@@ -608,9 +605,9 @@ fn walk_btree_node<'a, T: DebugType<'a>>(
     result
 }
 
-fn btree_edge_address<'a, T: DebugType<'a>>(
+fn btree_edge_address<'a>(
     bytes: &[u8],
-    layout: BTreeNodeLayout<T>,
+    layout: BTreeNodeLayout<'a>,
     index: u64,
 ) -> std::result::Result<u64, MapWalkError> {
     let offset = layout
@@ -634,15 +631,15 @@ fn btree_edge_address<'a, T: DebugType<'a>>(
 /// puts each on its own indented line. A queue entry is small, so this reads
 /// far better than expanding every entry across several lines.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn eval_list<'a, T: DebugType<'a>>(
+pub(crate) fn eval_list<'a>(
     f: &mut fmt::Formatter<'_>,
     head_offset: u64,
     next_offset: u64,
-    node: &DisplayNode<T>,
-    node_ty: &T,
+    node: &DisplayNode<'a>,
+    node_ty: &BundleType<'a>,
     node_size: u32,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     let Some(head) = read_u64_at(bytes, head_offset) else {

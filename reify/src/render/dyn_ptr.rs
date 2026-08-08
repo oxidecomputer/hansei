@@ -1,9 +1,11 @@
 //! Trait-object rendering: display a `dyn Trait` data pointer and its vtable,
 //! recovering the concrete type from a vtable function symbol where possible.
 
-use crate::debug_type::{DebugType, DisplayNode};
+use crate::debug_type::DisplayNode;
 use crate::target::ReadFromProc;
 use crate::value::TypeInfoRef;
+
+use exegesis::bundle::BundleType;
 
 use std::fmt;
 
@@ -17,13 +19,13 @@ struct VtableFunction {
     concrete: Option<String>,
 }
 
-pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
+pub(crate) fn eval_dyn_pointer<'a>(
     f: &mut fmt::Formatter<'_>,
-    ty: T,
+    ty: BundleType<'a>,
     name: Option<&str>,
-    node: &DisplayNode<T>,
+    node: &DisplayNode<'a>,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     let DisplayNode::DynPointer {
@@ -103,7 +105,6 @@ pub(crate) fn eval_dyn_pointer<'a, T: DebugType<'a>>(
                         ty: concrete_ty,
                         addr: pointee_address,
                         bytes: &pointee_bytes,
-                        _marker: std::marker::PhantomData,
                     };
                     write!(f, " -> ")?;
                     write_display_value(f, &pointee, ctx.deeper(), pretty)?;
@@ -241,8 +242,8 @@ fn write_vtable_field_prefix(
     }
 }
 
-fn read_vtable_words<'a, T: DebugType<'a>>(
-    vtable: T,
+fn read_vtable_words<'a>(
+    vtable: BundleType<'a>,
     address: u64,
     proc: Option<&(dyn ReadFromProc + Sync)>,
 ) -> Option<Vec<u64>> {
@@ -274,14 +275,14 @@ fn read_vtable_words<'a, T: DebugType<'a>>(
 /// against every named type in the bundle that shares its hash — so the
 /// resolved type answers the size question too: a name that resolves has
 /// one id, hence one size. Only a name borne by several ids, which
-/// [`type_by_name`](DebugType::type_by_name) declines, still needs asking
+/// [`type_by_name`](BundleType::type_by_name) declines, still needs asking
 /// whether those ids at least agree on a size.
-fn infer_concrete_type<'a, T: DebugType<'a>>(
-    ty: T,
+fn infer_concrete_type<'a>(
+    ty: BundleType<'a>,
     words: Option<&[u64]>,
     size_slot: u32,
     functions: &[VtableFunction],
-) -> Option<(String, Option<T>)> {
+) -> Option<(String, Option<BundleType<'a>>)> {
     let mut concrete = functions
         .iter()
         .filter_map(|function| function.concrete.as_deref());

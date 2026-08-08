@@ -24,7 +24,7 @@ pub use shape::{Addressed, Shape};
 pub use strings::{StrRef, StringInterner, StringTable};
 pub use view::{
     ActiveVariant, BundleMember, BundleMemberIter, BundleType, BundleVariant, BundleView,
-    DynPointer, POINTER_SIZE, VariantError, variant_name,
+    DynPointer, POINTER_SIZE, TypeClass, TypeKind, VariantError, variant_name,
 };
 
 #[cfg(test)]

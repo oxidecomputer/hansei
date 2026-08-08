@@ -1,6 +1,6 @@
 //! Parsing Rust values out of a typed buffer.
 
-use crate::debug_type::{DebugType, TypeKind};
+use crate::debug_type::TypeKind;
 use crate::target::ReadFromProc;
 use crate::value::TypeInfoRef;
 use crate::{Error, Result};
@@ -14,16 +14,16 @@ pub trait ParseCtx {
 }
 
 /// Parse a byte slice as a type using debug type information.
-pub trait ParseWithDbgInfo<'a, Ty: DebugType<'a>, Ctx>: Sized
+pub trait ParseWithDbgInfo<'a, Ctx>: Sized
 where
     Ctx: ParseCtx,
 {
     /// Attempt to read `Self` from the debug type information.
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self>;
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self>;
 }
 
-impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for u8 {
-    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for u8 {
+    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -34,8 +34,8 @@ impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for u8 
     }
 }
 
-impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for i8 {
-    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for i8 {
+    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -46,8 +46,8 @@ impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for i8 
     }
 }
 
-impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for bool {
-    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for bool {
+    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -60,8 +60,8 @@ impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for boo
 
 macro_rules! num_impl {
     ($num_ty:ty) => {
-        impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for $num_ty {
-            fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+        impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for $num_ty {
+            fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
                 if info.bytes.len() != size_of::<Self>() {
                     return Err(Error::unexpected_len(
                         info.bytes.len() as u32,
@@ -82,12 +82,12 @@ num_impl!(i64);
 num_impl!(f32);
 num_impl!(f64);
 
-impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithDbgInfo<'a, Ty, Ctx> for Option<V>
+impl<'a, V, Ctx> ParseWithDbgInfo<'a, Ctx> for Option<V>
 where
-    V: ParseWithDbgInfo<'a, Ty, Ctx>,
+    V: ParseWithDbgInfo<'a, Ctx>,
     Ctx: ParseCtx,
 {
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         let var = info.active_variant()?;
         let value = match var {
             ("Some", var_info) => V::parse_with_dbg(ctx, &var_info)?,
@@ -104,12 +104,12 @@ where
     }
 }
 
-impl<'a, Ty: DebugType<'a>, V, Ctx> ParseWithDbgInfo<'a, Ty, Ctx> for Box<[V]>
+impl<'a, V, Ctx> ParseWithDbgInfo<'a, Ctx> for Box<[V]>
 where
-    V: ParseWithDbgInfo<'a, Ty, Ctx>,
+    V: ParseWithDbgInfo<'a, Ctx>,
     Ctx: ParseCtx,
 {
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         let proc = ctx.proc();
 
         let len: u64 = info.member("length")?.parse(ctx)?;
@@ -133,7 +133,6 @@ where
                 ty: param_ty,
                 addr: p + (i as u64) * param_size,
                 bytes: chunk,
-                _marker: std::marker::PhantomData,
             };
             let item = V::parse_with_dbg(ctx, &item_info)?;
             out.push(item);
@@ -143,12 +142,12 @@ where
     }
 }
 
-impl<'a, Ty: DebugType<'a>, V, Ctx, const N: usize> ParseWithDbgInfo<'a, Ty, Ctx> for [V; N]
+impl<'a, V, Ctx, const N: usize> ParseWithDbgInfo<'a, Ctx> for [V; N]
 where
-    V: ParseWithDbgInfo<'a, Ty, Ctx>,
+    V: ParseWithDbgInfo<'a, Ctx>,
     Ctx: ParseCtx,
 {
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -171,7 +170,6 @@ where
                 ty: elem_ty,
                 addr: info.addr + (i * size) as u64,
                 bytes: slice,
-                _marker: std::marker::PhantomData,
             };
             let item = V::parse_with_dbg(ctx, &slice_info)?;
             items.push(item);
@@ -183,8 +181,8 @@ where
     }
 }
 
-impl<'a, Ty: DebugType<'a>, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ty, Ctx> for String {
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a, Ty>) -> Result<Self> {
+impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for String {
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         let proc = ctx.proc();
 
         let len: u64 = info.member("length")?.parse(ctx)?;
