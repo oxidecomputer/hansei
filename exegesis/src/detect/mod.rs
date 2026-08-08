@@ -22,6 +22,7 @@ mod crates;
 mod std;
 mod tokio;
 mod tokio_v1_50;
+mod tokio_v1_53;
 
 use self::crates::{hex_bytes_node, raw_mutex_node, utf8_path_buf_node, utf8_path_node, uuid_node};
 use self::std::{
@@ -36,7 +37,6 @@ use self::tokio::{
     mpsc_handle_node, notify_node, watch_receiver_node, watch_sender_node, watch_shared_node,
     watch_state_node,
 };
-use self::tokio_v1_50::{sleep_node, timer_entry_node};
 use crate::bundle::{
     BitField, Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MemberRef, ScalarDecode,
     Selector, Shape, Step, StringInterner,
@@ -226,17 +226,22 @@ pub enum Family {
     /// and a cached `deadline` instant beside a lazily-registered
     /// `Option<TimerShared>`.
     V1_50,
+    /// tokio 1.53 onward: the timer entry holds its `TimerShared` directly,
+    /// registration lives in the state word with the registration tick
+    /// cached beside it, and `Sleep` carries the deadline itself.
+    V1_53,
 }
 
 impl Family {
     /// Every family, oldest floor first.
-    pub const ALL: &'static [Family] = &[Family::V1_50];
+    pub const ALL: &'static [Family] = &[Family::V1_50, Family::V1_53];
 
     /// The lowest tokio `(major, minor)` the family covers; its range runs
     /// to the next family's floor.
     fn floor(self) -> (u64, u64) {
         match self {
             Family::V1_50 => (1, 50),
+            Family::V1_53 => (1, 53),
         }
     }
 
@@ -244,6 +249,7 @@ impl Family {
     pub fn name(self) -> &'static str {
         match self {
             Family::V1_50 => "v1_50",
+            Family::V1_53 => "v1_53",
         }
     }
 
@@ -347,7 +353,10 @@ static BY_NAME: &[(&str, Row)] = &[
     ("tokio::runtime::scheduler::Handle", All(elided_node)),
     (
         "tokio::runtime::time::entry::TimerEntry",
-        Versioned(&[(Family::V1_50, timer_entry_node)]),
+        Versioned(&[
+            (Family::V1_50, tokio_v1_50::timer_entry_node),
+            (Family::V1_53, tokio_v1_53::timer_entry_node),
+        ]),
     ),
     (
         "tokio::sync::batch_semaphore::Semaphore",
@@ -375,7 +384,10 @@ static BY_NAME: &[(&str, Row)] = &[
     ("tokio::time::instant::Instant", All(instant_alias_node)),
     (
         "tokio::time::sleep::Sleep",
-        Versioned(&[(Family::V1_50, sleep_node)]),
+        Versioned(&[
+            (Family::V1_50, tokio_v1_50::sleep_node),
+            (Family::V1_53, tokio_v1_53::sleep_node),
+        ]),
     ),
     (
         "tokio::util::cacheline::CachePadded",
@@ -1317,10 +1329,13 @@ mod tests {
         assert_eq!(Family::select(None), newest);
         assert_eq!(Family::select(Some(&v("1.50.0"))), Family::V1_50);
         assert_eq!(Family::select(Some(&v("1.52.4"))), Family::V1_50);
+        assert_eq!(Family::select(Some(&v("1.53.0"))), Family::V1_53);
+        assert_eq!(Family::select(Some(&v("1.53.1"))), Family::V1_53);
         assert_eq!(Family::select(Some(&v("1.99.0"))), newest);
         assert_eq!(Family::select(Some(&v("1.49.9"))), Family::ALL[0]);
         assert_eq!(Family::describe(Some(&v("1.50.0"))), "v1_50 (tokio 1.50.0)");
-        assert_eq!(Family::describe(None), "v1_50 (version unrecovered)");
+        assert_eq!(Family::describe(Some(&v("1.53.1"))), "v1_53 (tokio 1.53.1)");
+        assert_eq!(Family::describe(None), "v1_53 (version unrecovered)");
     }
 
     /// Run one detector directly. Every detector takes an `Emitter` whether or
