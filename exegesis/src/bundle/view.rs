@@ -1,9 +1,8 @@
 //! Read-only structural view over a loaded [`Bundle`].
 //!
-//! [`BundleType`] is a `Copy` handle borrowing from the loaded bundle; the
-//! `reify::DebugType` implementation over it lives in `reify`. Everything
-//! here is backend-side structure plus the variant decoding that makes
-//! `active_variant` a direct decode with no heuristics.
+//! [`BundleType`] is a `Copy` handle borrowing from the loaded bundle.
+//! Everything here is backend-side structure plus the variant decoding that
+//! makes `active_variant` a direct decode with no heuristics.
 
 use crate::bundle::schema::{
     Bundle, BundleTypeId, MemberDef, Provenance, SymbolLookup, TaskEntryId, TaskFutureEntry,
@@ -19,6 +18,66 @@ pub const POINTER_SIZE: u64 = 8;
 
 /// Placeholder name for types the debug info leaves anonymous.
 const ANON: &str = "<anon>";
+
+/// A type's coarse kind, collapsing every [`TypeDef`] spelling onto the
+/// handful of shapes a consumer distinguishes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TypeKind {
+    Integer,
+    Float,
+    Pointer,
+    Array,
+    Struct,
+    Union,
+    Enum,
+    /// Typedef, const, volatile, restrict, forward, unknown, etc.
+    Other,
+}
+
+impl fmt::Display for TypeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let desc = match self {
+            Self::Integer => "integer",
+            Self::Float => "float",
+            Self::Pointer => "pointer",
+            Self::Array => "array",
+            Self::Struct => "struct",
+            Self::Union => "union",
+            Self::Enum => "enum",
+            Self::Other => "other",
+        };
+        f.write_str(desc)
+    }
+}
+
+/// A type's kind with the detail that displaying a value of it needs.
+/// Consumers match on this rather than on [`TypeDef`].
+pub enum TypeClass<'a> {
+    /// An integer type with encoding info for display.
+    Integer {
+        size: u64,
+        is_signed: bool,
+        is_bool: bool,
+        is_char: bool,
+    },
+    /// A floating point type.
+    Float { size: u64 },
+    /// A pointer. `target` is the pointee type.
+    Pointer { target: BundleType<'a> },
+    /// A fixed-size array.
+    Array { element: BundleType<'a>, count: u64 },
+    /// A plain struct — display its fields.
+    Struct,
+    /// A plain union — hex dump.
+    Union,
+    /// A Rust discriminated enum — use [`BundleType::active_variant`] for
+    /// display.
+    RustEnum,
+    /// A C-style enum (named integer constants).
+    CEnum,
+    /// Opaque / unknown — hex dump.
+    Opaque,
+}
 
 /// A read-only view over a loaded [`Bundle`].
 #[derive(Copy, Clone)]
@@ -262,6 +321,67 @@ impl<'a> BundleType<'a> {
             TypeDef::Array { elem, count } => self.at(*elem).size() * count,
             TypeDef::Opaque { size, .. } => size.unwrap_or(0),
         }
+    }
+
+    /// The type's coarse kind — the shape a consumer switches on before it
+    /// needs the detail [`classify`](BundleType::classify) carries.
+    pub fn kind(&self) -> TypeKind {
+        match self.def() {
+            TypeDef::Base { encoding, .. } => match encoding {
+                Encoding::Float => TypeKind::Float,
+                _ => TypeKind::Integer,
+            },
+            TypeDef::Pointer { .. } => TypeKind::Pointer,
+            TypeDef::Array { .. } => TypeKind::Array,
+            TypeDef::Struct { .. } => TypeKind::Struct,
+            TypeDef::Union { .. } => TypeKind::Union,
+            TypeDef::Enum { .. } | TypeDef::CEnum { .. } => TypeKind::Enum,
+            TypeDef::Opaque { .. } => TypeKind::Other,
+        }
+    }
+
+    /// The type's kind together with everything displaying a value of it
+    /// needs: an integer's signedness, a pointer's target, an array's element
+    /// and count.
+    pub fn classify(&self) -> TypeClass<'a> {
+        match self.def() {
+            TypeDef::Base { size, encoding, .. } => match encoding {
+                Encoding::Float => TypeClass::Float { size: *size },
+                _ => TypeClass::Integer {
+                    size: *size,
+                    is_signed: matches!(encoding, Encoding::Signed | Encoding::SignedChar),
+                    is_bool: matches!(encoding, Encoding::Boolean),
+                    is_char: matches!(
+                        encoding,
+                        Encoding::SignedChar | Encoding::UnsignedChar | Encoding::UtfChar
+                    ),
+                },
+            },
+            TypeDef::Pointer { .. } => TypeClass::Pointer {
+                target: self.pointer_target().expect("pointer has a target"),
+            },
+            TypeDef::Array { .. } => {
+                let (element, count) = self.array_info().expect("array has element info");
+                TypeClass::Array { element, count }
+            }
+            TypeDef::Struct { .. } => TypeClass::Struct,
+            TypeDef::Union { .. } => TypeClass::Union,
+            TypeDef::Enum { .. } => TypeClass::RustEnum,
+            TypeDef::CEnum { .. } => TypeClass::CEnum,
+            TypeDef::Opaque { .. } => TypeClass::Opaque,
+        }
+    }
+
+    /// Whether this type's display program renders it as a self-contained
+    /// value that must not be unwrapped into its representation (a `Str`, a
+    /// `Slice`, a `Map`, …). A transparent `Alias` program (an atomic, a
+    /// newtype wrapper) is *not* a leaf — it renders as an inner member — so
+    /// a consumer peeling wrappers keeps descending through it.
+    pub fn is_display_leaf(&self) -> bool {
+        matches!(
+            self.debug_format(),
+            Some(node) if !matches!(node, crate::bundle::DisplayNode::Alias { .. })
+        )
     }
 
     /// The base-type encoding, if this is a base type.

@@ -3,9 +3,10 @@
 //! renderer. Owns the pretty-vs-inline layout, cycle guarding, and degradation
 //! markers for every node kind.
 
-use crate::debug_type::DebugType;
 use crate::debug_type::{Arm, DisplayNode, Field, Place, Stmt, ValueExpr};
 use crate::value::TypeInfoRef;
+
+use exegesis::bundle::BundleType;
 
 use std::borrow::Cow;
 use std::fmt;
@@ -25,13 +26,13 @@ use super::{RenderCtx, write_display_value, write_indent, write_seq_close, write
 /// value's buffer and target address; a node's offsets are relative to them.
 /// `pretty` requests multi-line layout. All pretty-vs-inline, cycle-guard, and
 /// degradation-string handling lives here, written once.
-pub(crate) fn eval_node<'a, T: DebugType<'a>>(
+pub(crate) fn eval_node<'a>(
     f: &mut fmt::Formatter<'_>,
-    node: &DisplayNode<T>,
-    ty: &T,
+    node: &DisplayNode<'a>,
+    ty: &BundleType<'a>,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     match node {
@@ -135,7 +136,6 @@ pub(crate) fn eval_node<'a, T: DebugType<'a>>(
                         ty: *target,
                         addr: child_addr,
                         bytes: child_bytes.as_ref(),
-                        _marker: std::marker::PhantomData,
                     };
                     write_display_value(f, &child, child_ctx, pretty)
                 }
@@ -258,12 +258,12 @@ fn u128_from_le(bytes: &[u8]) -> u128 {
 /// check it selects the variant the path descended into. A live read that
 /// finds another variant degrades to `<inactive variant>` — the datum is not
 /// there, not unreadable.
-fn check_place_guards<'a, T: DebugType<'a>>(
+fn check_place_guards<'a>(
     place: &Place,
     segment: usize,
     base: Option<u64>,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> std::result::Result<(), &'static str> {
     for guard in place.guards.iter().filter(|g| g.segment == segment) {
         let raw = match base {
@@ -291,11 +291,11 @@ fn check_place_guards<'a, T: DebugType<'a>>(
 /// `hops` is the common case: a borrowed local slice, no process read. On
 /// failure the `Err` carries the exact degradation marker to print in the
 /// value's place.
-fn read_place_bytes<'b, 'a, T: DebugType<'a>>(
+fn read_place_bytes<'b, 'a>(
     place: &Place,
     bytes: &'b [u8],
     addr: u64,
-    ctx: RenderCtx<'b, 'a, T>,
+    ctx: RenderCtx<'b, 'a>,
     size: u64,
 ) -> std::result::Result<(u64, Cow<'b, [u8]>), &'static str> {
     check_place_guards(place, 0, None, bytes, ctx)?;
@@ -332,12 +332,12 @@ fn read_place_bytes<'b, 'a, T: DebugType<'a>>(
 
 /// Evaluate a resolved [`ValueExpr`] against `bytes`, crossing pointer hops via
 /// `ctx.proc`. `Err` carries a degradation marker for a failed read.
-fn eval_expr<'a, T: DebugType<'a>>(
+fn eval_expr<'a>(
     expr: &ValueExpr,
     vars: &[u64],
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
 ) -> std::result::Result<u64, &'static str> {
     Ok(match expr {
         ValueExpr::Const(value) => *value,
@@ -403,15 +403,15 @@ fn write_seq_marker(f: &mut fmt::Formatter<'_>, marker: &str, any: bool) -> fmt:
 /// nodes. This is the general escape hatch a windowed/paged walk (the mpsc block
 /// chain) uses in place of a bespoke leaf.
 #[allow(clippy::too_many_arguments)]
-fn eval_custom_list<'a, T: DebugType<'a>>(
+fn eval_custom_list<'a>(
     f: &mut fmt::Formatter<'_>,
     vars_init: &[ValueExpr],
     condition: &ValueExpr,
     body: &[Stmt],
-    element: &T,
+    element: &BundleType<'a>,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     // Seeds read the value alone (no variables exist yet); a failed seed read
@@ -450,14 +450,14 @@ fn eval_custom_list<'a, T: DebugType<'a>>(
 /// mutating `vars`, emitting elements, and returning whether the loop continues.
 /// A read that degrades writes its marker inline and stops the loop.
 #[allow(clippy::too_many_arguments)]
-fn eval_stmts<'a, T: DebugType<'a>>(
+fn eval_stmts<'a>(
     f: &mut fmt::Formatter<'_>,
     stmts: &[Stmt],
     vars: &mut Vec<u64>,
-    element: &T,
+    element: &BundleType<'a>,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
     any: &mut bool,
 ) -> std::result::Result<Flow, fmt::Error> {
@@ -528,7 +528,6 @@ fn eval_stmts<'a, T: DebugType<'a>>(
                     ty: *element,
                     addr: target,
                     bytes: &element_bytes,
-                    _marker: std::marker::PhantomData,
                 };
                 write_display_value(f, &child, ctx.deeper(), pretty)?;
                 if pretty {
@@ -545,15 +544,15 @@ fn eval_stmts<'a, T: DebugType<'a>>(
 /// same no-silent-state contract the scalar decoder follows). Only the selected
 /// arm is evaluated, so an unseen watch receiver never reads its value.
 #[allow(clippy::too_many_arguments)]
-fn eval_variant<'a, T: DebugType<'a>>(
+fn eval_variant<'a>(
     f: &mut fmt::Formatter<'_>,
     discriminant: &ValueExpr,
-    arms: &[Arm<T>],
-    default: Option<&DisplayNode<T>>,
-    ty: &T,
+    arms: &[Arm<'a>],
+    default: Option<&DisplayNode<'a>>,
+    ty: &BundleType<'a>,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     let value = match eval_expr(discriminant, &[], bytes, addr, ctx) {
@@ -587,14 +586,14 @@ fn eval_variant<'a, T: DebugType<'a>>(
 /// either a real member shown structurally or a label whose value is a nested
 /// node.
 #[allow(clippy::too_many_arguments)]
-fn eval_struct<'a, T: DebugType<'a>>(
+fn eval_struct<'a>(
     f: &mut fmt::Formatter<'_>,
-    fields: &[Field<T>],
-    ty: &T,
+    fields: &[Field<'a>],
+    ty: &BundleType<'a>,
     name: Option<&str>,
     bytes: &[u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a, T>,
+    ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
     // A `Pointer` re-roots the record at its target but titles it with the
@@ -627,7 +626,6 @@ fn eval_struct<'a, T: DebugType<'a>>(
                             ty: *mem_ty,
                             addr: addr + offset,
                             bytes: mem_bytes,
-                            _marker: std::marker::PhantomData,
                         };
                         write_display_value(f, &child, ctx.deeper(), pretty)?
                     }

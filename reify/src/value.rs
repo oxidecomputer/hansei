@@ -2,36 +2,32 @@
 //! [`TypeInfoRef`] borrows them. Both navigate a value's structure -- members,
 //! pointees, array elements, enum variants -- without rendering anything.
 
-use crate::debug_type::{DebugMember, DebugType, TypeKind};
+use crate::debug_type::{TypeKind, bundle_variant_error};
 use crate::parse::{ParseCtx, ParseWithDbgInfo};
 use crate::target::ReadFromProc;
 use crate::{Error, Result};
 
+use exegesis::bundle::{BundleType, VariantError};
+
 use std::fmt;
 
 #[derive(Clone)]
-pub struct TypeInfo<'a, T: DebugType<'a>> {
-    pub ty: T,
+pub struct TypeInfo<'a> {
+    pub ty: BundleType<'a>,
     pub addr: u64,
     pub buf: Box<[u8]>,
-    _marker: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfo<'a, T> {
+impl<'buf, 'a: 'buf> TypeInfo<'a> {
     /// Read the type directly at the address provided.
-    pub fn from_addr<Ctx: ParseCtx>(ctx: &Ctx, ty: T, addr: u64) -> Result<Self> {
+    pub fn from_addr<Ctx: ParseCtx>(ctx: &Ctx, ty: BundleType<'a>, addr: u64) -> Result<Self> {
         let vec = ctx.proc().read_bytes(addr, ty.size())?;
         let buf = vec.into_owned().into_boxed_slice();
 
-        Ok(Self {
-            ty,
-            addr,
-            buf,
-            _marker: std::marker::PhantomData,
-        })
+        Ok(Self { ty, addr, buf })
     }
 
-    pub fn as_ref(&'buf self) -> TypeInfoRef<'buf, 'a, T> {
+    pub fn as_ref(&'buf self) -> TypeInfoRef<'buf, 'a> {
         self.into()
     }
 
@@ -45,60 +41,59 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfo<'a, T> {
         Ok(())
     }
 
-    pub fn try_member(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a, T>>> {
+    pub fn try_member(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a>>> {
         self.as_ref().try_member(name)
     }
 
-    pub fn member(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'a, T>> {
+    pub fn member(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'a>> {
         self.as_ref().member(name)
     }
 
-    pub fn try_deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a, T>>> {
+    pub fn try_deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a>>> {
         self.as_ref().try_deref_ptr(ctx)
     }
 
-    pub fn deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<TypeInfo<'a, T>> {
+    pub fn deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<TypeInfo<'a>> {
         self.as_ref().deref_ptr(ctx)
     }
 
-    pub fn try_select_variant(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a, T>>> {
+    pub fn try_select_variant(&'buf self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a>>> {
         self.as_ref().try_select_variant(name)
     }
 
-    pub fn select_variant(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'a, T>> {
+    pub fn select_variant(&'buf self, name: &str) -> Result<TypeInfoRef<'buf, 'a>> {
         self.as_ref().select_variant(name)
     }
 
-    pub fn array_elements(&'buf self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a, T>>> {
+    pub fn array_elements(&'buf self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a>>> {
         array_elements(self.ty, self.addr, &self.buf)
     }
 
     pub fn parse<V, Ctx>(&self, ctx: &Ctx) -> Result<V>
     where
-        V: ParseWithDbgInfo<'a, T, Ctx>,
+        V: ParseWithDbgInfo<'a, Ctx>,
         Ctx: ParseCtx,
     {
         self.as_ref().parse(ctx)
     }
 }
 
-impl<'buf, 'a: 'buf, T: DebugType<'a>> From<TypeInfoRef<'buf, 'a, T>> for TypeInfo<'a, T> {
+impl<'buf, 'a: 'buf> From<TypeInfoRef<'buf, 'a>> for TypeInfo<'a> {
     #[inline]
     fn from(
         TypeInfoRef {
             ty, addr, bytes, ..
-        }: TypeInfoRef<'buf, 'a, T>,
+        }: TypeInfoRef<'buf, 'a>,
     ) -> Self {
         Self {
             ty,
             addr,
             buf: bytes.to_vec().into_boxed_slice(),
-            _marker: std::marker::PhantomData,
         }
     }
 }
 
-impl<'a, T: DebugType<'a>> fmt::Debug for TypeInfo<'a, T> {
+impl<'a> fmt::Debug for TypeInfo<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TypeInfo")
             .field("ty", &self.ty)
@@ -113,34 +108,28 @@ impl<'a, T: DebugType<'a>> fmt::Debug for TypeInfo<'a, T> {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-pub struct TypeInfoRef<'buf, 'a: 'buf, T: DebugType<'a>> {
-    pub ty: T,
+pub struct TypeInfoRef<'buf, 'a: 'buf> {
+    pub ty: BundleType<'a>,
     pub addr: u64,
     pub bytes: &'buf [u8],
-    pub(crate) _marker: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'buf, 'a: 'buf, T: DebugType<'a> + PartialEq> Eq for TypeInfoRef<'buf, 'a, T> {}
+impl<'buf, 'a: 'buf> Eq for TypeInfoRef<'buf, 'a> {}
 
-impl<'buf, 'a: 'buf, T: DebugType<'a> + PartialEq> PartialEq for TypeInfoRef<'buf, 'a, T> {
+impl<'buf, 'a: 'buf> PartialEq for TypeInfoRef<'buf, 'a> {
     fn eq(&self, other: &Self) -> bool {
         self.ty == other.ty && self.addr == other.addr && self.bytes == other.bytes
     }
 }
 
-impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
+impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
     /// Wrap an already-read buffer. Useful when the bytes come from
     /// somewhere other than a live target (tests, snapshots).
-    pub fn new(ty: T, addr: u64, bytes: &'buf [u8]) -> Self {
-        Self {
-            ty,
-            addr,
-            bytes,
-            _marker: std::marker::PhantomData,
-        }
+    pub fn new(ty: BundleType<'a>, addr: u64, bytes: &'buf [u8]) -> Self {
+        Self { ty, addr, bytes }
     }
 
-    pub fn try_member(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a, T>>> {
+    pub fn try_member(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a>>> {
         let Some(member) = self.ty.member(name) else {
             return Ok(None);
         };
@@ -154,18 +143,10 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
         };
         let addr = self.addr + member.offset();
 
-        Ok(Some(
-            TypeInfoRef {
-                ty,
-                addr,
-                bytes,
-                _marker: std::marker::PhantomData,
-            }
-            .peel(),
-        ))
+        Ok(Some(TypeInfoRef { ty, addr, bytes }.peel()))
     }
 
-    pub fn member(&self, name: &str) -> Result<TypeInfoRef<'buf, 'a, T>> {
+    pub fn member(&self, name: &str) -> Result<TypeInfoRef<'buf, 'a>> {
         let Some(member) = self.try_member(name)? else {
             return Err(Error::no_member(
                 self.ty.name().to_string(),
@@ -176,7 +157,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
         Ok(member)
     }
 
-    pub fn try_deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a, T>>> {
+    pub fn try_deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a>>> {
         let proc = ctx.proc();
 
         let peeled = self.clone().peel();
@@ -204,7 +185,6 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             ty: target_ty,
             addr,
             bytes: &buf,
-            _marker: std::marker::PhantomData,
         }
         .peel();
 
@@ -212,11 +192,10 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
             ty: unwrapped.ty,
             addr,
             buf,
-            _marker: std::marker::PhantomData,
         }))
     }
 
-    pub fn deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<TypeInfo<'a, T>> {
+    pub fn deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<TypeInfo<'a>> {
         match self.try_deref_ptr(ctx) {
             Ok(Some(i)) => Ok(i),
             Ok(None) => Err(Error::invalid_addr(self.addr)),
@@ -228,11 +207,17 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
         self.ty.active_variant(self.bytes).is_some()
     }
 
-    pub fn try_select_variant(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a, T>>> {
+    pub fn try_select_variant(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a>>> {
         let Some(result) = self.ty.check_variant(self.bytes, name) else {
             return Err(Error::not_an_enum(self.ty.name().to_string()));
         };
-        let Some((var_ty, offset)) = result? else {
+        let Some((var_ty, offset)) = result.map_err(|e| match e {
+            VariantError::NoSuchVariant => {
+                Error::no_enumerator(self.ty.name().to_string(), name.to_string())
+            }
+            other => bundle_variant_error(&self.ty, other),
+        })?
+        else {
             return Ok(None);
         };
 
@@ -249,13 +234,12 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
                 ty: var_ty,
                 addr,
                 bytes,
-                _marker: std::marker::PhantomData,
             }
             .peel(),
         ))
     }
 
-    pub fn select_variant(&self, name: &str) -> Result<TypeInfoRef<'buf, 'a, T>> {
+    pub fn select_variant(&self, name: &str) -> Result<TypeInfoRef<'buf, 'a>> {
         let Some(info) = self.try_select_variant(name)? else {
             return Err(Error::unexpected_variant(name.to_string()));
         };
@@ -263,16 +247,16 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
         Ok(info)
     }
 
-    pub fn parse<V: ParseWithDbgInfo<'a, T, Ctx>, Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<V> {
+    pub fn parse<V: ParseWithDbgInfo<'a, Ctx>, Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<V> {
         V::parse_with_dbg(ctx, self).map_err(|e| Error::parse_type(self.ty.name()).with_source(e))
     }
 
-    pub fn to_owned(&self) -> TypeInfo<'a, T> {
+    pub fn to_owned(&self) -> TypeInfo<'a> {
         self.clone().into()
     }
 
     /// Get an iterator of `TypeInfoRef`s over the elements of an array.
-    pub fn array_elements(&self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a, T>>> {
+    pub fn array_elements(&self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a>>> {
         array_elements(self.ty, self.addr, self.bytes)
     }
 
@@ -280,7 +264,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
     /// provided closure.
     pub fn boxed_slice_elements<V, Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<Vec<V>>
     where
-        F: FnMut(&TypeInfoRef<'_, 'a, T>) -> Result<V>,
+        F: FnMut(&TypeInfoRef<'_, 'a>) -> Result<V>,
         Ctx: ParseCtx,
     {
         let proc = ctx.proc();
@@ -307,7 +291,6 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
                 ty: param_ty,
                 addr: p + (i as u64) * elem_size,
                 bytes: chunk,
-                _marker: std::marker::PhantomData,
             }
             .peel();
             let item = f(&item_info)?;
@@ -317,27 +300,27 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
         Ok(out)
     }
 
-    pub fn active_variant(&'buf self) -> Result<(&'a str, TypeInfoRef<'buf, 'a, T>)> {
-        let (name, var_ty, offset) = self
+    pub fn active_variant(&'buf self) -> Result<(&'a str, TypeInfoRef<'buf, 'a>)> {
+        let active = self
             .ty
             .active_variant(self.bytes)
-            .ok_or_else(|| Error::not_an_enum(self.ty.name().to_string()))??;
+            .ok_or_else(|| Error::not_an_enum(self.ty.name().to_string()))?
+            .map_err(|e| bundle_variant_error(&self.ty, e))?;
 
-        let start = offset as usize;
-        let end = start + var_ty.size() as usize;
+        let start = active.offset as usize;
+        let end = start + active.ty.size() as usize;
         let Some(bytes) = self.bytes.get(start..end) else {
             let len = self.bytes.len() as u16;
             return Err(Error::invalid_member_range(start as u16, end as u16, len));
         };
-        let addr = self.addr + offset;
+        let addr = self.addr + active.offset;
 
         Ok((
-            name,
+            active.name,
             TypeInfoRef {
-                ty: var_ty,
+                ty: active.ty,
                 addr,
                 bytes,
-                _marker: std::marker::PhantomData,
             }
             .peel(),
         ))
@@ -351,7 +334,7 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
     /// Peeling stops early at a member the buffer cannot cover, returning the
     /// outermost type whose bytes are intact rather than descending past the
     /// end of the value.
-    pub fn peel(self) -> TypeInfoRef<'buf, 'a, T> {
+    pub fn peel(self) -> TypeInfoRef<'buf, 'a> {
         let mut info = self;
 
         loop {
@@ -402,19 +385,18 @@ impl<'buf, 'a: 'buf, T: DebugType<'a>> TypeInfoRef<'buf, 'a, T> {
     }
 }
 
-impl<'buf, 'a: 'buf, T: DebugType<'a>> From<&'buf TypeInfo<'a, T>> for TypeInfoRef<'buf, 'a, T> {
+impl<'buf, 'a: 'buf> From<&'buf TypeInfo<'a>> for TypeInfoRef<'buf, 'a> {
     #[inline]
-    fn from(TypeInfo { ty, addr, buf, .. }: &'buf TypeInfo<'a, T>) -> Self {
+    fn from(TypeInfo { ty, addr, buf, .. }: &'buf TypeInfo<'a>) -> Self {
         Self {
             ty: *ty,
             addr: *addr,
             bytes: buf,
-            _marker: std::marker::PhantomData,
         }
     }
 }
 
-impl<'a, T: DebugType<'a>> fmt::Debug for TypeInfoRef<'_, 'a, T> {
+impl<'a> fmt::Debug for TypeInfoRef<'_, 'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TypeInfoRef")
             .field("ty", &self.ty)
@@ -428,11 +410,11 @@ impl<'a, T: DebugType<'a>> fmt::Debug for TypeInfoRef<'_, 'a, T> {
 // Display
 // ---------------------------------------------------------------------------
 
-fn array_elements<'buf, 'a: 'buf, T: DebugType<'a>>(
-    ty: T,
+fn array_elements<'buf, 'a: 'buf>(
+    ty: BundleType<'a>,
     addr: u64,
     bytes: &'buf [u8],
-) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a, T>>> {
+) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a>>> {
     let Some((elem_ty, _count)) = ty.array_info() else {
         return Err(Error::unexpected_type(
             ty.kind(),
@@ -450,7 +432,6 @@ fn array_elements<'buf, 'a: 'buf, T: DebugType<'a>>(
                 ty: elem_ty,
                 addr: addr + (i * elem_size) as u64,
                 bytes: chunk,
-                _marker: std::marker::PhantomData,
             }
             .peel()
         });

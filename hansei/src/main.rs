@@ -490,7 +490,7 @@ pub struct Session<'b> {
     lwps: usize,
     /// The multi_thread scheduler's `Handle`: the scheduler state and
     /// the drivers both hang off it.
-    handle: TypeInfo<'b, BundleType<'b>>,
+    handle: TypeInfo<'b>,
     tasks: bundle::TaskList,
     /// Task extents, the sub-executor census and the wait analysis,
     /// built on first use: a core does not change, so the address→task
@@ -2948,7 +2948,7 @@ fn print_thread_context(
 /// deferred until the current poll returns.
 fn print_worker_state<'b>(
     session: &Session<'_>,
-    worker_ctx: &TypeInfo<'b, BundleType<'b>>,
+    worker_ctx: &TypeInfo<'b>,
     depth: usize,
     ugly: bool,
     out: &mut dyn io::Write,
@@ -3024,10 +3024,10 @@ fn exec_runtime_field(
 /// the text can stream to its destination instead of through a `String`.
 fn render<'r, 'buf, 'b: 'buf>(
     session: &'r Session<'b>,
-    value: &'r TypeInfoRef<'buf, 'b, BundleType<'b>>,
+    value: &'r TypeInfoRef<'buf, 'b>,
     depth: usize,
     ugly: bool,
-) -> reify::DisplayTargetValue<'r, 'buf, 'b, BundleType<'b>, Proc> {
+) -> reify::DisplayTargetValue<'r, 'buf, 'b, Proc> {
     let display = value.display_from_target(session.ctx.proc, depth);
     if ugly { display.ugly() } else { display }
 }
