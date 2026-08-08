@@ -34,3 +34,22 @@ pub fn allow_any_tracer() {
 /// say-so.
 #[cfg(not(target_os = "linux"))]
 pub fn allow_any_tracer() {}
+
+/// The builder every fixture parks a runtime from. `oxide-tokio-rt`
+/// re-exports this same type, so both arms of [`run_builder`] take it.
+pub use tokio::runtime::Builder;
+
+/// With the `unstable` feature (the default recipe, built with
+/// `--cfg tokio_unstable`), the runtime is oxide-tokio-rt's.
+#[cfg(feature = "unstable")]
+pub use oxide_tokio_rt::run_builder;
+
+/// Without it, a plain tokio runtime with the same call shape, so a
+/// fixture's `main` is identical however the cell is built.
+#[cfg(not(feature = "unstable"))]
+pub fn run_builder<T>(builder: &mut Builder, main: impl std::future::Future<Output = T>) -> T {
+    match builder.enable_all().build() {
+        Ok(rt) => rt.block_on(main),
+        Err(e) => panic!("failed to initialize Tokio runtime: {e:?}"),
+    }
+}
