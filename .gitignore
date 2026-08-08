@@ -1,1 +1,4 @@
 /target
+
+# Side-by-side actuals a diverged matrix golden writes for review.
+*.golden.actual
