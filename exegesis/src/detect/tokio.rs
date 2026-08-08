@@ -4,7 +4,7 @@
 //! layout a release has restructured lives in a per-family module
 //! (`tokio_v1_50`) instead.
 
-use super::ReachStep::{FindParam, Named, PeelTo, Resolved};
+use super::ReachStep::{Deref, FindParam, Named, PeelTo, Resolved, Variant};
 use super::crates::{is_raw_mutex, mutex_byte_path};
 use super::std::{is_generic_atomic, unsafe_cell_layout};
 use super::{
@@ -853,6 +853,45 @@ pub(super) fn loom_parking_lot_node(emitter: &mut Emitter<'_>, id: TypeId) -> Op
             .is_some_and(|name| name.starts_with("core::marker::PhantomData"))
     })?;
     transparent(emitter, &st.members, lock)
+}
+
+/// The driver wheel's clock — `elapsed`, ms since the runtime's
+/// `TimeSource` epoch, advanced each time the wheel is processed — reached
+/// from a timer entry's own scheduler handle under `prefix`: driver → the
+/// `MultiThread` variant's `Arc` → the runtime's `driver::Handle` → the
+/// time handle → the `Traditional` driver's mutex-guarded `InnerState`.
+/// `time` is an `Option<time::Handle>` (`None` only for a runtime built
+/// without a time driver) and the mutex spelling varies by feature set, so
+/// the guarded steps and the parameter search do the navigating. Every enum
+/// on the path is crossed with a guarded variant step, so a current-thread
+/// runtime (or an alternative timer) degrades the field to
+/// `<inactive variant>` rather than misreading; the mutex is not taken, the
+/// usual torn-read caveat for a live target.
+///
+/// This path has held across every supported tokio version, which is why it
+/// lives here rather than in a timer family module.
+pub(super) fn wheel_elapsed<'a>(prefix: &Reach<'a>) -> Reach<'a> {
+    let mut path = prefix.clone();
+    path.extend(reach![
+        Named("driver"),
+        Variant("MultiThread"),
+        Named("__0"),
+        Named("ptr"),
+        Named("pointer"),
+        Deref,
+        Named("data"),
+        Named("driver"),
+        Named("time"),
+        Variant("Some"),
+        Named("__0"),
+        Named("inner"),
+        Variant("Traditional"),
+        Named("state"),
+        FindParam,
+        Named("wheel"),
+        Named("elapsed"),
+    ]);
+    path
 }
 
 impl Emitter<'_> {
