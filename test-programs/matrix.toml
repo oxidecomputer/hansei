@@ -1,0 +1,41 @@
+# The fixture version matrix: which tokio and toolchain versions the
+# extraction and walk contracts are held against. This file is the
+# supported-versions statement — tooling enumerates cells from it, and
+# the polling job diffs new releases against it.
+#
+# tokio lists the floor plus the latest patch of every minor above it
+# (patch releases essentially never move internal layouts; a new patch
+# bumps its minor's pin in place). Toolchain patches are listed
+# individually, since a point release can change codegen and DWARF
+# output; retirement keeps at most two patches per supported minor.
+# The floors advance deliberately, tracking what deployed targets
+# actually run; retiring an entry deletes its lockfile, cells, and
+# goldens in the same change that edits this file.
+#
+# The primary cell is what test-programs/Cargo.lock resolves, built on
+# the primary toolchain — the default regen.sh build, the existing
+# golden tests, and the everyday dev loop. Every other tokio version
+# has a lockfile under locks/tokio-<ver>.lock, derived from the primary
+# lock with `cargo update -p tokio --precise <ver>` so only tokio and
+# its dependents move.
+
+primary = { tokio = "1.50.0", toolchain = "1.97.0" }
+
+[tokio]
+floor = "1.50.0"
+versions = ["1.50.0", "1.51.4", "1.52.4", "1.53.1"]
+
+[toolchain]
+floor = "1.97.0"
+versions = ["1.97.0", "1.97.1"]
+
+# Which cells the trim policy actually builds, so "the matrix" is
+# enumerable by tooling rather than implied by prose. The tokio axis is
+# exercised in full on the primary toolchain with tokio_unstable on;
+# the secondary axes (no-unstable, non-primary toolchains) cover only
+# the named tokio versions — the cfg's and the toolchain's layout
+# impact are both far less volatile than tokio's version-to-version
+# drift.
+[cells]
+no_unstable_tokio = ["floor", "primary", "latest"]
+secondary_toolchain_tokio = ["floor", "primary", "latest"]

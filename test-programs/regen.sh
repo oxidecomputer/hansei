@@ -6,22 +6,61 @@
 #   - pinned toolchain (v0 mangling, stable std internals)
 #   - RUSTFLAGS="--cfg tokio_unstable" (oxide-tokio-rt; feeds -Cmetadata)
 #   - release profile with full debug info for the whole graph
-#   - the workspace Cargo.lock
+#   - the crate's own checked-in Cargo.lock
 #
 # No binaries are checked in: tests that need a fixture run this script
 # (or skip with a message when the toolchain is unavailable). Fixtures
 # land in test-programs/fixtures/bin; on macOS a .dSYM is produced next
 # to each binary and the extraction tests read the DWARF from there.
 #
-# Usage: regen.sh [PROGRAM]...   (default: all)
+# Usage: regen.sh [OPTION]... [PROGRAM]...   (default: all programs)
+#
+#   --tokio VER      build against locks/tokio-VER.lock (or the crate's
+#                    own Cargo.lock when that is what it resolves)
+#   --toolchain VER  build with the named toolchain instead of the pin
+#   --no-unstable    drop --cfg tokio_unstable and the oxide-tokio-rt
+#                    runtime (--no-default-features)
+#   --no-debug-info  build without debug info — the shape of a binary a
+#                    production core comes from. A bundle can never be
+#                    extracted from such a build; pair it with a full
+#                    debug build of the same cell, which is what
+#                    capture-snapshots.sh does for its core target.
+#
+# The tokio/toolchain/unstable axes come from matrix.toml. A build with
+# any non-primary axis value is a matrix *cell*: it is compiled from a
+# scratch copy of this crate under fixtures/cells/ (so it can carry its
+# own lockfile without touching the checked-in one, and so concurrent
+# primary builds see nothing), and its binaries land in a per-cell
+# directory, fixtures/bin/rust-TOOLCHAIN-tokio-VER-{unstable,stable}.
+# Cells sharing a (toolchain, unstable) pair share one target dir; the
+# lockfile difference re-resolves only tokio and its dependents.
 
 set -euo pipefail
 
-TOOLCHAIN=1.97.0
+PRIMARY_TOOLCHAIN=1.97.0
 ALL_PROGRAMS=(futurelock simple-await nested-await dyn-future select-combinator many-tasks sleep-join channels park-target core-target unordered joinset)
 
 cd "$(dirname "$0")"
 FIXTURES="$PWD/fixtures"
+
+TOOLCHAIN="$PRIMARY_TOOLCHAIN"
+TOKIO=""
+UNSTABLE=1
+DEBUG_INFO=1
+PROGRAMS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --tokio) TOKIO="$2"; shift 2 ;;
+        --toolchain) TOOLCHAIN="$2"; shift 2 ;;
+        --no-unstable) UNSTABLE=0; shift ;;
+        --no-debug-info) DEBUG_INFO=0; shift ;;
+        --*) echo "regen.sh: unknown option $1" >&2; exit 2 ;;
+        *) PROGRAMS+=("$1"); shift ;;
+    esac
+done
+if [[ ${#PROGRAMS[@]} -eq 0 ]]; then
+    PROGRAMS=("${ALL_PROGRAMS[@]}")
+fi
 
 if ! command -v rustup >/dev/null; then
     echo "regen.sh: rustup not found; cannot build pinned fixtures" >&2
@@ -33,26 +72,76 @@ if ! rustup toolchain list | grep -q "^$TOOLCHAIN"; then
     exit 2
 fi
 
-PROGRAMS=("${@:-${ALL_PROGRAMS[@]}}")
+# The version the checked-in Cargo.lock resolves — the primary cell.
+locked_tokio() {
+    awk '/^name = "tokio"$/ { getline; gsub(/[^0-9.]/, "", $3); print $3 }' \
+        Cargo.lock
+}
 
-# Overridable so capture-snapshots.sh can produce two *separate*
-# compilations of the same sources (the two-binary constraint, §11.3).
-BIN_DIR="${REGEN_BIN_DIR:-$FIXTURES/bin}"
-TARGET_DIR="${REGEN_TARGET_DIR:-$FIXTURES/target}"
+# Decide whether this is the primary build or a matrix cell, and where
+# its sources, lockfile, and binaries live.
+CRATE_DIR="$PWD"
+if [[ -n "$TOKIO" && "$TOKIO" != "$(locked_tokio)" ]]; then
+    LOCK="locks/tokio-$TOKIO.lock"
+    if [[ ! -f "$LOCK" ]]; then
+        echo "regen.sh: no $LOCK; add the version to matrix.toml and" \
+             "derive its lockfile from Cargo.lock with" \
+             "\`cargo update -p tokio --precise $TOKIO\`" >&2
+        exit 2
+    fi
+else
+    LOCK="Cargo.lock"
+    TOKIO="$(locked_tokio)"
+fi
+
+if [[ "$UNSTABLE" == 1 ]]; then
+    CFG_SUFFIX=unstable
+else
+    CFG_SUFFIX=stable
+fi
+CELL="rust-$TOOLCHAIN-tokio-$TOKIO-$CFG_SUFFIX"
+
+if [[ "$LOCK" == "Cargo.lock" && "$TOOLCHAIN" == "$PRIMARY_TOOLCHAIN" \
+      && "$UNSTABLE" == 1 ]]; then
+    # The primary build: in place, with the everyday dirs, exactly the
+    # recipe the golden tests and the dev loop have always used.
+    BIN_DIR="${REGEN_BIN_DIR:-$FIXTURES/bin}"
+    TARGET_DIR="${REGEN_TARGET_DIR:-$FIXTURES/target}"
+else
+    # A matrix cell: compile from a scratch copy carrying the cell's
+    # lockfile. One copy and one target dir per (toolchain, unstable)
+    # pair — switching tokio versions inside a pair swaps only the
+    # lockfile, so the pair's std/dep cache is shared.
+    PAIR="rust-$TOOLCHAIN-$CFG_SUFFIX"
+    CRATE_DIR="$FIXTURES/cells/$PAIR/crate"
+    mkdir -p "$CRATE_DIR"
+    rsync -a --delete Cargo.toml src "$CRATE_DIR/"
+    cp -f "$LOCK" "$CRATE_DIR/Cargo.lock"
+    BIN_DIR="${REGEN_BIN_DIR:-$FIXTURES/bin/$CELL}"
+    TARGET_DIR="${REGEN_TARGET_DIR:-$FIXTURES/cells/$PAIR/target}"
+fi
 
 # Full debug info for every crate in the graph, not just test-programs:
 # tokio's own CUs carry the statics (CONTEXT, WAKER_VTABLE) the extractor
 # needs. A dedicated target dir keeps this profile from thrashing the
-# regular build cache.
-export RUSTFLAGS="--cfg tokio_unstable"
-export CARGO_PROFILE_RELEASE_DEBUG=2
+# regular build cache. (--no-debug-info drops all of it instead; see
+# above.)
+if [[ "$UNSTABLE" == 1 ]]; then
+    export RUSTFLAGS="--cfg tokio_unstable"
+    FEATURES=()
+else
+    export RUSTFLAGS=""
+    FEATURES=(--no-default-features)
+fi
+export CARGO_PROFILE_RELEASE_DEBUG=$((DEBUG_INFO ? 2 : 0))
 export CARGO_TARGET_DIR="$TARGET_DIR"
 
 bins=()
 for p in "${PROGRAMS[@]}"; do
     bins+=(--bin "$p")
 done
-cargo "+$TOOLCHAIN" build --release -p test-programs "${bins[@]}"
+(cd "$CRATE_DIR" && \
+    cargo "+$TOOLCHAIN" build --locked --release "${FEATURES[@]}" "${bins[@]}")
 
 mkdir -p "$BIN_DIR"
 
@@ -73,7 +162,7 @@ trap 'rm -rf "$BIN_DIR"/*.tmp$$ "$BIN_DIR"/*.dSYM.tmp$$' EXIT
 
 for p in "${PROGRAMS[@]}"; do
     install "$TARGET_DIR/release/$p" "$BIN_DIR/$p"
-    if [[ "$(uname)" == "Darwin" ]]; then
+    if [[ "$(uname)" == "Darwin" && "$DEBUG_INFO" == 1 ]]; then
         # Mach-O executables don't carry DWARF; link it into a dSYM. The
         # bundle is built aside and its one file of interest — the linked
         # DWARF the tests read — renamed in, since replacing a whole
