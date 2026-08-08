@@ -6,14 +6,29 @@
 //! fixture program, on whatever system is running the tests.
 //!
 //! Everything here runs against freshly built two-binary fixture pairs:
-//! `test-programs/regen.sh` compiles the fixture programs twice with the
-//! pinned recipe into separate target dirs, bundles are extracted from
-//! build B, and the cores under inspection come from build A. Joining
-//! B's layouts against A's memory by mangled symbol name is the
-//! two-binary constraint the whole design rests on. Each program is
-//! driven to a deterministic parked steady state by blocking on its
-//! stdout readiness marker — there are no timing sleeps anywhere. Cores
-//! are taken fresh into a tempdir and removed with it.
+//! `test-programs/regen.sh` compiles the fixture programs twice into
+//! separate target dirs, bundles are extracted from build B, and the
+//! cores under inspection come from build A — which carries **no debug
+//! info**, the shape of a production binary a core actually comes
+//! from, so the join is proven against a target whose only
+//! self-description is its symbol table. Joining B's layouts against
+//! A's memory by mangled symbol name is the two-binary constraint the
+//! whole design rests on. Each program is driven to a deterministic
+//! parked steady state by blocking on its stdout readiness marker —
+//! there are no timing sleeps anywhere. Cores are taken fresh into a
+//! tempdir and removed with it.
+//!
+//! By default the pair is the primary matrix cell — the checked-in
+//! lock's tokio on the pinned toolchain, `--cfg tokio_unstable` on.
+//! `HANSEI_CELL=rust-<toolchain>-tokio-<version>-{unstable,stable}`
+//! (the fixture-dir spelling `regen.sh` uses) runs the whole suite
+//! against that cell instead, which is the behavioral half of the
+//! version matrix: the goldens hold semantic facts — states decode,
+//! chains reach their known leaves, counts match what the fixture
+//! spawned — that no bundle-only check can prove. What a cell cannot
+//! record adapts ([`spawned`]: a no-unstable build has no spawn
+//! locations), and what varies per cell is masked ([`normalize`]:
+//! tokio's own source lines move between versions).
 //!
 //! Nothing here is specific to *either* of the two systems it runs on.
 //! `gcore(1)` takes a core of a running process under the same spelling
@@ -61,6 +76,86 @@ fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
 }
 
+/// The matrix cell the suite is running against.
+struct Cell {
+    /// The fixture-dir name, `None` for the primary cell.
+    name: Option<String>,
+    /// `--tokio`/`--toolchain`/`--no-unstable` for `regen.sh`; empty
+    /// for the primary cell, whose defaults are exactly that recipe.
+    flags: Vec<String>,
+    /// Whether the cell builds with `--cfg tokio_unstable`.
+    unstable: bool,
+    /// The (toolchain, cfg) pair key: cells of one pair share target
+    /// dirs, so switching tokio versions re-resolves only tokio.
+    pair: String,
+}
+
+fn cell() -> &'static Cell {
+    static CELL: OnceLock<Cell> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let Ok(name) = std::env::var("HANSEI_CELL") else {
+            return Cell {
+                name: None,
+                flags: Vec::new(),
+                unstable: true,
+                pair: String::new(),
+            };
+        };
+        let parse = || {
+            let rest = name.strip_prefix("rust-")?;
+            let (toolchain, rest) = rest.split_once("-tokio-")?;
+            let (tokio, cfg) = rest.rsplit_once('-')?;
+            let unstable = match cfg {
+                "unstable" => true,
+                "stable" => false,
+                _ => return None,
+            };
+            Some((toolchain.to_owned(), tokio.to_owned(), unstable))
+        };
+        let Some((toolchain, tokio, unstable)) = parse() else {
+            panic!(
+                "HANSEI_CELL={name} is not rust-<toolchain>-tokio-<version>-{{unstable,stable}}"
+            );
+        };
+        let mut flags = vec![
+            "--tokio".to_owned(),
+            tokio,
+            "--toolchain".to_owned(),
+            toolchain.clone(),
+        ];
+        if !unstable {
+            flags.push("--no-unstable".to_owned());
+        }
+        let cfg = if unstable { "unstable" } else { "stable" };
+        Cell {
+            pair: format!("rust-{toolchain}-{cfg}"),
+            name: Some(name),
+            flags,
+            unstable,
+        }
+    })
+}
+
+/// The `Spawned at` value a listing reports: the recorded location
+/// under tokio_unstable instrumentation, the `-` gap marker without.
+fn spawned(loc: &str) -> String {
+    if cell().unstable {
+        loc.to_owned()
+    } else {
+        "-".to_owned()
+    }
+}
+
+/// The trace header's `Spawned at` line — present, with its trailing
+/// newline, only when the target records spawn locations at all.
+fn spawned_at(loc: &str) -> String {
+    if cell().unstable {
+        format!("Spawned at: {loc}\n")
+    } else {
+        String::new()
+    }
+}
+
 struct Fixtures {
     /// Build A: the binaries that run (and are cored).
     bin_a: PathBuf,
@@ -83,29 +178,56 @@ impl Fixtures {
 fn fixtures() -> &'static Fixtures {
     static FIXTURES: OnceLock<Fixtures> = OnceLock::new();
     FIXTURES.get_or_init(|| {
+        let cell = cell();
         let test_programs = workspace_root().join("test-programs");
         let fixture_dir = test_programs.join("fixtures");
-        for (bin, target) in [("bin-a", "target-a"), ("bin-b", "target-b")] {
-            let status = Command::new(test_programs.join("regen.sh"))
+        // The primary cell keeps the classic dirs (the same ones
+        // capture-snapshots.sh uses); a matrix cell gets its own bin
+        // and bundle dirs, with target dirs shared per (toolchain,
+        // cfg) pair the way regen.sh shares its cell target dirs.
+        let (base, targets) = match &cell.name {
+            None => (fixture_dir.clone(), fixture_dir.clone()),
+            Some(name) => (
+                fixture_dir.join("accept").join(name),
+                fixture_dir.join("accept-target"),
+            ),
+        };
+        let target_name = |flavor: &str| {
+            if cell.pair.is_empty() {
+                format!("target-{flavor}")
+            } else {
+                format!("{}-{flavor}", cell.pair)
+            }
+        };
+        // Build A runs and is cored, so it is built the way a
+        // production binary is — no debug info; build B carries the
+        // full debug info the extractor reads.
+        for (bin, flavor, debug_info) in [("bin-a", "a", false), ("bin-b", "b", true)] {
+            let mut command = Command::new(test_programs.join("regen.sh"));
+            if !debug_info {
+                command.arg("--no-debug-info");
+            }
+            let status = command
+                .args(&cell.flags)
                 .args(PROGRAMS)
-                .env("REGEN_BIN_DIR", fixture_dir.join(bin))
-                .env("REGEN_TARGET_DIR", fixture_dir.join(target))
+                .env("REGEN_BIN_DIR", base.join(bin))
+                .env("REGEN_TARGET_DIR", targets.join(target_name(flavor)))
                 .status()
                 .expect("failed to run regen.sh");
             assert!(
                 status.success(),
-                "regen.sh failed; is the pinned toolchain installed?"
+                "regen.sh failed; is the cell's toolchain installed?"
             );
         }
 
-        let bundles = fixture_dir.join("integration");
+        let bundles = base.join("integration");
         fs::create_dir_all(&bundles).expect("failed to create the bundle dir");
         for program in PROGRAMS {
             let opts = ExtractOptions {
                 extract_args: format!("acceptance-suite extraction of {program}"),
                 ..Default::default()
             };
-            let (bundle, _stats) = extract_file(&fixture_dir.join("bin-b").join(program), &opts)
+            let (bundle, _stats) = extract_file(&base.join("bin-b").join(program), &opts)
                 .unwrap_or_else(|e| panic!("extraction of {program} failed: {e}"));
             bundle
                 .save(&bundles.join(format!("{program}.bundle")))
@@ -113,7 +235,7 @@ fn fixtures() -> &'static Fixtures {
         }
 
         Fixtures {
-            bin_a: fixture_dir.join("bin-a"),
+            bin_a: base.join("bin-a"),
             bundles,
         }
     })
@@ -391,12 +513,22 @@ fn trace_opts(bundle: &Path, core: &Path, task_id: &str, verbose: bool, ugly: bo
 /// (illumos) and as an absolute point on the monotonic clock where they
 /// do not (a Linux core). Both spellings are pinned deterministically by
 /// `hansei-types`' `test_timer_deadline_spellings`.
+///
+/// An await site inside tokio's own sources is masked down to its file
+/// (`tokio/src/sync/mutex.rs:LINE`): the version in the path and the
+/// line number are the cell's tokio, not hansei's output, and one
+/// golden serves every cell. The fixture's own `src/bin/…` sites stay
+/// exact — those the golden owns.
 fn normalize(trace: &str) -> String {
     let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
     let deadlines =
         regex::Regex::new(r"deadline -?\d+\.\d{3}s( on the target's monotonic clock)?").unwrap();
+    let tokio_sites = regex::Regex::new(r"tokio-\d+\.\d+\.\d+(/[^ :]+):\d+").unwrap();
     let masked = addrs.replace_all(trace, "0xADDR");
-    deadlines.replace_all(&masked, "deadline TS").into_owned()
+    let masked = deadlines.replace_all(&masked, "deadline TS");
+    tokio_sites
+        .replace_all(&masked, "tokio$1:LINE")
+        .into_owned()
 }
 
 fn assert_locals(verbose_trace: &str, names: &[&str]) {
@@ -425,14 +557,13 @@ fn test_simple_await_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, "src/bin/simple-await.rs:67:21");
+        assert_eq!(task.spawned, spawned("src/bin/simple-await.rs:67:21"));
         assert_eq!(task.defined, "src/bin/simple-await.rs:16");
 
         let expected = format!(
             "\
 Task {id}: simple_await::work::{{async_fn_env#0}} (idle)
-Spawned at: src/bin/simple-await.rs:67:21
-Defined at: src/bin/simple-await.rs:16
+{spawned}Defined at: src/bin/simple-await.rs:16
 
   0  async fn      simple_await::work::{{async_fn_env#0}}
      suspends:
@@ -440,7 +571,8 @@ Defined at: src/bin/simple-await.rs:16
      ▸ Suspend1  src/bin/simple-await.rs:34  10 locals
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
-            id = task.id
+            id = task.id,
+            spawned = spawned_at("src/bin/simple-await.rs:67:21")
         );
         assert_eq!(trace(&bundle, core, &task.id, false), expected);
 
@@ -587,14 +719,13 @@ fn test_nested_await_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "nested_await::outer::{async_fn_env#0}");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, "src/bin/nested-await.rs:32:21");
+        assert_eq!(task.spawned, spawned("src/bin/nested-await.rs:32:21"));
         assert_eq!(task.defined, "src/bin/nested-await.rs:16");
 
         let expected = format!(
             "\
 Task {id}: nested_await::outer::{{async_fn_env#0}} (idle)
-Spawned at: src/bin/nested-await.rs:32:21
-Defined at: src/bin/nested-await.rs:16
+{spawned}Defined at: src/bin/nested-await.rs:16
 
   0  async fn      nested_await::outer::{{async_fn_env#0}}
      suspends:
@@ -607,7 +738,8 @@ Defined at: src/bin/nested-await.rs:16
                ▸ Suspend0  src/bin/nested-await.rs:8
                  └─* 3  future        tokio::sync::oneshot::Receiver<u32>
 ",
-            id = task.id
+            id = task.id,
+            spawned = spawned_at("src/bin/nested-await.rs:32:21")
         );
         assert_eq!(trace(&bundle, core, &task.id, false), expected);
     });
@@ -626,13 +758,12 @@ fn test_dyn_future_acceptance() {
 
         let driver = task_with_future(&rows, "dyn_future::driver::{async_fn_env#0}");
         assert_eq!(driver.state, "idle");
-        assert_eq!(driver.spawned, "src/bin/dyn-future.rs:46:21");
+        assert_eq!(driver.spawned, spawned("src/bin/dyn-future.rs:46:21"));
         assert_eq!(driver.defined, "src/bin/dyn-future.rs:22");
         let expected = format!(
             "\
 Task {id}: dyn_future::driver::{{async_fn_env#0}} (idle)
-Spawned at: src/bin/dyn-future.rs:46:21
-Defined at: src/bin/dyn-future.rs:22
+{spawned}Defined at: src/bin/dyn-future.rs:22
 
   0  async fn      dyn_future::driver::{{async_fn_env#0}}
      suspends:
@@ -643,26 +774,27 @@ Defined at: src/bin/dyn-future.rs:22
             └─* 2  future        tokio::sync::oneshot::Receiver<u32>
        Suspend1  src/bin/dyn-future.rs:30  2 locals  tokio::task::join_set::{{impl#1}}::join_next::{{async_fn_env#0}}<u32>
 ",
-            id = driver.id
+            id = driver.id,
+            spawned = spawned_at("src/bin/dyn-future.rs:46:21")
         );
         assert_eq!(trace(&bundle, core, &driver.id, false), expected);
 
         let member = task_with_future(&rows, "dyn_future::set_member::{async_fn_env#0}");
         assert_eq!(member.state, "idle");
-        assert_eq!(member.spawned, "src/bin/dyn-future.rs:26:9");
+        assert_eq!(member.spawned, spawned("src/bin/dyn-future.rs:26:9"));
         assert_eq!(member.defined, "src/bin/dyn-future.rs:14");
         let expected = format!(
             "\
 Task {id}: dyn_future::set_member::{{async_fn_env#0}} (idle)
-Spawned at: src/bin/dyn-future.rs:26:9
-Defined at: src/bin/dyn-future.rs:14
+{spawned}Defined at: src/bin/dyn-future.rs:14
 
   0  async fn      dyn_future::set_member::{{async_fn_env#0}}
      suspends:
      ▸ Suspend0  src/bin/dyn-future.rs:15
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
-            id = member.id
+            id = member.id,
+            spawned = spawned_at("src/bin/dyn-future.rs:26:9")
         );
         assert_eq!(trace(&bundle, core, &member.id, false), expected);
     });
@@ -685,14 +817,13 @@ fn test_futurelock_acceptance() {
             "futurelock::main::{async_block#0}::{async_block_env#0}",
         );
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, "src/bin/futurelock.rs:15:17");
+        assert_eq!(task.spawned, spawned("src/bin/futurelock.rs:15:17"));
         assert_eq!(task.defined, "src/bin/futurelock.rs:15");
 
         let expected = format!(
             "\
 Task {id}: futurelock::main::{{async_block#0}}::{{async_block_env#0}} (idle)
-Spawned at: src/bin/futurelock.rs:15:17
-Defined at: src/bin/futurelock.rs:15
+{spawned}Defined at: src/bin/futurelock.rs:15
 
   0  async block   futurelock::main::{{async_block#0}}::{{async_block_env#0}}
      suspends:
@@ -707,18 +838,19 @@ Defined at: src/bin/futurelock.rs:15
                ▸ Suspend0  src/bin/futurelock.rs:72  2 locals
                  └─  3  async fn      tokio::sync::mutex::{{impl#10}}::lock::{{async_fn_env#0}}<()>
                     suspends:
-                    ▸ Suspend0  tokio-1.50.0/src/sync/mutex.rs:455
+                    ▸ Suspend0  tokio/src/sync/mutex.rs:LINE
                       └─  4  async block   tokio::sync::mutex::{{impl#10}}::lock::{{async_fn#0}}::{{async_block_env#0}}<()>
                          suspends:
-                         ▸ Suspend0  tokio-1.50.0/src/sync/mutex.rs:436
+                         ▸ Suspend0  tokio/src/sync/mutex.rs:LINE
                            └─  5  async fn      tokio::sync::mutex::{{impl#10}}::acquire::{{async_fn_env#0}}<()>
                               suspends:
-                                Suspend0  tokio-1.50.0/src/sync/mutex.rs:656  1 local  tokio::trace::async_trace_leaf::{{async_fn_env#0}}
-                              ▸ Suspend1  tokio-1.50.0/src/sync/mutex.rs:658
+                                Suspend0  tokio/src/sync/mutex.rs:LINE  1 local  tokio::trace::async_trace_leaf::{{async_fn_env#0}}
+                              ▸ Suspend1  tokio/src/sync/mutex.rs:LINE
                                 └─* 6  future        tokio::sync::batch_semaphore::Acquire
                                    waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task {id}
 ",
-            id = task.id
+            id = task.id,
+            spawned = spawned_at("src/bin/futurelock.rs:15:17")
         );
         assert_eq!(normalize(&trace(&bundle, core, &task.id, false)), expected);
 
@@ -758,7 +890,7 @@ fn test_many_tasks_acceptance() {
         for row in &rows {
             assert_eq!(row.state, "idle", "{row:#?}");
             assert_eq!(row.future, "many_tasks::park_task::{async_fn_env#0}");
-            assert_eq!(row.spawned, "src/bin/many-tasks.rs:27:13");
+            assert_eq!(row.spawned, spawned("src/bin/many-tasks.rs:27:13"));
             assert_eq!(row.defined, "src/bin/many-tasks.rs:9");
         }
         let ids: HashSet<&str> = rows.iter().map(|row| row.id.as_str()).collect();
@@ -768,15 +900,15 @@ fn test_many_tasks_acceptance() {
         let expected = format!(
             "\
 Task {id}: many_tasks::park_task::{{async_fn_env#0}} (idle)
-Spawned at: src/bin/many-tasks.rs:27:13
-Defined at: src/bin/many-tasks.rs:9
+{spawned}Defined at: src/bin/many-tasks.rs:9
 
   0  async fn      many_tasks::park_task::{{async_fn_env#0}}
      suspends:
      ▸ Suspend0  src/bin/many-tasks.rs:11
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 ",
-            id = task.id
+            id = task.id,
+            spawned = spawned_at("src/bin/many-tasks.rs:27:13")
         );
         assert_eq!(trace(&bundle, core, &task.id, false), expected);
     });
@@ -800,8 +932,7 @@ fn test_sleep_join_acceptance() {
         let expected = format!(
             "\
 Task {id}: sleep_join::sleeper::{{async_fn_env#0}} (idle)
-Spawned at: src/bin/sleep-join.rs:28:22
-Defined at: src/bin/sleep-join.rs:9
+{spawned}Defined at: src/bin/sleep-join.rs:9
 
   0  async fn      sleep_join::sleeper::{{async_fn_env#0}}
      suspends:
@@ -809,7 +940,8 @@ Defined at: src/bin/sleep-join.rs:9
        └─* 1  future        tokio::time::sleep::Sleep
           waiting on the timer: deadline TS
 ",
-            id = sleeper.id
+            id = sleeper.id,
+            spawned = spawned_at("src/bin/sleep-join.rs:28:22")
         );
         assert_eq!(
             normalize(&trace(&bundle, core, &sleeper.id, false)),
@@ -819,8 +951,7 @@ Defined at: src/bin/sleep-join.rs:9
         let expected = format!(
             "\
 Task {id}: sleep_join::joiner::{{async_fn_env#0}} (idle)
-Spawned at: src/bin/sleep-join.rs:29:23
-Defined at: src/bin/sleep-join.rs:15
+{spawned}Defined at: src/bin/sleep-join.rs:15
 
   0  async fn      sleep_join::joiner::{{async_fn_env#0}}
      suspends:
@@ -829,7 +960,8 @@ Defined at: src/bin/sleep-join.rs:15
           waiting on task {sleeper_id} (JoinHandle)
 ",
             id = joiner.id,
-            sleeper_id = sleeper.id
+            sleeper_id = sleeper.id,
+            spawned = spawned_at("src/bin/sleep-join.rs:29:23")
         );
         assert_eq!(trace(&bundle, core, &joiner.id, false), expected);
     });
