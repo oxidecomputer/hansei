@@ -1451,10 +1451,7 @@ fn test_type_and_find_types() {
         // The state the task is parked in, at the await point rustc
         // recorded for it — the same line the trace prints.
         assert!(out.contains("Suspend1"), "{out}");
-        assert!(
-            out.contains("src/bin/simple-await.rs:34"),
-            "{out}"
-        );
+        assert!(out.contains("src/bin/simple-await.rs:34"), "{out}");
 
         // The locals held across that await — and only those. The
         // arguments rustc also lists here belong to `Unresumed`, whose

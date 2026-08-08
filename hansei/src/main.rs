@@ -4070,16 +4070,13 @@ mod trace_render_tests {
     fn test_verbose_lists_the_active_states_locals_under_its_row() {
         let rendered = trace("simple-await", "simple_await::work::{async_fn_env#0}", true);
         assert!(
-            rendered.contains(
-                "     ▸ Suspend1  src/bin/simple-await.rs:34\n       locals:\n"
-            ),
+            rendered.contains("     ▸ Suspend1  src/bin/simple-await.rs:34\n       locals:\n"),
             "{rendered}"
         );
         // The inactive row keeps its count: every variant shares the
         // enum's storage, so its locals cannot be read at all.
         assert!(
-            rendered
-                .contains("       Suspend0  src/bin/simple-await.rs:32  11 locals  "),
+            rendered.contains("       Suspend0  src/bin/simple-await.rs:32  11 locals  "),
             "{rendered}"
         );
         assert!(rendered.contains("\n         count: 3\n"), "{rendered}");
