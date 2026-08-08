@@ -33,9 +33,9 @@ async fn joiner(
 fn main() {
     test_programs::allow_any_tracer();
 
-    let mut builder = oxide_tokio_rt::Builder::new_multi_thread();
+    let mut builder = test_programs::Builder::new_multi_thread();
     builder.worker_threads(2);
-    oxide_tokio_rt::run_builder(&mut builder, async {
+    test_programs::run_builder(&mut builder, async {
         let (ready_sel_tx, ready_sel_rx) = oneshot::channel();
         let (ready_join_tx, ready_join_rx) = oneshot::channel();
         let (sel_a_tx, sel_a_rx) = oneshot::channel();

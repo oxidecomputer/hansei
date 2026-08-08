@@ -34,9 +34,9 @@ async fn driver(
 fn main() {
     test_programs::allow_any_tracer();
 
-    let mut builder = oxide_tokio_rt::Builder::new_multi_thread();
+    let mut builder = test_programs::Builder::new_multi_thread();
     builder.worker_threads(2);
-    oxide_tokio_rt::run_builder(&mut builder, async {
+    test_programs::run_builder(&mut builder, async {
         let (ready_tx, ready_rx) = oneshot::channel();
         let (park_boxed_tx, park_boxed_rx) = oneshot::channel();
         let (park_set_tx, park_set_rx) = oneshot::channel();

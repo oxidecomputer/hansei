@@ -3,9 +3,16 @@ name = "test-programs"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["unstable"]
+# The bundle-compatible recipe builds with `--cfg tokio_unstable`, which
+# oxide-tokio-rt requires; the no-unstable matrix cells build with
+# `--no-default-features` and a plain `tokio::runtime::Builder` main.
+unstable = ["dep:oxide-tokio-rt"]
+
 [dependencies]
 futures = "0.3.32"
-oxide-tokio-rt = "0.1.2"
+oxide-tokio-rt = { version = "0.1.2", optional = true }
 tokio = { version = ">=1.50", features = [ "full", "test-util" ] }
 
 # For the `prctl` that lets a test harness core a fixture by pid; see
