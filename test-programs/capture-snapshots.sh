@@ -46,10 +46,13 @@ marker() {
     esac
 }
 
-# Two separate compilations, same pinned recipe (regen.sh): build A is
-# the capture target, build B feeds the extractor.
+# Two separate compilations of the same sources (regen.sh): build A is
+# the capture target, build B feeds the extractor. Build A carries no
+# debug info — the shape of a production binary a core actually comes
+# from — so the join is proven against a target whose only self-
+# description is its symbol table, with all DWARF coming from B.
 REGEN_BIN_DIR="$FIXTURES/bin-a" REGEN_TARGET_DIR="$FIXTURES/target-a" \
-    ./regen.sh "${PROGRAMS[@]}"
+    ./regen.sh --no-debug-info "${PROGRAMS[@]}"
 REGEN_BIN_DIR="$FIXTURES/bin-b" REGEN_TARGET_DIR="$FIXTURES/target-b" \
     ./regen.sh "${PROGRAMS[@]}"
 
