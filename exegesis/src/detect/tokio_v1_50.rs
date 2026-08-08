@@ -5,7 +5,8 @@
 //! this, which is why these live apart from the invariant tokio
 //! detectors.
 
-use super::ReachStep::{Deref, FindParam, Named, PeelTo, Variant};
+use super::ReachStep::{Named, PeelTo, Variant};
+use super::tokio::wheel_elapsed;
 use super::{Reach, WORD, reach};
 use crate::TypeId;
 use crate::bundle::{Arm, DisplayNode, Field, ScalarDecode, ValueExpr};
@@ -25,13 +26,8 @@ use crate::extract::Emitter;
 /// remaining wait — computed from two reads of target memory, no host clock
 /// involved, so it means the same thing against a live process and a core.
 ///
-/// The wheel is reached *through the entry's own scheduler handle*: driver →
-/// the `MultiThread` variant's `Arc` → the runtime's `driver::Handle` → the
-/// time handle → the `Traditional` driver's mutex-guarded `InnerState`. Every
-/// enum on that path is crossed with a guarded variant step, so a
-/// current-thread runtime (or an alternative timer) degrades the field to
-/// `<inactive variant>` rather than misreading; the mutex is not taken, the
-/// usual torn-read caveat for a live target.
+/// The wheel is reached through the entry's own scheduler handle
+/// ([`wheel_elapsed`]).
 ///
 /// Every selector is rooted at `root` under `prefix` — empty for the
 /// `TimerEntry` itself, the path down through the `Timer` enum for the
@@ -60,34 +56,8 @@ pub(super) fn timer_fields<'a>(
             ]),
         )?
         .0;
-    // The wheel's clock, as of the driver's last tick. `time` is an
-    // `Option<time::Handle>` (`None` only for a runtime built without a time
-    // driver) and the mutex spelling varies by feature set, so the guarded
-    // steps and the parameter search do the navigating.
-    let now = emitter
-        .walk(
-            root,
-            &under(reach![
-                Named("driver"),
-                Variant("MultiThread"),
-                Named("__0"),
-                Named("ptr"),
-                Named("pointer"),
-                Deref,
-                Named("data"),
-                Named("driver"),
-                Named("time"),
-                Variant("Some"),
-                Named("__0"),
-                Named("inner"),
-                Variant("Traditional"),
-                Named("state"),
-                FindParam,
-                Named("wheel"),
-                Named("elapsed"),
-            ]),
-        )?
-        .0;
+    // The wheel's clock, as of the driver's last tick.
+    let now = emitter.walk(root, &wheel_elapsed(prefix))?.0;
     let registered = emitter.walk(root, &under(reach![Named("registered")]))?.0;
     // The absolute instant, for the states with no computable remaining wait;
     // its own `Instant` alias formatters reduce it to the Timespec inside.
