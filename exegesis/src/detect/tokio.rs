@@ -868,48 +868,45 @@ pub(super) fn loom_parking_lot_node(emitter: &mut Emitter<'_>, id: TypeId) -> Op
 /// `<inactive variant>` rather than misreading; the mutex is not taken, the
 /// usual torn-read caveat for a live target.
 ///
-/// The one respelling along the way is `time::Inner`: tokio 1.49 made it
-/// an enum over the driver flavor (`Traditional` | `Alternative`) when the
-/// alternative timer arrived, where before it is the traditional driver's
-/// struct itself. Ordered alternatives, newest first. Everything else has
-/// held across every supported tokio version, which is why this lives here
-/// rather than in a timer family module.
+/// The one navigation here that is not version-invariant is `time::Inner`:
+/// tokio 1.49 made it an enum over the driver flavor
+/// (`Traditional` | `Alternative`) when the alternative timer arrived,
+/// where before it is the traditional driver's struct itself. Which
+/// spelling holds is version-determined, so the calling family declares it
+/// (`flavored_inner`) rather than this walk probing both — everything else
+/// has held across every supported tokio version, which is why this lives
+/// here rather than in a timer family module.
 pub(super) fn wheel_elapsed(
     emitter: &mut Emitter<'_>,
     root: TypeId,
     prefix: &Reach<'_>,
+    flavored_inner: bool,
 ) -> Option<Selector> {
-    let path = |flavored: bool| {
-        let mut path = prefix.clone();
-        path.extend(reach![
-            Named("driver"),
-            Variant("MultiThread"),
-            Named("__0"),
-            Named("ptr"),
-            Named("pointer"),
-            Deref,
-            Named("data"),
-            Named("driver"),
-            Named("time"),
-            Variant("Some"),
-            Named("__0"),
-            Named("inner"),
-        ]);
-        if flavored {
-            path.push(Variant("Traditional"));
-        }
-        path.extend(reach![
-            Named("state"),
-            FindParam,
-            Named("wheel"),
-            Named("elapsed"),
-        ]);
-        path
-    };
-    [path(true), path(false)]
-        .iter()
-        .find_map(|path| emitter.walk(root, path))
-        .map(|(sel, _)| sel)
+    let mut path = prefix.clone();
+    path.extend(reach![
+        Named("driver"),
+        Variant("MultiThread"),
+        Named("__0"),
+        Named("ptr"),
+        Named("pointer"),
+        Deref,
+        Named("data"),
+        Named("driver"),
+        Named("time"),
+        Variant("Some"),
+        Named("__0"),
+        Named("inner"),
+    ]);
+    if flavored_inner {
+        path.push(Variant("Traditional"));
+    }
+    path.extend(reach![
+        Named("state"),
+        FindParam,
+        Named("wheel"),
+        Named("elapsed"),
+    ]);
+    emitter.walk(root, &path).map(|(sel, _)| sel)
 }
 
 impl Emitter<'_> {
