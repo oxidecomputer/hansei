@@ -262,6 +262,11 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
 
     /// Pass the `TypeInfoRef` of the elements of a boxed slice to the
     /// provided closure.
+    ///
+    /// Each element is handed over as the slice's own element type,
+    /// unpeeled: a recorded walk binding roots at that type, so
+    /// descending a wrapper here would start the walk below its root.
+    /// A caller that wants the peeled view can peel in the closure.
     pub fn boxed_slice_elements<V, Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<Vec<V>>
     where
         F: FnMut(&TypeInfoRef<'_, 'a>) -> Result<V>,
@@ -291,8 +296,7 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
                 ty: param_ty,
                 addr: p + (i as u64) * elem_size,
                 bytes: chunk,
-            }
-            .peel();
+            };
             let item = f(&item_info)?;
             out.push(item);
         }

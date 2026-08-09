@@ -448,14 +448,24 @@ fn decls() -> Vec<WalkDecl> {
             spellings: Row::All(|| vec![reach![Named("spawn_location_offset")]]),
             needs: Some(Capability::TokioUnstable),
         },
-        // `core::panic::Location`, for spawn locations. Pre-rename std
-        // spells the file field `file` — a toolchain difference no tokio
-        // version can select, so it stays an ordered alternative.
+        // `core::panic::Location`, for spawn locations. The file member
+        // varies by toolchain — `filename: NonNull<str>` on current std,
+        // a bare `&str` before that, `file` before the rename — which no
+        // tokio version can select, so it stays ordered alternatives.
+        // Every spelling lands on the fat pointer (`data_ptr` +
+        // `length`), the shape the string reader parses; the Slice
+        // terminal is what rejects a landing that stops on a wrapper.
         decl(
             WalkRole::LocationFile,
             Infra(InfraRoot::Location),
-            Any,
-            || vec![reach![Named("filename")], reach![Named("file")]],
+            Slice,
+            || {
+                vec![
+                    reach![Named("filename"), Named("pointer")],
+                    reach![Named("filename")],
+                    reach![Named("file")],
+                ]
+            },
         ),
         decl(
             WalkRole::LocationLine,

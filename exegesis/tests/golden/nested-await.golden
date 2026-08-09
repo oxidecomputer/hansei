@@ -64,7 +64,7 @@ ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
 ok      Vtable.spawn_location_offset
-ok      Location.file (spelling 1 of 2)
+ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
 ok      Cell.stage
