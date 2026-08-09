@@ -13,7 +13,7 @@ unstable = ["dep:oxide-tokio-rt"]
 [dependencies]
 futures = "0.3.32"
 oxide-tokio-rt = { version = "0.1.2", optional = true }
-tokio = { version = ">=1.50", features = [ "full", "test-util" ] }
+tokio = { version = ">=1.49", features = [ "full", "test-util" ] }
 
 # For the `prctl` that lets a test harness core a fixture by pid; see
 # `allow_any_tracer`.
