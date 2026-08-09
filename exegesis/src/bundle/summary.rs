@@ -9,7 +9,7 @@
 //! primary fixtures, the matrix suite per cell); keeping one renderer is
 //! what keeps their review surfaces the same.
 
-use crate::bundle::schema::{Bundle, StaticRole, TypeDef};
+use crate::bundle::schema::{Bundle, StaticRole, TypeDef, WalkBinding, WalkOutcome, WalkRole};
 
 use std::fmt::Write as _;
 
@@ -196,5 +196,84 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
         writeln!(out, "{label}: {ok}").unwrap();
     }
 
+    // The walk bindings the binder recorded, offsets stripped: which
+    // spelling bound (and under which family), what is absent and why,
+    // what broke. The map's order is `WalkRole`'s declaration order —
+    // the report's order. Two target-dependent facts are left out so one
+    // golden serves every platform: rows rooted at leaf types (whether a
+    // `Sleep` or `Acquire` monomorphization exists in the image is the
+    // linker's call — the same reason the dyn-future list above skips
+    // `futures_util` adapters), and the cell/type counts a binding's
+    // note carries (an ELF build keeps task instantiations the Mach-O
+    // build inlines away). The single-target matrix goldens report both.
+    writeln!(out, "\n[walks]").unwrap();
+    for (role, binding) in &bundle.walks.entries {
+        if crate::detect::walk::leaf_rooted(*role) {
+            continue;
+        }
+        writeln!(out, "{}", walk_entry_line_portable(*role, binding)).unwrap();
+    }
+
     out
+}
+
+/// [`walk_entry_line`] with the target-dependent note segments (counts)
+/// removed; only the family annotation survives.
+fn walk_entry_line_portable(role: WalkRole, binding: &WalkBinding) -> String {
+    let portable = |note: &Option<String>| -> Option<String> {
+        let kept: Vec<&str> = note
+            .as_deref()?
+            .split("; ")
+            .filter(|segment| segment.starts_with("family "))
+            .collect();
+        (!kept.is_empty()).then(|| kept.join("; "))
+    };
+    match &binding.outcome {
+        WalkOutcome::Bound {
+            spelling,
+            spellings,
+            note,
+        } => walk_entry_line(
+            role,
+            &WalkBinding {
+                roots: binding.roots.clone(),
+                steps: binding.steps.clone(),
+                outcome: WalkOutcome::Bound {
+                    spelling: *spelling,
+                    spellings: *spellings,
+                    note: portable(note),
+                },
+            },
+        ),
+        _ => walk_entry_line(role, binding),
+    }
+}
+
+/// One walk binding as the golden summary prints it — also what
+/// `--explain-walk` reports as the recorded verdict.
+pub fn walk_entry_line(role: WalkRole, binding: &WalkBinding) -> String {
+    match &binding.outcome {
+        WalkOutcome::Bound {
+            spelling,
+            spellings,
+            note,
+        } => {
+            let mut extras = Vec::new();
+            if *spellings > 1 {
+                extras.push(format!("spelling {} of {spellings}", spelling + 1));
+            }
+            if let Some(note) = note {
+                extras.push(note.clone());
+            }
+            if extras.is_empty() {
+                format!("ok      {}", role.name())
+            } else {
+                format!("ok      {} ({})", role.name(), extras.join("; "))
+            }
+        }
+        WalkOutcome::Absent { reason } => format!("absent  {} — {reason}", role.name()),
+        WalkOutcome::Broken { errors } => {
+            format!("BROKEN  {} — {}", role.name(), errors.join("; "))
+        }
+    }
 }

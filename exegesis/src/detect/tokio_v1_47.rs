@@ -174,3 +174,18 @@ pub(super) fn sleep_record(
 pub(super) fn sleep_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     sleep_record(emitter, id, &reach![Named("entry")], false)
 }
+
+/// The walk contract's `Sleep.deadline` spelling for this family: `Sleep`'s
+/// `entry` is the `TimerEntry` bare, and the deadline `Instant` it caches
+/// peels through std's newtype chain to the `Timespec` inside. (tokio 1.49
+/// put the entry behind the `Timer` flavor enum; 1.53 moved the deadline
+/// onto the `Sleep` itself.)
+pub(super) fn sleep_deadline_walk() -> Vec<Reach<'static>> {
+    vec![reach![
+        Named("entry"),
+        Named("deadline"),
+        Named("std"),
+        Named("__0"),
+        Named("t"),
+    ]]
+}

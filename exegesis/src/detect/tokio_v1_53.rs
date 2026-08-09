@@ -192,3 +192,16 @@ pub(super) fn sleep_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
         ],
     })
 }
+
+/// The walk contract's `Sleep.deadline` spelling for this family: 1.53
+/// moved the deadline out of the timer entry onto the `Sleep` itself, so
+/// the walk reads it there — always valid, even before the entry exists —
+/// peeled through std's newtype chain to the `Timespec`.
+pub(super) fn sleep_deadline_walk() -> Vec<Reach<'static>> {
+    vec![reach![
+        Named("deadline"),
+        Named("std"),
+        Named("__0"),
+        Named("t"),
+    ]]
+}
