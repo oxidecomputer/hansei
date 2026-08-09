@@ -37,7 +37,7 @@
 
 set -euo pipefail
 
-PRIMARY_TOOLCHAIN=1.97.0
+PRIMARY_TOOLCHAIN=1.97.1
 ALL_PROGRAMS=(futurelock simple-await nested-await dyn-future select-combinator many-tasks sleep-join channels park-target core-target unordered joinset)
 
 cd "$(dirname "$0")"
