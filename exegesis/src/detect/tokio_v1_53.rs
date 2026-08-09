@@ -71,7 +71,7 @@ fn timer_fields<'a>(
         )?
         .0;
     // The wheel's clock, as of the driver's last tick.
-    let now = emitter.walk(root, &wheel_elapsed(prefix))?.0;
+    let now = wheel_elapsed(emitter, root, prefix)?;
 
     let registered_test = || {
         ValueExpr::Ne(

@@ -1,9 +1,9 @@
-//! The timer detectors for the tokio range this tree supports: the
+//! The timer detectors for every supported tokio release before 1.53: the
 //! `TimerEntry` that keeps a `registered` flag and a cached `deadline`
 //! `Instant` beside its lazily-registered `TimerShared`, and the `Sleep`
-//! that wraps one behind the `Timer` enum. tokio 1.53 restructured all of
-//! this, which is why these live apart from the invariant tokio
-//! detectors.
+//! that holds one — behind the `Timer` flavor enum from 1.49 on, bare
+//! before that. tokio 1.53 restructured all of this, which is why these
+//! live apart from the invariant tokio detectors.
 
 use super::ReachStep::{Named, PeelTo, Variant};
 use super::tokio::wheel_elapsed;
@@ -57,7 +57,7 @@ pub(super) fn timer_fields<'a>(
         )?
         .0;
     // The wheel's clock, as of the driver's last tick.
-    let now = emitter.walk(root, &wheel_elapsed(prefix))?.0;
+    let now = wheel_elapsed(emitter, root, prefix)?;
     let registered = emitter.walk(root, &under(reach![Named("registered")]))?.0;
     // The absolute instant, for the states with no computable remaining wait;
     // its own `Instant` alias formatters reduce it to the Timespec inside.
@@ -134,14 +134,17 @@ pub(super) fn timer_entry_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<
     })
 }
 
-/// A `tokio::time::sleep::Sleep` is a `Timer` enum around a `TimerEntry` and
-/// nothing else, so it renders as the same `{ deadline, state }` record with
-/// the wrapper levels flattened away: the selectors are rooted at the `Sleep`
-/// and cross the `Timer`'s `Traditional` variant (guarded — an unstable
-/// alternative-timer build degrades rather than misreads).
+/// A `tokio::time::sleep::Sleep` is a `TimerEntry` and nothing else, so it
+/// renders as the same `{ deadline, state }` record with the wrapper levels
+/// flattened away. From tokio 1.49 the entry sits behind the `Timer` flavor
+/// enum, crossed with a guarded `Traditional` step (an unstable
+/// alternative-timer build degrades rather than misreads); before that
+/// `entry` is the `TimerEntry` itself. Ordered alternatives, newest first.
 pub(super) fn sleep_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let entry = reach![Named("entry"), Variant("Traditional"), Named("__0")];
-    let (deadline, state) = timer_fields(emitter, id, &entry)?;
+    let wrapped = reach![Named("entry"), Variant("Traditional"), Named("__0")];
+    let bare = reach![Named("entry")];
+    let (deadline, state) =
+        timer_fields(emitter, id, &wrapped).or_else(|| timer_fields(emitter, id, &bare))?;
     Some(DisplayNode::Struct {
         fields: vec![
             Field::Synth {
