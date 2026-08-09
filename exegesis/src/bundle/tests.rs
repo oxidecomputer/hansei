@@ -58,6 +58,7 @@ fn tiny_bundle() -> Bundle {
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
         statics: StaticsTable::default(),
+        walks: WalksTable::default(),
         infra: InfraTypes {
             header: ty,
             vtable: ty,
@@ -298,6 +299,7 @@ fn random_bundle(seed: u64) -> Bundle {
         },
         dyn_futures,
         statics,
+        walks: WalksTable::default(),
         infra: InfraTypes {
             header: any_ty(&mut rng),
             vtable: any_ty(&mut rng),
@@ -548,6 +550,7 @@ fn test_validate_accepts_selector_through_deref() {
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
         statics: StaticsTable::default(),
+        walks: WalksTable::default(),
         infra: InfraTypes {
             header: ty,
             vtable: ty,
@@ -649,6 +652,7 @@ fn test_validate_rejects_out_of_range_member() {
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
         statics: StaticsTable::default(),
+        walks: WalksTable::default(),
         infra: InfraTypes {
             header: ty,
             vtable: ty,
@@ -724,6 +728,7 @@ fn test_validate_requires_a_named_member_to_be_unique() {
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
         statics: StaticsTable::default(),
+        walks: WalksTable::default(),
         infra: InfraTypes {
             header: ty,
             vtable: ty,
@@ -751,6 +756,208 @@ fn test_validate_requires_a_named_member_to_be_unique() {
             .expect_err(why);
         assert!(format!("{err}").contains("no unique member"), "{err}");
     }
+}
+
+/// An `ActiveVariant` step never belongs in a display selector: which
+/// variant continues is a runtime fact only the walk's interpreter decodes.
+#[test]
+fn test_validate_rejects_active_variant_in_display_selector() {
+    let mut b = tiny_bundle();
+    b.types.debug_formats.insert(
+        BundleTypeId(0),
+        DisplayNode::Alias {
+            at: Selector(vec![Step::ActiveVariant]),
+            follow_pointers: true,
+        },
+    );
+    let err = b
+        .validate()
+        .expect_err("an active-variant display selector must be rejected");
+    assert!(format!("{err}").contains("only a walk binding"), "{err}");
+}
+
+/// A bundle whose walks table exercises every step kind: `Sleep { entry }`
+/// where `entry` is a two-variant enum, both of whose payloads carry a
+/// `deadline` word — the shape the timer-flavor navigation walks. `broken_b`
+/// drops the second variant's `deadline`, so an `ActiveVariant` crossing
+/// cannot promise the remaining steps on every variant.
+fn walk_bundle(broken_b: bool) -> Bundle {
+    let mut strings = StringInterner::new();
+    let u64n = strings.intern("u64");
+    let an = strings.intern("A");
+    let bn = strings.intern("B");
+    let payloadn = strings.intern("payload");
+    let deadlinen = strings.intern("deadline");
+    let othern = strings.intern("other");
+    let timern = strings.intern("Timer");
+    let sleepn = strings.intern("Sleep");
+    let entryn = strings.intern("entry");
+    let ty = BundleTypeId(0);
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    let variant = |name, ty, value| VariantDef {
+        name,
+        discr_values: Some(DiscrValues(vec![DiscrValue::Value(value)])),
+        payload: member(payloadn, ty, 8),
+        decl: None,
+        await_site: None,
+    };
+    let mut b = Bundle {
+        meta: Meta {
+            format_version: FORMAT_VERSION,
+            ..Default::default()
+        },
+        strings: strings.finish(),
+        types: TypeTable {
+            types: vec![
+                // 0: u64
+                TypeDef::Base {
+                    name: u64n,
+                    size: 8,
+                    encoding: Encoding::Unsigned,
+                },
+                // 1: A's payload { deadline: u64 @0 }
+                TypeDef::Struct {
+                    name: an,
+                    size: 8,
+                    members: vec![member(deadlinen, ty, 0)],
+                },
+                // 2: B's payload { deadline: u64 @0 } (or `other`, broken)
+                TypeDef::Struct {
+                    name: bn,
+                    size: 8,
+                    members: vec![member(if broken_b { othern } else { deadlinen }, ty, 0)],
+                },
+                // 3: Timer, an enum over the two payloads.
+                TypeDef::Enum {
+                    name: timern,
+                    size: 16,
+                    shape: VariantShape {
+                        discr: Some(DiscrDef { offset: 0, ty }),
+                        variants: vec![
+                            variant(an, BundleTypeId(1), 0),
+                            variant(bn, BundleTypeId(2), 1),
+                        ],
+                    },
+                },
+                // 4: Sleep { entry: Timer @0 }
+                TypeDef::Struct {
+                    name: sleepn,
+                    size: 16,
+                    members: vec![member(entryn, BundleTypeId(3), 0)],
+                },
+            ],
+            name_index: vec![],
+            ..Default::default()
+        },
+        tasks: TaskTable::default(),
+        dyn_futures: DynFutureTable::default(),
+        statics: StaticsTable::default(),
+        walks: WalksTable::default(),
+        infra: InfraTypes {
+            header: ty,
+            vtable: ty,
+            trailer: ty,
+            context: ty,
+            scheduler_handle: ty,
+            mt_handle: ty,
+            location: ty,
+            raw_waker_vtable: ty,
+        },
+        provenance: ProvenanceTable::default(),
+    };
+    b.walks.entries.insert(
+        WalkRole::SleepDeadline,
+        WalkBinding {
+            roots: vec![BundleTypeId(4)],
+            steps: vec![
+                Step::Member(MemberRef::Named(entryn)),
+                Step::ActiveVariant,
+                Step::Member(MemberRef::Named(deadlinen)),
+            ],
+            outcome: WalkOutcome::Bound {
+                spelling: 1,
+                spellings: 3,
+                note: None,
+            },
+        },
+    );
+    b
+}
+
+/// A bound walk binding resolves from every recorded root, fanning out over
+/// an `ActiveVariant` crossing — and survives a save/load round-trip.
+#[test]
+fn test_validate_accepts_a_bound_walk_binding() {
+    let b = walk_bundle(false);
+    b.validate().expect("the binding resolves on every variant");
+    assert!(Bundle::read_from(encode(&b).as_slice()).is_ok());
+}
+
+/// An `ActiveVariant` crossing requires *every* variant to satisfy the
+/// remaining steps, since the runtime walker takes whichever is live.
+#[test]
+fn test_validate_requires_every_variant_to_satisfy_walk_steps() {
+    let err = walk_bundle(true)
+        .validate()
+        .expect_err("a variant missing the walked member must be rejected");
+    assert!(format!("{err}").contains("no unique member"), "{err}");
+}
+
+/// Absent and broken walk entries state outcomes, not navigations; a bound
+/// one must record where it was resolved from.
+#[test]
+fn test_validate_constrains_walk_binding_shape() {
+    // An unbound entry carrying steps.
+    let mut b = walk_bundle(false);
+    let binding = b.walks.entries.get_mut(&WalkRole::SleepDeadline).unwrap();
+    binding.roots = Vec::new();
+    binding.outcome = WalkOutcome::Absent {
+        reason: "no Sleep in the bundle".to_owned(),
+    };
+    let err = b.validate().expect_err("an absent entry with steps");
+    assert!(format!("{err}").contains("carries navigation"), "{err}");
+
+    // A bound entry with no roots.
+    let mut b = walk_bundle(false);
+    b.walks
+        .entries
+        .get_mut(&WalkRole::SleepDeadline)
+        .unwrap()
+        .roots = Vec::new();
+    let err = b.validate().expect_err("a bound entry with no roots");
+    assert!(format!("{err}").contains("no roots"), "{err}");
+
+    // A root id past the type table.
+    let mut b = walk_bundle(false);
+    b.walks
+        .entries
+        .get_mut(&WalkRole::SleepDeadline)
+        .unwrap()
+        .roots = vec![BundleTypeId(99)];
+    let err = b.validate().expect_err("an out-of-range root");
+    assert!(format!("{err}").contains("out of range"), "{err}");
+
+    // A bound spelling index past its alternative count.
+    let mut b = walk_bundle(false);
+    b.walks
+        .entries
+        .get_mut(&WalkRole::SleepDeadline)
+        .unwrap()
+        .outcome = WalkOutcome::Bound {
+        spelling: 3,
+        spellings: 3,
+        note: None,
+    };
+    let err = b.validate().expect_err("a spelling index out of range");
+    assert!(format!("{err}").contains("spelling"), "{err}");
+}
+
+/// Role names are the report's row labels; two roles sharing one would make
+/// the report ambiguous.
+#[test]
+fn test_walk_role_names_are_unique() {
+    let names: std::collections::BTreeSet<_> = WalkRole::ALL.iter().map(|r| r.name()).collect();
+    assert_eq!(names.len(), WalkRole::ALL.len());
 }
 
 #[test]

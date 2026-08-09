@@ -40,6 +40,7 @@ pub struct Bundle {
     pub tasks: TaskTable,
     pub dyn_futures: DynFutureTable,
     pub statics: StaticsTable,
+    pub walks: WalksTable,
     pub infra: InfraTypes,
     pub provenance: ProvenanceTable,
 }
@@ -164,6 +165,18 @@ pub enum Step {
     /// name that no variant (or more than one) answers to resolves to
     /// nothing.
     Variant(StrRef),
+    /// Descend into whichever variant of a Rust enum is live at read time.
+    ///
+    /// Which variant holds the storage is a property of the running process,
+    /// not of the layout, so this step cannot lower to a fixed payload offset
+    /// the way [`Step::Variant`] does. It is legal only in a [`WalkBinding`]'s
+    /// steps, where the runtime walker decodes the discriminant and continues
+    /// in the live variant's payload — and where validation requires *every*
+    /// variant to satisfy the remaining steps, since any of them may be the
+    /// one found. Validation rejects it in every display selector, and
+    /// reify's resolution declines a program carrying one (falling back to
+    /// structural display) rather than guessing a variant.
+    ActiveVariant,
 }
 
 impl MemberRef {
@@ -1065,6 +1078,264 @@ pub struct StaticDef {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct StaticsTable {
     pub entries: BTreeMap<StaticRole, StaticDef>,
+}
+
+/// Every datum the runtime walk navigates to by declaration, by role.
+///
+/// One variant per row of the walk contract's table. The names mirror the
+/// contract's own (`Context.current_task_id`, `Sleep.deadline`, …) — see
+/// [`WalkRole::name`] — and the declaration order here is the report's
+/// order.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub enum WalkRole {
+    CurrentTaskId,
+    WorkerHandle,
+    WorkerContext,
+    WorkerIndex,
+    HandleShared,
+    SharedRemotes,
+    RemoteUnpark,
+    ParkerState,
+    ParkerDriverLock,
+    BlockingMetrics,
+    BlockingThreads,
+    BlockingIdle,
+    BlockingQueueDepth,
+    OwnedLists,
+    ShardHead,
+    HeaderState,
+    HeaderOwnerId,
+    HeaderVtable,
+    TrailerNext,
+    VtablePoll,
+    VtableTrailerOffset,
+    VtableIdOffset,
+    VtableDealloc,
+    VtableTryReadOutput,
+    VtableDropJoinHandleSlow,
+    VtableDropAbortHandle,
+    VtableShutdown,
+    VtableSpawnLocationOffset,
+    LocationFile,
+    LocationLine,
+    LocationCol,
+    CellStage,
+    CellStageRunning,
+    CellStageFinished,
+    CellStageConsumed,
+    CellTrailer,
+    CellTaskId,
+    SleepDeadline,
+    DeadlineTvSec,
+    DeadlineTvNsec,
+    JoinHandleRaw,
+    AcquireSemaphore,
+    AcquireNumPermits,
+    AcquireNode,
+    AcquireNeeded,
+    AcquireQueued,
+    SemaphorePermits,
+    SemaphoreQueueHead,
+    WaiterNeeded,
+    WaiterNext,
+    WaiterWaker,
+    WakerData,
+    WakerVtable,
+    SetHeadAll,
+    SetNodeFuture,
+    SetNodeNext,
+    JoinSetLength,
+    JoinSetLists,
+    JoinSetNotifiedHead,
+    JoinSetIdleHead,
+    JoinSetEntryValue,
+    JoinSetEntryNext,
+}
+
+impl WalkRole {
+    /// Every role, in report order (declaration order).
+    pub const ALL: &'static [WalkRole] = &[
+        WalkRole::CurrentTaskId,
+        WalkRole::WorkerHandle,
+        WalkRole::WorkerContext,
+        WalkRole::WorkerIndex,
+        WalkRole::HandleShared,
+        WalkRole::SharedRemotes,
+        WalkRole::RemoteUnpark,
+        WalkRole::ParkerState,
+        WalkRole::ParkerDriverLock,
+        WalkRole::BlockingMetrics,
+        WalkRole::BlockingThreads,
+        WalkRole::BlockingIdle,
+        WalkRole::BlockingQueueDepth,
+        WalkRole::OwnedLists,
+        WalkRole::ShardHead,
+        WalkRole::HeaderState,
+        WalkRole::HeaderOwnerId,
+        WalkRole::HeaderVtable,
+        WalkRole::TrailerNext,
+        WalkRole::VtablePoll,
+        WalkRole::VtableTrailerOffset,
+        WalkRole::VtableIdOffset,
+        WalkRole::VtableDealloc,
+        WalkRole::VtableTryReadOutput,
+        WalkRole::VtableDropJoinHandleSlow,
+        WalkRole::VtableDropAbortHandle,
+        WalkRole::VtableShutdown,
+        WalkRole::VtableSpawnLocationOffset,
+        WalkRole::LocationFile,
+        WalkRole::LocationLine,
+        WalkRole::LocationCol,
+        WalkRole::CellStage,
+        WalkRole::CellStageRunning,
+        WalkRole::CellStageFinished,
+        WalkRole::CellStageConsumed,
+        WalkRole::CellTrailer,
+        WalkRole::CellTaskId,
+        WalkRole::SleepDeadline,
+        WalkRole::DeadlineTvSec,
+        WalkRole::DeadlineTvNsec,
+        WalkRole::JoinHandleRaw,
+        WalkRole::AcquireSemaphore,
+        WalkRole::AcquireNumPermits,
+        WalkRole::AcquireNode,
+        WalkRole::AcquireNeeded,
+        WalkRole::AcquireQueued,
+        WalkRole::SemaphorePermits,
+        WalkRole::SemaphoreQueueHead,
+        WalkRole::WaiterNeeded,
+        WalkRole::WaiterNext,
+        WalkRole::WaiterWaker,
+        WalkRole::WakerData,
+        WalkRole::WakerVtable,
+        WalkRole::SetHeadAll,
+        WalkRole::SetNodeFuture,
+        WalkRole::SetNodeNext,
+        WalkRole::JoinSetLength,
+        WalkRole::JoinSetLists,
+        WalkRole::JoinSetNotifiedHead,
+        WalkRole::JoinSetIdleHead,
+        WalkRole::JoinSetEntryValue,
+        WalkRole::JoinSetEntryNext,
+    ];
+
+    /// The role's name as the walk-contract report spells it. These are
+    /// stable: the matrix `walk.golden`s diff them.
+    pub fn name(self) -> &'static str {
+        match self {
+            WalkRole::CurrentTaskId => "Context.current_task_id",
+            WalkRole::WorkerHandle => "Context.handle",
+            WalkRole::WorkerContext => "Context.scheduler",
+            WalkRole::WorkerIndex => "worker::Context.index",
+            WalkRole::HandleShared => "Handle.shared",
+            WalkRole::SharedRemotes => "Shared.remotes",
+            WalkRole::RemoteUnpark => "Remote.unpark",
+            WalkRole::ParkerState => "parker::Inner.state",
+            WalkRole::ParkerDriverLock => "parker::Inner.driver_lock",
+            WalkRole::BlockingMetrics => "Handle.blocking_metrics",
+            WalkRole::BlockingThreads => "SpawnerMetrics.num_threads",
+            WalkRole::BlockingIdle => "SpawnerMetrics.num_idle_threads",
+            WalkRole::BlockingQueueDepth => "SpawnerMetrics.queue_depth",
+            WalkRole::OwnedLists => "Shared.owned_lists",
+            WalkRole::ShardHead => "Shard.head",
+            WalkRole::HeaderState => "Header.state",
+            WalkRole::HeaderOwnerId => "Header.owner_id",
+            WalkRole::HeaderVtable => "Header.vtable",
+            WalkRole::TrailerNext => "Trailer.owned_next",
+            WalkRole::VtablePoll => "Vtable.poll",
+            WalkRole::VtableTrailerOffset => "Vtable.trailer_offset",
+            WalkRole::VtableIdOffset => "Vtable.id_offset",
+            WalkRole::VtableDealloc => "Vtable.dealloc",
+            WalkRole::VtableTryReadOutput => "Vtable.try_read_output",
+            WalkRole::VtableDropJoinHandleSlow => "Vtable.drop_join_handle_slow",
+            WalkRole::VtableDropAbortHandle => "Vtable.drop_abort_handle",
+            WalkRole::VtableShutdown => "Vtable.shutdown",
+            WalkRole::VtableSpawnLocationOffset => "Vtable.spawn_location_offset",
+            WalkRole::LocationFile => "Location.file",
+            WalkRole::LocationLine => "Location.line",
+            WalkRole::LocationCol => "Location.col",
+            WalkRole::CellStage => "Cell.stage",
+            WalkRole::CellStageRunning => "Cell.stage_running",
+            WalkRole::CellStageFinished => "Cell.stage_finished",
+            WalkRole::CellStageConsumed => "Cell.stage_consumed",
+            WalkRole::CellTrailer => "Cell.trailer",
+            WalkRole::CellTaskId => "Cell.task_id",
+            WalkRole::SleepDeadline => "Sleep.deadline",
+            WalkRole::DeadlineTvSec => "Sleep.deadline.tv_sec",
+            WalkRole::DeadlineTvNsec => "Sleep.deadline.tv_nsec",
+            WalkRole::JoinHandleRaw => "JoinHandle.raw",
+            WalkRole::AcquireSemaphore => "Acquire.semaphore",
+            WalkRole::AcquireNumPermits => "Acquire.num_permits",
+            WalkRole::AcquireNode => "Acquire.node",
+            WalkRole::AcquireNeeded => "Acquire.node.state",
+            WalkRole::AcquireQueued => "Acquire.queued",
+            WalkRole::SemaphorePermits => "Semaphore.permits",
+            WalkRole::SemaphoreQueueHead => "Semaphore.queue_head",
+            WalkRole::WaiterNeeded => "Waiter.state",
+            WalkRole::WaiterNext => "Waiter.next",
+            WalkRole::WaiterWaker => "Waiter.waker",
+            WalkRole::WakerData => "RawWaker.data",
+            WalkRole::WakerVtable => "RawWaker.vtable",
+            WalkRole::SetHeadAll => "FuturesUnordered.head_all",
+            WalkRole::SetNodeFuture => "SetNode.future",
+            WalkRole::SetNodeNext => "SetNode.next_all",
+            WalkRole::JoinSetLength => "JoinSet.length",
+            WalkRole::JoinSetLists => "JoinSet.lists",
+            WalkRole::JoinSetNotifiedHead => "JoinSet.notified_head",
+            WalkRole::JoinSetIdleHead => "JoinSet.idle_head",
+            WalkRole::JoinSetEntryValue => "ListEntry.value",
+            WalkRole::JoinSetEntryNext => "ListEntry.next",
+        }
+    }
+}
+
+/// What binding one walk role against the target's DWARF concluded.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum WalkOutcome {
+    /// The navigation resolved. `spelling` is which declared alternative
+    /// bound (0-based) of `spellings`, for the report — anything but the
+    /// first is a fallback worth noticing in a report diff.
+    Bound {
+        spelling: u32,
+        spellings: u32,
+        /// Extraction-time context for the report: how many root types the
+        /// binding was validated against, opaque cells skipped, and the
+        /// like.
+        note: Option<String>,
+    },
+    /// Nothing to bind, expectedly: a leaf type the target does not use, an
+    /// instrumentation member of a build whose capability the bundle
+    /// records as off.
+    Absent { reason: String },
+    /// No spelling matched the layout — or the roots demanded different
+    /// spellings, which one binding cannot serve. One message per miss.
+    Broken { errors: Vec<String> },
+}
+
+/// One navigation the extraction-time binder resolved against the target's
+/// own DWARF, for the runtime walk to execute.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct WalkBinding {
+    /// The root types the steps were resolved against — every per-type root
+    /// (each task cell, each matching leaf type) for a bound entry, so
+    /// validation can re-resolve the binding without knowing how the role's
+    /// roots are found. Empty unless the outcome is [`WalkOutcome::Bound`].
+    pub roots: Vec<BundleTypeId>,
+    /// The bound navigation, name-addressed — same doctrine as display
+    /// selectors: names, never positions. Empty unless the outcome is
+    /// [`WalkOutcome::Bound`].
+    pub steps: Vec<Step>,
+    pub outcome: WalkOutcome,
+}
+
+/// Navigations whose spellings exegesis bound against this target's DWARF
+/// at extraction, for hansei's runtime walk to execute — the walk-contract
+/// sibling of [`StaticsTable`]: exegesis locates, hansei consumes by role,
+/// never re-searches. One entry per role the binder could say anything
+/// about.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct WalksTable {
+    pub entries: BTreeMap<WalkRole, WalkBinding>,
 }
 
 /// Type-table ids for the non-generic tokio infrastructure types (§5.4).

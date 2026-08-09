@@ -370,9 +370,9 @@ task 5 idle futurelock::main::{async_block#0}::{async_block_env#0}
   await futurelock::main::{async_block#0}::{async_block_env#0} Suspend1 @ src/bin/futurelock.rs:25 locals [lock]
   await futurelock::do_stuff::{async_fn_env#0} Suspend1 @ src/bin/futurelock.rs:64 locals [lock, future1, disabled]
   await futurelock::do_async_thing::{async_fn_env#0} Suspend0 @ src/bin/futurelock.rs:72 locals [label, lock]
-  await tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()> Suspend0 @ tokio-1.50.0/src/sync/mutex.rs:455
-  await tokio::sync::mutex::{impl#10}::lock::{async_fn#0}::{async_block_env#0}<()> Suspend0 @ tokio-1.50.0/src/sync/mutex.rs:436
-  await tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()> Suspend1 @ tokio-1.50.0/src/sync/mutex.rs:658
+  await tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()> Suspend0 @ tokio-1.52.4/src/sync/mutex.rs:455
+  await tokio::sync::mutex::{impl#10}::lock::{async_fn#0}::{async_block_env#0}<()> Suspend0 @ tokio-1.52.4/src/sync/mutex.rs:436
+  await tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()> Suspend1 @ tokio-1.52.4/src/sync/mutex.rs:658
   await tokio::sync::batch_semaphore::Acquire
   end leaf
   waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5

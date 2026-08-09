@@ -149,6 +149,12 @@ fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, Bu
                     }
                 }
             }
+            Step::ActiveVariant => {
+                // Which variant continues is a runtime fact, so the chain
+                // ends here: there is no one type or offset to keep walking.
+                names.push("{<active variant>}".to_owned());
+                return (names.join("."), offset, cur);
+            }
         }
     }
     (names.join("."), offset, cur)

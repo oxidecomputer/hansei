@@ -407,6 +407,10 @@ impl<'a> DisplayNode<'a> {
                         offset = offset.checked_add(variant.1)?;
                         ty = variant.0;
                     }
+                    // Legal only in a bundle's walk bindings, which display
+                    // programs never carry (validation enforces it); decline
+                    // to structural display rather than guess a variant.
+                    Step::ActiveVariant => return None,
                 }
             }
             if before_first_deref {

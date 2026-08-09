@@ -11,7 +11,7 @@ use exegesis::bundle::{
     FieldRender as BundleFieldRender, InfraTypes, MapEntries as BundleMapEntries, MemberDef,
     MemberRef, Meta, Notation, ProvenanceTable, ScalarDecode as BundleScalarDecode, Selector,
     StaticsTable, Step, Stmt as BundleStmt, StrRef, StringInterner, TaskTable, TypeDef, TypeTable,
-    ValueExpr, VariantDef, VariantShape,
+    ValueExpr, VariantDef, VariantShape, WalksTable,
 };
 
 use std::collections::BTreeMap;
@@ -2053,6 +2053,7 @@ pub fn test_bundle() -> Bundle {
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
         statics: StaticsTable::default(),
+        walks: WalksTable::default(),
         infra: InfraTypes {
             header: U32,
             vtable: U32,
@@ -2304,6 +2305,7 @@ pub fn node_bundle() -> Bundle {
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
         statics: StaticsTable::default(),
+        walks: WalksTable::default(),
         infra: InfraTypes {
             header: N_U32,
             vtable: N_U32,

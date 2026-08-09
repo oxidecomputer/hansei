@@ -709,6 +709,9 @@ fn selector_lands(
                 let variant = raw_variant(reader, en, strings.get(*name)?)?;
                 reader.canonicalize(variant.type_id)
             }
+            // Legal only in a walk binding, whose validation fans out over
+            // every variant; a display selector never carries one.
+            Step::ActiveVariant => return None,
         };
     }
     Some(cur)
@@ -1078,6 +1081,8 @@ impl Emitter<'_> {
                     cur = self.reader.canonicalize(variant.type_id);
                     steps.push(Step::Variant(*name));
                 }
+                // A shape walk reports member positions; it never finds one.
+                Step::ActiveVariant => return None,
             }
         }
         Some(Selector(steps))
