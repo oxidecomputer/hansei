@@ -70,8 +70,9 @@ fn timer_fields<'a>(
             ]),
         )?
         .0;
-    // The wheel's clock, as of the driver's last tick.
-    let now = wheel_elapsed(emitter, root, prefix)?;
+    // The wheel's clock, as of the driver's last tick; `time::Inner` has
+    // been flavored since 1.49.
+    let now = wheel_elapsed(emitter, root, prefix, true)?;
 
     let registered_test = || {
         ValueExpr::Ne(

@@ -1,4 +1,4 @@
-family: v1_47 (tokio 1.52.4)
+family: v1_49 (tokio 1.52.4)
 
 &[u32] :: Node Slice { pointer=data_ptr, length=length, element=u32 }
 &str :: Node Str { pointer=data_ptr, length=length }

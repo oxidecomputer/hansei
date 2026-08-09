@@ -1,9 +1,12 @@
-//! The timer detectors for every supported tokio release before 1.53: the
-//! `TimerEntry` that keeps a `registered` flag and a cached `deadline`
-//! `Instant` beside its lazily-registered `TimerShared`, and the `Sleep`
-//! that holds one — behind the `Timer` flavor enum from 1.49 on, bare
-//! before that. tokio 1.53 restructured all of this, which is why these
-//! live apart from the invariant tokio detectors.
+//! The timer detectors for tokio 1.47 and 1.48: the `TimerEntry` that
+//! keeps a `registered` flag and a cached `deadline` `Instant` beside its
+//! lazily-registered `TimerShared`, the `Sleep` whose `entry` is that
+//! `TimerEntry` bare, and the unflavored `time::Inner` behind the wheel
+//! clock. tokio 1.49 kept the entry layout but wrapped `Sleep`'s entry in
+//! the `Timer` flavor enum and flavored `time::Inner` — so the record
+//! builders here are shared with [`super::tokio_v1_49`], which supplies
+//! its own spellings; tokio 1.53 restructured the entry itself, which is
+//! why all of this lives apart from the invariant tokio detectors.
 
 use super::ReachStep::{Named, PeelTo, Variant};
 use super::tokio::wheel_elapsed;
@@ -27,15 +30,17 @@ use crate::extract::Emitter;
 /// involved, so it means the same thing against a live process and a core.
 ///
 /// The wheel is reached through the entry's own scheduler handle
-/// ([`wheel_elapsed`]).
+/// ([`wheel_elapsed`]); `flavored_inner` is the calling family's declaration
+/// of the `time::Inner` spelling along that reach.
 ///
 /// Every selector is rooted at `root` under `prefix` — empty for the
-/// `TimerEntry` itself, the path down through the `Timer` enum for the
-/// `Sleep` that embeds one — so the two formatters share this one builder.
+/// `TimerEntry` itself, the path down to the entry for the `Sleep` that
+/// embeds one — so the two formatters share this one builder.
 pub(super) fn timer_fields<'a>(
     emitter: &mut Emitter<'_>,
     root: TypeId,
     prefix: &Reach<'a>,
+    flavored_inner: bool,
 ) -> Option<(DisplayNode, DisplayNode)> {
     let under = |tail: Reach<'a>| -> Reach<'a> {
         let mut path = prefix.clone();
@@ -57,7 +62,7 @@ pub(super) fn timer_fields<'a>(
         )?
         .0;
     // The wheel's clock, as of the driver's last tick.
-    let now = wheel_elapsed(emitter, root, prefix)?;
+    let now = wheel_elapsed(emitter, root, prefix, flavored_inner)?;
     let registered = emitter.walk(root, &under(reach![Named("registered")]))?.0;
     // The absolute instant, for the states with no computable remaining wait;
     // its own `Instant` alias formatters reduce it to the Timespec inside.
@@ -120,9 +125,13 @@ pub(super) fn timer_fields<'a>(
 /// A `tokio::runtime::time::entry::TimerEntry` renders as `TimerEntry {
 /// deadline: 12.721s, state: registered }` — the real `deadline` member under
 /// its own name with its value computed by [`timer_fields`], and the state
-/// synthesized beside it.
-pub(super) fn timer_entry_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let (deadline, state) = timer_fields(emitter, id, &reach![])?;
+/// synthesized beside it. Shared by the two families whose entry this is.
+pub(super) fn timer_entry_record(
+    emitter: &mut Emitter<'_>,
+    id: TypeId,
+    flavored_inner: bool,
+) -> Option<DisplayNode> {
+    let (deadline, state) = timer_fields(emitter, id, &reach![], flavored_inner)?;
     Some(DisplayNode::Struct {
         fields: vec![
             Field::computed(emitter.member_named(id, "deadline")?, deadline),
@@ -134,17 +143,20 @@ pub(super) fn timer_entry_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<
     })
 }
 
+pub(super) fn timer_entry_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    timer_entry_record(emitter, id, false)
+}
+
 /// A `tokio::time::sleep::Sleep` is a `TimerEntry` and nothing else, so it
 /// renders as the same `{ deadline, state }` record with the wrapper levels
-/// flattened away. From tokio 1.49 the entry sits behind the `Timer` flavor
-/// enum, crossed with a guarded `Traditional` step (an unstable
-/// alternative-timer build degrades rather than misreads); before that
-/// `entry` is the `TimerEntry` itself. Ordered alternatives, newest first.
-pub(super) fn sleep_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let wrapped = reach![Named("entry"), Variant("Traditional"), Named("__0")];
-    let bare = reach![Named("entry")];
-    let (deadline, state) =
-        timer_fields(emitter, id, &wrapped).or_else(|| timer_fields(emitter, id, &bare))?;
+/// flattened away. `entry` is the calling family's path down to the entry.
+pub(super) fn sleep_record(
+    emitter: &mut Emitter<'_>,
+    id: TypeId,
+    entry: &Reach<'_>,
+    flavored_inner: bool,
+) -> Option<DisplayNode> {
+    let (deadline, state) = timer_fields(emitter, id, entry, flavored_inner)?;
     Some(DisplayNode::Struct {
         fields: vec![
             Field::Synth {
@@ -157,4 +169,8 @@ pub(super) fn sleep_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
             },
         ],
     })
+}
+
+pub(super) fn sleep_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    sleep_record(emitter, id, &reach![Named("entry")], false)
 }

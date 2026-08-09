@@ -15,13 +15,14 @@
 //! - [`tokio`]: tokio types whose layout has held across every supported
 //!   tokio version;
 //! - [`tokio_v1_47`]: a family module — only the detectors a tokio
-//!   restructure moved, dispatched per target by the recovered tokio
+//!   release moved, dispatched per target by the recovered tokio
 //!   version (see [`Family`]).
 
 mod crates;
 mod std;
 mod tokio;
 mod tokio_v1_47;
+mod tokio_v1_49;
 mod tokio_v1_53;
 
 use self::crates::{hex_bytes_node, raw_mutex_node, utf8_path_buf_node, utf8_path_node, uuid_node};
@@ -204,11 +205,14 @@ impl FormatExplanation {
 type Detector = fn(&mut Emitter<'_>, TypeId) -> Option<DisplayNode>;
 
 /// A tokio version family: a contiguous range of tokio releases whose
-/// layouts share detector code, named by the floor of the range. Families
-/// exist for divergence too large for a structural alternative to absorb —
-/// a respelled member is an ordered fallback inside one detector, but a
-/// restructure gets a `tokio_v<floor>` module of its own, holding only the
-/// detectors that moved.
+/// layouts share detector code, named by the floor of the range. Any
+/// divergence a release ships in a layout the detectors navigate — a
+/// respelled member, an added wrapper, a full restructure — is a family
+/// boundary: the release gets a `tokio_v<floor>` module holding only the
+/// detectors it moved, never an ordered fallback that would let one
+/// spelling bind on a version it was not written for. Ordered
+/// alternatives remain only for divergence a version cannot select — a
+/// spelling that varies with build features or cfg within one release.
 ///
 /// Selection is by version, once per target: the tokio version recovered
 /// from the target's DWARF (`Meta::tokio_version`) picks the family with
@@ -222,13 +226,17 @@ type Detector = fn(&mut Emitter<'_>, TypeId) -> Option<DisplayNode>;
 /// derived `Ord` both rely on it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Family {
-    /// tokio 1.47 through 1.52: the timer entry keeps a `registered` flag
+    /// tokio 1.47 through 1.48: the timer entry keeps a `registered` flag
     /// and a cached `deadline` instant beside a lazily-registered
-    /// `Option<TimerShared>`. The wrappers 1.49 added inside the range
-    /// (the `Timer` flavor enum around `Sleep`'s entry, the flavored
-    /// `time::Inner`) are ordered alternatives inside its detectors, not
-    /// a family boundary — and anything older than the floor clamps here.
+    /// `Option<TimerShared>`; `Sleep`'s `entry` is that `TimerEntry`
+    /// itself, and the driver's `time::Inner` is the traditional driver's
+    /// struct. Anything older than the floor clamps here.
     V1_47,
+    /// tokio 1.49 through 1.52: the alternative timer arrives. The entry
+    /// layout is still [`Family::V1_47`]'s, but `Sleep`'s `entry` sits
+    /// behind the `Timer` flavor enum and `time::Inner` becomes an enum
+    /// over the driver flavor.
+    V1_49,
     /// tokio 1.53 onward: the timer entry holds its `TimerShared` directly,
     /// registration lives in the state word with the registration tick
     /// cached beside it, and `Sleep` carries the deadline itself.
@@ -237,13 +245,14 @@ pub enum Family {
 
 impl Family {
     /// Every family, oldest floor first.
-    pub const ALL: &'static [Family] = &[Family::V1_47, Family::V1_53];
+    pub const ALL: &'static [Family] = &[Family::V1_47, Family::V1_49, Family::V1_53];
 
     /// The lowest tokio `(major, minor)` the family covers; its range runs
     /// to the next family's floor.
     fn floor(self) -> (u64, u64) {
         match self {
             Family::V1_47 => (1, 47),
+            Family::V1_49 => (1, 49),
             Family::V1_53 => (1, 53),
         }
     }
@@ -252,6 +261,7 @@ impl Family {
     pub fn name(self) -> &'static str {
         match self {
             Family::V1_47 => "v1_47",
+            Family::V1_49 => "v1_49",
             Family::V1_53 => "v1_53",
         }
     }
@@ -358,6 +368,7 @@ static BY_NAME: &[(&str, Row)] = &[
         "tokio::runtime::time::entry::TimerEntry",
         Versioned(&[
             (Family::V1_47, tokio_v1_47::timer_entry_node),
+            (Family::V1_49, tokio_v1_49::timer_entry_node),
             (Family::V1_53, tokio_v1_53::timer_entry_node),
         ]),
     ),
@@ -389,6 +400,7 @@ static BY_NAME: &[(&str, Row)] = &[
         "tokio::time::sleep::Sleep",
         Versioned(&[
             (Family::V1_47, tokio_v1_47::sleep_node),
+            (Family::V1_49, tokio_v1_49::sleep_node),
             (Family::V1_53, tokio_v1_53::sleep_node),
         ]),
     ),
@@ -1331,13 +1343,15 @@ mod tests {
         let newest = *Family::ALL.last().unwrap();
         assert_eq!(Family::select(None), newest);
         assert_eq!(Family::select(Some(&v("1.47.5"))), Family::V1_47);
-        assert_eq!(Family::select(Some(&v("1.50.0"))), Family::V1_47);
-        assert_eq!(Family::select(Some(&v("1.52.4"))), Family::V1_47);
+        assert_eq!(Family::select(Some(&v("1.48.0"))), Family::V1_47);
+        assert_eq!(Family::select(Some(&v("1.49.0"))), Family::V1_49);
+        assert_eq!(Family::select(Some(&v("1.50.0"))), Family::V1_49);
+        assert_eq!(Family::select(Some(&v("1.52.4"))), Family::V1_49);
         assert_eq!(Family::select(Some(&v("1.53.0"))), Family::V1_53);
         assert_eq!(Family::select(Some(&v("1.53.1"))), Family::V1_53);
         assert_eq!(Family::select(Some(&v("1.99.0"))), newest);
         assert_eq!(Family::select(Some(&v("1.46.9"))), Family::ALL[0]);
-        assert_eq!(Family::describe(Some(&v("1.50.0"))), "v1_47 (tokio 1.50.0)");
+        assert_eq!(Family::describe(Some(&v("1.50.0"))), "v1_49 (tokio 1.50.0)");
         assert_eq!(Family::describe(Some(&v("1.53.1"))), "v1_53 (tokio 1.53.1)");
         assert_eq!(Family::describe(None), "v1_53 (version unrecovered)");
     }
