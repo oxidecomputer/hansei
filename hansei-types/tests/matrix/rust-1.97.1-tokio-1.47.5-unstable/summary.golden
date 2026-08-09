@@ -1,0 +1,443 @@
+program: futurelock
+
+[tasks]
+task: futurelock::start_background_task::{async_fn#0}::{async_block_env#0}
+  kind: AsyncBlock
+  decl: futurelock.rs:41
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<futurelock::start_background_task::{async_fn#0}::{async_block_env#0}>
+  variants:
+    Unresumed @ futurelock.rs:41
+    Returned @ futurelock.rs:47
+    Panicked @ futurelock.rs:47
+    Suspend0 @ futurelock.rs:43
+    Suspend1 @ futurelock.rs:45
+task: futurelock::main::{async_block#0}::{async_block_env#0}
+  kind: AsyncBlock
+  decl: futurelock.rs:15
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<futurelock::main::{async_block#0}::{async_block_env#0}>
+  variants:
+    Unresumed @ futurelock.rs:15
+    Returned @ futurelock.rs:26
+    Panicked @ futurelock.rs:26
+    Suspend0 @ futurelock.rs:22
+    Suspend1 @ futurelock.rs:25
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}> (poll)
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<futurelock::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut futurelock::main::{async_block_env#0}> (poll)
+dyn: futurelock::do_async_thing::{async_fn_env#0} (poll, drop_glue)
+dyn: futurelock::do_stuff::{async_fn_env#0} (poll, drop_glue)
+dyn: futurelock::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
+dyn: futurelock::main::{async_block_env#0} (poll, drop_glue)
+dyn: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} (poll, drop_glue)
+dyn: futurelock::start_background_task::{async_fn_env#0} (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+program: simple-await
+
+[tasks]
+task: simple_await::work::{async_fn_env#0}
+  kind: AsyncFn
+  decl: simple-await.rs:16
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<simple_await::work::{async_fn_env#0}>
+  variants:
+    Unresumed @ simple-await.rs:16
+    Returned @ simple-await.rs:46
+    Panicked @ simple-await.rs:46
+    Suspend0 @ simple-await.rs:32
+    Suspend1 @ simple-await.rs:34
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<simple_await::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut simple_await::main::{async_block_env#0}> (poll)
+dyn: simple_await::main::{async_block_env#0} (poll, drop_glue)
+dyn: simple_await::ready_value::{async_fn_env#0} (poll)
+dyn: simple_await::work::{async_fn_env#0} (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+program: nested-await
+
+[tasks]
+task: nested_await::outer::{async_fn_env#0}
+  kind: AsyncFn
+  decl: nested-await.rs:16
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<nested_await::outer::{async_fn_env#0}>
+  variants:
+    Unresumed @ nested-await.rs:16
+    Returned @ nested-await.rs:20
+    Panicked @ nested-await.rs:20
+    Suspend0 @ nested-await.rs:18
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<nested_await::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut nested_await::main::{async_block_env#0}> (poll)
+dyn: nested_await::leaf::{async_fn_env#0} (poll, drop_glue)
+dyn: nested_await::main::{async_block_env#0} (poll, drop_glue)
+dyn: nested_await::middle::{async_fn_env#0} (poll, drop_glue)
+dyn: nested_await::outer::{async_fn_env#0} (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+program: dyn-future
+
+[tasks]
+task: dyn_future::set_member::{async_fn_env#0}
+  kind: AsyncFn
+  decl: dyn-future.rs:14
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<dyn_future::set_member::{async_fn_env#0}>
+  variants:
+    Unresumed @ dyn-future.rs:14
+    Returned @ dyn-future.rs:16
+    Panicked @ dyn-future.rs:16
+    Suspend0 @ dyn-future.rs:15
+task: dyn_future::driver::{async_fn_env#0}
+  kind: AsyncFn
+  decl: dyn-future.rs:22
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<dyn_future::driver::{async_fn_env#0}>
+  variants:
+    Unresumed @ dyn-future.rs:22
+    Returned @ dyn-future.rs:32
+    Panicked @ dyn-future.rs:32
+    Suspend0 @ dyn-future.rs:29
+    Suspend1 @ dyn-future.rs:30
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<dyn_future::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut dyn_future::main::{async_block_env#0}> (poll)
+dyn: dyn_future::boxed_leaf::{async_fn_env#0} (poll, drop_glue)
+dyn: dyn_future::driver::{async_fn_env#0} (poll, drop_glue)
+dyn: dyn_future::main::{async_block_env#0} (poll, drop_glue)
+dyn: dyn_future::set_member::{async_fn_env#0} (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+program: select-combinator
+
+[tasks]
+task: select_combinator::joiner::{async_fn_env#0}
+  kind: AsyncFn
+  decl: select-combinator.rs:27
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<select_combinator::joiner::{async_fn_env#0}>
+  variants:
+    Unresumed @ select-combinator.rs:27
+    Returned @ select-combinator.rs:31
+    Panicked @ select-combinator.rs:31
+    Suspend0 @ join.rs:203 (awaited at select-combinator.rs:29)
+task: select_combinator::selector::{async_fn_env#0}
+  kind: AsyncFn
+  decl: select-combinator.rs:15
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<select_combinator::selector::{async_fn_env#0}>
+  variants:
+    Unresumed @ select-combinator.rs:15
+    Returned @ select-combinator.rs:21
+    Panicked @ select-combinator.rs:21
+    Suspend0 @ select.rs:744 (awaited at select-combinator.rs:17)
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<select_combinator::joiner::{async_fn#0}::{closure_env#0}> (poll)
+dyn: core::future::poll_fn::PollFn<select_combinator::selector::{async_fn#0}::{closure_env#0}> (poll)
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<select_combinator::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut select_combinator::main::{async_block_env#0}> (poll)
+dyn: select_combinator::joiner::{async_fn_env#0} (poll, drop_glue)
+dyn: select_combinator::main::{async_block_env#0} (poll, drop_glue)
+dyn: select_combinator::selector::{async_fn_env#0} (poll, drop_glue)
+dyn: select_combinator::wait::{async_fn_env#0} (poll, drop_glue)
+dyn: tokio::future::maybe_done::MaybeDone<select_combinator::wait::{async_fn_env#0}> (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+program: many-tasks
+
+[tasks]
+task: many_tasks::park_task::{async_fn_env#0}
+  kind: AsyncFn
+  decl: many-tasks.rs:9
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<many_tasks::park_task::{async_fn_env#0}>
+  variants:
+    Unresumed @ many-tasks.rs:9
+    Returned @ many-tasks.rs:12
+    Panicked @ many-tasks.rs:12
+    Suspend0 @ many-tasks.rs:11
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<many_tasks::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut many_tasks::main::{async_block_env#0}> (poll)
+dyn: many_tasks::main::{async_block_env#0} (poll, drop_glue)
+dyn: many_tasks::park_task::{async_fn_env#0} (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+program: sleep-join
+
+[tasks]
+task: sleep_join::joiner::{async_fn_env#0}
+  kind: AsyncFn
+  decl: sleep-join.rs:15
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<sleep_join::joiner::{async_fn_env#0}>
+  variants:
+    Unresumed @ sleep-join.rs:15
+    Returned @ sleep-join.rs:18
+    Panicked @ sleep-join.rs:18
+    Suspend0 @ sleep-join.rs:17
+task: sleep_join::sleeper::{async_fn_env#0}
+  kind: AsyncFn
+  decl: sleep-join.rs:9
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<sleep_join::sleeper::{async_fn_env#0}>
+  variants:
+    Unresumed @ sleep-join.rs:9
+    Returned @ sleep-join.rs:13
+    Panicked @ sleep-join.rs:13
+    Suspend0 @ sleep-join.rs:11
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<sleep_join::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut sleep_join::main::{async_block_env#0}> (poll)
+dyn: sleep_join::joiner::{async_fn_env#0} (poll, drop_glue)
+dyn: sleep_join::main::{async_block_env#0} (poll, drop_glue)
+dyn: sleep_join::sleeper::{async_fn_env#0} (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+program: channels
+
+[tasks]
+task: channels::notify_waiter::{async_fn_env#0}
+  kind: AsyncFn
+  decl: channels.rs:16
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<channels::notify_waiter::{async_fn_env#0}>
+  variants:
+    Unresumed @ channels.rs:16
+    Returned @ channels.rs:22
+    Panicked @ channels.rs:22
+    Suspend0 @ channels.rs:21
+task: channels::hold::{async_fn_env#0}
+  kind: AsyncFn
+  decl: channels.rs:36
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<channels::hold::{async_fn_env#0}>
+  variants:
+    Unresumed @ channels.rs:36
+    Returned @ channels.rs:39
+    Panicked @ channels.rs:39
+    Suspend0 @ channels.rs:38
+
+[dyn-futures]
+dyn: channels::hold::{async_fn_env#0} (poll, drop_glue)
+dyn: channels::main::{async_block_env#0} (poll, drop_glue)
+dyn: channels::notify_waiter::{async_fn_env#0} (poll, drop_glue)
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<channels::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut channels::main::{async_block_env#0}> (poll)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+program: unordered
+
+[tasks]
+task: unordered::driver::{async_fn_env#0}
+  kind: AsyncFn
+  decl: unordered.rs:24
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<unordered::driver::{async_fn_env#0}>
+  variants:
+    Unresumed @ unordered.rs:24
+    Returned @ unordered.rs:38
+    Panicked @ unordered.rs:38
+    Suspend0 @ unordered.rs:34
+    Suspend1 @ unordered.rs:37
+    Suspend2 @ unordered.rs:37
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<unordered::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut unordered::main::{async_block_env#0}> (poll)
+dyn: unordered::driver::{async_fn_env#0} (poll, drop_glue)
+dyn: unordered::main::{async_block_env#0} (poll, drop_glue)
+dyn: unordered::set_member::{async_fn_env#0} (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+program: joinset
+
+[tasks]
+task: joinset::driver::{async_fn_env#0}
+  kind: AsyncFn
+  decl: joinset.rs:22
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<joinset::driver::{async_fn_env#0}>
+  variants:
+    Unresumed @ joinset.rs:22
+    Returned @ joinset.rs:45
+    Panicked @ joinset.rs:45
+    Suspend0 @ joinset.rs:36
+    Suspend1 @ joinset.rs:41
+task: joinset::member::{async_fn_env#0}
+  kind: AsyncFn
+  decl: joinset.rs:16
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<joinset::member::{async_fn_env#0}>
+  variants:
+    Unresumed @ joinset.rs:16
+    Returned @ joinset.rs:20
+    Panicked @ joinset.rs:20
+    Suspend0 @ joinset.rs:17
+    Suspend1 @ joinset.rs:18
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<joinset::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut joinset::main::{async_block_env#0}> (poll)
+dyn: joinset::driver::{async_fn_env#0} (poll, drop_glue)
+dyn: joinset::main::{async_block_env#0} (poll, drop_glue)
+dyn: joinset::member::{async_fn_env#0} (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
