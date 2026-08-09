@@ -25,7 +25,7 @@ use crate::bundle::{
     DynFutureTable, FutureKind, InfraTypes, MemberDef, MemberRef, Meta, Provenance,
     ProvenanceTable, SourceLoc, StaticDef, StaticRole, StaticsTable, StrRef, StringInterner,
     TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
-    WalksTable, strip_build_prefix,
+    strip_build_prefix,
 };
 use crate::detect::{Family, FormatExplanation, struct_of, trace, unique_member};
 use crate::raw_types::{NsId, RawType, VariantShape as RawVariantShape};
@@ -77,6 +77,9 @@ pub struct ExtractOptions {
     /// whose fully-qualified name contains this substring
     /// (`--explain-format`). See [`explain`].
     pub explain_format: Option<String>,
+    /// Report how the walk binder resolved each contract role whose name
+    /// contains this substring (`--explain-walk`).
+    pub explain_walk: Option<String>,
 }
 
 /// Counters describing an extraction run. Anything the extractor skipped,
@@ -89,6 +92,10 @@ pub struct ExtractStats {
     /// `--stats` summary; `exegesis extract --explain-format` renders these
     /// itself, against the bundle the extraction produced.
     pub format_explanations: Vec<FormatExplanation>,
+    /// Walk-binder traces requested with [`ExtractOptions::explain_walk`],
+    /// one per matching role. Like the formatter traces, rendered by the
+    /// CLI rather than by the `Display` form.
+    pub walk_explanations: Vec<crate::detect::walk::WalkExplanation>,
     /// Task-table entries, one per `(T, S)` instantiation.
     pub task_entries: usize,
     /// Mangled symbols keying the task table.
@@ -1113,6 +1120,7 @@ fn extract_from_view_with_vtable_types(
     let mut provenance: Vec<Provenance> = Vec::new();
     let mut by_symbol: BTreeMap<String, TaskEntryId> = BTreeMap::new();
     let mut fingerprint: BTreeSet<String> = BTreeSet::new();
+    let mut walk_cells: Vec<(String, Option<TypeId>)> = Vec::new();
 
     // The fingerprint is resolved against a target's symbol table, so it
     // can only be made of names a symbol table carries. DWARF describes
@@ -1133,6 +1141,7 @@ fn extract_from_view_with_vtable_types(
             Some(c) => em.emit(c),
             None => em.placeholder("<missing: Cell>"),
         };
+        walk_cells.push((display.clone(), task.cell));
         let stage = match task.stage {
             Some(st) => em.emit(st),
             None => em.placeholder("<missing: Stage>"),
@@ -1190,6 +1199,31 @@ fn extract_from_view_with_vtable_types(
         em.emit(id);
     }
 
+    // Bind the walk contract against this target's DWARF. Runs after every
+    // root above is emitted — the binder's leaf scan reads the emitted-type
+    // map, and its recorded roots are bundle ids — and before `em.finish()`,
+    // since it interns the names its steps address. Failure is recorded in
+    // the outcomes, never fatal here.
+    let infra = |key: &str| {
+        infra_ids[infra_paths
+            .iter()
+            .position(|(k, _)| *k == key)
+            .expect("infra_paths names every walk root")]
+    };
+    let walk_roots = crate::detect::walk::WalkRoots {
+        context: infra("context"),
+        header: infra("header"),
+        trailer: infra("trailer"),
+        vtable: infra("vtable"),
+        location: infra("location"),
+        mt_handle: infra("mt_handle"),
+        cells: &walk_cells,
+        tokio_unstable,
+    };
+    let (walks, walk_explanations) =
+        crate::detect::walk::bind_walks(&mut em, &walk_roots, opts.explain_walk.as_deref());
+    stats.walk_explanations = walk_explanations;
+
     // Meta.
     let producer = reader
         .producer
@@ -1238,7 +1272,7 @@ fn extract_from_view_with_vtable_types(
             by_normalized_symbol: dyn_normalized,
         },
         statics: StaticsTable { entries: statics },
-        walks: WalksTable::default(),
+        walks,
         infra: InfraTypes {
             header: infra_bundle_ids[0],
             vtable: infra_bundle_ids[1],
@@ -1755,6 +1789,22 @@ impl<'a> Emitter<'a> {
     /// Intern a string for the bundle's string table.
     pub(crate) fn intern(&mut self, s: &str) -> StrRef {
         self.interner.intern(s)
+    }
+
+    /// The bundle id `id` was emitted under, if it has been emitted.
+    pub(crate) fn bundle_id_of(&self, id: TypeId) -> Option<BundleTypeId> {
+        self.ids.get(&self.reader.canonicalize(id)).copied()
+    }
+
+    /// Every emitted type that carries a fully-qualified name — the walk
+    /// binder's leaf scan, mirroring the runtime scan of the bundle's own
+    /// name index.
+    pub(crate) fn emitted_named(&self) -> impl Iterator<Item = (TypeId, &str)> {
+        self.ids.iter().filter_map(|(&tid, &bid)| {
+            self.names[bid.0 as usize]
+                .as_deref()
+                .map(|name| (tid, name))
+        })
     }
 
     /// How to address `members[index]`: by its name when it has one no sibling

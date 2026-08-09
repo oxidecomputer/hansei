@@ -140,6 +140,28 @@ fn assert_addresses_by_name(program: &str, bundle: &Bundle) {
         positional.len(),
         positional.join("\n"),
     );
+
+    // The same doctrine for walk bindings: a recorded step may address a
+    // member by position only when no name can select it, and no walked
+    // tokio layout has such a member.
+    use exegesis::bundle::{MemberRef, Step};
+    let positional_walks: Vec<&str> = bundle
+        .walks
+        .entries
+        .iter()
+        .filter(|(_, binding)| {
+            binding
+                .steps
+                .iter()
+                .any(|step| matches!(step, Step::Member(MemberRef::Index(_))))
+        })
+        .map(|(role, _)| role.name())
+        .collect();
+    assert!(
+        positional_walks.is_empty(),
+        "{program}: walk binding(s) address a member by position: {}",
+        positional_walks.join(", "),
+    );
 }
 
 /// Assert that the debug format on the type named exactly `type_name` resolves

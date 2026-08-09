@@ -24,6 +24,7 @@ mod tokio;
 mod tokio_v1_47;
 mod tokio_v1_49;
 mod tokio_v1_53;
+pub mod walk;
 
 use self::crates::{hex_bytes_node, raw_mutex_node, utf8_path_buf_node, utf8_path_node, uuid_node};
 use self::std::{
@@ -494,20 +495,29 @@ pub(crate) fn unique_member<'a>(
     matches.next().is_none().then_some(found)
 }
 
+/// Every variant's payload member of a Rust enum, or `None` when the shape
+/// has none to descend into (uninhabited, C-style).
+fn raw_variants(
+    en: &crate::raw_types::RawEnum<crate::StrId>,
+) -> Option<Vec<&crate::raw_types::RawMember<crate::StrId>>> {
+    match &en.shape {
+        RawVariantShape::One(variant) => Some(vec![&variant.member]),
+        RawVariantShape::Many { variants, .. } => Some(
+            variants
+                .iter()
+                .map(|(_, variant)| &variant.member)
+                .collect(),
+        ),
+        RawVariantShape::Zero | RawVariantShape::CStyle { .. } => None,
+    }
+}
+
 fn raw_variant<'a>(
     reader: &DwReader<'_>,
     en: &'a crate::raw_types::RawEnum<crate::StrId>,
     expected: &str,
 ) -> Option<&'a crate::raw_types::RawMember<crate::StrId>> {
-    let variants: Vec<_> = match &en.shape {
-        RawVariantShape::One(variant) => vec![&variant.member],
-        RawVariantShape::Many { variants, .. } => variants
-            .iter()
-            .map(|(_, variant)| &variant.member)
-            .collect(),
-        RawVariantShape::Zero | RawVariantShape::CStyle { .. } => return None,
-    };
-    let mut matches = variants
+    let mut matches = raw_variants(en)?
         .into_iter()
         .filter(|member| member.name.map(|name| reader.strings.get(name)) == Some(expected));
     let found = matches.next()?;
@@ -806,6 +816,15 @@ enum ReachStep<'a> {
     /// a value-expression `Read`, an `Alias` — may carry one (see
     /// [`Step::Variant`]).
     Variant(&'a str),
+    /// Enter whichever variant of a Rust enum is live at read time.
+    ///
+    /// Which variant that is cannot be known here, so the lowering requires
+    /// *every* variant to satisfy the remaining steps — with one spelling,
+    /// since what is recorded is one path — and lowers to
+    /// [`Step::ActiveVariant`] rather than away. Legal only in a walk
+    /// binding's steps; a display selector never carries one (see
+    /// [`Step::ActiveVariant`]).
+    ActiveVariant,
     /// Descend the zero-offset wrapper chain to the one value of this shape.
     ///
     /// tokio reaches an atomic's word through a different chain of loom,
@@ -861,10 +880,22 @@ impl Emitter<'_> {
 
     /// Resolve a pattern path against `root`: the selector it lowers to and
     /// the type it lands on.
+    ///
+    /// A path crossing [`ReachStep::ActiveVariant`] lands on a different
+    /// type per variant; what is returned is the last variant's, and a
+    /// caller that needs every landing re-resolves the lowered steps
+    /// (fanning out as walk-binding validation does).
     fn walk(&mut self, root: TypeId, path: &Reach<'_>) -> Option<(Selector, TypeId)> {
+        self.walk_steps(root, path)
+    }
+
+    /// [`Emitter::walk`] over a borrowed run of steps — what the
+    /// [`ReachStep::ActiveVariant`] arm recurses on, since the remaining
+    /// steps are a slice of the caller's path.
+    fn walk_steps(&mut self, root: TypeId, path: &[ReachStep<'_>]) -> Option<(Selector, TypeId)> {
         let mut steps = Vec::new();
         let mut cur = self.reader.canonicalize(root);
-        for step in path {
+        for (index, step) in path.iter().enumerate() {
             match step {
                 Named(name) => {
                     let members = aggregate_members(self.reader, cur).or_else(|| {
@@ -914,6 +945,13 @@ impl Emitter<'_> {
                     cur = self.reader.canonicalize(variant.type_id);
                     steps.push(Step::Variant(self.intern(name)));
                 }
+                ReachStep::ActiveVariant => {
+                    let rest = &path[index + 1..];
+                    let (lowered, landed) = self.walk_variants(cur, rest)?;
+                    steps.push(Step::ActiveVariant);
+                    steps.extend(lowered.0);
+                    return Some((Selector(steps), landed));
+                }
                 ReachStep::PeelTo(shape) => {
                     let reader = self.reader;
                     let accepts = |id| raw_shape_matches(reader, id, *shape);
@@ -946,6 +984,56 @@ impl Emitter<'_> {
             }
         }
         Some((Selector(steps), cur))
+    }
+
+    /// The [`ReachStep::ActiveVariant`] arm of [`Emitter::walk`]: lower the
+    /// remaining steps against every variant of the enum at `cur`.
+    ///
+    /// Which variant is live is a runtime fact, so every variant must
+    /// satisfy the rest — any of them may be the one found — and all must
+    /// lower it to the *same* name-addressed steps, since what is recorded
+    /// is one path. Variants that would demand different spellings decline,
+    /// as does an enum with no payload variants to descend into.
+    fn walk_variants(&mut self, cur: TypeId, rest: &[ReachStep<'_>]) -> Option<(Selector, TypeId)> {
+        let reader = self.reader;
+        let Some(RawType::Enum(en)) = reader.canonical_type(cur) else {
+            explain!(
+                "  path enters the active variant, but {} is not an enum",
+                type_label(reader, cur),
+            );
+            return None;
+        };
+        let Some(variants) = raw_variants(en) else {
+            explain!(
+                "  path enters the active variant, but {} has no payload variants",
+                type_label(reader, cur),
+            );
+            return None;
+        };
+        let mut lowered: Option<(Selector, TypeId)> = None;
+        for member in variants {
+            let name = member.name.map_or("<anonymous>", |n| reader.strings.get(n));
+            let payload = reader.canonicalize(member.type_id);
+            let Some((sel, landed)) = self.walk_steps(payload, rest) else {
+                explain!(
+                    "  variant {name} of {} does not satisfy the remaining steps",
+                    type_label(reader, cur),
+                );
+                return None;
+            };
+            match &lowered {
+                Some((first, _)) if *first != sel => {
+                    explain!(
+                        "  the variants of {} spell the remaining steps differently, \
+                         which one recorded path cannot serve",
+                        type_label(reader, cur),
+                    );
+                    return None;
+                }
+                _ => lowered = Some((sel, landed)),
+            }
+        }
+        lowered
     }
 
     /// Descend from `root` to the one value `accepts` takes, name-addressed —
@@ -1580,7 +1668,7 @@ mod tests {
             ),
         );
 
-        let walk = |path| {
+        let walk = |path: super::Reach<'_>| {
             trace::capture(|| {
                 Emitter::new(&reader, BTreeMap::new(), None, None)
                     .walk(notify, &path)
@@ -1620,6 +1708,166 @@ mod tests {
         assert!(
             matches!(at.steps(), [Step::Member(MemberRef::Named(_))]),
             "{at:?}"
+        );
+    }
+
+    /// An `ActiveVariant` reach lowers to `Step::ActiveVariant` plus the one
+    /// spelling of the remaining steps every variant agrees on — and
+    /// declines when a variant cannot satisfy them or would spell them
+    /// differently, since what is recorded is one path.
+    #[test]
+    fn test_active_variant_requires_every_variant_to_agree() {
+        use super::ReachStep::ActiveVariant;
+        use crate::raw_types::{RawEnum, RawVariant, VariantShape};
+
+        let mut reader = DwReader::default();
+        let word_id = type_id(1);
+        let entry_a = type_id(2);
+        let entry_b = type_id(3);
+        let pay_a = type_id(4);
+        let pay_b = type_id(5);
+        let timer_id = type_id(6);
+        let sleep_id = type_id(7);
+
+        let u64n = reader.strings.intern("u64");
+        reader
+            .types
+            .insert(word_id, base(u64n, POINTER_SIZE, Encoding::Unsigned));
+        let member = |name, type_id, offset| RawMember {
+            name: Some(name),
+            offset,
+            type_id,
+            source_loc: None,
+        };
+        let deadline = reader.strings.intern("deadline");
+        let m0 = reader.strings.intern("__0");
+        let entry_a_name = reader.strings.intern("EntryA");
+        let entry_b_name = reader.strings.intern("EntryB");
+        reader.types.insert(
+            entry_a,
+            ns_struct(None, entry_a_name, 8, vec![member(deadline, word_id, 0)]),
+        );
+        reader.types.insert(
+            entry_b,
+            ns_struct(None, entry_b_name, 8, vec![member(deadline, word_id, 0)]),
+        );
+        let trad = reader.strings.intern("Traditional");
+        let wheel = reader.strings.intern("Wheel");
+        reader.types.insert(
+            pay_a,
+            ns_struct(None, trad, 8, vec![member(m0, entry_a, 0)]),
+        );
+        reader.types.insert(
+            pay_b,
+            ns_struct(None, wheel, 8, vec![member(m0, entry_b, 0)]),
+        );
+        let timer_name = reader.strings.intern("Timer");
+        reader.types.insert(
+            timer_id,
+            RawEnum {
+                name: Some(timer_name),
+                namespace: None,
+                size: 16,
+                alignment: None,
+                shape: VariantShape::Many {
+                    discr: None,
+                    variants: Box::new([
+                        (
+                            Some(0),
+                            RawVariant {
+                                member: member(trad, pay_a, 0),
+                            },
+                        ),
+                        (
+                            Some(1),
+                            RawVariant {
+                                member: member(wheel, pay_b, 0),
+                            },
+                        ),
+                    ]),
+                },
+                template_params: Box::new([]),
+                source_loc: None,
+            }
+            .into(),
+        );
+        let sleep_name = reader.strings.intern("Sleep");
+        let entry = reader.strings.intern("entry");
+        reader.types.insert(
+            sleep_id,
+            ns_struct(None, sleep_name, 16, vec![member(entry, timer_id, 0)]),
+        );
+
+        let walk = |path: &[super::ReachStep<'_>]| {
+            trace::capture(|| {
+                Emitter::new(&reader, BTreeMap::new(), None, None).walk_steps(sleep_id, path)
+            })
+        };
+
+        // Both variants spell the rest identically: the reach lowers to
+        // `ActiveVariant` followed by that one spelling, landing on the word.
+        let (got, trace) = walk(&[
+            Named("entry"),
+            ActiveVariant,
+            Named("__0"),
+            Named("deadline"),
+        ]);
+        assert!(trace.is_empty(), "{trace:?}");
+        let (at, landed) = got.expect("both variants satisfy the steps");
+        assert_eq!(landed, word_id);
+        assert!(
+            matches!(
+                at.steps(),
+                [
+                    Step::Member(MemberRef::Named(_)),
+                    Step::ActiveVariant,
+                    Step::Member(MemberRef::Named(_)),
+                    Step::Member(MemberRef::Named(_)),
+                ]
+            ),
+            "{at:?}"
+        );
+
+        // A member one variant lacks declines, naming the variant.
+        let (got, trace) = walk(&[Named("entry"), ActiveVariant, Named("missing")]);
+        assert!(got.is_none());
+        assert!(
+            trace
+                .iter()
+                .any(|line| line.contains("variant Traditional")),
+            "{trace:?}"
+        );
+
+        // A peel that lands through different member chains per variant
+        // declines: one recorded path cannot serve both. `EntryB` gains a
+        // wrapper level `EntryA` does not have.
+        let wrap_name = reader.strings.intern("Wrap");
+        let value = reader.strings.intern("value");
+        let wrap_id = type_id(8);
+        reader.types.insert(
+            wrap_id,
+            ns_struct(None, wrap_name, 8, vec![member(value, word_id, 0)]),
+        );
+        reader.types.insert(
+            entry_b,
+            ns_struct(None, entry_b_name, 8, vec![member(deadline, wrap_id, 0)]),
+        );
+        let (got, trace) = trace::capture(|| {
+            Emitter::new(&reader, BTreeMap::new(), None, None).walk_steps(
+                sleep_id,
+                &[
+                    Named("entry"),
+                    ActiveVariant,
+                    PeelTo(Shape::Uint(POINTER_SIZE)),
+                ],
+            )
+        });
+        assert!(got.is_none());
+        assert!(
+            trace
+                .iter()
+                .any(|line| line.contains("spell the remaining steps differently")),
+            "{trace:?}"
         );
     }
 

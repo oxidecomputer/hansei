@@ -23,7 +23,7 @@ pub use schema::{
 };
 pub use shape::{Addressed, Shape};
 pub use strings::{StrRef, StringInterner, StringTable};
-pub use summary::portable_summary;
+pub use summary::{portable_summary, walk_entry_line};
 pub use view::{
     ActiveVariant, BundleMember, BundleMemberIter, BundleType, BundleVariant, BundleView,
     DynPointer, POINTER_SIZE, TypeClass, TypeKind, VariantError, variant_name,

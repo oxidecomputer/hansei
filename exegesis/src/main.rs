@@ -45,6 +45,10 @@ enum Cmd {
         /// type whose fully-qualified name contains this substring.
         #[arg(long, value_name = "FQN")]
         explain_format: Option<String>,
+        /// Report how the walk binder resolved each contract role whose
+        /// name contains this substring (e.g. "Sleep.deadline").
+        #[arg(long, value_name = "ROLE")]
+        explain_walk: Option<String>,
     },
     /// Parse a binary's DWARF and summarize its types and statics.
     DumpDwarf {
@@ -77,6 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             include_types,
             allow_missing_infra,
             explain_format,
+            explain_walk,
         } => extract(
             &binary,
             &output,
@@ -84,6 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             include_types,
             allow_missing_infra,
             explain_format,
+            explain_walk,
         ),
         Cmd::DumpDwarf { binary } => dump_dwarf(&binary),
         Cmd::Stats { bundle } => stats(&bundle),
@@ -98,13 +104,16 @@ fn extract(
     include_types: Vec<String>,
     allow_missing_infra: bool,
     explain_format: Option<String>,
+    explain_walk: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let explaining = explain_format.clone();
+    let explaining_walk = explain_walk.clone();
     let opts = exegesis::extract::ExtractOptions {
         include_types,
         allow_missing_infra,
         extract_args: std::env::args().skip(1).collect::<Vec<_>>().join(" "),
         explain_format,
+        explain_walk,
     };
     let (bundle, stats) = exegesis::extract::extract_file(binary, &opts)?;
     if let Some(v) = &stats.rustc_below_floor {
@@ -139,6 +148,26 @@ fn extract(
         }
         for explanation in &stats.format_explanations {
             print!("{}", explanation.render(&bundle));
+        }
+    }
+    if let Some(wanted) = explaining_walk {
+        if stats.walk_explanations.is_empty() {
+            println!("no walk role's name contains {wanted:?}");
+        }
+        for explanation in &stats.walk_explanations {
+            println!("{}", explanation.role.name());
+            for line in &explanation.trace {
+                println!("  {line}");
+            }
+            match bundle.walks.entries.get(&explanation.role) {
+                Some(binding) => {
+                    println!(
+                        "  => {}",
+                        exegesis::bundle::walk_entry_line(explanation.role, binding)
+                    );
+                }
+                None => println!("  => no binding recorded"),
+            }
         }
     }
     if print_stats {
@@ -408,6 +437,35 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             StaticRole::TaskWakerVtable => "task-waker-vtable",
         };
         println!("{role}: {} ({})", def.symbol, def.display);
+    }
+
+    println!("== walks ({}) ==", bundle.walks.entries.len());
+    for (role, binding) in &bundle.walks.entries {
+        println!("{}", exegesis::bundle::walk_entry_line(*role, binding));
+        if binding.steps.is_empty() {
+            continue;
+        }
+        let steps: Vec<String> = binding
+            .steps
+            .iter()
+            .map(|step| match step {
+                exegesis::bundle::Step::Member(exegesis::bundle::MemberRef::Named(name)) => {
+                    s(*name).to_owned()
+                }
+                exegesis::bundle::Step::Member(exegesis::bundle::MemberRef::Index(index)) => {
+                    format!("%{index}")
+                }
+                exegesis::bundle::Step::Deref => "*".to_owned(),
+                exegesis::bundle::Step::Variant(name) => format!("<{}>", s(*name)),
+                exegesis::bundle::Step::ActiveVariant => "<active variant>".to_owned(),
+            })
+            .collect();
+        let roots: Vec<String> = binding
+            .roots
+            .iter()
+            .map(|id| format!("[{}]", id.0))
+            .collect();
+        println!("        {} from {}", steps.join("."), roots.join(" "));
     }
     Ok(())
 }
