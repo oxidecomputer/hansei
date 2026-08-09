@@ -298,26 +298,54 @@ impl Family {
     }
 }
 
-/// One [`BY_NAME`]/[`BY_PREFIX`] row: how a name maps to detector code.
+/// One family-dispatched table row: how a key maps to a value that may
+/// vary by tokio release — a [`BY_NAME`]/[`BY_PREFIX`] detector today,
+/// generic so any per-family fact dispatches through the same mechanism.
 ///
-/// Nearly every row is [`Row::All`] — one detector for every supported
+/// Nearly every row is [`Row::All`] — one entry for every supported
 /// tokio version, which is also the only sensible spelling for the std and
 /// third-party detectors that no tokio release can move. A tokio
-/// restructure turns its row [`Row::Versioned`]: one detector per
+/// restructure turns its row [`Row::Versioned`]: one entry per
 /// [`Family`], oldest first, and the target's selected family takes the
 /// entry with the highest floor at or below it — so the newest entry keeps
 /// serving every later version until a restructure adds a newer one. A row
-/// with no entry old enough for the target declines to the structural
-/// chain, the same fail-safe as any other mismatch.
+/// with no entry old enough for the target declines ([`Row::select`]
+/// returns `None`) — for detectors, to the structural chain, the same
+/// fail-safe as any other mismatch.
 #[derive(Copy, Clone)]
-enum Row {
-    /// One detector for every version.
-    All(Detector),
-    /// Family-keyed detectors, oldest first.
-    Versioned(&'static [(Family, Detector)]),
+enum Row<T: 'static> {
+    /// One entry for every version.
+    All(T),
+    /// Family-keyed entries, oldest first.
+    Versioned(&'static [(Family, T)]),
 }
 
 use Row::{All, Versioned};
+
+impl<T: Copy> Row<T> {
+    /// Whether this row dispatches by family at all — consulting one is
+    /// what arms the guessed-family warning when the tokio version was
+    /// not recovered.
+    fn is_versioned(self) -> bool {
+        matches!(self, Versioned(_))
+    }
+
+    /// The entry the selected `family` takes: an `All` row's single value
+    /// (no family attached), or the versioned entry with the highest
+    /// floor at or below `family`, paired with that entry's family for
+    /// diagnostics. `None` when the row is versioned and no entry is old
+    /// enough for the target.
+    fn select(self, family: Family) -> Option<(Option<Family>, T)> {
+        match self {
+            All(value) => Some((None, value)),
+            Versioned(entries) => entries
+                .iter()
+                .rev()
+                .find(|&&(floor, _)| floor <= family)
+                .map(|&(floor, value)| (Some(floor), value)),
+        }
+    }
+}
 
 /// Detectors keyed by fully-qualified type name with generic arguments
 /// stripped. Screening on the name means only the one matching detector runs
@@ -325,7 +353,7 @@ use Row::{All, Versioned};
 /// detector it selected — so a detector belongs here whenever a name selects
 /// it, and its body then validates only the *structure*. A type named by
 /// neither this table nor [`BY_PREFIX`] falls through to [`STRUCTURAL`].
-static BY_NAME: &[(&str, Row)] = &[
+static BY_NAME: &[(&str, Row<Detector>)] = &[
     ("&camino::Utf8Path", All(utf8_path_node)),
     ("&str", All(str_node)),
     (
@@ -423,7 +451,7 @@ static BY_NAME: &[(&str, Row)] = &[
 /// than a name, so these detectors keep the residual check the key cannot
 /// express — `NonZeroU32Inner` ends in `Inner`, a loom atomic module has a
 /// single segment.
-static BY_PREFIX: &[(&str, Row)] = &[
+static BY_PREFIX: &[(&str, Row<Detector>)] = &[
     ("&[", All(slice_node)),
     ("alloc::boxed::Box<[", All(slice_node)),
     ("core::num::niche_types::NonZero", All(nonzero_inner_node)),
@@ -1173,25 +1201,20 @@ impl Emitter<'_> {
             explain!("  no name-keyed detector for `{base}`; trying the structural chain");
             return None;
         };
-        let detector = match row {
-            All(detector) => {
-                explain!("  name-keyed detector for `{key}` selected");
-                detector
-            }
-            Versioned(families) => {
-                self.versioned_dispatch = true;
-                let Some(&(family, detector)) = families
-                    .iter()
-                    .rev()
-                    .find(|&&(family, _)| family <= self.family)
-                else {
-                    explain!(
-                        "  name-keyed detector for `{key}` has no entry as old as \
-                         family {}; trying the structural chain",
-                        self.family.name(),
-                    );
-                    return None;
-                };
+        if row.is_versioned() {
+            self.versioned_dispatch = true;
+        }
+        let Some((matched, detector)) = row.select(self.family) else {
+            explain!(
+                "  name-keyed detector for `{key}` has no entry as old as \
+                 family {}; trying the structural chain",
+                self.family.name(),
+            );
+            return None;
+        };
+        match matched {
+            None => explain!("  name-keyed detector for `{key}` selected"),
+            Some(family) => {
                 let why = match &self.tokio_version {
                     Some(version) => format!("tokio {version}"),
                     None => "version unrecovered".to_owned(),
@@ -1200,9 +1223,8 @@ impl Emitter<'_> {
                     "  name-keyed detector for `{key}` selected (family {}: {why})",
                     family.name(),
                 );
-                detector
             }
-        };
+        }
         detector(self, tid)
     }
 }
@@ -1354,6 +1376,39 @@ mod tests {
         assert_eq!(Family::describe(Some(&v("1.50.0"))), "v1_49 (tokio 1.50.0)");
         assert_eq!(Family::describe(Some(&v("1.53.1"))), "v1_53 (tokio 1.53.1)");
         assert_eq!(Family::describe(None), "v1_53 (version unrecovered)");
+    }
+
+    /// Row lookup: an `All` row serves every family with no family
+    /// attached; a `Versioned` row serves the entry with the highest floor
+    /// at or below the selected family, and declines when none is old
+    /// enough.
+    #[test]
+    fn test_row_selection() {
+        use super::Row::{self, All, Versioned};
+
+        let all: Row<&str> = All("everywhere");
+        assert!(!all.is_versioned());
+        for family in Family::ALL {
+            assert_eq!(all.select(*family), Some((None, "everywhere")));
+        }
+
+        let versioned: Row<&str> = Versioned(&[(Family::V1_47, "old"), (Family::V1_53, "new")]);
+        assert!(versioned.is_versioned());
+        assert_eq!(
+            versioned.select(Family::V1_47),
+            Some((Some(Family::V1_47), "old"))
+        );
+        assert_eq!(
+            versioned.select(Family::V1_49),
+            Some((Some(Family::V1_47), "old"))
+        );
+        assert_eq!(
+            versioned.select(Family::V1_53),
+            Some((Some(Family::V1_53), "new"))
+        );
+
+        let too_new: Row<&str> = Versioned(&[(Family::V1_49, "recent")]);
+        assert_eq!(too_new.select(Family::V1_47), None);
     }
 
     /// Run one detector directly. Every detector takes an `Emitter` whether or
