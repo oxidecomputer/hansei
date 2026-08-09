@@ -519,15 +519,22 @@ fn trace_opts(bundle: &Path, core: &Path, task_id: &str, verbose: bool, ugly: bo
 /// line number are the cell's tokio, not hansei's output, and one
 /// golden serves every cell. The fixture's own `src/bin/…` sites stay
 /// exact — those the golden owns.
+///
+/// The instrumentation leaf's type is masked the same way: tokio 1.50
+/// rewrote `async_trace_leaf` from a hand-written `Trace` future into
+/// an async fn, so which spelling a chain's leaf local carries is the
+/// cell's tokio version.
 fn normalize(trace: &str) -> String {
     let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
     let deadlines =
         regex::Regex::new(r"deadline -?\d+\.\d{3}s( on the target's monotonic clock)?").unwrap();
     let tokio_sites = regex::Regex::new(r"tokio-\d+\.\d+\.\d+(/[^ :]+):\d+").unwrap();
+    let trace_leaf = regex::Regex::new(r"tokio::trace::async_trace_leaf::\S+").unwrap();
     let masked = addrs.replace_all(trace, "0xADDR");
     let masked = deadlines.replace_all(&masked, "deadline TS");
-    tokio_sites
-        .replace_all(&masked, "tokio$1:LINE")
+    let masked = tokio_sites.replace_all(&masked, "tokio$1:LINE");
+    trace_leaf
+        .replace_all(&masked, "tokio::trace::async_trace_leaf::TY")
         .into_owned()
 }
 
@@ -844,7 +851,7 @@ Task {id}: futurelock::main::{{async_block#0}}::{{async_block_env#0}} (idle)
                          ▸ Suspend0  tokio/src/sync/mutex.rs:LINE
                            └─  5  async fn      tokio::sync::mutex::{{impl#10}}::acquire::{{async_fn_env#0}}<()>
                               suspends:
-                                Suspend0  tokio/src/sync/mutex.rs:LINE  1 local  tokio::trace::async_trace_leaf::{{async_fn_env#0}}
+                                Suspend0  tokio/src/sync/mutex.rs:LINE  1 local  tokio::trace::async_trace_leaf::TY
                               ▸ Suspend1  tokio/src/sync/mutex.rs:LINE
                                 └─* 6  future        tokio::sync::batch_semaphore::Acquire
                                    waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task {id}
