@@ -14,14 +14,14 @@
 //!   moving on its own release cadence;
 //! - [`tokio`]: tokio types whose layout has held across every supported
 //!   tokio version;
-//! - [`tokio_v1_50`]: a family module — only the detectors a tokio
+//! - [`tokio_v1_47`]: a family module — only the detectors a tokio
 //!   restructure moved, dispatched per target by the recovered tokio
 //!   version (see [`Family`]).
 
 mod crates;
 mod std;
 mod tokio;
-mod tokio_v1_50;
+mod tokio_v1_47;
 mod tokio_v1_53;
 
 use self::crates::{hex_bytes_node, raw_mutex_node, utf8_path_buf_node, utf8_path_node, uuid_node};
@@ -222,13 +222,13 @@ type Detector = fn(&mut Emitter<'_>, TypeId) -> Option<DisplayNode>;
 /// derived `Ord` both rely on it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Family {
-    /// Every supported tokio release through 1.52 — 1.50 is the dispatch
-    /// floor, and selection clamps older versions here: the timer entry
-    /// keeps a `registered` flag and a cached `deadline` instant beside a
-    /// lazily-registered `Option<TimerShared>`. The pre-1.49 respellings
-    /// (a bare `Sleep.entry`, an unflavored `time::Inner`) are ordered
-    /// alternatives inside its detectors, not a family boundary.
-    V1_50,
+    /// tokio 1.47 through 1.52: the timer entry keeps a `registered` flag
+    /// and a cached `deadline` instant beside a lazily-registered
+    /// `Option<TimerShared>`. The wrappers 1.49 added inside the range
+    /// (the `Timer` flavor enum around `Sleep`'s entry, the flavored
+    /// `time::Inner`) are ordered alternatives inside its detectors, not
+    /// a family boundary — and anything older than the floor clamps here.
+    V1_47,
     /// tokio 1.53 onward: the timer entry holds its `TimerShared` directly,
     /// registration lives in the state word with the registration tick
     /// cached beside it, and `Sleep` carries the deadline itself.
@@ -237,13 +237,13 @@ pub enum Family {
 
 impl Family {
     /// Every family, oldest floor first.
-    pub const ALL: &'static [Family] = &[Family::V1_50, Family::V1_53];
+    pub const ALL: &'static [Family] = &[Family::V1_47, Family::V1_53];
 
     /// The lowest tokio `(major, minor)` the family covers; its range runs
     /// to the next family's floor.
     fn floor(self) -> (u64, u64) {
         match self {
-            Family::V1_50 => (1, 50),
+            Family::V1_47 => (1, 47),
             Family::V1_53 => (1, 53),
         }
     }
@@ -251,7 +251,7 @@ impl Family {
     /// The tag `--explain-format` and the matrix goldens name the family by.
     pub fn name(self) -> &'static str {
         match self {
-            Family::V1_50 => "v1_50",
+            Family::V1_47 => "v1_47",
             Family::V1_53 => "v1_53",
         }
     }
@@ -277,7 +277,7 @@ impl Family {
     }
 
     /// The selection and why, as the per-cell detector catalog pins it:
-    /// `v1_50 (tokio 1.50.0)`, or `v1_50 (version unrecovered)` for the
+    /// `v1_47 (tokio 1.50.0)`, or `v1_53 (version unrecovered)` for the
     /// newest-family guess.
     pub fn describe(version: Option<&semver::Version>) -> String {
         let family = Family::select(version);
@@ -357,7 +357,7 @@ static BY_NAME: &[(&str, Row)] = &[
     (
         "tokio::runtime::time::entry::TimerEntry",
         Versioned(&[
-            (Family::V1_50, tokio_v1_50::timer_entry_node),
+            (Family::V1_47, tokio_v1_47::timer_entry_node),
             (Family::V1_53, tokio_v1_53::timer_entry_node),
         ]),
     ),
@@ -388,7 +388,7 @@ static BY_NAME: &[(&str, Row)] = &[
     (
         "tokio::time::sleep::Sleep",
         Versioned(&[
-            (Family::V1_50, tokio_v1_50::sleep_node),
+            (Family::V1_47, tokio_v1_47::sleep_node),
             (Family::V1_53, tokio_v1_53::sleep_node),
         ]),
     ),
@@ -1330,13 +1330,14 @@ mod tests {
         let v = |s: &str| semver::Version::parse(s).unwrap();
         let newest = *Family::ALL.last().unwrap();
         assert_eq!(Family::select(None), newest);
-        assert_eq!(Family::select(Some(&v("1.50.0"))), Family::V1_50);
-        assert_eq!(Family::select(Some(&v("1.52.4"))), Family::V1_50);
+        assert_eq!(Family::select(Some(&v("1.47.5"))), Family::V1_47);
+        assert_eq!(Family::select(Some(&v("1.50.0"))), Family::V1_47);
+        assert_eq!(Family::select(Some(&v("1.52.4"))), Family::V1_47);
         assert_eq!(Family::select(Some(&v("1.53.0"))), Family::V1_53);
         assert_eq!(Family::select(Some(&v("1.53.1"))), Family::V1_53);
         assert_eq!(Family::select(Some(&v("1.99.0"))), newest);
-        assert_eq!(Family::select(Some(&v("1.49.9"))), Family::ALL[0]);
-        assert_eq!(Family::describe(Some(&v("1.50.0"))), "v1_50 (tokio 1.50.0)");
+        assert_eq!(Family::select(Some(&v("1.46.9"))), Family::ALL[0]);
+        assert_eq!(Family::describe(Some(&v("1.50.0"))), "v1_47 (tokio 1.50.0)");
         assert_eq!(Family::describe(Some(&v("1.53.1"))), "v1_53 (tokio 1.53.1)");
         assert_eq!(Family::describe(None), "v1_53 (version unrecovered)");
     }
