@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
-use exegesis::bundle::{Bundle, BundleMember, BundleType, BundleView};
+use exegesis::bundle::{Bundle, BundleMember, BundleType, BundleView, WalkRole};
 use hansei_types::tokio::{Lifecycle, bundle, census, contract, graph};
 use proc::Proc;
 #[cfg(feature = "snapshot")]
@@ -545,7 +545,7 @@ impl<'b> Session<'b> {
         let lwps = proc.lwps().context("failed to read lwps")?;
         let workers = discover_workers(&lwps, &ctx)?;
         let handle = ctx.find_handle(&workers)?;
-        let shared = contract::HANDLE_SHARED.walk_at(&ctx, handle.as_ref())?;
+        let shared = ctx.walk(WalkRole::HandleShared).walk_at(handle.as_ref())?;
         let tasks = ctx.enumerate_tasks(&shared)?;
         for err in &tasks.errors {
             writeln!(io::stderr(), "warning: {err:#}")?;

@@ -18,7 +18,7 @@ use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use exegesis::bundle::{
     BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, SymbolLookup,
-    TaskEntryId, TaskFutureEntry, TypeDef, strip_build_prefix, strip_llvm_suffix,
+    TaskEntryId, TaskFutureEntry, TypeDef, WalkRole, strip_build_prefix, strip_llvm_suffix,
 };
 use exegesis::symbols::normalized_v0_key;
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
@@ -376,8 +376,9 @@ impl<'b, T: Target> Context<'b, T> {
     /// the thread-local the bundle names.
     pub fn worker_at(&self, tid: u32, context_addr: u64) -> Result<Worker> {
         let info = self.context_info(context_addr)?;
-        let current_task_id = contract::CURRENT_TASK_ID
-            .read(self, info.as_ref())
+        let current_task_id = self
+            .walk(WalkRole::CurrentTaskId)
+            .read(info.as_ref())
             .context("failed to parse Context.current_task_id")?;
         Ok(Worker {
             tid,
@@ -409,7 +410,7 @@ impl<'b, T: Target> Context<'b, T> {
         let mut saw_other_scheduler = false;
         for worker in workers {
             let info = self.context_info(worker.context_addr)?;
-            match contract::WORKER_HANDLE.walk(self, info.as_ref())? {
+            match self.walk(WalkRole::WorkerHandle).walk(info.as_ref())? {
                 Walked::At(handle) => return Ok(handle),
                 // current_thread is out of scope (§13.4).
                 Walked::Inactive("MultiThread") => saw_other_scheduler = true,
@@ -428,7 +429,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// [`Context::find_handle`] reaches.
     pub fn find_shared(&self, workers: &[Worker]) -> Result<TypeInfo<'b>> {
         let handle = self.find_handle(workers)?;
-        contract::HANDLE_SHARED.walk_at(self, handle.as_ref())
+        self.walk(WalkRole::HandleShared).walk_at(handle.as_ref())
     }
 
     /// The scheduler context a worker thread is running under: the
@@ -446,8 +447,9 @@ impl<'b, T: Target> Context<'b, T> {
         // both ordinary. Anything else has to be readable: an
         // unreadable pointer is a failure to report, not a thread to
         // pass over.
-        Ok(contract::WORKER_CONTEXT
-            .walk(self, info.as_ref())?
+        Ok(self
+            .walk(WalkRole::WorkerContext)
+            .walk(info.as_ref())?
             .optional())
     }
 
@@ -455,7 +457,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// scheduler numbers them, from the context
     /// [`Context::worker_context`] returned.
     pub fn worker_index(&self, worker_ctx: &TypeInfo<'b>) -> Result<u64> {
-        contract::WORKER_INDEX.read(self, worker_ctx.as_ref())
+        self.walk(WalkRole::WorkerIndex).read(worker_ctx.as_ref())
     }
 
     /// What every worker's parker says, in worker-index order.
@@ -467,8 +469,10 @@ impl<'b, T: Target> Context<'b, T> {
     /// state, so every worker's state word is readable from one place
     /// whether or not the thread holding it can be walked.
     pub fn park_states(&self, handle: &TypeInfo<'b>) -> Result<ParkStates> {
-        let shared = contract::HANDLE_SHARED.walk_at(self, handle.as_ref())?;
-        let remotes = contract::SHARED_REMOTES.walk_at(self, shared.as_ref())?;
+        let shared = self.walk(WalkRole::HandleShared).walk_at(handle.as_ref())?;
+        let remotes = self
+            .walk(WalkRole::SharedRemotes)
+            .walk_at(shared.as_ref())?;
         // The driver's lock lives under the parkers' own shared state,
         // which every `Inner` points at; the first one answers for all.
         let mut driver_held = None;
@@ -476,12 +480,12 @@ impl<'b, T: Target> Context<'b, T> {
             .as_ref()
             .boxed_slice_elements(self, |remote| {
                 Ok((|| -> Result<ParkState> {
-                    let inner = contract::REMOTE_UNPARK.walk_at(self, remote.clone())?;
+                    let inner = self.walk(WalkRole::RemoteUnpark).walk_at(remote.clone())?;
                     if driver_held.is_none() {
                         driver_held =
-                            Some(contract::PARKER_DRIVER_LOCK.read(self, inner.as_ref())?);
+                            Some(self.walk(WalkRole::ParkerDriverLock).read(inner.as_ref())?);
                     }
-                    let state = contract::PARKER_STATE.read(self, inner.as_ref())?;
+                    let state = self.walk(WalkRole::ParkerState).read(inner.as_ref())?;
                     Ok(ParkState::from_word(state))
                 })())
             })
@@ -501,11 +505,17 @@ impl<'b, T: Target> Context<'b, T> {
     /// blocking thread carries no scheduler state to be recognized by,
     /// so what the pool says about itself is all there is to say.
     pub fn blocking_pool(&self, handle: &TypeInfo<'b>) -> Result<BlockingPool> {
-        let metrics = contract::BLOCKING_METRICS.walk_at(self, handle.as_ref())?;
+        let metrics = self
+            .walk(WalkRole::BlockingMetrics)
+            .walk_at(handle.as_ref())?;
         Ok(BlockingPool {
-            threads: contract::BLOCKING_THREADS.read(self, metrics.as_ref())?,
-            idle: contract::BLOCKING_IDLE.read(self, metrics.as_ref())?,
-            queued: contract::BLOCKING_QUEUE_DEPTH.read(self, metrics.as_ref())?,
+            threads: self
+                .walk(WalkRole::BlockingThreads)
+                .read(metrics.as_ref())?,
+            idle: self.walk(WalkRole::BlockingIdle).read(metrics.as_ref())?,
+            queued: self
+                .walk(WalkRole::BlockingQueueDepth)
+                .read(metrics.as_ref())?,
         })
     }
 
@@ -518,7 +528,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// Corrupt memory degrades per shard: the failing shard contributes an
     /// error, the rest of the listing is unaffected (§11.5).
     pub fn enumerate_tasks(&self, shared: &TypeInfo<'b>) -> Result<TaskList> {
-        let lists = contract::OWNED_LISTS.walk_at(self, shared.as_ref())?;
+        let lists = self.walk(WalkRole::OwnedLists).walk_at(shared.as_ref())?;
 
         let mut tasks = Vec::new();
         let mut errors = Vec::new();
@@ -540,7 +550,7 @@ impl<'b, T: Target> Context<'b, T> {
                     return Ok(());
                 }
 
-                let head_addr = match contract::SHARD_HEAD.walk(self, elem.clone()) {
+                let head_addr = match self.walk(WalkRole::ShardHead).walk(elem.clone()) {
                     Ok(Walked::At(head)) => match head.parse::<u64, _>(self) {
                         Ok(addr) => addr,
                         Err(e) => {
@@ -596,10 +606,10 @@ impl<'b, T: Target> Context<'b, T> {
         let info = TypeInfo::from_addr(self, header_ty, addr)
             .with_context(|| format!("failed to read task Header at {addr:#x}"))?;
 
-        let state = TaskState(contract::HEADER_STATE.read(self, info.as_ref())?);
-        let owner_id = contract::HEADER_OWNER_ID.read(self, info.as_ref())?;
+        let state = TaskState(self.walk(WalkRole::HeaderState).read(info.as_ref())?);
+        let owner_id = self.walk(WalkRole::HeaderOwnerId).read(info.as_ref())?;
 
-        let vtable_addr: u64 = contract::HEADER_VTABLE.read(self, info.as_ref())?;
+        let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(info.as_ref())?;
         let vtable = self
             .task_vtable(vtable_addr)
             .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
@@ -657,18 +667,26 @@ impl<'b, T: Target> Context<'b, T> {
         let info = info.as_ref();
 
         let vt = TaskVtable {
-            poll: contract::VTABLE_POLL.read(self, info.clone())?,
-            dealloc: contract::VTABLE_DEALLOC.try_read(self, info.clone())?,
-            try_read_output: contract::VTABLE_TRY_READ_OUTPUT.try_read(self, info.clone())?,
-            drop_join_handle_slow: contract::VTABLE_DROP_JOIN_HANDLE_SLOW
-                .try_read(self, info.clone())?,
-            drop_abort_handle: contract::VTABLE_DROP_ABORT_HANDLE.try_read(self, info.clone())?,
-            shutdown: contract::VTABLE_SHUTDOWN.try_read(self, info.clone())?,
-            trailer_offset: contract::VTABLE_TRAILER_OFFSET.read(self, info.clone())?,
-            id_offset: contract::VTABLE_ID_OFFSET.read(self, info.clone())?,
+            poll: self.walk(WalkRole::VtablePoll).read(info.clone())?,
+            dealloc: self.walk(WalkRole::VtableDealloc).try_read(info.clone())?,
+            try_read_output: self
+                .walk(WalkRole::VtableTryReadOutput)
+                .try_read(info.clone())?,
+            drop_join_handle_slow: self
+                .walk(WalkRole::VtableDropJoinHandleSlow)
+                .try_read(info.clone())?,
+            drop_abort_handle: self
+                .walk(WalkRole::VtableDropAbortHandle)
+                .try_read(info.clone())?,
+            shutdown: self.walk(WalkRole::VtableShutdown).try_read(info.clone())?,
+            trailer_offset: self
+                .walk(WalkRole::VtableTrailerOffset)
+                .read(info.clone())?,
+            id_offset: self.walk(WalkRole::VtableIdOffset).read(info.clone())?,
             // Only present under `tokio_unstable` + task instrumentation.
-            spawn_location_offset: contract::VTABLE_SPAWN_LOCATION_OFFSET
-                .try_read(self, info.clone())?,
+            spawn_location_offset: self
+                .walk(WalkRole::VtableSpawnLocationOffset)
+                .try_read(info.clone())?,
         };
         self.vtables.borrow_mut().insert(vtable_addr, vt.clone());
         Ok(vt)
@@ -743,7 +761,7 @@ impl<'b, T: Target> Context<'b, T> {
         };
         // The Cell may be an opaque placeholder if extraction could not
         // bind it; nothing to check then.
-        let Some(trailer_offset) = contract::CELL_TRAILER.member_offset(cell) else {
+        let Some(trailer_offset) = self.walk(WalkRole::CellTrailer).member_offset(cell) else {
             return Ok(());
         };
         ensure!(
@@ -754,7 +772,7 @@ impl<'b, T: Target> Context<'b, T> {
             trailer_offset,
             vt.trailer_offset
         );
-        if let Some(id_offset) = contract::CELL_TASK_ID.member_offset(cell) {
+        if let Some(id_offset) = self.walk(WalkRole::CellTaskId).member_offset(cell) {
             ensure!(
                 id_offset == vt.id_offset,
                 "bundle/target layout mismatch for {}: bundle Core.task_id at {:#x}, \
@@ -783,9 +801,9 @@ impl<'b, T: Target> Context<'b, T> {
         // extraction cuts a line-table path, or one file is spelled two ways
         // in one listing (`tasks` prints a task's spawn site beside its
         // future's declaration).
-        let filename: String = contract::LOCATION_FILE.read(self, info.as_ref())?;
-        let line = contract::LOCATION_LINE.read(self, info.as_ref())?;
-        let col = contract::LOCATION_COL.read(self, info.as_ref())?;
+        let filename: String = self.walk(WalkRole::LocationFile).read(info.as_ref())?;
+        let line = self.walk(WalkRole::LocationLine).read(info.as_ref())?;
+        let col = self.walk(WalkRole::LocationCol).read(info.as_ref())?;
         Ok(Location {
             filename: strip_build_prefix(&filename).into_owned(),
             line,
@@ -801,8 +819,8 @@ impl<'b, T: Target> Context<'b, T> {
             .with_context(|| format!("failed to read Trailer at {trailer_addr:#x}"))?;
         // Trailer.owned: linked_list::Pointers<Header>, which peels down to
         // its inner { prev, next } struct.
-        contract::TRAILER_NEXT
-            .walk(self, info.as_ref())?
+        self.walk(WalkRole::TrailerNext)
+            .walk(info.as_ref())?
             .optional()
             .map(|ptr| ptr.parse(self).map_err(anyhow::Error::from))
             .transpose()
@@ -840,7 +858,7 @@ impl<'b, T: Target> Context<'b, T> {
             .with_context(|| format!("failed to read the task Cell at {:?}", task.addr))?;
         // Cell.core.stage peels through CoreStage and the UnsafeCells down
         // to the Stage<T> enum.
-        let stage = contract::CELL_STAGE.walk_at(self, cell.as_ref())?;
+        let stage = self.walk(WalkRole::CellStage).walk_at(cell.as_ref())?;
         let stage = stage.as_ref();
         let (state, payload) = stage
             .active_variant()
@@ -1267,14 +1285,16 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// `tokio::time::Sleep`: the deadline its timer entry registered.
-    /// Which of the two spellings the target has is the table's
-    /// business ([`contract::SLEEP_DEADLINE`]'s ordered alternatives).
+    /// Where this tokio keeps it was the binder's business at
+    /// extraction; the recorded steps already spell the route.
     fn read_sleep(&self, sleep: &TypeInfo<'b>) -> Result<WaitTarget> {
-        // The deadline is tokio's Instant, which peels down to the std
-        // Timespec on the target's monotonic clock.
-        let deadline = contract::SLEEP_DEADLINE.walk_at(self, sleep.as_ref())?;
-        let tv_sec: i64 = contract::DEADLINE_TV_SEC.read(self, deadline.as_ref())?;
-        let tv_nsec: u32 = contract::DEADLINE_TV_NSEC.read(self, deadline.as_ref())?;
+        // The deadline lands on the std Timespec inside tokio's
+        // Instant, on the target's monotonic clock.
+        let deadline = self.walk(WalkRole::SleepDeadline).walk_at(sleep.as_ref())?;
+        let tv_sec: i64 = self.walk(WalkRole::DeadlineTvSec).read(deadline.as_ref())?;
+        let tv_nsec: u32 = self
+            .walk(WalkRole::DeadlineTvNsec)
+            .read(deadline.as_ref())?;
         Ok(WaitTarget::Timer {
             deadline: RawInstant {
                 tv_sec: tv_sec as u64,
@@ -1288,7 +1308,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// between tasks (§3.6).
     fn read_join_handle(&self, handle: &TypeInfo<'b>, list: &TaskList) -> Result<WaitTarget> {
         // JoinHandle.raw: RawTask, which peels to the NonNull<Header>.
-        let addr: u64 = contract::JOIN_HANDLE_RAW.read(self, handle.as_ref())?;
+        let addr: u64 = self.walk(WalkRole::JoinHandleRaw).read(handle.as_ref())?;
         let (task_id, state) = self
             .header_task_ref(addr)
             .context("failed to identify the joined task")?;
@@ -1314,8 +1334,8 @@ impl<'b, T: Target> Context<'b, T> {
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
         let header = TypeInfo::from_addr(self, header_ty, addr)
             .with_context(|| format!("failed to read the task Header at {addr:#x}"))?;
-        let state = TaskState(contract::HEADER_STATE.read(self, header.as_ref())?);
-        let vtable_addr: u64 = contract::HEADER_VTABLE.read(self, header.as_ref())?;
+        let state = TaskState(self.walk(WalkRole::HeaderState).read(header.as_ref())?);
+        let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header.as_ref())?;
         let vtable = self
             .task_vtable(vtable_addr)
             .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
@@ -1348,7 +1368,7 @@ impl<'b, T: Target> Context<'b, T> {
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
         let header = TypeInfo::from_addr(self, header_ty, task.addr.0)
             .with_context(|| format!("failed to read the task Header at {:?}", task.addr))?;
-        let vtable_addr: u64 = contract::HEADER_VTABLE.read(self, header.as_ref())?;
+        let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header.as_ref())?;
         let vtable = self
             .task_vtable(vtable_addr)
             .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
@@ -1378,15 +1398,24 @@ impl<'b, T: Target> Context<'b, T> {
     /// identifies the contended resource; the frame that awaits the
     /// Acquire names which primitive wraps it.
     fn read_acquire(&self, acquire: &TypeInfo<'b>, chain: &AwaitChain<'b>) -> Result<WaitTarget> {
-        let semaphore = contract::ACQUIRE_SEMAPHORE.walk_at(self, acquire.as_ref())?;
+        let semaphore = self
+            .walk(WalkRole::AcquireSemaphore)
+            .walk_at(acquire.as_ref())?;
         let addr: u64 = semaphore.parse(self)?;
-        let num_permits: u64 = contract::ACQUIRE_NUM_PERMITS.read(self, acquire.as_ref())?;
-        let sem = semaphore
-            .deref_ptr(self)
-            .context("failed to read the Semaphore")?;
+        let num_permits: u64 = self
+            .walk(WalkRole::AcquireNumPermits)
+            .read(acquire.as_ref())?;
+        // Read the pointee as its own type, not deref_ptr's peeled view:
+        // the semaphore walks root at the Semaphore itself.
+        let sem_ty = semaphore
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("Acquire.semaphore is not pointer-shaped"))?;
+        let sem =
+            TypeInfo::from_addr(self, sem_ty, addr).context("failed to read the Semaphore")?;
         // `permits` keeps the available count shifted above the CLOSED
         // bit.
-        let raw: u64 = contract::SEMAPHORE_PERMITS.read(self, sem.as_ref())?;
+        let raw: u64 = self.walk(WalkRole::SemaphorePermits).read(sem.as_ref())?;
         let owner = semaphore_owner(chain);
         let waiters = self
             .semaphore_waiters(&sem)
@@ -1408,8 +1437,9 @@ impl<'b, T: Target> Context<'b, T> {
         // Semaphore.waiters is a loom Mutex over the Waitlist; both the
         // parking_lot and std mutexes beneath it spell the payload
         // member `data`.
-        let Some(head) = contract::SEMAPHORE_QUEUE_HEAD
-            .walk(self, sem.as_ref())?
+        let Some(head) = self
+            .walk(WalkRole::SemaphoreQueueHead)
+            .walk(sem.as_ref())?
             .optional()
         else {
             return Ok(Vec::new());
@@ -1434,11 +1464,12 @@ impl<'b, T: Target> Context<'b, T> {
                 .with_context(|| format!("failed to read the Waiter at {addr:#x}"))?;
             waiters.push(SemaphoreWaiter {
                 addr,
-                needed: contract::WAITER_NEEDED.read(self, node.as_ref())?,
+                needed: self.walk(WalkRole::WaiterNeeded).read(node.as_ref())?,
                 waker: self.read_queued_waker(&node)?,
             });
-            cur = contract::WAITER_NEXT
-                .walk(self, node.as_ref())?
+            cur = self
+                .walk(WalkRole::WaiterNext)
+                .walk(node.as_ref())?
                 .optional()
                 .map(|ptr| ptr.parse(self).map_err(anyhow::Error::from))
                 .transpose()?;
@@ -1454,11 +1485,15 @@ impl<'b, T: Target> Context<'b, T> {
     fn read_queued_waker(&self, node: &TypeInfo<'b>) -> Result<QueuedWaker> {
         // Waiter.waker: UnsafeCell<Option<Waker>>; the Some payload
         // peels through the Waker to its RawWaker.
-        let Some(raw) = contract::WAITER_WAKER.walk(self, node.as_ref())?.optional() else {
+        let Some(raw) = self
+            .walk(WalkRole::WaiterWaker)
+            .walk(node.as_ref())?
+            .optional()
+        else {
             return Ok(QueuedWaker::Unarmed);
         };
-        let data: u64 = contract::WAKER_DATA.read(self, raw.as_ref())?;
-        let vtable: u64 = contract::WAKER_VTABLE.read(self, raw.as_ref())?;
+        let data: u64 = self.walk(WalkRole::WakerData).read(raw.as_ref())?;
+        let vtable: u64 = self.walk(WalkRole::WakerVtable).read(raw.as_ref())?;
         if self.task_waker_vtable()? == Some(vtable) {
             let (task_id, _) = self
                 .header_task_ref(data)
@@ -1531,8 +1566,9 @@ impl<'b, T: Target> Context<'b, T> {
                 )
             })
             .and_then(|f| {
-                let node = contract::ACQUIRE_NODE
-                    .walk_at(self, f.future.as_ref())
+                let node = self
+                    .walk(WalkRole::AcquireNode)
+                    .walk_at(f.future.as_ref())
                     .ok()?;
                 Some(node.addr)
             });
@@ -1618,11 +1654,18 @@ impl<'b, T: Target> Context<'b, T> {
     fn read_acquire_fields(&self, acquire: &TypeInfo<'b>) -> Result<AcquireFields> {
         let acquire = acquire.as_ref();
         Ok(AcquireFields {
-            semaphore: contract::ACQUIRE_SEMAPHORE.read(self, acquire.clone())?,
-            node: contract::ACQUIRE_NODE.walk_at(self, acquire.clone())?.addr,
-            num_permits: contract::ACQUIRE_NUM_PERMITS.read(self, acquire.clone())?,
-            needed: contract::ACQUIRE_NEEDED.read(self, acquire.clone())?,
-            queued: contract::ACQUIRE_QUEUED.read(self, acquire.clone())?,
+            semaphore: self
+                .walk(WalkRole::AcquireSemaphore)
+                .read(acquire.clone())?,
+            node: self
+                .walk(WalkRole::AcquireNode)
+                .walk_at(acquire.clone())?
+                .addr,
+            num_permits: self
+                .walk(WalkRole::AcquireNumPermits)
+                .read(acquire.clone())?,
+            needed: self.walk(WalkRole::AcquireNeeded).read(acquire.clone())?,
+            queued: self.walk(WalkRole::AcquireQueued).read(acquire.clone())?,
         })
     }
 }

@@ -3,15 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! The walk contract against real bundles: every fixture pair's bundle
-//! must verify clean, the alternative spellings that bind on the
+//! must carry a clean recorded report, the spellings that bind on the
 //! primary tokio/toolchain must stay the ones we think bind, and a
-//! layout the table cannot navigate must be loud, not a silent
+//! bundle missing a recorded binding must be loud, not a silent
 //! structural decline.
 
-use exegesis::bundle::{Bundle, BundleView};
-use hansei_types::tokio::contract::{
-    self, Class, InfraRoot, Nav, Outcome, Root, Terminal, WalkPath, verify_walk_contract,
-};
+use exegesis::bundle::{Bundle, BundleView, WalkOutcome, WalkRole};
+use hansei_types::tokio::contract::{Class, verify_walk_contract};
 
 use std::path::{Path, PathBuf};
 
@@ -34,11 +32,12 @@ fn fixture_bundle(program: &str) -> Bundle {
     Bundle::load(&path).expect("fixture bundle loads; regenerate with capture-snapshots.sh")
 }
 
-/// The whole table resolves against every fixture bundle: nothing is
-/// broken, and the required paths in particular all bind. This is the
-/// macOS-runnable half of "a new tokio produces a loud diff" — the
-/// fixtures are the primary cell, so a table edit that no longer
-/// matches them fails here first.
+/// Every fixture bundle records a clean walk contract: nothing broken,
+/// and the required roles in particular all bound. The fixtures are the
+/// primary cell, so a binder edit that no longer matches them fails
+/// here first — the macOS-runnable half of "a new tokio produces a loud
+/// diff" (the other half is the matrix suite, where binding runs
+/// against every cell's DWARF).
 #[test]
 fn test_contract_is_clean_on_every_fixture() {
     for program in PROGRAMS {
@@ -50,8 +49,8 @@ fn test_contract_is_clean_on_every_fixture() {
         for entry in &report.entries {
             if entry.class == Class::Required {
                 assert!(
-                    matches!(entry.outcome, Outcome::Resolved { .. }),
-                    "{program}: required path {} did not resolve:\n{report}",
+                    matches!(entry.outcome, WalkOutcome::Bound { .. }),
+                    "{program}: required path {} did not bind:\n{report}",
                     entry.name
                 );
             }
@@ -59,35 +58,49 @@ fn test_contract_is_clean_on_every_fixture() {
     }
 }
 
-/// Which alternative spelling binds on the primary cell, pinned per
-/// path. A regenerated fixture that silently flips one — the walk
-/// starts taking a fallback route — fails here as a reviewable diff
-/// rather than an invisible behavior change.
+/// Which spelling the binder recorded on the primary cell, pinned per
+/// role. A regenerated fixture that silently flips one — the walk
+/// starts taking a fallback route, or a versioned row selects a
+/// different family — fails here as a reviewable diff rather than an
+/// invisible behavior change.
 #[test]
-fn test_primary_cell_alternative_bindings() {
-    // (path name, 0-based alternative expected wherever it resolves)
-    let expected = [
-        // std spells the field `filename` on the pinned toolchain.
-        ("Location.file", 0),
-        // The parkers' `Shared` holds only the driver lock, so the
-        // member peels past it: the driver-less spelling binds.
-        ("parker::Inner.driver_lock", 1),
-        // This tokio's `entry` is already the `runtime::Timer` enum,
-        // so the active-variant route binds, not the flat member.
-        ("Sleep.deadline", 1),
-    ];
+fn test_primary_cell_recorded_spellings() {
     for program in PROGRAMS {
         let bundle = fixture_bundle(program);
         let view = BundleView::new(&bundle);
         let report = verify_walk_contract(&view);
-        for (name, want) in expected {
-            let entry = report.entry(name).expect(name);
-            if let Outcome::Resolved { alternative, .. } = entry.outcome {
-                assert_eq!(
-                    alternative, want,
-                    "{program}: {name} bound a different alternative:\n{report}"
-                );
-            }
+
+        // The pinned toolchain spells the field `filename: NonNull<str>`,
+        // so the wrapper-explicit spelling binds; the bare-`filename` and
+        // pre-rename `file` spellings stay declared as fallbacks.
+        let entry = report.entry("Location.file").expect("in table");
+        if let WalkOutcome::Bound {
+            spelling,
+            spellings,
+            ..
+        } = entry.outcome
+        {
+            assert_eq!(spelling, 0, "{program}: Location.file:\n{report}");
+            assert_eq!(spellings, 3, "{program}: Location.file:\n{report}");
+        }
+
+        // The primary tokio (1.52.x) keeps the deadline behind the
+        // 1.49 flavor enum: the versioned row must record the V1_49
+        // family's spelling.
+        let entry = report.entry("Sleep.deadline").expect("in table");
+        if let WalkOutcome::Bound { note, .. } = &entry.outcome {
+            let note = note.as_deref().unwrap_or("");
+            assert!(
+                note.contains("family v1_49"),
+                "{program}: Sleep.deadline note {note:?}:\n{report}"
+            );
+        }
+
+        // The driver-lock row collapsed to one explicit spelling when
+        // the implicit-peel alternatives died with the old interpreter.
+        let entry = report.entry("parker::Inner.driver_lock").expect("in table");
+        if let WalkOutcome::Bound { spellings, .. } = entry.outcome {
+            assert_eq!(spellings, 1, "{program}:\n{report}");
         }
     }
 }
@@ -102,98 +115,56 @@ fn test_unused_leaf_is_absent_not_broken() {
     let report = verify_walk_contract(&view);
     let entry = report.entry("FuturesUnordered.head_all").expect("in table");
     assert!(
-        matches!(entry.outcome, Outcome::Absent { .. }),
+        matches!(entry.outcome, WalkOutcome::Absent { .. }),
         "{:?}",
         entry.outcome
     );
     assert!(report.is_clean());
 }
 
-/// A navigation the layout cannot satisfy is loud and self-describing:
-/// the report names the missing member and what the type actually has,
-/// the way `--explain-format` does for detectors.
+/// A bundle that records no binding for a role — one produced before
+/// the role existed, or doctored — is loud and refuses a strict attach,
+/// not a silent structural decline.
 #[test]
-fn test_a_moved_layout_is_loud() {
-    let bundle = fixture_bundle("simple-await");
+fn test_a_missing_binding_is_loud() {
+    let mut bundle = fixture_bundle("simple-await");
+    bundle
+        .walks
+        .entries
+        .remove(&WalkRole::HeaderState)
+        .expect("the fixture records the role");
+
     let view = BundleView::new(&bundle);
-
-    let moved = WalkPath {
-        name: "Header.gone",
-        root: Root::Infra(InfraRoot::Header),
-        alts: &[&[Nav::Member("owned_by_a_future_tokio")]],
-        terminal: Terminal::Any,
-        class: Class::Required,
-        needs: None,
-    };
-    let Outcome::Broken { errors } = moved.check(&view) else {
-        panic!(
-            "a missing member must be Broken, not {:?}",
-            moved.check(&view)
-        );
-    };
-    let text = errors.join("; ");
-    assert!(text.contains("no member owned_by_a_future_tokio"), "{text}");
-    assert!(text.contains("has: "), "{text}");
-
-    // A wrong terminal shape is breakage too, not a bind: the path
-    // navigates but does not land on what the walk would then read.
-    let misshapen = WalkPath {
-        name: "Header.state_as_pointer",
-        root: Root::Infra(InfraRoot::Header),
-        alts: &[&[Nav::Member("state")]],
-        terminal: Terminal::Pointer,
-        class: Class::Required,
-        needs: None,
-    };
+    let report = verify_walk_contract(&view);
+    let entry = report.entry("Header.state").expect("in table");
     assert!(
-        matches!(misshapen.check(&view), Outcome::Broken { .. }),
+        matches!(entry.outcome, WalkOutcome::Broken { .. }),
         "{:?}",
-        misshapen.check(&view)
+        entry.outcome
     );
+    assert!(!report.is_clean());
+    let text = report.to_string();
+    assert!(text.contains("BROKEN  Header.state"), "{text}");
+    assert!(text.contains("no walk binding"), "{text}");
 }
 
-/// An instrumentation member a plain build never has is expected
-/// absence when the bundle records the cfg as off — and stays loud
-/// drift when the bundle says the cfg was on (the member should have
-/// been there) or cannot say.
+/// The fixtures are built `--cfg tokio_unstable`, so the
+/// instrumentation member exists and its capability-conditional role
+/// binds — extraction classified it, and the record says so.
 #[test]
-fn test_missing_instrumentation_is_absent_only_when_recorded_off() {
-    let mut bundle = fixture_bundle("simple-await");
-
-    // Give the vtable the shape of a plain build: no
-    // spawn_location_offset member.
-    let vtable = bundle.infra.vtable;
-    let exegesis::bundle::TypeDef::Struct { members, .. } =
-        &mut bundle.types.types[vtable.0 as usize]
-    else {
-        panic!("the vtable is a struct");
-    };
-    let before = members.len();
-    let strings = bundle.strings.clone();
-    members.retain(|m| strings.get(m.name) != Some("spawn_location_offset"));
-    assert_eq!(members.len(), before - 1, "the fixture had the member");
-
-    for (recorded, expect_absent) in [(Some(false), true), (Some(true), false), (None, false)] {
-        bundle.meta.tokio_unstable = recorded;
-        let view = BundleView::new(&bundle);
-        let report = verify_walk_contract(&view);
-        let entry = report
-            .entry("Vtable.spawn_location_offset")
-            .expect("in table");
-        if expect_absent {
-            assert!(
-                matches!(entry.outcome, Outcome::Absent { .. }),
-                "{recorded:?}: {:?}",
-                entry.outcome
-            );
-        } else {
-            assert!(
-                matches!(entry.outcome, Outcome::Broken { .. }),
-                "{recorded:?}: {:?}",
-                entry.outcome
-            );
-        }
-    }
+fn test_instrumentation_binds_on_the_unstable_fixture() {
+    let bundle = fixture_bundle("simple-await");
+    assert_eq!(bundle.meta.tokio_unstable, Some(true));
+    let view = BundleView::new(&bundle);
+    let report = verify_walk_contract(&view);
+    let entry = report
+        .entry("Vtable.spawn_location_offset")
+        .expect("in table");
+    assert!(
+        matches!(entry.outcome, WalkOutcome::Bound { .. }),
+        "{:?}",
+        entry.outcome
+    );
 }
 
 /// Every fixture records the statics the walk resolves through the
@@ -208,7 +179,7 @@ fn test_statics_are_recorded() {
         for name in ["statics.tls_context_key", "statics.task_waker_vtable"] {
             let entry = report.entry(name).expect(name);
             assert!(
-                matches!(entry.outcome, Outcome::Resolved { .. }),
+                matches!(entry.outcome, WalkOutcome::Bound { .. }),
                 "{program}: {name}: {:?}",
                 entry.outcome
             );
@@ -216,16 +187,16 @@ fn test_statics_are_recorded() {
     }
 }
 
-/// The stage decode is checked over every task cell the bundle binds,
-/// and the report says how many that was — the count is what makes "it
-/// verified" mean something.
+/// The stage decode was bound over every task cell the bundle binds,
+/// and the recorded note says how many that was — the count is what
+/// makes "it verified" mean something.
 #[test]
-fn test_cell_family_is_checked_per_cell() {
+fn test_cell_rows_record_the_cell_count() {
     let bundle = fixture_bundle("simple-await");
     let view = BundleView::new(&bundle);
     let report = verify_walk_contract(&view);
-    let entry = report.entry(contract::CELL_STAGE.name).expect("in table");
-    let Outcome::Resolved {
+    let entry = report.entry("Cell.stage").expect("in table");
+    let WalkOutcome::Bound {
         note: Some(note), ..
     } = &entry.outcome
     else {

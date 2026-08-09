@@ -10,7 +10,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Shared.remotes
   ok      Remote.unpark
   ok      parker::Inner.state
-  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      parker::Inner.driver_lock
   ok      Handle.blocking_metrics
   ok      SpawnerMetrics.num_threads
   ok      SpawnerMetrics.num_idle_threads
@@ -30,7 +30,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
   absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
-  ok      Location.file (alternative 1 of 2)
+  ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
   ok      Cell.stage (5 cells)
@@ -39,7 +39,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
-  ok      Sleep.deadline (alternative 3 of 3)
+  ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
   ok      JoinHandle.raw
@@ -77,7 +77,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Shared.remotes
   ok      Remote.unpark
   ok      parker::Inner.state
-  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      parker::Inner.driver_lock
   ok      Handle.blocking_metrics
   ok      SpawnerMetrics.num_threads
   ok      SpawnerMetrics.num_idle_threads
@@ -97,7 +97,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
   absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
-  ok      Location.file (alternative 1 of 2)
+  ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
   ok      Cell.stage (3 cells)
@@ -144,7 +144,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Shared.remotes
   ok      Remote.unpark
   ok      parker::Inner.state
-  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      parker::Inner.driver_lock
   ok      Handle.blocking_metrics
   ok      SpawnerMetrics.num_threads
   ok      SpawnerMetrics.num_idle_threads
@@ -164,7 +164,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
   absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
-  ok      Location.file (alternative 1 of 2)
+  ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
   ok      Cell.stage (3 cells)
@@ -211,7 +211,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Shared.remotes
   ok      Remote.unpark
   ok      parker::Inner.state
-  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      parker::Inner.driver_lock
   ok      Handle.blocking_metrics
   ok      SpawnerMetrics.num_threads
   ok      SpawnerMetrics.num_idle_threads
@@ -231,7 +231,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
   absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
-  ok      Location.file (alternative 1 of 2)
+  ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
   ok      Cell.stage (5 cells)
@@ -278,7 +278,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Shared.remotes
   ok      Remote.unpark
   ok      parker::Inner.state
-  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      parker::Inner.driver_lock
   ok      Handle.blocking_metrics
   ok      SpawnerMetrics.num_threads
   ok      SpawnerMetrics.num_idle_threads
@@ -298,7 +298,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
   absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
-  ok      Location.file (alternative 1 of 2)
+  ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
   ok      Cell.stage (5 cells)
@@ -345,7 +345,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Shared.remotes
   ok      Remote.unpark
   ok      parker::Inner.state
-  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      parker::Inner.driver_lock
   ok      Handle.blocking_metrics
   ok      SpawnerMetrics.num_threads
   ok      SpawnerMetrics.num_idle_threads
@@ -365,7 +365,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
   absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
-  ok      Location.file (alternative 1 of 2)
+  ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
   ok      Cell.stage (3 cells)
@@ -412,7 +412,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Shared.remotes
   ok      Remote.unpark
   ok      parker::Inner.state
-  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      parker::Inner.driver_lock
   ok      Handle.blocking_metrics
   ok      SpawnerMetrics.num_threads
   ok      SpawnerMetrics.num_idle_threads
@@ -432,7 +432,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
   absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
-  ok      Location.file (alternative 1 of 2)
+  ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
   ok      Cell.stage (5 cells)
@@ -441,7 +441,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
-  ok      Sleep.deadline (alternative 3 of 3)
+  ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
   ok      JoinHandle.raw
@@ -479,7 +479,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Shared.remotes
   ok      Remote.unpark
   ok      parker::Inner.state
-  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      parker::Inner.driver_lock
   ok      Handle.blocking_metrics
   ok      SpawnerMetrics.num_threads
   ok      SpawnerMetrics.num_idle_threads
@@ -499,7 +499,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
   absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
-  ok      Location.file (alternative 1 of 2)
+  ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
   ok      Cell.stage (5 cells)
@@ -546,7 +546,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Shared.remotes
   ok      Remote.unpark
   ok      parker::Inner.state
-  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      parker::Inner.driver_lock
   ok      Handle.blocking_metrics
   ok      SpawnerMetrics.num_threads
   ok      SpawnerMetrics.num_idle_threads
@@ -566,7 +566,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
   absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
-  ok      Location.file (alternative 1 of 2)
+  ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
   ok      Cell.stage (3 cells)
@@ -613,7 +613,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Shared.remotes
   ok      Remote.unpark
   ok      parker::Inner.state
-  ok      parker::Inner.driver_lock (alternative 2 of 2)
+  ok      parker::Inner.driver_lock
   ok      Handle.blocking_metrics
   ok      SpawnerMetrics.num_threads
   ok      SpawnerMetrics.num_idle_threads
@@ -633,7 +633,7 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 64 entries, 0
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
   absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
-  ok      Location.file (alternative 1 of 2)
+  ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
   ok      Cell.stage (5 cells)
