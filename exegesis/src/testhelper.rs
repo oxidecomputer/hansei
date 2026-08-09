@@ -9,13 +9,14 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
-// 1.97.0: first release with v0 symbol mangling by default, so linkage
-// names in fixtures match what the bundle join tables will see. Bumping
-// the pin is a deliberate change — these tests double as the canary for
-// DWARF-shape and mangling drift across toolchains.
+// The matrix's primary toolchain (matrix.toml), which is at or above
+// 1.97.0 — the first release with v0 symbol mangling by default, so
+// linkage names in fixtures match what the bundle join tables will see.
+// Bumping the pin is a deliberate change — these tests double as the
+// canary for DWARF-shape and mangling drift across toolchains.
 const TOOLCHAIN: &str = r#"
 [toolchain]
-channel = "1.97.0"
+channel = "1.97.1"
 profile = "default"
 "#;
 

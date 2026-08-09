@@ -19,7 +19,7 @@
 # lock with `cargo update -p tokio --precise <ver>` so only tokio and
 # its dependents move.
 
-primary = { tokio = "1.52.4", toolchain = "1.97.0" }
+primary = { tokio = "1.52.4", toolchain = "1.97.1" }
 
 [tokio]
 floor = "1.47.5"
