@@ -10,7 +10,7 @@
 
 use crate::bundle::schema::{
     Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MapEntries, MemberDef, MemberRef,
-    Notation, ScalarDecode, Selector, StaticsTable, Step, Stmt, TypeDef, ValueExpr,
+    Notation, ScalarDecode, Selector, StaticsTable, Step, Stmt, TypeDef, ValueExpr, WalkOutcome,
     strip_llvm_suffix,
 };
 use crate::bundle::shape::{Addressed, Shape};
@@ -26,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 31;
+pub const FORMAT_VERSION: u32 = 32;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -167,6 +167,16 @@ fn selector_target(
                     .get(variant.payload.ty)
                     .expect("variant payload validated before formats");
             }
+            Step::ActiveVariant => {
+                // Which variant is live is a runtime fact; only a walk
+                // binding may take it (validated by `walk_targets`, which
+                // fans out over every variant).
+                return Err(Error::Corrupt(format!(
+                    "{what} for type {}: step {step} takes whichever variant is live, \
+                     which only a walk binding may",
+                    root.0
+                )));
+            }
         }
     }
     Ok(current)
@@ -195,12 +205,132 @@ fn selector_offset(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> Optio
                 let variant = variant_named(shape, *name)?;
                 (variant.payload.offset, variant.payload.ty)
             }
-            Step::Deref => return None,
+            Step::Deref | Step::ActiveVariant => return None,
         };
         offset = offset.checked_add(member_offset)?;
         def = bundle.types.get(ty)?;
     }
     Some(offset)
+}
+
+/// Resolve a walk binding's steps from `current`, returning every type the
+/// path can land on — one per variant crossed by a [`Step::ActiveVariant`].
+/// The runtime walker resolves that step by decoding the live discriminant,
+/// so the static check requires *every* variant to satisfy the remaining
+/// steps, since any of them may be the one found. The cycle guard matches
+/// [`selector_target`]'s: a member run within one allocation may not
+/// revisit a type, and the guard resets across a `Deref`.
+fn walk_targets(
+    bundle: &Bundle,
+    current: BundleTypeId,
+    steps: &[Step],
+    what: &str,
+    seen: &mut Vec<BundleTypeId>,
+) -> Result<Vec<BundleTypeId>> {
+    let [step, rest @ ..] = steps else {
+        return Ok(vec![current]);
+    };
+    let corrupt = |msg: String| Err(Error::Corrupt(format!("{what}: {msg}")));
+    let def = bundle
+        .types
+        .get(current)
+        .expect("walk types are checked before their steps are walked");
+    let descend = |bundle, ty: BundleTypeId, seen: &mut Vec<BundleTypeId>| {
+        if seen.contains(&ty) {
+            return corrupt("the steps contain a type cycle".to_owned());
+        }
+        seen.push(ty);
+        let out = walk_targets(bundle, ty, rest, what, seen);
+        seen.pop();
+        out
+    };
+    match step {
+        Step::Member(at) => {
+            let members = match def {
+                TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
+                _ => return corrupt("a member step traverses a non-aggregate type".to_owned()),
+            };
+            let member = member_at(members, at)
+                .ok_or_else(|| Error::Corrupt(format!("{what}: {}", unresolved(at))))?;
+            descend(bundle, member.ty, seen)
+        }
+        Step::Deref => {
+            let TypeDef::Pointer { target, .. } = def else {
+                return corrupt("a deref step follows a non-pointer type".to_owned());
+            };
+            walk_targets(bundle, *target, rest, what, &mut vec![*target])
+        }
+        Step::Variant(name) => {
+            let TypeDef::Enum { shape, .. } = def else {
+                return corrupt("a variant step enters a non-enum type".to_owned());
+            };
+            let variant = variant_named(shape, *name).ok_or_else(|| {
+                Error::Corrupt(format!(
+                    "{what}: no unique variant with string ref {}",
+                    name.0
+                ))
+            })?;
+            descend(bundle, variant.payload.ty, seen)
+        }
+        Step::ActiveVariant => {
+            let TypeDef::Enum { shape, .. } = def else {
+                return corrupt("an active-variant step enters a non-enum type".to_owned());
+            };
+            if shape.variants.is_empty() {
+                return corrupt(
+                    "an active-variant step enters an enum with no variants".to_owned(),
+                );
+            }
+            let mut targets = Vec::new();
+            for variant in &shape.variants {
+                targets.extend(descend(bundle, variant.payload.ty, seen)?);
+            }
+            Ok(targets)
+        }
+    }
+}
+
+/// Validate the walks table: every recorded binding's roots are real types
+/// and its steps resolve from every root — the same guarantee display
+/// selectors get — so a binding cannot ship pointing at a member the bundle
+/// does not record. Absent and broken entries carry no navigation.
+fn check_walks(bundle: &Bundle) -> Result<()> {
+    for (role, binding) in &bundle.walks.entries {
+        let what = format!("walk binding {}", role.name());
+        match &binding.outcome {
+            WalkOutcome::Bound {
+                spelling,
+                spellings,
+                ..
+            } => {
+                if spelling >= spellings {
+                    return Err(Error::Corrupt(format!(
+                        "{what}: bound to spelling {spelling} of {spellings}"
+                    )));
+                }
+                if binding.roots.is_empty() {
+                    return Err(Error::Corrupt(format!("{what}: bound with no roots")));
+                }
+                for &root in &binding.roots {
+                    if bundle.types.get(root).is_none() {
+                        return Err(Error::Corrupt(format!(
+                            "{what}: root type id {} out of range",
+                            root.0
+                        )));
+                    }
+                    walk_targets(bundle, root, &binding.steps, &what, &mut vec![root])?;
+                }
+            }
+            WalkOutcome::Absent { .. } | WalkOutcome::Broken { .. } => {
+                if !binding.steps.is_empty() || !binding.roots.is_empty() {
+                    return Err(Error::Corrupt(format!(
+                        "{what}: an unbound entry carries navigation"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether the bundle's `id` meets `shape`. This is the [`TypeTable`] half of
@@ -1191,6 +1321,8 @@ impl Bundle {
         }
 
         let StaticsTable { entries: _ } = &self.statics; // plain strings, nothing to check
+
+        check_walks(self)?;
 
         let infra = &self.infra;
         for (what, id) in [

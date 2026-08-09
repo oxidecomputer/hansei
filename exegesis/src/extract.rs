@@ -25,7 +25,7 @@ use crate::bundle::{
     DynFutureTable, FutureKind, InfraTypes, MemberDef, MemberRef, Meta, Provenance,
     ProvenanceTable, SourceLoc, StaticDef, StaticRole, StaticsTable, StrRef, StringInterner,
     TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
-    strip_build_prefix,
+    WalksTable, strip_build_prefix,
 };
 use crate::detect::{Family, FormatExplanation, struct_of, trace, unique_member};
 use crate::raw_types::{NsId, RawType, VariantShape as RawVariantShape};
@@ -1238,6 +1238,7 @@ fn extract_from_view_with_vtable_types(
             by_normalized_symbol: dyn_normalized,
         },
         statics: StaticsTable { entries: statics },
+        walks: WalksTable::default(),
         infra: InfraTypes {
             header: infra_bundle_ids[0],
             vtable: infra_bundle_ids[1],

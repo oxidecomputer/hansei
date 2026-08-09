@@ -18,8 +18,8 @@ pub use schema::{
     DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
     MemberRef, Meta, Notation, Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc,
     StaticDef, StaticRole, StaticsTable, Step, Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry,
-    TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape, strip_build_prefix,
-    strip_llvm_suffix,
+    TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape, WalkBinding, WalkOutcome,
+    WalkRole, WalksTable, strip_build_prefix, strip_llvm_suffix,
 };
 pub use shape::{Addressed, Shape};
 pub use strings::{StrRef, StringInterner, StringTable};

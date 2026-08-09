@@ -3979,14 +3979,14 @@ mod trace_render_tests {
                ▸ Suspend0  src/bin/futurelock.rs:72  2 locals
                  └─  3  async fn      tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()>
                     suspends:
-                    ▸ Suspend0  tokio-1.50.0/src/sync/mutex.rs:455
+                    ▸ Suspend0  tokio-1.52.4/src/sync/mutex.rs:455
                       └─  4  async block   tokio::sync::mutex::{impl#10}::lock::{async_fn#0}::{async_block_env#0}<()>
                          suspends:
-                         ▸ Suspend0  tokio-1.50.0/src/sync/mutex.rs:436
+                         ▸ Suspend0  tokio-1.52.4/src/sync/mutex.rs:436
                            └─  5  async fn      tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()>
                               suspends:
-                                Suspend0  tokio-1.50.0/src/sync/mutex.rs:656  1 local  tokio::trace::async_trace_leaf::{async_fn_env#0}
-                              ▸ Suspend1  tokio-1.50.0/src/sync/mutex.rs:658
+                                Suspend0  tokio-1.52.4/src/sync/mutex.rs:656  1 local  tokio::trace::async_trace_leaf::{async_fn_env#0}
+                              ▸ Suspend1  tokio-1.52.4/src/sync/mutex.rs:658
                                 └─* 6  future        tokio::sync::batch_semaphore::Acquire
                                    waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
 "
