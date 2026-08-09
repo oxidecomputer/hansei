@@ -2,7 +2,7 @@
 //! supported tokio version: the sync primitives, the mpsc block chain,
 //! and the loom shims. A tokio release is what moves anything here; a
 //! layout a release has restructured lives in a per-family module
-//! (`tokio_v1_50`) instead.
+//! (`tokio_v1_47`) instead.
 
 use super::ReachStep::{Deref, FindParam, Named, PeelTo, Resolved, Variant};
 use super::crates::{is_raw_mutex, mutex_byte_path};
