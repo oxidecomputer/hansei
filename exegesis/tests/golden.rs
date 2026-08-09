@@ -426,11 +426,11 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         // offset these asserts pin — its terminal offset is per-platform:
         // one arm per system the suite runs on, since no two agree.
         let wheel_offset = if cfg!(target_os = "macos") {
-            648
+            672
         } else if cfg!(target_os = "linux") {
-            624
+            648
         } else {
-            632
+            656
         };
         assert_format(
             program,

@@ -1,5 +1,5 @@
 program: futurelock
-walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 10 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 10 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      Context.current_task_id
@@ -66,7 +66,7 @@ walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
 
 program: simple-await
-walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 25 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 25 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      Context.current_task_id
@@ -133,7 +133,7 @@ walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
 
 program: nested-await
-walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 25 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 25 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      Context.current_task_id
@@ -200,7 +200,7 @@ walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
 
 program: dyn-future
-walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 19 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 19 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      Context.current_task_id
@@ -267,7 +267,7 @@ walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0
   ok      ListEntry.next
 
 program: select-combinator
-walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 25 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 25 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      Context.current_task_id
@@ -334,7 +334,7 @@ walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
 
 program: many-tasks
-walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 26 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 26 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      Context.current_task_id
@@ -401,7 +401,7 @@ walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
 
 program: sleep-join
-walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 22 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 22 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      Context.current_task_id
@@ -468,7 +468,7 @@ walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
 
 program: channels
-walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 13 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 13 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      Context.current_task_id
@@ -535,7 +535,7 @@ walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
 
 program: unordered
-walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 22 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 22 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      Context.current_task_id
@@ -602,7 +602,7 @@ walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
 
 program: joinset
-walk contract (tokio 1.50.0, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 7 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 64 entries, 0 broken, 7 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      Context.current_task_id
