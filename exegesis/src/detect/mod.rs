@@ -222,9 +222,12 @@ type Detector = fn(&mut Emitter<'_>, TypeId) -> Option<DisplayNode>;
 /// derived `Ord` both rely on it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Family {
-    /// tokio 1.50 through 1.52: the timer entry keeps a `registered` flag
-    /// and a cached `deadline` instant beside a lazily-registered
-    /// `Option<TimerShared>`.
+    /// Every supported tokio release through 1.52 — 1.50 is the dispatch
+    /// floor, and selection clamps older versions here: the timer entry
+    /// keeps a `registered` flag and a cached `deadline` instant beside a
+    /// lazily-registered `Option<TimerShared>`. The pre-1.49 respellings
+    /// (a bare `Sleep.entry`, an unflavored `time::Inner`) are ordered
+    /// alternatives inside its detectors, not a family boundary.
     V1_50,
     /// tokio 1.53 onward: the timer entry holds its `TimerShared` directly,
     /// registration lives in the state word with the registration tick
