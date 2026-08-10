@@ -129,6 +129,13 @@ impl Snapshot {
         Self::read(File::open(path)?)
     }
 
+    /// The recorded memory runs, in address order — what this capture
+    /// actually holds, for diagnostics and for tests that corrupt a
+    /// replay and must know where the recorded structures live.
+    pub fn segments(&self) -> impl Iterator<Item = std::ops::Range<u64>> + '_ {
+        self.memory.iter().map(|s| s.addr..s.end())
+    }
+
     /// The segment containing `addr`, if captured.
     fn segment(&self, addr: u64) -> Option<&Segment> {
         let idx = self.memory.partition_point(|s| s.addr <= addr);
