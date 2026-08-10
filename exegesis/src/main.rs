@@ -67,12 +67,32 @@ enum Cmd {
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> std::process::ExitCode {
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(EnvFilter::from_default_env())
         .init();
 
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        // Spell the whole cause chain out. Returning the error from
+        // `main` prints its `Debug` form — `Error: NoTaskFutures` — and
+        // the messages these errors were given, hints included, never
+        // reach anyone.
+        Err(e) => {
+            eprint!("error: {e}");
+            let mut source = e.source();
+            while let Some(cause) = source {
+                eprint!(": {cause}");
+                source = cause.source();
+            }
+            eprintln!();
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().cmd {
         Cmd::Extract {
             binary,
