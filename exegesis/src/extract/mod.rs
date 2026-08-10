@@ -417,6 +417,56 @@ pub fn extract_from_view(
     extract_from_view_with_vtable_types(view, symbols, ident, opts, &[])
 }
 
+/// One infra type's slot: the DWARF path it is found under, and the type
+/// the lookup resolved — `None` when the target has no such type.
+struct InfraSlot {
+    path: &'static str,
+    id: Option<TypeId>,
+}
+
+/// The infra types extraction locates (§5.4), one named field per role, so
+/// the lookup, the tokio_unstable probe, the walk roots, and the bundle's
+/// [`InfraTypes`] all address a slot by name — a reorder here cannot
+/// quietly relabel one. Declaration order is emission order: the bundle
+/// ids the slots emit under are sequential, so it must not change without
+/// a reason.
+struct InfraIds {
+    header: InfraSlot,
+    vtable: InfraSlot,
+    trailer: InfraSlot,
+    context: InfraSlot,
+    scheduler_handle: InfraSlot,
+    mt_handle: InfraSlot,
+    location: InfraSlot,
+    raw_waker_vtable: InfraSlot,
+}
+
+impl InfraIds {
+    /// Look every role up in the target's DWARF, recording each miss.
+    fn resolve(view: &DwView<'_>, reader: &DwReader<'_>, stats: &mut ExtractStats) -> InfraIds {
+        let mut slot = |path: &'static str| {
+            let id = match view.find_all_ids(path).first() {
+                Some(&id) => Some(reader.canonicalize(id)),
+                None => {
+                    stats.infra_missing.push(path.to_owned());
+                    None
+                }
+            };
+            InfraSlot { path, id }
+        };
+        InfraIds {
+            header: slot("tokio::runtime::task::core::Header"),
+            vtable: slot("tokio::runtime::task::raw::Vtable"),
+            trailer: slot("tokio::runtime::task::core::Trailer"),
+            context: slot("tokio::runtime::context::Context"),
+            scheduler_handle: slot("tokio::runtime::scheduler::Handle"),
+            mt_handle: slot("tokio::runtime::scheduler::multi_thread::handle::Handle"),
+            location: slot("core::panic::location::Location"),
+            raw_waker_vtable: slot("core::task::wake::RawWakerVTable"),
+        }
+    }
+}
+
 fn extract_from_view_with_vtable_types(
     view: &DwView<'_>,
     symbols: &[&str],
@@ -558,40 +608,14 @@ fn extract_from_view_with_vtable_types(
     stats.dyn_futures = fut_polls.len();
 
     // Infra types (§5.4) and statics.
-    let infra_paths: [(&str, &str); 8] = [
-        ("header", "tokio::runtime::task::core::Header"),
-        ("vtable", "tokio::runtime::task::raw::Vtable"),
-        ("trailer", "tokio::runtime::task::core::Trailer"),
-        ("context", "tokio::runtime::context::Context"),
-        ("scheduler_handle", "tokio::runtime::scheduler::Handle"),
-        (
-            "mt_handle",
-            "tokio::runtime::scheduler::multi_thread::handle::Handle",
-        ),
-        ("location", "core::panic::location::Location"),
-        ("raw_waker_vtable", "core::task::wake::RawWakerVTable"),
-    ];
-    let mut infra_ids: Vec<Option<TypeId>> = Vec::new();
-    for (_, path) in infra_paths {
-        let ids = view.find_all_ids(path);
-        if ids.is_empty() {
-            stats.infra_missing.push(path.to_owned());
-            infra_ids.push(None);
-        } else {
-            infra_ids.push(Some(reader.canonicalize(ids[0])));
-        }
-    }
+    let infra = InfraIds::resolve(view, reader, &mut stats);
 
     // Whether the target was built with `--cfg tokio_unstable`, decided
     // structurally: the task `Vtable`'s `spawn_location_offset` member is
     // behind that cfg (tokio 1.50 through 1.53), so its presence in an
     // otherwise-resolved vtable is the build flavor. Unknown when the
     // vtable type itself is missing.
-    let vtable_slot = infra_paths
-        .iter()
-        .position(|(key, _)| *key == "vtable")
-        .expect("infra_paths names a vtable slot");
-    let tokio_unstable = infra_ids[vtable_slot].map(|vtable| {
+    let tokio_unstable = infra.vtable.id.map(|vtable| {
         struct_of(reader, vtable).is_some_and(|st| {
             st.members
                 .iter()
@@ -707,14 +731,20 @@ fn extract_from_view_with_vtable_types(
         dyn_table.insert(sym.clone(), em.emit(*t));
     }
 
-    let infra_bundle_ids: Vec<BundleTypeId> = infra_ids
-        .iter()
-        .zip(infra_paths.iter())
-        .map(|(id, (_, path))| match id {
-            Some(id) => em.emit(*id),
-            None => em.placeholder(&format!("<missing: {path}>")),
-        })
-        .collect();
+    let mut emit_infra = |slot: &InfraSlot| match slot.id {
+        Some(id) => em.emit(id),
+        None => em.placeholder(&format!("<missing: {}>", slot.path)),
+    };
+    let infra_types = InfraTypes {
+        header: emit_infra(&infra.header),
+        vtable: emit_infra(&infra.vtable),
+        trailer: emit_infra(&infra.trailer),
+        context: emit_infra(&infra.context),
+        scheduler_handle: emit_infra(&infra.scheduler_handle),
+        mt_handle: emit_infra(&infra.mt_handle),
+        location: emit_infra(&infra.location),
+        raw_waker_vtable: emit_infra(&infra.raw_waker_vtable),
+    };
 
     for id in include_ids {
         em.emit(id);
@@ -728,19 +758,13 @@ fn extract_from_view_with_vtable_types(
     // map, and its recorded roots are bundle ids — and before `em.finish()`,
     // since it interns the names its steps address. Failure is recorded in
     // the outcomes, never fatal here.
-    let infra = |key: &str| {
-        infra_ids[infra_paths
-            .iter()
-            .position(|(k, _)| *k == key)
-            .expect("infra_paths names every walk root")]
-    };
     let walk_roots = crate::detect::walk::WalkRoots {
-        context: infra("context"),
-        header: infra("header"),
-        trailer: infra("trailer"),
-        vtable: infra("vtable"),
-        location: infra("location"),
-        mt_handle: infra("mt_handle"),
+        context: infra.context.id,
+        header: infra.header.id,
+        trailer: infra.trailer.id,
+        vtable: infra.vtable.id,
+        location: infra.location.id,
+        mt_handle: infra.mt_handle.id,
         cells: &walk_cells,
         tokio_unstable,
     };
@@ -797,16 +821,7 @@ fn extract_from_view_with_vtable_types(
         },
         statics: StaticsTable { entries: statics },
         walks,
-        infra: InfraTypes {
-            header: infra_bundle_ids[0],
-            vtable: infra_bundle_ids[1],
-            trailer: infra_bundle_ids[2],
-            context: infra_bundle_ids[3],
-            scheduler_handle: infra_bundle_ids[4],
-            mt_handle: infra_bundle_ids[5],
-            location: infra_bundle_ids[6],
-            raw_waker_vtable: infra_bundle_ids[7],
-        },
+        infra: infra_types,
         provenance: ProvenanceTable {
             entries: provenance,
         },
