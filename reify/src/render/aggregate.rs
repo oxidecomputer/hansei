@@ -10,7 +10,10 @@ use exegesis::bundle::{BundleMember, BundleType};
 use std::fmt;
 
 use super::dyn_ptr::eval_dyn_pointer;
-use super::{RenderCtx, write_display_value, write_hex_bytes, write_indent};
+use super::{
+    RenderCtx, write_display_value, write_field_prefix, write_named_bytes, write_record_close,
+    write_seq_close, write_seq_prefix,
+};
 
 /// True when `members` are a Rust tuple aggregate — a tuple struct or a tuple
 /// enum variant — whose fields rustc names `__0, __1, …` in declaration order.
@@ -104,38 +107,18 @@ fn write_aggregate_body<'a>(
     if tuple {
         write!(f, "(")?;
         for (i, member) in shown.enumerate() {
-            if pretty {
-                writeln!(f)?;
-                write_indent(f, ctx.prefix, ctx.depth + 1)?;
-            } else if i > 0 {
-                write!(f, ", ")?;
-            }
+            write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, i == 0)?;
             write_member_value(f, &member, bytes, addr, ctx, pretty)?;
             if pretty {
                 write!(f, ",")?;
             }
         }
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.prefix, ctx.depth)?;
-        }
+        write_seq_close(f, pretty, ctx.prefix, ctx.depth, true)?;
         write!(f, ")")
     } else {
         write!(f, " {{")?;
         for (i, member) in shown.enumerate() {
-            if pretty {
-                writeln!(f)?;
-                write_indent(f, ctx.prefix, ctx.depth + 1)?;
-            } else {
-                // Inline, the space separates the field from the opening brace
-                // or from the preceding comma. Pretty has already indented, so
-                // adding it there would put the field one column past the
-                // closing brace's own indent.
-                if i > 0 {
-                    write!(f, ",")?;
-                }
-                write!(f, " ")?;
-            }
+            write_field_prefix(f, pretty, ctx.prefix, ctx.depth, i == 0)?;
             f.write_str(member.name())?;
             f.write_str(": ")?;
             write_member_value(f, &member, bytes, addr, ctx, pretty)?;
@@ -143,12 +126,7 @@ fn write_aggregate_body<'a>(
                 write!(f, ",")?;
             }
         }
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.prefix, ctx.depth)?;
-        } else {
-            write!(f, " ")?;
-        }
+        write_record_close(f, pretty, ctx.prefix, ctx.depth)?;
         write!(f, "}}")
     }
 }
@@ -174,19 +152,13 @@ pub(crate) fn write_rust_enum<'a>(
     ctx: RenderCtx<'_, 'a>,
 ) -> fmt::Result {
     let Some(Ok(active)) = info.ty.active_variant(info.bytes) else {
-        if !name.is_empty() {
-            write!(f, "{} ", name)?;
-        }
-        return write_hex_bytes(f, info.bytes);
+        return write_named_bytes(f, name, info.bytes);
     };
     let (variant_name, var_ty, offset) = (active.name, active.ty, active.offset);
     let start = offset as usize;
     let end = start + var_ty.size() as usize;
     let Some(variant_bytes) = info.bytes.get(start..end) else {
-        if !name.is_empty() {
-            write!(f, "{} ", name)?;
-        }
-        return write_hex_bytes(f, info.bytes);
+        return write_named_bytes(f, name, info.bytes);
     };
     let variant_addr = info.addr + offset;
     let variant_info = TypeInfoRef {

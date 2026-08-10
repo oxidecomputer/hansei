@@ -575,50 +575,31 @@ pub(crate) fn write_display_value<'a>(
             for i in 0..count {
                 let start = i * elem_size;
                 let end = start + elem_size;
-                if let Some(elem_bytes) = bytes.get(start..end) {
-                    if pretty {
-                        writeln!(f)?;
-                        write_indent(f, ctx.prefix, ctx.depth + 1)?;
-                    } else if i > 0 {
-                        write!(f, ", ")?;
-                    }
-
-                    let child = TypeInfoRef {
-                        ty: element,
-                        addr: info.addr + start as u64,
-                        bytes: elem_bytes,
-                    };
-                    write_display_value(f, &child, ctx.deeper().with_hex(hex_elements), pretty)?;
-                    if pretty {
-                        write!(f, ",")?;
-                    }
-                } else {
+                write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, i == 0)?;
+                let Some(elem_bytes) = bytes.get(start..end) else {
                     // Unreachable for a backend whose array size agrees with
                     // its element size times count, which the guard at the top
                     // of this function has already checked the buffer against.
                     // Kept because the slice is fallible and a backend that
                     // disagreed must degrade rather than read past the end.
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
                     write!(f, "<truncated>")?;
                     break;
+                };
+                let child = TypeInfoRef {
+                    ty: element,
+                    addr: info.addr + start as u64,
+                    bytes: elem_bytes,
+                };
+                write_display_value(f, &child, ctx.deeper().with_hex(hex_elements), pretty)?;
+                if pretty {
+                    write!(f, ",")?;
                 }
             }
-            if pretty && count > 0 {
-                writeln!(f)?;
-                write_indent(f, ctx.prefix, ctx.depth)?;
-            }
+            write_seq_close(f, pretty, ctx.prefix, ctx.depth, count > 0)?;
             write!(f, "]")
         }
 
-        TypeClass::Opaque => {
-            let name = ty.name();
-            if !name.is_empty() {
-                write!(f, "{} ", name)?;
-            }
-            write_hex_bytes(f, bytes)
-        }
+        TypeClass::Opaque => write_named_bytes(f, ty.name(), bytes),
     }
 }
 
@@ -681,6 +662,58 @@ pub(crate) fn write_seq_close(
         write_indent(f, prefix, depth)?;
     }
     Ok(())
+}
+
+/// Prefix punctuation before one field of a `Name { field, … }` record body.
+/// In pretty mode: a newline and one deeper indent. Inline: the space after
+/// the opening brace for the first field (`first`), a `, ` separator for the
+/// rest. Shared by the struct, aggregate, and map renderers.
+pub(crate) fn write_field_prefix(
+    f: &mut fmt::Formatter<'_>,
+    pretty: bool,
+    prefix: &str,
+    depth: usize,
+    first: bool,
+) -> fmt::Result {
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, prefix, depth + 1)
+    } else if first {
+        f.write_str(" ")
+    } else {
+        f.write_str(", ")
+    }
+}
+
+/// Whitespace closing a `Name { … }` record body, written before the caller's
+/// `}`. In pretty mode, a newline and an indent back to `depth` so the brace
+/// lines up with the opener; inline, the space separating it from the last
+/// field.
+pub(crate) fn write_record_close(
+    f: &mut fmt::Formatter<'_>,
+    pretty: bool,
+    prefix: &str,
+    depth: usize,
+) -> fmt::Result {
+    if pretty {
+        writeln!(f)?;
+        write_indent(f, prefix, depth)
+    } else {
+        f.write_str(" ")
+    }
+}
+
+/// `Name [0x…]` — the type's name (when it has one) over a raw byte dump,
+/// the fallback for an opaque and for an enum that cannot be decoded.
+pub(crate) fn write_named_bytes(
+    f: &mut fmt::Formatter<'_>,
+    name: &str,
+    bytes: &[u8],
+) -> fmt::Result {
+    if !name.is_empty() {
+        write!(f, "{} ", name)?;
+    }
+    write_hex_bytes(f, bytes)
 }
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
