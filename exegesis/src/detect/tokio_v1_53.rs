@@ -74,34 +74,12 @@ fn timer_fields<'a>(
     // been flavored since 1.49.
     let now = wheel_elapsed(emitter, root, prefix, true)?;
 
-    let registered_test = || {
-        ValueExpr::Ne(
-            Box::new(ValueExpr::Read(tick.clone())),
-            Box::new(ValueExpr::Const(u64::MAX)),
-        )
-    };
-    let ever_registered = || {
-        ValueExpr::Ne(
-            Box::new(ValueExpr::Read(registered_when.clone())),
-            Box::new(ValueExpr::Const(0)),
-        )
-    };
-    let remaining = Box::new(DisplayNode::Computed {
-        value: ValueExpr::Sub(
-            Box::new(ValueExpr::Read(tick.clone())),
-            Box::new(ValueExpr::Read(now)),
-        ),
+    use ValueExpr::{Const, Read};
+    let registered_test = || Read(tick.clone()).ne(Const(u64::MAX));
+    let ever_registered = || Read(registered_when.clone()).ne(Const(0));
+    let remaining = DisplayNode::Computed {
+        value: Read(tick.clone()) - Read(now),
         decode: ScalarDecode::Millis,
-    });
-    let payload_arm = |value, node: Box<DisplayNode>| Arm {
-        value,
-        label: None,
-        payload: Some(node),
-    };
-    let label_arm = |emitter: &mut Emitter<'_>, value, label: &str| Arm {
-        value,
-        label: Some(emitter.intern(label)),
-        payload: None,
     };
 
     // With the entry deregistered, fall back to the absolute deadline where
@@ -109,8 +87,8 @@ fn timer_fields<'a>(
     let fallback = match absolute {
         Some(node) => Box::new(node),
         None => {
-            let unregistered = label_arm(emitter, 0, "unregistered");
-            let elapsed = label_arm(emitter, 1, "elapsed");
+            let unregistered = emitter.label_arm(0, "unregistered");
+            let elapsed = emitter.label_arm(1, "elapsed");
             Box::new(DisplayNode::Variant {
                 discriminant: ever_registered(),
                 arms: vec![unregistered, elapsed],
@@ -120,13 +98,13 @@ fn timer_fields<'a>(
     };
     let deadline = DisplayNode::Variant {
         discriminant: registered_test(),
-        arms: vec![payload_arm(1, remaining)],
+        arms: vec![Arm::payload(1, remaining)],
         default: Some(fallback),
     };
 
-    let unregistered = label_arm(emitter, 0, "unregistered");
-    let elapsed = label_arm(emitter, 1, "elapsed");
-    let parked = label_arm(emitter, 1, "registered");
+    let unregistered = emitter.label_arm(0, "unregistered");
+    let elapsed = emitter.label_arm(1, "elapsed");
+    let parked = emitter.label_arm(1, "registered");
     let state = DisplayNode::Variant {
         discriminant: registered_test(),
         arms: vec![parked],

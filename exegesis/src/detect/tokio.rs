@@ -288,22 +288,13 @@ pub(super) fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Opti
     let value_sel = cross_arc(value);
     let closed_mask = 1u64;
 
+    use ValueExpr::{Const, Read};
     // unseen = observed != (state & !closed_mask), the published version; render
     // the newest value as `Some(T)` when it differs.
     let unseen = DisplayNode::Variant {
-        discriminant: ValueExpr::Ne(
-            Box::new(ValueExpr::Read(observed)),
-            Box::new(ValueExpr::And(
-                Box::new(ValueExpr::Read(state_sel.clone())),
-                Box::new(ValueExpr::Not(Box::new(ValueExpr::Const(closed_mask)))),
-            )),
-        ),
+        discriminant: Read(observed).ne(Read(state_sel.clone()) & !Const(closed_mask)),
         arms: vec![
-            Arm {
-                value: 0,
-                label: Some(emitter.intern("None")),
-                payload: None,
-            },
+            emitter.label_arm(0, "None"),
             Arm {
                 value: 1,
                 label: Some(emitter.intern("Some")),
@@ -317,22 +308,8 @@ pub(super) fn watch_receiver_node(emitter: &mut Emitter<'_>, id: TypeId) -> Opti
     };
     // closed is the low state bit, independent of the version.
     let closed = DisplayNode::Variant {
-        discriminant: ValueExpr::And(
-            Box::new(ValueExpr::Read(state_sel)),
-            Box::new(ValueExpr::Const(closed_mask)),
-        ),
-        arms: vec![
-            Arm {
-                value: 0,
-                label: Some(emitter.intern("false")),
-                payload: None,
-            },
-            Arm {
-                value: 1,
-                label: Some(emitter.intern("true")),
-                payload: None,
-            },
-        ],
+        discriminant: Read(state_sel) & Const(closed_mask),
+        arms: vec![emitter.label_arm(0, "false"), emitter.label_arm(1, "true")],
         default: None,
     };
     Some(DisplayNode::Struct {
@@ -689,33 +666,6 @@ pub(super) fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<C
     })
 }
 
-// Compact builders for the mpsc `queued` CustomList program below. The value
-// language is verbose to spell with `Box::new`; these keep the program legible.
-pub(super) fn ve_var(id: u32) -> ValueExpr {
-    ValueExpr::Var(id)
-}
-pub(super) fn ve_const(n: u64) -> ValueExpr {
-    ValueExpr::Const(n)
-}
-pub(super) fn ve_add(a: ValueExpr, b: ValueExpr) -> ValueExpr {
-    ValueExpr::Add(Box::new(a), Box::new(b))
-}
-pub(super) fn ve_sub(a: ValueExpr, b: ValueExpr) -> ValueExpr {
-    ValueExpr::Sub(Box::new(a), Box::new(b))
-}
-pub(super) fn ve_mul(a: ValueExpr, b: ValueExpr) -> ValueExpr {
-    ValueExpr::Mul(Box::new(a), Box::new(b))
-}
-pub(super) fn ve_lt(a: ValueExpr, b: ValueExpr) -> ValueExpr {
-    ValueExpr::Lt(Box::new(a), Box::new(b))
-}
-pub(super) fn ve_load(addr: ValueExpr) -> ValueExpr {
-    ValueExpr::Load {
-        addr: Box::new(addr),
-        size: crate::bundle::POINTER_SIZE as u32,
-    }
-}
-
 /// Build the synthetic `queued` field's node: a [`DisplayNode::CustomList`] that
 /// walks the mpsc block chain and emits the live `[index, tail)` messages,
 /// reproducing the retired bespoke `MpscChan` leaf from the general value
@@ -735,47 +685,40 @@ pub(super) fn mpsc_queued_node(
     count: u64,
     element: BundleTypeId,
 ) -> DisplayNode {
+    use ValueExpr::{Const, Read, Var};
+    let word = crate::bundle::POINTER_SIZE as u32;
     // `block->start_index`, recomputed at each use (there is no `start` var).
-    let start = || ve_load(ve_add(ve_var(2), ve_const(start_index_offset)));
+    let start = || (Var(2) + Const(start_index_offset)).load(word);
     DisplayNode::CustomList {
         vars: vec![
-            ValueExpr::Read(index), // 0: cur = read index
-            ValueExpr::Read(tail),  // 1: tail
-            ValueExpr::Read(head),  // 2: block = head pointer
+            Read(index), // 0: cur = read index
+            Read(tail),  // 1: tail
+            Read(head),  // 2: block = head pointer
         ],
-        condition: ValueExpr::And(
-            Box::new(ve_lt(ve_var(0), ve_var(1))),
-            Box::new(ValueExpr::Ne(Box::new(ve_var(2)), Box::new(ve_const(0)))),
-        ),
+        condition: Var(0).lt(Var(1)) & Var(2).ne(Const(0)),
         body: vec![
             // A block starting past cur is malformed; stop before the offset
             // subtraction below would underflow.
             Stmt::Break {
-                cond: ve_lt(ve_var(0), start()),
+                cond: Var(0).lt(start()),
             },
             Stmt::If {
                 // cur - start < slots: the message lives in this block.
-                cond: ve_lt(ve_sub(ve_var(0), start()), ve_const(count)),
+                cond: (Var(0) - start()).lt(Const(count)),
                 then: vec![
                     // Emit values[cur - start] at values_offset + i*stride.
                     Stmt::Emit {
-                        at: ve_add(
-                            ve_var(2),
-                            ve_add(
-                                ve_const(values_offset),
-                                ve_mul(ve_sub(ve_var(0), start()), ve_const(stride)),
-                            ),
-                        ),
+                        at: Var(2) + (Const(values_offset) + (Var(0) - start()) * Const(stride)),
                     },
                     Stmt::Set {
                         var: 0,
-                        value: ve_add(ve_var(0), ve_const(1)),
+                        value: Var(0) + Const(1),
                     },
                 ],
                 // Past this block: follow the successor pointer.
                 otherwise: vec![Stmt::Set {
                     var: 2,
-                    value: ve_load(ve_add(ve_var(2), ve_const(next_offset))),
+                    value: (Var(2) + Const(next_offset)).load(word),
                 }],
             },
         ],

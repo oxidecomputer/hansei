@@ -40,7 +40,7 @@ use self::tokio::{
     watch_state_node,
 };
 use crate::bundle::{
-    BitField, Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MemberRef, ScalarDecode,
+    Arm, BitField, Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MemberRef, ScalarDecode,
     Selector, Shape, Step, StringInterner,
 };
 use crate::extract::{Emitter, fq_name, raw_type_size};
@@ -1214,6 +1214,12 @@ impl Emitter<'_> {
     /// Build a single-bit boolean [`BitField`] rendered as `false`/`true`.
     fn bool_field(&mut self, name: &str, shift: u8) -> BitField {
         self.enum_field(name, shift, 1, &[(0, "false"), (1, "true")])
+    }
+
+    /// Build a label-only [`Arm`], interning its label.
+    fn label_arm(&mut self, value: u64, label: &str) -> Arm {
+        let label = self.intern(label);
+        Arm::labeled(value, label)
     }
 
     /// Build an unsigned-integer [`BitField`] covering all bits at and above

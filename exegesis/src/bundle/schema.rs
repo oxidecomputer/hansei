@@ -608,6 +608,27 @@ pub struct Arm {
     pub payload: Option<Box<DisplayNode>>,
 }
 
+impl Arm {
+    /// An arm that renders as its label alone — a unit variant, a state name,
+    /// a bare boolean.
+    pub fn labeled(value: u64, label: StrRef) -> Arm {
+        Arm {
+            value,
+            label: Some(label),
+            payload: None,
+        }
+    }
+
+    /// An arm that renders `node` in the value's place, with no label.
+    pub fn payload(value: u64, node: DisplayNode) -> Arm {
+        Arm {
+            value,
+            label: None,
+            payload: Some(Box::new(node)),
+        }
+    }
+}
+
 /// A small value sublanguage evaluated at render time against a value's bytes
 /// (and, across a [`Step::Deref`], the target process). It exists so a
 /// [`DisplayNode::Variant`] discriminant — a length, an index, a predicate —
@@ -648,6 +669,68 @@ pub enum ValueExpr {
     Mul(Box<ValueExpr>, Box<ValueExpr>),
     /// `1` if `lhs < rhs` (unsigned), else `0`.
     Lt(Box<ValueExpr>, Box<ValueExpr>),
+}
+
+/// Builders, so a display program composes as the expression it is instead
+/// of a pyramid of `Box::new`. The arithmetic and bitwise operators are the
+/// std traits (`a + b`, `a & !mask`); the comparisons produce a word rather
+/// than a `bool`, which the trait signatures cannot spell, so those are
+/// plain methods.
+impl ValueExpr {
+    /// `1` if `self != rhs`, else `0` ([`ValueExpr::Ne`]).
+    #[allow(clippy::should_implement_trait)] // PartialEq::ne must return bool.
+    pub fn ne(self, rhs: ValueExpr) -> ValueExpr {
+        ValueExpr::Ne(Box::new(self), Box::new(rhs))
+    }
+
+    /// `1` if `self < rhs` (unsigned), else `0` ([`ValueExpr::Lt`]).
+    pub fn lt(self, rhs: ValueExpr) -> ValueExpr {
+        ValueExpr::Lt(Box::new(self), Box::new(rhs))
+    }
+
+    /// Read a `size`-byte word at the address `self` computes
+    /// ([`ValueExpr::Load`]).
+    pub fn load(self, size: u32) -> ValueExpr {
+        ValueExpr::Load {
+            addr: Box::new(self),
+            size,
+        }
+    }
+}
+
+impl std::ops::Add for ValueExpr {
+    type Output = ValueExpr;
+    fn add(self, rhs: ValueExpr) -> ValueExpr {
+        ValueExpr::Add(Box::new(self), Box::new(rhs))
+    }
+}
+
+impl std::ops::Sub for ValueExpr {
+    type Output = ValueExpr;
+    fn sub(self, rhs: ValueExpr) -> ValueExpr {
+        ValueExpr::Sub(Box::new(self), Box::new(rhs))
+    }
+}
+
+impl std::ops::Mul for ValueExpr {
+    type Output = ValueExpr;
+    fn mul(self, rhs: ValueExpr) -> ValueExpr {
+        ValueExpr::Mul(Box::new(self), Box::new(rhs))
+    }
+}
+
+impl std::ops::BitAnd for ValueExpr {
+    type Output = ValueExpr;
+    fn bitand(self, rhs: ValueExpr) -> ValueExpr {
+        ValueExpr::And(Box::new(self), Box::new(rhs))
+    }
+}
+
+impl std::ops::Not for ValueExpr {
+    type Output = ValueExpr;
+    fn not(self) -> ValueExpr {
+        ValueExpr::Not(Box::new(self))
+    }
 }
 
 /// A storage-specific producer of key/value entries for [`DisplayNode::Map`].

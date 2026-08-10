@@ -67,49 +67,30 @@ pub(super) fn timer_fields<'a>(
     // The absolute instant, for the states with no computable remaining wait;
     // its own `Instant` alias formatters reduce it to the Timespec inside.
     let instant_at = emitter.walk(root, &under(reach![Named("deadline")]))?.0;
-    let instant = || {
-        Box::new(DisplayNode::Alias {
-            at: instant_at.clone(),
-            follow_pointers: true,
-        })
-    };
-    let instant_arm = |value, node: Box<DisplayNode>| Arm {
-        value,
-        label: None,
-        payload: Some(node),
+    let instant = || DisplayNode::Alias {
+        at: instant_at.clone(),
+        follow_pointers: true,
     };
 
-    let remaining = Box::new(DisplayNode::Computed {
-        value: ValueExpr::Sub(
-            Box::new(ValueExpr::Read(tick.clone())),
-            Box::new(ValueExpr::Read(now)),
-        ),
+    use ValueExpr::{Const, Read};
+    let remaining = DisplayNode::Computed {
+        value: Read(tick.clone()) - Read(now),
         decode: ScalarDecode::Millis,
-    });
-    let registered_read = || ValueExpr::Read(registered.clone());
-    let fired_test = || {
-        ValueExpr::Ne(
-            Box::new(ValueExpr::Read(tick.clone())),
-            Box::new(ValueExpr::Const(u64::MAX)),
-        )
     };
+    let registered_read = || Read(registered.clone());
+    let fired_test = || Read(tick.clone()).ne(Const(u64::MAX));
     let deadline = DisplayNode::Variant {
         discriminant: registered_read(),
-        arms: vec![instant_arm(0, instant())],
+        arms: vec![Arm::payload(0, instant())],
         default: Some(Box::new(DisplayNode::Variant {
             discriminant: fired_test(),
-            arms: vec![instant_arm(0, instant()), instant_arm(1, remaining)],
+            arms: vec![Arm::payload(0, instant()), Arm::payload(1, remaining)],
             default: None,
         })),
     };
-    let label_arm = |emitter: &mut Emitter<'_>, value, label: &str| Arm {
-        value,
-        label: Some(emitter.intern(label)),
-        payload: None,
-    };
-    let unregistered = label_arm(emitter, 0, "unregistered");
-    let elapsed = label_arm(emitter, 0, "elapsed");
-    let parked = label_arm(emitter, 1, "registered");
+    let unregistered = emitter.label_arm(0, "unregistered");
+    let elapsed = emitter.label_arm(0, "elapsed");
+    let parked = emitter.label_arm(1, "registered");
     let state = DisplayNode::Variant {
         discriminant: registered_read(),
         arms: vec![unregistered],
