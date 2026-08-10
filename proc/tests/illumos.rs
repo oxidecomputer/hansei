@@ -378,10 +378,22 @@ fn test_reads_see_the_targets_memory() {
             "({who})"
         );
 
+        // The same bytes as a borrow where the backend has a mapping to
+        // lend — the core does; a live grab reads through a handle and
+        // keeps `pread` as its libproc-compat read instead.
         let mut buf = [0u8; 8];
-        p.pread_exact(&mut buf, addr).unwrap();
-        assert_eq!(buf, MARKER_VALUE.to_le_bytes(), "({who})");
-        assert_eq!(p.pread(&mut buf, addr).unwrap(), 8, "({who})");
+        match p.pslice(addr, 8) {
+            Some(bytes) => {
+                assert_eq!(who, "core", "a live grab lent a slice");
+                assert_eq!(bytes, MARKER_VALUE.to_le_bytes());
+            }
+            None => {
+                assert_eq!(who, "live", "the core failed to lend a slice");
+                p.pread_exact(&mut buf, addr).unwrap();
+                assert_eq!(buf, MARKER_VALUE.to_le_bytes());
+                assert_eq!(p.pread(&mut buf, addr).unwrap(), 8);
+            }
+        }
 
         // And the same bytes through the Target trait.
         assert_eq!(
@@ -395,16 +407,18 @@ fn test_reads_see_the_targets_memory() {
         // fill its buffer fails there.
         assert!(p.read_u64(UNMAPPED).is_err(), "({who})");
         assert!(p.read_u8(UNMAPPED).is_err(), "({who})");
-        assert!(p.pread_exact(&mut buf, UNMAPPED).is_err(), "({who})");
         assert!(Target::read_bytes(p, UNMAPPED, 8).is_err(), "({who})");
-        // A bare pread need not: a live grab fails it outright, but a
-        // core just comes up short, which is the whole reason the
-        // helpers above insist on the count.
-        let short = p.pread(&mut buf, UNMAPPED).unwrap_or(0);
-        assert!(
-            short < buf.len() as u64,
-            "({who}) read {short} bytes of unmapped memory"
-        );
+        assert!(p.pslice(UNMAPPED, 8).is_none(), "({who})");
+        if who == "live" {
+            assert!(p.pread_exact(&mut buf, UNMAPPED).is_err());
+            // A bare pread need not fail: it may just come up short,
+            // which is why pread_exact insists on the count.
+            let short = p.pread(&mut buf, UNMAPPED).unwrap_or(0);
+            assert!(
+                short < buf.len() as u64,
+                "read {short} bytes of unmapped memory"
+            );
+        }
     });
 }
 

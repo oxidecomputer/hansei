@@ -469,21 +469,16 @@ impl Core {
         self.file_at(addr).map(|file| file.range.end)
     }
 
-    /// How many of the `max` bytes at `addr` this core can serve, walking
-    /// adjacent readable regions the way [`pread`](Core::pread) does so a
-    /// buffer split across segments is not understated.
+    /// How many of the `max` bytes at `addr` this core can serve: the
+    /// rest of the readable region `addr` falls in, which is exactly the
+    /// longest slice [`pslice`](Core::pslice) can lend there. A read is
+    /// one source's business; a buffer running past its region's end
+    /// reads as short.
     pub fn readable_len(&self, addr: u64, max: u64) -> u64 {
-        let end = addr.saturating_add(max);
-        let mut cur = addr;
-        while cur < end {
-            // Each region strictly contains `cur`, so its end advances the
-            // cursor and the walk terminates.
-            let Some(next) = self.readable_until(cur) else {
-                break;
-            };
-            cur = next;
+        match self.readable_until(addr) {
+            Some(end) => (end - addr).min(max),
+            None => 0,
         }
-        cur.min(end) - addr
     }
 
     /// The mapped backing file for `path`, if it was there to open. A
@@ -493,52 +488,13 @@ impl Core {
         self.backing.get(path)?.as_ref()
     }
 
-    /// Read as much of `buf` as one source can serve, starting at
-    /// `addr`. The core's own bytes win over the file on disk: a
-    /// writable page may have been modified since it was mapped.
-    fn read_chunk(&self, addr: u64, buf: &mut [u8]) -> Result<usize> {
-        if let Some(seg) = self.segment_at(addr)
-            && seg.dumped().contains(&addr)
-        {
-            let skip = addr - seg.vaddr;
-            let avail = (seg.filesz - skip) as usize;
-            let take = avail.min(buf.len());
-            let start = (seg.offset + skip) as usize;
-            let bytes = self
-                .core
-                .get(start..start + take)
-                .ok_or_else(|| Error::bad_core("PT_LOAD runs past the end of the file"))?;
-            buf[..take].copy_from_slice(bytes);
-            return Ok(take);
-        }
-
-        // Not dumped: the pages are unmodified since they were mapped,
-        // so the file they came from still has them. This is the normal
-        // path for the executable's text under the default
-        // coredump_filter.
-        let file = self
-            .file_at(addr)
-            .ok_or_else(|| Error::unmapped(addr, buf.len() as u64))?;
-        let skip = addr - file.range.start;
-        let avail = (file.range.end - addr) as usize;
-        let take = avail.min(buf.len());
-        let start = (file.offset + skip) as usize;
-        let backing = self
-            .backing(&file.path)
-            .ok_or_else(|| Error::unmapped(addr, buf.len() as u64))?;
-        let bytes = backing
-            .map
-            .get(start..start + take)
-            .ok_or_else(|| Error::unmapped(addr, buf.len() as u64))?;
-        buf[..take].copy_from_slice(bytes);
-        Ok(take)
-    }
-
     /// The bytes at `addr`, borrowed straight from a mapping — the core's
     /// own when the range is dumped, the backing file's when it is not.
-    /// A read no single source serves whole (crossing a boundary, or
-    /// straddling the dumped/on-disk seam) is `None`; [`pread`](Core::pread)
-    /// assembles those into a caller's buffer instead.
+    /// The core's bytes win over the file on disk: a writable page may
+    /// have been modified since it was mapped. A read no single source
+    /// serves whole (crossing a boundary, or straddling the dumped/
+    /// on-disk seam) is `None`, and nothing assembles those: what one
+    /// source cannot serve, the core does not serve.
     pub fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
         if let Some(seg) = self.segment_at(addr).filter(|s| s.dumped().contains(&addr)) {
             let skip = addr - seg.vaddr;
@@ -558,49 +514,27 @@ impl Core {
             .get(start..start + len as usize)
     }
 
-    pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
-        let mut done = 0usize;
-        while done < buf.len() {
-            let addr = address + done as u64;
-            match self.read_chunk(addr, &mut buf[done..]) {
-                Ok(0) => break,
-                Ok(n) => done += n,
-                Err(_) if done > 0 => break,
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(done as u64)
-    }
-
-    pub fn pread_exact(&self, buf: &mut [u8], address: u64) -> Result<()> {
-        if self.pread(buf, address)? != buf.len() as u64 {
-            return Err(Error::unexpected_eof());
-        }
-        Ok(())
+    /// A word borrowed via [`pslice`](Core::pslice), as its array.
+    fn word<const N: usize>(&self, address: u64) -> Result<[u8; N]> {
+        self.pslice(address, N as u64)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| Error::unmapped(address, N as u64))
     }
 
     pub fn read_u64(&self, address: u64) -> Result<u64> {
-        let mut buf = [0u8; size_of::<u64>()];
-        self.pread_exact(&mut buf, address)?;
-        Ok(u64::from_le_bytes(buf))
+        Ok(u64::from_le_bytes(self.word(address)?))
     }
 
     pub fn read_u32(&self, address: u64) -> Result<u32> {
-        let mut buf = [0u8; size_of::<u32>()];
-        self.pread_exact(&mut buf, address)?;
-        Ok(u32::from_le_bytes(buf))
+        Ok(u32::from_le_bytes(self.word(address)?))
     }
 
     pub fn read_u16(&self, address: u64) -> Result<u16> {
-        let mut buf = [0u8; size_of::<u16>()];
-        self.pread_exact(&mut buf, address)?;
-        Ok(u16::from_le_bytes(buf))
+        Ok(u16::from_le_bytes(self.word(address)?))
     }
 
     pub fn read_u8(&self, address: u64) -> Result<u8> {
-        let mut val = [0u8];
-        self.pread_exact(&mut val, address)?;
-        Ok(val[0])
+        Ok(self.word::<1>(address)?[0])
     }
 
     pub fn exec_name(&self) -> Result<PathBuf> {
@@ -905,9 +839,9 @@ const _: () = {
 
 impl Target for Core {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; len as usize];
-        self.pread_exact(&mut buf, addr)?;
-        Ok(buf)
+        self.pslice(addr, len)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| Error::unmapped(addr, len))
     }
 
     fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
@@ -1323,10 +1257,11 @@ mod tests {
         assert_eq!(p.read_bytes(BASE, 4).unwrap(), [0x5a; 4]);
     }
 
-    /// One read, two sources: the dumped half comes from the core and
-    /// the rest from the file, without the caller knowing.
+    /// One read never spans two sources: a buffer straddling the
+    /// dumped/on-disk seam fails, exactly where `pslice` declines,
+    /// while each side of the seam still reads fine on its own.
     #[test]
-    fn test_reads_span_sources() {
+    fn test_reads_do_not_span_sources() {
         let exe = std::env::current_exe().unwrap();
         let on_disk = std::fs::read(&exe).unwrap();
         const BASE: u64 = 0x40_0000;
@@ -1338,15 +1273,18 @@ mod tests {
             .file(BASE..BASE + 2 * PAGE, 0, exe.to_str().unwrap())
             .proc();
 
-        let got = p.read_bytes(BASE + PAGE - 4, 8).unwrap();
-        assert_eq!(&got[..4], [0x5a; 4]);
-        assert_eq!(&got[4..], &on_disk[PAGE as usize..PAGE as usize + 4]);
+        assert!(p.read_bytes(BASE + PAGE - 4, 8).is_err());
+        assert_eq!(p.read_bytes(BASE + PAGE - 4, 4).unwrap(), [0x5a; 4]);
+        assert_eq!(
+            p.read_bytes(BASE + PAGE, 4).unwrap(),
+            &on_disk[PAGE as usize..PAGE as usize + 4]
+        );
     }
 
     /// `readable_len` answers how far a read could get without doing it,
     /// so a length word out of corrupt memory is bounded before anything
-    /// is allocated for it. Unlike `pslice` it spans adjacent sources, or
-    /// a buffer straddling the dumped/on-disk seam would read as short.
+    /// is allocated for it. It stops where its region does — the longest
+    /// slice `pslice` can lend.
     #[test]
     fn test_readable_len_bounds_a_claimed_length() {
         let exe = std::env::current_exe().unwrap();
@@ -1359,10 +1297,11 @@ mod tests {
             .file(BASE..BASE + 2 * PAGE, 0, exe.to_str().unwrap())
             .proc();
 
-        // A wild claim is cut to what the two mappings actually hold,
-        // seam included — where `pslice` would have declined outright.
-        assert_eq!(p.readable_len(BASE, u64::MAX), 2 * PAGE);
-        assert_eq!(p.readable_len(BASE + PAGE - 4, u64::MAX), PAGE + 4);
+        // A wild claim is cut to the region the read starts in: the
+        // dumped page up to the seam, the file-backed page past it.
+        assert_eq!(p.readable_len(BASE, u64::MAX), PAGE);
+        assert_eq!(p.readable_len(BASE + PAGE - 4, u64::MAX), 4);
+        assert_eq!(p.readable_len(BASE + PAGE, u64::MAX), PAGE);
 
         // Never more than asked for, and nothing at all where nothing is
         // mapped — including one byte past the end of the last mapping.
@@ -1370,15 +1309,15 @@ mod tests {
         assert_eq!(p.readable_len(BASE + 2 * PAGE, 8), 0);
         assert_eq!(p.readable_len(0xdead_0000, 8), 0);
 
-        // What it promises, `read_bytes` delivers.
+        // What it promises, `pslice` lends and `read_bytes` delivers.
         let len = p.readable_len(BASE, u64::MAX);
+        assert!(p.pslice(BASE, len).is_some());
         assert_eq!(p.read_bytes(BASE, len).unwrap().len(), len as usize);
     }
 
     /// `pslice` borrows only what one source serves whole: inside the
     /// dumped page that is the core's bytes, inside the undumped page
-    /// the backing file's, and across the seam — where `read_bytes`
-    /// quietly assembles from both — it declines.
+    /// the backing file's, and across the seam it declines.
     #[test]
     fn test_pslice_borrows_within_a_single_source() {
         let exe = std::env::current_exe().unwrap();

@@ -3,9 +3,10 @@
 //! A core is identified by what wrote it, not by what is reading it, so
 //! [`Proc::open_core`] looks at the file and picks. Either system's core
 //! reads from the file, anywhere: the portable readers parse the notes
-//! and symbol tables themselves, and every read is a copy out of the
-//! mapped file rather than a `pread` through libproc — which a render
-//! pass issuing one read per string can feel. On illumos libproc remains
+//! and symbol tables themselves, and every read is lent straight out of
+//! the mapped file ([`Target::pslice`]) rather than copied through
+//! libproc's `pread` — which a render pass issuing one read per string
+//! can feel. On illumos libproc remains
 //! the reference reader, held against the portable one in tests via
 //! [`Proc::open_core_libproc`].
 //!
@@ -77,14 +78,6 @@ impl Proc {
         dispatch!(self, regs(lwp))
     }
 
-    pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
-        dispatch!(self, pread(buf, address))
-    }
-
-    pub fn pread_exact(&self, buf: &mut [u8], address: u64) -> Result<()> {
-        dispatch!(self, pread_exact(buf, address))
-    }
-
     pub fn read_u64(&self, address: u64) -> Result<u64> {
         dispatch!(self, read_u64(address))
     }
@@ -153,6 +146,24 @@ impl Proc {
 
     pub fn grab_pid_no_stop(pid: u32) -> Result<Self> {
         Ok(Proc::Libproc(crate::illumos::Proc::grab_pid_no_stop(pid)?))
+    }
+
+    /// Read through libproc's `Pread`, which serves live grabs and
+    /// libproc-opened cores alike. This is the libproc-compat surface
+    /// only: the portable core readers lend borrows via
+    /// [`Target::pslice`] instead and refuse it.
+    pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
+        match self {
+            Proc::Libproc(p) => p.pread(buf, address),
+            _ => Err(crate::Error::not_a_live_process()),
+        }
+    }
+
+    pub fn pread_exact(&self, buf: &mut [u8], address: u64) -> Result<()> {
+        match self {
+            Proc::Libproc(p) => p.pread_exact(buf, address),
+            _ => Err(crate::Error::not_a_live_process()),
+        }
     }
 
     pub fn run(&self) -> Result<()> {

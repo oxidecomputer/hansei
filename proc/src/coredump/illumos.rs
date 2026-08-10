@@ -617,22 +617,16 @@ impl Core {
         (addr < seg.range().end).then_some(seg)
     }
 
-    /// How many of the `max` bytes at `addr` this core can serve, walking
-    /// adjacent dumped segments the way [`pread`](Core::pread) does so a
-    /// buffer split across segments is not understated. An illumos core
-    /// carries no backing-file map, so an undumped page reads as nothing.
+    /// How many of the `max` bytes at `addr` this core can serve: the
+    /// dumped remainder of the segment `addr` falls in, which is exactly
+    /// the longest slice [`pslice`](Core::pslice) can lend there. An
+    /// illumos core carries no backing-file map, so an undumped page
+    /// reads as nothing.
     pub fn readable_len(&self, addr: u64, max: u64) -> u64 {
-        let end = addr.saturating_add(max);
-        let mut cur = addr;
-        while cur < end {
-            // Each segment strictly contains `cur`, so its dumped end
-            // advances the cursor and the walk terminates.
-            let Some(seg) = self.segment_at(cur).filter(|s| s.dumped().contains(&cur)) else {
-                break;
-            };
-            cur = seg.dumped().end;
+        match self.segment_at(addr).filter(|s| s.dumped().contains(&addr)) {
+            Some(seg) => (seg.dumped().end - addr).min(max),
+            None => 0,
         }
-        cur.min(end) - addr
     }
 
     /// The object whose symbols cover `addr`: the one loaded at or
@@ -644,8 +638,8 @@ impl Core {
     /// The bytes at `address`, borrowed straight from the mapped core —
     /// for a read one dumped segment serves whole. A read the mapping
     /// cannot serve in one piece (crossing a segment boundary, or
-    /// running into an undumped tail) is `None`; [`pread`](Core::pread)
-    /// assembles those into a caller's buffer instead.
+    /// running into an undumped tail) is `None`, and nothing assembles
+    /// those: what one segment cannot serve, the core does not serve.
     pub fn pslice(&self, address: u64, len: u64) -> Option<&[u8]> {
         let seg = self
             .segment_at(address)
@@ -658,55 +652,27 @@ impl Core {
         self.core.get(at..at + len as usize)
     }
 
-    pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
-        let mut done = 0usize;
-        while done < buf.len() {
-            let addr = address + done as u64;
-            let Some(seg) = self.segment_at(addr).filter(|s| s.dumped().contains(&addr)) else {
-                break;
-            };
-            let skip = addr - seg.vaddr;
-            let take = ((seg.filesz - skip) as usize).min(buf.len() - done);
-            let at = (seg.offset + skip) as usize;
-            let bytes = self
-                .core
-                .get(at..at + take)
-                .ok_or_else(|| Error::bad_core("PT_LOAD runs past the end of the file"))?;
-            buf[done..done + take].copy_from_slice(bytes);
-            done += take;
-        }
-        Ok(done as u64)
-    }
-
-    pub fn pread_exact(&self, buf: &mut [u8], address: u64) -> Result<()> {
-        if self.pread(buf, address)? != buf.len() as u64 {
-            return Err(Error::unmapped(address, buf.len() as u64));
-        }
-        Ok(())
+    /// A word borrowed via [`pslice`](Core::pslice), as its array.
+    fn word<const N: usize>(&self, address: u64) -> Result<[u8; N]> {
+        self.pslice(address, N as u64)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| Error::unmapped(address, N as u64))
     }
 
     pub fn read_u64(&self, address: u64) -> Result<u64> {
-        let mut buf = [0u8; size_of::<u64>()];
-        self.pread_exact(&mut buf, address)?;
-        Ok(u64::from_le_bytes(buf))
+        Ok(u64::from_le_bytes(self.word(address)?))
     }
 
     pub fn read_u32(&self, address: u64) -> Result<u32> {
-        let mut buf = [0u8; size_of::<u32>()];
-        self.pread_exact(&mut buf, address)?;
-        Ok(u32::from_le_bytes(buf))
+        Ok(u32::from_le_bytes(self.word(address)?))
     }
 
     pub fn read_u16(&self, address: u64) -> Result<u16> {
-        let mut buf = [0u8; size_of::<u16>()];
-        self.pread_exact(&mut buf, address)?;
-        Ok(u16::from_le_bytes(buf))
+        Ok(u16::from_le_bytes(self.word(address)?))
     }
 
     pub fn read_u8(&self, address: u64) -> Result<u8> {
-        let mut val = [0u8];
-        self.pread_exact(&mut val, address)?;
-        Ok(val[0])
+        Ok(self.word::<1>(address)?[0])
     }
 
     pub fn exec_name(&self) -> Result<PathBuf> {
@@ -1081,9 +1047,9 @@ const _: () = {
 
 impl Target for Core {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; len as usize];
-        self.pread_exact(&mut buf, addr)?;
-        Ok(buf)
+        self.pslice(addr, len)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| Error::unmapped(addr, len))
     }
 
     fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
