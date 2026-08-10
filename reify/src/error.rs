@@ -36,6 +36,12 @@ enum ErrorKind {
     UnexpectedVariant { expected: String },
     #[error("{0} is not an enum type")]
     NotAnEnum(String),
+    #[error("{ty} is not a sequence")]
+    NotASequence { ty: String },
+    #[error("{ty} has an unusable sequence header: {why}")]
+    InvalidSequence { ty: String, why: &'static str },
+    #[error("{ty} claims {claimed} elements but only {got} could be read")]
+    ShortSequence { ty: String, claimed: u64, got: u64 },
 }
 
 impl Error {
@@ -104,6 +110,22 @@ impl Error {
 
     pub fn not_an_enum(ty: String) -> Self {
         Self::new(ErrorKind::NotAnEnum(ty))
+    }
+
+    pub fn not_a_sequence(ty: impl Into<String>) -> Self {
+        Self::new(ErrorKind::NotASequence { ty: ty.into() })
+    }
+
+    pub fn invalid_sequence(ty: impl Into<String>, why: &'static str) -> Self {
+        Self::new(ErrorKind::InvalidSequence { ty: ty.into(), why })
+    }
+
+    pub fn short_sequence(ty: impl Into<String>, claimed: u64, got: u64) -> Self {
+        Self::new(ErrorKind::ShortSequence {
+            ty: ty.into(),
+            claimed,
+            got,
+        })
     }
 }
 

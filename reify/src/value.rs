@@ -3,6 +3,7 @@
 //! pointees, array elements, enum variants -- without rendering anything.
 
 use crate::debug_type::{TypeKind, bundle_variant_error};
+use crate::elements::Elements;
 use crate::parse::{ParseCtx, ParseWithDbgInfo};
 use crate::target::ReadFromProc;
 use crate::{Error, Result};
@@ -65,8 +66,8 @@ impl<'buf, 'a: 'buf> TypeInfo<'a> {
         self.as_ref().select_variant(name)
     }
 
-    pub fn array_elements(&'buf self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a>>> {
-        array_elements(self.ty, self.addr, &self.buf)
+    pub fn elements<Ctx: ParseCtx>(&'buf self, ctx: &'buf Ctx) -> Result<Elements<'buf, 'a>> {
+        Elements::of(&self.as_ref(), ctx)
     }
 
     pub fn parse<V, Ctx>(&self, ctx: &Ctx) -> Result<V>
@@ -255,53 +256,11 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
         self.clone().into()
     }
 
-    /// Get an iterator of `TypeInfoRef`s over the elements of an array.
-    pub fn array_elements(&self) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a>>> {
-        array_elements(self.ty, self.addr, self.bytes)
-    }
-
-    /// Pass the `TypeInfoRef` of the elements of a boxed slice to the
-    /// provided closure.
-    ///
-    /// Each element is handed over as the slice's own element type,
-    /// unpeeled: a recorded walk binding roots at that type, so
-    /// descending a wrapper here would start the walk below its root.
-    /// A caller that wants the peeled view can peel in the closure.
-    pub fn boxed_slice_elements<V, Ctx, F>(&self, ctx: &Ctx, mut f: F) -> Result<Vec<V>>
-    where
-        F: FnMut(&TypeInfoRef<'_, 'a>) -> Result<V>,
-        Ctx: ParseCtx,
-    {
-        let proc = ctx.proc();
-
-        let len: u64 = self.member("length")?.parse(ctx)?;
-        let ptr = self.member("data_ptr")?;
-        let Some(param_ty) = ptr.ty.pointer_target() else {
-            return Err(Error::unexpected_type(
-                ptr.ty.kind(),
-                TypeKind::Pointer,
-                self.ty.name().to_string(),
-            ));
-        };
-        let elem_size = param_ty.size();
-
-        let p: u64 = ptr.parse(ctx)?;
-        let total_len = len * param_ty.size();
-
-        let mut out = Vec::with_capacity(len as usize);
-        let raw = proc.read_bytes(p, total_len)?;
-
-        for (i, chunk) in raw.chunks(elem_size as usize).enumerate() {
-            let item_info = TypeInfoRef {
-                ty: param_ty,
-                addr: p + (i as u64) * elem_size,
-                bytes: chunk,
-            };
-            let item = f(&item_info)?;
-            out.push(item);
-        }
-
-        Ok(out)
+    /// The elements of a sequence-shaped value — an owned `Vec`, a boxed or
+    /// borrowed slice, an inline array — read and addressed; see
+    /// [`Elements`].
+    pub fn elements<Ctx: ParseCtx>(&self, ctx: &'buf Ctx) -> Result<Elements<'buf, 'a>> {
+        Elements::of(self, ctx)
     }
 
     pub fn active_variant(&'buf self) -> Result<(&'a str, TypeInfoRef<'buf, 'a>)> {
@@ -408,38 +367,6 @@ impl<'a> fmt::Debug for TypeInfoRef<'_, 'a> {
             .field("bytes", &self.bytes)
             .finish()
     }
-}
-
-// ---------------------------------------------------------------------------
-// Display
-// ---------------------------------------------------------------------------
-
-fn array_elements<'buf, 'a: 'buf>(
-    ty: BundleType<'a>,
-    addr: u64,
-    bytes: &'buf [u8],
-) -> Result<impl Iterator<Item = TypeInfoRef<'buf, 'a>>> {
-    let Some((elem_ty, _count)) = ty.array_info() else {
-        return Err(Error::unexpected_type(
-            ty.kind(),
-            TypeKind::Array,
-            ty.name().to_string(),
-        ));
-    };
-
-    let elem_size = elem_ty.size() as usize;
-    let iter = bytes
-        .chunks_exact(elem_size)
-        .enumerate()
-        .map(move |(i, chunk)| {
-            TypeInfoRef {
-                ty: elem_ty,
-                addr: addr + (i * elem_size) as u64,
-                bytes: chunk,
-            }
-            .peel()
-        });
-    Ok(iter)
 }
 
 // ---------------------------------------------------------------------------
@@ -551,8 +478,9 @@ mod tests {
         assert!(opt.select_variant("Nope").is_err());
     }
 
-    /// Element iteration over an owned array, and over a boxed slice read
-    /// through the target -- both spellings, the iterator and the callback.
+    /// Element iteration over an owned array, whose elements are its own
+    /// bytes, and over a fat pointer, whose elements are read through the
+    /// target -- one call for both.
     #[test]
     fn test_owned_type_info_iterates_elements() {
         let b = test_bundle();
@@ -561,31 +489,36 @@ mod tests {
             FakeMem::new()
                 .at(0x1000, u32s(&[10, 20, 30]))
                 .at(0x4000, u64s(&[0x5000, 3]))
-                .at(0x5000, vec![7u8, 8, 9]),
+                .at(0x5000, u32s(&[7, 8, 9])),
         );
 
         let arr = crate::TypeInfo::from_addr(&ctx, v.ty(ARR).unwrap(), 0x1000).unwrap();
-        let shown: Vec<String> = arr
-            .array_elements()
-            .expect("array elements")
+        let elements = arr.elements(&ctx).expect("array elements");
+        assert_eq!(elements.len(), 3);
+        assert_eq!(elements.truncated(), None);
+        let shown: Vec<String> = elements
+            .iter()
             .map(|e| format!("{}", e.display()))
             .collect();
         assert_eq!(shown, ["10", "20", "30"]);
 
-        // `&[u32]` is (data_ptr: *u8, length) in the fixture, so its elements
-        // are the bytes behind the pointer, addressed from the buffer they
-        // were read from rather than from the fat pointer.
+        // The fixture's `&[u32]` is (data_ptr: *u8, length), byte-erased as a
+        // `Vec`'s is; its elements are `u32` because its display program says
+        // so, addressed from the buffer they were read from rather than from
+        // the fat pointer.
         let slice = crate::TypeInfo::from_addr(&ctx, v.ty(SLICE).unwrap(), 0x4000).unwrap();
         let seen: Vec<(u64, String)> = slice
-            .as_ref()
-            .boxed_slice_elements(&ctx, |e| Ok((e.addr, format!("{}", e.display()))))
-            .expect("boxed slice walk");
+            .elements(&ctx)
+            .expect("slice elements")
+            .iter()
+            .map(|e| (e.addr, format!("{}", e.display())))
+            .collect();
         assert_eq!(
             seen,
             [
                 (0x5000, "7".to_owned()),
-                (0x5001, "8".to_owned()),
-                (0x5002, "9".to_owned())
+                (0x5004, "8".to_owned()),
+                (0x5008, "9".to_owned())
             ]
         );
     }
