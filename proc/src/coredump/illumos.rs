@@ -617,6 +617,24 @@ impl Core {
         (addr < seg.range().end).then_some(seg)
     }
 
+    /// How many of the `max` bytes at `addr` this core can serve, walking
+    /// adjacent dumped segments the way [`pread`](Core::pread) does so a
+    /// buffer split across segments is not understated. An illumos core
+    /// carries no backing-file map, so an undumped page reads as nothing.
+    pub fn readable_len(&self, addr: u64, max: u64) -> u64 {
+        let end = addr.saturating_add(max);
+        let mut cur = addr;
+        while cur < end {
+            // Each segment strictly contains `cur`, so its dumped end
+            // advances the cursor and the walk terminates.
+            let Some(seg) = self.segment_at(cur).filter(|s| s.dumped().contains(&cur)) else {
+                break;
+            };
+            cur = seg.dumped().end;
+        }
+        cur.min(end) - addr
+    }
+
     /// The object whose symbols cover `addr`: the one loaded at or
     /// below it, nearest.
     fn object_at(&self, addr: u64) -> Option<&Symbols> {
@@ -1070,6 +1088,10 @@ impl Target for Core {
 
     fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
         Core::pslice(self, addr, len)
+    }
+
+    fn readable_len(&self, addr: u64, max: u64) -> u64 {
+        Core::readable_len(self, addr, max)
     }
 
     fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {

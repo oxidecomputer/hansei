@@ -457,6 +457,35 @@ impl Core {
         (addr < seg.range().end).then_some(seg)
     }
 
+    /// The end of the readable region containing `addr` — the dumped part
+    /// of its segment, or the backing file's extent where the dump filter
+    /// left the pages out. `None` when nothing there is readable.
+    fn readable_until(&self, addr: u64) -> Option<u64> {
+        if let Some(seg) = self.segment_at(addr)
+            && seg.dumped().contains(&addr)
+        {
+            return Some(seg.dumped().end);
+        }
+        self.file_at(addr).map(|file| file.range.end)
+    }
+
+    /// How many of the `max` bytes at `addr` this core can serve, walking
+    /// adjacent readable regions the way [`pread`](Core::pread) does so a
+    /// buffer split across segments is not understated.
+    pub fn readable_len(&self, addr: u64, max: u64) -> u64 {
+        let end = addr.saturating_add(max);
+        let mut cur = addr;
+        while cur < end {
+            // Each region strictly contains `cur`, so its end advances the
+            // cursor and the walk terminates.
+            let Some(next) = self.readable_until(cur) else {
+                break;
+            };
+            cur = next;
+        }
+        cur.min(end) - addr
+    }
+
     /// The mapped backing file for `path`, if it was there to open. A
     /// core routinely names files that have moved off this machine;
     /// that is only fatal for reads that actually land in one.
@@ -885,6 +914,10 @@ impl Target for Core {
         Core::pslice(self, addr, len)
     }
 
+    fn readable_len(&self, addr: u64, max: u64) -> u64 {
+        Core::readable_len(self, addr, max)
+    }
+
     fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {
         Core::lookup_symbol_by_addr(self, address)
     }
@@ -1308,6 +1341,38 @@ mod tests {
         let got = p.read_bytes(BASE + PAGE - 4, 8).unwrap();
         assert_eq!(&got[..4], [0x5a; 4]);
         assert_eq!(&got[4..], &on_disk[PAGE as usize..PAGE as usize + 4]);
+    }
+
+    /// `readable_len` answers how far a read could get without doing it,
+    /// so a length word out of corrupt memory is bounded before anything
+    /// is allocated for it. Unlike `pslice` it spans adjacent sources, or
+    /// a buffer straddling the dumped/on-disk seam would read as short.
+    #[test]
+    fn test_readable_len_bounds_a_claimed_length() {
+        let exe = std::env::current_exe().unwrap();
+        const BASE: u64 = 0x40_0000;
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(BASE, PF_R | PF_W, vec![0x5a; PAGE as usize])
+            .undumped(BASE + PAGE, PAGE, PF_R | PF_X)
+            .file(BASE..BASE + 2 * PAGE, 0, exe.to_str().unwrap())
+            .proc();
+
+        // A wild claim is cut to what the two mappings actually hold,
+        // seam included — where `pslice` would have declined outright.
+        assert_eq!(p.readable_len(BASE, u64::MAX), 2 * PAGE);
+        assert_eq!(p.readable_len(BASE + PAGE - 4, u64::MAX), PAGE + 4);
+
+        // Never more than asked for, and nothing at all where nothing is
+        // mapped — including one byte past the end of the last mapping.
+        assert_eq!(p.readable_len(BASE, 16), 16);
+        assert_eq!(p.readable_len(BASE + 2 * PAGE, 8), 0);
+        assert_eq!(p.readable_len(0xdead_0000, 8), 0);
+
+        // What it promises, `read_bytes` delivers.
+        let len = p.readable_len(BASE, u64::MAX);
+        assert_eq!(p.read_bytes(BASE, len).unwrap().len(), len as usize);
     }
 
     /// `pslice` borrows only what one source serves whole: inside the
