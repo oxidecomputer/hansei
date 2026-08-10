@@ -20,7 +20,7 @@ tempfile = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 exegesis = { workspace = true }
-hansei-types = { workspace = true }
+hansei-runtime = { workspace = true }
 proc = { workspace = true }
 rayon = { workspace = true }
 reedline = { workspace = true }

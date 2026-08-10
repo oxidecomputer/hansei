@@ -37,7 +37,7 @@
 //! `HANSEI_MATRIX_BLESS=1` rewrites the goldens instead of diffing;
 //! review the diff like any golden. Cells whose toolchain is not
 //! rustup-installed skip with a message, the same contract the
-//! extraction goldens have. Run it alone (`cargo test -p hansei-types
+//! extraction goldens have. Run it alone (`cargo test -p hansei-runtime
 //! --test matrix`), not under a workspace-wide `cargo test`: the
 //! primary cell shares its fixture dirs with the extraction goldens,
 //! and two test binaries rebuilding one fixture dir race.
@@ -52,7 +52,7 @@
 use exegesis::bundle::{Bundle, BundleView, describe_debug_format, portable_summary};
 use exegesis::detect::Family;
 use exegesis::extract::{ExtractOptions, extract_file};
-use hansei_types::tokio::contract::verify_walk_contract;
+use hansei_runtime::tokio::contract::verify_walk_contract;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;

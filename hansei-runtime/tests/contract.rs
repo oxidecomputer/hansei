@@ -9,7 +9,7 @@
 //! structural decline.
 
 use exegesis::bundle::{Bundle, BundleView, WalkOutcome, WalkRole};
-use hansei_types::tokio::contract::{Class, verify_walk_contract};
+use hansei_runtime::tokio::contract::{Class, verify_walk_contract};
 
 use std::path::{Path, PathBuf};
 

@@ -134,7 +134,7 @@ At attach time the bundle's symbol fingerprint is resolved against the target's 
 
 The `snapshot` command captures everything a bundle-backed analysis reads from a target into a small replayable file;
 together with a bundle extracted from a *separate* build it feeds the offline two-binary tests in
-`hansei-types/tests`.
+`hansei-runtime/tests`.
 
 == Testing
 

@@ -18,10 +18,10 @@
 //!
 //! The expected render is a golden in `tests/value_render/`; regenerate
 //! after an intended change with `VALUE_RENDER_BLESS=1 cargo test -p
-//! hansei-types --test value_render` and review the diff.
+//! hansei-runtime --test value_render` and review the diff.
 
 use exegesis::bundle::{Bundle, BundleView};
-use hansei_types::tokio::bundle::{Context, TaskStage};
+use hansei_runtime::tokio::bundle::{Context, TaskStage};
 use proc::Target;
 use proc::snapshot::Snapshot;
 use reify::TypeInfoRef;
@@ -58,7 +58,7 @@ fn mask(s: &str) -> String {
 fn render_local(
     ctx: &Context<'_, Snapshot>,
     snapshot: &Snapshot,
-    list: &hansei_types::tokio::bundle::TaskList,
+    list: &hansei_runtime::tokio::bundle::TaskList,
     task_id: u64,
     local: &str,
     depth: usize,

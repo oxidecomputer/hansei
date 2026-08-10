@@ -19,12 +19,12 @@
 use crate::future_name;
 
 use anyhow::Result;
-use hansei_types::tokio::Lifecycle;
-use hansei_types::tokio::bundle::{
+use hansei_runtime::tokio::Lifecycle;
+use hansei_runtime::tokio::bundle::{
     BlockingPool, FutureInfo, ParkState, ParkStates, Task, TaskList, WaitKind,
 };
-use hansei_types::tokio::census::{FutureSet, HeldFuture};
-use hansei_types::tokio::graph::TaskWait;
+use hansei_runtime::tokio::census::{FutureSet, HeldFuture};
+use hansei_runtime::tokio::graph::TaskWait;
 
 use std::collections::BTreeMap;
 use std::io;
@@ -678,10 +678,10 @@ mod tests {
     use super::*;
 
     use exegesis::bundle::{BundleTypeId, FutureKind, TaskEntryId};
-    use hansei_types::tokio::bundle::{KnownFuture, Task, WaitTarget};
-    use hansei_types::tokio::census::SetChild;
-    use hansei_types::tokio::graph::TaskRef;
-    use hansei_types::tokio::{Location, RawInstant, TaskAddr, TaskState};
+    use hansei_runtime::tokio::bundle::{KnownFuture, Task, WaitTarget};
+    use hansei_runtime::tokio::census::SetChild;
+    use hansei_runtime::tokio::graph::TaskRef;
+    use hansei_runtime::tokio::{Location, RawInstant, TaskAddr, TaskState};
 
     const RUNNING: u64 = 0b1;
     const NOTIFIED: u64 = 0b100;

@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use exegesis::bundle::{Bundle, BundleMember, BundleType, BundleView, WalkRole};
-use hansei_types::tokio::{Lifecycle, bundle, census, contract, graph};
+use hansei_runtime::tokio::{Lifecycle, bundle, census, contract, graph};
 use proc::Proc;
 #[cfg(feature = "snapshot")]
 use proc::snapshot::Recorder;
@@ -3214,8 +3214,8 @@ mod variable_format_tests {
 mod whatis_tests {
     use super::{parse_hex_addr, report_whatis};
     use exegesis::bundle::{Bundle, BundleView};
-    use hansei_types::tokio::bundle::{Context, TaskExtents, TaskList};
-    use hansei_types::tokio::census::{self, FutureCensus};
+    use hansei_runtime::tokio::bundle::{Context, TaskExtents, TaskList};
+    use hansei_runtime::tokio::census::{self, FutureCensus};
     use proc::Target;
     use proc::snapshot::Snapshot;
 
@@ -3225,7 +3225,7 @@ mod whatis_tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
-            .join("hansei-types/tests/fixtures")
+            .join("hansei-runtime/tests/fixtures")
             .join(name)
     }
 
@@ -3400,9 +3400,9 @@ mod future_trace_tests {
         print_tasks,
     };
     use exegesis::bundle::{Bundle, BundleView};
-    use hansei_types::tokio::TaskState;
-    use hansei_types::tokio::bundle::{self, Context, TaskExtents, TaskList};
-    use hansei_types::tokio::census::{self, FutureCensus};
+    use hansei_runtime::tokio::TaskState;
+    use hansei_runtime::tokio::bundle::{self, Context, TaskExtents, TaskList};
+    use hansei_runtime::tokio::census::{self, FutureCensus};
     use proc::Target;
     use proc::snapshot::Snapshot;
     use reify::TypeInfo;
@@ -3414,7 +3414,7 @@ mod future_trace_tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
-            .join("hansei-types/tests/fixtures")
+            .join("hansei-runtime/tests/fixtures")
             .join(name)
     }
 
@@ -3870,7 +3870,7 @@ mod future_trace_tests {
 mod trace_render_tests {
     use super::print_await_chain;
     use exegesis::bundle::{Bundle, BundleView};
-    use hansei_types::tokio::bundle::{Context, TaskStage};
+    use hansei_runtime::tokio::bundle::{Context, TaskStage};
     use proc::Target;
     use proc::snapshot::Snapshot;
 
@@ -3880,7 +3880,7 @@ mod trace_render_tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
-            .join("hansei-types/tests/fixtures")
+            .join("hansei-runtime/tests/fixtures")
             .join(name)
     }
 
@@ -3902,7 +3902,7 @@ mod trace_render_tests {
             .tasks
             .iter()
             .find(|t| match &t.future {
-                hansei_types::tokio::bundle::FutureInfo::Known(known) => {
+                hansei_runtime::tokio::bundle::FutureInfo::Known(known) => {
                     known.display_name == future
                 }
                 _ => false,
@@ -4088,12 +4088,12 @@ mod graph_tests {
     use super::print_graph;
 
     use exegesis::bundle::BundleTypeId;
-    use hansei_types::tokio::bundle::{
+    use hansei_runtime::tokio::bundle::{
         AbandonedAcquire, FutureInfo, Task, TaskList, WaitKind, WaitTarget,
     };
-    use hansei_types::tokio::census;
-    use hansei_types::tokio::graph::{Analysis, Futurelock, TaskRef, TaskWait};
-    use hansei_types::tokio::{RawInstant, TaskAddr, TaskState};
+    use hansei_runtime::tokio::census;
+    use hansei_runtime::tokio::graph::{Analysis, Futurelock, TaskRef, TaskWait};
+    use hansei_runtime::tokio::{RawInstant, TaskAddr, TaskState};
 
     const REF_ONE: u64 = 1 << 6;
     const SEMAPHORE: u64 = 0x9000;

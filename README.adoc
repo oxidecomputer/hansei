@@ -16,7 +16,7 @@ These are the workspace members that may be useful:
 * hansei: Inspect the state of the `tokio` multi-threaded runtime in a core
   dump: task listings, automatic await-chain traces, and task dependency
   graphs with futurelock detection.
-* hansei-types: The tokio-introspection library behind hansei.
+* hansei-runtime: The tokio-introspection library behind hansei.
 * reify: Interpret a process's memory through a debug bundle, rendering values
   of the bundle's types for humans.
 * proc: Target access — readers for illumos and Linux core dumps, minimal

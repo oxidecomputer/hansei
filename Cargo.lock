@@ -501,7 +501,7 @@ dependencies = [
  "anyhow",
  "clap",
  "exegesis",
- "hansei-types",
+ "hansei-runtime",
  "proc",
  "rayon",
  "reedline",
@@ -514,7 +514,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hansei-types"
+name = "hansei-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
