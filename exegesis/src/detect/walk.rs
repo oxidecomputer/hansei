@@ -22,8 +22,8 @@
 
 use super::ReachStep::{Deref, FindParam, Named, PeelTo, Variant};
 use super::{
-    Family, Reach, Row, WORD, aggregate_members, raw_member_at, raw_variant, raw_variants, reach,
-    tokio_v1_47, tokio_v1_49, tokio_v1_53, trace, type_label,
+    Family, Reach, Row, WORD, aggregate_members, raw_variants, reach, step_into, tokio_v1_47,
+    tokio_v1_49, tokio_v1_53, trace, type_label,
 };
 use crate::bundle::{
     BundleTypeId, Selector, Shape, Step, StringInterner, WalkBinding, WalkOutcome, WalkRole,
@@ -1149,36 +1149,18 @@ fn step_targets(
     let [step, rest @ ..] = steps else {
         return Some(vec![cur]);
     };
-    match step {
-        Step::Member(at) => {
-            let members = aggregate_members(reader, cur)?;
-            let member = raw_member_at(reader, strings, members, at)?;
-            step_targets(reader, strings, member.type_id, rest)
+    if matches!(step, Step::ActiveVariant) {
+        let Some(RawType::Enum(en)) = reader.canonical_type(cur) else {
+            return None;
+        };
+        let mut out = Vec::new();
+        for member in raw_variants(en)? {
+            out.extend(step_targets(reader, strings, member.type_id, rest)?);
         }
-        Step::Deref => {
-            let Some(RawType::Pointer(pointer)) = reader.canonical_type(cur) else {
-                return None;
-            };
-            step_targets(reader, strings, pointer.target_type_id, rest)
-        }
-        Step::Variant(name) => {
-            let Some(RawType::Enum(en)) = reader.canonical_type(cur) else {
-                return None;
-            };
-            let variant = raw_variant(reader, en, strings.get(*name)?)?;
-            step_targets(reader, strings, variant.type_id, rest)
-        }
-        Step::ActiveVariant => {
-            let Some(RawType::Enum(en)) = reader.canonical_type(cur) else {
-                return None;
-            };
-            let mut out = Vec::new();
-            for member in raw_variants(en)? {
-                out.extend(step_targets(reader, strings, member.type_id, rest)?);
-            }
-            (!out.is_empty()).then_some(out)
-        }
+        return (!out.is_empty()).then_some(out);
     }
+    let (landed, _) = step_into(reader, strings, cur, step)?;
+    step_targets(reader, strings, landed, rest)
 }
 
 /// Whether the DWARF type meets the declared terminal shape.
