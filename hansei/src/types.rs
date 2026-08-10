@@ -424,3 +424,335 @@ fn label(ty: BundleType<'_>) -> String {
     }
     go(ty, 8)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use exegesis::bundle::{
+        Bundle, DiscrDef, DiscrValues, FORMAT_VERSION, InfraTypes, MemberDef, Meta, StrRef,
+        StringInterner, TypeTable, VariantShape,
+    };
+    use exegesis::raw_types::Encoding;
+
+    /// A bundle exercising every shape the describer renders: a
+    /// self-reaching list node, empty and opaque types, a c-enum, a
+    /// tagged enum with ranged and fallback selectors, nested arrays
+    /// and double pointers, and one name with two definitions.
+    fn bundle() -> Bundle {
+        let mut strings = StringInterner::new();
+        let mut names = std::collections::BTreeMap::new();
+        for name in [
+            "u64",
+            "Node",
+            "value",
+            "next",
+            "Ghost",
+            "Wrapper",
+            "node",
+            "ghost",
+            "mystery",
+            "color",
+            "arr",
+            "indirect",
+            "Mystery",
+            "Color",
+            "Red",
+            "Green",
+            "OptEnum",
+            "Unit",
+            "None",
+            "Some",
+            "Many",
+            "dup::Type",
+        ] {
+            names.insert(name, strings.intern(name));
+        }
+        let n = |name: &str| names[name];
+        let member = |name: &str, ty: u32, offset: u64| MemberDef {
+            name: n(name),
+            ty: BundleTypeId(ty),
+            offset,
+        };
+        let variant = |name: &str, values: Option<DiscrValues>, ty: u32| VariantDef {
+            name: n(name),
+            discr_values: values,
+            payload: member(name, ty, 0),
+            decl: None,
+            await_site: None,
+        };
+        use exegesis::bundle::DiscrValue::{Range, Value};
+
+        let types = vec![
+            // 0: u64
+            TypeDef::Base {
+                name: n("u64"),
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
+            // 1: Node { value: u64, next: *Node } — reaches itself
+            TypeDef::Struct {
+                name: n("Node"),
+                size: 16,
+                members: vec![member("value", 0, 0), member("next", 2, 8)],
+            },
+            // 2: *Node
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(1),
+            },
+            // 3: Ghost {} — a PhantomData: named, but nothing below
+            TypeDef::Struct {
+                name: n("Ghost"),
+                size: 0,
+                members: vec![],
+            },
+            // 4: Mystery — what the extractor could not model
+            TypeDef::Opaque {
+                name: n("Mystery"),
+                size: None,
+            },
+            // 5: Color — a c-enum
+            TypeDef::CEnum {
+                name: n("Color"),
+                size: 1,
+                repr: BundleTypeId(0),
+                enumerators: vec![(n("Red"), 0), (n("Green"), 1)],
+            },
+            // 6: [u64; 3]
+            TypeDef::Array {
+                elem: BundleTypeId(0),
+                count: 3,
+            },
+            // 7: **Node
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(2),
+            },
+            // 8: Unit {}
+            TypeDef::Struct {
+                name: n("Unit"),
+                size: 0,
+                members: vec![],
+            },
+            // 9: OptEnum — explicit, ranged, and fallback selectors
+            TypeDef::Enum {
+                name: n("OptEnum"),
+                size: 16,
+                shape: VariantShape {
+                    discr: Some(DiscrDef {
+                        offset: 8,
+                        ty: BundleTypeId(0),
+                    }),
+                    variants: vec![
+                        variant("None", Some(DiscrValues(vec![Value(0)])), 8),
+                        variant("Some", Some(DiscrValues(vec![Range(1, 3)])), 0),
+                        variant("Many", None, 0),
+                    ],
+                },
+            },
+            // 10: Wrapper — one member of every spelling
+            TypeDef::Struct {
+                name: n("Wrapper"),
+                size: 64,
+                members: vec![
+                    member("node", 1, 0),
+                    member("ghost", 3, 16),
+                    member("mystery", 4, 16),
+                    member("color", 5, 17),
+                    member("arr", 6, 24),
+                    member("indirect", 7, 48),
+                ],
+            },
+            // 11 and 12: one name, two definitions
+            TypeDef::Struct {
+                name: n("dup::Type"),
+                size: 8,
+                members: vec![member("value", 0, 0)],
+            },
+            TypeDef::Struct {
+                name: n("dup::Type"),
+                size: 16,
+                members: vec![member("value", 0, 8)],
+            },
+        ];
+
+        let strings = strings.finish();
+        let mut name_index: Vec<(StrRef, BundleTypeId)> = types
+            .iter()
+            .enumerate()
+            .filter_map(|(i, def)| {
+                let name = match def {
+                    TypeDef::Base { name, .. }
+                    | TypeDef::Struct { name, .. }
+                    | TypeDef::Enum { name, .. }
+                    | TypeDef::CEnum { name, .. }
+                    | TypeDef::Opaque { name, .. } => *name,
+                    TypeDef::Pointer { .. } | TypeDef::Array { .. } => return None,
+                    TypeDef::Union { name, .. } => *name,
+                };
+                Some((name, BundleTypeId(i as u32)))
+            })
+            .collect();
+        name_index.sort_by_key(|(r, _)| strings.get(*r).unwrap().to_string());
+
+        let ty = BundleTypeId(0);
+        Bundle {
+            meta: Meta {
+                format_version: FORMAT_VERSION,
+                ..Default::default()
+            },
+            strings,
+            types: TypeTable {
+                types,
+                name_index,
+                ..Default::default()
+            },
+            tasks: Default::default(),
+            dyn_futures: Default::default(),
+            statics: Default::default(),
+            walks: Default::default(),
+            infra: InfraTypes {
+                header: ty,
+                vtable: ty,
+                trailer: ty,
+                context: ty,
+                scheduler_handle: ty,
+                mt_handle: ty,
+                location: ty,
+                raw_waker_vtable: ty,
+            },
+            provenance: Default::default(),
+        }
+    }
+
+    fn described(name: &str, recursive: bool, depth: usize) -> String {
+        let bundle = bundle();
+        let view = BundleView::new(&bundle);
+        let mut out = Vec::new();
+        describe(&view, name, recursive, depth, &mut out).expect("describe succeeds");
+        String::from_utf8(out).unwrap()
+    }
+
+    fn found(needle: &str) -> String {
+        let bundle = bundle();
+        let view = BundleView::new(&bundle);
+        let mut out = Vec::new();
+        find(&view, needle, &mut out).expect("find succeeds");
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn test_find_lists_matches_and_counts() {
+        let out = found("Node");
+        assert!(out.contains("Node\n"), "{out}");
+        assert!(out.ends_with("1 type\n"), "{out}");
+
+        // Repeated definitions of one name collapse into one line.
+        let out = found("dup");
+        assert!(out.contains("dup::Type  (2 definitions)"), "{out}");
+        assert!(out.ends_with("1 type\n"), "{out}");
+
+        let out = found("no_such_needle");
+        assert!(out.ends_with("0 types\n"), "{out}");
+
+        // An empty needle matches every named type.
+        let out = found("");
+        assert!(out.contains("Wrapper"), "{out}");
+        assert!(out.contains("OptEnum"), "{out}");
+    }
+
+    #[test]
+    fn test_describe_unknown_name_suggests_find() {
+        let bundle = bundle();
+        let view = BundleView::new(&bundle);
+        let err = describe(&view, "no::such::Type", false, 0, &mut Vec::new()).unwrap_err();
+        assert!(err.to_string().contains("find-types"), "{err}");
+    }
+
+    #[test]
+    fn test_describe_prints_every_definition_of_a_name() {
+        let out = described("dup::Type", false, 0);
+        assert!(out.contains("(definition 2 of 2)"), "{out}");
+        assert_eq!(out.matches("struct dup::Type").count(), 2, "{out}");
+    }
+
+    /// A list node reaches itself across its `next` pointer; the second
+    /// visit says so instead of recursing until the stack runs out.
+    #[test]
+    fn test_a_recursive_description_stops_at_a_cycle() {
+        let out = described("Node", true, 8);
+        // The pointee gets a heading of its own — offsets restart there.
+        assert!(out.contains("→ struct Node"), "{out}");
+        assert!(out.contains(DESCRIBED_ABOVE), "{out}");
+    }
+
+    /// `--depth` stops the nesting and marks the line that has more
+    /// below it; a full-depth rendering carries no mark.
+    #[test]
+    fn test_depth_truncation_marks_the_line() {
+        let shallow = described("Wrapper", true, 0);
+        assert!(shallow.contains(MORE_BELOW), "{shallow}");
+        // Marked on the line naming the nested struct, not followed.
+        assert!(!shallow.contains("+8     next"), "{shallow}");
+
+        let deep = described("Wrapper", true, 8);
+        assert!(!deep.contains(MORE_BELOW), "{deep}");
+        assert!(deep.contains("next"), "{deep}");
+    }
+
+    /// A type with nothing below the line that names it — an empty
+    /// struct, a base, an array of bases — is never marked as
+    /// truncated, while a pointer chain that reaches a layout is: what
+    /// `reach` finds decides, not the member's own kind.
+    #[test]
+    fn test_bodyless_members_carry_no_truncation_mark() {
+        let out = described("Wrapper", true, 0);
+        for line in out.lines() {
+            for bodyless in ["ghost", "value", "arr"] {
+                if line.contains(bodyless) {
+                    assert!(!line.contains(MORE_BELOW), "{line:?}");
+                }
+            }
+            if line.contains("indirect") {
+                assert!(line.contains(MORE_BELOW), "{line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_cenum_and_opaque_bodies() {
+        let out = described("Color", false, 0);
+        assert!(out.contains("c-enum Color — 1 byte"), "{out}");
+        assert!(out.contains("Red = 0"), "{out}");
+        assert!(out.contains("Green = 1"), "{out}");
+
+        let out = described("Mystery", false, 0);
+        assert!(out.contains("opaque Mystery — size unknown"), "{out}");
+        assert!(out.contains("could not model"), "{out}");
+    }
+
+    /// The enum rendering spells each variant's selector the way the
+    /// discriminant encodes it: a value, a range, or the niche
+    /// fallback's "otherwise".
+    #[test]
+    fn test_enum_variants_render_their_selectors() {
+        let out = described("OptEnum", false, 0);
+        assert!(out.contains("discriminant +8"), "{out}");
+        assert!(out.contains("= 0 "), "{out}");
+        assert!(out.contains("1..=3"), "{out}");
+        assert!(out.contains("otherwise"), "{out}");
+    }
+
+    /// Pointers and arrays are anonymous in the bundle; member lines
+    /// spell them from what they address.
+    #[test]
+    fn test_labels_spell_pointers_and_arrays() {
+        let out = described("Wrapper", false, 0);
+        assert!(out.contains("[u64; 3]"), "{out}");
+        assert!(out.contains("**Node"), "{out}");
+
+        let out = described("Node", false, 0);
+        assert!(out.contains("*Node"), "{out}");
+    }
+}
