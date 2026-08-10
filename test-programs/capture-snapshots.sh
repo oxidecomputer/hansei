@@ -21,7 +21,11 @@
 # complete, so both reject a mismatched pair, but a capture taken on
 # illumos checks a pair against more names.
 #
-# Usage: capture-snapshots.sh [OUT_DIR]
+# Usage: capture-snapshots.sh [OUT_DIR [PROGRAM...]]
+#
+# With no PROGRAMs, every fixture pair is recaptured. Naming some
+# captures only those, leaving the other checked-in pairs — and the
+# goldens quoting them — exactly as they are.
 
 set -euo pipefail
 
@@ -36,7 +40,11 @@ FIXTURES="$PWD/fixtures"
 
 # Program -> the stdout line marking its parked steady state. Reads
 # block on the child's stdout; there are no timing sleeps anywhere.
-PROGRAMS=(simple-await nested-await dyn-future futurelock sleep-join channels)
+PROGRAMS=(simple-await nested-await dyn-future futurelock sleep-join channels
+          unordered joinset)
+if [[ $# -gt 1 ]]; then
+    PROGRAMS=("${@:2}")
+fi
 marker() {
     case "$1" in
         # Deadlocked for good once the background task drops the lock
