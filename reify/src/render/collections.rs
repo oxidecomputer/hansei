@@ -2,6 +2,7 @@
 //! associative collections with their storage-specific entry walks.
 
 use crate::debug_type::{DisplayNode, FatHeader, MapEntries};
+use crate::elements::{Elements, MAX_SEQUENCE_BYTES, SeqError};
 use crate::value::TypeInfoRef;
 
 use exegesis::bundle::BundleType;
@@ -23,10 +24,12 @@ use super::{
 };
 
 /// Follow the `(data, len)` fat pointer `header` to a contiguous buffer and
-/// render its first `len` `element`s as `[e, e, …]`. The header's capacity,
-/// when present, bounds `len` (skipped for a zero-sized element, whose buffer
-/// is not read). Unlike [`eval_list`] the elements are contiguous, read in
-/// one target access.
+/// render its first `len` `element`s as `[e, e, …]`, through the same
+/// [`Elements`] read the parse path performs — one header validation, and one
+/// refusal to believe a length further than the target corroborates it. A
+/// shortfall renders the elements that are there and says how many are
+/// missing; nothing served at all degrades whole. Unlike [`eval_list`] the
+/// elements are contiguous, read in one target access.
 pub(crate) fn eval_slice<'a>(
     f: &mut fmt::Formatter<'_>,
     header: &FatHeader,
@@ -36,62 +39,37 @@ pub(crate) fn eval_slice<'a>(
     ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
-    let Some(len) = read_unsigned_at(bytes, header.length_offset, u64::from(header.length_size))
-    else {
-        return write!(f, "<truncated slice length>");
-    };
-    let element_size = u64::from(element_size);
-    if let Some((capacity_offset, capacity_size)) = header.capacity {
-        let Some(capacity) = read_unsigned_at(bytes, capacity_offset, u64::from(capacity_size))
-        else {
-            return write!(f, "<truncated slice capacity>");
+    let proc = ctx.proc.map(|proc| proc as &dyn ReadFromProc);
+    let stride = u64::from(element_size);
+    let elements =
+        match Elements::read_fat(header, *element, stride, bytes, proc, MAX_SEQUENCE_BYTES) {
+            Ok(elements) => elements,
+            Err(SeqError::Invalid(why)) => return write!(f, "<invalid slice: {why}>"),
+            Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable slice buffer>"),
+            Err(SeqError::NoTarget) => return write!(f, "<target unavailable>"),
         };
-        if element_size != 0 && len > capacity {
-            return write!(f, "<invalid slice: length exceeds capacity>");
-        }
+    if elements.is_empty() {
+        // Nothing served of a non-empty claim: the whole buffer is out of
+        // reach, which is a degradation, not an empty sequence.
+        return match elements.truncated() {
+            Some(_) => write!(f, "<unreadable slice buffer>"),
+            None => write!(f, "[]"),
+        };
     }
-    if len == 0 {
-        return write!(f, "[]");
-    }
-    let Some(pointer) = read_u64_at(bytes, header.pointer_offset) else {
-        return write!(f, "<truncated slice pointer>");
-    };
-
-    let allocation = if element_size == 0 {
-        std::borrow::Cow::Borrowed(&[][..])
-    } else {
-        if pointer == 0 {
-            return write!(f, "<invalid slice: null data pointer>");
-        }
-        let Some(byte_len) = len.checked_mul(element_size) else {
-            return write!(f, "<invalid slice: buffer size overflow>");
-        };
-        let Some(proc) = ctx.proc else {
-            return write!(f, "<target unavailable>");
-        };
-        let Ok(bytes) = proc.read_bytes(pointer, byte_len) else {
-            return write!(f, "<unreadable slice buffer>");
-        };
-        bytes
-    };
 
     // Vec elements pick their own integer rendering (never hex).
     let element_ctx = ctx.deeper().with_hex(false);
+    let len = elements.len();
     write!(f, "[")?;
 
-    // A long slice formats its elements on worker threads. The gate on
-    // the end address makes the per-element degradations below
-    // unreachable — a slice that would hit one renders sequentially and
-    // aborts at the exact element it always did.
+    // A long slice formats its elements on worker threads.
     if ctx.parallel
         && len >= MIN_PARALLEL_ITEMS
-        && element_size > 0
-        && pointer.checked_add(len * element_size).is_some()
         && let Some(visited) = ctx.visited
     {
         let seed = visited.borrow().clone();
         let worker = element_ctx.for_workers();
-        let (element, depth, allocation) = (*element, ctx.depth, &allocation);
+        let (elements_ref, depth) = (&elements, ctx.depth);
         render_chunked(f, len as usize, |range, out| {
             let task_visited = RefCell::new(seed.clone());
             let formats = FormatCache::default();
@@ -101,83 +79,32 @@ pub(crate) fn eval_slice<'a>(
                 "{}",
                 DisplayWith(|f: &mut fmt::Formatter<'_>| {
                     for index in range.clone() {
-                        write_slice_element(
-                            f,
-                            index as u64,
-                            pointer,
-                            allocation,
-                            element,
-                            element_size,
-                            depth,
-                            task_ctx,
-                            pretty,
-                        )?;
+                        let child = elements_ref.get(index as u64);
+                        write_seq_prefix(f, pretty, task_ctx.prefix, depth, index == 0)?;
+                        write_display_value(f, &child, task_ctx, pretty)?;
+                        if pretty {
+                            write!(f, ",")?;
+                        }
                     }
                     Ok(())
                 })
             );
         })?;
     } else {
-        for index in 0..len {
-            let rendered = write_slice_element(
-                f,
-                index,
-                pointer,
-                &allocation,
-                *element,
-                element_size,
-                ctx.depth,
-                element_ctx,
-                pretty,
-            )?;
-            if !rendered {
-                return Ok(());
+        for (index, child) in elements.iter().enumerate() {
+            write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, index == 0)?;
+            write_display_value(f, &child, element_ctx, pretty)?;
+            if pretty {
+                write!(f, ",")?;
             }
         }
     }
+    if let Some(claimed) = elements.truncated() {
+        write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, false)?;
+        write!(f, "<{} more unreadable>", claimed - len)?;
+    }
     write_seq_close(f, pretty, ctx.prefix, ctx.depth, true)?;
     write!(f, "]")
-}
-
-/// One element of a slice body: its separator or line prefix, then its
-/// value. `Ok(false)` means a degradation marker was written in the
-/// value's place and the slice must stop where it stands, bracket
-/// unclosed — exactly what the streaming path has always done.
-#[allow(clippy::too_many_arguments)]
-fn write_slice_element<'a>(
-    f: &mut fmt::Formatter<'_>,
-    index: u64,
-    pointer: u64,
-    allocation: &[u8],
-    element: BundleType<'a>,
-    element_size: u64,
-    depth: usize,
-    ctx: RenderCtx<'_, 'a>,
-    pretty: bool,
-) -> std::result::Result<bool, fmt::Error> {
-    write_seq_prefix(f, pretty, ctx.prefix, depth, index == 0)?;
-    let Some(offset) = index.checked_mul(element_size) else {
-        write!(f, "<invalid element offset>")?;
-        return Ok(false);
-    };
-    let Some(bytes) = byte_range(allocation, offset, element_size) else {
-        write!(f, "<truncated element>")?;
-        return Ok(false);
-    };
-    let Some(address) = pointer.checked_add(offset) else {
-        write!(f, "<invalid element address>")?;
-        return Ok(false);
-    };
-    let child = TypeInfoRef {
-        ty: element,
-        addr: address,
-        bytes,
-    };
-    write_display_value(f, &child, ctx, pretty)?;
-    if pretty {
-        write!(f, ",")?;
-    }
-    Ok(true)
 }
 
 #[derive(Copy, Clone)]
@@ -683,7 +610,7 @@ mod tests {
         let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &invalid);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
-            "<invalid slice: length exceeds capacity>"
+            "<invalid slice: the length exceeds the capacity>"
         );
     }
 
@@ -934,15 +861,39 @@ mod tests {
         };
 
         assert_eq!(show(&[0, 0, 0]), "[]");
-        assert_eq!(show(&[0, 3, 3]), "<invalid slice: null data pointer>");
+        assert_eq!(
+            show(&[0, 3, 3]),
+            "<invalid slice: the data pointer is null>"
+        );
         assert_eq!(show(&[0x2000, 3, 3]), "<unreadable slice buffer>");
         assert_eq!(
             show(&[0x2000, 4, 3]),
-            "<invalid slice: length exceeds capacity>"
+            "<invalid slice: the length exceeds the capacity>"
         );
         assert_eq!(
             show(&[0x2000, u64::MAX, u64::MAX]),
-            "<invalid slice: buffer size overflow>"
+            "<invalid slice: the buffer size overflows>"
+        );
+    }
+
+    /// A length the target can only partly corroborate renders the elements
+    /// that are there and says how many are missing, rather than degrading
+    /// whole or quietly passing the prefix off as the full sequence.
+    #[test]
+    fn test_slice_render_reports_a_shortfall() {
+        let mem = FakeMem::new().at(0x2000, u32s(&[7, 8, 9]));
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let fat = u64s(&[0x2000, 1000, 1000]);
+        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &fat);
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8)),
+            "[7, 8, 9, <997 more unreadable>]"
+        );
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&mem, 8)),
+            "[\n    7,\n    8,\n    9,\n    <997 more unreadable>\n]"
         );
     }
 }
