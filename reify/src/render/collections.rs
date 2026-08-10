@@ -458,25 +458,13 @@ fn walk_map_entries<'a>(
         edge_pointer_offset,
     } = entries;
 
-    let root_start =
-        usize::try_from(*root_offset).map_err(|_| MapWalkError::Marker("<invalid root>"))?;
-    let root_end = root_start
-        .checked_add(root.size() as usize)
-        .ok_or(MapWalkError::Marker("<invalid root>"))?;
-    let root_bytes = bytes
-        .get(root_start..root_end)
+    let root_bytes = byte_range(bytes, *root_offset, root.size())
         .ok_or(MapWalkError::Marker("<truncated root>"))?;
     if !matches!(root.check_variant(root_bytes, "Some"), Some(Ok(Some(_)))) {
         return Err(MapWalkError::Marker("<invalid missing root>"));
     }
 
-    let root_node_start = usize::try_from(*root_node_offset)
-        .map_err(|_| MapWalkError::Marker("<invalid root node>"))?;
-    let root_node_end = root_node_start
-        .checked_add(root_node.size() as usize)
-        .ok_or(MapWalkError::Marker("<invalid root node>"))?;
-    let root_node_bytes = bytes
-        .get(root_node_start..root_node_end)
+    let root_node_bytes = byte_range(bytes, *root_node_offset, root_node.size())
         .ok_or(MapWalkError::Marker("<truncated root node>"))?;
     let height = read_unsigned_at(root_node_bytes, *height_offset, height.size())
         .ok_or(MapWalkError::Marker("<truncated height>"))?;

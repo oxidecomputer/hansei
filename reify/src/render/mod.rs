@@ -24,6 +24,7 @@ use exegesis::bundle::{BundleType, BundleTypeId};
 use aggregate::{write_rust_enum, write_struct_fields};
 use node::eval_node;
 use par::WorkerCtx;
+use scalar::{read_u64_at, read_unsigned_at};
 
 use foldhash::{HashMap, HashSet};
 
@@ -446,40 +447,19 @@ pub(crate) fn write_display_value<'a>(
                 };
             }
 
+            // A width with no whole-word reading (`read_unsigned_at` knows
+            // 1, 2, 4 and 8) dumps its bytes.
+            let Some(word) = read_unsigned_at(bytes, 0, size) else {
+                return write_hex_bytes(f, bytes);
+            };
             if ctx.hex_integers {
-                return match size {
-                    1 => write_hex_fixed(f, u64::from(bytes[0]), 1),
-                    2 => write_hex_fixed(
-                        f,
-                        u64::from(u16::from_le_bytes(bytes[..2].try_into().unwrap())),
-                        2,
-                    ),
-                    4 => write_hex_fixed(
-                        f,
-                        u64::from(u32::from_le_bytes(bytes[..4].try_into().unwrap())),
-                        4,
-                    ),
-                    8 => write_hex_fixed(f, u64::from_le_bytes(bytes[..8].try_into().unwrap()), 8),
-                    _ => write_hex_bytes(f, bytes),
-                };
-            }
-
-            if is_signed {
-                match size {
-                    1 => write!(f, "{}", bytes[0] as i8),
-                    2 => write!(f, "{}", i16::from_le_bytes(bytes[..2].try_into().unwrap())),
-                    4 => write!(f, "{}", i32::from_le_bytes(bytes[..4].try_into().unwrap())),
-                    8 => write!(f, "{}", i64::from_le_bytes(bytes[..8].try_into().unwrap())),
-                    _ => write_hex_bytes(f, bytes),
-                }
+                write_hex_fixed(f, word, size as usize)
+            } else if is_signed {
+                // Sign-extend the word from its own width to i64.
+                let shift = 64 - 8 * size as u32;
+                write!(f, "{}", ((word as i64) << shift) >> shift)
             } else {
-                match size {
-                    1 => write!(f, "{}", bytes[0]),
-                    2 => write!(f, "{}", u16::from_le_bytes(bytes[..2].try_into().unwrap())),
-                    4 => write!(f, "{}", u32::from_le_bytes(bytes[..4].try_into().unwrap())),
-                    8 => write!(f, "{}", u64::from_le_bytes(bytes[..8].try_into().unwrap())),
-                    _ => write_hex_bytes(f, bytes),
-                }
+                write!(f, "{}", word)
             }
         }
 
@@ -490,10 +470,9 @@ pub(crate) fn write_display_value<'a>(
         },
 
         TypeClass::Pointer { target } => {
-            if bytes.len() < 8 {
+            let Some(addr) = read_u64_at(bytes, 0) else {
                 return write!(f, "<truncated>");
-            }
-            let addr = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            };
             if addr == 0 {
                 return write!(f, "null");
             }
