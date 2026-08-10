@@ -58,11 +58,13 @@ marker() {
 # the capture target, build B feeds the extractor. Build A carries no
 # debug info — the shape of a production binary a core actually comes
 # from — so the join is proven against a target whose only self-
-# description is its symbol table, with all DWARF coming from B.
+# description is its symbol table, with all DWARF coming from B. Build
+# B is the standard fixture build in regen.sh's own dirs, shared with
+# the extraction goldens and the acceptance suite; only A, the cored
+# side, needs a compilation of its own.
 REGEN_BIN_DIR="$FIXTURES/bin-a" REGEN_TARGET_DIR="$FIXTURES/target-a" \
     ./regen.sh --no-debug-info "${PROGRAMS[@]}"
-REGEN_BIN_DIR="$FIXTURES/bin-b" REGEN_TARGET_DIR="$FIXTURES/target-b" \
-    ./regen.sh "${PROGRAMS[@]}"
+./regen.sh "${PROGRAMS[@]}"
 
 # The capture tools themselves come from the workspace as-is, except
 # that `snapshot` is not in a default hansei: it makes test data rather
@@ -72,7 +74,7 @@ EXEGESIS=../target/debug/exegesis
 HANSEI=../target/debug/hansei
 
 for p in "${PROGRAMS[@]}"; do
-    "$EXEGESIS" extract "$FIXTURES/bin-b/$p" -o "$OUT/$p.bundle"
+    "$EXEGESIS" extract "$FIXTURES/bin/$p" -o "$OUT/$p.bundle"
 
     fifo="$(mktemp -u)"
     mkfifo "$fifo"

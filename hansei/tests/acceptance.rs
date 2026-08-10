@@ -13,7 +13,11 @@
 //! from, so the join is proven against a target whose only
 //! self-description is its symbol table. Joining B's layouts against
 //! A's memory by mangled symbol name is the two-binary constraint the
-//! whole design rests on. Each program is driven to a deterministic
+//! whole design rests on. Build B is not a compilation of its own: it
+//! is the standard fixture build, the same dirs the extraction goldens
+//! use, so on a host that runs both suites the debug graph is compiled
+//! once. The constraint only needs the *cored* binary to come from a
+//! different compilation than the bundle, and build A still does. Each program is driven to a deterministic
 //! parked steady state by blocking on its stdout readiness marker —
 //! there are no timing sleeps anywhere. Cores are taken fresh into a
 //! tempdir and removed with it.
@@ -181,44 +185,50 @@ fn fixtures() -> &'static Fixtures {
         let cell = cell();
         let test_programs = workspace_root().join("test-programs");
         let fixture_dir = test_programs.join("fixtures");
-        // The primary cell keeps the classic dirs (the same ones
-        // capture-snapshots.sh uses); a matrix cell gets its own bin
-        // and bundle dirs, with target dirs shared per (toolchain,
-        // cfg) pair the way regen.sh shares its cell target dirs.
-        let (base, targets) = match &cell.name {
-            None => (fixture_dir.clone(), fixture_dir.clone()),
+        // Build A's dirs: the primary cell keeps the classic ones (the
+        // same capture-snapshots.sh uses); a matrix cell gets its own
+        // bin dir, with target dirs shared per (toolchain, cfg) pair
+        // the way regen.sh shares its cell target dirs.
+        let (base, target_a) = match &cell.name {
+            None => (fixture_dir.clone(), fixture_dir.join("target-a")),
             Some(name) => (
                 fixture_dir.join("accept").join(name),
-                fixture_dir.join("accept-target"),
+                fixture_dir
+                    .join("accept-target")
+                    .join(format!("{}-a", cell.pair)),
             ),
         };
-        let target_name = |flavor: &str| {
-            if cell.pair.is_empty() {
-                format!("target-{flavor}")
-            } else {
-                format!("{}-{flavor}", cell.pair)
-            }
-        };
         // Build A runs and is cored, so it is built the way a
-        // production binary is — no debug info; build B carries the
-        // full debug info the extractor reads.
-        for (bin, flavor, debug_info) in [("bin-a", "a", false), ("bin-b", "b", true)] {
-            let mut command = Command::new(test_programs.join("regen.sh"));
-            if !debug_info {
-                command.arg("--no-debug-info");
-            }
-            let status = command
-                .args(&cell.flags)
-                .args(PROGRAMS)
-                .env("REGEN_BIN_DIR", base.join(bin))
-                .env("REGEN_TARGET_DIR", targets.join(target_name(flavor)))
-                .status()
-                .expect("failed to run regen.sh");
-            assert!(
-                status.success(),
-                "regen.sh failed; is the cell's toolchain installed?"
-            );
-        }
+        // production binary is — no debug info, as a compilation of its
+        // own rather than a stripped copy of B.
+        let status = Command::new(test_programs.join("regen.sh"))
+            .arg("--no-debug-info")
+            .args(&cell.flags)
+            .args(PROGRAMS)
+            .env("REGEN_BIN_DIR", base.join("bin-a"))
+            .env("REGEN_TARGET_DIR", &target_a)
+            .status()
+            .expect("failed to run regen.sh");
+        assert!(
+            status.success(),
+            "regen.sh failed; is the cell's toolchain installed?"
+        );
+        // Build B is the standard fixture build in regen.sh's own dirs
+        // — an incremental no-op on a host whose extraction goldens
+        // already built this cell.
+        let status = Command::new(test_programs.join("regen.sh"))
+            .args(&cell.flags)
+            .args(PROGRAMS)
+            .status()
+            .expect("failed to run regen.sh");
+        assert!(
+            status.success(),
+            "regen.sh failed; is the cell's toolchain installed?"
+        );
+        let bin_b = match &cell.name {
+            None => fixture_dir.join("bin"),
+            Some(name) => fixture_dir.join("bin").join(name),
+        };
 
         let bundles = base.join("integration");
         fs::create_dir_all(&bundles).expect("failed to create the bundle dir");
@@ -227,7 +237,7 @@ fn fixtures() -> &'static Fixtures {
                 extract_args: format!("acceptance-suite extraction of {program}"),
                 ..Default::default()
             };
-            let (bundle, _stats) = extract_file(&base.join("bin-b").join(program), &opts)
+            let (bundle, _stats) = extract_file(&bin_b.join(program), &opts)
                 .unwrap_or_else(|e| panic!("extraction of {program} failed: {e}"));
             bundle
                 .save(&bundles.join(format!("{program}.bundle")))
