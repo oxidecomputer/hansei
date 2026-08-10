@@ -4,6 +4,7 @@
 //! byte-slicing primitives the other render modules read words with.
 
 use crate::debug_type::{BitField, FatHeader, FieldRender, ScalarDecode};
+use crate::elements::{MAX_SEQUENCE_BYTES, SeqError, utf8_buffer};
 use crate::target::ReadFromProc;
 
 use exegesis::bundle::Notation;
@@ -98,42 +99,29 @@ pub(crate) fn write_symbol(
     Ok(())
 }
 
+/// Render the UTF-8 buffer `header` describes as a quoted, escaped string,
+/// read through the same [`utf8_buffer`] the parse path uses — one header
+/// validation, and one refusal to believe a length further than the target
+/// corroborates it. A shortfall renders the bytes that are there and says
+/// how many are missing; nothing served at all degrades whole.
 pub(crate) fn write_utf8_string(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     header: &FatHeader,
     proc: Option<&(dyn ReadFromProc + Sync)>,
 ) -> fmt::Result {
-    let Some(len) = read_unsigned_at(bytes, header.length_offset, u64::from(header.length_size))
-    else {
-        return write!(f, "<truncated string length>");
+    let proc = proc.map(|proc| proc as &dyn ReadFromProc);
+    let text = match utf8_buffer(header, bytes, proc, MAX_SEQUENCE_BYTES) {
+        Ok(text) => text,
+        Err(SeqError::Invalid(why)) => return write!(f, "<invalid string: {why}>"),
+        Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable string data>"),
+        Err(SeqError::NoTarget) => return write!(f, "<target unavailable>"),
     };
-    if let Some((capacity_offset, capacity_size)) = header.capacity {
-        let Some(capacity) = read_unsigned_at(bytes, capacity_offset, u64::from(capacity_size))
-        else {
-            return write!(f, "<truncated String capacity>");
-        };
-        if len > capacity {
-            return write!(f, "<invalid String: length exceeds capacity>");
-        }
-    }
-    if len == 0 {
-        return write!(f, "\"\"");
-    }
-    let Some(pointer) = read_u64_at(bytes, header.pointer_offset) else {
-        return write!(f, "<truncated string pointer>");
-    };
-    if pointer == 0 {
-        return write!(f, "<invalid string: null data pointer>");
-    }
-    let Some(proc) = proc else {
-        return write!(f, "<target unavailable>");
-    };
-    let Ok(bytes) = proc.read_bytes(pointer, len) else {
+    if text.count == 0 && text.claimed.is_some() {
         return write!(f, "<unreadable string data>");
-    };
-    match std::str::from_utf8(&bytes) {
-        Ok(text) => write!(f, "{text:?}"),
+    }
+    match std::str::from_utf8(&text.bytes) {
+        Ok(text) => write!(f, "{text:?}")?,
         // A corrupted string is most useful mostly-shown: the valid
         // runs render escaped as usual and each bad byte renders as
         // `\xNN`, so the salvageable text survives the damage instead
@@ -146,7 +134,7 @@ pub(crate) fn write_utf8_string(
             use std::fmt::Write as _;
 
             f.write_str("\"")?;
-            for chunk in bytes.utf8_chunks() {
+            for chunk in text.bytes.utf8_chunks() {
                 for ch in chunk.valid().chars() {
                     // `escape_debug` would escape a bare `'`, which
                     // `str`'s `Debug` on the valid path leaves alone;
@@ -164,9 +152,13 @@ pub(crate) fn write_utf8_string(
                     f.write_str(hex_pair(*byte))?;
                 }
             }
-            f.write_str("\"")
+            f.write_str("\"")?;
         }
     }
+    if let Some(claimed) = text.claimed {
+        write!(f, " <{} more bytes unreadable>", claimed - text.count)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn byte_range(bytes: &[u8], offset: u64, size: u64) -> Option<&[u8]> {
@@ -586,7 +578,7 @@ mod tests {
                 "{}",
                 TypeInfoRef::new(str_ty, 0, &fat(&[0, 4])).display_from_target(&mem, 8)
             ),
-            "<invalid string: null data pointer>"
+            "<invalid string: the data pointer is null>"
         );
         // A pointer the target cannot read.
         assert_eq!(
@@ -610,7 +602,27 @@ mod tests {
                 "{}",
                 TypeInfoRef::new(string_ty, 0, &fat(&[0x4000, 9, 4])).display_from_target(&mem, 8)
             ),
-            "<invalid String: length exceeds capacity>"
+            "<invalid string: the length exceeds the capacity>"
+        );
+    }
+
+    /// A length the target can only partly corroborate renders the bytes
+    /// that are there and says how many are missing, rather than degrading
+    /// whole or quietly passing the prefix off as the full string.
+    #[test]
+    fn test_string_render_reports_a_shortfall() {
+        let mem = FakeMem::new().at(0x3000, b"hello".to_vec());
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let fat: Vec<u8> = [0x3000u64, 500]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let value = TypeInfoRef::new(v.ty(STR).unwrap(), 0, &fat);
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8)),
+            "\"hello\" <495 more bytes unreadable>"
         );
     }
 }

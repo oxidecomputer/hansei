@@ -74,24 +74,25 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
         self.claimed
     }
 
-    /// The elements, in order.
-    ///
-    /// Each is handed over as the sequence's own element type, *unpeeled*: a
-    /// recorded walk binding roots at that type, so descending a transparent
-    /// wrapper here would start the walk below its root. A caller that wants
-    /// the peeled view calls [`TypeInfoRef::peel`] itself.
+    /// The element at `index`, handed over as the sequence's own element
+    /// type, *unpeeled*: a recorded walk binding roots at that type, so
+    /// descending a transparent wrapper here would start the walk below its
+    /// root. A caller that wants the peeled view calls [`TypeInfoRef::peel`]
+    /// itself.
+    pub fn get(&self, index: u64) -> TypeInfoRef<'_, 'a> {
+        // A zero-sized element has no bytes of its own; every one of
+        // them sits at the base address with an empty buffer.
+        let offset = index * self.stride;
+        let slot = self
+            .bytes
+            .get(offset as usize..(offset + self.stride) as usize)
+            .unwrap_or(&[]);
+        TypeInfoRef::new(self.element, self.base + offset, slot)
+    }
+
+    /// The elements, in order; see [`Elements::get`] for what each is.
     pub fn iter(&self) -> impl Iterator<Item = TypeInfoRef<'_, 'a>> {
-        let (element, base, stride) = (self.element, self.base, self.stride);
-        let bytes: &[u8] = &self.bytes;
-        (0..self.count).map(move |index| {
-            // A zero-sized element has no bytes of its own; every one of
-            // them sits at the base address with an empty buffer.
-            let offset = index * stride;
-            let slot = bytes
-                .get(offset as usize..(offset + stride) as usize)
-                .unwrap_or(&[]);
-            TypeInfoRef::new(element, base + offset, slot)
-        })
+        (0..self.count).map(move |index| self.get(index))
     }
 
     /// Resolve `info` to its elements, reading a buffered sequence's bytes.
@@ -107,36 +108,18 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
         ctx: &'buf Ctx,
     ) -> Result<Elements<'buf, 'a>> {
         let ty = info.ty;
-        let invalid = |why| Error::invalid_sequence(ty.name(), why);
+        let proc: &dyn ReadFromProc = ctx.proc();
+        let max_bytes = ctx.max_sequence_bytes();
 
         if let Some(DisplayNode::Slice {
-            header:
-                FatHeader {
-                    pointer_offset,
-                    length_offset,
-                    length_size,
-                    capacity,
-                },
+            header,
             element,
             element_size,
         }) = DisplayNode::resolve(ty)
         {
-            let bytes = info.bytes;
-            let count = read_unsigned_at(bytes, length_offset, u64::from(length_size))
-                .ok_or_else(|| invalid("the length does not fit the value"))?;
             let stride = u64::from(element_size);
-            if let Some((offset, size)) = capacity {
-                let capacity = read_unsigned_at(bytes, offset, u64::from(size))
-                    .ok_or_else(|| invalid("the capacity does not fit the value"))?;
-                // A zero-sized element allocates nothing, so its capacity
-                // bounds nothing: `Vec<()>` reports `usize::MAX`.
-                if stride != 0 && count > capacity {
-                    return Err(invalid("the length exceeds the capacity"));
-                }
-            }
-            let base = read_u64_at(bytes, pointer_offset)
-                .ok_or_else(|| invalid("the data pointer does not fit the value"))?;
-            return Self::buffered(ty, element, base, stride, count, ctx);
+            return Self::read_fat(&header, element, stride, info.bytes, Some(proc), max_bytes)
+                .map_err(|e| e.into_error(ty.name()));
         }
 
         if let Some((element, count)) = ty.array_info() {
@@ -164,31 +147,94 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
         };
         let count: u64 = length.parse(ctx)?;
         let base: u64 = pointer.parse(ctx)?;
-        Self::buffered(ty, element, base, element.size(), count, ctx)
+        let stride = element.size();
+        let buffer = read_buffer(Some(proc), max_bytes, base, stride, count)
+            .map_err(|e| e.into_error(ty.name()))?;
+        Ok(Self::over(buffer, element, base, stride))
     }
 
-    fn buffered<Ctx: ParseCtx>(
-        ty: BundleType<'a>,
+    /// Resolve a `Slice` display program's header against `bytes` and read
+    /// the buffer it describes — the one sequence read both the parse path
+    /// and the slice renderer perform, so the validation of a header and the
+    /// refusal to believe an uncorroborated length are written once.
+    pub(crate) fn read_fat(
+        header: &FatHeader,
         element: BundleType<'a>,
-        base: u64,
         stride: u64,
-        count: u64,
-        ctx: &'buf Ctx,
-    ) -> Result<Elements<'buf, 'a>> {
+        bytes: &[u8],
+        proc: Option<&'buf dyn ReadFromProc>,
+        max_bytes: u64,
+    ) -> std::result::Result<Elements<'buf, 'a>, SeqError> {
+        let (base, count) = decode_header(bytes, header, stride)?;
+        let buffer = read_buffer(proc, max_bytes, base, stride, count)?;
+        Ok(Self::over(buffer, element, base, stride))
+    }
+
+    /// The elements a read buffer holds.
+    fn over(buffer: Buffer<'buf>, element: BundleType<'a>, base: u64, stride: u64) -> Self {
         let Buffer {
             bytes,
             count,
             claimed,
-        } = read_buffer(ty, base, stride, count, ctx)?;
-        Ok(Elements {
+        } = buffer;
+        Elements {
             element,
             base,
             stride,
             count,
             claimed,
             bytes,
-        })
+        }
     }
+}
+
+/// Why a sequence could not be read, shaped for either consumer: the parse
+/// path upgrades it to an [`Error`] naming the sequence type, the render
+/// path prints a degradation marker in the value's place.
+pub(crate) enum SeqError {
+    /// The header cannot describe a sequence; the reason, in prose.
+    Invalid(&'static str),
+    /// The target refused the buffer read outright.
+    Unreadable(Error),
+    /// A read was needed and no target is attached.
+    NoTarget,
+}
+
+impl SeqError {
+    /// The parse-path spelling.
+    fn into_error(self, ty: &str) -> Error {
+        match self {
+            SeqError::Invalid(why) => Error::invalid_sequence(ty, why),
+            SeqError::Unreadable(e) => e,
+            // The parse path always attaches a target, so a read that found
+            // none never actually reaches this.
+            SeqError::NoTarget => Error::invalid_sequence(ty, "no target to read through"),
+        }
+    }
+}
+
+/// Decode and validate the `(pointer, length[, capacity])` words of `header`
+/// against the value's own bytes, to the address of element zero and the
+/// count the value claims. `stride` is the element width; a zero-sized
+/// element allocates nothing, so its capacity bounds nothing (`Vec<()>`
+/// reports `usize::MAX`).
+fn decode_header(
+    bytes: &[u8],
+    header: &FatHeader,
+    stride: u64,
+) -> std::result::Result<(u64, u64), SeqError> {
+    let count = read_unsigned_at(bytes, header.length_offset, u64::from(header.length_size))
+        .ok_or(SeqError::Invalid("the length does not fit the value"))?;
+    if let Some((offset, size)) = header.capacity {
+        let capacity = read_unsigned_at(bytes, offset, u64::from(size))
+            .ok_or(SeqError::Invalid("the capacity does not fit the value"))?;
+        if stride != 0 && count > capacity {
+            return Err(SeqError::Invalid("the length exceeds the capacity"));
+        }
+    }
+    let base = read_u64_at(bytes, header.pointer_offset)
+        .ok_or(SeqError::Invalid("the data pointer does not fit the value"))?;
+    Ok((base, count))
 }
 
 /// One buffer read out of the target: the bytes served, how many whole units
@@ -213,31 +259,12 @@ pub(crate) fn utf8<'buf, Ctx: ParseCtx>(
     ctx: &'buf Ctx,
 ) -> Result<Buffer<'buf>> {
     let ty = info.ty;
-    let invalid = |why| Error::invalid_sequence(ty.name(), why);
+    let proc: &dyn ReadFromProc = ctx.proc();
+    let max_bytes = ctx.max_sequence_bytes();
 
-    if let Some(DisplayNode::Str {
-        header:
-            FatHeader {
-                pointer_offset,
-                length_offset,
-                length_size,
-                capacity,
-            },
-    }) = DisplayNode::resolve(ty)
-    {
-        let bytes = info.bytes;
-        let length = read_unsigned_at(bytes, length_offset, u64::from(length_size))
-            .ok_or_else(|| invalid("the length does not fit the value"))?;
-        if let Some((offset, size)) = capacity {
-            let capacity = read_unsigned_at(bytes, offset, u64::from(size))
-                .ok_or_else(|| invalid("the capacity does not fit the value"))?;
-            if length > capacity {
-                return Err(invalid("the length exceeds the capacity"));
-            }
-        }
-        let base = read_u64_at(bytes, pointer_offset)
-            .ok_or_else(|| invalid("the data pointer does not fit the value"))?;
-        return read_buffer(ty, base, 1, length, ctx);
+    if let Some(DisplayNode::Str { header }) = DisplayNode::resolve(ty) {
+        return utf8_buffer(&header, info.bytes, Some(proc), max_bytes)
+            .map_err(|e| e.into_error(ty.name()));
     }
 
     let (Some(pointer), Some(length)) = (info.try_member("data_ptr")?, info.try_member("length")?)
@@ -246,19 +273,31 @@ pub(crate) fn utf8<'buf, Ctx: ParseCtx>(
     };
     let length: u64 = length.parse(ctx)?;
     let base: u64 = pointer.parse(ctx)?;
-    read_buffer(ty, base, 1, length, ctx)
+    read_buffer(Some(proc), max_bytes, base, 1, length).map_err(|e| e.into_error(ty.name()))
+}
+
+/// Resolve a `Str` display program's header against `bytes` and read the
+/// buffer it describes — [`Elements::read_fat`] for the string renderer and
+/// parser, sharing the same header validation and length corroboration.
+pub(crate) fn utf8_buffer<'buf>(
+    header: &FatHeader,
+    bytes: &[u8],
+    proc: Option<&'buf dyn ReadFromProc>,
+    max_bytes: u64,
+) -> std::result::Result<Buffer<'buf>, SeqError> {
+    let (base, length) = decode_header(bytes, header, 1)?;
+    read_buffer(proc, max_bytes, base, 1, length)
 }
 
 /// Read `count` units of `stride` bytes from `base`, believing the count only
 /// as far as it can be corroborated.
-fn read_buffer<'buf, Ctx: ParseCtx>(
-    ty: BundleType<'_>,
+fn read_buffer<'buf>(
+    proc: Option<&'buf dyn ReadFromProc>,
+    max_bytes: u64,
     base: u64,
     stride: u64,
     count: u64,
-    ctx: &'buf Ctx,
-) -> Result<Buffer<'buf>> {
-    let invalid = |why| Error::invalid_sequence(ty.name(), why);
+) -> std::result::Result<Buffer<'buf>, SeqError> {
     let empty = |count, claimed| Buffer {
         bytes: Cow::Borrowed(&[][..]),
         count,
@@ -269,35 +308,37 @@ fn read_buffer<'buf, Ctx: ParseCtx>(
         return Ok(empty(0, None));
     }
     if base == 0 {
-        return Err(invalid("the data pointer is null"));
+        return Err(SeqError::Invalid("the data pointer is null"));
     }
-    let ceiling = ctx.max_sequence_bytes();
     if stride == 0 {
         // Nothing to read: a zero-sized element is entirely described by how
         // many of it there are. The ceiling still applies, since a corrupt
         // count would otherwise be iterated in full.
-        return Ok(match count > ceiling {
-            true => empty(ceiling, Some(count)),
+        return Ok(match count > max_bytes {
+            true => empty(max_bytes, Some(count)),
             false => empty(count, None),
         });
     }
 
     let want = count
         .checked_mul(stride)
-        .ok_or_else(|| invalid("the buffer size overflows"))?;
+        .ok_or(SeqError::Invalid("the buffer size overflows"))?;
     base.checked_add(want)
-        .ok_or_else(|| invalid("the buffer wraps the address space"))?;
+        .ok_or(SeqError::Invalid("the buffer wraps the address space"))?;
+    let proc = proc.ok_or(SeqError::NoTarget)?;
 
     // What the target says it can serve, capped: a length out of corrupt
     // memory otherwise sizes an allocation before the read that would have
     // refused it. Round down, so a partial trailing unit is not passed off
     // as a whole one.
-    let servable = ctx.proc().readable_len(base, want.min(ceiling));
+    let servable = proc.readable_len(base, want.min(max_bytes));
     let served = servable - servable % stride;
     if served == 0 {
         return Ok(empty(0, Some(count)));
     }
-    let bytes = ctx.proc().read_bytes(base, served)?;
+    let bytes = proc
+        .read_bytes(base, served)
+        .map_err(SeqError::Unreadable)?;
     let got = served / stride;
     Ok(Buffer {
         bytes,
