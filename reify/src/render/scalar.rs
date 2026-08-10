@@ -4,7 +4,7 @@
 //! byte-slicing primitives the other render modules read words with.
 
 use crate::debug_type::{BitField, FatHeader, FieldRender, ScalarDecode};
-use crate::elements::{MAX_SEQUENCE_BYTES, SeqError, utf8_buffer};
+use crate::elements::{SeqError, utf8_buffer};
 use crate::target::ReadFromProc;
 
 use exegesis::bundle::Notation;
@@ -111,7 +111,7 @@ pub(crate) fn write_utf8_string(
     proc: Option<&(dyn ReadFromProc + Sync)>,
 ) -> fmt::Result {
     let proc = proc.map(|proc| proc as &dyn ReadFromProc);
-    let text = match utf8_buffer(header, bytes, proc, MAX_SEQUENCE_BYTES) {
+    let text = match utf8_buffer(header, bytes, proc) {
         Ok(text) => text,
         Err(SeqError::Invalid(why)) => return write!(f, "<invalid string: {why}>"),
         Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable string data>"),

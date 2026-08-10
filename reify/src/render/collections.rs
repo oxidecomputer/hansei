@@ -2,7 +2,7 @@
 //! associative collections with their storage-specific entry walks.
 
 use crate::debug_type::{DisplayNode, FatHeader, MapEntries};
-use crate::elements::{Elements, MAX_SEQUENCE_BYTES, SeqError};
+use crate::elements::{Elements, SeqError};
 use crate::value::TypeInfoRef;
 
 use exegesis::bundle::BundleType;
@@ -41,13 +41,12 @@ pub(crate) fn eval_slice<'a>(
 ) -> fmt::Result {
     let proc = ctx.proc.map(|proc| proc as &dyn ReadFromProc);
     let stride = u64::from(element_size);
-    let elements =
-        match Elements::read_fat(header, *element, stride, bytes, proc, MAX_SEQUENCE_BYTES) {
-            Ok(elements) => elements,
-            Err(SeqError::Invalid(why)) => return write!(f, "<invalid slice: {why}>"),
-            Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable slice buffer>"),
-            Err(SeqError::NoTarget) => return write!(f, "<target unavailable>"),
-        };
+    let elements = match Elements::read_fat(header, *element, stride, bytes, proc) {
+        Ok(elements) => elements,
+        Err(SeqError::Invalid(why)) => return write!(f, "<invalid slice: {why}>"),
+        Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable slice buffer>"),
+        Err(SeqError::NoTarget) => return write!(f, "<target unavailable>"),
+    };
     if elements.is_empty() {
         // Nothing served of a non-empty claim: the whole buffer is out of
         // reach, which is a degradation, not an empty sequence.

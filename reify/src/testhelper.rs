@@ -34,6 +34,7 @@ pub struct FakeMem {
     symbols: BTreeMap<u64, String>,
     unmapped: Unmapped,
     all_reads_fail: bool,
+    no_bounds: bool,
 }
 
 /// What a read no region satisfies does.
@@ -78,6 +79,14 @@ impl FakeMem {
         self.all_reads_fail = true;
         self
     }
+
+    /// Decline to bound reads, the way a live process does: `readable_len`
+    /// claims everything asked for, and a read past the regions fails
+    /// outright rather than coming up short.
+    pub fn no_bounds(mut self) -> Self {
+        self.no_bounds = true;
+        self
+    }
 }
 
 impl crate::ReadFromProc for FakeMem {
@@ -110,6 +119,9 @@ impl crate::ReadFromProc for FakeMem {
     // does -- so a length that outruns the bytes in hand is cut to them
     // rather than failing the read outright.
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
+        if self.no_bounds {
+            return max;
+        }
         if self.all_reads_fail {
             return 0;
         }
@@ -133,22 +145,11 @@ impl crate::ReadFromProc for FakeMem {
 /// owned-`TypeInfo` paths that take a context rather than a bare reader.
 pub struct TestCtx {
     pub mem: FakeMem,
-    max_sequence_bytes: u64,
 }
 
 impl TestCtx {
     pub fn new(mem: FakeMem) -> Self {
-        Self {
-            mem,
-            max_sequence_bytes: crate::MAX_SEQUENCE_BYTES,
-        }
-    }
-
-    /// Cap sequence reads at `bytes`, so the ceiling can be exercised
-    /// without a fixture the size of the real one.
-    pub fn with_max_sequence_bytes(mut self, bytes: u64) -> Self {
-        self.max_sequence_bytes = bytes;
-        self
+        Self { mem }
     }
 }
 
@@ -157,10 +158,6 @@ impl crate::ParseCtx for TestCtx {
 
     fn proc(&self) -> &FakeMem {
         &self.mem
-    }
-
-    fn max_sequence_bytes(&self) -> u64 {
-        self.max_sequence_bytes
     }
 }
 

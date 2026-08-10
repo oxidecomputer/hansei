@@ -625,8 +625,22 @@ impl Proc {
 
 impl Target for Proc {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; len as usize];
-        self.pread_exact(&mut buf, addr)?;
+        // `len` may itself have been read out of the target, and a live
+        // process declines to bound it (see [`Target::readable_len`]) — so
+        // allocate as the bytes arrive rather than sizing a buffer by an
+        // unverified claim, and a garbage length fails at the first
+        // unreadable page instead of allocating what it named.
+        const CHUNK: u64 = 4 * 1024 * 1024;
+        let mut buf = Vec::new();
+        while (buf.len() as u64) < len {
+            let step = CHUNK.min(len - buf.len() as u64) as usize;
+            let start = buf.len();
+            buf.resize(start + step, 0);
+            let got = self.pread(&mut buf[start..], addr + start as u64)?;
+            if got < step as u64 {
+                return Err(Error::unexpected_eof());
+            }
+        }
         Ok(buf)
     }
 
