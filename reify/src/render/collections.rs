@@ -1,7 +1,7 @@
 //! Sequence and map renderers: contiguous slices, intrusive linked lists, and
 //! associative collections with their storage-specific entry walks.
 
-use crate::debug_type::{DisplayNode, MapEntries};
+use crate::debug_type::{DisplayNode, FatHeader, MapEntries};
 use crate::value::TypeInfoRef;
 
 use exegesis::bundle::BundleType;
@@ -22,28 +22,26 @@ use super::{
     write_seq_close, write_seq_prefix,
 };
 
-/// Follow a `(data, len)` fat pointer to a contiguous buffer and render its
-/// first `len` `element`s as `[e, e, …]`. `capacity`, when present, bounds
-/// `len` (skipped for a zero-sized element, whose buffer is not read). Unlike
-/// [`eval_list`] the elements are contiguous, read in one target access.
-#[allow(clippy::too_many_arguments)]
+/// Follow the `(data, len)` fat pointer `header` to a contiguous buffer and
+/// render its first `len` `element`s as `[e, e, …]`. The header's capacity,
+/// when present, bounds `len` (skipped for a zero-sized element, whose buffer
+/// is not read). Unlike [`eval_list`] the elements are contiguous, read in
+/// one target access.
 pub(crate) fn eval_slice<'a>(
     f: &mut fmt::Formatter<'_>,
-    pointer_offset: u64,
-    length_offset: u64,
-    length_size: u32,
-    capacity: Option<(u64, u32)>,
+    header: &FatHeader,
     element: &BundleType<'a>,
     element_size: u32,
     bytes: &[u8],
     ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
-    let Some(len) = read_unsigned_at(bytes, length_offset, u64::from(length_size)) else {
+    let Some(len) = read_unsigned_at(bytes, header.length_offset, u64::from(header.length_size))
+    else {
         return write!(f, "<truncated slice length>");
     };
     let element_size = u64::from(element_size);
-    if let Some((capacity_offset, capacity_size)) = capacity {
+    if let Some((capacity_offset, capacity_size)) = header.capacity {
         let Some(capacity) = read_unsigned_at(bytes, capacity_offset, u64::from(capacity_size))
         else {
             return write!(f, "<truncated slice capacity>");
@@ -55,7 +53,7 @@ pub(crate) fn eval_slice<'a>(
     if len == 0 {
         return write!(f, "[]");
     }
-    let Some(pointer) = read_u64_at(bytes, pointer_offset) else {
+    let Some(pointer) = read_u64_at(bytes, header.pointer_offset) else {
         return write!(f, "<truncated slice pointer>");
     };
 

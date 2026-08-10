@@ -3,7 +3,7 @@
 //! to a symbol, a UTF-8 string, a byte array in a standard notation -- plus the
 //! byte-slicing primitives the other render modules read words with.
 
-use crate::debug_type::{BitField, FieldRender, ScalarDecode};
+use crate::debug_type::{BitField, FatHeader, FieldRender, ScalarDecode};
 use crate::target::ReadFromProc;
 
 use exegesis::bundle::Notation;
@@ -101,17 +101,16 @@ pub(crate) fn write_symbol(
 pub(crate) fn write_utf8_string(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
-    pointer_offset: u64,
-    length_offset: u64,
-    length_size: u64,
-    capacity: Option<(u64, u64)>,
+    header: &FatHeader,
     proc: Option<&(dyn ReadFromProc + Sync)>,
 ) -> fmt::Result {
-    let Some(len) = read_unsigned_at(bytes, length_offset, length_size) else {
+    let Some(len) = read_unsigned_at(bytes, header.length_offset, u64::from(header.length_size))
+    else {
         return write!(f, "<truncated string length>");
     };
-    if let Some((capacity_offset, capacity_size)) = capacity {
-        let Some(capacity) = read_unsigned_at(bytes, capacity_offset, capacity_size) else {
+    if let Some((capacity_offset, capacity_size)) = header.capacity {
+        let Some(capacity) = read_unsigned_at(bytes, capacity_offset, u64::from(capacity_size))
+        else {
             return write!(f, "<truncated String capacity>");
         };
         if len > capacity {
@@ -121,7 +120,7 @@ pub(crate) fn write_utf8_string(
     if len == 0 {
         return write!(f, "\"\"");
     }
-    let Some(pointer) = read_u64_at(bytes, pointer_offset) else {
+    let Some(pointer) = read_u64_at(bytes, header.pointer_offset) else {
         return write!(f, "<truncated string pointer>");
     };
     if pointer == 0 {
