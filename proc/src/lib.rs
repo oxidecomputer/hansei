@@ -189,8 +189,8 @@ pub trait Target {
 
     /// The bytes at `addr`, borrowed from the target's own storage when
     /// one piece of it serves the whole read — a mapped core segment or
-    /// backing file. `None` means the read needs assembling (or the
-    /// backend reads through a handle rather than a mapping); fall back
+    /// backing file. `None` means this backend cannot lend it whole —
+    /// it reads through a handle, or records what it serves; fall back
     /// to [`read_bytes`](Target::read_bytes).
     fn pslice(&self, _addr: u64, _len: u64) -> Option<&[u8]> {
         None
