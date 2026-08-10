@@ -889,17 +889,9 @@ fn classify_future(
     } else {
         // Root namespace segment distinguishes runtime/combinator crates
         // from application types.
-        let root = raw.namespace().map(|ns| {
-            let mut id = ns;
-            loop {
-                let entry = reader.namespaces.get(id);
-                match entry.parent {
-                    Some(p) => id = p,
-                    None => break reader.strings.get(entry.name).to_owned(),
-                }
-            }
-        });
-        match root.as_deref() {
+        let path = raw.namespace().map(|ns| ns_path(reader, ns));
+        let root = path.as_deref().and_then(|path| path.split("::").next());
+        match root {
             Some("tokio" | "futures" | "futures_util" | "futures_core") => FutureKind::Combinator,
             _ => FutureKind::Manual,
         }
@@ -931,19 +923,8 @@ fn classify_future(
         while let Some(id) = ns {
             let entry = reader.namespaces.get(id);
             let leaf = reader.strings.get(entry.name);
-            let path = {
-                let mut segs = vec![leaf.to_owned()];
-                let mut p = entry.parent;
-                while let Some(pid) = p {
-                    let e = reader.namespaces.get(pid);
-                    segs.push(reader.strings.get(e.name).to_owned());
-                    p = e.parent;
-                }
-                segs.reverse();
-                segs.join("::")
-            };
             if !leaf.starts_with('{')
-                && let Some(func) = view.find_func(&path)
+                && let Some(func) = view.find_func(&ns_path(reader, id))
             {
                 if let Some(loc) = func.source_loc()
                     && let (Some(file), Some(line)) = (loc.file(), loc.line())
