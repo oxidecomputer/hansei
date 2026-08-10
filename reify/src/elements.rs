@@ -164,8 +164,6 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
         Self::buffered(ty, element, base, element.size(), count, ctx)
     }
 
-    /// Read `count` elements of `stride` bytes from `base`, believing the
-    /// count only as far as it can be corroborated.
     fn buffered<Ctx: ParseCtx>(
         ty: BundleType<'a>,
         element: BundleType<'a>,
@@ -174,59 +172,132 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
         count: u64,
         ctx: &'buf Ctx,
     ) -> Result<Elements<'buf, 'a>> {
-        let invalid = |why| Error::invalid_sequence(ty.name(), why);
-        let empty = |count, claimed| Elements {
+        let Buffer {
+            bytes,
+            count,
+            claimed,
+        } = read_buffer(ty, base, stride, count, ctx)?;
+        Ok(Elements {
             element,
             base,
             stride,
             count,
             claimed,
-            bytes: Cow::Borrowed(&[][..]),
-        };
-
-        if count == 0 {
-            return Ok(empty(0, None));
-        }
-        if base == 0 {
-            return Err(invalid("the data pointer is null"));
-        }
-        let ceiling = ctx.max_sequence_bytes();
-        if stride == 0 {
-            // Nothing to read: a zero-sized element is entirely described by
-            // how many of it there are. The ceiling still applies, since a
-            // corrupt count would otherwise be iterated in full.
-            return Ok(match count > ceiling {
-                true => empty(ceiling, Some(count)),
-                false => empty(count, None),
-            });
-        }
-
-        let want = count
-            .checked_mul(stride)
-            .ok_or_else(|| invalid("the buffer size overflows"))?;
-        base.checked_add(want)
-            .ok_or_else(|| invalid("the buffer wraps the address space"))?;
-
-        // What the target says it can serve, capped: a length out of corrupt
-        // memory otherwise sizes an allocation before the read that would
-        // have refused it. Round down, so a partial trailing element is not
-        // shown as a whole one.
-        let servable = ctx.proc().readable_len(base, want.min(ceiling));
-        let served = servable - servable % stride;
-        if served == 0 {
-            return Ok(empty(0, Some(count)));
-        }
-        let bytes = ctx.proc().read_bytes(base, served)?;
-        let got = served / stride;
-        Ok(Elements {
-            element,
-            base,
-            stride,
-            count: got,
-            claimed: (got < count).then_some(count),
             bytes,
         })
     }
+}
+
+/// One buffer read out of the target: the bytes served, how many whole units
+/// of the requested stride they hold, and what the value's length claimed
+/// when that is more than was served.
+pub(crate) struct Buffer<'buf> {
+    pub(crate) bytes: Cow<'buf, [u8]>,
+    pub(crate) count: u64,
+    pub(crate) claimed: Option<u64>,
+}
+
+/// The bytes of a UTF-8 buffer — a `String`, a `&str`, an owned path — read
+/// through the `Str` display program the bundle carries, or through the bare
+/// `(data_ptr, length)` pair where it carries none.
+///
+/// This is [`Elements::of`] for a sequence whose elements are bytes and whose
+/// point is the bytes rather than the elements: same header, same validation,
+/// same bound on a length that cannot be trusted, but one bulk read instead
+/// of a typed view per byte.
+pub(crate) fn utf8<'buf, Ctx: ParseCtx>(
+    info: &TypeInfoRef<'buf, '_>,
+    ctx: &'buf Ctx,
+) -> Result<Buffer<'buf>> {
+    let ty = info.ty;
+    let invalid = |why| Error::invalid_sequence(ty.name(), why);
+
+    if let Some(DisplayNode::Str {
+        pointer_offset,
+        length_offset,
+        length_size,
+        capacity,
+    }) = DisplayNode::resolve(ty)
+    {
+        let bytes = info.bytes;
+        let length = read_unsigned_at(bytes, length_offset, u64::from(length_size))
+            .ok_or_else(|| invalid("the length does not fit the value"))?;
+        if let Some((offset, size)) = capacity {
+            let capacity = read_unsigned_at(bytes, offset, u64::from(size))
+                .ok_or_else(|| invalid("the capacity does not fit the value"))?;
+            if length > capacity {
+                return Err(invalid("the length exceeds the capacity"));
+            }
+        }
+        let base = read_u64_at(bytes, pointer_offset)
+            .ok_or_else(|| invalid("the data pointer does not fit the value"))?;
+        return read_buffer(ty, base, 1, length, ctx);
+    }
+
+    let (Some(pointer), Some(length)) = (info.try_member("data_ptr")?, info.try_member("length")?)
+    else {
+        return Err(Error::not_a_sequence(ty.name()));
+    };
+    let length: u64 = length.parse(ctx)?;
+    let base: u64 = pointer.parse(ctx)?;
+    read_buffer(ty, base, 1, length, ctx)
+}
+
+/// Read `count` units of `stride` bytes from `base`, believing the count only
+/// as far as it can be corroborated.
+fn read_buffer<'buf, Ctx: ParseCtx>(
+    ty: BundleType<'_>,
+    base: u64,
+    stride: u64,
+    count: u64,
+    ctx: &'buf Ctx,
+) -> Result<Buffer<'buf>> {
+    let invalid = |why| Error::invalid_sequence(ty.name(), why);
+    let empty = |count, claimed| Buffer {
+        bytes: Cow::Borrowed(&[][..]),
+        count,
+        claimed,
+    };
+
+    if count == 0 {
+        return Ok(empty(0, None));
+    }
+    if base == 0 {
+        return Err(invalid("the data pointer is null"));
+    }
+    let ceiling = ctx.max_sequence_bytes();
+    if stride == 0 {
+        // Nothing to read: a zero-sized element is entirely described by how
+        // many of it there are. The ceiling still applies, since a corrupt
+        // count would otherwise be iterated in full.
+        return Ok(match count > ceiling {
+            true => empty(ceiling, Some(count)),
+            false => empty(count, None),
+        });
+    }
+
+    let want = count
+        .checked_mul(stride)
+        .ok_or_else(|| invalid("the buffer size overflows"))?;
+    base.checked_add(want)
+        .ok_or_else(|| invalid("the buffer wraps the address space"))?;
+
+    // What the target says it can serve, capped: a length out of corrupt
+    // memory otherwise sizes an allocation before the read that would have
+    // refused it. Round down, so a partial trailing unit is not passed off
+    // as a whole one.
+    let servable = ctx.proc().readable_len(base, want.min(ceiling));
+    let served = servable - servable % stride;
+    if served == 0 {
+        return Ok(empty(0, Some(count)));
+    }
+    let bytes = ctx.proc().read_bytes(base, served)?;
+    let got = served / stride;
+    Ok(Buffer {
+        bytes,
+        count: got,
+        claimed: (got < count).then_some(count),
+    })
 }
 
 #[cfg(test)]
@@ -325,6 +396,30 @@ mod tests {
             .expect("an empty vec");
         assert!(empty.is_empty());
         assert_eq!(empty.iter().count(), 0);
+    }
+
+    /// A UTF-8 buffer reads through its own display program and gets the same
+    /// checks a sequence does: an owned `String` names a capacity to be held
+    /// to, a borrowed `&str` does not, and neither believes a length past
+    /// what the target can serve.
+    #[test]
+    fn test_a_string_reads_through_its_display_program() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ctx = TestCtx::new(FakeMem::new().at(0x2000, b"hello".to_vec()));
+        let text = |id, header: &[u8]| {
+            TypeInfoRef::new(v.ty(id).unwrap(), 0x1000, header).parse::<String, _>(&ctx)
+        };
+
+        // String { ptr @0, len @8, capacity @16 }, then &str { ptr, len }.
+        assert_eq!(text(STRING, &u64s(&[0x2000, 5, 8])).unwrap(), "hello");
+        assert_eq!(text(STR, &u64s(&[0x2000, 5])).unwrap(), "hello");
+
+        // More bytes than the allocation that holds them.
+        assert!(text(STRING, &u64s(&[0x2000, 9, 8])).is_err());
+        // A length the target cannot serve is an error, not a short string.
+        assert!(text(STRING, &u64s(&[0x2000, 500, 500])).is_err());
+        assert!(text(STR, &u64s(&[0x2000, 500])).is_err());
     }
 
     /// A type with no sequence shape at all says so, rather than reading
