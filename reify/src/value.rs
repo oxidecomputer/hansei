@@ -130,21 +130,33 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
         Self { ty, addr, bytes }
     }
 
+    /// The `ty`-typed view at `offset` within this value — the slicing every
+    /// member access, variant selection and decode shares. Fails when the
+    /// value's bytes do not cover the range; the view comes back unpeeled.
+    fn view_at(&self, offset: u64, ty: BundleType<'a>) -> Result<TypeInfoRef<'buf, 'a>> {
+        let bytes = usize::try_from(offset)
+            .ok()
+            .zip(usize::try_from(ty.size()).ok())
+            .and_then(|(start, size)| self.bytes.get(start..start.checked_add(size)?));
+        let Some(bytes) = bytes else {
+            return Err(Error::invalid_member_range(
+                offset,
+                offset.saturating_add(ty.size()),
+                self.bytes.len() as u64,
+            ));
+        };
+        Ok(TypeInfoRef {
+            ty,
+            addr: self.addr + offset,
+            bytes,
+        })
+    }
+
     pub fn try_member(&self, name: &str) -> Result<Option<TypeInfoRef<'buf, 'a>>> {
         let Some(member) = self.ty.member(name) else {
             return Ok(None);
         };
-        let ty = member.ty();
-
-        let start = member.offset() as u16;
-        let end = start + ty.size() as u16;
-        let Some(bytes) = self.bytes.get(start as usize..end as usize) else {
-            let len = self.bytes.len() as u16;
-            return Err(Error::invalid_member_range(start, end, len));
-        };
-        let addr = self.addr + member.offset();
-
-        Ok(Some(TypeInfoRef { ty, addr, bytes }.peel()))
+        Ok(Some(self.view_at(member.offset(), member.ty())?.peel()))
     }
 
     pub fn member(&self, name: &str) -> Result<TypeInfoRef<'buf, 'a>> {
@@ -222,22 +234,7 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
             return Ok(None);
         };
 
-        let start = offset as u16;
-        let end = start + var_ty.size() as u16;
-        let Some(bytes) = self.bytes.get(start as usize..end as usize) else {
-            let len = self.bytes.len() as u16;
-            return Err(Error::invalid_member_range(start, end, len));
-        };
-        let addr = self.addr + offset;
-
-        Ok(Some(
-            TypeInfoRef {
-                ty: var_ty,
-                addr,
-                bytes,
-            }
-            .peel(),
-        ))
+        Ok(Some(self.view_at(offset, var_ty)?.peel()))
     }
 
     pub fn select_variant(&self, name: &str) -> Result<TypeInfoRef<'buf, 'a>> {
@@ -270,23 +267,7 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
             .ok_or_else(|| Error::not_an_enum(self.ty.name().to_string()))?
             .map_err(|e| bundle_variant_error(&self.ty, e))?;
 
-        let start = active.offset as usize;
-        let end = start + active.ty.size() as usize;
-        let Some(bytes) = self.bytes.get(start..end) else {
-            let len = self.bytes.len() as u16;
-            return Err(Error::invalid_member_range(start as u16, end as u16, len));
-        };
-        let addr = self.addr + active.offset;
-
-        Ok((
-            active.name,
-            TypeInfoRef {
-                ty: active.ty,
-                addr,
-                bytes,
-            }
-            .peel(),
-        ))
+        Ok((active.name, self.view_at(active.offset, active.ty)?.peel()))
     }
 
     /// Check if the type is a wrapper struct, and return its inner type if it
@@ -532,6 +513,26 @@ mod tests {
         let point = crate::TypeInfo::from_addr(&ctx, v.ty(POINT).unwrap(), 0x1000).unwrap();
         assert_eq!(point.member("x").unwrap().parse::<u32, _>(&ctx).unwrap(), 1);
         assert_eq!(point.parse::<u32, _>(&ctx).ok(), None, "Point is not a u32");
+    }
+
+    /// A member past 64 KiB is sliced at its real offset. The member range
+    /// used to be computed in `u16`, so an offset like `Big::tail`'s 0x10000
+    /// wrapped to zero and the wrong bytes were served without an error.
+    #[test]
+    fn test_member_past_64k_is_sliced_at_its_real_offset() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mut bytes = vec![0u8; 0x10004];
+        bytes[0x10000..].copy_from_slice(&7u32.to_le_bytes());
+        let big = TypeInfoRef::new(v.ty(BIG).unwrap(), 0x1000, &bytes);
+
+        let tail = big.member("tail").expect("tail is addressable");
+        assert_eq!(tail.addr, 0x1000 + 0x10000);
+        assert_eq!(format!("{}", tail.display()), "7");
+
+        // Short of the member, the range is reported rather than misread.
+        let short = TypeInfoRef::new(v.ty(BIG).unwrap(), 0x1000, &bytes[..0x10000]);
+        assert!(short.member("tail").is_err());
     }
 
     /// `to_owned` copies a borrowed view's bytes into an owned one, which is
