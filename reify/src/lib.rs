@@ -12,7 +12,7 @@ mod value;
 mod testhelper;
 
 pub use debug_type::TypeKind;
-pub use elements::{Elements, MAX_SEQUENCE_BYTES};
+pub use elements::Elements;
 pub use error::Error;
 pub use parse::{ParseCtx, ParseWithDbgInfo};
 pub use render::{AddrAnnotator, DisplayTargetValue, DisplayValue, ElideOverride};

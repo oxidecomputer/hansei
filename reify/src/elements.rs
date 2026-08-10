@@ -17,17 +17,13 @@ use exegesis::bundle::BundleType;
 
 use std::borrow::Cow;
 
-/// The most bytes one sequence read asks a target for, whatever the value's
-/// length claims.
+/// The most elements a zero-sized sequence is credited with.
 ///
-/// The length that sizes the read is itself read out of the target, so
-/// corrupt memory names whatever its bits say. [`ReadFromProc::readable_len`]
-/// cuts that claim to what the target can actually serve, which settles it for
-/// a core; a live process cannot answer cheaply and does not try, so this
-/// ceiling is what stands between a garbage length and an allocation the size
-/// it asked for. Override it per context with
-/// [`ParseCtx::max_sequence_bytes`].
-pub const MAX_SEQUENCE_BYTES: u64 = 64 * 1024 * 1024;
+/// A sequence of sized elements is believed only as far as the target can
+/// serve its bytes, but a zero-sized element has no bytes to corroborate a
+/// count with — any claim at all costs nothing to read and everything to
+/// iterate. This is the one place a count is bounded by fiat.
+const MAX_ZST_ELEMENTS: u64 = 64 * 1024 * 1024;
 
 /// The elements of one sequence-shaped value, read and addressed.
 ///
@@ -109,7 +105,6 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
     ) -> Result<Elements<'buf, 'a>> {
         let ty = info.ty;
         let proc: &dyn ReadFromProc = ctx.proc();
-        let max_bytes = ctx.max_sequence_bytes();
 
         if let Some(DisplayNode::Slice {
             header,
@@ -118,7 +113,7 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
         }) = DisplayNode::resolve(ty)
         {
             let stride = u64::from(element_size);
-            return Self::read_fat(&header, element, stride, info.bytes, Some(proc), max_bytes)
+            return Self::read_fat(&header, element, stride, info.bytes, Some(proc))
                 .map_err(|e| e.into_error(ty.name()));
         }
 
@@ -148,8 +143,8 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
         let count: u64 = length.parse(ctx)?;
         let base: u64 = pointer.parse(ctx)?;
         let stride = element.size();
-        let buffer = read_buffer(Some(proc), max_bytes, base, stride, count)
-            .map_err(|e| e.into_error(ty.name()))?;
+        let buffer =
+            read_buffer(Some(proc), base, stride, count).map_err(|e| e.into_error(ty.name()))?;
         Ok(Self::over(buffer, element, base, stride))
     }
 
@@ -163,10 +158,9 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
         stride: u64,
         bytes: &[u8],
         proc: Option<&'buf dyn ReadFromProc>,
-        max_bytes: u64,
     ) -> std::result::Result<Elements<'buf, 'a>, SeqError> {
         let (base, count) = decode_header(bytes, header, stride)?;
-        let buffer = read_buffer(proc, max_bytes, base, stride, count)?;
+        let buffer = read_buffer(proc, base, stride, count)?;
         Ok(Self::over(buffer, element, base, stride))
     }
 
@@ -260,11 +254,9 @@ pub(crate) fn utf8<'buf, Ctx: ParseCtx>(
 ) -> Result<Buffer<'buf>> {
     let ty = info.ty;
     let proc: &dyn ReadFromProc = ctx.proc();
-    let max_bytes = ctx.max_sequence_bytes();
 
     if let Some(DisplayNode::Str { header }) = DisplayNode::resolve(ty) {
-        return utf8_buffer(&header, info.bytes, Some(proc), max_bytes)
-            .map_err(|e| e.into_error(ty.name()));
+        return utf8_buffer(&header, info.bytes, Some(proc)).map_err(|e| e.into_error(ty.name()));
     }
 
     let (Some(pointer), Some(length)) = (info.try_member("data_ptr")?, info.try_member("length")?)
@@ -273,7 +265,7 @@ pub(crate) fn utf8<'buf, Ctx: ParseCtx>(
     };
     let length: u64 = length.parse(ctx)?;
     let base: u64 = pointer.parse(ctx)?;
-    read_buffer(Some(proc), max_bytes, base, 1, length).map_err(|e| e.into_error(ty.name()))
+    read_buffer(Some(proc), base, 1, length).map_err(|e| e.into_error(ty.name()))
 }
 
 /// Resolve a `Str` display program's header against `bytes` and read the
@@ -283,17 +275,15 @@ pub(crate) fn utf8_buffer<'buf>(
     header: &FatHeader,
     bytes: &[u8],
     proc: Option<&'buf dyn ReadFromProc>,
-    max_bytes: u64,
 ) -> std::result::Result<Buffer<'buf>, SeqError> {
     let (base, length) = decode_header(bytes, header, 1)?;
-    read_buffer(proc, max_bytes, base, 1, length)
+    read_buffer(proc, base, 1, length)
 }
 
 /// Read `count` units of `stride` bytes from `base`, believing the count only
 /// as far as it can be corroborated.
 fn read_buffer<'buf>(
     proc: Option<&'buf dyn ReadFromProc>,
-    max_bytes: u64,
     base: u64,
     stride: u64,
     count: u64,
@@ -312,10 +302,10 @@ fn read_buffer<'buf>(
     }
     if stride == 0 {
         // Nothing to read: a zero-sized element is entirely described by how
-        // many of it there are. The ceiling still applies, since a corrupt
-        // count would otherwise be iterated in full.
-        return Ok(match count > max_bytes {
-            true => empty(max_bytes, Some(count)),
+        // many of it there are — which also means nothing corroborates the
+        // count, so it alone gets a ceiling rather than a read's refusal.
+        return Ok(match count > MAX_ZST_ELEMENTS {
+            true => empty(MAX_ZST_ELEMENTS, Some(count)),
             false => empty(count, None),
         });
     }
@@ -327,11 +317,11 @@ fn read_buffer<'buf>(
         .ok_or(SeqError::Invalid("the buffer wraps the address space"))?;
     let proc = proc.ok_or(SeqError::NoTarget)?;
 
-    // What the target says it can serve, capped: a length out of corrupt
-    // memory otherwise sizes an allocation before the read that would have
-    // refused it. Round down, so a partial trailing unit is not passed off
-    // as a whole one.
-    let servable = proc.readable_len(base, want.min(max_bytes));
+    // What the target says it can serve: a length out of corrupt memory
+    // otherwise sizes an allocation before the read that would have refused
+    // it. Round down, so a partial trailing unit is not passed off as a
+    // whole one.
+    let servable = proc.readable_len(base, want);
     let served = servable - servable % stride;
     if served == 0 {
         return Ok(empty(0, Some(count)));
@@ -401,16 +391,15 @@ mod tests {
         assert_eq!(elements.len(), 3);
         assert_eq!(elements.truncated(), Some(1000));
 
-        // Where the target cannot say -- a live process -- the ceiling is
-        // what bounds the read. Two whole elements fit in eight bytes.
-        let ctx = TestCtx::new(mem()).with_max_sequence_bytes(8);
-        let elements = slice.elements(&ctx).expect("slice elements");
-        assert_eq!(elements.len(), 2);
-        assert_eq!(elements.truncated(), Some(1000));
-
         // A short read is not a short sequence: collecting one is an error,
         // not a `Vec` quietly missing its tail.
         assert!(slice.parse::<Vec<u32>, _>(&ctx).is_err());
+
+        // A target that cannot bound a read -- a live process -- refuses the
+        // whole read instead of coming up short, and the claim is an error
+        // rather than a truncation.
+        let ctx = TestCtx::new(mem().no_bounds());
+        assert!(slice.elements(&ctx).is_err());
     }
 
     /// A header that cannot describe any sequence is refused before it is

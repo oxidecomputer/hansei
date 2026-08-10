@@ -245,7 +245,8 @@ impl Target for Proc {
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
         match self {
             // Bounding a live process would mean probing its mappings on
-            // every read; it claims no bound and the ceiling covers it.
+            // every read; it claims no bound, and its `read_bytes`
+            // allocates only as far as the target actually serves.
             #[cfg(target_os = "illumos")]
             Proc::Libproc(_) => max,
             Proc::LinuxCore(c) => c.readable_len(addr, max),

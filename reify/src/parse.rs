@@ -1,6 +1,5 @@
 //! Parsing Rust values out of a typed buffer.
 
-use crate::elements::MAX_SEQUENCE_BYTES;
 use crate::target::ReadFromProc;
 use crate::value::TypeInfoRef;
 use crate::{Error, Result};
@@ -11,13 +10,6 @@ pub trait ParseCtx {
     type Target: ReadFromProc;
 
     fn proc(&self) -> &Self::Target;
-
-    /// The most bytes one sequence read may ask the target for, whatever
-    /// the value's length claims; see [`MAX_SEQUENCE_BYTES`], which is what
-    /// this defaults to.
-    fn max_sequence_bytes(&self) -> u64 {
-        MAX_SEQUENCE_BYTES
-    }
 }
 
 /// Parse a byte slice as a type using debug type information.
