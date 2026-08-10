@@ -1088,3 +1088,1359 @@ impl Target for Core {
         Core::tls_var_addr(self, regs, sym)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use goblin::elf::header::{EM_X86_64, ET_CORE, ET_DYN, Header as UnifiedHeader};
+    use goblin::elf::program_header::PT_NOTE;
+    use goblin::elf::section_header::section_header64::SIZEOF_SHDR;
+    use goblin::elf::section_header::{SHT_STRTAB, SectionHeader};
+    use goblin::elf::sym::STB_GLOBAL;
+    use scroll::Pwrite;
+
+    use std::io::Write;
+
+    const PAGE: u64 = 0x1000;
+
+    /// The builder pads its notes to four bytes, which is what a core
+    /// actually uses whatever its `PT_NOTE` alignment claims.
+    const NOTE_ALIGN: usize = 4;
+
+    /// Builds an illumos `ET_CORE` file in memory, so the reader can be
+    /// held to cores a real one is awkward to produce: a symbol table
+    /// whose object moved, a link map that loops, a `stack_t` that
+    /// cannot be read.
+    ///
+    /// Unlike the Linux builder next door, nothing here reaches for the
+    /// test binary: everything an illumos core reader consumes — the
+    /// notes, the per-object symbol tables, the link map — is *in* the
+    /// core, so the whole suite synthesizes it and runs on any host.
+    #[derive(Default)]
+    struct CoreBuilder {
+        loads: Vec<Load>,
+        /// Raw `(n_type, desc)` pairs, emitted in insertion order.
+        notes: Vec<(u32, Vec<u8>)>,
+        auxv: Vec<(u64, u64)>,
+        /// Per-object symbol tables: `(sh_addr, entries)`.
+        symtabs: Vec<(u64, Vec<TestSym>)>,
+        /// Emitted verbatim in place of the assembled notes, for the
+        /// malformed-core tests.
+        raw_notes: Option<Vec<u8>>,
+    }
+
+    struct Load {
+        vaddr: u64,
+        memsz: u64,
+        flags: u32,
+        /// The bytes actually written to the core; shorter than `memsz`
+        /// when the dump left the tail of the region out.
+        bytes: Vec<u8>,
+    }
+
+    impl CoreBuilder {
+        /// A region whose bytes are all in the core.
+        fn dumped(self, vaddr: u64, flags: u32, bytes: Vec<u8>) -> Self {
+            let memsz = bytes.len() as u64;
+            self.partial(vaddr, memsz, flags, bytes)
+        }
+
+        /// A region absent from the file: in the address space, with
+        /// nothing dumped.
+        fn undumped(self, vaddr: u64, memsz: u64, flags: u32) -> Self {
+            self.partial(vaddr, memsz, flags, Vec::new())
+        }
+
+        /// A region only the front of which was written out.
+        fn partial(mut self, vaddr: u64, memsz: u64, flags: u32, bytes: Vec<u8>) -> Self {
+            self.loads.push(Load {
+                vaddr,
+                memsz,
+                flags,
+                bytes,
+            });
+            self
+        }
+
+        fn thread(self, tid: u32, regs: Regs) -> Self {
+            self.thread_with_ustack(tid, regs, 0)
+        }
+
+        fn thread_with_ustack(self, tid: u32, regs: Regs, ustack: u64) -> Self {
+            let zero = Timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            self.note(NT_LWPSTATUS, lwpstatus(tid, &regs, ustack, zero))
+        }
+
+        fn lwp_name(self, tid: u32, name: &str) -> Self {
+            self.note(NT_LWPNAME, lwpname(tid, name))
+        }
+
+        fn psargs(self, args: &str) -> Self {
+            self.note(NT_PSINFO, psinfo(args))
+        }
+
+        fn auxv(mut self, tag: u64, val: u64) -> Self {
+            self.auxv.push((tag, val));
+            self
+        }
+
+        fn note(mut self, ntype: u32, desc: Vec<u8>) -> Self {
+            self.notes.push((ntype, desc));
+            self
+        }
+
+        fn symtab(mut self, addr: u64, syms: Vec<TestSym>) -> Self {
+            self.symtabs.push((addr, syms));
+            self
+        }
+
+        fn build(&self) -> Vec<u8> {
+            let notes = self
+                .raw_notes
+                .clone()
+                .unwrap_or_else(|| self.assemble_notes());
+
+            // Header, then one phdr per note/load segment, the note and
+            // load bodies, the section bodies, and the section header
+            // table last — where illumos also puts sections, which is
+            // why a size-truncated core loses them first.
+            let phnum = 1 + self.loads.len();
+            let mut offset = (SIZEOF_EHDR + phnum * SIZEOF_PHDR) as u64;
+            let note_offset = offset;
+            offset += notes.len() as u64;
+
+            let mut phdrs = Vec::new();
+            phdrs.extend(phdr(PT_NOTE, 0, note_offset, 0, notes.len() as u64, 0, 4));
+            for load in &self.loads {
+                phdrs.extend(phdr(
+                    PT_LOAD,
+                    load.flags,
+                    offset,
+                    load.vaddr,
+                    load.bytes.len() as u64,
+                    load.memsz,
+                    PAGE,
+                ));
+                offset += load.bytes.len() as u64;
+            }
+
+            // One `.symtab`/`.strtab` pair per object, `sh_addr` naming
+            // where the object was loaded — `coreadm`'s default content.
+            let mut bodies = Vec::new();
+            let mut shdrs = vec![SectionHeader::default()];
+            for (addr, syms) in &self.symtabs {
+                let (table, strs) = symtab_section(syms);
+                shdrs.push(SectionHeader {
+                    sh_type: SHT_SYMTAB,
+                    sh_addr: *addr,
+                    sh_offset: offset + bodies.len() as u64,
+                    sh_size: table.len() as u64,
+                    sh_link: (shdrs.len() + 1) as u32,
+                    sh_entsize: SIZEOF_SYM as u64,
+                    ..SectionHeader::default()
+                });
+                bodies.extend(table);
+                shdrs.push(SectionHeader {
+                    sh_type: SHT_STRTAB,
+                    sh_offset: offset + bodies.len() as u64,
+                    sh_size: strs.len() as u64,
+                    ..SectionHeader::default()
+                });
+                bodies.extend(strs);
+            }
+            let shoff = offset + bodies.len() as u64;
+
+            let mut out = Vec::new();
+            let shnum = if self.symtabs.is_empty() {
+                0
+            } else {
+                shdrs.len() as u16
+            };
+            out.extend(elf_header(ET_CORE, phnum as u16, shnum, shoff));
+            out.extend(phdrs);
+            out.extend(&notes);
+            for load in &self.loads {
+                out.extend(&load.bytes);
+            }
+            out.extend(bodies);
+            if shnum > 0 {
+                for sh in shdrs {
+                    let mut buf = vec![0u8; SIZEOF_SHDR];
+                    buf.pwrite_with(sh, 0, elf_ctx())
+                        .expect("failed to write a section header");
+                    out.extend(buf);
+                }
+            }
+            out
+        }
+
+        fn assemble_notes(&self) -> Vec<u8> {
+            let mut out = Vec::new();
+            for (ntype, desc) in &self.notes {
+                out.extend(note(*ntype, "CORE", desc));
+            }
+            if !self.auxv.is_empty() {
+                let mut desc = Vec::new();
+                for (tag, val) in &self.auxv {
+                    desc.extend(tag.to_le_bytes());
+                    desc.extend(val.to_le_bytes());
+                }
+                desc.extend([0u8; 16]);
+                out.extend(note(NT_AUXV, "CORE", &desc));
+            }
+            out
+        }
+
+        /// Write the core to a file and open it, the way a caller does.
+        fn open(&self) -> (tempfile::TempDir, Result<Core>) {
+            let dir = tempfile::tempdir().expect("failed to create a tempdir");
+            let path = dir.path().join("core");
+            let mut f = File::create(&path).expect("failed to create the core");
+            f.write_all(&self.build())
+                .expect("failed to write the core");
+            drop(f);
+            let proc = Core::open(&path);
+            (dir, proc)
+        }
+
+        fn proc(&self) -> (tempfile::TempDir, Core) {
+            let (dir, proc) = self.open();
+            (dir, proc.expect("failed to open the core"))
+        }
+    }
+
+    /// An ELF header, written through goblin rather than by hand: a
+    /// builder that lays out its own fields can put one at the wrong
+    /// offset and produce a fixture that is merely malformed, which is
+    /// a confusing way for a test of a parser to fail.
+    fn elf_header(e_type: u16, phnum: u16, shnum: u16, shoff: u64) -> Vec<u8> {
+        let mut header = UnifiedHeader::new(elf_ctx());
+        header.e_type = e_type;
+        header.e_machine = EM_X86_64;
+        header.e_phoff = SIZEOF_EHDR as u64;
+        header.e_phentsize = SIZEOF_PHDR as u16;
+        header.e_phnum = phnum;
+        if shnum > 0 {
+            header.e_shoff = shoff;
+            header.e_shentsize = SIZEOF_SHDR as u16;
+            header.e_shnum = shnum;
+            header.e_shstrndx = 0;
+        }
+
+        let mut out = vec![0u8; SIZEOF_EHDR];
+        out.pwrite_with(header, 0, scroll::Endian::Little)
+            .expect("failed to write the ELF header");
+        out
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn phdr(
+        p_type: u32,
+        p_flags: u32,
+        p_offset: u64,
+        p_vaddr: u64,
+        p_filesz: u64,
+        p_memsz: u64,
+        p_align: u64,
+    ) -> Vec<u8> {
+        let header = ProgramHeader {
+            p_type,
+            p_flags,
+            p_offset,
+            p_vaddr,
+            p_paddr: p_vaddr,
+            p_filesz,
+            p_memsz,
+            p_align,
+        };
+        let mut out = vec![0u8; SIZEOF_PHDR];
+        out.pwrite_with(header, 0, elf_ctx())
+            .expect("failed to write a program header");
+        out
+    }
+
+    fn note(ntype: u32, name: &str, desc: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let namesz = name.len() + 1;
+        out.extend((namesz as u32).to_le_bytes());
+        out.extend((desc.len() as u32).to_le_bytes());
+        out.extend(ntype.to_le_bytes());
+        out.extend(name.as_bytes());
+        out.push(0);
+        while out.len() % NOTE_ALIGN != 0 {
+            out.push(0);
+        }
+        out.extend(desc);
+        while out.len() % NOTE_ALIGN != 0 {
+            out.push(0);
+        }
+        out
+    }
+
+    /// The inverse of [`Regs::from_gregset`], for building notes. The
+    /// slot order itself is pinned by writing raw slots in
+    /// [`test_registers_decode_in_illumos_order`], so a mistake shared
+    /// with the decoder cannot hide here.
+    fn gregset(regs: &Regs) -> [u64; NGREG] {
+        let mut r = [0u64; NGREG];
+        r[REG_R15] = regs.r15;
+        r[REG_R14] = regs.r14;
+        r[REG_R13] = regs.r13;
+        r[REG_R12] = regs.r12;
+        r[REG_R11] = regs.r11;
+        r[REG_R10] = regs.r10;
+        r[REG_R9] = regs.r9;
+        r[REG_R8] = regs.r8;
+        r[REG_RDI] = regs.rdi;
+        r[REG_RSI] = regs.rsi;
+        r[REG_RBP] = regs.rbp;
+        r[REG_RBX] = regs.rbx;
+        r[REG_RDX] = regs.rdx;
+        r[REG_RCX] = regs.rcx;
+        r[REG_RAX] = regs.rax;
+        r[REG_TRAPNO] = regs.trapno;
+        r[REG_ERR] = regs.err;
+        r[REG_RIP] = regs.rip;
+        r[REG_CS] = regs.cs;
+        r[REG_RFL] = regs.rfl;
+        r[REG_RSP] = regs.rsp;
+        r[REG_SS] = regs.ss;
+        r[REG_FS] = regs.fs;
+        r[REG_GS] = regs.gs;
+        r[REG_ES] = regs.es;
+        r[REG_DS] = regs.ds;
+        r[REG_FSBASE] = regs.fsbase;
+        r[REG_GSBASE] = regs.gsbase;
+        r
+    }
+
+    fn lwpstatus(tid: u32, regs: &Regs, ustack: u64, tstamp: Timespec) -> Vec<u8> {
+        let mut out = vec![0u8; LWPSTATUS_LEN];
+        out[LWPSTATUS_PR_LWPID..LWPSTATUS_PR_LWPID + 4].copy_from_slice(&tid.to_le_bytes());
+        let at = LWPSTATUS_PR_TSTAMP;
+        out[at..at + 8].copy_from_slice(&tstamp.tv_sec.to_le_bytes());
+        out[at + 8..at + 16].copy_from_slice(&tstamp.tv_nsec.to_le_bytes());
+        let at = LWPSTATUS_PR_USTACK;
+        out[at..at + 8].copy_from_slice(&ustack.to_le_bytes());
+        for (i, v) in gregset(regs).iter().enumerate() {
+            let at = LWPSTATUS_PR_REG + i * 8;
+            out[at..at + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+
+    fn lwpname(tid: u32, name: &str) -> Vec<u8> {
+        let mut out = vec![0u8; LWPNAME_LEN];
+        out[0..4].copy_from_slice(&tid.to_le_bytes());
+        let bytes = name.as_bytes();
+        let len = bytes.len().min(LWPNAME_MAX);
+        out[LWPNAME_PR_LWPNAME..LWPNAME_PR_LWPNAME + len].copy_from_slice(&bytes[..len]);
+        out
+    }
+
+    fn psinfo(psargs: &str) -> Vec<u8> {
+        let mut out = vec![0u8; PSINFO_LEN];
+        let bytes = psargs.as_bytes();
+        let len = bytes.len().min(PSINFO_PSARGS_LEN);
+        out[PSINFO_PR_PSARGS..PSINFO_PR_PSARGS + len].copy_from_slice(&bytes[..len]);
+        out
+    }
+
+    /// One entry for a synthesized `.symtab` section.
+    struct TestSym {
+        name: &'static str,
+        info: u8,
+        value: u64,
+        size: u64,
+    }
+
+    const FUNC: u8 = (STB_GLOBAL << 4) | STT_FUNC;
+    const LOCAL_FUNC: u8 = (STB_LOCAL << 4) | STT_FUNC;
+    const WEAK_FUNC: u8 = (STB_WEAK << 4) | STT_FUNC;
+    const OBJECT: u8 = (STB_GLOBAL << 4) | STT_OBJECT;
+    const TLS: u8 = (STB_GLOBAL << 4) | STT_TLS;
+
+    fn sym(name: &'static str, info: u8, value: u64, size: u64) -> TestSym {
+        TestSym {
+            name,
+            info,
+            value,
+            size,
+        }
+    }
+
+    fn symtab_section(syms: &[TestSym]) -> (Vec<u8>, Vec<u8>) {
+        let mut strtab = vec![0u8];
+        let mut table = Vec::new();
+        for s in syms {
+            let st_name = strtab.len();
+            strtab.extend(s.name.as_bytes());
+            strtab.push(0);
+            let entry = Sym {
+                st_name,
+                st_info: s.info,
+                st_other: 0,
+                st_shndx: 1,
+                st_value: s.value,
+                st_size: s.size,
+            };
+            let mut buf = vec![0u8; SIZEOF_SYM];
+            buf.pwrite_with(entry, 0, elf_ctx())
+                .expect("failed to write a symbol");
+            table.extend(buf);
+        }
+        (table, strtab)
+    }
+
+    /// Lays structures into one region at chosen offsets — the link-map
+    /// structures the walk reads out of the target's memory.
+    struct Region {
+        base: u64,
+        bytes: Vec<u8>,
+    }
+
+    impl Region {
+        fn new(base: u64, len: usize) -> Self {
+            Region {
+                base,
+                bytes: vec![0; len],
+            }
+        }
+
+        fn put(&mut self, off: usize, bytes: &[u8]) {
+            self.bytes[off..off + bytes.len()].copy_from_slice(bytes);
+        }
+
+        fn put_u64(&mut self, off: usize, val: u64) {
+            self.put(off, &val.to_le_bytes());
+        }
+
+        /// The region is zeroed, so the terminating NUL is already
+        /// there.
+        fn put_str(&mut self, off: usize, s: &str) {
+            self.put(off, s.as_bytes());
+        }
+
+        fn addr(&self, off: usize) -> u64 {
+            self.base + off as u64
+        }
+    }
+
+    /// An ELF image as the runtime linker mapped it — header then
+    /// program headers, which is all `object_span` and the `r_debug`
+    /// walk read of one.
+    fn image(base: u64, e_type: u16, phdrs: &[(u32, u64, u64)]) -> Region {
+        let mut region = Region::new(base, PAGE as usize);
+        region.put(0, &elf_header(e_type, phdrs.len() as u16, 0, 0));
+        let mut at = SIZEOF_EHDR;
+        for (p_type, vaddr, memsz) in phdrs {
+            region.put(at, &phdr(*p_type, PF_R, 0, *vaddr, *memsz, *memsz, PAGE));
+            at += SIZEOF_PHDR;
+        }
+        region
+    }
+
+    fn regs_at(rip: u64, rsp: u64) -> Regs {
+        Regs {
+            rip,
+            rsp,
+            ..Regs::default()
+        }
+    }
+
+    fn names(syms: Vec<SymbolBuf>) -> Vec<String> {
+        syms.into_iter().map(|s| s.name).collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Memory
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reads_come_from_the_core() {
+        let bytes: Vec<u8> = (0..=255).cycle().take(PAGE as usize).collect();
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, bytes.clone())
+            .proc();
+
+        assert_eq!(p.read_bytes(0x9000, 16).unwrap(), bytes[..16]);
+        assert_eq!(p.read_bytes(0x9100, 8).unwrap(), bytes[0x100..0x108]);
+        assert_eq!(
+            p.read_u64(0x9000).unwrap(),
+            u64::from_le_bytes(bytes[..8].try_into().unwrap())
+        );
+        // The last byte of the region, and one past it.
+        assert!(p.read_bytes(0x9000 + PAGE - 1, 1).is_ok());
+        assert!(p.read_bytes(0x9000 + PAGE - 1, 2).is_err());
+    }
+
+    #[test]
+    fn test_unmapped_reads_fail() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0xaa; PAGE as usize])
+            .proc();
+
+        assert!(p.read_bytes(0x1000, 8).is_err());
+        assert!(p.read_bytes(0x9000 + PAGE, 8).is_err());
+        // A read starting inside but running past the end.
+        assert!(p.read_bytes(0x9000 + PAGE - 4, 8).is_err());
+        assert!(p.read_bytes(u64::MAX - 4, 8).is_err());
+    }
+
+    /// An illumos core has no backing-file map to fall back on: an
+    /// undumped tail is in the address space, and reads as nothing.
+    #[test]
+    fn test_the_undumped_tail_reads_as_nothing() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .partial(0x9000, 2 * PAGE, PF_R | PF_W, vec![0x5a; PAGE as usize])
+            .undumped(0x20000, PAGE, PF_R | PF_X)
+            .proc();
+
+        // The dumped front reads; the tail and the fully undumped
+        // region do not, and a read straddling the seam fails whole.
+        assert_eq!(p.read_bytes(0x9000, 4).unwrap(), [0x5a; 4]);
+        assert!(p.read_bytes(0x9000 + PAGE, 8).is_err());
+        assert!(p.read_bytes(0x9000 + PAGE - 4, 8).is_err());
+        assert!(p.read_bytes(0x20000, 8).is_err());
+
+        // `readable_len` promises exactly what `pslice` can lend.
+        assert_eq!(p.readable_len(0x9000, u64::MAX), PAGE);
+        assert_eq!(p.readable_len(0x9000 + PAGE - 4, u64::MAX), 4);
+        assert_eq!(p.readable_len(0x9000, 16), 16);
+        assert_eq!(p.readable_len(0x9000 + PAGE, 8), 0);
+        assert_eq!(p.readable_len(0x20000, 8), 0);
+        assert_eq!(p.readable_len(0xdead_0000, 8), 0);
+        assert!(p.pslice(0x9000, PAGE).is_some());
+        assert!(p.pslice(0x9000 + PAGE - 4, 8).is_none());
+
+        // Undumped is still mapped: the address space is the program
+        // headers' business, whatever was written out.
+        assert!(p.addr_is_mapped(0x9000 + 2 * PAGE - 1));
+        assert!(!p.addr_is_mapped(0x9000 + 2 * PAGE));
+        assert!(p.addr_is_mapped(0x20000));
+    }
+
+    /// What one segment cannot serve, the core does not serve: a read
+    /// crossing two segments fails even where both sides are dumped.
+    #[test]
+    fn test_reads_do_not_span_segments() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0x11; PAGE as usize])
+            .dumped(0xa000, PF_R | PF_W, vec![0x22; PAGE as usize])
+            .proc();
+
+        assert_eq!(p.read_bytes(0x9fff, 1).unwrap(), [0x11]);
+        assert_eq!(p.read_bytes(0xa000, 1).unwrap(), [0x22]);
+        assert!(p.read_bytes(0x9ffc, 8).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Threads
+    // -----------------------------------------------------------------------
+
+    /// The register slots decode at illumos's `REG_*` indices — written
+    /// raw here, slot `i` holding `1000 + i`, so this pins the index
+    /// table itself rather than round-tripping the builder's inverse.
+    #[test]
+    fn test_registers_decode_in_illumos_order() {
+        let mut desc = lwpstatus(
+            7,
+            &Regs::default(),
+            0,
+            Timespec {
+                tv_sec: 5,
+                tv_nsec: 6,
+            },
+        );
+        for i in 0..NGREG {
+            let at = LWPSTATUS_PR_REG + i * 8;
+            desc[at..at + 8].copy_from_slice(&(1000 + i as u64).to_le_bytes());
+        }
+        let (_dir, p) = CoreBuilder::default()
+            .note(NT_LWPSTATUS, desc)
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        let lwp = &p.lwps().unwrap()[0];
+        assert_eq!(lwp.tid, 7);
+        assert_eq!(
+            lwp.tstamp,
+            Timespec {
+                tv_sec: 5,
+                tv_nsec: 6
+            }
+        );
+        let want = Regs {
+            r15: 1000,
+            r14: 1001,
+            r13: 1002,
+            r12: 1003,
+            r11: 1004,
+            r10: 1005,
+            r9: 1006,
+            r8: 1007,
+            rdi: 1008,
+            rsi: 1009,
+            rbp: 1010,
+            rbx: 1011,
+            rdx: 1012,
+            rcx: 1013,
+            rax: 1014,
+            trapno: 1015,
+            err: 1016,
+            rip: 1017,
+            cs: 1018,
+            rfl: 1019,
+            rsp: 1020,
+            ss: 1021,
+            fs: 1022,
+            gs: 1023,
+            es: 1024,
+            ds: 1025,
+            fsbase: 1026,
+            gsbase: 1027,
+        };
+        assert_eq!(lwp.regs, want);
+    }
+
+    /// Threads sort by id whatever order their notes came in, and each
+    /// keeps its own `pr_ustack` through the sort.
+    #[test]
+    fn test_threads_sort_by_tid() {
+        let mut stacks = Region::new(0x8000, PAGE as usize);
+        stacks.put_u64(0, 0x10_0000);
+        stacks.put_u64(8, 4 * PAGE);
+        stacks.put_u64(16, 0x20_0000);
+        stacks.put_u64(24, 8 * PAGE);
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread_with_ustack(43, regs_at(0, 0x9000), stacks.addr(16))
+            .thread_with_ustack(42, regs_at(0, 0x9000), stacks.addr(0))
+            .dumped(0x8000, PF_R | PF_W, stacks.bytes)
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        let lwps = p.lwps().unwrap();
+        assert_eq!(lwps.len(), 2);
+        assert_eq!(lwps[0].tid, 42);
+        assert_eq!(lwps[0].stack_range, 0x10_0000..0x10_0000 + 4 * PAGE);
+        assert_eq!(lwps[1].tid, 43);
+        assert_eq!(lwps[1].stack_range, 0x20_0000..0x20_0000 + 8 * PAGE);
+        // Registers are also reachable by thread id.
+        assert!(p.regs(43).is_ok());
+        assert!(p.regs(99).is_err());
+        assert_eq!(p.status().active_lwp, 42);
+        assert_eq!(p.status().stack_range, 0x10_0000..0x10_0000 + 4 * PAGE);
+    }
+
+    /// The stack comes from the `stack_t` at `pr_ustack`, read out of
+    /// the core's own memory: the whole reservation the thread was
+    /// given, not the pages the program headers happen to show.
+    #[test]
+    fn test_the_stack_comes_from_ustack() {
+        let mut stack_t = Region::new(0x8000, PAGE as usize);
+        stack_t.put_u64(0, 0x7000_0000);
+        stack_t.put_u64(8, 0xa0_0000); // ten megabytes, none of it dumped
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread_with_ustack(1, regs_at(0, 0x9000), stack_t.addr(0))
+            .dumped(0x8000, PF_R | PF_W, stack_t.bytes)
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        assert_eq!(
+            p.lwps().unwrap()[0].stack_range,
+            0x7000_0000..0x7000_0000 + 0xa0_0000
+        );
+    }
+
+    /// A thread whose `stack_t` cannot be read — no pointer, an
+    /// unmapped one, or a zeroed structure — falls back to the region
+    /// holding `%rsp`; a thread whose `%rsp` is nowhere gets nothing.
+    #[test]
+    fn test_an_unreadable_ustack_falls_back_to_rsp() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread_with_ustack(1, regs_at(0, 0x9800), 0)
+            .thread_with_ustack(2, regs_at(0, 0x9800), 0xdead_0000)
+            .thread_with_ustack(3, regs_at(0, 0x9800), 0x8000)
+            .thread_with_ustack(4, regs_at(0, 0xffff_0000), 0)
+            .dumped(0x8000, PF_R | PF_W, vec![0; PAGE as usize])
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        let lwps = p.lwps().unwrap();
+        for lwp in &lwps[..3] {
+            assert_eq!(lwp.stack_range, 0x9000..0x9000 + PAGE, "lwp {}", lwp.tid);
+        }
+        assert_eq!(lwps[3].stack_range, 0..0);
+    }
+
+    #[test]
+    fn test_lwp_names_come_from_their_note() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .thread(2, regs_at(0, 0x9000))
+            .lwp_name(1, "tokio-runtime-w")
+            .lwp_name(2, "")
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        assert_eq!(p.lwp_name(1).unwrap(), "tokio-runtime-w");
+        // An empty name is no name, and an unknown thread has none.
+        assert!(p.lwp_name(2).is_err());
+        assert!(p.lwp_name(9).is_err());
+    }
+
+    /// The first word of `pr_psargs` names the executable — the nearest
+    /// an illumos core comes to naming its own — and the first
+    /// `NT_PSINFO` wins.
+    #[test]
+    fn test_psinfo_names_the_executable() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .psargs("/opt/oxide/sled-agent run --config /var/x.toml")
+            .psargs("/second/prog")
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+        assert_eq!(
+            p.exec_name().unwrap(),
+            PathBuf::from("/opt/oxide/sled-agent")
+        );
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+        assert!(p.exec_name().is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Malformed cores
+    // -----------------------------------------------------------------------
+
+    /// Notes shorter than the structures they claim are ignored rather
+    /// than misread; what remains decides whether the core stands.
+    #[test]
+    fn test_short_notes_are_ignored() {
+        // A core whose only LWPSTATUS is short has no threads at all.
+        let (_dir, res) = CoreBuilder::default()
+            .note(NT_LWPSTATUS, vec![0; 100])
+            .dumped(0x9000, PF_R | PF_W, vec![0; 8])
+            .open();
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "malformed core file: no NT_LWPSTATUS note"
+        );
+
+        // Beside a whole thread, short name and psinfo notes just
+        // contribute nothing.
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .note(NT_LWPNAME, vec![0; 8])
+            .note(NT_PSINFO, vec![0; 50])
+            .dumped(0x9000, PF_R | PF_W, vec![0; 8])
+            .proc();
+        assert!(p.lwp_name(1).is_err());
+        assert!(p.exec_name().is_err());
+    }
+
+    #[test]
+    fn test_open_rejects_what_is_not_a_core() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let path = dir.path().join("garbage");
+        std::fs::write(&path, b"not an elf file at all").unwrap();
+        assert!(Core::open(&path).is_err());
+
+        assert!(Core::open(&dir.path().join("no-such-file")).is_err());
+
+        // A well-formed ELF that is not a core — synthesized, so this
+        // holds on any host.
+        let path = dir.path().join("exe");
+        std::fs::write(&path, image(0, ET_EXEC, &[(PT_LOAD, 0, PAGE)]).bytes).unwrap();
+        assert_eq!(
+            Core::open(&path).unwrap_err().to_string(),
+            "malformed core file: not a core file"
+        );
+    }
+
+    #[test]
+    fn test_open_rejects_a_core_with_no_threads() {
+        let (_dir, res) = CoreBuilder::default()
+            .dumped(0x9000, PF_R | PF_W, vec![0; 8])
+            .open();
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "malformed core file: no NT_LWPSTATUS note"
+        );
+    }
+
+    #[test]
+    fn test_open_rejects_truncated_notes() {
+        // A note header promising a descriptor that is not there.
+        let mut builder = CoreBuilder::default().dumped(0x9000, PF_R | PF_W, vec![0; 8]);
+        let mut truncated = note(
+            NT_LWPSTATUS,
+            "CORE",
+            &lwpstatus(
+                1,
+                &regs_at(0, 0x9000),
+                0,
+                Timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            ),
+        );
+        truncated.truncate(truncated.len() / 2);
+        builder.raw_notes = Some(truncated);
+        assert!(builder.open().1.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Symbols
+    // -----------------------------------------------------------------------
+
+    /// Symbols come out of the core's own section headers, with no
+    /// companion binary to find: the opposite of Linux.
+    #[test]
+    fn test_symbols_come_from_the_cores_sections() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .symtab(
+                0x40_0000,
+                vec![
+                    sym("alpha", FUNC, 0x40_0100, 0x40),
+                    sym("beta", FUNC, 0x40_0200, 0x20),
+                    sym("gamma", OBJECT, 0x40_0800, 8),
+                ],
+            )
+            .proc();
+
+        // With no link map to say otherwise, the lowest table is the
+        // executable's — illumos maps it below every shared object.
+        assert_eq!(names(p.symbols().unwrap()), ["alpha", "beta"]);
+        assert_eq!(names(p.object_symbols().unwrap()), ["gamma"]);
+
+        // An executable's values are absolute already: no bias.
+        assert_eq!(
+            p.lookup_symbol_by_name("alpha").unwrap().st_value,
+            0x40_0100
+        );
+        // By-name lookup crosses from functions into data.
+        assert_eq!(
+            p.lookup_symbol_by_name("gamma").unwrap().st_value,
+            0x40_0800
+        );
+        assert!(p.lookup_symbol_by_name("delta").is_none());
+
+        // By address: containment against st_size, not nearness.
+        assert_eq!(
+            p.lookup_symbol_name_by_addr(0x40_0120).as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(
+            p.lookup_symbol_name_by_addr(0x40_013f).as_deref(),
+            Some("alpha")
+        );
+        assert!(p.lookup_symbol_by_addr(0x40_0140).is_none());
+        assert!(p.lookup_symbol_by_addr(0x40_0500).is_none());
+        assert!(p.lookup_symbol_by_addr(0x1000).is_none());
+    }
+
+    /// A shared object's table holds link-time offsets; `sh_addr` is
+    /// where it landed. Nothing in the core says which kind a table is,
+    /// and the values themselves do.
+    #[test]
+    fn test_shared_object_symbols_are_biased() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .symtab(
+                0x5000_0000,
+                vec![
+                    sym("lib_fn", FUNC, 0x100, 0x10),
+                    sym("TLS_SLOT", TLS, 0x10, 8),
+                ],
+            )
+            .proc();
+
+        assert_eq!(
+            p.lookup_symbol_by_name("lib_fn").unwrap().st_value,
+            0x5000_0100
+        );
+        // A thread-local's value is an offset into a TLS block; the
+        // bias must not touch it.
+        assert_eq!(p.lookup_symbol_by_name("TLS_SLOT").unwrap().st_value, 0x10);
+    }
+
+    /// What libproc would not report, this reader must not either:
+    /// weak symbols, unnamed ones, and undefined references all stay
+    /// out, so the two readers of one core agree.
+    #[test]
+    fn test_weak_and_valueless_symbols_are_dropped() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .symtab(
+                0x40_0000,
+                vec![
+                    sym("real", FUNC, 0x40_0100, 0x10),
+                    sym("_mcount", WEAK_FUNC, 0x40_0100, 0x10),
+                    sym("", FUNC, 0x40_0200, 0x10),
+                    sym("undefined", FUNC, 0, 0),
+                    sym("notype", STB_GLOBAL << 4, 0x40_0300, 0x10),
+                ],
+            )
+            .proc();
+
+        assert_eq!(names(p.symbols().unwrap()), ["real"]);
+        assert!(p.object_symbols().unwrap().is_empty());
+        assert!(p.lookup_symbol_by_name("_mcount").is_none());
+        assert!(p.lookup_symbol_by_name("notype").is_none());
+    }
+
+    /// Identical-code folding leaves several names on one address; a
+    /// lookup takes the one libproc would.
+    #[test]
+    fn test_tied_addresses_resolve_in_libproc_order() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .symtab(
+                0x40_0000,
+                vec![
+                    sym("_local_alias", LOCAL_FUNC, 0x40_0100, 0x10),
+                    sym("public_fn", FUNC, 0x40_0100, 0x10),
+                ],
+            )
+            .proc();
+
+        assert_eq!(
+            p.lookup_symbol_name_by_addr(0x40_0105).as_deref(),
+            Some("public_fn")
+        );
+    }
+
+    /// The pairwise preference chain, held to the transcription of
+    /// libproc's `byaddr_cmp_common`.
+    #[test]
+    fn test_libproc_order_prefers_what_libproc_prefers() {
+        use Ordering::{Greater, Less};
+
+        fn buf(name: &str, info: u8, value: u64, size: u64) -> SymbolBuf {
+            SymbolBuf {
+                name: name.to_string(),
+                st_name: 0,
+                st_info: info,
+                st_other: 0,
+                st_shndx: 1,
+                st_value: value,
+                st_size: size,
+            }
+        }
+
+        // Address order first, whatever else differs.
+        assert_eq!(
+            libproc_order(&buf("z", OBJECT, 1, 8), &buf("a", FUNC, 2, 8)),
+            Less
+        );
+        // On one address: the function, then the global, then the name
+        // without a '$', then fewer leading underscores, then the
+        // smaller symbol, then name order.
+        assert_eq!(
+            libproc_order(&buf("data", OBJECT, 5, 8), &buf("code", FUNC, 5, 8)),
+            Greater
+        );
+        assert_eq!(
+            libproc_order(&buf("global", FUNC, 5, 8), &buf("local", LOCAL_FUNC, 5, 8)),
+            Less
+        );
+        assert_eq!(
+            libproc_order(&buf("$compiler", FUNC, 5, 8), &buf("named", FUNC, 5, 8)),
+            Greater
+        );
+        assert_eq!(
+            libproc_order(&buf("_write", FUNC, 5, 8), &buf("__write", FUNC, 5, 8)),
+            Less
+        );
+        assert_eq!(
+            libproc_order(&buf("bigger", FUNC, 5, 16), &buf("smaller", FUNC, 5, 8)),
+            Greater
+        );
+        assert_eq!(
+            libproc_order(&buf("abel", FUNC, 5, 8), &buf("baker", FUNC, 5, 8)),
+            Less
+        );
+    }
+
+    /// An address resolves in whichever object covers it, while by-name
+    /// lookup searches only the executable — libproc's `PR_OBJ_EXEC`.
+    #[test]
+    fn test_lookup_lands_in_the_covering_object() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .symtab(0x40_0000, vec![sym("in_exec", FUNC, 0x40_0100, 0x10)])
+            .symtab(0x5000_0000, vec![sym("in_lib", FUNC, 0x100, 0x10)])
+            .proc();
+
+        assert_eq!(
+            p.lookup_symbol_name_by_addr(0x40_0105).as_deref(),
+            Some("in_exec")
+        );
+        assert_eq!(
+            p.lookup_symbol_name_by_addr(0x5000_0105).as_deref(),
+            Some("in_lib")
+        );
+        assert!(p.lookup_symbol_by_name("in_lib").is_none());
+        assert_eq!(names(p.symbols().unwrap()), ["in_exec"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Thread-locals
+    // -----------------------------------------------------------------------
+
+    /// illumos stores a `thread_local!` behind a pthread key: the
+    /// symbol names a static holding the key, and the thread's value
+    /// for it sits in the fast-TSD slots at a fixed offset from
+    /// `%fsbase` — all of it plain memory, all of it in the core.
+    #[test]
+    fn test_tls_var_addr_walks_the_pthread_key() {
+        const FSBASE: u64 = 0xa000;
+
+        let mut keys = Region::new(0x8000, PAGE as usize);
+        keys.put_u64(0, 3); // a key this thread has set
+        keys.put_u64(8, 5); // one it never set
+        keys.put_u64(16, 99); // one past the fast slots
+
+        let mut ulwp = Region::new(FSBASE, PAGE as usize);
+        ulwp.put_u64(320 + 3 * 8, 0x1234_5678);
+
+        let regs = Regs {
+            fsbase: FSBASE,
+            ..Regs::default()
+        };
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs.clone())
+            .dumped(0x8000, PF_R | PF_W, keys.bytes)
+            .dumped(FSBASE, PF_R | PF_W, ulwp.bytes)
+            .proc();
+
+        let key_sym = |value: u64| SymbolBuf {
+            name: "CONTEXT".to_string(),
+            st_name: 0,
+            st_info: OBJECT,
+            st_other: 0,
+            st_shndx: 1,
+            st_value: value,
+            st_size: 8,
+        };
+        assert_eq!(
+            p.tls_var_addr(&regs, &key_sym(0x8000)).unwrap(),
+            Some(0x1234_5678)
+        );
+        // A zero slot means the thread never set the key.
+        assert_eq!(p.tls_var_addr(&regs, &key_sym(0x8008)).unwrap(), None);
+        // A key past the fast slots is refused, not walked.
+        assert!(p.tls_var_addr(&regs, &key_sym(0x8010)).is_err());
+        // As is a key whose own static cannot be read.
+        assert!(p.tls_var_addr(&regs, &key_sym(0xdead_0000)).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // The link map
+    // -----------------------------------------------------------------------
+
+    const LDATA: u64 = 0x6000_0000;
+
+    /// The `r_debug` structures the walk reads: at offset 0, heading a
+    /// `Link_map` chain of `(l_addr, name, next)` entries laid down
+    /// from offset 64 in 64-byte strides, their names from 512 up.
+    fn link_map(entries: &[(u64, &str)], ldso: Option<(u64, &str)>) -> Region {
+        let mut r = Region::new(LDATA, PAGE as usize);
+        let lay = |r: &mut Region, at: usize, entries: &[(u64, &str)]| {
+            for (i, (l_addr, name)) in entries.iter().enumerate() {
+                let e = at + i * 64;
+                let name_at = 512 + e;
+                r.put_u64(e, *l_addr);
+                r.put_u64(e + LINK_MAP_L_NAME as usize, r.addr(name_at));
+                if i + 1 < entries.len() {
+                    let next = r.addr(e + 64);
+                    r.put_u64(e + LINK_MAP_L_NEXT as usize, next);
+                }
+                r.put_str(name_at, name);
+            }
+        };
+        r.put_u64(R_DEBUG_R_MAP as usize, r.addr(64));
+        lay(&mut r, 64, entries);
+        if let Some((l_addr, name)) = ldso {
+            r.put_u64(R_DEBUG_R_LDSOMAP as usize, r.addr(320));
+            lay(&mut r, 320, &[(l_addr, name)]);
+        }
+        r
+    }
+
+    /// An executable image whose `PT_DYNAMIC` carries `DT_DEBUG`
+    /// pointing at [`LDATA`]. `vbase` is where its program headers
+    /// claim to sit: equal to `base` for an `ET_EXEC`, zero for the
+    /// link-time addresses of a PIE.
+    fn exec_image(base: u64, e_type: u16, vbase: u64) -> Region {
+        let mut exec = image(
+            base,
+            e_type,
+            &[
+                (PT_PHDR, vbase + SIZEOF_EHDR as u64, 3 * SIZEOF_PHDR as u64),
+                (PT_LOAD, vbase, PAGE),
+                (PT_DYNAMIC, vbase + 0x200, 2 * SIZEOF_DYN as u64),
+            ],
+        );
+        exec.put_u64(0x200, DT_DEBUG);
+        exec.put_u64(0x208, LDATA);
+        exec.put_u64(0x210, DT_NULL);
+        exec
+    }
+
+    /// The full walk an illumos core supports: the auxiliary vector to
+    /// the executable's program headers, `PT_DYNAMIC` to `DT_DEBUG` to
+    /// `r_debug`, and down both `Link_map` chains — every mapped object
+    /// named out of the core's own memory, no filesystem consulted.
+    #[test]
+    fn test_the_link_map_names_the_mappings() {
+        const EXEC_BASE: u64 = 0x40_0000;
+        // Below the executable, so only the link map's name — not the
+        // lowest-table fallback — can pick the executable's symtab.
+        const LIB_BASE: u64 = 0x30_0000;
+        const LDSO_BASE: u64 = 0x7000_0000;
+
+        let exec = exec_image(EXEC_BASE, ET_EXEC, EXEC_BASE);
+        let lib = image(LIB_BASE, ET_DYN, &[(PT_LOAD, 0, 2 * PAGE)]);
+        let ldso = image(LDSO_BASE, ET_DYN, &[(PT_LOAD, 0, PAGE)]);
+        // On an illumos host the recorded paths are resolved against
+        // the filesystem, so none of these may name a file that is
+        // really there — `/lib/64/ld.so.1` would come back as the
+        // `/lib/amd64` it links to.
+        let ldata = link_map(
+            &[(EXEC_BASE, "/opt/prog"), (LIB_BASE, "/lib/64/libdemo.so.1")],
+            Some((LDSO_BASE, "/lib/64/ld-demo.so.1")),
+        );
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(EXEC_BASE + 0x100, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .dumped(LIB_BASE, PF_R | PF_X, lib.bytes)
+            .undumped(LIB_BASE + PAGE, PAGE, PF_R | PF_W)
+            .dumped(EXEC_BASE, PF_R | PF_X, exec.bytes)
+            .dumped(LDATA, PF_R | PF_W, ldata.bytes)
+            .dumped(LDSO_BASE, PF_R | PF_X, ldso.bytes)
+            .auxv(AT_PHDR, EXEC_BASE + SIZEOF_EHDR as u64)
+            .auxv(AT_PHENT, SIZEOF_PHDR as u64)
+            .auxv(AT_PHNUM, 3)
+            .psargs("/opt/prog --flag")
+            .symtab(EXEC_BASE, vec![sym("main", FUNC, EXEC_BASE + 0x100, 0x20)])
+            .symtab(LIB_BASE, vec![sym("lib_fn", FUNC, 0x100, 0x10)])
+            .proc();
+
+        // Every object's mappings carry its name; the shared object's
+        // span comes from its own program headers, so it covers the
+        // undumped data page too, and the linker itself — off on the
+        // list it keeps for itself — is named all the same.
+        let maps = p.mappings().unwrap();
+        assert_eq!(
+            maps.get(EXEC_BASE).unwrap().path.as_deref(),
+            Some("/opt/prog")
+        );
+        assert_eq!(
+            maps.get(LIB_BASE).unwrap().path.as_deref(),
+            Some("/lib/64/libdemo.so.1")
+        );
+        assert_eq!(
+            maps.get(LIB_BASE + PAGE).unwrap().path.as_deref(),
+            Some("/lib/64/libdemo.so.1")
+        );
+        assert_eq!(
+            maps.get(LDSO_BASE).unwrap().path.as_deref(),
+            Some("/lib/64/ld-demo.so.1")
+        );
+        // What no object covers is anonymous.
+        let stack = maps.get(0x9000).unwrap();
+        assert_eq!(stack.path, None);
+        assert!(stack.flags.is_anon());
+
+        // The executable's symtab is the one the link map names with
+        // the path the process was started from — not the lowest.
+        assert_eq!(p.exec_name().unwrap(), PathBuf::from("/opt/prog"));
+        assert_eq!(names(p.symbols().unwrap()), ["main"]);
+        assert!(p.lookup_symbol_by_name("lib_fn").is_none());
+        assert_eq!(
+            p.lookup_symbol_name_by_addr(LIB_BASE + 0x105).as_deref(),
+            Some("lib_fn")
+        );
+
+        // The break is the writable region above the executable that no
+        // object's symbols claim.
+        assert_eq!(p.status().brk_range, LDATA..LDATA + PAGE);
+    }
+
+    /// A PIE's program headers hold link-time offsets; the bias worked
+    /// out from `PT_PHDR` brings the walk to its dynamic section, and
+    /// its `ET_DYN` header tells `object_span` to bias its span.
+    #[test]
+    fn test_a_pie_exec_walks_through_its_bias() {
+        const BASE: u64 = 0x5555_0000;
+
+        let exec = exec_image(BASE, ET_DYN, 0);
+        let ldata = link_map(&[(BASE, "/opt/pie")], None);
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(BASE + 0x100, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .dumped(BASE, PF_R | PF_X, exec.bytes)
+            .dumped(LDATA, PF_R | PF_W, ldata.bytes)
+            .auxv(AT_PHDR, BASE + SIZEOF_EHDR as u64)
+            .auxv(AT_PHENT, SIZEOF_PHDR as u64)
+            .auxv(AT_PHNUM, 3)
+            .proc();
+
+        let maps = p.mappings().unwrap();
+        assert_eq!(maps.get(BASE).unwrap().path.as_deref(), Some("/opt/pie"));
+        assert_eq!(maps.get(0x9000).unwrap().path, None);
+    }
+
+    /// A link map whose chain loops is walked no further than the
+    /// bound: a corrupt core cannot hold the reader forever.
+    #[test]
+    fn test_a_link_map_cycle_is_bounded() {
+        const BASE: u64 = 0x5555_0000;
+
+        let exec = exec_image(BASE, ET_DYN, 0);
+        let mut ldata = link_map(&[(BASE, "/opt/pie")], None);
+        // The entry's successor is itself.
+        let entry = ldata.addr(64);
+        ldata.put_u64(64 + LINK_MAP_L_NEXT as usize, entry);
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(BASE + 0x100, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .dumped(BASE, PF_R | PF_X, exec.bytes)
+            .dumped(LDATA, PF_R | PF_W, ldata.bytes)
+            .auxv(AT_PHDR, BASE + SIZEOF_EHDR as u64)
+            .auxv(AT_PHENT, SIZEOF_PHDR as u64)
+            .auxv(AT_PHNUM, 3)
+            .proc();
+
+        assert_eq!(
+            p.mappings().unwrap().get(BASE).unwrap().path.as_deref(),
+            Some("/opt/pie")
+        );
+    }
+
+    /// A chain that runs into unmapped memory keeps the objects it
+    /// reached: unnamed rather than wrong, and never fatal.
+    #[test]
+    fn test_a_truncated_link_map_keeps_what_it_reached() {
+        const BASE: u64 = 0x5555_0000;
+        const LIB_BASE: u64 = 0x7000_0000;
+
+        let exec = exec_image(BASE, ET_DYN, 0);
+        let lib = image(LIB_BASE, ET_DYN, &[(PT_LOAD, 0, PAGE)]);
+        let mut ldata = link_map(&[(BASE, "/opt/pie")], None);
+        // The chain continues into memory the core does not have.
+        ldata.put_u64(64 + LINK_MAP_L_NEXT as usize, 0xdead_0000);
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(BASE + 0x100, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .dumped(BASE, PF_R | PF_X, exec.bytes)
+            .dumped(LDATA, PF_R | PF_W, ldata.bytes)
+            .dumped(LIB_BASE, PF_R | PF_X, lib.bytes)
+            .auxv(AT_PHDR, BASE + SIZEOF_EHDR as u64)
+            .auxv(AT_PHENT, SIZEOF_PHDR as u64)
+            .auxv(AT_PHNUM, 3)
+            .proc();
+
+        let maps = p.mappings().unwrap();
+        assert_eq!(maps.get(BASE).unwrap().path.as_deref(), Some("/opt/pie"));
+        // The object past the break in the chain goes unnamed.
+        assert_eq!(maps.get(LIB_BASE).unwrap().path, None);
+    }
+
+    /// A statically linked executable has no `DT_DEBUG` to follow — a
+    /// zero one is the same as none — so nothing is named, and
+    /// everything else still works.
+    #[test]
+    fn test_a_static_exec_has_no_link_map() {
+        const BASE: u64 = 0x40_0000;
+
+        let mut exec = image(
+            BASE,
+            ET_EXEC,
+            &[
+                (PT_PHDR, BASE + SIZEOF_EHDR as u64, 3 * SIZEOF_PHDR as u64),
+                (PT_LOAD, BASE, PAGE),
+                (PT_DYNAMIC, BASE + 0x200, 2 * SIZEOF_DYN as u64),
+            ],
+        );
+        exec.put_u64(0x200, DT_DEBUG); // left zero by the linker
+        exec.put_u64(0x210, DT_NULL);
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(BASE + 0x100, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .dumped(BASE, PF_R | PF_X, exec.bytes)
+            .auxv(AT_PHDR, BASE + SIZEOF_EHDR as u64)
+            .auxv(AT_PHENT, SIZEOF_PHDR as u64)
+            .auxv(AT_PHNUM, 3)
+            .symtab(BASE, vec![sym("main", FUNC, BASE + 0x100, 0x20)])
+            .proc();
+
+        for m in p.mappings().unwrap().iter() {
+            assert_eq!(m.path, None, "{m:?}");
+        }
+        // Symbols still resolve, through the lowest-table fallback.
+        assert_eq!(names(p.symbols().unwrap()), ["main"]);
+    }
+
+    /// Program headers out of a core's memory can hold anything; a
+    /// span that would wrap the address space is corrupt, and must not
+    /// take mappings away from the object that is really there.
+    #[test]
+    fn test_span_of_rejects_wrapped_addresses() {
+        fn ph(p_type: u32, p_vaddr: u64, p_memsz: u64) -> ProgramHeader {
+            ProgramHeader {
+                p_type,
+                p_flags: PF_R,
+                p_offset: 0,
+                p_vaddr,
+                p_paddr: p_vaddr,
+                p_filesz: p_memsz,
+                p_memsz,
+                p_align: PAGE,
+            }
+        }
+
+        // The ordinary case: the extremes of the loads, biased.
+        assert_eq!(
+            span_of(
+                &[ph(PT_LOAD, 0x1000, 0x1000), ph(PT_LOAD, 0x4000, 0x1000)],
+                0x10
+            ),
+            Some(0x1010..0x5010)
+        );
+        // Wrapping in either the bias or the extent is corruption.
+        assert_eq!(span_of(&[ph(PT_LOAD, u64::MAX - 8, 0x100)], 0), None);
+        assert_eq!(span_of(&[ph(PT_LOAD, 0x1000, 0x100)], u64::MAX), None);
+        // No loads, or only empty ones, span nothing.
+        assert_eq!(span_of(&[ph(PT_NOTE, 0x1000, 0x100)], 0), None);
+        assert_eq!(span_of(&[ph(PT_LOAD, 0x1000, 0)], 0), None);
+    }
+}
