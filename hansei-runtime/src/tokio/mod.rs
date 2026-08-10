@@ -89,7 +89,7 @@ impl TaskState {
         (self.0 & Self::REF_COUNT_MASK) >> Self::REF_COUNT_SHIFT
     }
 
-    /// Derived lifecycle classification (plan §3.2). `COMPLETE` wins over
+    /// Derived lifecycle classification. `COMPLETE` wins over
     /// `RUNNING` (the final poll sets both until the ref is dropped), and
     /// `NOTIFIED` only matters while the task is idle.
     pub fn lifecycle(&self) -> Lifecycle {
@@ -206,7 +206,7 @@ mod tests {
     const CANCELLED: u64 = 0b100_000;
     const REF_ONE: u64 = 1 << 6;
 
-    /// Every lifecycle classification from plan §3.2, including tokio's
+    /// Every lifecycle classification, including tokio's
     /// INITIAL_STATE (0xCC: ref count 3, NOTIFIED | JOIN_INTEREST) and
     /// concurrently-set flag combinations.
     #[test]

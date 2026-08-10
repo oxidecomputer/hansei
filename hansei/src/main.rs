@@ -1589,7 +1589,7 @@ fn print_variable(
     }
 }
 
-/// Attach-time bundle validation (§5.1), shared by all bundle-mode
+/// Attach-time bundle validation, shared by all bundle-mode
 /// subcommands: a bundle from a different commit/toolchain must never
 /// silently misinterpret memory. `force` downgrades refusal to a warning.
 fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool) -> Result<()> {
@@ -1627,7 +1627,7 @@ fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool)
 }
 
 /// Find the LWPs holding a tokio `Context`, through the thread-local
-/// the bundle names (§3.0).
+/// the bundle names.
 fn discover_workers(
     lwps: &[proc::LwpInfo],
     ctx: &bundle::Context<'_, Proc>,
@@ -1681,7 +1681,7 @@ fn warm_frame_values<T: proc::Target + Sync>(
 }
 
 /// Drive the full bundle-backed analysis with a recording Target in
-/// place, then persist what it read (plan §11.3). Every task's stage
+/// place, then persist what it read. Every task's stage
 /// and await chain is walked so the snapshot can answer the offline
 /// tests' whole question set; walk problems are warnings, not errors,
 /// since a partially-traceable target is still worth capturing.
@@ -2320,7 +2320,7 @@ fn exec_tasks(
 ) -> Result<()> {
     let list = &session.tasks;
 
-    // Which LWP is polling which task right now (§3.2).
+    // Which LWP is polling which task right now.
     let polling: HashMap<u64, u32> = session
         .workers
         .iter()

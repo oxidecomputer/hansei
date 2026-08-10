@@ -2,14 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Bundle-based parsing of tokio runtime state (`HANSEI_V0_MANGLING_PLAN.md`
-//! §9).
+//! Bundle-based parsing of tokio runtime state.
 //!
 //! Layouts come only from the bundle; addresses and bytes come only from the
 //! target; the only thing that crosses between the two binaries is symbol
-//! names (§2). Runtime discovery is the pthread-key flow (§3.0): the
-//! bundle names the TLS-key static, the target's symtab locates it, and
-//! its value indexes each LWP's fast-TSD slots to find that thread's
+//! names. Runtime discovery is the pthread-key flow: the bundle names the
+//! TLS-key static, the target's symtab locates it, and its value indexes
+//! each LWP's fast-TSD slots to find that thread's
 //! `tokio::runtime::context::Context`.
 
 use super::contract::{self, ContractReport, WalkPolicy, Walked};
@@ -32,7 +31,7 @@ use std::fmt;
 
 /// Hard bound on await-chain depth: anything deeper indicates corrupt
 /// memory (or a pathological program), and the walk must report it
-/// rather than hang (§3.5).
+/// rather than hang.
 const MAX_AWAIT_DEPTH: usize = 64;
 
 /// How far to unwrap a member's type looking for the future inside it
@@ -46,7 +45,7 @@ const MAX_WRAPPER_DEPTH: usize = 8;
 const VTABLE_SLOT_DROP: u64 = 0;
 const VTABLE_SLOT_FUTURE_POLL: u64 = 3;
 
-/// The leaf-future knowledge base (§3.6): the wait primitives hansei
+/// The leaf-future knowledge base: the wait primitives hansei
 /// can interpret, keyed by leaf type name
 /// ([`contract::leaf_matches`]). It grows one row (and one reader fn)
 /// at a time, with no structural change.
@@ -258,7 +257,7 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     // -----------------------------------------------------------------------
-    // Attach-time validation (§5.1)
+    // Attach-time validation
     // -----------------------------------------------------------------------
 
     /// Resolve the bundle's symbol fingerprint against the target's symtab.
@@ -298,7 +297,7 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     // -----------------------------------------------------------------------
-    // Runtime discovery (§3.0)
+    // Runtime discovery
     // -----------------------------------------------------------------------
 
     /// The symbol under which each thread stores its
@@ -332,7 +331,7 @@ impl<'b, T: Target> Context<'b, T> {
         })
     }
 
-    /// Probe every LWP for a live `Context` (§13.3: all LWPs, never thread
+    /// Probe every LWP for a live `Context` (all LWPs, never thread
     /// names). LWPs holding none are skipped; an LWP whose `Context` fails
     /// to parse is an error, not a skip — the target told us it has one.
     pub fn find_workers(&self, lwps: &[LwpInfo]) -> Result<Vec<Worker>> {
@@ -412,7 +411,7 @@ impl<'b, T: Target> Context<'b, T> {
             let info = self.context_info(worker.context_addr)?;
             match self.walk(WalkRole::WorkerHandle).walk(info.as_ref())? {
                 Walked::At(handle) => return Ok(handle),
-                // current_thread is out of scope (§13.4).
+                // current_thread is out of scope.
                 Walked::Inactive("MultiThread") => saw_other_scheduler = true,
                 // No handle in this thread's Context.
                 Walked::Inactive(_) => {}
@@ -524,13 +523,13 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     // -----------------------------------------------------------------------
-    // Task enumeration (§3.1–§3.4)
+    // Task enumeration
     // -----------------------------------------------------------------------
 
     /// Walk `Shared.owned`'s sharded intrusive lists and parse every task.
     ///
     /// Corrupt memory degrades per shard: the failing shard contributes an
-    /// error, the rest of the listing is unaffected (§11.5).
+    /// error, the rest of the listing is unaffected.
     pub fn enumerate_tasks(&self, shared: &TypeInfo<'b>) -> Result<TaskList> {
         let lists = self.walk(WalkRole::OwnedLists).walk_at(shared.as_ref())?;
 
@@ -592,7 +591,7 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// Parse one task from its `Header` address; returns the task and the
-    /// next Header in the owned list (via `Trailer.owned`, §3.1).
+    /// next Header in the owned list (via `Trailer.owned`).
     fn parse_task(&self, addr: u64) -> Result<(Task, Option<u64>)> {
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
         let info = TypeInfo::from_addr(self, header_ty, addr)
@@ -648,7 +647,7 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// Decode a `task::raw::Vtable` from target memory using the bundle's
     /// layout — the struct is `#[repr(Rust)]`, so offsets must never be
-    /// assumed from declaration order (§3.3).
+    /// assumed from declaration order.
     fn task_vtable(&self, vtable_addr: u64) -> Result<TaskVtable> {
         if let Some(vt) = self.vtables.borrow().get(&vtable_addr) {
             return Ok(vt.clone());
@@ -684,7 +683,7 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(vt)
     }
 
-    /// The v0 pivot (§3.3): resolve the vtable's monomorphized fns via the
+    /// The v0 pivot: resolve the vtable's monomorphized fns via the
     /// target's symtab and join them against the bundle's task table.
     /// Falls through the sibling vtable fns before giving up; never guesses.
     fn resolve_future(&self, vt: &TaskVtable) -> FutureInfo {
@@ -742,7 +741,7 @@ impl<'b, T: Target> Context<'b, T> {
         }
     }
 
-    /// Cheap bundle/target mismatch canary (§3.3): the offsets stored in the
+    /// Cheap bundle/target mismatch canary: the offsets stored in the
     /// target's vtable must equal the ones computed from the bundle's
     /// `Cell<T, S>` layout. Disagreement is a hard diagnostic, not a silent
     /// misparse.
@@ -803,7 +802,7 @@ impl<'b, T: Target> Context<'b, T> {
         })
     }
 
-    /// Follow the owned-list link out of a task's `Trailer` (§3.1: the
+    /// Follow the owned-list link out of a task's `Trailer` (the
     /// next/prev pointers live in `Trailer.owned`, not the Header).
     fn owned_next(&self, trailer_addr: u64) -> Result<Option<u64>> {
         let ty = self.infra_ty(self.view.bundle().infra.trailer, "task Trailer")?;
@@ -819,14 +818,14 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     // -----------------------------------------------------------------------
-    // Task tracing (§3.4–§3.5)
+    // Task tracing
     // -----------------------------------------------------------------------
 
-    /// Decode a task's `Stage<T>` (§3.4): the future lives at
+    /// Decode a task's `Stage<T>`: the future lives at
     /// `header_addr + offset(Cell.core) + offset(Core.stage)`, and the
     /// stage's discriminant says whether the state machine is resident.
     ///
-    /// Requires the future type to have been resolved (§3.3); an unknown
+    /// Requires the future type to have been resolved; an unknown
     /// future has no `Cell` layout to interpret the memory with, and we
     /// never guess.
     pub fn task_stage(&self, task: &Task) -> Result<TaskStage<'b>> {
@@ -865,8 +864,7 @@ impl<'b, T: Target> Context<'b, T> {
         }
     }
 
-    /// Walk a resident future's await chain (§3.5), outermost future
-    /// first.
+    /// Walk a resident future's await chain, outermost future first.
     ///
     /// The walk never fails outright: whatever decoded cleanly is in
     /// [`AwaitChain::frames`], and [`AwaitChain::end`] says why it
@@ -964,7 +962,7 @@ impl<'b, T: Target> Context<'b, T> {
             };
 
             // Coroutine variant members are numbered; their state names
-            // live on the payload structs (§5.5). An ordinary enum is a
+            // live on the payload structs. An ordinary enum is a
             // combinator written by hand — `futures_util`'s `Map` is an
             // `Incomplete { future, f }` — so it names no awaitee, and
             // what it holds decides whether the chain goes on.
@@ -1064,7 +1062,7 @@ impl<'b, T: Target> Context<'b, T> {
         let peeled = awaitee.clone().peel();
         if let Some(dp) = peeled.ty.dyn_pointer() {
             // A boxed trait object: only its vtable knows the concrete
-            // type (§3.5).
+            // type.
             return match self.resolve_dyn_future(&peeled, &dp) {
                 Ok(DynAwaitee::Resolved { future, symbol }) => Follow::Next {
                     future,
@@ -1188,7 +1186,7 @@ impl<'b, T: Target> Context<'b, T> {
         false
     }
 
-    /// Resolve a `dyn Future` wide pointer (§3.5): read its data and
+    /// Resolve a `dyn Future` wide pointer: read its data and
     /// vtable pointers from the already-read payload bytes, resolve the
     /// vtable's poll fn — or its drop glue, for polls internalized out of
     /// the symtab — through the *target's* symtab, and join the mangled
@@ -1249,7 +1247,7 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     // -----------------------------------------------------------------------
-    // The leaf-future knowledge base (§3.6)
+    // The leaf-future knowledge base
     // -----------------------------------------------------------------------
 
     /// What the chain's leaf future is waiting on, when it is a
@@ -1297,7 +1295,7 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// A `JoinHandle<T>`: the task being awaited — a dependency edge
-    /// between tasks (§3.6).
+    /// between tasks.
     fn read_join_handle(&self, handle: &TypeInfo<'b>, list: &TaskList) -> Result<WaitTarget> {
         // JoinHandle.raw: RawTask, which peels to the NonNull<Header>.
         let addr: u64 = self.walk(WalkRole::JoinHandleRaw).read(handle.as_ref())?;
@@ -1473,7 +1471,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// Decode the waker registered in a wait-queue node. Task wakers are
     /// recognized by their vtable: tokio builds them as `(data = the
     /// task's Header, vtable = &WAKER_VTABLE)`, and the bundle names that
-    /// static (§3.6).
+    /// static.
     fn read_queued_waker(&self, node: &TypeInfo<'b>) -> Result<QueuedWaker> {
         // Waiter.waker: UnsafeCell<Option<Waker>>; the Some payload
         // peels through the Waker to its RawWaker.
@@ -1728,8 +1726,7 @@ fn normalized_key_set(symbols: &[SymbolBuf]) -> HashSet<String> {
     })
 }
 
-/// Result of resolving the bundle's symbol fingerprint against the target
-/// (§5.1).
+/// Result of resolving the bundle's symbol fingerprint against the target.
 #[derive(Clone, Debug)]
 pub struct Fingerprint {
     pub total: usize,
@@ -1921,13 +1918,13 @@ pub struct KnownFuture {
     /// Demangled name of the future type (display only).
     pub display_name: String,
     pub kind: FutureKind,
-    /// Source file/line where the future is defined (§5.5 provenance).
+    /// Source file/line where the future is defined.
     pub decl: Option<(String, u32)>,
     /// The mangled vtable-fn symbol the join matched on.
     pub symbol: String,
 }
 
-/// A task's decoded `Stage<T>` (§3.4).
+/// A task's decoded `Stage<T>`.
 #[derive(Debug)]
 pub enum TaskStage<'b> {
     /// The state machine is resident; walk it with
@@ -1940,7 +1937,7 @@ pub enum TaskStage<'b> {
     Consumed,
 }
 
-/// The await chain of a resident future (§3.5), outermost future first.
+/// The await chain of a resident future, outermost future first.
 #[derive(Debug)]
 pub struct AwaitChain<'b> {
     pub frames: Vec<AwaitFrame<'b>>,
@@ -1992,7 +1989,7 @@ pub struct FrameState<'b> {
     /// The human-readable state name (`Unresumed`, `Suspend0`, …).
     pub name: &'b str,
     /// The awaited expression's source location, when the debug info
-    /// recorded it (§5.5).
+    /// recorded it.
     pub await_loc: Option<(&'b str, u32)>,
     /// The active variant's payload: the state's live locals, including
     /// compiler-generated `__…` slots and the `__awaitee` itself.
@@ -2006,8 +2003,7 @@ pub enum ChainEnd {
     /// with nothing awaited.
     Leaf,
     /// A `dyn Future` awaitee whose vtable symbols joined nothing in the
-    /// bundle; the raw poll symbol is reported and nothing is guessed
-    /// (§3.3).
+    /// bundle; the raw poll symbol is reported and nothing is guessed.
     UnknownDyn {
         /// The `dyn Trait` spelling, for display.
         pointee: String,
@@ -2031,7 +2027,7 @@ pub enum ChainEnd {
     Error(anyhow::Error),
 }
 
-/// What a leaf future is waiting on (§3.6).
+/// What a leaf future is waiting on.
 #[derive(Clone, Debug)]
 pub enum WaitTarget {
     /// `tokio::time::Sleep`: parked on the timer wheel until a deadline

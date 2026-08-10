@@ -1,4 +1,4 @@
-//! An async fn awaiting an async fn awaiting a leaf future (§11.2): a
+//! An async fn awaiting an async fn awaiting a leaf future: a
 //! three-deep await chain, parked deterministically on a oneshot whose
 //! sender is intentionally leaked.
 

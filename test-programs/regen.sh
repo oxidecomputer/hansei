@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build the test-program fixture binaries with the pinned
-# "bundle-compatible" recipe (docs/v0-mangling-spike.md §5):
+# "bundle-compatible" recipe:
 #
 #   - pinned toolchain (v0 mangling, stable std internals)
 #   - RUSTFLAGS="--cfg tokio_unstable" (oxide-tokio-rt; feeds -Cmetadata)

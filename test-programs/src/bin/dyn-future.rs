@@ -1,4 +1,4 @@
-//! A `Pin<Box<dyn Future>>` awaitee plus a `JoinSet` (§11.2): exercises
+//! A `Pin<Box<dyn Future>>` awaitee plus a `JoinSet`: exercises
 //! the dyn-future join table, since the boxed future's concrete type is
 //! only reachable through its vtable's poll/drop_glue symbols.
 

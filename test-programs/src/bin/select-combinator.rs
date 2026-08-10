@@ -1,4 +1,4 @@
-//! `select!` and `join!` shapes (§11.2): two spawned tasks suspended
+//! `select!` and `join!` shapes: two spawned tasks suspended
 //! inside combinator-generated futures, parked deterministically on
 //! oneshots whose senders are intentionally leaked.
 

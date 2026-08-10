@@ -1,6 +1,5 @@
-//! Milestone-1 spike (HANSEI_V0_MANGLING_PLAN §6 items 3+4): verify that
-//! symtab-only discovery of the tokio runtime works against a live process
-//! and a core, with no DWARF on the target side.
+//! A spike: verify that symtab-only discovery of the tokio runtime works
+//! against a live process and a core, with no DWARF on the target side.
 //!
 //! Usage: tls_spike <pid|core-path> [mangled-poll-symbol]
 

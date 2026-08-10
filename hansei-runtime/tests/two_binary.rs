@@ -2,14 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Snapshot-based two-binary offline tests (plan §11.3).
+//! Snapshot-based two-binary offline tests.
 //!
 //! Each fixture pair was produced by `test-programs/capture-snapshots.sh`:
 //! the `.snapshot` is everything the analysis read from a live run of
 //! one compilation (build A), and the `.bundle` was extracted from a
 //! *separate* compilation of the same sources (build B). Joining B's
 //! layouts against A's memory by mangled symbol name is the two-binary
-//! constraint the whole design rests on (§2), exercised here in plain
+//! constraint the whole design rests on, exercised here in plain
 //! `cargo test` on any platform.
 //!
 //! The expected summaries are goldens: they change only when the
@@ -148,7 +148,7 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
         list.errors
     );
 
-    // The dependency analysis (§3.6/§10): wait targets come from it so
+    // The dependency analysis: wait targets come from it so
     // the per-task lines and the diagnoses agree by construction.
     let analysis = graph::analyze(&ctx, &list);
     assert!(
@@ -464,7 +464,7 @@ fn test_futurelock_census_offline() {
     assert_eq!(first.future.ty.name(), future1.future, "{future1:#?}");
 }
 
-/// The wrong-bundle failure mode (§5.1, §11.5): a bundle from a
+/// The wrong-bundle failure mode: a bundle from a
 /// different program shares tokio-internal instantiations with the
 /// target but misses its program-specific ones, so the fingerprint
 /// lands strictly between zero and complete — and the default <100%

@@ -481,8 +481,8 @@ fn test_validate_rejects_bad_debug_format_path() {
 }
 
 /// A selector may cross a pointer with a `Deref` step; the validator resolves
-/// through it to the pointee. (Phase A emits no such selector yet, but the
-/// validator handles them — this guards that path.)
+/// through it to the pointee. (No detector emits such a selector yet, but
+/// the validator handles them — this guards that path.)
 #[test]
 fn test_validate_accepts_selector_through_deref() {
     let mut strings = StringInterner::new();
@@ -1024,7 +1024,7 @@ fn test_strip_llvm_suffix() {
 
 #[test]
 fn test_symbol_lookup_is_mangled_exact_match() {
-    // §11.1: joins are exact-match on mangled input, with .llvm stripping;
+    // Joins are exact-match on mangled input, with .llvm stripping;
     // no demangling in the lookup path.
     let mut b = tiny_bundle();
     let mut strings = StringInterner::new();
@@ -1144,7 +1144,7 @@ fn test_discr_values_matches() {
 }
 
 // ---------------------------------------------------------------------------
-// BundleType view + variant decoding (§8, §11.1)
+// BundleType view + variant decoding
 // ---------------------------------------------------------------------------
 
 mod view_tests {
@@ -1462,7 +1462,7 @@ mod view_tests {
         );
     }
 
-    /// A coroutine-shaped enum, as rustc 1.97 emits it (§5.5): variant
+    /// A coroutine-shaped enum, as rustc 1.97 emits it: variant
     /// members are numbered ("0", "1", …); the state names live on the
     /// payload structs; suspend variants carry the awaited expression's
     /// decl coordinates.

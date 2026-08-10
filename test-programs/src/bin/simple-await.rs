@@ -1,4 +1,4 @@
-//! One spawned async fn with two await points and known locals (§11.2).
+//! One spawned async fn with two await points and known locals.
 //!
 //! The task reaches a deterministic steady state: it passes one
 //! trivially-ready await point, signals readiness, then parks forever on

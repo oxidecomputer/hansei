@@ -1,4 +1,4 @@
-//! Many parked tasks (plan §11.4): enough spawned tasks to give the
+//! Many parked tasks: enough spawned tasks to give the
 //! `OwnedTasks` shards more than one task each, so a backend list walk
 //! that mishandles the intrusive links cannot round-trip the task count.
 
