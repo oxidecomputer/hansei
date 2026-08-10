@@ -23,7 +23,8 @@
 //! nothing else here would notice the programs moving on without them.
 
 use exegesis::bundle::{Bundle, BundleView};
-use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd, Context, FutureInfo, TaskStage};
+use hansei_runtime::tokio::Lifecycle;
+use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd, Context, FutureInfo, Task, TaskStage};
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
 use proc::snapshot::Snapshot;
@@ -40,6 +41,8 @@ const PROGRAMS: &[&str] = &[
     "futurelock",
     "sleep-join",
     "channels",
+    "unordered",
+    "joinset",
 ];
 
 fn fixture(name: &str) -> PathBuf {
@@ -462,6 +465,226 @@ fn test_futurelock_census_offline() {
     let chain = ctx.await_chain(root);
     let first = chain.frames.first().expect("the re-rooted chain decodes");
     assert_eq!(first.future.ty.name(), future1.future, "{future1:#?}");
+}
+
+/// A `FuturesUnordered` is a sub-executor the task listing never
+/// shows: the driver's chain ends at the set itself, and its children
+/// are the census's business (below).
+#[test]
+fn test_unordered_offline() {
+    assert_summary(
+        "unordered",
+        r#"
+fingerprint 15/15
+workers 3
+task 3 idle unordered::driver::{async_fn_env#0}
+  spawned src/bin/unordered.rs:51:21
+  defined src/bin/unordered.rs:24
+  await unordered::driver::{async_fn_env#0} Suspend0 @ src/bin/unordered.rs:34 locals [notify, set, held, boxed, sum]
+  await futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}>
+  end leaf
+"#,
+    );
+}
+
+/// A `JoinSet`'s members are real tasks: each is its own listing entry
+/// parked in the shared `Notify`, while the driver parks in
+/// `join_next` over the `IdleNotifiedSet`.
+#[test]
+fn test_joinset_offline() {
+    assert_summary(
+        "joinset",
+        r#"
+fingerprint 17/17
+workers 3
+task 3 idle joinset::driver::{async_fn_env#0}
+  spawned src/bin/joinset.rs:58:21
+  defined src/bin/joinset.rs:22
+  await joinset::driver::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:41 locals [notify, started_tx, started_rx, set, sum]
+  await tokio::task::join_set::{impl#1}::join_next::{async_fn_env#0}<u32> Suspend0 @ tokio-1.52.4/src/task/join_set.rs:297
+  await tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
+  end leaf
+task 4 idle joinset::member::{async_fn_env#0}
+  spawned src/bin/joinset.rs:28:13
+  defined src/bin/joinset.rs:16
+  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:18 locals [started, notify]
+  await tokio::sync::notify::Notified
+  end leaf
+task 5 idle joinset::member::{async_fn_env#0}
+  spawned src/bin/joinset.rs:28:13
+  defined src/bin/joinset.rs:16
+  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:18 locals [started, notify]
+  await tokio::sync::notify::Notified
+  end leaf
+task 6 idle joinset::member::{async_fn_env#0}
+  spawned src/bin/joinset.rs:28:13
+  defined src/bin/joinset.rs:16
+  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:18 locals [started, notify]
+  await tokio::sync::notify::Notified
+  end leaf
+"#,
+    );
+}
+
+/// The resolved future name of a task the fixtures guarantee decodes.
+fn known_name(task: &Task) -> &str {
+    match &task.future {
+        FutureInfo::Known(known) => known.display_name.as_str(),
+        other => panic!("unresolved future: {other:?}"),
+    }
+}
+
+/// The whole pipeline up to the census, shared by the census tests.
+fn census_of<'a>(
+    bundle: &'a Bundle,
+    snapshot: &'a Snapshot,
+) -> (
+    Context<'a, Snapshot>,
+    hansei_runtime::tokio::bundle::TaskList,
+    census::FutureCensus,
+) {
+    let view = BundleView::new(bundle);
+    let ctx = Context::new(snapshot, view).expect("snapshot has mappings");
+    let lwps = snapshot.lwps().unwrap();
+    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+    let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
+    let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+    let census = census::census(&ctx, &list);
+    assert!(census.errors.is_empty(), "{:?}", census.errors);
+    assert_eq!(census.capped, 0, "the walk hit a hard limit");
+    (ctx, list, census)
+}
+
+/// The `FuturesUnordered` census, offline: the intrusive
+/// `head_all` → `next_all` node walk finds all three children with
+/// their suspend states and `Notified` leaves, and the two futures the
+/// driver merely holds — one bare, one dyn-boxed — are found beside
+/// it, never yet polled.
+#[test]
+fn test_unordered_census_offline() {
+    let (bundle, snapshot) = load("unordered");
+    let (ctx, list, census) = census_of(&bundle, &snapshot);
+
+    let set = match census.sets.as_slice() {
+        [set] => set,
+        other => panic!("expected one set, got {other:#?}"),
+    };
+    assert_eq!(set.local, "set");
+    assert!(
+        known_name(&list.tasks[set.owner]).contains("unordered::driver"),
+        "{:?}",
+        list.tasks[set.owner].future
+    );
+    assert!(set.ty.starts_with(
+        "futures_util::stream::futures_unordered::FuturesUnordered<\
+         unordered::set_member::{async_fn_env#0}>"
+    ));
+
+    assert_eq!(set.children.len(), 3, "{:#?}", set.children);
+    for child in &set.children {
+        assert_eq!(
+            child.future.as_deref(),
+            Some("unordered::set_member::{async_fn_env#0}"),
+            "{child:#?}"
+        );
+        assert!(
+            child
+                .state
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Suspend0"),
+            "{child:#?}"
+        );
+        assert_eq!(
+            child.leaf.as_deref(),
+            Some("tokio::sync::notify::Notified"),
+            "{child:#?}"
+        );
+    }
+
+    // A child's recorded root re-roots it: reading it back by
+    // (addr, ty) and chaining again reproduces the identity the census
+    // summarized — what tracing a child node by address rests on.
+    let root = set.children[0].root.as_ref().expect("a decoded child");
+    let ty = ctx
+        .view
+        .ty(root.ty)
+        .expect("the root type is in the bundle");
+    let future =
+        reify::TypeInfo::from_addr(&ctx, ty, root.addr).expect("the recorded root reads back");
+    let chain = ctx.await_chain(future);
+    assert_eq!(
+        chain
+            .frames
+            .first()
+            .expect("the re-rooted chain decodes")
+            .future
+            .ty
+            .name(),
+        "unordered::set_member::{async_fn_env#0}"
+    );
+
+    // The held futures: a bare coroutine in the driver's frame and a
+    // dyn-boxed one on the heap, both `Unresumed`.
+    let mut locals: Vec<&str> = census.held.iter().map(|h| h.local.as_str()).collect();
+    locals.sort_unstable();
+    assert_eq!(locals, ["boxed", "held"], "{:#?}", census.held);
+    for held in &census.held {
+        assert_eq!(held.future, "unordered::set_member::{async_fn_env#0}");
+        assert!(
+            held.state
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Unresumed"),
+            "{held:#?}"
+        );
+        assert_eq!(list.tasks[held.owner].task_id, Some(3), "{held:#?}");
+    }
+}
+
+/// The `JoinSet` census, offline: the `IdleNotifiedSet`'s two lists
+/// walked entry by entry, every member resolved to a task the listing
+/// also shows — by id, parked, join-interested.
+#[test]
+fn test_joinset_census_offline() {
+    let (bundle, snapshot) = load("joinset");
+    let (_ctx, list, census) = census_of(&bundle, &snapshot);
+
+    assert!(census.sets.is_empty(), "{:#?}", census.sets);
+    assert!(census.held.is_empty(), "{:#?}", census.held);
+
+    let set = match census.join_sets.as_slice() {
+        [set] => set,
+        other => panic!("expected one join set, got {other:#?}"),
+    };
+    assert_eq!(set.local, "set");
+    assert_eq!(set.ty, "tokio::task::join_set::JoinSet<u32>");
+    assert!(
+        known_name(&list.tasks[set.owner]).contains("joinset::driver"),
+        "{:?}",
+        list.tasks[set.owner].future
+    );
+
+    // The set's own length word and what the walk actually found agree.
+    assert_eq!(set.length, 3);
+    assert_eq!(set.children.len(), 3, "{:#?}", set.children);
+
+    let mut ids: Vec<u64> = set
+        .children
+        .iter()
+        .map(|c| c.id.expect("every member has an id"))
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, [4, 5, 6], "{:#?}", set.children);
+    for child in &set.children {
+        assert_eq!(child.state.lifecycle(), Lifecycle::Idle, "{child:#?}");
+        // `listed`: the member is a task the plain listing also shows.
+        assert!(child.listed, "{child:#?}");
+        assert!(
+            list.tasks.iter().any(|t| t.addr.0 == child.task),
+            "{child:#?}"
+        );
+    }
 }
 
 /// The wrong-bundle failure mode: a bundle from a
