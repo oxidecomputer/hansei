@@ -84,27 +84,14 @@ pub enum DisplayNode<'a> {
         node_ty: BundleType<'a>,
         node_size: u32,
     },
-    /// Follow a `(data, len)` string slice and render its bytes as a quoted,
-    /// escaped UTF-8 string. `pointer_offset` locates the data pointer,
-    /// `length_offset`/`length_size` the byte length; `capacity`, when present,
-    /// locates an owned buffer's capacity word (validated against the length).
-    Str {
-        pointer_offset: u64,
-        length_offset: u64,
-        length_size: u32,
-        capacity: Option<(u64, u32)>,
-    },
-    /// Follow a `(data, len)` fat pointer to a contiguous buffer and render its
-    /// first `length` `element`s as `[e, e, …]`. `pointer_offset` locates the
-    /// data pointer and `length_offset`/`length_size` the element count;
-    /// `capacity`, when present, locates an owned buffer's capacity (validated
-    /// against the length). `element_size` is the stride between successive
-    /// elements.
+    /// Follow the `(data, len)` string slice `header` and render its bytes as
+    /// a quoted, escaped UTF-8 string.
+    Str { header: FatHeader },
+    /// Follow the `(data, len)` fat pointer `header` to a contiguous buffer
+    /// and render its first `length` `element`s as `[e, e, …]`. `element_size`
+    /// is the stride between successive elements.
     Slice {
-        pointer_offset: u64,
-        length_offset: u64,
-        length_size: u32,
-        capacity: Option<(u64, u32)>,
+        header: FatHeader,
         element: BundleType<'a>,
         element_size: u32,
     },
@@ -187,6 +174,18 @@ pub enum DisplayNode<'a> {
     },
     /// Render the value as the single token `<elided>`, reading nothing.
     Elided,
+}
+
+/// The resolved `(pointer, length[, capacity])` header a [`DisplayNode::Str`]
+/// or [`DisplayNode::Slice`] reads its buffer through: where the value keeps
+/// the data pointer and the length, and — for an owned buffer — the capacity
+/// word the length is validated against.
+#[derive(Clone, Copy, Debug)]
+pub struct FatHeader {
+    pub pointer_offset: u64,
+    pub length_offset: u64,
+    pub length_size: u32,
+    pub capacity: Option<(u64, u32)>,
 }
 
 /// One resolved [`DisplayNode::CustomList`] body statement, mirroring the bundle
@@ -571,6 +570,33 @@ impl<'a> DisplayNode<'a> {
             })
         }
 
+        /// Resolve the `(pointer, length[, capacity])` header a `Str` and a
+        /// `Slice` node share: the pointer must be one, and each word's width
+        /// comes from the type its selector lands on.
+        fn resolve_fat_header(
+            scope: BundleType<'_>,
+            pointer: &Selector,
+            length: &Selector,
+            capacity: &Option<Selector>,
+        ) -> Option<FatHeader> {
+            let (pointer_ty, pointer_offset) = resolve_selector(scope, pointer)?;
+            pointer_ty.pointer_target()?;
+            let (length_ty, length_offset) = resolve_selector(scope, length)?;
+            let capacity = match capacity {
+                Some(capacity) => {
+                    let (capacity_ty, capacity_offset) = resolve_selector(scope, capacity)?;
+                    Some((capacity_offset, capacity_ty.size() as u32))
+                }
+                None => None,
+            };
+            Some(FatHeader {
+                pointer_offset,
+                length_offset,
+                length_size: length_ty.size() as u32,
+                capacity,
+            })
+        }
+
         /// Resolve a bundle [`exegesis::bundle::ScalarDecode`] into reify's
         /// owned form, resolving each label [`StrRef`] against `root`'s bundle.
         fn resolve_decode(
@@ -655,46 +681,18 @@ impl<'a> DisplayNode<'a> {
                     pointer,
                     length,
                     capacity,
-                } => {
-                    let (pointer_ty, pointer_offset) = resolve_selector(scope, pointer)?;
-                    pointer_ty.pointer_target()?;
-                    let (length_ty, length_offset) = resolve_selector(scope, length)?;
-                    let capacity = match capacity {
-                        Some(capacity) => {
-                            let (capacity_ty, capacity_offset) = resolve_selector(scope, capacity)?;
-                            Some((capacity_offset, capacity_ty.size() as u32))
-                        }
-                        None => None,
-                    };
-                    Some(DisplayNode::Str {
-                        pointer_offset,
-                        length_offset,
-                        length_size: length_ty.size() as u32,
-                        capacity,
-                    })
-                }
+                } => Some(DisplayNode::Str {
+                    header: resolve_fat_header(scope, pointer, length, capacity)?,
+                }),
                 BundleNode::Slice {
                     pointer,
                     length,
                     capacity,
                     element,
                 } => {
-                    let (pointer_ty, pointer_offset) = resolve_selector(scope, pointer)?;
-                    pointer_ty.pointer_target()?;
-                    let (length_ty, length_offset) = resolve_selector(scope, length)?;
-                    let capacity = match capacity {
-                        Some(capacity) => {
-                            let (capacity_ty, capacity_offset) = resolve_selector(scope, capacity)?;
-                            Some((capacity_offset, capacity_ty.size() as u32))
-                        }
-                        None => None,
-                    };
                     let element = scope.related_type(*element);
                     Some(DisplayNode::Slice {
-                        pointer_offset,
-                        length_offset,
-                        length_size: length_ty.size() as u32,
-                        capacity,
+                        header: resolve_fat_header(scope, pointer, length, capacity)?,
                         element,
                         element_size: element.size() as u32,
                     })

@@ -6,7 +6,7 @@
 //! spelling it was handed — or where in the layout that spelling hides its
 //! pointer, which is the bundle's business and not reify's.
 
-use crate::debug_type::{DisplayNode, TypeKind};
+use crate::debug_type::{DisplayNode, FatHeader, TypeKind};
 use crate::parse::ParseCtx;
 use crate::render::scalar::{read_u64_at, read_unsigned_at};
 use crate::target::ReadFromProc;
@@ -110,10 +110,13 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
         let invalid = |why| Error::invalid_sequence(ty.name(), why);
 
         if let Some(DisplayNode::Slice {
-            pointer_offset,
-            length_offset,
-            length_size,
-            capacity,
+            header:
+                FatHeader {
+                    pointer_offset,
+                    length_offset,
+                    length_size,
+                    capacity,
+                },
             element,
             element_size,
         }) = DisplayNode::resolve(ty)
@@ -213,10 +216,13 @@ pub(crate) fn utf8<'buf, Ctx: ParseCtx>(
     let invalid = |why| Error::invalid_sequence(ty.name(), why);
 
     if let Some(DisplayNode::Str {
-        pointer_offset,
-        length_offset,
-        length_size,
-        capacity,
+        header:
+            FatHeader {
+                pointer_offset,
+                length_offset,
+                length_size,
+                capacity,
+            },
     }) = DisplayNode::resolve(ty)
     {
         let bytes = info.bytes;
