@@ -464,16 +464,24 @@ fn eval_stmts<'a>(
     pretty: bool,
     any: &mut bool,
 ) -> std::result::Result<Flow, fmt::Error> {
+    // Evaluate an expression or degrade: a failed read writes its marker as
+    // a pseudo-element and stops the loop, whichever statement asked.
+    macro_rules! eval_or_stop {
+        ($expr:expr) => {
+            match eval_expr($expr, vars, bytes, addr, ctx) {
+                Ok(value) => value,
+                Err(marker) => {
+                    write_seq_marker(f, marker, *any)?;
+                    return Ok(Flow::Stop);
+                }
+            }
+        };
+    }
+
     for stmt in stmts {
         match stmt {
             Stmt::Set { var, value } => {
-                let value = match eval_expr(value, vars, bytes, addr, ctx) {
-                    Ok(value) => value,
-                    Err(marker) => {
-                        write_seq_marker(f, marker, *any)?;
-                        return Ok(Flow::Stop);
-                    }
-                };
+                let value = eval_or_stop!(value);
                 if let Some(slot) = vars.get_mut(*var as usize) {
                     *slot = value;
                 }
@@ -483,14 +491,11 @@ fn eval_stmts<'a>(
                 then,
                 otherwise,
             } => {
-                let cond = match eval_expr(cond, vars, bytes, addr, ctx) {
-                    Ok(cond) => cond,
-                    Err(marker) => {
-                        write_seq_marker(f, marker, *any)?;
-                        return Ok(Flow::Stop);
-                    }
+                let branch = if eval_or_stop!(cond) != 0 {
+                    then
+                } else {
+                    otherwise
                 };
-                let branch = if cond != 0 { then } else { otherwise };
                 if let Flow::Stop =
                     eval_stmts(f, branch, vars, element, bytes, addr, ctx, pretty, any)?
                 {
@@ -498,25 +503,12 @@ fn eval_stmts<'a>(
                 }
             }
             Stmt::Break { cond } => {
-                let cond = match eval_expr(cond, vars, bytes, addr, ctx) {
-                    Ok(cond) => cond,
-                    Err(marker) => {
-                        write_seq_marker(f, marker, *any)?;
-                        return Ok(Flow::Stop);
-                    }
-                };
-                if cond != 0 {
+                if eval_or_stop!(cond) != 0 {
                     return Ok(Flow::Stop);
                 }
             }
             Stmt::Emit { at } => {
-                let target = match eval_expr(at, vars, bytes, addr, ctx) {
-                    Ok(target) => target,
-                    Err(marker) => {
-                        write_seq_marker(f, marker, *any)?;
-                        return Ok(Flow::Stop);
-                    }
-                };
+                let target = eval_or_stop!(at);
                 let Some(proc) = ctx.proc else {
                     write_seq_marker(f, "<target unavailable>", *any)?;
                     return Ok(Flow::Stop);
