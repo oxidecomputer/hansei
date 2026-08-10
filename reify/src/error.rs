@@ -15,7 +15,7 @@ enum ErrorKind {
     #[error("invalid discriminant value {discrim} for type {ty}")]
     InvalidDiscriminantValue { ty: String, discrim: i64 },
     #[error("unable to read member at range {start}..{end} from buf with len {len}")]
-    InvalidMemberRange { start: u16, end: u16, len: u16 },
+    InvalidMemberRange { start: u64, end: u64, len: u64 },
     #[error("enumerator {enum_name} not found for type {ty}")]
     NoEnumerator { ty: String, enum_name: String },
     #[error("member {member_name} not found for type {ty}")]
@@ -72,7 +72,7 @@ impl Error {
         Self::new(ErrorKind::InvalidDiscriminantValue { ty, discrim })
     }
 
-    pub fn invalid_member_range(start: u16, end: u16, len: u16) -> Self {
+    pub fn invalid_member_range(start: u64, end: u64, len: u64) -> Self {
         Self::new(ErrorKind::InvalidMemberRange { start, end, len })
     }
 

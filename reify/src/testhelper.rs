@@ -469,6 +469,9 @@ fixture_ids! {
     // and an outer struct reaching one across a pointer (plus the niche
     // `Opt` inline), so both local and cross-segment guards are exercised.
     MSG_WRAP, MSG_WRAP_PTR, GUARD_OUTER,
+    // A struct with a member past 64 KiB, so member slicing is exercised
+    // beyond the offsets a 16-bit computation can represent.
+    BIG,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -581,6 +584,7 @@ pub fn test_bundle() -> Bundle {
     );
     let (msg_wrapn, msgn2, guard_outern, wrapn2, optn2) =
         (s("MsgWrap"), s("msg"), s("GuardOuter"), s("wrap"), s("opt"));
+    let bign = s("Big");
 
     // Labels for the sync-primitive `ScalarDecode` tables. Interned here so
     // the decode-building closures below can assemble tables from `Copy`
@@ -1598,6 +1602,16 @@ pub fn test_bundle() -> Bundle {
             name: guard_outern,
             size: 16,
             members: vec![m(wrapn2, MSG_WRAP_PTR, 0), m(optn2, OPT, 8)],
+        },
+    );
+    // Big { tail: u32 @0x10000 } — a member whose offset does not fit in
+    // sixteen bits, which member slicing must reach without truncating.
+    types.add(
+        BIG,
+        TypeDef::Struct {
+            name: bign,
+            size: 0x10004,
+            members: vec![m(tailn, U32, 0x10000)],
         },
     );
     let types = types.finish();
