@@ -1,6 +1,6 @@
 //! Parsing Rust values out of a typed buffer.
 
-use crate::debug_type::TypeKind;
+use crate::elements::MAX_SEQUENCE_BYTES;
 use crate::target::ReadFromProc;
 use crate::value::TypeInfoRef;
 use crate::{Error, Result};
@@ -11,6 +11,13 @@ pub trait ParseCtx {
     type Target: ReadFromProc;
 
     fn proc(&self) -> &Self::Target;
+
+    /// The most bytes one sequence read may ask the target for, whatever
+    /// the value's length claims; see [`MAX_SEQUENCE_BYTES`], which is what
+    /// this defaults to.
+    fn max_sequence_bytes(&self) -> u64 {
+        MAX_SEQUENCE_BYTES
+    }
 }
 
 /// Parse a byte slice as a type using debug type information.
@@ -104,41 +111,42 @@ where
     }
 }
 
+/// Every sequence parses the same way — an owned `Vec`, a boxed or borrowed
+/// slice, an inline array — because [`Elements`](crate::Elements) has already
+/// reduced them all to a count, a stride and the bytes.
+///
+/// A sequence the target could not serve whole is an error rather than a
+/// short `Vec`: a caller collecting into one has no way to notice the
+/// difference, and quietly dropping the tail of a task list is worse than
+/// failing to read it.
+impl<'a, V, Ctx> ParseWithDbgInfo<'a, Ctx> for Vec<V>
+where
+    V: ParseWithDbgInfo<'a, Ctx>,
+    Ctx: ParseCtx,
+{
+    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
+        let elements = info.elements(ctx)?;
+        if let Some(claimed) = elements.truncated() {
+            return Err(Error::short_sequence(
+                info.ty.name(),
+                claimed,
+                elements.len(),
+            ));
+        }
+        elements
+            .iter()
+            .map(|element| V::parse_with_dbg(ctx, &element))
+            .collect()
+    }
+}
+
 impl<'a, V, Ctx> ParseWithDbgInfo<'a, Ctx> for Box<[V]>
 where
     V: ParseWithDbgInfo<'a, Ctx>,
     Ctx: ParseCtx,
 {
     fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
-        let proc = ctx.proc();
-
-        let len: u64 = info.member("length")?.parse(ctx)?;
-        let ptr = info.member("data_ptr")?;
-        let Some(param_ty) = ptr.ty.pointer_target() else {
-            return Err(Error::unexpected_type(
-                ptr.ty.kind(),
-                TypeKind::Pointer,
-                info.ty.name().to_string(),
-            ));
-        };
-        let param_size = param_ty.size();
-
-        let p: u64 = ptr.parse(ctx)?;
-        let total_len = len * param_ty.size();
-
-        let raw = proc.read_bytes(p, total_len)?;
-        let mut out = Vec::with_capacity(len as usize);
-        for (i, chunk) in raw.chunks(param_size as usize).enumerate() {
-            let item_info = TypeInfoRef {
-                ty: param_ty,
-                addr: p + (i as u64) * param_size,
-                bytes: chunk,
-            };
-            let item = V::parse_with_dbg(ctx, &item_info)?;
-            out.push(item);
-        }
-
-        Ok(out.into_boxed_slice())
+        Ok(Vec::<V>::parse_with_dbg(ctx, info)?.into_boxed_slice())
     }
 }
 
@@ -148,36 +156,12 @@ where
     Ctx: ParseCtx,
 {
     fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
-        if info.bytes.len() != size_of::<Self>() {
-            return Err(Error::unexpected_len(
-                info.bytes.len() as u32,
-                size_of::<Self>() as u32,
-            ));
-        }
-
-        let Some((elem_ty, _count)) = info.ty.array_info() else {
-            return Err(Error::unexpected_type(
-                info.ty.kind(),
-                TypeKind::Array,
-                info.ty.name().to_string(),
-            ));
-        };
-        let size = elem_ty.size() as usize;
-
-        let mut items = Vec::with_capacity(N);
-        for (i, slice) in info.bytes.chunks(size).enumerate() {
-            let slice_info = TypeInfoRef {
-                ty: elem_ty,
-                addr: info.addr + (i * size) as u64,
-                bytes: slice,
-            };
-            let item = V::parse_with_dbg(ctx, &slice_info)?;
-            items.push(item);
-        }
-        let Ok(arr) = items.try_into() else {
-            unreachable!();
-        };
-        Ok(arr)
+        let items = Vec::<V>::parse_with_dbg(ctx, info)?;
+        // The array's own length is the type's, not the target's, so a
+        // count that disagrees is a type mismatch rather than bad data.
+        items
+            .try_into()
+            .map_err(|items: Vec<V>| Error::unexpected_len(items.len() as u32, N as u32))
     }
 }
 
@@ -319,7 +303,7 @@ mod tests {
         assert!(short.parse::<[u32; 3], _>(&ctx).is_err());
     }
 
-    /// A boxed slice and a string both follow a `(data_ptr, length)` pair into
+    /// A sequence and a string both follow a `(data_ptr, length)` pair into
     /// the target. The elements are addressed from the buffer they were read
     /// from, not from the fat pointer's own address.
     #[test]
@@ -328,17 +312,23 @@ mod tests {
         let v = BundleView::new(&b);
         let ctx = TestCtx::new(
             FakeMem::new()
-                .at(0x2000, vec![1u8, 2, 3, 4])
+                .at(0x2000, u32s(&[1, 2, 3, 4]))
                 .at(0x3000, b"hello".to_vec()),
         );
 
-        // `&[u32]` in the fixture is (data_ptr: *u8, length), so it parses as a
-        // boxed slice of bytes.
+        // The fixture's `&[u32]` carries a byte-erased `data_ptr`, as a `Vec`
+        // does; the element type comes from its display program, so this is a
+        // sequence of `u32` and not of the pointer's bytes. Owned or boxed is
+        // the caller's choice, over the same read.
         let fat = u64s(&[0x2000, 4]);
         let slice = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0x9000, &fat);
         assert_eq!(
-            slice.parse::<Box<[u8]>, _>(&ctx).unwrap().as_ref(),
-            &[1u8, 2, 3, 4]
+            slice.parse::<Box<[u32]>, _>(&ctx).unwrap().as_ref(),
+            &[1u32, 2, 3, 4]
+        );
+        assert_eq!(
+            slice.parse::<Vec<u32>, _>(&ctx).unwrap(),
+            vec![1u32, 2, 3, 4]
         );
 
         let fat = u64s(&[0x3000, 5]);
@@ -349,6 +339,6 @@ mod tests {
         let ctx = TestCtx::new(FakeMem::new().unreadable());
         let fat = u64s(&[0x2000, 4]);
         let slice = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0, &fat);
-        assert!(slice.parse::<Box<[u8]>, _>(&ctx).is_err());
+        assert!(slice.parse::<Box<[u32]>, _>(&ctx).is_err());
     }
 }

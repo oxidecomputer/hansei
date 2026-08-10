@@ -476,22 +476,26 @@ impl<'b, T: Target> Context<'b, T> {
         // The driver's lock lives under the parkers' own shared state,
         // which every `Inner` points at; the first one answers for all.
         let mut driver_held = None;
-        let workers = remotes
-            .as_ref()
-            .boxed_slice_elements(self, |remote| {
-                Ok((|| -> Result<ParkState> {
-                    let inner = self.walk(WalkRole::RemoteUnpark).walk_at(remote.clone())?;
-                    if driver_held.is_none() {
-                        driver_held =
-                            Some(self.walk(WalkRole::ParkerDriverLock).read(inner.as_ref())?);
-                    }
-                    let state = self.walk(WalkRole::ParkerState).read(inner.as_ref())?;
-                    Ok(ParkState::from_word(state))
-                })())
-            })
-            .map_err(anyhow::Error::from)
-            .and_then(|states| states.into_iter().collect::<Result<Vec<_>>>())
-            .context("failed to read the workers' park state")?;
+        let remotes = remotes.as_ref().elements(self)?;
+        ensure!(
+            remotes.truncated().is_none(),
+            "the remotes array claims {} workers, only {} readable",
+            remotes.truncated().unwrap_or_default(),
+            remotes.len(),
+        );
+        let workers = (|| -> Result<Vec<ParkState>> {
+            let mut workers = Vec::with_capacity(remotes.len() as usize);
+            for remote in remotes.iter() {
+                let inner = self.walk(WalkRole::RemoteUnpark).walk_at(remote)?;
+                if driver_held.is_none() {
+                    driver_held = Some(self.walk(WalkRole::ParkerDriverLock).read(inner.as_ref())?);
+                }
+                let state = self.walk(WalkRole::ParkerState).read(inner.as_ref())?;
+                workers.push(ParkState::from_word(state));
+            }
+            Ok(workers)
+        })()
+        .context("failed to read the workers' park state")?;
         Ok(ParkStates {
             workers,
             driver_held: driver_held.unwrap_or(false),
@@ -535,64 +539,52 @@ impl<'b, T: Target> Context<'b, T> {
         // Guards against cycles from corrupt memory, across shards: the
         // same Header must never appear twice.
         let mut visited = HashSet::default();
-        let mut shard = 0usize;
-        // A failure to navigate a shard itself (as opposed to a node in
-        // its list) means every shard is unreadable the same way; abort
-        // the enumeration rather than reporting it once per shard.
-        let mut nav_failure = None;
 
-        lists
+        let shards = lists
             .as_ref()
-            .boxed_slice_elements(self, |elem| {
-                let this_shard = shard;
-                shard += 1;
-                if nav_failure.is_some() {
-                    return Ok(());
-                }
-
-                let head_addr = match self.walk(WalkRole::ShardHead).walk(elem.clone()) {
-                    Ok(Walked::At(head)) => match head.parse::<u64, _>(self) {
-                        Ok(addr) => addr,
-                        Err(e) => {
-                            nav_failure = Some(anyhow!(e));
-                            return Ok(());
-                        }
-                    },
-                    // An empty shard.
-                    Ok(_) => return Ok(()),
-                    Err(e) => {
-                        nav_failure = Some(e);
-                        return Ok(());
-                    }
-                };
-
-                let mut cur = Some(head_addr);
-                while let Some(addr) = cur {
-                    let step = (|| -> Result<Option<u64>> {
-                        ensure!(
-                            self.mappings.contains_addr(addr),
-                            "task pointer {addr:#x} is unmapped"
-                        );
-                        ensure!(visited.insert(addr), "owned-task list cycle at {addr:#x}");
-                        let (task, next) = self.parse_task(addr)?;
-                        tasks.push(task);
-                        Ok(next)
-                    })();
-                    match step {
-                        Ok(next) => cur = next,
-                        Err(e) => {
-                            errors.push(e.context(format!(
-                                "task walk failed in shard {this_shard} at {addr:#x}"
-                            )));
-                            break;
-                        }
-                    }
-                }
-                Ok(())
-            })
+            .elements(self)
             .context("failed to walk OwnedTasks shards")?;
-        if let Some(e) = nav_failure {
-            return Err(e.context("failed to walk OwnedTasks shards"));
+        ensure!(
+            shards.truncated().is_none(),
+            "the OwnedTasks shard array claims {} shards, only {} readable",
+            shards.truncated().unwrap_or_default(),
+            shards.len(),
+        );
+        for (this_shard, elem) in shards.iter().enumerate() {
+            // A failure to navigate a shard itself (as opposed to a node in
+            // its list) means every shard is unreadable the same way; abort
+            // the enumeration rather than reporting it once per shard.
+            let head_addr = match self.walk(WalkRole::ShardHead).walk(elem) {
+                Ok(Walked::At(head)) => head
+                    .parse::<u64, _>(self)
+                    .context("failed to walk OwnedTasks shards")?,
+                // An empty shard.
+                Ok(_) => continue,
+                Err(e) => return Err(e.context("failed to walk OwnedTasks shards")),
+            };
+
+            let mut cur = Some(head_addr);
+            while let Some(addr) = cur {
+                let step = (|| -> Result<Option<u64>> {
+                    ensure!(
+                        self.mappings.contains_addr(addr),
+                        "task pointer {addr:#x} is unmapped"
+                    );
+                    ensure!(visited.insert(addr), "owned-task list cycle at {addr:#x}");
+                    let (task, next) = self.parse_task(addr)?;
+                    tasks.push(task);
+                    Ok(next)
+                })();
+                match step {
+                    Ok(next) => cur = next,
+                    Err(e) => {
+                        errors.push(e.context(format!(
+                            "task walk failed in shard {this_shard} at {addr:#x}"
+                        )));
+                        break;
+                    }
+                }
+            }
         }
 
         tasks.sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));

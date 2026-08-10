@@ -106,6 +106,24 @@ impl crate::ReadFromProc for FakeMem {
         }
     }
 
+    // A region bounds what can be read from it, the way a core's segment
+    // does -- so a length that outruns the bytes in hand is cut to them
+    // rather than failing the read outright.
+    fn readable_len(&self, addr: u64, max: u64) -> u64 {
+        if self.all_reads_fail {
+            return 0;
+        }
+        for (base, bytes) in &self.regions {
+            let Some(start) = addr.checked_sub(*base) else {
+                continue;
+            };
+            if start < bytes.len() as u64 {
+                return (bytes.len() as u64 - start).min(max);
+            }
+        }
+        0
+    }
+
     fn function_symbol(&self, addr: u64) -> Option<String> {
         self.symbols.get(&addr).cloned()
     }
@@ -115,11 +133,22 @@ impl crate::ReadFromProc for FakeMem {
 /// owned-`TypeInfo` paths that take a context rather than a bare reader.
 pub struct TestCtx {
     pub mem: FakeMem,
+    max_sequence_bytes: u64,
 }
 
 impl TestCtx {
     pub fn new(mem: FakeMem) -> Self {
-        Self { mem }
+        Self {
+            mem,
+            max_sequence_bytes: crate::MAX_SEQUENCE_BYTES,
+        }
+    }
+
+    /// Cap sequence reads at `bytes`, so the ceiling can be exercised
+    /// without a fixture the size of the real one.
+    pub fn with_max_sequence_bytes(mut self, bytes: u64) -> Self {
+        self.max_sequence_bytes = bytes;
+        self
     }
 }
 
@@ -128,6 +157,10 @@ impl crate::ParseCtx for TestCtx {
 
     fn proc(&self) -> &FakeMem {
         &self.mem
+    }
+
+    fn max_sequence_bytes(&self) -> u64 {
+        self.max_sequence_bytes
     }
 }
 

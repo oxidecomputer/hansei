@@ -1083,14 +1083,16 @@ mod tests {
     fn test_array_elements_through_typeinfo() {
         let b = test_bundle();
         let v = BundleView::new(&b);
+        let ctx = TestCtx::new(FakeMem::new());
         let bytes: Vec<u8> = [10u32, 20, 30]
             .iter()
             .flat_map(|x| x.to_le_bytes())
             .collect();
         let r = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &bytes);
         let shown: Vec<String> = r
-            .array_elements()
+            .elements(&ctx)
             .expect("array elements")
+            .iter()
             .map(|e| format!("{}", e.display()))
             .collect();
         assert_eq!(shown, ["10", "20", "30"]);
