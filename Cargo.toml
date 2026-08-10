@@ -4,7 +4,7 @@ members = [
     "durin",
     "exegesis",
     "hansei",
-    "hansei-types",
+    "hansei-runtime",
     "libproc-sys",
     "proc",
     "reify",
@@ -28,7 +28,7 @@ flate2 = "1.1.5"
 foldhash = "0.2"
 gimli = { version = "0.32", features = ["fallible-iterator"] }
 goblin = "0.10.3"
-hansei-types = { path = "hansei-types" }
+hansei-runtime = { path = "hansei-runtime" }
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
 memmap2 = "0.9.9"
 mimalloc = { version = "*", features = ["v3"] }

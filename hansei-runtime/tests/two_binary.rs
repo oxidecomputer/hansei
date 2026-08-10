@@ -23,8 +23,8 @@
 //! nothing else here would notice the programs moving on without them.
 
 use exegesis::bundle::{Bundle, BundleView};
-use hansei_types::tokio::bundle::{AwaitChain, ChainEnd, Context, FutureInfo, TaskStage};
-use hansei_types::tokio::{census, graph};
+use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd, Context, FutureInfo, TaskStage};
+use hansei_runtime::tokio::{census, graph};
 use proc::Target;
 use proc::snapshot::Snapshot;
 

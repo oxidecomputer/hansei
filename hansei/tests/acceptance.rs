@@ -43,14 +43,14 @@
 //! core formats hansei knows are the ELF ones these two write; macOS
 //! spells `gcore` the same way but hands back a Mach-O core of a Mach-O
 //! binary, which nothing downstream can read. The portable coverage of
-//! the same analysis is `hansei-types/tests/two_binary.rs`, which
+//! the same analysis is `hansei-runtime/tests/two_binary.rs`, which
 //! replays captured snapshots instead of coring anything.
 
 #![cfg(any(target_os = "linux", target_os = "illumos"))]
 
 use exegesis::bundle::{Bundle, BundleView};
 use exegesis::extract::{ExtractOptions, extract_file};
-use hansei_types::tokio::bundle::Context as BundleContext;
+use hansei_runtime::tokio::bundle::Context as BundleContext;
 use proc::Proc;
 
 use std::collections::HashSet;
@@ -512,7 +512,7 @@ fn trace_opts(bundle: &Path, core: &Path, task_id: &str, verbose: bool, ugly: bo
 /// relative to the moment the target stopped where the lwps stamp one
 /// (illumos) and as an absolute point on the monotonic clock where they
 /// do not (a Linux core). Both spellings are pinned deterministically by
-/// `hansei-types`' `test_timer_deadline_spellings`.
+/// `hansei-runtime`' `test_timer_deadline_spellings`.
 ///
 /// An await site inside tokio's own sources is masked down to its file
 /// (`tokio/src/sync/mutex.rs:LINE`): the version in the path and the

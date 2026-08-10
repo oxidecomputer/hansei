@@ -33,7 +33,7 @@ set -uo pipefail
 cd "$(dirname "$0")" || exit 2
 SELF=$(basename "$0")
 REPO=$(cd .. && pwd)
-GOLDENS=$REPO/hansei-types/tests/matrix
+GOLDENS=$REPO/hansei-runtime/tests/matrix
 MANIFEST=matrix.toml
 INDEX_URL=https://index.crates.io/to/ki/tokio
 CHANNEL_URL=https://static.rust-lang.org/dist/channel-rust-stable.toml
@@ -46,7 +46,7 @@ usage() { awk 'NR < 3 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$SELF
 #
 # The grammar is deliberately rigid — single-line arrays, every value
 # quoted — because several tools parse it independently
-# (hansei-types/tests/matrix.rs is the reference). Keep the file that way
+# (hansei-runtime/tests/matrix.rs is the reference). Keep the file that way
 # or the parsers drift.
 # ---------------------------------------------------------------------------
 
@@ -232,7 +232,7 @@ require_clean() {
     local dirty
     dirty=$(git -C "$REPO" status --porcelain -- \
         test-programs/Cargo.lock test-programs/matrix.toml test-programs/locks \
-        hansei-types/tests/matrix)
+        hansei-runtime/tests/matrix)
     [ -z "$dirty" ] || die "uncommitted changes in the paths add rewrites — commit or stash first:
 $dirty"
 }
@@ -270,7 +270,7 @@ reconcile_cells() { # before, after (newline-separated), bless substring
 
     echo "building and blessing the new cells..."
     (cd "$REPO" && HANSEI_MATRIX=$3 HANSEI_MATRIX_BLESS=1 \
-        cargo test -q -p hansei-types --test matrix) \
+        cargo test -q -p hansei-runtime --test matrix) \
         || die "blessing the new cells failed"
     # A cell whose toolchain is missing skips silently; goldens are the
     # proof every new cell actually ran.
@@ -281,7 +281,7 @@ reconcile_cells() { # before, after (newline-separated), bless substring
     [ $missing = 0 ] || die "blessing skipped cells"
 
     echo "running the whole matrix un-blessed (no existing cell's goldens may move)..."
-    (cd "$REPO" && HANSEI_MATRIX=1 cargo test -q -p hansei-types --test matrix) \
+    (cd "$REPO" && HANSEI_MATRIX=1 cargo test -q -p hansei-runtime --test matrix) \
         || die "the full matrix run failed — an existing cell's goldens moved, or a new golden is unstable"
 }
 
@@ -289,7 +289,7 @@ report() {
     echo
     echo "working tree is ready for review:"
     git -C "$REPO" status --short -- \
-        test-programs/matrix.toml test-programs/locks hansei-types/tests/matrix \
+        test-programs/matrix.toml test-programs/locks hansei-runtime/tests/matrix \
         | sed 's/^/  /'
     echo
     echo "next: review the golden diffs (a respelled member = an ordered"

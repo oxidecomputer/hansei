@@ -11,7 +11,7 @@
 # and the snapshot is captured from that core. Neither step is
 # platform-specific: gcore takes a core under the same spelling on
 # illumos and Linux, and hansei reads either format. Fixtures land in
-# hansei-types/tests/fixtures (override with $1) and are small enough to
+# hansei-runtime/tests/fixtures (override with $1) and are small enough to
 # check in; this script makes them regenerable either way.
 #
 # What a capture is worth does vary by platform, though. The bundle's
@@ -26,9 +26,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-OUT="$(cd "${1:-../hansei-types/tests/fixtures}" 2>/dev/null && pwd || true)"
+OUT="$(cd "${1:-../hansei-runtime/tests/fixtures}" 2>/dev/null && pwd || true)"
 if [[ -z "$OUT" ]]; then
-    OUT="${1:-../hansei-types/tests/fixtures}"
+    OUT="${1:-../hansei-runtime/tests/fixtures}"
     mkdir -p "$OUT"
     OUT="$(cd "$OUT" && pwd)"
 fi
@@ -99,10 +99,10 @@ done
 # goldens quote line numbers out of sources they are never rebuilt
 # against — so the offline suite checks this manifest and says to come
 # back here when it no longer matches.
-DEFAULT_OUT="$(cd ../hansei-types/tests/fixtures 2>/dev/null && pwd || true)"
+DEFAULT_OUT="$(cd ../hansei-runtime/tests/fixtures 2>/dev/null && pwd || true)"
 if [[ "$OUT" == "$DEFAULT_OUT" ]]; then
     (cd .. && FIXTURE_SOURCES_BLESS=1 \
-        cargo test -q -p hansei-types --test two_binary fixtures_record >/dev/null)
+        cargo test -q -p hansei-runtime --test two_binary fixtures_record >/dev/null)
     echo "capture-snapshots.sh: recorded the fixture sources in $OUT/SOURCES"
 else
     echo "capture-snapshots.sh: $OUT is not the checked-in fixture dir;" \

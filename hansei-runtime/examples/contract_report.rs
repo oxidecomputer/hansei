@@ -7,10 +7,10 @@
 //! and what is absent or broken. Runs anywhere a bundle loads — no
 //! target process needed.
 //!
-//! Usage: `cargo run -p hansei-types --example contract_report -- <bundle>`
+//! Usage: `cargo run -p hansei-runtime --example contract_report -- <bundle>`
 
 use exegesis::bundle::{Bundle, BundleView};
-use hansei_types::tokio::contract::verify_walk_contract;
+use hansei_runtime::tokio::contract::verify_walk_contract;
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()
