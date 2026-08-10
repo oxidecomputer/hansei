@@ -3,7 +3,6 @@ use clap::{Args, Parser, Subcommand};
 use exegesis::bundle::{Bundle, BundleMember, BundleType, BundleView, WalkRole};
 use hansei_runtime::tokio::{Lifecycle, bundle, census, contract, graph};
 use proc::Proc;
-#[cfg(feature = "snapshot")]
 use proc::snapshot::Recorder;
 use reify::{TypeInfo, TypeInfoRef};
 
@@ -485,10 +484,8 @@ pub struct Session<'b> {
     ctx: bundle::Context<'b, Proc>,
     proc: &'b Proc,
     /// Read again under a recording target when a snapshot is captured.
-    #[cfg(feature = "snapshot")]
     bundle: &'b Bundle,
     /// How the session attached, so the capture attaches the same way.
-    #[cfg(feature = "snapshot")]
     policy: contract::WalkPolicy,
     core: &'b Path,
     bundle_path: &'b Path,
@@ -554,9 +551,7 @@ impl<'b> Session<'b> {
         Ok(Session {
             ctx,
             proc,
-            #[cfg(feature = "snapshot")]
             bundle,
-            #[cfg(feature = "snapshot")]
             policy,
             core: &args.core,
             bundle_path: &args.bundle,
@@ -1653,7 +1648,7 @@ fn discover_workers(
 /// e.g. `bounded::Receiver`'s compact `MpscRx` form, which peeling would
 /// strip away). The two read slightly different page sets, so warming
 /// both keeps the snapshot faithful to either rendering path.
-#[cfg(feature = "snapshot")]
+#[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
 fn warm_frame_values<T: proc::Target + Sync>(
     ctx: &bundle::Context<'_, T>,
     chain: &bundle::AwaitChain<'_>,
@@ -1685,7 +1680,7 @@ fn warm_frame_values<T: proc::Target + Sync>(
 /// and await chain is walked so the snapshot can answer the offline
 /// tests' whole question set; walk problems are warnings, not errors,
 /// since a partially-traceable target is still worth capturing.
-#[cfg(feature = "snapshot")]
+#[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
 fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) -> Result<()> {
     // The recording wrapper has to sit under its own context: what makes
     // a snapshot is the reads going through `Recorder`, so the session's
