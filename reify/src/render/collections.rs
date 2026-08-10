@@ -18,7 +18,8 @@ use super::node::eval_node;
 use super::par::{DisplayWith, MIN_PARALLEL_ITEMS, render_chunked};
 use super::scalar::{byte_range, read_u64_at, read_unsigned_at};
 use super::{
-    FormatCache, RenderCtx, write_display_value, write_indent, write_seq_close, write_seq_prefix,
+    FormatCache, RenderCtx, write_display_value, write_field_prefix, write_record_close,
+    write_seq_close, write_seq_prefix,
 };
 
 /// Follow a `(data, len)` fat pointer to a contiguous buffer and render its
@@ -261,7 +262,7 @@ pub(crate) fn eval_map<'a>(
                     "tree contains more entries than length",
                 ));
             }
-            write_map_entry_prefix(f, pretty, ctx.prefix, ctx.depth, emitted)?;
+            write_field_prefix(f, pretty, ctx.prefix, ctx.depth, emitted == 0)?;
             let key = TypeInfoRef {
                 ty: key,
                 addr: key_addr,
@@ -301,26 +302,21 @@ fn write_map_tail(
     match walk {
         Ok(()) if emitted == map_length => {}
         Ok(()) => {
-            write_map_entry_prefix(f, pretty, prefix, depth, emitted)?;
+            write_field_prefix(f, pretty, prefix, depth, emitted == 0)?;
             write!(f, "<invalid: tree contains fewer entries than length>")?;
         }
         Err(MapWalkError::Invalid(reason)) => {
-            write_map_entry_prefix(f, pretty, prefix, depth, emitted)?;
+            write_field_prefix(f, pretty, prefix, depth, emitted == 0)?;
             write!(f, "<invalid: {reason}>")?;
         }
         Err(MapWalkError::Marker(marker)) => {
-            write_map_entry_prefix(f, pretty, prefix, depth, emitted)?;
+            write_field_prefix(f, pretty, prefix, depth, emitted == 0)?;
             write!(f, "{marker}")?;
         }
         Err(MapWalkError::Format) => return Err(fmt::Error),
     }
 
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, prefix, depth)?;
-    } else {
-        write!(f, " ")?;
-    }
+    write_record_close(f, pretty, prefix, depth)?;
     write!(f, "}}")
 }
 
@@ -374,7 +370,7 @@ fn eval_map_parallel<'a>(
             DisplayWith(|f: &mut fmt::Formatter<'_>| {
                 for index in range.clone() {
                     let (key_addr, value_addr) = entries_ref[index];
-                    write_map_entry_prefix(f, pretty, task_ctx.prefix, depth, index as u64)?;
+                    write_field_prefix(f, pretty, task_ctx.prefix, depth, index == 0)?;
                     write_map_entry(f, key, key_addr, value, value_addr, task_ctx, pretty)?;
                 }
                 Ok(())
@@ -432,23 +428,6 @@ fn write_map_entry<'a>(
         write!(f, ",")?;
     }
     Ok(())
-}
-
-fn write_map_entry_prefix(
-    f: &mut fmt::Formatter<'_>,
-    pretty: bool,
-    prefix: &str,
-    depth: usize,
-    entry: u64,
-) -> fmt::Result {
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, prefix, depth + 1)
-    } else if entry == 0 {
-        write!(f, " ")
-    } else {
-        write!(f, ", ")
-    }
 }
 
 fn walk_map_entries<'a>(

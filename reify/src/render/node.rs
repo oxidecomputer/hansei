@@ -16,7 +16,10 @@ use super::dyn_ptr::eval_dyn_pointer;
 use super::scalar::{
     apply, byte_range, eval_bytes, read_u64_at, read_unsigned_at, write_symbol, write_utf8_string,
 };
-use super::{RenderCtx, write_display_value, write_indent, write_seq_close, write_seq_prefix};
+use super::{
+    RenderCtx, write_display_value, write_field_prefix, write_record_close, write_seq_close,
+    write_seq_prefix,
+};
 
 /// Interpret a resolved [`DisplayNode`] tree — the single generic evaluator
 /// that stands in for the per-type `write_*` renderers on node-based formats.
@@ -602,16 +605,7 @@ fn eval_struct<'a>(
     f.write_str(name.unwrap_or_else(|| ty.name()))?;
     f.write_str(" {")?;
     for (i, field) in fields.iter().enumerate() {
-        // Field prefix: pretty starts a fresh indented line; inline opens with
-        // a space after `{` and separates subsequent fields with `, `.
-        if pretty {
-            writeln!(f)?;
-            write_indent(f, ctx.prefix, ctx.depth + 1)?;
-        } else if i > 0 {
-            write!(f, ", ")?;
-        } else {
-            write!(f, " ")?;
-        }
+        write_field_prefix(f, pretty, ctx.prefix, ctx.depth, i == 0)?;
         match field {
             Field::Structural {
                 name,
@@ -642,12 +636,7 @@ fn eval_struct<'a>(
             write!(f, ",")?;
         }
     }
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.prefix, ctx.depth)?;
-    } else {
-        write!(f, " ")?;
-    }
+    write_record_close(f, pretty, ctx.prefix, ctx.depth)?;
     write!(f, "}}")
 }
 

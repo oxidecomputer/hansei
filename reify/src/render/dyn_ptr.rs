@@ -10,7 +10,10 @@ use exegesis::bundle::BundleType;
 use std::fmt;
 
 use super::scalar::read_u64_at;
-use super::{RenderCtx, write_display_value, write_hex_fixed, write_hex_u64, write_indent};
+use super::{
+    RenderCtx, write_display_value, write_hex_fixed, write_hex_u64, write_indent,
+    write_record_close,
+};
 
 #[derive(Debug)]
 struct VtableFunction {
@@ -127,7 +130,7 @@ pub(crate) fn eval_dyn_pointer<'a>(
     match words.as_deref() {
         Some(words) if ctx.depth + 1 < ctx.max_depth => {
             write!(f, "{{")?;
-            write_vtable_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
+            write_dyn_field_prefix(f, pretty, ctx.prefix, ctx.depth + 1)?;
             let drop_address = words
                 .get(*drop_in_place_slot as usize)
                 .copied()
@@ -142,12 +145,12 @@ pub(crate) fn eval_dyn_pointer<'a>(
             }
             write!(f, ",")?;
 
-            write_vtable_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
+            write_dyn_field_prefix(f, pretty, ctx.prefix, ctx.depth + 1)?;
             match words.get(*size_slot as usize) {
                 Some(size) => write!(f, "size: {size},")?,
                 None => write!(f, "size: <unavailable>,")?,
             }
-            write_vtable_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
+            write_dyn_field_prefix(f, pretty, ctx.prefix, ctx.depth + 1)?;
             match words.get(*align_slot as usize) {
                 Some(align) => write!(f, "align: {align},")?,
                 None => write!(f, "align: <unavailable>,")?,
@@ -158,7 +161,7 @@ pub(crate) fn eval_dyn_pointer<'a>(
                 if slot == *drop_in_place_slot || slot == *size_slot || slot == *align_slot {
                     continue;
                 }
-                write_vtable_field_prefix(f, pretty, ctx.prefix, ctx.depth)?;
+                write_dyn_field_prefix(f, pretty, ctx.prefix, ctx.depth + 1)?;
                 if let Some(function) = functions.iter().find(|function| function.slot == slot) {
                     write!(f, "method[{slot}]: ")?;
                     write_hex_u64(f, address)?;
@@ -170,12 +173,7 @@ pub(crate) fn eval_dyn_pointer<'a>(
                 }
             }
 
-            if pretty {
-                writeln!(f)?;
-                write_indent(f, ctx.prefix, ctx.depth + 1)?;
-            } else {
-                write!(f, " ")?;
-            }
+            write_record_close(f, pretty, ctx.prefix, ctx.depth + 1)?;
             write!(f, "}},")?;
         }
         Some(_) => {
@@ -189,12 +187,7 @@ pub(crate) fn eval_dyn_pointer<'a>(
         }
     }
 
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, ctx.prefix, ctx.depth)?;
-    } else {
-        write!(f, " ")?;
-    }
+    write_record_close(f, pretty, ctx.prefix, ctx.depth)?;
     write!(f, "}}")
 }
 
@@ -214,6 +207,9 @@ pub(crate) fn resolve_function_symbol(
     )
 }
 
+/// Punctuation before one field of the dyn-pointer record (or its nested
+/// vtable record, one level deeper): a fresh line indented past `depth` in
+/// pretty mode, a space inline — every field writes its own trailing comma.
 fn write_dyn_field_prefix(
     f: &mut fmt::Formatter<'_>,
     pretty: bool,
@@ -223,20 +219,6 @@ fn write_dyn_field_prefix(
     if pretty {
         writeln!(f)?;
         write_indent(f, prefix, depth + 1)
-    } else {
-        write!(f, " ")
-    }
-}
-
-fn write_vtable_field_prefix(
-    f: &mut fmt::Formatter<'_>,
-    pretty: bool,
-    prefix: &str,
-    depth: usize,
-) -> fmt::Result {
-    if pretty {
-        writeln!(f)?;
-        write_indent(f, prefix, depth + 2)
     } else {
         write!(f, " ")
     }
