@@ -522,7 +522,7 @@ impl<'a> BundleType<'a> {
     /// `pointer` member targeting the unsized `dyn Trait` type itself
     /// (named `(dyn …)`) and a `vtable` member (`&[usize; N]`). The
     /// vtable's *contents* live in the target binary; only the member
-    /// offsets come from here (§3.5).
+    /// offsets come from here.
     pub fn dyn_pointer(&self) -> Option<DynPointer<'a>> {
         if !matches!(self.def(), TypeDef::Struct { .. }) {
             return None;
@@ -612,8 +612,7 @@ pub struct BundleVariant<'a> {
     /// The payload's byte offset within the enum.
     pub offset: u64,
     /// The variant member's declaration coordinates — for coroutine
-    /// suspend states, the awaited expression's source file and line
-    /// (§13.5).
+    /// suspend states, the awaited expression's source file and line.
     pub decl: Option<(&'a str, u32)>,
     /// Where a suspend point's await is written, when extraction found
     /// that `decl` names the macro it expanded from instead.
@@ -656,7 +655,7 @@ pub fn variant_name<'a>(member: &'a str, payload: BundleType<'a>) -> &'a str {
     }
 }
 
-/// A trait-object wide pointer decomposed into its parts (§3.5).
+/// A trait-object wide pointer decomposed into its parts.
 #[derive(Copy, Clone, Debug)]
 pub struct DynPointer<'a> {
     /// Byte offset of the data pointer within the wide-pointer struct.

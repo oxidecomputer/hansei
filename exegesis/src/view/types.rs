@@ -2583,7 +2583,7 @@ mod tests {
             // Coroutine variant members carry the decl coordinates of the
             // suspend point itself — the awaited expression's source line.
             // This is the raw material for await-point → source-line
-            // reporting (plan §13.5).
+            // reporting.
             let t = view
                 .find("testlib::asyncs::chain::{async_fn_env#0}", TypeKind::Enum)
                 .unwrap();
@@ -2608,7 +2608,7 @@ mod tests {
     #[test]
     fn test_drop_glue_template_param_binds_coroutine() {
         with_view!(view => {
-            // The dyn-future join (plan §5.3) resolves a vtable's
+            // The dyn-future join resolves a vtable's
             // drop_glue<T> symbol and needs T as a DIE reference: the
             // instantiation's template parameter binds the coroutine
             // type directly.

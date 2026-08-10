@@ -1,6 +1,6 @@
 //! The bundle's serialized data model.
 //!
-//! Design rules (see `HANSEI_V0_MANGLING_PLAN.md` §5):
+//! Design rules:
 //!
 //! - Symbol join tables are keyed by **mangled v0 names**, never demangled
 //!   text; demangling is display-only. Lookups strip any `.llvm.<hash>`
@@ -53,7 +53,7 @@ const _: () = {
     send_sync::<Bundle>();
 };
 
-/// Identity and validation data for the producing binary (§5.1).
+/// Identity and validation data for the producing binary.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct Meta {
     /// Copy of the header's format version, for tools that inspect a decoded
@@ -91,7 +91,7 @@ pub struct BinaryIdent {
     pub blake3: [u8; 32],
 }
 
-/// The layout graph (§5.2): an index-based arena of type definitions.
+/// The layout graph: an index-based arena of type definitions.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct TypeTable {
     pub types: Vec<TypeDef>,
@@ -973,8 +973,7 @@ pub struct VariantDef {
     pub payload: MemberDef,
     /// Declaration coordinates of the variant member. For coroutine state
     /// machines rustc records the *awaited expression* here, so a
-    /// `SuspendN` variant's `decl` is its await point's source line
-    /// (§13.5).
+    /// `SuspendN` variant's `decl` is its await point's source line.
     pub decl: Option<SourceLoc>,
     /// Where a coroutine suspend point's await is *written*, when that is
     /// known to differ from where `decl` puts it.
@@ -1018,7 +1017,7 @@ impl DiscrValues {
     }
 }
 
-/// The task join table (§5.3): mangled vtable-fn symbol → spawned future.
+/// The task join table: mangled vtable-fn symbol → spawned future.
 ///
 /// Every monomorphized vtable fn of an instantiation (`poll`, `dealloc`,
 /// `try_read_output`, `drop_join_handle_slow`, `drop_abort_handle`,
@@ -1083,7 +1082,7 @@ pub struct TaskFutureEntry {
     pub display_name: StrRef,
 }
 
-/// Join table for `Box<dyn Future>` / `Pin<Box<dyn ...>>` awaitees (§5.3):
+/// Join table for `Box<dyn Future>` / `Pin<Box<dyn ...>>` awaitees:
 /// linkage names of `<T as core::future::Future>::poll` and
 /// `core::ptr::drop_glue::<T>` (rustc ≥ 1.97's spelling of what used to be
 /// `drop_in_place`) → `T`'s type id.
@@ -1122,7 +1121,7 @@ impl DynFutureTable {
 
 /// Strip the `.llvm.<decimal>` suffix LLVM appends to internalized copies of
 /// a symbol. The suffix is path-sensitive across separate compilations and
-/// must never participate in a join (see `docs/v0-mangling-spike.md`).
+/// must never participate in a join.
 pub fn strip_llvm_suffix(symbol: &str) -> &str {
     match symbol.rfind(".llvm.") {
         Some(i)
@@ -1138,7 +1137,7 @@ pub fn strip_llvm_suffix(symbol: &str) -> &str {
 }
 
 /// Named statics whose *addresses* must be resolved in the target's symtab
-/// at attach time (§5.4).
+/// at attach time.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub enum StaticRole {
     /// The TLS key holding each thread's `tokio::runtime::context::Context`
@@ -1421,7 +1420,7 @@ pub struct WalksTable {
     pub entries: BTreeMap<WalkRole, WalkBinding>,
 }
 
-/// Type-table ids for the non-generic tokio infrastructure types (§5.4).
+/// Type-table ids for the non-generic tokio infrastructure types.
 ///
 /// Extraction resolves these from the debug binary's DWARF and fails
 /// loudly if any is missing.
@@ -1446,7 +1445,7 @@ pub struct InfraTypes {
     pub raw_waker_vtable: BundleTypeId,
 }
 
-/// Where each task future comes from (§5.5), indexed by [`TaskEntryId`]
+/// Where each task future comes from, indexed by [`TaskEntryId`]
 /// (parallel to [`TaskTable::entries`]).
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct ProvenanceTable {

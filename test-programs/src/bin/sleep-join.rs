@@ -1,4 +1,4 @@
-//! `Sleep` and `JoinHandle` leaves (plan §3.6): one task parked on the
+//! `Sleep` and `JoinHandle` leaves: one task parked on the
 //! timer wheel, another awaiting the first task's `JoinHandle` — the
 //! dependency edge the leaf-future knowledge base reports.
 

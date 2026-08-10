@@ -1,4 +1,4 @@
-//! Serializable target snapshots (`HANSEI_V0_MANGLING_PLAN.md` §11.3).
+//! Serializable target snapshots.
 //!
 //! A [`Snapshot`] captures the handful of things a debugger actually
 //! read from a target — memory runs, symbol lookups, the function

@@ -1,4 +1,4 @@
-//! Extraction golden tests (plan §11.2): run `extract` on the
+//! Extraction golden tests: run `extract` on the
 //! test-programs fixtures and compare a textual summary against checked-in
 //! expectations.
 //!
@@ -198,7 +198,7 @@ fn assert_format(program: &str, bundle: &Bundle, type_name: &str, expected: &str
 }
 
 /// Structural assertions that hold for every fixture — the "zero silent
-/// drops" checks (§11.2) plus metadata sanity.
+/// drops" checks plus metadata sanity.
 fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert_addresses_by_name(program, bundle);
     assert_eq!(stats.cells_missing, 0, "{program}: cells missing");

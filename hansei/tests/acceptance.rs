@@ -551,7 +551,7 @@ fn assert_locals(verbose_trace: &str, names: &[&str]) {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance tests: exact await-chain goldens (§11.4 item 3)
+// Acceptance tests: exact await-chain goldens
 // ---------------------------------------------------------------------------
 
 /// One spawned async fn parked on a leaked oneshot: the baseline listing
@@ -807,7 +807,7 @@ Task {id}: dyn_future::set_member::{{async_fn_env#0}} (idle)
     });
 }
 
-/// The RFD 609 futurelock acceptance test (§10, §11.4): the surviving
+/// The RFD 609 futurelock acceptance test: the surviving
 /// task is suspended in the select! arm while still holding `future1`
 /// (visible in its locals), blocked down the Mutex lock/acquire chain on
 /// the semaphore leaf — found fully automatically.
@@ -921,7 +921,7 @@ Task {id}: many_tasks::park_task::{{async_fn_env#0}} (idle)
     });
 }
 
-/// The leaf-future knowledge base (§3.6): a task parked on the timer
+/// The leaf-future knowledge base: a task parked on the timer
 /// reports its deadline, and a task awaiting a JoinHandle reports which
 /// task it waits for — the dependency edge, joined across the two
 /// binaries by nothing but the leaf's type name.
@@ -1322,7 +1322,7 @@ fn test_join_set_acceptance() {
 }
 
 // ---------------------------------------------------------------------------
-// Dependency graph and futurelock diagnosis (§3.6, §10)
+// Dependency graph and futurelock diagnosis
 // ---------------------------------------------------------------------------
 
 /// Run the `graph` command and return its output.

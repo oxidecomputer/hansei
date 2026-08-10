@@ -2,9 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Waker-based task dependency analysis (plan §3.6/§10): what every
-//! task is waiting on, who wakes whom, and the futurelocks those
-//! edges reveal.
+//! Waker-based task dependency analysis: what every task is waiting
+//! on, who wakes whom, and the futurelocks those edges reveal.
 //!
 //! The edges come from three reads the bundle backend already makes:
 //! `JoinHandle` leaves name the awaited task, semaphore leaves carry

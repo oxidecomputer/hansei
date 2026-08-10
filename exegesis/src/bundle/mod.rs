@@ -1,7 +1,7 @@
 //! The async debug bundle: a serialized description of a debug binary's
 //! tokio runtime, keyed by v0 mangled symbol names so a separately-compiled
 //! target binary can be interpreted without any address ever crossing
-//! between the two (see `HANSEI_V0_MANGLING_PLAN.md` §5).
+//! between the two.
 
 mod describe;
 mod io;

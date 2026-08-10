@@ -32,7 +32,7 @@ const FUTURE_POLL_SUFFIX: &str = " as core::future::future::Future>::poll";
 /// Below this many subprograms, sweeping them by hand beats spawning threads.
 const SWEEP_PARALLEL_THRESHOLD: usize = 4096;
 
-/// Contributions gathered by phase 1's subprogram sweep (§7.1). Accumulated per
+/// Contributions gathered by phase 1's subprogram sweep. Accumulated per
 /// worker and merged so the sweep — dominated by demangling every `poll*`
 /// symbol — can run in parallel.
 #[derive(Default)]
@@ -94,7 +94,7 @@ impl Sweep {
 }
 
 /// Sweep every subprogram into task seeds, dyn-future poll symbols, drop glue,
-/// and coroutine resume locations (§7.1). The per-function classification is
+/// and coroutine resume locations. The per-function classification is
 /// read-only over the reader and independent, so it is fanned out across a
 /// thread pool and the per-worker [`Sweep`]s merged in source order.
 pub(super) fn sweep_functions(

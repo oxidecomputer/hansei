@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Produce the two-binary offline test fixtures (plan §11.3): for each
+# Produce the two-binary offline test fixtures: for each
 # test program, a target *snapshot* captured from one compilation
 # (build A) and a debug *bundle* extracted from a second, separate
 # compilation of the same sources (build B). The offline tests then

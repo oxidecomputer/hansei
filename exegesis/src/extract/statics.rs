@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const WAKER_NS: &str = "tokio::runtime::task::waker";
 
-/// Locate the named statics (§5.4) by DWARF shape, not by hardcoded
+/// Locate the named statics by DWARF shape, not by hardcoded
 /// mangled names: the TLS key static's path spelling is a std internal
 /// that differs across platforms and std versions.
 pub(super) fn find_statics(
@@ -99,7 +99,7 @@ pub(super) fn find_statics(
     out
 }
 
-/// Match an ELF symbol-table name to a named static (§5.4) by its v0-mangled
+/// Match an ELF symbol-table name to a named static by its v0-mangled
 /// shape. Used as a fallback when the DWARF carries no `DW_TAG_variable` DIE
 /// for the static (e.g. illumos release builds), where the symbol is still
 /// present in `.symtab`/`.dynsym`.

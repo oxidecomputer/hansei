@@ -2,8 +2,7 @@
 
 _Exegesis_: critical interpretation of an impenetrable source text.
 
-This crate is both sides of the async debug bundle (see
-`HANSEI_V0_MANGLING_PLAN.md` at the repo root):
+This crate is both sides of the async debug bundle:
 
 * *lib*: the DWARF parsing layer (formerly the `felak` crate) plus the
   bundle format -- schema, reader/writer, and validation. Cross-platform,

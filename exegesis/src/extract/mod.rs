@@ -1,20 +1,20 @@
-//! The extraction pipeline (`exegesis extract`, plan §7): turn a debug
+//! The extraction pipeline (`exegesis extract`): turn a debug
 //! binary's DWARF into a [`Bundle`].
 //!
 //! The pipeline has three phases:
 //!
-//! 1. **Seed discovery** (§7.1): one sweep over all subprograms finds the
+//! 1. **Seed discovery**: one sweep over all subprograms finds the
 //!    `tokio::runtime::task::raw` vtable-fn instantiations (grouped per
 //!    `(T, S)` by the DIE references of their template parameters),
 //!    `<T as Future>::poll` impls, and `core::ptr::drop_glue::<T>`
-//!    instantiations; separate lookups resolve the infra types (§5.4) and
+//!    instantiations; separate lookups resolve the infra types and
 //!    the named statics.
-//! 2. **Type binding** (§7.2): `Cell<T, S>` is recovered structurally from
+//! 2. **Type binding**: `Cell<T, S>` is recovered structurally from
 //!    `dealloc`'s `NonNull<Cell<T, S>>` parameter (falling back to a
 //!    namespace scan matched on template parameters — never on
 //!    reconstructed name strings), and `Stage<T>` by walking the member
 //!    graph from `Cell`.
-//! 3. **Closure and emission** (§7.3): a worklist over DIE references
+//! 3. **Closure and emission**: a worklist over DIE references
 //!    converts every reachable type into a [`TypeDef`], interning strings
 //!    and remapping DWARF offsets to dense [`BundleTypeId`]s. Anything
 //!    unmodelable becomes an explicit `Opaque` entry and a stats counter —
@@ -131,7 +131,7 @@ pub struct ExtractStats {
     /// Statics that were not found.
     pub statics_missing: Vec<String>,
     /// Statics recovered from the symbol table because the DWARF carried no
-    /// `DW_TAG_variable` DIE for them (§5.4 fallback, e.g. illumos builds).
+    /// `DW_TAG_variable` DIE for them (e.g. illumos builds).
     pub statics_from_symtab: usize,
     /// `--include-type` roots resolved.
     pub include_roots: usize,
@@ -359,7 +359,7 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
     let (reader, symbols, vtable_types) = std::thread::scope(|scope| {
         let aux = scope.spawn(|| {
             // Named statics can be absent from `.debug_info` yet present in the
-            // symbol table (§5.4): illumos release builds emit no
+            // symbol table: illumos release builds emit no
             // `DW_TAG_variable` DIE for tokio/std dependency statics such as
             // `WAKER_VTABLE`, but keep the symbol in `.symtab`/`.dynsym`. Gather
             // both tables so `find_statics` can fall back to a mangled-name match.
@@ -424,7 +424,7 @@ struct InfraSlot {
     id: Option<TypeId>,
 }
 
-/// The infra types extraction locates (§5.4), one named field per role, so
+/// The infra types extraction locates, one named field per role, so
 /// the lookup, the tokio_unstable probe, the walk roots, and the bundle's
 /// [`InfraTypes`] all address a slot by name — a reorder here cannot
 /// quietly relabel one. Declaration order is emission order: the bundle
@@ -483,7 +483,7 @@ fn extract_from_view_with_vtable_types(
     let core_ns = view.find_ns(TASK_CORE_NS).map(|n| n.id());
     let glue_ns = view.find_ns(DROP_GLUE_NS).map(|n| n.id());
 
-    // --- Phase 1: one sweep over all subprograms (§7.1). ---
+    // --- Phase 1: one sweep over all subprograms. ---
     let Sweep {
         seeds,
         fut_polls,
@@ -503,7 +503,7 @@ fn extract_from_view_with_vtable_types(
         return Err(Error::NoTaskFutures);
     }
 
-    // --- Phase 2: per-instantiation type binding (§7.2). ---
+    // --- Phase 2: per-instantiation type binding. ---
 
     // Fallback index: Cell instantiations in task::core, matched on their
     // own template parameters.
@@ -581,7 +581,7 @@ fn extract_from_view_with_vtable_types(
     }
 
     // Dyn-future table: every `<T as Future>::poll` impl, plus the
-    // matching `drop_glue::<T>` instantiations (§5.3). drop_glue exists
+    // matching `drop_glue::<T>` instantiations. drop_glue exists
     // for *every* droppable type, so only glue for known future types is
     // recorded. Glue is matched by the template-parameter DIE reference
     // when the glue DIE carries one, else by its `drop_glue<T>` display
@@ -607,7 +607,7 @@ fn extract_from_view_with_vtable_types(
     }
     stats.dyn_futures = fut_polls.len();
 
-    // Infra types (§5.4) and statics.
+    // Infra types and statics.
     let infra = InfraIds::resolve(view, reader, &mut stats);
 
     // Whether the target was built with `--cfg tokio_unstable`, decided
@@ -647,7 +647,7 @@ fn extract_from_view_with_vtable_types(
 
     let vtable_type_ids = resolve_vtable_type_hints(reader, vtable_types, &mut stats);
 
-    // --- Phase 3: transitive closure and emission (§7.3). ---
+    // --- Phase 3: transitive closure and emission. ---
 
     // The recovered tokio version selects the detector family before any
     // type is emitted, so every versioned dispatch in this bundle answers
@@ -831,7 +831,7 @@ fn extract_from_view_with_vtable_types(
 }
 
 /// Strip a `.llvm.<decimal>` suffix; symbol-table keys are stored
-/// unsuffixed (§5.3). DWARF linkage names are unsuffixed in practice, so
+/// unsuffixed. DWARF linkage names are unsuffixed in practice, so
 /// this is insurance.
 fn strip(symbol: &str) -> &str {
     crate::bundle::strip_llvm_suffix(symbol)
@@ -860,7 +860,7 @@ pub(crate) fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
     segs.join("::")
 }
 
-/// Determine a task future's provenance (§5.5): coroutine env types name
+/// Determine a task future's provenance: coroutine env types name
 /// their defining async fn/block in their namespace path; the subprogram
 /// carries the declaration coordinates the type DIE lacks.
 fn classify_future(
