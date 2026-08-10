@@ -1851,3 +1851,765 @@ mod source_path_tests {
         );
     }
 }
+
+/// Negative validation for the newer display-node vocabulary: the
+/// `ScalarDecode` tables, value expressions, `CustomList` programs,
+/// `Variant` arms, `Bytes` notations, and the B-tree `MapEntries`.
+/// `validate()` is the trust boundary for a bundle read from disk, and
+/// until here nothing proved a malformed instance of these kinds is
+/// *rejected* — only that valid ones are accepted.
+mod node_validation {
+    use super::*;
+
+    use std::num::NonZeroU8;
+
+    /// Validation fails *and* the message names this corruption — a
+    /// rejection for some other reason is a false pass.
+    #[track_caller]
+    fn rejects(b: &Bundle, needle: &str) {
+        match b.validate() {
+            Err(Error::Corrupt(msg)) => assert!(
+                msg.contains(needle),
+                "rejected for the wrong reason:\n  wanted …{needle}…\n  got    {msg}"
+            ),
+            other => panic!("expected Corrupt(…{needle}…), got {other:?}"),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // A scope to hang programs on: word and byte-array members.
+    // -------------------------------------------------------------------
+
+    const HOLDER: BundleTypeId = BundleTypeId(7);
+    const OPAQUE: BundleTypeId = BundleTypeId(6);
+
+    /// `Holder { word: u64@0, b4: [u8;4]@8, b5: [u8;5]@12, sb16: [i8;16]@17,
+    /// b0: [u8;0]@33 }`, plus an opaque (unsized) type on the side.
+    fn holder_bundle() -> Bundle {
+        let mut b = super::tiny_bundle();
+        let mut strings = StringInterner::new();
+        let u64n = strings.intern("u64");
+        let u8n = strings.intern("u8");
+        let i8n = strings.intern("i8");
+        let opaquen = strings.intern("Mystery");
+        let holdern = strings.intern("Holder");
+        let members: Vec<StrRef> = ["word", "b4", "b5", "sb16", "b0"]
+            .iter()
+            .map(|m| strings.intern(m))
+            .collect();
+
+        let types = vec![
+            // 0: u64
+            TypeDef::Base {
+                name: u64n,
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
+            // 1: u8
+            TypeDef::Base {
+                name: u8n,
+                size: 1,
+                encoding: Encoding::Unsigned,
+            },
+            // 2: i8
+            TypeDef::Base {
+                name: i8n,
+                size: 1,
+                encoding: Encoding::Signed,
+            },
+            // 3: [u8; 4]
+            TypeDef::Array {
+                elem: BundleTypeId(1),
+                count: 4,
+            },
+            // 4: [u8; 5]
+            TypeDef::Array {
+                elem: BundleTypeId(1),
+                count: 5,
+            },
+            // 5: [i8; 16]
+            TypeDef::Array {
+                elem: BundleTypeId(2),
+                count: 16,
+            },
+            // 6: an unsized type
+            TypeDef::Opaque {
+                name: opaquen,
+                size: None,
+            },
+            // 7: Holder
+            TypeDef::Struct {
+                name: holdern,
+                size: 40,
+                members: [
+                    (0u64, BundleTypeId(0)),
+                    (8, BundleTypeId(3)),
+                    (12, BundleTypeId(4)),
+                    (17, BundleTypeId(5)),
+                    (33, BundleTypeId(3)),
+                ]
+                .iter()
+                .zip(&members)
+                .map(|((offset, ty), name)| MemberDef {
+                    name: *name,
+                    ty: *ty,
+                    offset: *offset,
+                })
+                .collect(),
+            },
+        ];
+        // `b0` above reuses [u8;4]; re-point it at a zero-length array.
+        let mut types = types;
+        types.push(TypeDef::Array {
+            elem: BundleTypeId(1),
+            count: 0,
+        });
+        match &mut types[7] {
+            TypeDef::Struct { members, .. } => members[4].ty = BundleTypeId(8),
+            _ => unreachable!(),
+        }
+
+        b.strings = strings.finish();
+        b.types = TypeTable {
+            types,
+            debug_formats: BTreeMap::new(),
+            name_index: vec![],
+            ..Default::default()
+        };
+        b.validate().expect("the holder fixture must validate");
+        b
+    }
+
+    fn with_format(node: DisplayNode) -> Bundle {
+        let mut b = holder_bundle();
+        b.types.debug_formats.insert(HOLDER, node);
+        b
+    }
+
+    fn scalar(decode: ScalarDecode) -> DisplayNode {
+        DisplayNode::Scalar {
+            at: Selector::member(0),
+            decode,
+        }
+    }
+
+    fn field(name: StrRef, shift: u8, width: Option<u8>, render: FieldRender) -> BitField {
+        BitField {
+            name,
+            shift,
+            width: width.map(|w| NonZeroU8::new(w).unwrap()),
+            render,
+        }
+    }
+
+    /// A string ref the fixture actually holds, for fields whose name
+    /// is not what the test is about.
+    fn a_name() -> StrRef {
+        StrRef(0)
+    }
+
+    // -------------------------------------------------------------------
+    // ScalarDecode
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_rejects_an_empty_bits_decode() {
+        let b = with_format(scalar(ScalarDecode::Bits(vec![])));
+        rejects(&b, "Bits decode has no fields");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_bits_field_with_a_bad_name() {
+        let b = with_format(scalar(ScalarDecode::Bits(vec![field(
+            StrRef(999),
+            0,
+            None,
+            FieldRender::Uint,
+        )])));
+        rejects(&b, "name string ref 999 out of range");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_shift_beyond_the_word() {
+        let name = a_name();
+        let b = with_format(scalar(ScalarDecode::Bits(vec![field(
+            name,
+            64,
+            None,
+            FieldRender::Uint,
+        )])));
+        rejects(&b, "beyond the 64-bit word");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_field_overflowing_the_word() {
+        let name = a_name();
+        let b = with_format(scalar(ScalarDecode::Bits(vec![field(
+            name,
+            60,
+            Some(8),
+            FieldRender::Uint,
+        )])));
+        rejects(&b, "overflows the 64-bit word");
+    }
+
+    #[test]
+    fn test_validate_rejects_overlapping_bit_fields() {
+        let name = a_name();
+        let b = with_format(scalar(ScalarDecode::Bits(vec![
+            field(name, 0, Some(4), FieldRender::Uint),
+            field(name, 2, Some(4), FieldRender::Uint),
+        ])));
+        rejects(&b, "overlaps an earlier field");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_bad_enum_label_ref() {
+        let name = a_name();
+        let b = with_format(scalar(ScalarDecode::Bits(vec![field(
+            name,
+            0,
+            Some(2),
+            FieldRender::Enum(vec![(0, StrRef(999))]),
+        )])));
+        rejects(&b, "enum label string ref 999 out of range");
+    }
+
+    #[test]
+    fn test_validate_rejects_an_enum_value_wider_than_its_field() {
+        let name = a_name();
+        let b = with_format(scalar(ScalarDecode::Bits(vec![field(
+            name,
+            0,
+            Some(2),
+            FieldRender::Enum(vec![(7, name)]),
+        )])));
+        rejects(&b, "enum value 7 does not fit its 2-bit field");
+    }
+
+    // -------------------------------------------------------------------
+    // Value expressions (via `Computed`, which roots one)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_rejects_a_variable_outside_a_custom_list() {
+        // `Computed` declares no loop variables, so any Var is out of
+        // range — even nested inside other operators.
+        let b = with_format(DisplayNode::Computed {
+            value: ValueExpr::Add(
+                Box::new(ValueExpr::Const(1)),
+                Box::new(ValueExpr::Not(Box::new(ValueExpr::Var(0)))),
+            ),
+            decode: ScalarDecode::Raw,
+        });
+        rejects(&b, "variable 0 out of range (0 declared)");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_load_of_an_odd_width() {
+        let b = with_format(DisplayNode::Computed {
+            value: ValueExpr::Const(0).load(3),
+            decode: ScalarDecode::Raw,
+        });
+        rejects(&b, "load size 3 is not a machine-word width");
+    }
+
+    #[test]
+    fn test_validate_rejects_an_unresolvable_expression_read() {
+        let b = with_format(DisplayNode::Computed {
+            value: ValueExpr::Read(Selector::member(9)),
+            decode: ScalarDecode::Raw,
+        });
+        rejects(&b, "a value-expression read");
+    }
+
+    // -------------------------------------------------------------------
+    // Variant arms
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_rejects_an_empty_variant_arm() {
+        let b = with_format(DisplayNode::Variant {
+            discriminant: ValueExpr::Const(0),
+            arms: vec![Arm {
+                value: 0,
+                label: None,
+                payload: None,
+            }],
+            default: None,
+        });
+        rejects(&b, "has neither a label nor a payload");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_bad_arm_label_ref() {
+        let b = with_format(DisplayNode::Variant {
+            discriminant: ValueExpr::Const(0),
+            arms: vec![Arm {
+                value: 0,
+                label: Some(StrRef(999)),
+                payload: None,
+            }],
+            default: None,
+        });
+        rejects(&b, "label string ref 999 out of range");
+    }
+
+    #[test]
+    fn test_validate_checks_the_discriminant_expression() {
+        let name = a_name();
+        let b = with_format(DisplayNode::Variant {
+            discriminant: ValueExpr::Var(2),
+            arms: vec![Arm::labeled(0, name)],
+            default: None,
+        });
+        rejects(&b, "variable 2 out of range");
+    }
+
+    // -------------------------------------------------------------------
+    // CustomList programs
+    // -------------------------------------------------------------------
+
+    fn custom_list(vars: Vec<ValueExpr>, condition: ValueExpr, body: Vec<Stmt>) -> DisplayNode {
+        DisplayNode::CustomList {
+            vars,
+            condition,
+            body,
+            element: BundleTypeId(0),
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_a_seed_referencing_a_variable() {
+        // Seeds run before any variable exists, so even the variable a
+        // seed itself declares is out of range in one.
+        let b = with_format(custom_list(
+            vec![ValueExpr::Var(0)],
+            ValueExpr::Const(0),
+            vec![],
+        ));
+        rejects(&b, "variable 0 out of range (0 declared)");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_condition_variable_out_of_range() {
+        let b = with_format(custom_list(
+            vec![ValueExpr::Const(1)],
+            ValueExpr::Var(1),
+            vec![],
+        ));
+        rejects(&b, "variable 1 out of range (1 declared)");
+    }
+
+    #[test]
+    fn test_validate_rejects_an_assignment_to_an_undeclared_variable() {
+        let b = with_format(custom_list(
+            vec![ValueExpr::Const(1)],
+            ValueExpr::Const(0),
+            vec![Stmt::Set {
+                var: 5,
+                value: ValueExpr::Const(0),
+            }],
+        ));
+        rejects(&b, "assigns out-of-range variable 5 (1 declared)");
+    }
+
+    #[test]
+    fn test_validate_checks_statements_nested_in_branches() {
+        let b = with_format(custom_list(
+            vec![ValueExpr::Const(1)],
+            ValueExpr::Const(0),
+            vec![Stmt::If {
+                cond: ValueExpr::Const(1),
+                then: vec![Stmt::Break {
+                    cond: ValueExpr::Var(9),
+                }],
+                otherwise: vec![],
+            }],
+        ));
+        rejects(&b, "variable 9 out of range");
+    }
+
+    #[test]
+    fn test_validate_checks_an_emit_address() {
+        let b = with_format(custom_list(
+            vec![ValueExpr::Const(1)],
+            ValueExpr::Const(0),
+            vec![Stmt::Emit {
+                at: ValueExpr::Var(8),
+            }],
+        ));
+        rejects(&b, "variable 8 out of range");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_custom_list_element_out_of_range() {
+        let mut node = custom_list(vec![], ValueExpr::Const(0), vec![]);
+        match &mut node {
+            DisplayNode::CustomList { element, .. } => *element = BundleTypeId(99),
+            _ => unreachable!(),
+        }
+        let b = with_format(node);
+        rejects(&b, "CustomList element type id 99 out of range");
+    }
+
+    #[test]
+    fn test_validate_rejects_an_unsized_custom_list_element() {
+        let mut node = custom_list(vec![], ValueExpr::Const(0), vec![]);
+        match &mut node {
+            DisplayNode::CustomList { element, .. } => *element = OPAQUE,
+            _ => unreachable!(),
+        }
+        let b = with_format(node);
+        rejects(&b, "unsized element type");
+    }
+
+    // -------------------------------------------------------------------
+    // Bytes notations
+    // -------------------------------------------------------------------
+
+    fn bytes(member: u32, notation: Notation) -> DisplayNode {
+        DisplayNode::Bytes {
+            at: Selector::member(member),
+            notation,
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_a_notation_of_the_wrong_length() {
+        // A UUID is exactly 16 bytes; an IP address is 4 or 16; hex
+        // spells anything but nothing.
+        rejects(
+            &with_format(bytes(1, Notation::Uuid)),
+            "4 bytes is not a length the Uuid notation spells",
+        );
+        rejects(
+            &with_format(bytes(2, Notation::IpAddr)),
+            "5 bytes is not a length the IpAddr notation spells",
+        );
+        rejects(
+            &with_format(bytes(4, Notation::Hex)),
+            "0 bytes is not a length the Hex notation spells",
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_a_notation_over_signed_bytes() {
+        let b = with_format(bytes(3, Notation::Uuid));
+        rejects(&b, "does not target unsigned bytes");
+    }
+
+    // -------------------------------------------------------------------
+    // The B-tree MapEntries
+    // -------------------------------------------------------------------
+
+    const LEAF: BundleTypeId = BundleTypeId(2);
+    const ROOT_ENUM: BundleTypeId = BundleTypeId(6);
+    const EDGES: BundleTypeId = BundleTypeId(7);
+    const INTERNAL: BundleTypeId = BundleTypeId(8);
+    const MAP_HOLDER: BundleTypeId = BundleTypeId(9);
+    const U8: BundleTypeId = BundleTypeId(10);
+    const NODE_REF_PTR: BundleTypeId = BundleTypeId(11);
+
+    /// A miniature std `BTreeMap` layout, complete enough to satisfy
+    /// every constraint `check_map_entries` states: a root
+    /// `Option<NodeRef>`, a `NodeRef { height, node }`, a two-slot leaf,
+    /// and an internal node that is the leaf plus an edge array one
+    /// wider than its key count.
+    fn map_bundle() -> Bundle {
+        let mut b = super::tiny_bundle();
+        let mut strings = StringInterner::new();
+        let names: BTreeMap<&str, StrRef> = [
+            "u64",
+            "u8",
+            "Leaf",
+            "NodeRef",
+            "Unit",
+            "Root",
+            "Internal",
+            "MapHolder",
+            "None",
+            "Some",
+            "len",
+            "keys",
+            "vals",
+            "height",
+            "node",
+            "data",
+            "edges",
+            "root",
+            "pad",
+            "Mystery",
+        ]
+        .iter()
+        .map(|n| (*n, strings.intern(n)))
+        .collect();
+        let n = |name: &str| names[name];
+        let member = |name: &str, ty: u32, offset: u64| MemberDef {
+            name: n(name),
+            ty: BundleTypeId(ty),
+            offset,
+        };
+
+        let types = vec![
+            // 0: u64
+            TypeDef::Base {
+                name: n("u64"),
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
+            // 1: [u64; 2]
+            TypeDef::Array {
+                elem: BundleTypeId(0),
+                count: 2,
+            },
+            // 2: Leaf { len, keys: [u64;2], vals: [u64;2] }
+            TypeDef::Struct {
+                name: n("Leaf"),
+                size: 40,
+                members: vec![
+                    member("len", 0, 0),
+                    member("keys", 1, 8),
+                    member("vals", 1, 24),
+                ],
+            },
+            // 3: *Leaf
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(2),
+            },
+            // 4: NodeRef { height, node: *Leaf }
+            TypeDef::Struct {
+                name: n("NodeRef"),
+                size: 16,
+                members: vec![member("height", 0, 0), member("node", 3, 8)],
+            },
+            // 5: Unit (the None payload)
+            TypeDef::Struct {
+                name: n("Unit"),
+                size: 0,
+                members: vec![],
+            },
+            // 6: Root = enum { None(Unit), Some(NodeRef) }, discr @16
+            TypeDef::Enum {
+                name: n("Root"),
+                size: 24,
+                shape: VariantShape {
+                    discr: Some(DiscrDef {
+                        offset: 16,
+                        ty: BundleTypeId(0),
+                    }),
+                    variants: vec![
+                        VariantDef {
+                            name: n("None"),
+                            discr_values: Some(DiscrValues(vec![DiscrValue::Value(0)])),
+                            payload: member("None", 5, 0),
+                            decl: None,
+                            await_site: None,
+                        },
+                        VariantDef {
+                            name: n("Some"),
+                            discr_values: Some(DiscrValues(vec![DiscrValue::Value(1)])),
+                            payload: member("Some", 4, 0),
+                            decl: None,
+                            await_site: None,
+                        },
+                    ],
+                },
+            },
+            // 7: [*Leaf; 3] — one edge more than the two key slots
+            TypeDef::Array {
+                elem: BundleTypeId(3),
+                count: 3,
+            },
+            // 8: Internal { data: Leaf @0, edges: [*Leaf;3] }
+            TypeDef::Struct {
+                name: n("Internal"),
+                size: 64,
+                members: vec![member("data", 2, 0), member("edges", 7, 40)],
+            },
+            // 9: MapHolder { len, root: Root, pad }
+            TypeDef::Struct {
+                name: n("MapHolder"),
+                size: 40,
+                members: vec![
+                    member("len", 0, 0),
+                    member("root", 6, 8),
+                    member("pad", 0, 32),
+                ],
+            },
+            // 10: u8 — a key type whose size no slot matches
+            TypeDef::Base {
+                name: n("u8"),
+                size: 1,
+                encoding: Encoding::Unsigned,
+            },
+            // 11: *NodeRef — a pointer to the wrong node type
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(4),
+            },
+        ];
+
+        b.strings = strings.finish();
+        b.types = TypeTable {
+            types,
+            debug_formats: BTreeMap::from([(MAP_HOLDER, map_node())]),
+            name_index: vec![],
+            ..Default::default()
+        };
+        b
+    }
+
+    fn map_node() -> DisplayNode {
+        DisplayNode::Map {
+            length: Selector::member(0),
+            key: BundleTypeId(0),
+            value: BundleTypeId(0),
+            entries: Box::new(MapEntries::BTree {
+                root: Selector::member(1),
+                // The Some payload *is* the node reference, and an edge
+                // element *is* the pointer: both auxiliary roots take
+                // the empty path the validator deliberately admits.
+                root_node: Selector::default(),
+                height: Selector::member(0),
+                node: Selector::member(1),
+                leaf: LEAF,
+                leaf_len: Selector::member(0),
+                leaf_keys: Selector::member(1),
+                leaf_values: Selector::member(2),
+                internal: INTERNAL,
+                internal_data: Selector::member(0),
+                internal_edges: Selector::member(1),
+                edge: Selector::default(),
+            }),
+        }
+    }
+
+    /// The map fixture with one `MapEntries` field rewritten.
+    fn broken_map(f: impl FnOnce(&mut MapEntries)) -> Bundle {
+        let mut b = map_bundle();
+        let mut node = map_node();
+        match &mut node {
+            DisplayNode::Map { entries, .. } => f(entries),
+            _ => unreachable!(),
+        }
+        b.types.debug_formats.insert(MAP_HOLDER, node);
+        b
+    }
+
+    /// The baseline is genuinely valid, so each rejection below fails
+    /// for the corruption it plants and not for a broken fixture.
+    #[test]
+    fn test_validate_accepts_a_btree_map() {
+        assert!(map_bundle().validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_a_root_reused_as_length() {
+        let b = broken_map(|e| {
+            let MapEntries::BTree { root, .. } = e;
+            *root = Selector::member(0);
+        });
+        rejects(&b, "reuses root as length");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_non_enum_root() {
+        let b = broken_map(|e| {
+            let MapEntries::BTree { root, .. } = e;
+            *root = Selector::member(2);
+        });
+        rejects(&b, "B-tree root is not an enum");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_root_without_some() {
+        let mut b = map_bundle();
+        let TypeDef::Enum { shape, .. } = &mut b.types.types[ROOT_ENUM.0 as usize] else {
+            unreachable!();
+        };
+        shape.variants[1].name = shape.variants[0].name;
+        rejects(&b, "B-tree root has no Some variant");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_non_integer_height() {
+        let b = broken_map(|e| {
+            let MapEntries::BTree { height, .. } = e;
+            *height = Selector::member(1);
+        });
+        rejects(&b, "height is not an unsigned integer");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_node_pointer_to_the_wrong_type() {
+        let b = broken_map(|e| {
+            let MapEntries::BTree { leaf, .. } = e;
+            *leaf = INTERNAL;
+        });
+        rejects(&b, "node selector does not point to its leaf type");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_non_integer_leaf_length() {
+        let b = broken_map(|e| {
+            let MapEntries::BTree { leaf_len, .. } = e;
+            *leaf_len = Selector::member(1);
+        });
+        rejects(&b, "leaf length is not an unsigned integer");
+    }
+
+    #[test]
+    fn test_validate_rejects_mismatched_key_and_value_slots() {
+        let mut b = map_bundle();
+        let mut node = map_node();
+        match &mut node {
+            DisplayNode::Map { key, .. } => *key = U8,
+            _ => unreachable!(),
+        }
+        b.types.debug_formats.insert(MAP_HOLDER, node);
+        rejects(&b, "incompatible key/value slots");
+    }
+
+    #[test]
+    fn test_validate_rejects_internal_data_that_is_not_the_leaf_prefix() {
+        let b = broken_map(|e| {
+            let MapEntries::BTree { internal_data, .. } = e;
+            *internal_data = Selector::member(1);
+        });
+        rejects(&b, "internal data is not its leaf prefix");
+    }
+
+    #[test]
+    fn test_validate_rejects_the_wrong_edge_capacity() {
+        let mut b = map_bundle();
+        let TypeDef::Array { count, .. } = &mut b.types.types[EDGES.0 as usize] else {
+            unreachable!();
+        };
+        *count = 2;
+        rejects(&b, "wrong edge capacity");
+    }
+
+    #[test]
+    fn test_validate_rejects_an_edge_to_the_wrong_type() {
+        let mut b = map_bundle();
+        let TypeDef::Array { elem, .. } = &mut b.types.types[EDGES.0 as usize] else {
+            unreachable!();
+        };
+        *elem = NODE_REF_PTR;
+        rejects(&b, "edge does not point to its leaf type");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_map_type_out_of_range() {
+        let mut b = map_bundle();
+        let mut node = map_node();
+        match &mut node {
+            DisplayNode::Map { value, .. } => *value = BundleTypeId(99),
+            _ => unreachable!(),
+        }
+        b.types.debug_formats.insert(MAP_HOLDER, node);
+        rejects(&b, "map value type id 99 out of range");
+    }
+}
