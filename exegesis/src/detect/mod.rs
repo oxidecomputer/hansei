@@ -667,28 +667,58 @@ fn find_unique(
     Some((Selector::members(path), *reported))
 }
 
-/// The DWARF member a [`MemberRef`] addresses.
+/// The member list a [`step_into`] member step indexed, and where — for the
+/// walks that re-address a member or sum its offset.
+type SteppedMember<'r> = (&'r [crate::raw_types::RawMember<crate::StrId>], usize);
+
+/// Resolve one lowered [`Step`] against DWARF: the type it advances to from
+/// `cur`, plus the member a member step crossed ([`SteppedMember`]).
 ///
-/// A name in a display program is a [`StrRef`] into the bundle's own string
-/// table, so matching one against DWARF means reading it back out of the
-/// interner the detector put it in and comparing spellings. The uniqueness
-/// rule is [`MemberRef::resolve`]'s, the same one validation and reify apply.
-fn raw_member_at<'m>(
-    reader: &DwReader<'_>,
+/// A name in a step is a [`StrRef`] into the bundle's own string table, so
+/// matching one against DWARF means reading it back out of the interner the
+/// detector put it in and comparing spellings; the uniqueness rule is
+/// [`MemberRef::resolve`]'s, the same one validation and reify apply.
+/// [`Step::ActiveVariant`] resolves to no single type, so it is `None` here;
+/// the one walk that fans out over every variant handles it before calling.
+fn step_into<'r>(
+    reader: &'r DwReader<'_>,
     strings: &StringInterner,
-    members: &'m [crate::raw_types::RawMember<crate::StrId>],
-    at: &MemberRef,
-) -> Option<&'m crate::raw_types::RawMember<crate::StrId>> {
-    let index = at.resolve(members.len(), |index, name| {
-        members[index].name.map(|n| reader.strings.get(n)) == strings.get(name)
-    })?;
-    members.get(index)
+    cur: TypeId,
+    step: &Step,
+) -> Option<(TypeId, Option<SteppedMember<'r>>)> {
+    match step {
+        Step::Member(at) => {
+            let members = aggregate_members(reader, cur)?;
+            let index = at.resolve(members.len(), |index, name| {
+                members[index].name.map(|n| reader.strings.get(n)) == strings.get(name)
+            })?;
+            let member = members.get(index)?;
+            Some((reader.canonicalize(member.type_id), Some((members, index))))
+        }
+        Step::Deref => {
+            let RawType::Pointer(pointer) = reader.canonical_type(cur)? else {
+                return None;
+            };
+            Some((reader.canonicalize(pointer.target_type_id), None))
+        }
+        Step::Variant(name) => {
+            let RawType::Enum(en) = reader.canonical_type(cur)? else {
+                return None;
+            };
+            let variant = raw_variant(reader, en, strings.get(*name)?)?;
+            Some((reader.canonicalize(variant.type_id), None))
+        }
+        Step::ActiveVariant => None,
+    }
 }
 
 /// Walk a [`Selector`] through DWARF from `root`, returning the type it lands
 /// on. The DWARF counterpart of the bundle's own `selector_target`; where that
 /// one validates a finished bundle, this one lets a detector be held to the
 /// same addressing contract while the node is still being built.
+/// [`Step::ActiveVariant`] declines here: it is legal only in a walk binding,
+/// whose validation fans out over every variant; a display selector never
+/// carries one.
 fn selector_lands(
     reader: &DwReader<'_>,
     strings: &StringInterner,
@@ -697,32 +727,7 @@ fn selector_lands(
 ) -> Option<TypeId> {
     let mut cur = reader.canonicalize(root);
     for step in sel.steps() {
-        cur = match step {
-            Step::Member(at) => {
-                let members = match reader.canonical_type(cur)? {
-                    RawType::Struct(st) => &st.members,
-                    RawType::Union(union) => &union.members,
-                    _ => return None,
-                };
-                reader.canonicalize(raw_member_at(reader, strings, members, at)?.type_id)
-            }
-            Step::Deref => {
-                let RawType::Pointer(pointer) = reader.canonical_type(cur)? else {
-                    return None;
-                };
-                reader.canonicalize(pointer.target_type_id)
-            }
-            Step::Variant(name) => {
-                let RawType::Enum(en) = reader.canonical_type(cur)? else {
-                    return None;
-                };
-                let variant = raw_variant(reader, en, strings.get(*name)?)?;
-                reader.canonicalize(variant.type_id)
-            }
-            // Legal only in a walk binding, whose validation fans out over
-            // every variant; a display selector never carries one.
-            Step::ActiveVariant => return None,
-        };
+        cur = step_into(reader, strings, cur, step)?.0;
     }
     Some(cur)
 }
@@ -1140,38 +1145,20 @@ impl Emitter<'_> {
     /// what makes a discovered path as durable as a declared one — and it is
     /// the only place that conversion happens, so no walk can forget it.
     fn readdress(&mut self, root: TypeId, found: &Selector) -> Option<Selector> {
+        let reader = self.reader;
         let mut steps = Vec::with_capacity(found.steps().len());
-        let mut cur = self.reader.canonicalize(root);
+        let mut cur = reader.canonicalize(root);
         for step in found.steps() {
-            match step {
-                Step::Member(at) => {
-                    let members = aggregate_members(self.reader, cur)?;
-                    let index = at.resolve(members.len(), |index, name| {
-                        members[index].name.map(|n| self.reader.strings.get(n))
-                            == self.interner.get(name)
-                    })?;
-                    cur = self.reader.canonicalize(members[index].type_id);
-                    steps.push(Step::Member(self.address(members, index as u32)));
-                }
-                Step::Deref => {
-                    let RawType::Pointer(pointer) = self.reader.canonical_type(cur)? else {
-                        return None;
-                    };
-                    cur = self.reader.canonicalize(pointer.target_type_id);
-                    steps.push(Step::Deref);
-                }
-                Step::Variant(name) => {
-                    // Already addressed by name; only the type advances.
-                    let RawType::Enum(en) = self.reader.canonical_type(cur)? else {
-                        return None;
-                    };
-                    let variant = raw_variant(self.reader, en, self.interner.get(*name)?)?;
-                    cur = self.reader.canonicalize(variant.type_id);
-                    steps.push(Step::Variant(*name));
-                }
-                // A shape walk reports member positions; it never finds one.
-                Step::ActiveVariant => return None,
-            }
+            // A shape walk reports member positions; it never finds an
+            // active-variant step, and `step_into` declines one.
+            let (landed, member) = step_into(reader, &self.interner, cur, step)?;
+            steps.push(match member {
+                Some((members, index)) => Step::Member(self.address(members, index as u32)),
+                // A deref or variant step carries no member to re-address;
+                // only the type advances.
+                None => *step,
+            });
+            cur = landed;
         }
         Some(Selector(steps))
     }

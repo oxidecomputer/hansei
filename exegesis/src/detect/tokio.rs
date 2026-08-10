@@ -8,12 +8,12 @@ use super::ReachStep::{Deref, FindParam, Named, PeelTo, Resolved, Variant};
 use super::crates::{is_raw_mutex, mutex_byte_path};
 use super::std::{is_generic_atomic, unsafe_cell_layout};
 use super::{
-    Reach, Through, WORD, Want, find_unique, is_unsigned_integer, raw_member_at, reach,
-    sole_param_target, struct_of, transparent, unique_member, zero_offset_member,
+    Reach, Through, WORD, Want, find_unique, is_unsigned_integer, reach, sole_param_target,
+    step_into, struct_of, transparent, unique_member, zero_offset_member,
 };
 use crate::bundle::{
-    Arm, BundleTypeId, DisplayNode, Field, ScalarDecode, Selector, Shape, Step, Stmt,
-    StringInterner, ValueExpr,
+    Arm, BundleTypeId, DisplayNode, Field, ScalarDecode, Selector, Shape, Stmt, StringInterner,
+    ValueExpr,
 };
 use crate::extract::{Emitter, fq_name, ns_path, raw_type_size};
 use crate::raw_types::RawType;
@@ -554,17 +554,11 @@ pub(super) fn path_offset(
     let mut cur = reader.canonicalize(ty);
     let mut offset = 0u64;
     for step in selector.steps() {
-        let Step::Member(at) = step else {
-            return None;
-        };
-        let members = match reader.canonical_type(cur)? {
-            RawType::Struct(st) => &st.members,
-            RawType::Union(u) => &u.members,
-            _ => return None,
-        };
-        let member = raw_member_at(reader, strings, members, at)?;
-        offset = offset.checked_add(member.offset)?;
-        cur = reader.canonicalize(member.type_id);
+        let (landed, member) = step_into(reader, strings, cur, step)?;
+        // Only a member step has an offset to sum.
+        let (members, index) = member?;
+        offset = offset.checked_add(members[index].offset)?;
+        cur = landed;
     }
     Some((offset, cur))
 }
