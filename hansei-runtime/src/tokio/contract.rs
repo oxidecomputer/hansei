@@ -736,4 +736,315 @@ mod tests {
             "tokio::runtime::task::join::JoinHandleFoo"
         ));
     }
+
+    // -----------------------------------------------------------------------
+    // The step interpreter
+    // -----------------------------------------------------------------------
+    //
+    // Every recorded walk runs through `walk_steps`, and the healthy
+    // fixtures exercise only its success paths. These tests drive each
+    // step kind over hand-laid buffers — real bundle types, controlled
+    // bytes — so the runtime outcomes (`Null`, `Inactive`) and every
+    // refusal are pinned directly.
+
+    use exegesis::bundle::{Bundle, BundleTypeId, DiscrValue, StrRef, TypeDef};
+    use proc::snapshot::Snapshot;
+
+    use std::sync::OnceLock;
+
+    fn fixture() -> &'static (Bundle, Snapshot) {
+        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+        PAIR.get_or_init(|| {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+            (
+                Bundle::load(&dir.join("futurelock.bundle")).expect("fixture bundle loads"),
+                Snapshot::load(&dir.join("futurelock.snapshot")).expect("fixture snapshot loads"),
+            )
+        })
+    }
+
+    fn walk_ctx() -> Context<'static, Snapshot> {
+        let (bundle, snapshot) = fixture();
+        Context::new(snapshot, BundleView::new(bundle)).expect("the fixture pair attaches")
+    }
+
+    /// The first bundle type satisfying `pred`, scanned in id order so
+    /// one frozen fixture always yields the same type.
+    fn find_ty<'b>(
+        ctx: &Context<'b, Snapshot>,
+        mut pred: impl FnMut(BundleType<'b>) -> bool,
+    ) -> BundleType<'b> {
+        let count = fixture().0.types.types.len() as u32;
+        (0..count)
+            .filter_map(|i| ctx.view.ty(BundleTypeId(i)))
+            .find(|ty| pred(*ty))
+            .expect("the fixture bundle has such a type")
+    }
+
+    fn header_ty<'b>(ctx: &Context<'b, Snapshot>) -> BundleType<'b> {
+        ctx.view
+            .ty(fixture().0.infra.header)
+            .expect("the header infra type resolves")
+    }
+
+    /// A pointer to a small sized pointee, for the deref steps.
+    fn pointer_ty<'b>(ctx: &Context<'b, Snapshot>) -> BundleType<'b> {
+        find_ty(ctx, |ty| {
+            matches!(ty.def(), TypeDef::Pointer { .. })
+                && ty
+                    .pointer_target()
+                    .is_some_and(|t| t.size() > 0 && t.size() <= 64)
+        })
+    }
+
+    /// A tagged enum whose variants all carry explicit single-value
+    /// discriminants — so bytes selecting any variant, and bytes
+    /// selecting none, can both be laid down deliberately.
+    struct PlainEnum<'b> {
+        ty: BundleType<'b>,
+        discr_offset: u64,
+        discr_size: u64,
+        /// (variant name ref, discriminant value), first two variants.
+        variants: [(StrRef, u128); 2],
+        /// A discriminant value no variant claims.
+        unclaimed: u128,
+    }
+
+    fn plain_enum<'b>(ctx: &Context<'b, Snapshot>) -> PlainEnum<'b> {
+        let mut found = None;
+        find_ty(ctx, |ty| {
+            let Some(shape) = ty.variant_shape() else {
+                return false;
+            };
+            let Some(discr) = &shape.discr else {
+                return false;
+            };
+            let discr_size = ty.related_type(discr.ty).size();
+            if discr_size == 0 || discr_size > 8 || shape.variants.len() < 2 {
+                return false;
+            }
+            let mut claimed = Vec::new();
+            for v in &shape.variants {
+                let Some(values) = &v.discr_values else {
+                    return false;
+                };
+                let [DiscrValue::Value(x)] = values.0.as_slice() else {
+                    return false;
+                };
+                // The payload must fit the enum's own bytes.
+                if v.payload.offset + ty.related_type(v.payload.ty).size() > ty.size() {
+                    return false;
+                }
+                claimed.push((v.name, *x));
+            }
+            let Some(unclaimed) = (0..=255u128).find(|x| claimed.iter().all(|(_, c)| c != x))
+            else {
+                return false;
+            };
+            found = Some(PlainEnum {
+                ty,
+                discr_offset: discr.offset,
+                discr_size,
+                variants: [claimed[0], claimed[1]],
+                unclaimed,
+            });
+            true
+        });
+        found.expect("the fixture bundle has a plainly-tagged enum")
+    }
+
+    impl PlainEnum<'_> {
+        /// The enum's bytes with the discriminant field set to `value`.
+        fn bytes(&self, value: u128) -> Vec<u8> {
+            let mut out = vec![0u8; self.ty.size() as usize];
+            let at = self.discr_offset as usize;
+            let size = self.discr_size as usize;
+            out[at..at + size].copy_from_slice(&value.to_le_bytes()[..size]);
+            out
+        }
+    }
+
+    /// The failure a walk was expected to produce, as its full chain.
+    #[track_caller]
+    fn walk_err(
+        ctx: &Context<'static, Snapshot>,
+        root: TypeInfoRef<'_, 'static>,
+        steps: &[Step],
+    ) -> String {
+        match walk_steps(ctx, root, steps) {
+            Err(e) => format!("{e:#}"),
+            Ok(_) => panic!("the walk was expected to fail"),
+        }
+    }
+
+    #[test]
+    fn test_walk_steps_with_no_steps_is_the_value_itself() {
+        let ctx = walk_ctx();
+        let ty = header_ty(&ctx);
+        let buf = vec![0u8; ty.size() as usize];
+        let root = TypeInfoRef::new(ty, 0x1000, &buf);
+        let Walked::At(info) = walk_steps(&ctx, root, &[]).unwrap() else {
+            panic!("empty steps must land on the root");
+        };
+        assert_eq!(info.addr, 0x1000);
+        assert_eq!(info.ty.id(), ty.id());
+    }
+
+    #[test]
+    fn test_member_steps_descend_and_miss_loudly() {
+        let ctx = walk_ctx();
+        let ty = header_ty(&ctx);
+        let buf = vec![0u8; ty.size() as usize];
+        let root = TypeInfoRef::new(ty, 0x1000, &buf);
+
+        let first = ty.members().next().expect("the header has members");
+        let Walked::At(info) =
+            walk_steps(&ctx, root.clone(), &[Step::Member(MemberRef::Index(0))]).unwrap()
+        else {
+            panic!("member 0 resolves");
+        };
+        assert_eq!(info.addr, 0x1000 + first.offset());
+        assert_eq!(info.ty.id(), first.ty().id());
+
+        let err = walk_err(&ctx, root.clone(), &[Step::Member(MemberRef::Index(999))]);
+        assert!(err.contains("no member at index 999"), "{err}");
+
+        // A name the type does not have: the message lists what it has.
+        let TypeDef::Struct { name, .. } = ty.def() else {
+            panic!("the header is a struct");
+        };
+        let err = walk_err(&ctx, root, &[Step::Member(MemberRef::Named(*name))]);
+        assert!(err.contains("no member"), "{err}");
+        assert!(err.contains("(has: "), "{err}");
+
+        // And on a type with no members at all, it says that instead.
+        let base = find_ty(&ctx, |t| matches!(t.def(), TypeDef::Base { .. }));
+        let root = TypeInfoRef::new(base, 0x1000, &[0u8; 8]);
+        let err = walk_err(&ctx, root, &[Step::Member(MemberRef::Named(*name))]);
+        assert!(err.contains("no members"), "{err}");
+    }
+
+    /// A buffer shorter than the layout says fails the slice with the
+    /// extents in the message, whatever step kind asked.
+    #[test]
+    fn test_a_short_buffer_fails_the_slice() {
+        let ctx = walk_ctx();
+        let ty = header_ty(&ctx);
+        let last = ty
+            .members()
+            .max_by_key(|m| m.offset())
+            .expect("the header has members");
+        let index = ty
+            .members()
+            .position(|m| m.offset() == last.offset())
+            .unwrap();
+        let buf = vec![0u8; last.offset() as usize]; // stops short of it
+        let root = TypeInfoRef::new(ty, 0x1000, &buf);
+        let err = walk_err(&ctx, root, &[Step::Member(MemberRef::Index(index as u32))]);
+        assert!(err.contains("do not fit"), "{err}");
+    }
+
+    #[test]
+    fn test_deref_outcomes() {
+        let ctx = walk_ctx();
+        let (_, snapshot) = fixture();
+        let ptr = pointer_ty(&ctx);
+        let target = ptr.pointer_target().unwrap();
+
+        // Null reads as the runtime outcome, not an error.
+        let root = TypeInfoRef::new(ptr, 0x1000, &[0u8; 8]);
+        assert!(matches!(
+            walk_steps(&ctx, root, &[Step::Deref]).unwrap(),
+            Walked::Null
+        ));
+
+        // A pointer into recorded memory dereferences to its pointee.
+        let addr = snapshot
+            .segments()
+            .find(|r| r.end - r.start >= target.size())
+            .expect("the snapshot recorded memory")
+            .start;
+        let bytes = addr.to_le_bytes();
+        let root = TypeInfoRef::new(ptr, 0x1000, &bytes);
+        let Walked::At(info) = walk_steps(&ctx, root, &[Step::Deref]).unwrap() else {
+            panic!("a recorded address dereferences");
+        };
+        assert_eq!(info.addr, addr);
+        assert_eq!(info.ty.id(), target.id());
+
+        // An unmapped pointer is an error naming the dereference.
+        let bytes = 0xdead_beef_0000u64.to_le_bytes();
+        let root = TypeInfoRef::new(ptr, 0x1000, &bytes);
+        let err = walk_err(&ctx, root, &[Step::Deref]);
+        assert!(err.contains("dereferencing"), "{err}");
+
+        // A buffer that cannot hold a pointer, and a type that is not
+        // one, are refused before anything is read.
+        let root = TypeInfoRef::new(ptr, 0x1000, &[0u8; 4]);
+        let err = walk_err(&ctx, root, &[Step::Deref]);
+        assert!(err.contains("is 4 bytes, not a pointer"), "{err}");
+
+        let base = find_ty(&ctx, |t| matches!(t.def(), TypeDef::Base { .. }));
+        let root = TypeInfoRef::new(base, 0x1000, &[0u8; 8]);
+        let err = walk_err(&ctx, root, &[Step::Deref]);
+        assert!(err.contains("is not a pointer"), "{err}");
+    }
+
+    #[test]
+    fn test_variant_steps_guard_the_discriminant() {
+        let ctx = walk_ctx();
+        let e = plain_enum(&ctx);
+        let (first_name, first_value) = e.variants[0];
+        let (second_name, _) = e.variants[1];
+
+        // The active variant's payload is walked into.
+        let buf = e.bytes(first_value);
+        let root = TypeInfoRef::new(e.ty, 0x1000, &buf);
+        let Walked::At(_) = walk_steps(&ctx, root.clone(), &[Step::Variant(first_name)]).unwrap()
+        else {
+            panic!("the laid-down variant is active");
+        };
+
+        // Asking for the other is the runtime outcome, named.
+        let Walked::Inactive(name) =
+            walk_steps(&ctx, root.clone(), &[Step::Variant(second_name)]).unwrap()
+        else {
+            panic!("the other variant is inactive");
+        };
+        assert_eq!(name, ctx.view.str(second_name).unwrap());
+
+        // A name ref the bundle cannot resolve, and a type that is not
+        // an enum, are refused.
+        let err = walk_err(&ctx, root, &[Step::Variant(StrRef(u32::MAX))]);
+        assert!(err.contains("unresolvable variant name"), "{err}");
+
+        let base = find_ty(&ctx, |t| matches!(t.def(), TypeDef::Base { .. }));
+        let root = TypeInfoRef::new(base, 0x1000, &[0u8; 8]);
+        let err = walk_err(&ctx, root, &[Step::Variant(first_name)]);
+        assert!(err.contains("is not an enum"), "{err}");
+    }
+
+    #[test]
+    fn test_active_variant_decodes_or_says_why() {
+        let ctx = walk_ctx();
+        let e = plain_enum(&ctx);
+        let (_, first_value) = e.variants[0];
+
+        let buf = e.bytes(first_value);
+        let root = TypeInfoRef::new(e.ty, 0x1000, &buf);
+        let Walked::At(_) = walk_steps(&ctx, root, &[Step::ActiveVariant]).unwrap() else {
+            panic!("the laid-down variant decodes");
+        };
+
+        // A discriminant no variant claims is an error naming the type.
+        let buf = e.bytes(e.unclaimed);
+        let root = TypeInfoRef::new(e.ty, 0x1000, &buf);
+        let err = walk_err(&ctx, root, &[Step::ActiveVariant]);
+        assert!(err.contains("decoding the variant of"), "{err}");
+
+        let base = find_ty(&ctx, |t| matches!(t.def(), TypeDef::Base { .. }));
+        let root = TypeInfoRef::new(base, 0x1000, &[0u8; 8]);
+        let err = walk_err(&ctx, root, &[Step::ActiveVariant]);
+        assert!(err.contains("is not an enum"), "{err}");
+    }
 }
