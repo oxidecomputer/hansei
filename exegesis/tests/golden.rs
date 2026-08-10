@@ -911,3 +911,36 @@ fn test_explain_traces_report_the_verdict() {
         "{rendered}"
     );
 }
+
+/// `--include-type` pulls extra roots into the closure by
+/// fully-qualified name, and records the names that resolved to
+/// nothing rather than dropping them silently.
+#[test]
+fn test_include_types_resolve_or_are_reported_missing() {
+    let program = "simple-await";
+    if !ensure_fixture(program) {
+        return;
+    }
+
+    let opts = ExtractOptions {
+        extract_args: format!("golden-test {program} --include-type"),
+        include_types: vec![
+            "alloc::string::String".into(),
+            "no_such_crate::NoSuchType".into(),
+        ],
+        ..Default::default()
+    };
+    let (bundle, stats) = extract_file(&dwarf_path(program), &opts)
+        .unwrap_or_else(|e| panic!("extract failed for {program}: {e}"));
+
+    assert!(stats.include_roots >= 1, "String did not resolve as a root");
+    assert_eq!(stats.include_missing, ["no_such_crate::NoSuchType"]);
+    assert!(
+        bundle
+            .types
+            .find_by_name(&bundle.strings, "alloc::string::String")
+            .next()
+            .is_some(),
+        "the included root is not in the bundle"
+    );
+}
