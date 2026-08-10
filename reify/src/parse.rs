@@ -165,17 +165,17 @@ where
     }
 }
 
+/// A UTF-8 buffer reads through the `Str` display program the bundle carries,
+/// which is what knows where a `String` keeps its pointer — the same
+/// arrangement, and the same refusal to believe a length further than the
+/// target corroborates it, as the sequences above.
 impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for String {
     fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
-        let proc = ctx.proc();
-
-        let len: u64 = info.member("length")?.parse(ctx)?;
-        let ptr: u64 = info.member("data_ptr")?.parse(ctx)?;
-        let data = proc.read_bytes(ptr, len)?;
-
-        let out = String::from_utf8_lossy(&data).to_string();
-
-        Ok(out)
+        let text = crate::elements::utf8(info, ctx)?;
+        if let Some(claimed) = text.claimed {
+            return Err(Error::short_sequence(info.ty.name(), claimed, text.count));
+        }
+        Ok(String::from_utf8_lossy(&text.bytes).to_string())
     }
 }
 
