@@ -29,30 +29,6 @@ where
     fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self>;
 }
 
-impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for u8 {
-    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
-        if info.bytes.len() != size_of::<Self>() {
-            return Err(Error::unexpected_len(
-                info.bytes.len() as u32,
-                size_of::<Self>() as u32,
-            ));
-        }
-        Ok(info.bytes[0])
-    }
-}
-
-impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for i8 {
-    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
-        if info.bytes.len() != size_of::<Self>() {
-            return Err(Error::unexpected_len(
-                info.bytes.len() as u32,
-                size_of::<Self>() as u32,
-            ));
-        }
-        Ok(info.bytes[0] as i8)
-    }
-}
-
 impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for bool {
     fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
@@ -80,9 +56,11 @@ macro_rules! num_impl {
         }
     };
 }
+num_impl!(u8);
 num_impl!(u16);
 num_impl!(u32);
 num_impl!(u64);
+num_impl!(i8);
 num_impl!(i16);
 num_impl!(i32);
 num_impl!(i64);
