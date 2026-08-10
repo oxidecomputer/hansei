@@ -14,7 +14,9 @@
 //! serves macOS and illumos. Regenerate with `EXEGESIS_BLESS=1 cargo test
 //! -p exegesis --test golden`.
 
-use exegesis::bundle::{Bundle, DisplayNode, TypeDef, describe_debug_format, portable_summary};
+use exegesis::bundle::{
+    Bundle, DisplayNode, TypeDef, describe_debug_format, portable_summary, walk_entry_line,
+};
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
 
 use std::collections::BTreeMap;
@@ -827,5 +829,85 @@ fn test_extraction_is_reproducible() {
         "{program}: serialized bundles differ ({} vs {} bytes)",
         first_bytes.len(),
         second_bytes.len()
+    );
+}
+
+/// The `--explain-format` / `--explain-walk` traces: the one diagnostic
+/// for a silently-declining detector, collected only on request, so no
+/// other test ever turns the trace sink on.
+#[test]
+fn test_explain_traces_report_the_verdict() {
+    let program = "simple-await";
+    if !ensure_fixture(program) {
+        return;
+    }
+
+    let opts = ExtractOptions {
+        extract_args: format!("golden-test {program} --explain"),
+        explain_format: Some("alloc::string::String".into()),
+        explain_walk: Some("Header.".into()),
+        ..Default::default()
+    };
+    let (bundle, stats) = extract_file(&dwarf_path(program), &opts)
+        .unwrap_or_else(|e| panic!("extract failed for {program}: {e}"));
+
+    // A type a formatter claims: the navigators left a trace, and the
+    // render ends with the program the bundle actually ships rather
+    // than the one the detector built.
+    let expl = stats
+        .format_explanations
+        .iter()
+        .find(|e| e.name == "alloc::string::String")
+        .unwrap_or_else(|| {
+            panic!(
+                "no explanation for String; traced: {:?}",
+                stats
+                    .format_explanations
+                    .iter()
+                    .map(|e| &e.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(!expl.trace.is_empty(), "the navigators left no trace");
+    let rendered = expl.render(&bundle);
+    assert!(
+        rendered.starts_with("alloc::string::String [type "),
+        "{rendered}"
+    );
+    assert!(rendered.contains("=>"), "{rendered}");
+    assert!(!rendered.contains("no formatter"), "{rendered}");
+
+    // Roles are selected by substring, each carries its binder trace,
+    // and a bound one reads its verdict back out of the bundle.
+    assert!(!stats.walk_explanations.is_empty());
+    for expl in &stats.walk_explanations {
+        assert!(expl.role.name().contains("Header."), "{:?}", expl.role);
+        assert!(!expl.trace.is_empty(), "{:?} left no trace", expl.role);
+    }
+    let bound = stats
+        .walk_explanations
+        .iter()
+        .find(|e| bundle.walks.entries.contains_key(&e.role))
+        .expect("a Header role binds on the fixture");
+    let line = walk_entry_line(bound.role, &bundle.walks.entries[&bound.role]);
+    assert!(line.contains(bound.role.name()), "{line}");
+
+    // A type nothing claims says so, instead of silence.
+    let opts = ExtractOptions {
+        extract_args: format!("golden-test {program} --explain-structural"),
+        explain_format: Some("::work::{async_fn_env".into()),
+        ..Default::default()
+    };
+    let (bundle, stats) = extract_file(&dwarf_path(program), &opts)
+        .unwrap_or_else(|e| panic!("extract failed for {program}: {e}"));
+    let expl = stats
+        .format_explanations
+        .iter()
+        .find(|e| e.name.contains("work::{async_fn_env"))
+        .expect("the fixture's own future is emitted");
+    let rendered = expl.render(&bundle);
+    assert!(
+        rendered.contains("no formatter; renders structurally"),
+        "{rendered}"
     );
 }
