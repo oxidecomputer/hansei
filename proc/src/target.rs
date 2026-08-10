@@ -231,6 +231,17 @@ impl Target for Proc {
         }
     }
 
+    fn readable_len(&self, addr: u64, max: u64) -> u64 {
+        match self {
+            // Bounding a live process would mean probing its mappings on
+            // every read; it claims no bound and the ceiling covers it.
+            #[cfg(target_os = "illumos")]
+            Proc::Libproc(_) => max,
+            Proc::LinuxCore(c) => c.readable_len(addr, max),
+            Proc::IllumosCore(c) => c.readable_len(addr, max),
+        }
+    }
+
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
         Proc::lookup_symbol_by_addr(self, addr)
     }

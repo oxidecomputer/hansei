@@ -160,6 +160,15 @@ impl Target for Snapshot {
         Ok(seg.bytes[start..start + len as usize].to_vec())
     }
 
+    fn readable_len(&self, addr: u64, max: u64) -> u64 {
+        // Merging made runs maximal, so the segment holding `addr` holds
+        // everything contiguously captured after it.
+        match self.segment(addr) {
+            Some(seg) => (seg.end() - addr).min(max),
+            None => 0,
+        }
+    }
+
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
         if let Some(recorded) = self.by_addr.get(&addr) {
             return recorded.clone();
@@ -308,6 +317,10 @@ impl<T: Target> Target for Recorder<'_, T> {
     // saw. Declining sends every read through `read_bytes`.
     fn pslice(&self, _addr: u64, _len: u64) -> Option<&[u8]> {
         None
+    }
+
+    fn readable_len(&self, addr: u64, max: u64) -> u64 {
+        self.target.readable_len(addr, max)
     }
 
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {

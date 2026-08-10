@@ -196,6 +196,20 @@ pub trait Target {
         None
     }
 
+    /// How many of the `max` bytes at `addr` this target can actually
+    /// serve, without reading any of them.
+    ///
+    /// This is what bounds a read whose length came out of the target's
+    /// own memory: a length word read from a corrupt `Vec` header claims
+    /// whatever its bits say, and believing it means allocating that much
+    /// before the read fails. A core knows its segments, so it can answer
+    /// exactly; a live process would have to probe, so it declines to
+    /// bound and returns `max`. Answering `0` means nothing at `addr` is
+    /// readable at all.
+    fn readable_len(&self, _addr: u64, max: u64) -> u64 {
+        max
+    }
+
     /// The symtab symbol covering `addr`, if any.
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf>;
 
