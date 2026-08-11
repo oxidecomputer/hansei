@@ -954,7 +954,7 @@ pub(crate) fn bundle_variant_error(ty: &BundleType<'_>, e: VariantError) -> crat
 #[cfg(test)]
 mod tests {
     use crate::testhelper::*;
-    use crate::{TypeInfo, TypeKind};
+    use crate::{TypeKind, Value};
 
     use exegesis::bundle::BundleView;
 
@@ -976,7 +976,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let r = TypeInfo::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
+        let r = Value::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
 
         let y = r.member("y").expect("member y");
         assert_eq!(y.addr, 0x1004);
@@ -999,7 +999,7 @@ mod tests {
         let mut bytes = [0u8; 16];
         bytes[0] = 1;
         bytes[8..].copy_from_slice(&42u64.to_le_bytes());
-        let r = TypeInfo::new(msg, 0, &bytes);
+        let r = Value::new(msg, 0, &bytes);
         assert!(r.is_enum());
 
         let (name, payload) = r.active_variant().expect("decode failed");
@@ -1010,13 +1010,13 @@ mod tests {
         bytes[0] = 0;
         bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
         bytes[12..16].copy_from_slice(&8u32.to_le_bytes());
-        let r = TypeInfo::new(msg, 0, &bytes);
+        let r = Value::new(msg, 0, &bytes);
         let (name, payload) = r.active_variant().expect("decode failed");
         assert_eq!(name, "A");
         assert_eq!(format!("{}", payload.member("x").unwrap().display()), "7");
 
         // Struct types are not enums.
-        let p = TypeInfo::new(v.ty(POINT).unwrap(), 0, &bytes[8..16]);
+        let p = Value::new(v.ty(POINT).unwrap(), 0, &bytes[8..16]);
         assert!(!p.is_enum());
         assert!(p.active_variant().is_err());
     }
@@ -1027,7 +1027,7 @@ mod tests {
         let v = BundleView::new(&b);
         let mut bytes = [0u8; 16];
         bytes[0] = 1;
-        let r = TypeInfo::new(v.ty(MSG).unwrap(), 0, &bytes);
+        let r = Value::new(v.ty(MSG).unwrap(), 0, &bytes);
 
         assert!(r.try_select_variant("B").expect("no error").is_some());
         assert!(r.try_select_variant("A").expect("no error").is_none());
@@ -1042,11 +1042,11 @@ mod tests {
         let opt = v.ty(OPT).unwrap();
 
         let bytes = 0u64.to_le_bytes();
-        let (name, _) = TypeInfo::new(opt, 0, &bytes).active_variant().unwrap();
+        let (name, _) = Value::new(opt, 0, &bytes).active_variant().unwrap();
         assert_eq!(name, "None");
 
         let bytes = 0xdead_beefu64.to_le_bytes();
-        let r = TypeInfo::new(opt, 0, &bytes);
+        let r = Value::new(opt, 0, &bytes);
         let (name, payload) = r.active_variant().unwrap();
         assert_eq!(name, "Some");
         assert_eq!(format!("{}", payload.display()), "3735928559");
@@ -1058,7 +1058,7 @@ mod tests {
         let v = BundleView::new(&b);
         let mut bytes = [0u8; 16];
         bytes[0] = 9;
-        let r = TypeInfo::new(v.ty(MSG).unwrap(), 0, &bytes);
+        let r = Value::new(v.ty(MSG).unwrap(), 0, &bytes);
         let err = r.active_variant().expect_err("tag 9 must not decode");
         let msg = format!("{err}");
         assert!(
@@ -1072,7 +1072,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let peeled = TypeInfo::new(v.ty(WRAP).unwrap(), 0, &bytes).peel();
+        let peeled = Value::new(v.ty(WRAP).unwrap(), 0, &bytes).peel();
         assert_eq!(peeled.ty.name(), "Point");
         assert_eq!(format!("{}", peeled.member("y").unwrap().display()), "4");
     }
@@ -1087,7 +1087,7 @@ mod tests {
             .iter()
             .flat_map(|x| x.to_le_bytes())
             .collect();
-        let r = TypeInfo::new(v.ty(ARR).unwrap(), 0, &bytes);
+        let r = Value::new(v.ty(ARR).unwrap(), 0, &bytes);
         let shown: Vec<String> = r
             .elements(&ctx)
             .expect("array elements")

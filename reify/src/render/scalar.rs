@@ -234,7 +234,7 @@ fn write_uuid(f: &mut fmt::Formatter<'_>, uuid: &[u8; 16]) -> fmt::Result {
 
 #[cfg(test)]
 mod tests {
-    use crate::TypeInfo;
+    use crate::Value;
     use crate::testhelper::*;
 
     use exegesis::bundle::BundleView;
@@ -245,13 +245,13 @@ mod tests {
         let v = BundleView::new(&b);
         let ipv4 = [192, 0, 2, 1];
         assert_eq!(
-            format!("{}", TypeInfo::new(v.ty(IPV4).unwrap(), 0, &ipv4).display()),
+            format!("{}", Value::new(v.ty(IPV4).unwrap(), 0, &ipv4).display()),
             "192.0.2.1"
         );
 
         let ipv6 = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
         assert_eq!(
-            format!("{}", TypeInfo::new(v.ty(IPV6).unwrap(), 0, &ipv6).display()),
+            format!("{}", Value::new(v.ty(IPV6).unwrap(), 0, &ipv6).display()),
             "2001:db8::1"
         );
     }
@@ -269,17 +269,11 @@ mod tests {
             0xe0, 0xc8,
         ];
         assert_eq!(
-            format!(
-                "{}",
-                TypeInfo::new(v.ty(UUID).unwrap(), 0, &bytes).display()
-            ),
+            format!("{}", Value::new(v.ty(UUID).unwrap(), 0, &bytes).display()),
             "67e55044-10b1-426f-9247-bb680e5fe0c8"
         );
         assert_eq!(
-            format!(
-                "{}",
-                TypeInfo::new(v.ty(IPV6).unwrap(), 0, &bytes).display()
-            ),
+            format!("{}", Value::new(v.ty(IPV6).unwrap(), 0, &bytes).display()),
             "67e5:5044:10b1:426f:9247:bb68:e5f:e0c8"
         );
 
@@ -287,7 +281,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                TypeInfo::new(v.ty(UUID).unwrap(), 0, &bytes[..8]).display()
+                Value::new(v.ty(UUID).unwrap(), 0, &bytes[..8]).display()
             ),
             "<truncated>"
         );
@@ -305,10 +299,7 @@ mod tests {
         }
         bytes[31] = 0xff;
         assert_eq!(
-            format!(
-                "{}",
-                TypeInfo::new(v.ty(HASH).unwrap(), 0, &bytes).display()
-            ),
+            format!("{}", Value::new(v.ty(HASH).unwrap(), 0, &bytes).display()),
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1eff"
         );
     }
@@ -326,7 +317,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfo::new(v.ty(STR).unwrap(), 0, &str_bytes);
+        let value = Value::new(v.ty(STR).unwrap(), 0, &str_bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "\"hi\\nthere\""
@@ -336,7 +327,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfo::new(v.ty(STRING).unwrap(), 0, &string_bytes);
+        let value = Value::new(v.ty(STRING).unwrap(), 0, &string_bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "\"owned\\ttext\""
@@ -366,7 +357,7 @@ mod tests {
             ),
         ];
         for (state, expected) in cases {
-            let value = TypeInfo::new(v.ty(RAW_MUTEX).unwrap(), 0, std::slice::from_ref(&state));
+            let value = Value::new(v.ty(RAW_MUTEX).unwrap(), 0, std::slice::from_ref(&state));
             assert_eq!(format!("{}", value.display()), expected, "state={state}");
         }
     }
@@ -398,7 +389,7 @@ mod tests {
         ];
         for (state, expected) in cases {
             let bytes = state.to_le_bytes();
-            let value = TypeInfo::new(v.ty(WATCH_STATE).unwrap(), 0, &bytes);
+            let value = Value::new(v.ty(WATCH_STATE).unwrap(), 0, &bytes);
             assert_eq!(format!("{}", value.display()), expected, "state={state}");
         }
     }
@@ -420,7 +411,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfo::new(v.ty(RAW_WAKER_VTABLE).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(RAW_WAKER_VTABLE).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&mem, 8));
         assert_eq!(
             shown,
@@ -444,7 +435,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes = 0x5000u64.to_le_bytes();
-        let value = TypeInfo::new(v.ty(FUNCTION_PTR).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(FUNCTION_PTR).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "0x5000 -> app::callback"
@@ -452,7 +443,7 @@ mod tests {
         assert_eq!(format!("{}", value.display()), "0x5000");
 
         let null = 0u64.to_le_bytes();
-        let value = TypeInfo::new(v.ty(FUNCTION_PTR).unwrap(), 0, &null);
+        let value = Value::new(v.ty(FUNCTION_PTR).unwrap(), 0, &null);
         assert_eq!(format!("{}", value.display_from_target(&mem, 8)), "null");
     }
 
@@ -471,7 +462,7 @@ mod tests {
         let show = |state: u8| {
             format!(
                 "{}",
-                TypeInfo::new(mutex, 0, std::slice::from_ref(&state)).display()
+                Value::new(mutex, 0, std::slice::from_ref(&state)).display()
             )
         };
         assert_eq!(
@@ -490,7 +481,7 @@ mod tests {
         let nb = node_bundle();
         let nv = BundleView::new(&nb);
         let state_bytes = thing_bytes(3, 0, 0, 0, 0);
-        let thing = TypeInfo::new(nv.ty(N_THING).unwrap(), 0, &state_bytes);
+        let thing = Value::new(nv.ty(N_THING).unwrap(), 0, &state_bytes);
         let shown = format!("{}", thing.display());
         assert!(
             shown.contains("state: state=<unknown: 3>, generation=0"),
@@ -514,7 +505,7 @@ mod tests {
         let v = BundleView::new(&b);
         let show = |addr: u64, len: u64| {
             let bytes: Vec<u8> = [addr, len].into_iter().flat_map(u64::to_le_bytes).collect();
-            let value = TypeInfo::new(v.ty(STR).unwrap(), 0, &bytes);
+            let value = Value::new(v.ty(STR).unwrap(), 0, &bytes);
             format!("{}", value.display_from_target(&mem, 8))
         };
         assert_eq!(show(0x3000, 6), r#""hi\xff\xfe\"!""#);
@@ -535,7 +526,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes = 0x5000u64.to_le_bytes();
-        let value = TypeInfo::new(v.ty(FUNCTION_PTR).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(FUNCTION_PTR).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "0x5000 -> <unknown symbol>"
@@ -562,7 +553,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                TypeInfo::new(str_ty, 0, &fat(&[0, 0])).display_from_target(&mem, 8)
+                Value::new(str_ty, 0, &fat(&[0, 0])).display_from_target(&mem, 8)
             ),
             "\"\""
         );
@@ -570,7 +561,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                TypeInfo::new(str_ty, 0, &fat(&[0, 4])).display_from_target(&mem, 8)
+                Value::new(str_ty, 0, &fat(&[0, 4])).display_from_target(&mem, 8)
             ),
             "<invalid string: the data pointer is null>"
         );
@@ -578,20 +569,20 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                TypeInfo::new(str_ty, 0, &fat(&[0x3000, 4])).display_from_target(&mem, 8)
+                Value::new(str_ty, 0, &fat(&[0x3000, 4])).display_from_target(&mem, 8)
             ),
             "<unreadable string data>"
         );
         // No target at all is distinct from a failed read.
         assert_eq!(
-            format!("{}", TypeInfo::new(str_ty, 0, &fat(&[0x3000, 4])).display()),
+            format!("{}", Value::new(str_ty, 0, &fat(&[0x3000, 4])).display()),
             "<target unavailable>"
         );
         // An owned String whose length exceeds its capacity cannot be trusted.
         assert_eq!(
             format!(
                 "{}",
-                TypeInfo::new(string_ty, 0, &fat(&[0x4000, 9, 4])).display_from_target(&mem, 8)
+                Value::new(string_ty, 0, &fat(&[0x4000, 9, 4])).display_from_target(&mem, 8)
             ),
             "<invalid string: the length exceeds the capacity>"
         );
@@ -610,7 +601,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfo::new(v.ty(STR).unwrap(), 0, &fat);
+        let value = Value::new(v.ty(STR).unwrap(), 0, &fat);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "\"hello\" <495 more bytes unreadable>"

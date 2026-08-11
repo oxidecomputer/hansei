@@ -4,7 +4,7 @@
 //! markers for every node kind.
 
 use crate::debug_type::{Arm, DisplayNode, Field, Place, Stmt, ValueExpr};
-use crate::value::TypeInfo;
+use crate::value::Value;
 
 use exegesis::bundle::BundleType;
 
@@ -107,7 +107,7 @@ pub(crate) fn eval_node<'a>(
             };
             match read_place_bytes(place, bytes, addr, child_ctx, target.size()) {
                 Ok((child_addr, child_bytes)) => {
-                    let child = TypeInfo {
+                    let child = Value {
                         ty: *target,
                         addr: child_addr,
                         bytes: child_bytes,
@@ -491,7 +491,7 @@ fn eval_stmts<'a>(
                 };
                 write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, !*any)?;
                 *any = true;
-                let child = TypeInfo {
+                let child = Value {
                     ty: *element,
                     addr: target,
                     bytes: element_bytes,
@@ -580,7 +580,7 @@ fn eval_struct<'a>(
                 f.write_str(": ")?;
                 match byte_range(bytes, *offset, mem_ty.size()) {
                     Some(mem_bytes) => {
-                        let child = TypeInfo {
+                        let child = Value {
                             ty: *mem_ty,
                             addr: addr + offset,
                             bytes: mem_bytes,
@@ -606,7 +606,7 @@ fn eval_struct<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::TypeInfo;
+    use crate::Value;
     use crate::testhelper::*;
 
     use exegesis::bundle::{
@@ -619,7 +619,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let value = TypeInfo::new(v.ty(WRAP).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(WRAP).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_with_depth(2)),
             "Point { x: 3, y: 4 }"
@@ -631,7 +631,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes = 42u32.to_le_bytes();
-        let value = TypeInfo::new(v.ty(ATOMIC).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(ATOMIC).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display_with_depth(1)), "42");
     }
 
@@ -641,11 +641,11 @@ mod tests {
         let v = BundleView::new(&b);
 
         let bytes = 42u32.to_le_bytes();
-        let atomic = TypeInfo::new(v.ty(LOOM_ATOMIC).unwrap(), 0, &bytes);
+        let atomic = Value::new(v.ty(LOOM_ATOMIC).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", atomic.display_with_depth(1)), "42");
 
         let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let cell = TypeInfo::new(v.ty(LOOM_CELL).unwrap(), 0, &bytes);
+        let cell = Value::new(v.ty(LOOM_CELL).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", cell.display_with_depth(2)),
             "Point { x: 3, y: 4 }"
@@ -660,7 +660,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes = 0x1000u64.to_le_bytes();
-        let value = TypeInfo::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display_from_target(&mem, 8)), "0x1000");
     }
 
@@ -679,7 +679,7 @@ mod tests {
         b.validate().expect("following alias must validate");
         let v = BundleView::new(&b);
         let bytes = 0x1000u64.to_le_bytes();
-        let value = TypeInfo::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(ATOMIC_PTR).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "0x1000 -> Point { x: 3, y: 4 }"
@@ -710,7 +710,7 @@ mod tests {
 
         // Idle, unlocked, two parked waiters.
         let buf = notify(0, 0, 0x3000);
-        let value = TypeInfo::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        let value = Value::new(v.ty(NOTIFY).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "tokio::sync::notify::Notify { state: state=idle, generation=0, \
@@ -737,7 +737,7 @@ mod tests {
         // Notified with two notify_waiters calls, locked mutex, empty queue.
         // 0b1010 = notified (state 2) with generation 2 (10 >> 2).
         let buf = notify(0b1010, 0b01, 0);
-        let value = TypeInfo::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        let value = Value::new(v.ty(NOTIFY).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "tokio::sync::notify::Notify { state: state=notified, generation=2, \
@@ -747,14 +747,14 @@ mod tests {
         // Without a target the queue cannot be walked, but state and mutex
         // (read from the value's own bytes) still render.
         let buf = notify(1, 0, 0x3000);
-        let value = TypeInfo::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        let value = Value::new(v.ty(NOTIFY).unwrap(), 0, &buf);
         let shown = format!("{}", value.display());
         assert!(shown.contains("state: state=waiting"), "{shown}");
         assert!(shown.contains("queue: <target unavailable>"), "{shown}");
 
         // Pretty mode puts each field and waiter on its own indented line.
         let buf = notify(0, 0, 0x3000);
-        let value = TypeInfo::new(v.ty(NOTIFY).unwrap(), 0, &buf);
+        let value = Value::new(v.ty(NOTIFY).unwrap(), 0, &buf);
         assert_eq!(
             format!("{:#}", value.display_from_target(&mem, 8)),
             "tokio::sync::notify::Notify {\n\
@@ -806,7 +806,7 @@ mod tests {
         ];
         for (permits, waiters, expected) in cases {
             let buf = bytes(permits, waiters);
-            let value = TypeInfo::new(v.ty(SEMAPHORE).unwrap(), 0, &buf);
+            let value = Value::new(v.ty(SEMAPHORE).unwrap(), 0, &buf);
             assert_eq!(
                 format!("{}", value.display()),
                 expected,
@@ -827,7 +827,7 @@ mod tests {
         };
         // Three bits set within the 4-slot capacity: three written slots.
         let buf = block(0b1011);
-        let value = TypeInfo::new(v.ty(BLOCK).unwrap(), 0, &buf);
+        let value = Value::new(v.ty(BLOCK).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display()),
             "tokio::sync::mpsc::block::Block<u32> { values: [3 slots], header: BlockHeader { ready_slots: 11 } }"
@@ -835,7 +835,7 @@ mod tests {
 
         // Bits outside the 4-slot capacity (released/closed flags) are ignored.
         let buf = block(0b1_0000);
-        let value = TypeInfo::new(v.ty(BLOCK).unwrap(), 0, &buf);
+        let value = Value::new(v.ty(BLOCK).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display()),
             "tokio::sync::mpsc::block::Block<u32> { values: [0 slots], header: BlockHeader { ready_slots: 16 } }"
@@ -859,13 +859,13 @@ mod tests {
 
         // index=1, tail=3: slots 1 and 2 are still queued.
         let bytes = chan(3, 1);
-        let value = TypeInfo::new(v.ty(CHAN).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(CHAN).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&mem, 8));
         assert!(shown.contains("queued: [20, 30]"), "{shown}");
 
         // Drained channel (index == tail): nothing queued, no stale slots shown.
         let bytes = chan(3, 3);
-        let value = TypeInfo::new(v.ty(CHAN).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(CHAN).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&mem, 8));
         assert!(shown.contains("queued: []"), "{shown}");
     }
@@ -894,13 +894,13 @@ mod tests {
 
         // index=1, tail=3: slots 1 and 2 are still queued — as MpscChan renders.
         let bytes = chan(3, 1);
-        let value = TypeInfo::new(view.ty(CHAN).unwrap(), 0, &bytes);
+        let value = Value::new(view.ty(CHAN).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&mem, 8));
         assert_eq!(shown, "[20, 30]", "{shown}");
 
         // Drained (index == tail): empty, and no block is read at all.
         let bytes = chan(3, 3);
-        let value = TypeInfo::new(view.ty(CHAN).unwrap(), 0, &bytes);
+        let value = Value::new(view.ty(CHAN).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&mem, 8));
         assert_eq!(shown, "[]", "{shown}");
     }
@@ -921,7 +921,7 @@ mod tests {
         let v = BundleView::new(&b);
         // Receiver holds the Arc raw pointer.
         let bytes = 0x2000u64.to_le_bytes();
-        let value = TypeInfo::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&mem, 8));
         assert!(
             shown.starts_with("tokio::sync::mpsc::bounded::Receiver<u32> {"),
@@ -933,7 +933,7 @@ mod tests {
 
         // A null channel pointer is reported rather than dereferenced.
         let bytes = 0u64.to_le_bytes();
-        let value = TypeInfo::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&mem, 8));
         assert_eq!(
             shown,
@@ -965,7 +965,7 @@ mod tests {
 
         // Unlocked, open, 10 permits (stored << 1), capacity 16, two waiters.
         let buf = sem(0, 0x3000, 0, 20, 16);
-        let value = TypeInfo::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        let value = Value::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=false, parked=false, \
@@ -978,7 +978,7 @@ mod tests {
 
         // Locked, closed, no permits, empty queue (null head).
         let buf = sem(0b01, 0, 1, 0, 16);
-        let value = TypeInfo::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        let value = Value::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=true, parked=false, \
@@ -988,7 +988,7 @@ mod tests {
         // Without a target the queue cannot be walked, but the inline fields
         // (read from the value's own bytes) still render.
         let buf = sem(0, 0x3000, 0, 20, 16);
-        let value = TypeInfo::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        let value = Value::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         let shown = format!("{}", value.display());
         assert!(
             shown.contains("permits: closed=false, permits=10"),
@@ -998,7 +998,7 @@ mod tests {
 
         // Pretty mode puts each field and waiter on its own indented line.
         let buf = sem(0, 0x3000, 0, 20, 16);
-        let value = TypeInfo::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
+        let value = Value::new(v.ty(BOUNDED_SEM).unwrap(), 0, &buf);
         assert_eq!(
             format!("{:#}", value.display_from_target(&mem, 8)),
             "tokio::sync::mpsc::bounded::Semaphore {\n\
@@ -1058,7 +1058,7 @@ mod tests {
         ];
         for (observed, state, expected) in cases {
             let bytes = receiver(observed, 0x2000);
-            let value = TypeInfo::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
+            let value = Value::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
             assert_eq!(
                 format!("{}", value.display_from_target(&shared(state, 42), 8)),
                 expected,
@@ -1067,7 +1067,7 @@ mod tests {
         }
 
         let bytes = receiver(0, 0x2000);
-        let value = TypeInfo::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{:#}", value.display_from_target(&shared(2, 42), 8)),
             "tokio::sync::watch::Receiver<u32> {\n\
@@ -1084,7 +1084,7 @@ mod tests {
              { unseen: <target unavailable>, closed: <target unavailable> }"
         );
         let bytes = receiver(0, 0);
-        let value = TypeInfo::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(WATCH_RECEIVER).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&shared(2, 42), 8)),
             "tokio::sync::watch::Receiver<u32> { unseen: <null>, closed: <null> }"
@@ -1103,7 +1103,7 @@ mod tests {
         let v = BundleView::new(&b);
         // state word: waiting (1) with generation 3 → (3 << 2) | 1 = 13.
         let bytes = thing_bytes(13, 1, 7, 9, 0x100);
-        let value = TypeInfo::new(v.ty(N_THING).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(N_THING).unwrap(), 0, &bytes);
 
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 16)),
@@ -1137,7 +1137,7 @@ mod tests {
         let show = |tag: u8| {
             format!(
                 "{}",
-                TypeInfo::new(choice, 0, std::slice::from_ref(&tag)).display()
+                Value::new(choice, 0, std::slice::from_ref(&tag)).display()
             )
         };
         assert_eq!(show(0), "none");
@@ -1158,7 +1158,7 @@ mod tests {
         // would surface as a degradation string instead.
         let mem = FakeMem::new().unreadable();
         let bytes = 0xdead_beef_u64.to_le_bytes();
-        let value = TypeInfo::new(logger, 0, &bytes);
+        let value = Value::new(logger, 0, &bytes);
         assert_eq!(
             format!("{:#}", value.display_from_target(&mem, 8)),
             "<elided>"
@@ -1184,9 +1184,9 @@ mod tests {
         let v = BundleView::new(&b);
         let mem = FakeMem::new().unreadable();
         let logger_bytes = 7_u64.to_le_bytes();
-        let logger = TypeInfo::new(v.ty(N_LOGGER).unwrap(), 0, &logger_bytes);
+        let logger = Value::new(v.ty(N_LOGGER).unwrap(), 0, &logger_bytes);
         let point_bytes = u32s(&[1, 2]);
-        let point = TypeInfo::new(v.ty(N_POINT).unwrap(), 0, &point_bytes);
+        let point = Value::new(v.ty(N_POINT).unwrap(), 0, &point_bytes);
 
         let no_elide = ElideOverride {
             no_elide: true,
@@ -1256,7 +1256,7 @@ mod tests {
 
         // Chan: tail usize @0, index usize @8, head ptr @16.
         let chan = u64s(&[3, 1, 0x1000]);
-        let value = TypeInfo::new(view.ty(CHAN).unwrap(), 0, &chan);
+        let value = Value::new(view.ty(CHAN).unwrap(), 0, &chan);
         assert_eq!(
             format!("{:#}", value.display_from_target(&mem, 8)),
             "[\n    20,\n    30,\n]"
@@ -1285,12 +1285,12 @@ mod tests {
 
         // Tag 1: `B(u64)` is live, and the alias renders its payload word.
         let bytes = msg_wrap(1, 42);
-        let value = TypeInfo::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "42");
 
         // Tag 0: `A` holds the storage, so the same 42 bytes mean nothing.
         let bytes = msg_wrap(0, 42);
-        let value = TypeInfo::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "<inactive variant>");
     }
 
@@ -1315,12 +1315,12 @@ mod tests {
         let outer = |opt: u64| u64s(&[0, opt]);
 
         let bytes = outer(0xdead_beef);
-        let value = TypeInfo::new(v.ty(GUARD_OUTER).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(GUARD_OUTER).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "3735928559");
 
         // The zero word selects `None`, so `Some`'s payload is not there.
         let bytes = outer(0);
-        let value = TypeInfo::new(v.ty(GUARD_OUTER).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(GUARD_OUTER).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "<inactive variant>");
     }
 
@@ -1349,7 +1349,7 @@ mod tests {
         let show = |mem: &FakeMem, bytes: &[u8]| {
             format!(
                 "{}",
-                TypeInfo::new(v.ty(GUARD_OUTER).unwrap(), 0, bytes).display_from_target(mem, 8)
+                Value::new(v.ty(GUARD_OUTER).unwrap(), 0, bytes).display_from_target(mem, 8)
             )
         };
 
@@ -1397,11 +1397,11 @@ mod tests {
         let v = BundleView::new(&b);
 
         let bytes = msg_wrap(1, 7);
-        let value = TypeInfo::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "one");
 
         let bytes = msg_wrap(0, 7);
-        let value = TypeInfo::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "<inactive variant>");
     }
 
@@ -1434,7 +1434,7 @@ mod tests {
         let bytes = msg_wrap(1, 42);
         let shown = format!(
             "{}",
-            TypeInfo::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes).display()
+            Value::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes).display()
         );
         assert!(shown.starts_with("MsgWrap {"), "{shown}");
     }
@@ -1461,7 +1461,7 @@ mod tests {
 
         // Chan: tail usize @0, index usize @8 — 5 written, 2 consumed.
         let bytes = u64s(&[5, 2, 0]);
-        let value = TypeInfo::new(v.ty(CHAN).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(CHAN).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display());
         assert!(shown.contains("queued: 3"), "{shown}");
     }
@@ -1485,10 +1485,7 @@ mod tests {
         // Chan: tail usize @0, index usize @8.
         let show = |tail: u64, index: u64| {
             let bytes = u64s(&[tail, index, 0]);
-            format!(
-                "{}",
-                TypeInfo::new(v.ty(CHAN).unwrap(), 0, &bytes).display()
-            )
+            format!("{}", Value::new(v.ty(CHAN).unwrap(), 0, &bytes).display())
         };
         assert_eq!(show(12_721, 0), "12.721s");
         assert_eq!(show(500, 496), "0.004s");
@@ -1516,11 +1513,11 @@ mod tests {
         let v = BundleView::new(&b);
 
         let bytes = msg_wrap(1, 44);
-        let value = TypeInfo::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "42");
 
         let bytes = msg_wrap(0, 44);
-        let value = TypeInfo::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
+        let value = Value::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "<inactive variant>");
     }
 

@@ -17,6 +17,6 @@ pub use error::Error;
 pub use parse::{ParseCtx, ParseWithDbgInfo};
 pub use render::{AddrAnnotator, DisplayTargetValue, DisplayValue, ElideOverride};
 pub use target::ReadFromProc;
-pub use value::TypeInfo;
+pub use value::Value;
 
 pub type Result<T> = std::result::Result<T, Error>;

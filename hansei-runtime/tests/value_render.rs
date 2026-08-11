@@ -24,7 +24,7 @@ use exegesis::bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::bundle::{Context, TaskStage};
 use proc::Target;
 use proc::snapshot::Snapshot;
-use reify::TypeInfo;
+use reify::Value;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -88,7 +88,7 @@ fn render_local(
     // dispatches the top-level formatter under test (e.g. `MpscRx`'s
     // compact form); peeling would strip `bounded::Receiver` down to its
     // inner `Arc<Chan>` and defeat it.
-    let v = TypeInfo::new(m.ty(), payload.addr + m.offset(), bytes);
+    let v = Value::new(m.ty(), payload.addr + m.offset(), bytes);
     mask(&format!("{:#}", v.display_from_target(snapshot, depth)))
 }
 

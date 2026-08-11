@@ -38,7 +38,7 @@ use exegesis::bundle::{
     BundleMember, BundleType, BundleView, MemberRef, StaticRole, Step, WalkOutcome, WalkRole,
 };
 use proc::Target;
-use reify::{ParseWithDbgInfo, TypeInfo};
+use reify::{ParseWithDbgInfo, Value};
 
 use std::fmt;
 
@@ -139,7 +139,7 @@ pub fn classify(role: WalkRole) -> Class {
 /// Where a walk ended: at the terminal, or at one of the two outcomes
 /// that are runtime states rather than failures.
 pub enum Walked<'b> {
-    At(TypeInfo<'b>),
+    At(Value<'b>),
     /// A [`Step::Variant`] step found some other variant active; the
     /// name is the variant the step asked for.
     Inactive(&'b str),
@@ -151,7 +151,7 @@ impl<'b> Walked<'b> {
     /// The terminal, for callers to whom an inactive variant (a `None`
     /// head, an unarmed waker) and a null pointer both mean "nothing
     /// here".
-    pub fn optional(self) -> Option<TypeInfo<'b>> {
+    pub fn optional(self) -> Option<Value<'b>> {
         match self {
             Walked::At(info) => Some(info),
             Walked::Inactive(_) | Walked::Null => None,
@@ -160,7 +160,7 @@ impl<'b> Walked<'b> {
 
     /// The terminal, treating the runtime outcomes as errors — for
     /// paths whose steps admit neither.
-    fn at(self, name: &str) -> Result<TypeInfo<'b>> {
+    fn at(self, name: &str) -> Result<Value<'b>> {
         match self {
             Walked::At(info) => Ok(info),
             Walked::Inactive(v) => bail!("{name}: variant {v} is not active"),
@@ -207,7 +207,7 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
     }
 
     /// Execute the recorded steps from `root`.
-    pub fn walk(&self, root: TypeInfo<'b>) -> Result<Walked<'b>> {
+    pub fn walk(&self, root: Value<'b>) -> Result<Walked<'b>> {
         match self.steps() {
             Ok(steps) => walk_steps(self.ctx, root, steps)
                 .with_context(|| format!("walk path {}", self.name())),
@@ -217,7 +217,7 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
 
     /// Like [`Bound::walk`], but an unbound role is `None` — for
     /// [`Class::Optional`] members whose absence is an expected shape.
-    pub fn try_walk(&self, root: TypeInfo<'b>) -> Result<Option<Walked<'b>>> {
+    pub fn try_walk(&self, root: Value<'b>) -> Result<Option<Walked<'b>>> {
         match self.steps() {
             Ok(steps) => walk_steps(self.ctx, root, steps)
                 .map(Some)
@@ -228,12 +228,12 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
 
     /// Walk to the terminal, where the steps admit no variant or null
     /// outcome (or where either would be a hard error anyway).
-    pub fn walk_at(&self, root: TypeInfo<'b>) -> Result<TypeInfo<'b>> {
+    pub fn walk_at(&self, root: Value<'b>) -> Result<Value<'b>> {
         self.walk(root)?.at(self.name())
     }
 
     /// Walk to the terminal and parse a value out of it.
-    pub fn read<V>(&self, root: TypeInfo<'b>) -> Result<V>
+    pub fn read<V>(&self, root: Value<'b>) -> Result<V>
     where
         V: ParseWithDbgInfo<'b, Context<'b, T>>,
     {
@@ -243,7 +243,7 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
     }
 
     /// [`Bound::read`] for a member whose absence is expected.
-    pub fn try_read<V>(&self, root: TypeInfo<'b>) -> Result<Option<V>>
+    pub fn try_read<V>(&self, root: Value<'b>) -> Result<Option<V>>
     where
         V: ParseWithDbgInfo<'b, Context<'b, T>>,
     {
@@ -297,7 +297,7 @@ fn member_at<'b>(
 /// peeling — recorded bindings spell every level explicitly.
 fn walk_steps<'b, T: Target>(
     ctx: &Context<'b, T>,
-    cur: TypeInfo<'b>,
+    cur: Value<'b>,
     steps: &[Step],
 ) -> Result<Walked<'b>> {
     let [step, rest @ ..] = steps else {
@@ -329,7 +329,7 @@ fn walk_steps<'b, T: Target>(
                 }
             })?;
             let bytes = slice(member.offset(), member.ty().size())?;
-            let next = TypeInfo::new(member.ty(), cur.addr + member.offset(), bytes);
+            let next = Value::new(member.ty(), cur.addr + member.offset(), bytes);
             walk_steps(ctx, next, rest)
         }
         Step::Variant(name) => {
@@ -345,7 +345,7 @@ fn walk_steps<'b, T: Target>(
                 Some(Ok(None)) => Ok(Walked::Inactive(name)),
                 Some(Ok(Some((payload, offset)))) => {
                     let bytes = slice(offset, payload.size())?;
-                    let next = TypeInfo::new(payload, cur.addr + offset, bytes);
+                    let next = Value::new(payload, cur.addr + offset, bytes);
                     walk_steps(ctx, next, rest)
                 }
             }
@@ -357,7 +357,7 @@ fn walk_steps<'b, T: Target>(
             }
             Some(Ok(active)) => {
                 let bytes = slice(active.offset, active.ty.size())?;
-                let next = TypeInfo::new(active.ty, cur.addr + active.offset, bytes);
+                let next = Value::new(active.ty, cur.addr + active.offset, bytes);
                 walk_steps(ctx, next, rest)
             }
         },
@@ -376,7 +376,7 @@ fn walk_steps<'b, T: Target>(
             if addr == 0 {
                 return Ok(Walked::Null);
             }
-            let pointee = TypeInfo::from_addr(ctx, target, addr)
+            let pointee = Value::read(ctx, target, addr)
                 .map_err(|e| anyhow!(e).context(format!("dereferencing {}", cur.ty.name())))?;
             walk_steps(ctx, pointee, rest)
         }
@@ -866,7 +866,7 @@ mod tests {
 
     /// The failure a walk was expected to produce, as its full chain.
     #[track_caller]
-    fn walk_err<'b>(ctx: &Context<'b, Snapshot>, root: TypeInfo<'b>, steps: &[Step]) -> String {
+    fn walk_err<'b>(ctx: &Context<'b, Snapshot>, root: Value<'b>, steps: &[Step]) -> String {
         match walk_steps(ctx, root, steps) {
             Err(e) => format!("{e:#}"),
             Ok(_) => panic!("the walk was expected to fail"),
@@ -878,7 +878,7 @@ mod tests {
         let ctx = walk_ctx();
         let ty = header_ty(&ctx);
         let buf = vec![0u8; ty.size() as usize];
-        let root = TypeInfo::new(ty, 0x1000, &buf);
+        let root = Value::new(ty, 0x1000, &buf);
         let Walked::At(info) = walk_steps(&ctx, root, &[]).unwrap() else {
             panic!("empty steps must land on the root");
         };
@@ -891,7 +891,7 @@ mod tests {
         let ctx = walk_ctx();
         let ty = header_ty(&ctx);
         let buf = vec![0u8; ty.size() as usize];
-        let root = TypeInfo::new(ty, 0x1000, &buf);
+        let root = Value::new(ty, 0x1000, &buf);
 
         let first = ty.members().next().expect("the header has members");
         let Walked::At(info) =
@@ -915,7 +915,7 @@ mod tests {
 
         // And on a type with no members at all, it says that instead.
         let base = find_ty(&ctx, |t| matches!(t.def(), TypeDef::Base { .. }));
-        let root = TypeInfo::new(base, 0x1000, &[0u8; 8]);
+        let root = Value::new(base, 0x1000, &[0u8; 8]);
         let err = walk_err(&ctx, root, &[Step::Member(MemberRef::Named(*name))]);
         assert!(err.contains("no members"), "{err}");
     }
@@ -935,7 +935,7 @@ mod tests {
             .position(|m| m.offset() == last.offset())
             .unwrap();
         let buf = vec![0u8; last.offset() as usize]; // stops short of it
-        let root = TypeInfo::new(ty, 0x1000, &buf);
+        let root = Value::new(ty, 0x1000, &buf);
         let err = walk_err(&ctx, root, &[Step::Member(MemberRef::Index(index as u32))]);
         assert!(err.contains("do not fit"), "{err}");
     }
@@ -948,7 +948,7 @@ mod tests {
         let target = ptr.pointer_target().unwrap();
 
         // Null reads as the runtime outcome, not an error.
-        let root = TypeInfo::new(ptr, 0x1000, &[0u8; 8]);
+        let root = Value::new(ptr, 0x1000, &[0u8; 8]);
         assert!(matches!(
             walk_steps(&ctx, root, &[Step::Deref]).unwrap(),
             Walked::Null
@@ -961,7 +961,7 @@ mod tests {
             .expect("the snapshot recorded memory")
             .start;
         let bytes = addr.to_le_bytes();
-        let root = TypeInfo::new(ptr, 0x1000, &bytes);
+        let root = Value::new(ptr, 0x1000, &bytes);
         let Walked::At(info) = walk_steps(&ctx, root, &[Step::Deref]).unwrap() else {
             panic!("a recorded address dereferences");
         };
@@ -970,18 +970,18 @@ mod tests {
 
         // An unmapped pointer is an error naming the dereference.
         let bytes = 0xdead_beef_0000u64.to_le_bytes();
-        let root = TypeInfo::new(ptr, 0x1000, &bytes);
+        let root = Value::new(ptr, 0x1000, &bytes);
         let err = walk_err(&ctx, root, &[Step::Deref]);
         assert!(err.contains("dereferencing"), "{err}");
 
         // A buffer that cannot hold a pointer, and a type that is not
         // one, are refused before anything is read.
-        let root = TypeInfo::new(ptr, 0x1000, &[0u8; 4]);
+        let root = Value::new(ptr, 0x1000, &[0u8; 4]);
         let err = walk_err(&ctx, root, &[Step::Deref]);
         assert!(err.contains("is 4 bytes, not a pointer"), "{err}");
 
         let base = find_ty(&ctx, |t| matches!(t.def(), TypeDef::Base { .. }));
-        let root = TypeInfo::new(base, 0x1000, &[0u8; 8]);
+        let root = Value::new(base, 0x1000, &[0u8; 8]);
         let err = walk_err(&ctx, root, &[Step::Deref]);
         assert!(err.contains("is not a pointer"), "{err}");
     }
@@ -995,7 +995,7 @@ mod tests {
 
         // The active variant's payload is walked into.
         let buf = e.bytes(first_value);
-        let root = TypeInfo::new(e.ty, 0x1000, &buf);
+        let root = Value::new(e.ty, 0x1000, &buf);
         let Walked::At(_) = walk_steps(&ctx, root, &[Step::Variant(first_name)]).unwrap() else {
             panic!("the laid-down variant is active");
         };
@@ -1013,7 +1013,7 @@ mod tests {
         assert!(err.contains("unresolvable variant name"), "{err}");
 
         let base = find_ty(&ctx, |t| matches!(t.def(), TypeDef::Base { .. }));
-        let root = TypeInfo::new(base, 0x1000, &[0u8; 8]);
+        let root = Value::new(base, 0x1000, &[0u8; 8]);
         let err = walk_err(&ctx, root, &[Step::Variant(first_name)]);
         assert!(err.contains("is not an enum"), "{err}");
     }
@@ -1025,19 +1025,19 @@ mod tests {
         let (_, first_value) = e.variants[0];
 
         let buf = e.bytes(first_value);
-        let root = TypeInfo::new(e.ty, 0x1000, &buf);
+        let root = Value::new(e.ty, 0x1000, &buf);
         let Walked::At(_) = walk_steps(&ctx, root, &[Step::ActiveVariant]).unwrap() else {
             panic!("the laid-down variant decodes");
         };
 
         // A discriminant no variant claims is an error naming the type.
         let buf = e.bytes(e.unclaimed);
-        let root = TypeInfo::new(e.ty, 0x1000, &buf);
+        let root = Value::new(e.ty, 0x1000, &buf);
         let err = walk_err(&ctx, root, &[Step::ActiveVariant]);
         assert!(err.contains("decoding the variant of"), "{err}");
 
         let base = find_ty(&ctx, |t| matches!(t.def(), TypeDef::Base { .. }));
-        let root = TypeInfo::new(base, 0x1000, &[0u8; 8]);
+        let root = Value::new(base, 0x1000, &[0u8; 8]);
         let err = walk_err(&ctx, root, &[Step::ActiveVariant]);
         assert!(err.contains("is not an enum"), "{err}");
     }

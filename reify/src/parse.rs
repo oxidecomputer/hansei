@@ -1,7 +1,7 @@
 //! Parsing Rust values out of a typed buffer.
 
 use crate::target::ReadFromProc;
-use crate::value::TypeInfo;
+use crate::value::Value;
 use crate::{Error, Result};
 
 /// A context that can reach the target's memory, parameterized by how long
@@ -25,11 +25,11 @@ where
     Ctx: ParseCtx<'a>,
 {
     /// Attempt to read `Self` from the debug type information.
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfo<'a>) -> Result<Self>;
+    fn parse_with_dbg(ctx: &Ctx, info: &Value<'a>) -> Result<Self>;
 }
 
 impl<'a, Ctx: ParseCtx<'a>> ParseWithDbgInfo<'a, Ctx> for bool {
-    fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfo<'a>) -> Result<Self> {
+    fn parse_with_dbg(_ctx: &Ctx, info: &Value<'a>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -43,7 +43,7 @@ impl<'a, Ctx: ParseCtx<'a>> ParseWithDbgInfo<'a, Ctx> for bool {
 macro_rules! num_impl {
     ($num_ty:ty) => {
         impl<'a, Ctx: ParseCtx<'a>> ParseWithDbgInfo<'a, Ctx> for $num_ty {
-            fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfo<'a>) -> Result<Self> {
+            fn parse_with_dbg(_ctx: &Ctx, info: &Value<'a>) -> Result<Self> {
                 if info.bytes.len() != size_of::<Self>() {
                     return Err(Error::unexpected_len(
                         info.bytes.len() as u32,
@@ -71,7 +71,7 @@ where
     V: ParseWithDbgInfo<'a, Ctx>,
     Ctx: ParseCtx<'a>,
 {
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfo<'a>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &Value<'a>) -> Result<Self> {
         let var = info.active_variant()?;
         let value = match var {
             ("Some", var_info) => V::parse_with_dbg(ctx, &var_info)?,
@@ -101,7 +101,7 @@ where
     V: ParseWithDbgInfo<'a, Ctx>,
     Ctx: ParseCtx<'a>,
 {
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfo<'a>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &Value<'a>) -> Result<Self> {
         let elements = info.elements(ctx)?;
         if let Some(claimed) = elements.truncated() {
             return Err(Error::short_sequence(
@@ -122,7 +122,7 @@ where
     V: ParseWithDbgInfo<'a, Ctx>,
     Ctx: ParseCtx<'a>,
 {
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfo<'a>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &Value<'a>) -> Result<Self> {
         Ok(Vec::<V>::parse_with_dbg(ctx, info)?.into_boxed_slice())
     }
 }
@@ -132,7 +132,7 @@ where
     V: ParseWithDbgInfo<'a, Ctx>,
     Ctx: ParseCtx<'a>,
 {
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfo<'a>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &Value<'a>) -> Result<Self> {
         let items = Vec::<V>::parse_with_dbg(ctx, info)?;
         // The array's own length is the type's, not the target's, so a
         // count that disagrees is a type mismatch rather than bad data.
@@ -147,7 +147,7 @@ where
 /// arrangement, and the same refusal to believe a length further than the
 /// target corroborates it, as the sequences above.
 impl<'a, Ctx: ParseCtx<'a>> ParseWithDbgInfo<'a, Ctx> for String {
-    fn parse_with_dbg(ctx: &Ctx, info: &TypeInfo<'a>) -> Result<Self> {
+    fn parse_with_dbg(ctx: &Ctx, info: &Value<'a>) -> Result<Self> {
         let text = crate::elements::utf8(info, ctx)?;
         if let Some(claimed) = text.claimed {
             return Err(Error::short_sequence(info.ty.name(), claimed, text.count));
@@ -158,7 +158,7 @@ impl<'a, Ctx: ParseCtx<'a>> ParseWithDbgInfo<'a, Ctx> for String {
 
 #[cfg(test)]
 mod tests {
-    use crate::TypeInfo;
+    use crate::Value;
     use crate::testhelper::*;
 
     use exegesis::bundle::BundleView;
@@ -176,40 +176,27 @@ mod tests {
         let u64_ty = v.ty(U64).unwrap();
         let bool_ty = v.ty(BOOL).unwrap();
 
+        assert_eq!(Value::new(u8_ty, 0, &[7]).parse::<u8, _>(&ctx).unwrap(), 7);
         assert_eq!(
-            TypeInfo::new(u8_ty, 0, &[7]).parse::<u8, _>(&ctx).unwrap(),
-            7
-        );
-        assert_eq!(
-            TypeInfo::new(u8_ty, 0, &[0xff])
-                .parse::<i8, _>(&ctx)
-                .unwrap(),
+            Value::new(u8_ty, 0, &[0xff]).parse::<i8, _>(&ctx).unwrap(),
             -1
         );
-        assert!(
-            TypeInfo::new(bool_ty, 0, &[1])
-                .parse::<bool, _>(&ctx)
-                .unwrap()
-        );
-        assert!(
-            !TypeInfo::new(bool_ty, 0, &[0])
-                .parse::<bool, _>(&ctx)
-                .unwrap()
-        );
+        assert!(Value::new(bool_ty, 0, &[1]).parse::<bool, _>(&ctx).unwrap());
+        assert!(!Value::new(bool_ty, 0, &[0]).parse::<bool, _>(&ctx).unwrap());
         assert_eq!(
-            TypeInfo::new(u32_ty, 0, &7u32.to_le_bytes())
+            Value::new(u32_ty, 0, &7u32.to_le_bytes())
                 .parse::<u32, _>(&ctx)
                 .unwrap(),
             7
         );
         assert_eq!(
-            TypeInfo::new(u64_ty, 0, &(-2i64).to_le_bytes())
+            Value::new(u64_ty, 0, &(-2i64).to_le_bytes())
                 .parse::<i64, _>(&ctx)
                 .unwrap(),
             -2
         );
         assert_eq!(
-            TypeInfo::new(u64_ty, 0, &1.5f64.to_le_bytes())
+            Value::new(u64_ty, 0, &1.5f64.to_le_bytes())
                 .parse::<f64, _>(&ctx)
                 .unwrap(),
             1.5
@@ -217,14 +204,14 @@ mod tests {
 
         // A width mismatch is reported, not truncated or padded.
         assert!(
-            TypeInfo::new(u32_ty, 0, &7u64.to_le_bytes())
+            Value::new(u32_ty, 0, &7u64.to_le_bytes())
                 .parse::<u32, _>(&ctx)
                 .is_err()
         );
-        assert!(TypeInfo::new(u8_ty, 0, &[]).parse::<u8, _>(&ctx).is_err());
-        assert!(TypeInfo::new(u8_ty, 0, &[]).parse::<i8, _>(&ctx).is_err());
+        assert!(Value::new(u8_ty, 0, &[]).parse::<u8, _>(&ctx).is_err());
+        assert!(Value::new(u8_ty, 0, &[]).parse::<i8, _>(&ctx).is_err());
         assert!(
-            TypeInfo::new(bool_ty, 0, &[0, 0])
+            Value::new(bool_ty, 0, &[0, 0])
                 .parse::<bool, _>(&ctx)
                 .is_err()
         );
@@ -242,15 +229,15 @@ mod tests {
 
         // Opt is a niche enum: discriminant 0 is None, anything else is Some.
         let none_bytes = 0u64.to_le_bytes();
-        let none = TypeInfo::new(opt, 0, &none_bytes);
+        let none = Value::new(opt, 0, &none_bytes);
         assert_eq!(none.parse::<Option<u64>, _>(&ctx).unwrap(), None);
         let some_bytes = 42u64.to_le_bytes();
-        let some = TypeInfo::new(opt, 0, &some_bytes);
+        let some = Value::new(opt, 0, &some_bytes);
         assert_eq!(some.parse::<Option<u64>, _>(&ctx).unwrap(), Some(42));
 
         // A two-variant enum whose variants are not None/Some is rejected by
         // name rather than guessed at.
-        let msg = TypeInfo::new(v.ty(MSG).unwrap(), 0, &[1u8; 16]);
+        let msg = Value::new(v.ty(MSG).unwrap(), 0, &[1u8; 16]);
         assert!(msg.parse::<Option<u64>, _>(&ctx).is_err());
     }
 
@@ -262,11 +249,11 @@ mod tests {
         let mem = FakeMem::new();
         let ctx = TestCtx::new(&mem);
         let bytes = u32s(&[10, 20, 30]);
-        let arr = TypeInfo::new(v.ty(ARR).unwrap(), 0, &bytes);
+        let arr = Value::new(v.ty(ARR).unwrap(), 0, &bytes);
         assert_eq!(arr.parse::<[u32; 3], _>(&ctx).unwrap(), [10, 20, 30]);
 
         // The buffer must be exactly the array; a short one is an error.
-        let short = TypeInfo::new(v.ty(ARR).unwrap(), 0, &bytes[..8]);
+        let short = Value::new(v.ty(ARR).unwrap(), 0, &bytes[..8]);
         assert!(short.parse::<[u32; 3], _>(&ctx).is_err());
     }
 
@@ -287,7 +274,7 @@ mod tests {
         // sequence of `u32` and not of the pointer's bytes. Owned or boxed is
         // the caller's choice, over the same read.
         let fat = u64s(&[0x2000, 4]);
-        let slice = TypeInfo::new(v.ty(SLICE).unwrap(), 0x9000, &fat);
+        let slice = Value::new(v.ty(SLICE).unwrap(), 0x9000, &fat);
         assert_eq!(
             slice.parse::<Box<[u32]>, _>(&ctx).unwrap().as_ref(),
             &[1u32, 2, 3, 4]
@@ -298,14 +285,14 @@ mod tests {
         );
 
         let fat = u64s(&[0x3000, 5]);
-        let text = TypeInfo::new(v.ty(SLICE).unwrap(), 0x9000, &fat);
+        let text = Value::new(v.ty(SLICE).unwrap(), 0x9000, &fat);
         assert_eq!(text.parse::<String, _>(&ctx).unwrap(), "hello");
 
         // An unreadable buffer is an error, not an empty result.
         let mem = FakeMem::new().unreadable();
         let ctx = TestCtx::new(&mem);
         let fat = u64s(&[0x2000, 4]);
-        let slice = TypeInfo::new(v.ty(SLICE).unwrap(), 0, &fat);
+        let slice = Value::new(v.ty(SLICE).unwrap(), 0, &fat);
         assert!(slice.parse::<Box<[u32]>, _>(&ctx).is_err());
     }
 }

@@ -21,7 +21,7 @@ use exegesis::bundle::{
 };
 use exegesis::symbols::normalized_v0_key;
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
-use reify::{ParseCtx, TypeInfo};
+use reify::{ParseCtx, Value};
 
 use foldhash::{HashMap, HashSet};
 use std::cell::RefCell;
@@ -424,13 +424,12 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// The thread-local `tokio::runtime::context::Context` at `addr`, as
     /// [`Context::find_workers`] located it.
-    pub fn context_info(&self, addr: u64) -> Result<TypeInfo<'b>> {
+    pub fn context_info(&self, addr: u64) -> Result<Value<'b>> {
         let ty = self.infra_ty(
             self.view.bundle().infra.context,
             "tokio::runtime::context::Context",
         )?;
-        TypeInfo::from_addr(self, ty, addr)
-            .with_context(|| format!("failed to read Context at {addr:#x}"))
+        Value::read(self, ty, addr).with_context(|| format!("failed to read Context at {addr:#x}"))
     }
 
     /// Navigate from the workers' `Context`s to the multi_thread
@@ -441,7 +440,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// The handle is the root of everything the runtime shares: the
     /// scheduler state under `shared`, the io/time/signal drivers under
     /// `driver`.
-    pub fn find_handle(&self, workers: &[Worker]) -> Result<TypeInfo<'b>> {
+    pub fn find_handle(&self, workers: &[Worker]) -> Result<Value<'b>> {
         let mut saw_other_scheduler = false;
         for worker in workers {
             let info = self.context_info(worker.context_addr)?;
@@ -462,7 +461,7 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// The scheduler state the workers share, from the runtime handle
     /// [`Context::find_handle`] reaches.
-    pub fn find_shared(&self, workers: &[Worker]) -> Result<TypeInfo<'b>> {
+    pub fn find_shared(&self, workers: &[Worker]) -> Result<Value<'b>> {
         let handle = self.find_handle(workers)?;
         self.walk(WalkRole::HandleShared).walk_at(handle)
     }
@@ -475,7 +474,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// scheduler — the pointer is set only for the duration of a
     /// worker's run loop — or when it runs a scheduler hansei does not
     /// read.
-    pub fn worker_context(&self, worker: &Worker) -> Result<Option<TypeInfo<'b>>> {
+    pub fn worker_context(&self, worker: &Worker) -> Result<Option<Value<'b>>> {
         let info = self.context_info(worker.context_addr)?;
         // The scoped pointer is null outside the run loop, and a
         // scheduler other than multi_thread is not one this reads —
@@ -488,7 +487,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// Which worker of the scheduler a thread is running, as the
     /// scheduler numbers them, from the context
     /// [`Context::worker_context`] returned.
-    pub fn worker_index(&self, worker_ctx: TypeInfo<'b>) -> Result<u64> {
+    pub fn worker_index(&self, worker_ctx: Value<'b>) -> Result<u64> {
         self.walk(WalkRole::WorkerIndex).read(worker_ctx)
     }
 
@@ -500,7 +499,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// same allocation, though, and that hangs off the shared scheduler
     /// state, so every worker's state word is readable from one place
     /// whether or not the thread holding it can be walked.
-    pub fn park_states(&self, handle: TypeInfo<'b>) -> Result<ParkStates> {
+    pub fn park_states(&self, handle: Value<'b>) -> Result<ParkStates> {
         let shared = self.walk(WalkRole::HandleShared).walk_at(handle)?;
         let remotes = self.walk(WalkRole::SharedRemotes).walk_at(shared)?;
         // The driver's lock lives under the parkers' own shared state,
@@ -538,7 +537,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// These are the pool's, not a walk of the target's threads: a
     /// blocking thread carries no scheduler state to be recognized by,
     /// so what the pool says about itself is all there is to say.
-    pub fn blocking_pool(&self, handle: TypeInfo<'b>) -> Result<BlockingPool> {
+    pub fn blocking_pool(&self, handle: Value<'b>) -> Result<BlockingPool> {
         let metrics = self.walk(WalkRole::BlockingMetrics).walk_at(handle)?;
         Ok(BlockingPool {
             threads: self.walk(WalkRole::BlockingThreads).read(metrics)?,
@@ -555,7 +554,7 @@ impl<'b, T: Target> Context<'b, T> {
     ///
     /// Corrupt memory degrades per shard: the failing shard contributes an
     /// error, the rest of the listing is unaffected.
-    pub fn enumerate_tasks(&self, shared: TypeInfo<'b>) -> Result<TaskList> {
+    pub fn enumerate_tasks(&self, shared: Value<'b>) -> Result<TaskList> {
         let lists = self.walk(WalkRole::OwnedLists).walk_at(shared)?;
 
         let mut tasks = Vec::new();
@@ -618,7 +617,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// next Header in the owned list (via `Trailer.owned`).
     fn parse_task(&self, addr: u64) -> Result<(Task, Option<u64>)> {
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
-        let info = TypeInfo::from_addr(self, header_ty, addr)
+        let info = Value::read(self, header_ty, addr)
             .with_context(|| format!("failed to read task Header at {addr:#x}"))?;
 
         let state = TaskState(self.walk(WalkRole::HeaderState).read(info)?);
@@ -678,7 +677,7 @@ impl<'b, T: Target> Context<'b, T> {
         }
 
         let ty = self.infra_ty(self.view.bundle().infra.vtable, "task Vtable")?;
-        let info = TypeInfo::from_addr(self, ty, vtable_addr)?;
+        let info = Value::read(self, ty, vtable_addr)?;
 
         let vt = TaskVtable {
             poll: self.walk(WalkRole::VtablePoll).read(info)?,
@@ -802,7 +801,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// in the *target's* rodata; the bundle only supplies the layout.
     fn read_location(&self, loc_ptr: u64) -> Result<Location> {
         let ty = self.infra_ty(self.view.bundle().infra.location, "core::panic::Location")?;
-        let info = TypeInfo::from_addr(self, ty, loc_ptr)
+        let info = Value::read(self, ty, loc_ptr)
             .with_context(|| format!("failed to read Location at {loc_ptr:#x}"))?;
         // `file!()` records the path as rustc saw it on the build machine,
         // so a registry crate names itself in full. Cut it down the same way
@@ -823,7 +822,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// next/prev pointers live in `Trailer.owned`, not the Header).
     fn owned_next(&self, trailer_addr: u64) -> Result<Option<u64>> {
         let ty = self.infra_ty(self.view.bundle().infra.trailer, "task Trailer")?;
-        let info = TypeInfo::from_addr(self, ty, trailer_addr)
+        let info = Value::read(self, ty, trailer_addr)
             .with_context(|| format!("failed to read Trailer at {trailer_addr:#x}"))?;
         // Trailer.owned: linked_list::Pointers<Header>, which peels down to
         // its inner { prev, next } struct.
@@ -862,7 +861,7 @@ impl<'b, T: Target> Context<'b, T> {
         };
         let entry = self.task_entry(known.entry);
         let cell_ty = self.infra_ty(entry.cell, &format!("the Cell of {}", known.display_name))?;
-        let cell = TypeInfo::from_addr(self, cell_ty, task.addr.0)
+        let cell = Value::read(self, cell_ty, task.addr.0)
             .with_context(|| format!("failed to read the task Cell at {:?}", task.addr))?;
         // Cell.core.stage peels through CoreStage and the UnsafeCells down
         // to the Stage<T> enum.
@@ -886,7 +885,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// [`AwaitChain::frames`], and [`AwaitChain::end`] says why it
     /// stopped. Corrupt memory is contained by the depth bound and an
     /// (address, type) cycle guard.
-    pub fn await_chain(&self, root: TypeInfo<'b>) -> AwaitChain<'b> {
+    pub fn await_chain(&self, root: Value<'b>) -> AwaitChain<'b> {
         let mut frames: Vec<AwaitFrame<'b>> = Vec::new();
         let mut visited: HashSet<(u64, BundleTypeId)> = HashSet::default();
         let mut cur = root;
@@ -1005,7 +1004,7 @@ impl<'b, T: Target> Context<'b, T> {
                 });
                 break ChainEnd::Error(err);
             };
-            let payload = TypeInfo::new(decoded.ty, cur.addr + decoded.offset, bytes);
+            let payload = Value::new(decoded.ty, cur.addr + decoded.offset, bytes);
             frames.push(AwaitFrame {
                 future: cur,
                 state: Some(FrameState {
@@ -1054,7 +1053,7 @@ impl<'b, T: Target> Context<'b, T> {
                     payload.ty.name(),
                 ));
             };
-            let awaitee = TypeInfo::new(member.ty(), payload.addr + member.offset(), bytes);
+            let awaitee = Value::new(member.ty(), payload.addr + member.offset(), bytes);
 
             match self.follow(awaitee) {
                 Follow::Next { future, symbol } => {
@@ -1074,7 +1073,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// are; plain ones keep their own type so the chain reports e.g.
     /// `oneshot::Receiver<u32>` rather than whatever its innards peel
     /// down to.
-    fn follow(&self, awaitee: TypeInfo<'b>) -> Follow<'b> {
+    fn follow(&self, awaitee: Value<'b>) -> Follow<'b> {
         let peeled = awaitee.peel();
         if let Some(dp) = peeled.ty.dyn_pointer() {
             // A boxed trait object: only its vtable knows the concrete
@@ -1145,7 +1144,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// bundle's future set, so a wrapper around it declines and the chain
     /// ends exactly where it did before — the miss costs the old
     /// behaviour, not a wrong one.
-    fn sole_inner_future(&self, scan: TypeInfo<'b>) -> Option<(&'b str, Follow<'b>)> {
+    fn sole_inner_future(&self, scan: Value<'b>) -> Option<(&'b str, Follow<'b>)> {
         let mut sole = None;
         for member in scan.ty.members() {
             if !self.is_future(member.ty()) {
@@ -1159,11 +1158,7 @@ impl<'b, T: Target> Context<'b, T> {
         let member = sole?;
         let start = member.offset() as usize;
         let bytes = scan.bytes.get(start..start + member.ty().size() as usize)?;
-        let follow = self.follow(TypeInfo::new(
-            member.ty(),
-            scan.addr + member.offset(),
-            bytes,
-        ));
+        let follow = self.follow(Value::new(member.ty(), scan.addr + member.offset(), bytes));
         Some((member.name(), follow))
     }
 
@@ -1207,7 +1202,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// vtable's poll fn — or its drop glue, for polls internalized out of
     /// the symtab — through the *target's* symtab, and join the mangled
     /// symbol against the bundle's dyn-future table. Never guesses.
-    fn resolve_dyn_future(&self, ptr: TypeInfo<'b>, dp: &DynPointer<'b>) -> Result<DynAwaitee<'b>> {
+    fn resolve_dyn_future(&self, ptr: Value<'b>, dp: &DynPointer<'b>) -> Result<DynAwaitee<'b>> {
         let word = |off: u64| -> Result<u64> {
             let bytes = ptr
                 .bytes
@@ -1240,7 +1235,7 @@ impl<'b, T: Target> Context<'b, T> {
             match self.dyn_future_ids_memoized(&symbol) {
                 SymbolLookup::Unique(id) => {
                     let ty = self.view.ty(id).expect("validated bundle type id");
-                    let future = TypeInfo::from_addr(self, ty, data)
+                    let future = Value::read(self, ty, data)
                         .with_context(|| format!("failed to read {} at {data:#x}", ty.name()))?;
                     return Ok(DynAwaitee::Resolved { future, symbol });
                 }
@@ -1289,7 +1284,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// `tokio::time::Sleep`: the deadline its timer entry registered.
     /// Where this tokio keeps it was the binder's business at
     /// extraction; the recorded steps already spell the route.
-    fn read_sleep(&self, sleep: TypeInfo<'b>) -> Result<WaitTarget> {
+    fn read_sleep(&self, sleep: Value<'b>) -> Result<WaitTarget> {
         // The deadline lands on the std Timespec inside tokio's
         // Instant, on the target's monotonic clock.
         let deadline = self.walk(WalkRole::SleepDeadline).walk_at(sleep)?;
@@ -1306,7 +1301,7 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// A `JoinHandle<T>`: the task being awaited — a dependency edge
     /// between tasks.
-    fn read_join_handle(&self, handle: TypeInfo<'b>, list: &TaskList) -> Result<WaitTarget> {
+    fn read_join_handle(&self, handle: Value<'b>, list: &TaskList) -> Result<WaitTarget> {
         // JoinHandle.raw: RawTask, which peels to the NonNull<Header>.
         let addr: u64 = self.walk(WalkRole::JoinHandleRaw).read(handle)?;
         let (task_id, state) = self
@@ -1332,7 +1327,7 @@ impl<'b, T: Target> Context<'b, T> {
             "task Header pointer {addr:#x} is unmapped"
         );
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
-        let header = TypeInfo::from_addr(self, header_ty, addr)
+        let header = Value::read(self, header_ty, addr)
             .with_context(|| format!("failed to read the task Header at {addr:#x}"))?;
         let state = TaskState(self.walk(WalkRole::HeaderState).read(header)?);
         let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
@@ -1366,7 +1361,7 @@ impl<'b, T: Target> Context<'b, T> {
             }
         }
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
-        let header = TypeInfo::from_addr(self, header_ty, task.addr.0)
+        let header = Value::read(self, header_ty, task.addr.0)
             .with_context(|| format!("failed to read the task Header at {:?}", task.addr))?;
         let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
         let vtable = self
@@ -1397,7 +1392,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// tokio's Mutex, RwLock, and Semaphore. The semaphore address
     /// identifies the contended resource; the frame that awaits the
     /// Acquire names which primitive wraps it.
-    fn read_acquire(&self, acquire: TypeInfo<'b>, chain: &AwaitChain<'b>) -> Result<WaitTarget> {
+    fn read_acquire(&self, acquire: Value<'b>, chain: &AwaitChain<'b>) -> Result<WaitTarget> {
         let semaphore = self.walk(WalkRole::AcquireSemaphore).walk_at(acquire)?;
         let addr: u64 = semaphore.parse(self)?;
         let num_permits: u64 = self.walk(WalkRole::AcquireNumPermits).read(acquire)?;
@@ -1407,8 +1402,7 @@ impl<'b, T: Target> Context<'b, T> {
             .ty
             .pointer_target()
             .ok_or_else(|| anyhow!("Acquire.semaphore is not pointer-shaped"))?;
-        let sem =
-            TypeInfo::from_addr(self, sem_ty, addr).context("failed to read the Semaphore")?;
+        let sem = Value::read(self, sem_ty, addr).context("failed to read the Semaphore")?;
         // `permits` keeps the available count shifted above the CLOSED
         // bit.
         let raw: u64 = self.walk(WalkRole::SemaphorePermits).read(sem)?;
@@ -1429,7 +1423,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// Walk a semaphore's wait queue: who its permits will wake, in wake
     /// order. tokio enqueues waiters at the list head and wakes from the
     /// tail, so the walk runs front-to-back and is reversed at the end.
-    fn semaphore_waiters(&self, sem: TypeInfo<'b>) -> Result<Vec<SemaphoreWaiter>> {
+    fn semaphore_waiters(&self, sem: Value<'b>) -> Result<Vec<SemaphoreWaiter>> {
         // Semaphore.waiters is a loom Mutex over the Waitlist; both the
         // parking_lot and std mutexes beneath it spell the payload
         // member `data`.
@@ -1456,7 +1450,7 @@ impl<'b, T: Target> Context<'b, T> {
                 "wait-queue pointer {addr:#x} is unmapped"
             );
             ensure!(visited.insert(addr), "wait-queue cycle at {addr:#x}");
-            let node = TypeInfo::from_addr(self, waiter_ty, addr)
+            let node = Value::read(self, waiter_ty, addr)
                 .with_context(|| format!("failed to read the Waiter at {addr:#x}"))?;
             waiters.push(SemaphoreWaiter {
                 addr,
@@ -1478,7 +1472,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// recognized by their vtable: tokio builds them as `(data = the
     /// task's Header, vtable = &WAKER_VTABLE)`, and the bundle names that
     /// static.
-    fn read_queued_waker(&self, node: TypeInfo<'b>) -> Result<QueuedWaker> {
+    fn read_queued_waker(&self, node: Value<'b>) -> Result<QueuedWaker> {
         // Waiter.waker: UnsafeCell<Option<Waker>>; the Some payload
         // peels through the Waker to its RawWaker.
         let Some(raw) = self.walk(WalkRole::WaiterWaker).walk(node)?.optional() else {
@@ -1580,7 +1574,7 @@ impl<'b, T: Target> Context<'b, T> {
                 let Some(bytes) = payload.bytes.get(start..start + m.ty().size() as usize) else {
                     continue;
                 };
-                let local = TypeInfo::new(m.ty(), payload.addr + m.offset(), bytes);
+                let local = Value::new(m.ty(), payload.addr + m.offset(), bytes);
                 let Some((future, owner, fields)) = self.local_acquire(local) else {
                     continue;
                 };
@@ -1610,7 +1604,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// chain bottoms out in a semaphore acquire.
     fn local_acquire(
         &self,
-        local: TypeInfo<'b>,
+        local: Value<'b>,
     ) -> Option<(String, Option<&'static str>, AcquireFields)> {
         let peeled = local.peel();
         let root = if let Some(dp) = peeled.ty.dyn_pointer() {
@@ -1640,7 +1634,7 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// The raw fields of a `batch_semaphore::Acquire`, read in place.
-    fn read_acquire_fields(&self, acquire: TypeInfo<'b>) -> Result<AcquireFields> {
+    fn read_acquire_fields(&self, acquire: Value<'b>) -> Result<AcquireFields> {
         Ok(AcquireFields {
             semaphore: self.walk(WalkRole::AcquireSemaphore).read(acquire)?,
             node: self.walk(WalkRole::AcquireNode).walk_at(acquire)?.addr,
@@ -1920,10 +1914,10 @@ pub struct KnownFuture {
 pub enum TaskStage<'b> {
     /// The state machine is resident; walk it with
     /// [`Context::await_chain`].
-    Running(TypeInfo<'b>),
+    Running(Value<'b>),
     /// `Result<T::Output, JoinError>`: the task returned, panicked, or
     /// was cancelled, and the output has not been consumed yet.
-    Finished(TypeInfo<'b>),
+    Finished(Value<'b>),
     /// The output was already taken through the join handle.
     Consumed,
 }
@@ -1958,7 +1952,7 @@ impl AwaitChain<'_> {
 #[derive(Debug)]
 pub struct AwaitFrame<'b> {
     /// The future being polled at this depth.
-    pub future: TypeInfo<'b>,
+    pub future: Value<'b>,
     /// The decoded coroutine state; `None` for plain (leaf) futures.
     pub state: Option<FrameState<'b>>,
     /// The mangled symbol that identified this frame, when it was
@@ -1984,7 +1978,7 @@ pub struct FrameState<'b> {
     pub await_loc: Option<(&'b str, u32)>,
     /// The active variant's payload: the state's live locals, including
     /// compiler-generated `__…` slots and the `__awaitee` itself.
-    pub payload: TypeInfo<'b>,
+    pub payload: Value<'b>,
 }
 
 /// Why an await-chain walk stopped.
@@ -2258,7 +2252,7 @@ impl fmt::Display for WaitTarget {
 /// the reason there is not one.
 enum Follow<'b> {
     Next {
-        future: TypeInfo<'b>,
+        future: Value<'b>,
         /// The dyn-vtable symbol that identified `future`, when it was
         /// not reached structurally.
         symbol: Option<String>,
@@ -2270,10 +2264,7 @@ enum Follow<'b> {
 enum DynAwaitee<'b> {
     /// The vtable joined: the concrete future, read from target memory,
     /// and the symbol that identified it.
-    Resolved {
-        future: TypeInfo<'b>,
-        symbol: String,
-    },
+    Resolved { future: Value<'b>, symbol: String },
     /// No vtable symbol joined the bundle's dyn-future table.
     Unknown { poll_symbol: Option<String> },
     /// The normalized symbol joined more than one concrete bundle type.

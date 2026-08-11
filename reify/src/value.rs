@@ -1,4 +1,4 @@
-//! A typed view over a buffer of target memory: [`TypeInfo`] pairs a bundle
+//! A typed view over a buffer of target memory: [`Value`] pairs a bundle
 //! type with the bytes of one value and the address they were read from, and
 //! navigates the value's structure -- members, pointees, array elements, enum
 //! variants -- without rendering anything.
@@ -19,21 +19,21 @@ use exegesis::bundle::{BundleType, VariantError};
 use std::fmt;
 
 #[derive(Copy, Clone)]
-pub struct TypeInfo<'a> {
+pub struct Value<'a> {
     pub ty: BundleType<'a>,
     pub addr: u64,
     pub bytes: &'a [u8],
 }
 
-impl<'a> Eq for TypeInfo<'a> {}
+impl<'a> Eq for Value<'a> {}
 
-impl<'a> PartialEq for TypeInfo<'a> {
+impl<'a> PartialEq for Value<'a> {
     fn eq(&self, other: &Self) -> bool {
         self.ty == other.ty && self.addr == other.addr && self.bytes == other.bytes
     }
 }
 
-impl<'a> TypeInfo<'a> {
+impl<'a> Value<'a> {
     /// Wrap an already-read buffer. Useful when the bytes come from
     /// somewhere other than a live target (tests, snapshots).
     pub fn new(ty: BundleType<'a>, addr: u64, bytes: &'a [u8]) -> Self {
@@ -41,7 +41,7 @@ impl<'a> TypeInfo<'a> {
     }
 
     /// Read the type directly at the address provided.
-    pub fn from_addr<Ctx: ParseCtx<'a>>(ctx: &Ctx, ty: BundleType<'a>, addr: u64) -> Result<Self> {
+    pub fn read<Ctx: ParseCtx<'a>>(ctx: &Ctx, ty: BundleType<'a>, addr: u64) -> Result<Self> {
         let bytes = ctx.proc().read_bytes(addr, ty.size())?;
 
         Ok(Self { ty, addr, bytes })
@@ -50,7 +50,7 @@ impl<'a> TypeInfo<'a> {
     /// The `ty`-typed view at `offset` within this value — the slicing every
     /// member access, variant selection and decode shares. Fails when the
     /// value's bytes do not cover the range; the view comes back unpeeled.
-    fn view_at(&self, offset: u64, ty: BundleType<'a>) -> Result<TypeInfo<'a>> {
+    fn view_at(&self, offset: u64, ty: BundleType<'a>) -> Result<Value<'a>> {
         let bytes = usize::try_from(offset)
             .ok()
             .zip(usize::try_from(ty.size()).ok())
@@ -62,21 +62,21 @@ impl<'a> TypeInfo<'a> {
                 self.bytes.len() as u64,
             ));
         };
-        Ok(TypeInfo {
+        Ok(Value {
             ty,
             addr: self.addr + offset,
             bytes,
         })
     }
 
-    pub fn try_member(&self, name: &str) -> Result<Option<TypeInfo<'a>>> {
+    pub fn try_member(&self, name: &str) -> Result<Option<Value<'a>>> {
         let Some(member) = self.ty.member(name) else {
             return Ok(None);
         };
         Ok(Some(self.view_at(member.offset(), member.ty())?.peel()))
     }
 
-    pub fn member(&self, name: &str) -> Result<TypeInfo<'a>> {
+    pub fn member(&self, name: &str) -> Result<Value<'a>> {
         let Some(member) = self.try_member(name)? else {
             return Err(Error::no_member(
                 self.ty.name().to_string(),
@@ -87,7 +87,7 @@ impl<'a> TypeInfo<'a> {
         Ok(member)
     }
 
-    pub fn try_deref_ptr<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a>>> {
+    pub fn try_deref_ptr<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<Option<Value<'a>>> {
         let proc = ctx.proc();
 
         let Some(target_ty) = self.peel().ty.pointer_target() else {
@@ -110,7 +110,7 @@ impl<'a> TypeInfo<'a> {
 
         // Remove any wrapper types.
         Ok(Some(
-            TypeInfo {
+            Value {
                 ty: target_ty,
                 addr,
                 bytes: read,
@@ -119,7 +119,7 @@ impl<'a> TypeInfo<'a> {
         ))
     }
 
-    pub fn deref_ptr<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<TypeInfo<'a>> {
+    pub fn deref_ptr<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<Value<'a>> {
         match self.try_deref_ptr(ctx) {
             Ok(Some(i)) => Ok(i),
             Ok(None) => Err(Error::invalid_addr(self.addr)),
@@ -131,7 +131,7 @@ impl<'a> TypeInfo<'a> {
         self.ty.active_variant(self.bytes).is_some()
     }
 
-    pub fn try_select_variant(&self, name: &str) -> Result<Option<TypeInfo<'a>>> {
+    pub fn try_select_variant(&self, name: &str) -> Result<Option<Value<'a>>> {
         let Some(result) = self.ty.check_variant(self.bytes, name) else {
             return Err(Error::not_an_enum(self.ty.name().to_string()));
         };
@@ -148,7 +148,7 @@ impl<'a> TypeInfo<'a> {
         Ok(Some(self.view_at(offset, var_ty)?.peel()))
     }
 
-    pub fn select_variant(&self, name: &str) -> Result<TypeInfo<'a>> {
+    pub fn select_variant(&self, name: &str) -> Result<Value<'a>> {
         let Some(info) = self.try_select_variant(name)? else {
             return Err(Error::unexpected_variant(name.to_string()));
         };
@@ -167,7 +167,7 @@ impl<'a> TypeInfo<'a> {
         Elements::of(self, ctx)
     }
 
-    pub fn active_variant(&self) -> Result<(&'a str, TypeInfo<'a>)> {
+    pub fn active_variant(&self) -> Result<(&'a str, Value<'a>)> {
         let active = self
             .ty
             .active_variant(self.bytes)
@@ -185,7 +185,7 @@ impl<'a> TypeInfo<'a> {
     /// Peeling stops early at a member the buffer cannot cover, returning the
     /// outermost type whose bytes are intact rather than descending past the
     /// end of the value.
-    pub fn peel(self) -> TypeInfo<'a> {
+    pub fn peel(self) -> Value<'a> {
         let mut info = self;
 
         loop {
@@ -236,9 +236,9 @@ impl<'a> TypeInfo<'a> {
     }
 }
 
-impl<'a> fmt::Debug for TypeInfo<'a> {
+impl<'a> fmt::Debug for Value<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TypeInfo")
+        f.debug_struct("Value")
             .field("ty", &self.ty)
             .field("addr", &format_args!("{:#x}", self.addr))
             .field("bytes", &self.bytes)
@@ -248,7 +248,7 @@ impl<'a> fmt::Debug for TypeInfo<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::TypeInfo;
+    use crate::Value;
     use crate::testhelper::*;
 
     use exegesis::bundle::BundleView;
@@ -264,7 +264,7 @@ mod tests {
 
         // `Wrap { inner: Point @0 }`, with all 8 bytes, peels to the Point.
         let full: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let peeled = TypeInfo::new(wrap, 0, &full).peel();
+        let peeled = Value::new(wrap, 0, &full).peel();
         assert_eq!(peeled.ty.name(), "Point");
         assert_eq!(format!("{}", peeled.display()), "Point { x: 3, y: 4 }");
 
@@ -272,7 +272,7 @@ mod tests {
         // buffer rather than reading past it.
         for len in 0..8 {
             let short = &full[..len];
-            let peeled = TypeInfo::new(wrap, 0, short).peel();
+            let peeled = Value::new(wrap, 0, short).peel();
             assert_eq!(peeled.ty.name(), "Wrap", "{len} bytes");
             assert_eq!(peeled.bytes.len(), len, "{len} bytes");
             assert_eq!(
@@ -293,8 +293,8 @@ mod tests {
         let mem = FakeMem::new().at(0x1000, point_bytes.clone());
         let ctx = TestCtx::new(&mem);
 
-        let info = TypeInfo::from_addr(&ctx, v.ty(POINT).unwrap(), 0x1000)
-            .expect("Point reads from the target");
+        let info =
+            Value::read(&ctx, v.ty(POINT).unwrap(), 0x1000).expect("Point reads from the target");
         assert_eq!(info.addr, 0x1000);
         assert_eq!(info.bytes, &point_bytes[..]);
         assert_eq!(format!("{info}"), "Point { x: 1, y: 2 }");
@@ -307,7 +307,7 @@ mod tests {
         // A read that fails surfaces as an error rather than an empty value.
         let dead_mem = FakeMem::new().unreadable();
         let dead = TestCtx::new(&dead_mem);
-        assert!(TypeInfo::from_addr(&dead, v.ty(POINT).unwrap(), 0x1000).is_err());
+        assert!(Value::read(&dead, v.ty(POINT).unwrap(), 0x1000).is_err());
     }
 
     /// Pointer and variant navigation from a value read at an address,
@@ -323,20 +323,20 @@ mod tests {
         let ctx = TestCtx::new(&mem);
 
         // `*Point` at 0x1000 points at a Point at 0x2000.
-        let ptr = TypeInfo::from_addr(&ctx, v.ty(PTR).unwrap(), 0x1000).unwrap();
+        let ptr = Value::read(&ctx, v.ty(PTR).unwrap(), 0x1000).unwrap();
         let pointee = ptr.deref_ptr(&ctx).expect("deref reads the pointee");
         assert_eq!(pointee.addr, 0x2000);
         assert_eq!(format!("{pointee}"), "Point { x: 3, y: 4 }");
         assert!(ptr.try_deref_ptr(&ctx).unwrap().is_some());
 
         // Dereferencing something that is not a pointer is an error.
-        let point = TypeInfo::from_addr(&ctx, v.ty(POINT).unwrap(), 0x2000).unwrap();
+        let point = Value::read(&ctx, v.ty(POINT).unwrap(), 0x2000).unwrap();
         assert!(point.deref_ptr(&ctx).is_err());
 
         // Variant selection: Opt is a niche enum, so 42 is `Some`.
         let mem = FakeMem::new().at(0x3000, u64s(&[42]));
         let ctx = TestCtx::new(&mem);
-        let opt = TypeInfo::from_addr(&ctx, v.ty(OPT).unwrap(), 0x3000).unwrap();
+        let opt = Value::read(&ctx, v.ty(OPT).unwrap(), 0x3000).unwrap();
         assert_eq!(
             format!("{}", opt.select_variant("Some").unwrap().display()),
             "42"
@@ -359,7 +359,7 @@ mod tests {
             .at(0x5000, u32s(&[7, 8, 9]));
         let ctx = TestCtx::new(&mem);
 
-        let arr = TypeInfo::from_addr(&ctx, v.ty(ARR).unwrap(), 0x1000).unwrap();
+        let arr = Value::read(&ctx, v.ty(ARR).unwrap(), 0x1000).unwrap();
         let elements = arr.elements(&ctx).expect("array elements");
         assert_eq!(elements.len(), 3);
         assert_eq!(elements.truncated(), None);
@@ -373,7 +373,7 @@ mod tests {
         // `Vec`'s is; its elements are `u32` because its display program says
         // so, addressed from the buffer they were read from rather than from
         // the fat pointer.
-        let slice = TypeInfo::from_addr(&ctx, v.ty(SLICE).unwrap(), 0x4000).unwrap();
+        let slice = Value::read(&ctx, v.ty(SLICE).unwrap(), 0x4000).unwrap();
         let seen: Vec<(u64, String)> = slice
             .elements(&ctx)
             .expect("slice elements")
@@ -397,7 +397,7 @@ mod tests {
         let v = BundleView::new(&b);
         let mem = FakeMem::new().at(0x1000, u32s(&[1, 2]));
         let ctx = TestCtx::new(&mem);
-        let point = TypeInfo::from_addr(&ctx, v.ty(POINT).unwrap(), 0x1000).unwrap();
+        let point = Value::read(&ctx, v.ty(POINT).unwrap(), 0x1000).unwrap();
         assert_eq!(point.member("x").unwrap().parse::<u32, _>(&ctx).unwrap(), 1);
         assert_eq!(point.parse::<u32, _>(&ctx).ok(), None, "Point is not a u32");
     }
@@ -411,14 +411,14 @@ mod tests {
         let v = BundleView::new(&b);
         let mut bytes = vec![0u8; 0x10004];
         bytes[0x10000..].copy_from_slice(&7u32.to_le_bytes());
-        let big = TypeInfo::new(v.ty(BIG).unwrap(), 0x1000, &bytes);
+        let big = Value::new(v.ty(BIG).unwrap(), 0x1000, &bytes);
 
         let tail = big.member("tail").expect("tail is addressable");
         assert_eq!(tail.addr, 0x1000 + 0x10000);
         assert_eq!(format!("{}", tail.display()), "7");
 
         // Short of the member, the range is reported rather than misread.
-        let short = TypeInfo::new(v.ty(BIG).unwrap(), 0x1000, &bytes[..0x10000]);
+        let short = Value::new(v.ty(BIG).unwrap(), 0x1000, &bytes[..0x10000]);
         assert!(short.member("tail").is_err());
     }
 
@@ -429,17 +429,17 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes = u32s(&[1, 2]);
-        let point = TypeInfo::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
+        let point = Value::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
 
         // Equality is over the type, address and bytes together.
-        assert_eq!(point, TypeInfo::new(v.ty(POINT).unwrap(), 0x1000, &bytes));
-        assert_ne!(point, TypeInfo::new(v.ty(POINT).unwrap(), 0x2000, &bytes));
+        assert_eq!(point, Value::new(v.ty(POINT).unwrap(), 0x1000, &bytes));
+        assert_ne!(point, Value::new(v.ty(POINT).unwrap(), 0x2000, &bytes));
         let other = u32s(&[9, 9]);
-        assert_ne!(point, TypeInfo::new(v.ty(POINT).unwrap(), 0x1000, &other));
+        assert_ne!(point, Value::new(v.ty(POINT).unwrap(), 0x1000, &other));
 
         // `Debug` shows the address in hex, unlike `Display`.
         let shown = format!("{point:?}");
-        assert!(shown.contains("TypeInfo"), "{shown}");
+        assert!(shown.contains("Value"), "{shown}");
         assert!(shown.contains("0x1000"), "{shown}");
     }
 }
