@@ -154,17 +154,19 @@ const _: () = {
 
 impl Target for Snapshot {
     fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<Vec<u8>> {
+        self.pslice(addr, len)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| TargetError::unmapped(addr, len))
+    }
+
+    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
         // Merging made runs maximal, so any fully-captured read lies
-        // within a single segment.
-        let end = addr
-            .checked_add(len)
-            .ok_or_else(|| TargetError::unmapped(addr, len))?;
-        let seg = self
-            .segment(addr)
-            .filter(|seg| end <= seg.end())
-            .ok_or_else(|| TargetError::unmapped(addr, len))?;
+        // within a single segment — what a snapshot cannot lend whole it
+        // cannot serve at all.
+        let end = addr.checked_add(len)?;
+        let seg = self.segment(addr).filter(|seg| end <= seg.end())?;
         let start = (addr - seg.addr) as usize;
-        Ok(seg.bytes[start..start + len as usize].to_vec())
+        Some(&seg.bytes[start..start + len as usize])
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
@@ -503,6 +505,34 @@ mod tests {
         // So do reads extending past a captured run's edge.
         assert!(snap.read_bytes(0x1108, 16).is_err());
         assert!(snap.read_bytes(0x10f8, 16).is_err());
+    }
+
+    /// A captured read is lent out of the snapshot's own segment rather
+    /// than copied, and what it cannot lend whole it does not serve at
+    /// all — the same rule the core readers follow.
+    #[test]
+    fn test_pslice_lends_captured_reads() {
+        let target = FakeTarget::new();
+        let rec = Recorder::new(&target);
+        rec.read_bytes(0x1100, 32).unwrap();
+        // A second run, past a gap the capture never touched.
+        rec.read_bytes(0x1300, 32).unwrap();
+        let snap = rec.snapshot().unwrap();
+        assert_eq!(snap.memory.len(), 2);
+
+        let lent = snap.pslice(0x1100, 32).unwrap();
+        assert_eq!(lent, snap.read_bytes(0x1100, 32).unwrap());
+        assert!(std::ptr::eq(lent.as_ptr(), snap.memory[0].bytes.as_ptr()));
+        // Sub-ranges lend from the same run.
+        assert_eq!(snap.pslice(0x1108, 8).unwrap(), &lent[8..16]);
+
+        // A range spanning the gap belongs to no single run, so neither
+        // call serves it...
+        assert!(snap.pslice(0x1100, 0x240).is_none());
+        assert!(snap.read_bytes(0x1100, 0x240).is_err());
+        // ...nor one running off a run's edge, or outside both.
+        assert!(snap.pslice(0x1110, 32).is_none());
+        assert!(snap.pslice(0x1200, 8).is_none());
     }
 
     #[test]
