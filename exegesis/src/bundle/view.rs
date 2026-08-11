@@ -258,7 +258,18 @@ impl<'a> BundleType<'a> {
     /// Custom display instructions resolved from this type's DWARF at
     /// extraction time.
     pub fn debug_format(&self) -> Option<&'a crate::bundle::DisplayNode> {
-        self.bundle.types.debug_formats.get(&self.id)
+        let types = &self.bundle.types;
+        let (positions, nodes) = types.format_index.0.get_or_init(|| {
+            let mut positions = vec![u32::MAX; types.types.len()];
+            let mut nodes = Vec::with_capacity(types.debug_formats.len());
+            for (id, node) in &types.debug_formats {
+                positions[id.0 as usize] = nodes.len() as u32;
+                nodes.push(node.clone());
+            }
+            (positions, nodes)
+        });
+        // Out-of-range ids and the no-format sentinel both fall out here.
+        nodes.get(*positions.get(self.id.0 as usize)? as usize)
     }
 
     /// Resolve another type id from the same validated bundle.

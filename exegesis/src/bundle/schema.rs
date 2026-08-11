@@ -119,6 +119,31 @@ pub struct TypeTable {
     /// (`by_normalized_symbol`), its contents ride on the format version:
     /// the hash function changing is a format change.
     pub by_normalized_name: Vec<(u64, u32)>,
+    /// O(1) view of `debug_formats`, built on first use: a position per
+    /// type id (`u32::MAX` for types without a format) into a flat list
+    /// of the display nodes. A census-style walk asks for a type's
+    /// format millions of times, which the `BTreeMap` made the single
+    /// hottest leaf of the whole command.
+    #[serde(skip)]
+    pub format_index: SideTable<(Vec<u32>, Vec<DisplayNode>)>,
+}
+
+/// A lazily-built in-memory side table riding on serialized data: skipped
+/// by serde, empty in clones (a clone rebuilds on first use), and ignored
+/// by comparisons.
+#[derive(Debug, Default)]
+pub struct SideTable<T>(pub std::sync::OnceLock<T>);
+
+impl<T> Clone for SideTable<T> {
+    fn clone(&self) -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+}
+
+impl<T> PartialEq for SideTable<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// Which member of an aggregate a [`Step`] or a [`Field`] addresses.
