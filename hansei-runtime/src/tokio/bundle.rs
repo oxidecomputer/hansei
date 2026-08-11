@@ -120,6 +120,13 @@ pub struct Context<'b, T> {
     /// Memoized stop time of the target on its own monotonic clock (see
     /// [`Context::stopped_at`]).
     stopped: RefCell<Option<Option<RawInstant>>>,
+    /// Memo of the task join's symbol resolution. Against a rebuilt
+    /// target every lookup misses the exact table and pays a demangle,
+    /// and the same few dozen symbols are asked about tens of thousands
+    /// of times in one command.
+    task_lookups: RefCell<HashMap<String, SymbolLookup<TaskEntryId>>>,
+    /// The same memo for the dyn-future join.
+    dyn_future_lookups: RefCell<HashMap<String, SymbolLookup<BundleTypeId>>>,
     /// Every type the bundle recorded a `Future::poll` impl for, which is
     /// what lets the await chain tell a wrapper's inner future from the
     /// rest of its members. Collected once: the walk asks per member of
@@ -154,6 +161,8 @@ impl<'b, T: Target> Context<'b, T> {
             vtables: RefCell::new(HashMap::default()),
             waker_vtable: RefCell::new(None),
             stopped: RefCell::new(None),
+            task_lookups: RefCell::new(HashMap::default()),
+            dyn_future_lookups: RefCell::new(HashMap::default()),
             futures: view.future_type_ids().collect(),
             contract,
         })
@@ -214,6 +223,33 @@ impl<'b, T: Target> Context<'b, T> {
         let name = self.proc.lookup_symbol_by_addr(addr).map(|s| s.name);
         self.symbols.borrow_mut().insert(addr, name.clone());
         name
+    }
+
+    /// [`BundleView::task_ids_for_symbol`], answered from
+    /// [`Context::task_lookups`] when the symbol has been asked before.
+    fn task_ids_memoized(&self, symbol: &str) -> SymbolLookup<TaskEntryId> {
+        if let Some(hit) = self.task_lookups.borrow().get(symbol) {
+            return hit.clone();
+        }
+        let answer = self.view.task_ids_for_symbol(symbol);
+        self.task_lookups
+            .borrow_mut()
+            .insert(symbol.to_owned(), answer.clone());
+        answer
+    }
+
+    /// [`BundleView::dyn_future_ids_for_symbol`], answered from
+    /// [`Context::dyn_future_lookups`] when the symbol has been asked
+    /// before.
+    fn dyn_future_ids_memoized(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
+        if let Some(hit) = self.dyn_future_lookups.borrow().get(symbol) {
+            return hit.clone();
+        }
+        let answer = self.view.dyn_future_ids_for_symbol(symbol);
+        self.dyn_future_lookups
+            .borrow_mut()
+            .insert(symbol.to_owned(), answer.clone());
+        answer
     }
 
     /// Resolve a named static exactly when possible, then by a normalized v0
@@ -700,7 +736,7 @@ impl<'b, T: Target> Context<'b, T> {
             let Some(symbol) = self.symbol_at(addr) else {
                 continue;
             };
-            let entry_id = match self.view.task_ids_for_symbol(&symbol) {
+            let entry_id = match self.task_ids_memoized(&symbol) {
                 SymbolLookup::Unique(id) => id,
                 SymbolLookup::Ambiguous(ids) => {
                     let names = ids
@@ -1225,7 +1261,7 @@ impl<'b, T: Target> Context<'b, T> {
             if slot == VTABLE_SLOT_FUTURE_POLL {
                 poll_symbol = Some(symbol.clone());
             }
-            match self.view.dyn_future_ids_for_symbol(&symbol) {
+            match self.dyn_future_ids_memoized(&symbol) {
                 SymbolLookup::Unique(id) => {
                     let ty = self.view.ty(id).expect("validated bundle type id");
                     let future = TypeInfo::from_addr(self, ty, data)

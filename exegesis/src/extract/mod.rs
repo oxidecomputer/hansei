@@ -814,12 +814,10 @@ fn extract_from_view_with_vtable_types(
             by_symbol,
             by_normalized_symbol: task_normalized,
             entries,
-            lookup_memo: Default::default(),
         },
         dyn_futures: DynFutureTable {
             by_symbol: dyn_table,
             by_normalized_symbol: dyn_normalized,
-            lookup_memo: Default::default(),
         },
         statics: StaticsTable { entries: statics },
         walks,

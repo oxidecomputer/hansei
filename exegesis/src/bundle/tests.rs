@@ -216,7 +216,6 @@ fn random_bundle(seed: u64) -> Bundle {
             .map(|i| (format!("_RNvX_dyn{i}_poll"), any_ty(&mut rng)))
             .collect(),
         by_normalized_symbol: BTreeMap::new(),
-        lookup_memo: Default::default(),
     };
 
     let mut statics = StaticsTable::default();
@@ -297,7 +296,6 @@ fn random_bundle(seed: u64) -> Bundle {
             by_symbol,
             by_normalized_symbol: BTreeMap::new(),
             entries,
-            lookup_memo: Default::default(),
         },
         dyn_futures,
         statics,
@@ -1086,7 +1084,6 @@ fn test_symbol_lookup_falls_back_to_normalized_name() {
         by_normalized_symbol: crate::symbols::normalized_value_index(&by_symbol),
         by_symbol,
         entries: vec![entry],
-        lookup_memo: Default::default(),
     };
     assert!(tasks.lookup(NODEBUG).is_some());
 }
