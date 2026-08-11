@@ -204,7 +204,7 @@ fn tasks_of<'a, T: Target>(ctx: &Context<'a, T>, snapshot: &Snapshot) -> TaskLis
     let lwps = snapshot.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
     let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    ctx.enumerate_tasks(&shared).expect("the owned-task walk")
+    ctx.enumerate_tasks(shared).expect("the owned-task walk")
 }
 
 /// The healthy pipeline, run first to learn the addresses a corruption

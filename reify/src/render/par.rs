@@ -39,10 +39,10 @@ impl<F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result> fmt::Display for DisplayWith
 /// The `Send + Sync` slice of a [`RenderCtx`]: what it carries minus the
 /// cycle guard and format cache, which each worker owns for itself.
 #[derive(Copy, Clone)]
-pub(crate) struct WorkerCtx<'buf> {
+pub(crate) struct WorkerCtx<'buf, 'a> {
     pub(super) depth: usize,
     pub(super) max_depth: usize,
-    pub(super) proc: Option<&'buf (dyn ReadFromProc + Sync)>,
+    pub(super) proc: Option<&'a (dyn ReadFromProc + Sync)>,
     pub(super) hex_integers: bool,
     pub(super) ugly: bool,
     pub(super) elide: Option<&'buf ElideOverride>,
@@ -50,12 +50,12 @@ pub(crate) struct WorkerCtx<'buf> {
     pub(super) prefix: &'buf str,
 }
 
-impl<'buf> WorkerCtx<'buf> {
+impl<'buf, 'a> WorkerCtx<'buf, 'a> {
     /// A worker's own [`RenderCtx`]: this slice around the task-local
     /// cycle guard and format cache, with no further fan-out — the
     /// entries of the collection that spawned the worker are the one
     /// level that parallelizes.
-    pub(crate) fn ctx<'x, 'a>(
+    pub(crate) fn ctx<'x>(
         &self,
         visited: &'x RefCell<HashSet<(u64, &'a str)>>,
         formats: &'x FormatCache<'a>,

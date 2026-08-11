@@ -4,7 +4,7 @@ use exegesis::bundle::{Bundle, BundleMember, BundleType, BundleView, WalkRole};
 use hansei_runtime::tokio::{Lifecycle, bundle, census, contract, graph};
 use proc::Proc;
 use proc::snapshot::Recorder;
-use reify::{TypeInfo, TypeInfoRef};
+use reify::TypeInfo;
 
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -542,8 +542,8 @@ impl<'b> Session<'b> {
         let lwps = proc.lwps().context("failed to read lwps")?;
         let workers = discover_workers(&lwps, &ctx)?;
         let handle = ctx.find_handle(&workers)?;
-        let shared = ctx.walk(WalkRole::HandleShared).walk_at(handle.as_ref())?;
-        let tasks = ctx.enumerate_tasks(&shared)?;
+        let shared = ctx.walk(WalkRole::HandleShared).walk_at(handle)?;
+        let tasks = ctx.enumerate_tasks(shared)?;
         for err in &tasks.errors {
             writeln!(io::stderr(), "warning: {err:#}")?;
         }
@@ -783,8 +783,7 @@ fn exec_trace_task(
                 out,
                 "The task has finished; its output has not been consumed:"
             )?;
-            let output = result.as_ref();
-            let mut value = output.display_with_depth(4);
+            let mut value = result.display_with_depth(4);
             if ugly {
                 value = value.ugly();
             }
@@ -1090,8 +1089,8 @@ fn print_await_chain<'b, T: proc::Target + Sync>(
 
         if verbose && (frame.state.is_some() || active) {
             let payload = match &frame.state {
-                Some(state) => state.payload.as_ref(),
-                None => frame.future.as_ref(),
+                Some(state) => state.payload,
+                None => frame.future,
             };
             let locals = state_locals(payload.ty);
             // The locals belong to the marked row, so they hang from it
@@ -1119,8 +1118,8 @@ fn print_await_chain<'b, T: proc::Target + Sync>(
                 let end = start + m.ty().size() as usize;
                 match payload.bytes.get(start..end) {
                     Some(bytes) => {
-                        let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes)
-                            .peel();
+                        let v =
+                            reify::TypeInfo::new(m.ty(), payload.addr + m.offset(), bytes).peel();
                         let mut disp = v
                             .display_from_target(ctx.proc, depth)
                             .elide_override(elide)
@@ -1656,8 +1655,8 @@ fn warm_frame_values<T: proc::Target + Sync>(
     const WARM_DEPTH: usize = 200;
     for frame in &chain.frames {
         let payload = match &frame.state {
-            Some(state) => state.payload.as_ref(),
-            None => frame.future.as_ref(),
+            Some(state) => state.payload,
+            None => frame.future,
         };
         for m in payload.ty.members() {
             if m.ty().size() == 0 {
@@ -1668,7 +1667,7 @@ fn warm_frame_values<T: proc::Target + Sync>(
             let Some(bytes) = payload.bytes.get(start..end) else {
                 continue;
             };
-            let v = reify::TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes);
+            let v = reify::TypeInfo::new(m.ty(), payload.addr + m.offset(), bytes);
             let _ = format!("{:#}", v.display_from_target(ctx.proc, WARM_DEPTH));
             let _ = format!("{:#}", v.peel().display_from_target(ctx.proc, WARM_DEPTH));
         }
@@ -1702,7 +1701,7 @@ fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) 
         "no LWP has a tokio Context in thread-local storage; is this a tokio program?"
     );
     let shared = ctx.find_shared(&workers)?;
-    let list = ctx.enumerate_tasks(&shared)?;
+    let list = ctx.enumerate_tasks(shared)?;
     for err in &list.errors {
         writeln!(io::stderr(), "warning: {err:#}")?;
     }
@@ -2502,7 +2501,7 @@ fn exec_census(session: &Session<'_>, top: usize, out: &mut dyn io::Write) -> Re
     let mut runtime = Vec::new();
     for worker in &session.workers {
         let index = match session.ctx.worker_context(worker) {
-            Ok(Some(ctx)) => match session.ctx.worker_index(&ctx) {
+            Ok(Some(ctx)) => match session.ctx.worker_index(ctx) {
                 Ok(index) => Some(index),
                 Err(e) => {
                     writeln!(
@@ -2535,8 +2534,8 @@ fn exec_census(session: &Session<'_>, top: usize, out: &mut dyn io::Write) -> Re
             }),
         });
     }
-    let parks = optional(session.ctx.park_states(&session.handle), "park state")?;
-    let pool = optional(session.ctx.blocking_pool(&session.handle), "blocking pool")?;
+    let parks = optional(session.ctx.park_states(session.handle), "park state")?;
+    let pool = optional(session.ctx.blocking_pool(session.handle), "blocking pool")?;
 
     let facts = summary::Facts {
         lwps: session.lwps,
@@ -2908,7 +2907,7 @@ fn exec_threads(
         }
 
         match session.ctx.worker_context(worker) {
-            Ok(Some(worker_ctx)) => print_worker_state(session, &worker_ctx, depth, ugly, out)?,
+            Ok(Some(worker_ctx)) => print_worker_state(session, worker_ctx, depth, ugly, out)?,
             // A thread inside the runtime without a scheduler context is
             // ordinary: `block_on` enters the runtime from a thread that
             // never runs the worker loop.
@@ -2982,7 +2981,7 @@ fn print_thread_context(
 /// deferred until the current poll returns.
 fn print_worker_state<'b>(
     session: &Session<'_>,
-    worker_ctx: &TypeInfo<'b>,
+    worker_ctx: TypeInfo<'b>,
     depth: usize,
     ugly: bool,
     out: &mut dyn io::Write,
@@ -3016,7 +3015,7 @@ fn print_worker_state<'b>(
         "core",
         &format_args!(
             "{:#}",
-            render(session, &core.as_ref(), depth, ugly).line_prefix("    ")
+            render(session, &core, depth, ugly).line_prefix("    ")
         ),
     )?;
     Ok(())
@@ -3056,12 +3055,12 @@ fn exec_runtime_field(
 /// unless asked for the raw structural view. Nothing is rendered until the
 /// caller formats the result (with `{:#}` for the usual pretty layout), so
 /// the text can stream to its destination instead of through a `String`.
-fn render<'r, 'buf, 'b: 'buf>(
+fn render<'r, 'b>(
     session: &'r Session<'b>,
-    value: &'r TypeInfoRef<'buf, 'b>,
+    value: &'r TypeInfo<'b>,
     depth: usize,
     ugly: bool,
-) -> reify::DisplayTargetValue<'r, 'buf, 'b, Proc> {
+) -> reify::DisplayTargetValue<'r, 'b, Proc> {
     let display = value.display_from_target(session.ctx.proc, depth);
     if ugly { display.ugly() } else { display }
 }
@@ -3237,7 +3236,7 @@ mod whatis_tests {
         let lwps = snapshot.lwps().unwrap();
         let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
         let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-        let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+        let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
         let extents = ctx.task_extents(&list);
         let census = census::census(&ctx, &list);
         check(&ctx.view, &list, &extents, &census);
@@ -3426,7 +3425,7 @@ mod future_trace_tests {
         let lwps = snapshot.lwps().unwrap();
         let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
         let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-        let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+        let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
         let extents = ctx.task_extents(&list);
         let census = census::census(&ctx, &list);
         check(&ctx, &list, &extents, &census);
@@ -3891,7 +3890,7 @@ mod trace_render_tests {
         let lwps = snapshot.lwps().unwrap();
         let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
         let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-        let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+        let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
 
         let task = list
             .tasks
@@ -4022,7 +4021,7 @@ mod trace_render_tests {
         let lwps = snapshot.lwps().unwrap();
         let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
         let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-        let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+        let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
 
         let joiner = list
             .tasks

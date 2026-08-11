@@ -144,7 +144,7 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
     writeln!(out, "workers {}", workers.len()).unwrap();
 
     let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+    let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
     assert!(
         list.errors.is_empty(),
         "task walk reported errors: {:?}",
@@ -429,7 +429,7 @@ fn test_futurelock_census_offline() {
     let lwps = snapshot.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
     let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+    let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
 
     let census = census::census(&ctx, &list);
     let future1 = census
@@ -548,7 +548,7 @@ fn census_of<'a>(
     let lwps = snapshot.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
     let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+    let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
     let census = census::census(&ctx, &list);
     assert!(census.errors.is_empty(), "{:?}", census.errors);
     assert_eq!(census.capped, 0, "the walk hit a hard limit");
