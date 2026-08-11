@@ -43,9 +43,10 @@ use super::contract::{FUTURES_UNORDERED, JOIN_SET};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use exegesis::bundle::{BundleTypeId, TypeClass, WalkRole};
-use foldhash::HashSet;
+use foldhash::{HashMap, HashSet};
 use proc::Target;
 use reify::{TypeInfo, TypeInfoRef};
+use std::rc::Rc;
 
 /// The spelling of a future trait object's pointee, which is what makes
 /// a wide pointer worth chaining even before the vtable join names the
@@ -285,6 +286,10 @@ struct Walker {
     /// Every find, by (address, type), so an aliased or re-reached
     /// future is recorded once.
     visited: HashSet<(u64, BundleTypeId)>,
+    /// [`ScanPlan`] per type: the scan visits millions of values but
+    /// only thousands of distinct types, and everything it asks short
+    /// of an enum's active variant is a fact of the type.
+    plans: HashMap<BundleTypeId, ScanPlan>,
 }
 
 /// Walk every enumerated task's await chain and take the census.
@@ -301,6 +306,7 @@ pub fn census<T: Target + Sync>(ctx: &Context<'_, T>, list: &TaskList) -> Future
         errors: Vec::new(),
         capped: 0,
         visited: HashSet::default(),
+        plans: HashMap::default(),
     };
 
     for (owner, task) in list.tasks.iter().enumerate() {
@@ -360,7 +366,7 @@ impl Walker {
                 };
                 let local = TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes);
                 let mut found = Vec::new();
-                scan_value(&local, 0, &mut found, &mut self.capped);
+                scan_value(&local, 0, &mut found, &mut self.capped, &mut self.plans);
                 for find in found {
                     self.record(ctx, list, owner, frame_index, m.name(), via, find, nesting);
                 }
@@ -540,35 +546,42 @@ impl Walker {
     }
 }
 
-/// Find every by-value future inside `value`: the value itself, or one
-/// nested in its structs, unions, and active enum variants. Ordinary
-/// pointers are never followed, so the scan stays inside the frame's
-/// own bytes and terminates.
-fn scan_value<'b>(
-    value: &TypeInfoRef<'_, 'b>,
-    depth: usize,
-    found: &mut Vec<Find<'b>>,
-    capped: &mut usize,
-) {
-    if depth > MAX_SCAN_DEPTH {
-        *capped += 1;
-        return;
-    }
+/// What [`scan_value`] does at a value of one type — every type-level
+/// test it makes, decided once per type and remembered. Everything the
+/// scan asks short of an enum's active variant is a fact of the type,
+/// and the scan visits millions of values but only thousands of
+/// distinct types.
+#[derive(Clone)]
+enum ScanPlan {
+    Set,
+    JoinSet,
+    /// A future outright: a coroutine env, a known leaf, or a wide
+    /// pointer to a future trait object — chained rather than descended
+    /// into, so its insides are attributed to it rather than to the
+    /// frame holding it.
+    Future,
+    /// A struct or union: recurse into each sized member, as
+    /// `(member type, offset, size)`.
+    Descend(Rc<Vec<(BundleTypeId, u64, u64)>>),
+    /// A Rust enum: recurse into the active variant's payload. Only the
+    /// active variant's payload holds live values; the other variants
+    /// are the same storage misread.
+    Enum,
+    Stop,
+}
+
+/// Decide [`ScanPlan`] for one value: the type-level tests of the scan,
+/// in order.
+fn scan_plan(value: &TypeInfoRef<'_, '_>) -> ScanPlan {
     let name = value.ty.name();
     if name.starts_with(FUTURES_UNORDERED) {
-        found.push(Find::Set(value.to_owned()));
-        return;
+        return ScanPlan::Set;
     }
     if name.starts_with(JOIN_SET) {
-        found.push(Find::JoinSet(value.to_owned()));
-        return;
+        return ScanPlan::JoinSet;
     }
-    // A coroutine env, a known leaf, or a future trait object is a
-    // future outright — chained rather than descended into, so its
-    // insides are attributed to it rather than to the frame holding it.
     if value.ty.is_coroutine() || leaf_kind(name).is_some() {
-        found.push(Find::Future(value.to_owned()));
-        return;
+        return ScanPlan::Future;
     }
     // The pointee must *be* a future trait object — anchored at the
     // front (past the parenthesized spelling), since any dyn whose
@@ -581,33 +594,74 @@ fn scan_value<'b>(
             .unwrap_or(pointee)
             .starts_with(DYN_FUTURE)
         {
-            found.push(Find::Future(value.to_owned()));
-            return;
+            return ScanPlan::Future;
         }
     }
     match value.ty.classify() {
-        TypeClass::Struct | TypeClass::Union => {
-            for m in value.ty.members() {
-                if m.ty().size() == 0 {
-                    continue;
-                }
-                let start = m.offset() as usize;
-                let end = start + m.ty().size() as usize;
-                let Some(bytes) = value.bytes.get(start..end) else {
+        TypeClass::Struct | TypeClass::Union => ScanPlan::Descend(Rc::new(
+            value
+                .ty
+                .members()
+                .filter(|m| m.ty().size() > 0)
+                .map(|m| (m.ty().id(), m.offset(), m.ty().size()))
+                .collect(),
+        )),
+        TypeClass::RustEnum => ScanPlan::Enum,
+        _ => ScanPlan::Stop,
+    }
+}
+
+/// Find every by-value future inside `value`: the value itself, or one
+/// nested in its structs, unions, and active enum variants. Ordinary
+/// pointers are never followed, so the scan stays inside the frame's
+/// own bytes and terminates.
+fn scan_value<'b>(
+    value: &TypeInfoRef<'_, 'b>,
+    depth: usize,
+    found: &mut Vec<Find<'b>>,
+    capped: &mut usize,
+    plans: &mut HashMap<BundleTypeId, ScanPlan>,
+) {
+    if depth > MAX_SCAN_DEPTH {
+        *capped += 1;
+        return;
+    }
+    // A remembered plan is only valid for a buffer that covers the type
+    // exactly: `peel` stops early on a short buffer, so a truncated
+    // value's plan is its own. Every value the scan builds covers
+    // exactly; this guard keeps the memo honest rather than fast.
+    let plan = if value.bytes.len() as u64 == value.ty.size() {
+        match plans.get(&value.ty.id()) {
+            Some(plan) => plan.clone(),
+            None => {
+                let plan = scan_plan(value);
+                plans.insert(value.ty.id(), plan.clone());
+                plan
+            }
+        }
+    } else {
+        scan_plan(value)
+    };
+    match plan {
+        ScanPlan::Set => found.push(Find::Set(value.to_owned())),
+        ScanPlan::JoinSet => found.push(Find::JoinSet(value.to_owned())),
+        ScanPlan::Future => found.push(Find::Future(value.to_owned())),
+        ScanPlan::Descend(members) => {
+            for &(ty, offset, size) in members.iter() {
+                let start = offset as usize;
+                let Some(bytes) = value.bytes.get(start..start + size as usize) else {
                     continue;
                 };
-                let child = TypeInfoRef::new(m.ty(), value.addr + m.offset(), bytes);
-                scan_value(&child, depth + 1, found, capped);
+                let child = TypeInfoRef::new(value.ty.related_type(ty), value.addr + offset, bytes);
+                scan_value(&child, depth + 1, found, capped, plans);
             }
         }
-        TypeClass::RustEnum => {
-            // Only the active variant's payload holds live values; the
-            // other variants are the same storage misread.
+        ScanPlan::Enum => {
             if let Ok((_, payload)) = value.active_variant() {
-                scan_value(&payload, depth + 1, found, capped);
+                scan_value(&payload, depth + 1, found, capped, plans);
             }
         }
-        _ => {}
+        ScanPlan::Stop => {}
     }
 }
 
