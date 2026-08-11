@@ -21,7 +21,7 @@ pub struct TypeInfo<'a> {
 
 impl<'buf, 'a: 'buf> TypeInfo<'a> {
     /// Read the type directly at the address provided.
-    pub fn from_addr<Ctx: ParseCtx>(ctx: &Ctx, ty: BundleType<'a>, addr: u64) -> Result<Self> {
+    pub fn from_addr<Ctx: ParseCtx<'a>>(ctx: &Ctx, ty: BundleType<'a>, addr: u64) -> Result<Self> {
         let buf = ctx.proc().read_bytes(addr, ty.size())?.into();
 
         Ok(Self { ty, addr, buf })
@@ -33,7 +33,7 @@ impl<'buf, 'a: 'buf> TypeInfo<'a> {
 
     /// Refresh the contents of the buffer from `Proc` memory from the current
     /// address.
-    pub fn refresh<Ctx: ParseCtx>(&mut self, ctx: &Ctx) -> Result<()> {
+    pub fn refresh<Ctx: ParseCtx<'a>>(&mut self, ctx: &Ctx) -> Result<()> {
         self.buf = ctx.proc().read_bytes(self.addr, self.ty.size())?.into();
         Ok(())
     }
@@ -46,11 +46,11 @@ impl<'buf, 'a: 'buf> TypeInfo<'a> {
         self.as_ref().member(name)
     }
 
-    pub fn try_deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a>>> {
+    pub fn try_deref_ptr<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a>>> {
         self.as_ref().try_deref_ptr(ctx)
     }
 
-    pub fn deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<TypeInfo<'a>> {
+    pub fn deref_ptr<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<TypeInfo<'a>> {
         self.as_ref().deref_ptr(ctx)
     }
 
@@ -62,14 +62,14 @@ impl<'buf, 'a: 'buf> TypeInfo<'a> {
         self.as_ref().select_variant(name)
     }
 
-    pub fn elements<Ctx: ParseCtx>(&'buf self, ctx: &'buf Ctx) -> Result<Elements<'buf, 'a>> {
+    pub fn elements<Ctx: ParseCtx<'a>>(&'buf self, ctx: &Ctx) -> Result<Elements<'buf, 'a>> {
         Elements::of(&self.as_ref(), ctx)
     }
 
     pub fn parse<V, Ctx>(&self, ctx: &Ctx) -> Result<V>
     where
         V: ParseWithDbgInfo<'a, Ctx>,
-        Ctx: ParseCtx,
+        Ctx: ParseCtx<'a>,
     {
         self.as_ref().parse(ctx)
     }
@@ -166,7 +166,7 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
         Ok(member)
     }
 
-    pub fn try_deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a>>> {
+    pub fn try_deref_ptr<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<Option<TypeInfo<'a>>> {
         let proc = ctx.proc();
 
         let peeled = self.clone().peel();
@@ -203,7 +203,7 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
         }))
     }
 
-    pub fn deref_ptr<Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<TypeInfo<'a>> {
+    pub fn deref_ptr<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<TypeInfo<'a>> {
         match self.try_deref_ptr(ctx) {
             Ok(Some(i)) => Ok(i),
             Ok(None) => Err(Error::invalid_addr(self.addr)),
@@ -240,7 +240,7 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
         Ok(info)
     }
 
-    pub fn parse<V: ParseWithDbgInfo<'a, Ctx>, Ctx: ParseCtx>(&self, ctx: &Ctx) -> Result<V> {
+    pub fn parse<V: ParseWithDbgInfo<'a, Ctx>, Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<V> {
         V::parse_with_dbg(ctx, self).map_err(|e| Error::parse_type(self.ty.name()).with_source(e))
     }
 
@@ -251,7 +251,7 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
     /// The elements of a sequence-shaped value — an owned `Vec`, a boxed or
     /// borrowed slice, an inline array — read and addressed; see
     /// [`Elements`].
-    pub fn elements<Ctx: ParseCtx>(&self, ctx: &'buf Ctx) -> Result<Elements<'buf, 'a>> {
+    pub fn elements<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<Elements<'buf, 'a>> {
         Elements::of(self, ctx)
     }
 
@@ -394,7 +394,8 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let point_bytes = u32s(&[1, 2]);
-        let ctx = TestCtx::new(FakeMem::new().at(0x1000, point_bytes.clone()));
+        let mem = FakeMem::new().at(0x1000, point_bytes.clone());
+        let ctx = TestCtx::new(&mem);
 
         let mut info = crate::TypeInfo::from_addr(&ctx, v.ty(POINT).unwrap(), 0x1000)
             .expect("Point reads from the target");
@@ -409,12 +410,14 @@ mod tests {
         assert_eq!(info.as_ref().addr, 0x1000);
 
         // `refresh` re-reads the same address, picking up a changed target.
-        let ctx = TestCtx::new(FakeMem::new().at(0x1000, u32s(&[8, 9])));
+        let mem = FakeMem::new().at(0x1000, u32s(&[8, 9]));
+        let ctx = TestCtx::new(&mem);
         info.refresh(&ctx).expect("refresh re-reads");
         assert_eq!(format!("{info}"), "Point { x: 8, y: 9 }");
 
         // A read that fails surfaces as an error rather than an empty value.
-        let dead = TestCtx::new(FakeMem::new().unreadable());
+        let dead_mem = FakeMem::new().unreadable();
+        let dead = TestCtx::new(&dead_mem);
         assert!(crate::TypeInfo::from_addr(&dead, v.ty(POINT).unwrap(), 0x1000).is_err());
         assert!(info.refresh(&dead).is_err());
     }
@@ -425,11 +428,10 @@ mod tests {
     fn test_owned_type_info_derefs_and_selects_variants() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(
-            FakeMem::new()
-                .at(0x1000, u64s(&[0x2000]))
-                .at(0x2000, u32s(&[3, 4])),
-        );
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[0x2000]))
+            .at(0x2000, u32s(&[3, 4]));
+        let ctx = TestCtx::new(&mem);
 
         // `*Point` at 0x1000 points at a Point at 0x2000.
         let ptr = crate::TypeInfo::from_addr(&ctx, v.ty(PTR).unwrap(), 0x1000).unwrap();
@@ -443,7 +445,8 @@ mod tests {
         assert!(point.deref_ptr(&ctx).is_err());
 
         // Variant selection: Opt is a niche enum, so 42 is `Some`.
-        let ctx = TestCtx::new(FakeMem::new().at(0x3000, u64s(&[42])));
+        let mem = FakeMem::new().at(0x3000, u64s(&[42]));
+        let ctx = TestCtx::new(&mem);
         let opt = crate::TypeInfo::from_addr(&ctx, v.ty(OPT).unwrap(), 0x3000).unwrap();
         assert_eq!(
             format!("{}", opt.select_variant("Some").unwrap().display()),
@@ -461,12 +464,11 @@ mod tests {
     fn test_owned_type_info_iterates_elements() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(
-            FakeMem::new()
-                .at(0x1000, u32s(&[10, 20, 30]))
-                .at(0x4000, u64s(&[0x5000, 3]))
-                .at(0x5000, u32s(&[7, 8, 9])),
-        );
+        let mem = FakeMem::new()
+            .at(0x1000, u32s(&[10, 20, 30]))
+            .at(0x4000, u64s(&[0x5000, 3]))
+            .at(0x5000, u32s(&[7, 8, 9]));
+        let ctx = TestCtx::new(&mem);
 
         let arr = crate::TypeInfo::from_addr(&ctx, v.ty(ARR).unwrap(), 0x1000).unwrap();
         let elements = arr.elements(&ctx).expect("array elements");
@@ -504,7 +506,8 @@ mod tests {
     fn test_owned_type_info_parses() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(FakeMem::new().at(0x1000, u32s(&[1, 2])));
+        let mem = FakeMem::new().at(0x1000, u32s(&[1, 2]));
+        let ctx = TestCtx::new(&mem);
         let point = crate::TypeInfo::from_addr(&ctx, v.ty(POINT).unwrap(), 0x1000).unwrap();
         assert_eq!(point.member("x").unwrap().parse::<u32, _>(&ctx).unwrap(), 1);
         assert_eq!(point.parse::<u32, _>(&ctx).ok(), None, "Point is not a u32");

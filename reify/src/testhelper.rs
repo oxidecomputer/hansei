@@ -143,21 +143,26 @@ impl crate::ReadFromProc for FakeMem {
 
 /// A [`ParseCtx`](crate::ParseCtx) over a [`FakeMem`], for the parsing and
 /// owned-`TypeInfo` paths that take a context rather than a bare reader.
-pub struct TestCtx {
-    pub mem: FakeMem,
+///
+/// The reader is borrowed rather than owned so that a read lends for as long
+/// as the memory does, the way a core-backed context's does; a `TestCtx` that
+/// owned its `FakeMem` could only lend for the length of the `&self` it was
+/// asked through.
+pub struct TestCtx<'m> {
+    pub mem: &'m FakeMem,
 }
 
-impl TestCtx {
-    pub fn new(mem: FakeMem) -> Self {
+impl<'m> TestCtx<'m> {
+    pub fn new(mem: &'m FakeMem) -> Self {
         Self { mem }
     }
 }
 
-impl crate::ParseCtx for TestCtx {
+impl<'m> crate::ParseCtx<'m> for TestCtx<'m> {
     type Target = FakeMem;
 
-    fn proc(&self) -> &FakeMem {
-        &self.mem
+    fn proc(&self) -> &'m FakeMem {
+        self.mem
     }
 }
 
