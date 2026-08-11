@@ -1057,36 +1057,6 @@ pub struct TaskTable {
     /// codegen copies of one entry collapse to one id.
     pub by_normalized_symbol: BTreeMap<String, Vec<TaskEntryId>>,
     pub entries: Vec<TaskFutureEntry>,
-    /// Memo of [`TaskTable::lookup_id`] answers. Against a rebuilt
-    /// target every lookup misses `by_symbol` and pays a demangle, and
-    /// the same few dozen symbols are asked about tens of thousands of
-    /// times in one command.
-    #[serde(skip)]
-    pub lookup_memo: LookupMemo<TaskEntryId>,
-}
-
-/// The memo a symbol table's `lookup_id` consults before demangling: the
-/// queried symbols repeat endlessly (every task instance of one future
-/// type resolves the same vtable fns) while the distinct answers stay in
-/// the dozens.
-pub type LookupMemo<T> =
-    SideTable<std::sync::Mutex<std::collections::HashMap<String, SymbolLookup<T>>>>;
-
-/// Answer `lookup_id` from the memo, or compute and remember it.
-fn memoized_lookup<T: Clone>(
-    memo: &LookupMemo<T>,
-    symbol: &str,
-    compute: impl FnOnce() -> SymbolLookup<T>,
-) -> SymbolLookup<T> {
-    let memo = memo.0.get_or_init(Default::default);
-    if let Some(hit) = memo.lock().unwrap().get(symbol) {
-        return hit.clone();
-    }
-    let answer = compute();
-    memo.lock()
-        .unwrap()
-        .insert(symbol.to_string(), answer.clone());
-    answer
 }
 
 /// Result of exact-then-normalized symbol resolution.
@@ -1099,20 +1069,18 @@ pub enum SymbolLookup<T> {
 
 impl TaskTable {
     pub fn lookup_id(&self, symbol: &str) -> SymbolLookup<TaskEntryId> {
-        memoized_lookup(&self.lookup_memo, symbol, || {
-            let symbol = strip_llvm_suffix(symbol);
-            if let Some(id) = self.by_symbol.get(symbol) {
-                return SymbolLookup::Unique(*id);
-            }
-            let Some(key) = normalized_v0_key(symbol) else {
-                return SymbolLookup::Missing;
-            };
-            match self.by_normalized_symbol.get(&key).map(Vec::as_slice) {
-                Some([id]) => SymbolLookup::Unique(*id),
-                Some(ids) if !ids.is_empty() => SymbolLookup::Ambiguous(ids.to_vec()),
-                _ => SymbolLookup::Missing,
-            }
-        })
+        let symbol = strip_llvm_suffix(symbol);
+        if let Some(id) = self.by_symbol.get(symbol) {
+            return SymbolLookup::Unique(*id);
+        }
+        let Some(key) = normalized_v0_key(symbol) else {
+            return SymbolLookup::Missing;
+        };
+        match self.by_normalized_symbol.get(&key).map(Vec::as_slice) {
+            Some([id]) => SymbolLookup::Unique(*id),
+            Some(ids) if !ids.is_empty() => SymbolLookup::Ambiguous(ids.to_vec()),
+            _ => SymbolLookup::Missing,
+        }
     }
 
     /// Look up a mangled symbol as read from the target's symtab.
@@ -1149,28 +1117,22 @@ pub struct DynFutureTable {
     /// [`DynFutureTable::lookup`] which strips them.
     pub by_symbol: BTreeMap<String, BundleTypeId>,
     pub by_normalized_symbol: BTreeMap<String, Vec<BundleTypeId>>,
-    /// Memo of [`DynFutureTable::lookup_id`] answers; see
-    /// [`TaskTable::lookup_memo`].
-    #[serde(skip)]
-    pub lookup_memo: LookupMemo<BundleTypeId>,
 }
 
 impl DynFutureTable {
     pub fn lookup_id(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
-        memoized_lookup(&self.lookup_memo, symbol, || {
-            let symbol = strip_llvm_suffix(symbol);
-            if let Some(id) = self.by_symbol.get(symbol) {
-                return SymbolLookup::Unique(*id);
-            }
-            let Some(key) = normalized_v0_key(symbol) else {
-                return SymbolLookup::Missing;
-            };
-            match self.by_normalized_symbol.get(&key).map(Vec::as_slice) {
-                Some([id]) => SymbolLookup::Unique(*id),
-                Some(ids) if !ids.is_empty() => SymbolLookup::Ambiguous(ids.to_vec()),
-                _ => SymbolLookup::Missing,
-            }
-        })
+        let symbol = strip_llvm_suffix(symbol);
+        if let Some(id) = self.by_symbol.get(symbol) {
+            return SymbolLookup::Unique(*id);
+        }
+        let Some(key) = normalized_v0_key(symbol) else {
+            return SymbolLookup::Missing;
+        };
+        match self.by_normalized_symbol.get(&key).map(Vec::as_slice) {
+            Some([id]) => SymbolLookup::Unique(*id),
+            Some(ids) if !ids.is_empty() => SymbolLookup::Ambiguous(ids.to_vec()),
+            _ => SymbolLookup::Missing,
+        }
     }
 
     /// Look up a mangled symbol as read from the target's symtab.
