@@ -321,11 +321,17 @@ impl<T: Target> Target for Recorder<'_, T> {
         Ok(bytes)
     }
 
-    // Deliberately not forwarded: a borrowed read would bypass the
-    // recording above, and a snapshot must carry every byte the caller
-    // saw. Declining sends every read through `read_bytes`.
-    fn pslice(&self, _addr: u64, _len: u64) -> Option<&[u8]> {
-        None
+    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+        // Recording and lending are not in tension: log a copy, then
+        // hand back the wrapped target's own storage. A target that
+        // declines to lend still records everything, through the
+        // `read_bytes` above.
+        let bytes = self.target.pslice(addr, len)?;
+        self.reads.lock().unwrap().push(Segment {
+            addr,
+            bytes: bytes.to_vec(),
+        });
+        Some(bytes)
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
@@ -390,6 +396,10 @@ mod tests {
         memory: Vec<u8>,
         functions: Vec<SymbolBuf>,
         objects: Vec<SymbolBuf>,
+        /// Whether this fake lends its memory, standing in for the two
+        /// kinds of target the recorder wraps: cores, which lend, and
+        /// live libproc handles, which have nothing to borrow.
+        lends: bool,
     }
 
     fn sym(name: &str, value: u64, size: u64) -> SymbolBuf {
@@ -411,19 +421,35 @@ mod tests {
                 memory: (0..=255).cycle().take(0x2000).collect(),
                 functions: vec![sym("poll_a", 0x100, 0x40), sym("poll_b", 0x140, 0x10)],
                 objects: vec![sym("TLS_KEY", 0x2000, 8)],
+                lends: true,
             }
+        }
+
+        /// The same fake, but declining to lend.
+        fn no_lend() -> Self {
+            FakeTarget {
+                lends: false,
+                ..FakeTarget::new()
+            }
+        }
+
+        /// The captured bytes at `addr`, regardless of whether this fake
+        /// is willing to lend them out.
+        fn at(&self, addr: u64, len: u64) -> Option<&[u8]> {
+            let start = addr.checked_sub(self.base)? as usize;
+            self.memory.get(start..start + len as usize)
         }
     }
 
     impl Target for FakeTarget {
         fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<Vec<u8>> {
-            let start = addr
-                .checked_sub(self.base)
-                .ok_or_else(|| TargetError::unmapped(addr, len))? as usize;
-            self.memory
-                .get(start..start + len as usize)
-                .map(|b| b.to_vec())
+            self.at(addr, len)
+                .map(<[u8]>::to_vec)
                 .ok_or_else(|| TargetError::unmapped(addr, len))
+        }
+
+        fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+            self.lends.then(|| self.at(addr, len)).flatten()
         }
 
         fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
@@ -533,6 +559,52 @@ mod tests {
         // ...nor one running off a run's edge, or outside both.
         assert!(snap.pslice(0x1110, 32).is_none());
         assert!(snap.pslice(0x1200, 8).is_none());
+    }
+
+    /// Recording and lending are not in tension: a read served as a
+    /// borrow is captured byte-for-byte, so a caller that prefers the
+    /// borrow snapshots exactly what a copying one does — and a target
+    /// with nothing to lend still records everything.
+    #[test]
+    fn test_recorder_records_lent_reads() {
+        /// What a borrowing caller does: take the lend when the target
+        /// offers one, copy when it does not.
+        fn read<T: Target>(rec: &Recorder<'_, T>, addr: u64, len: u64) -> Vec<u8> {
+            match rec.pslice(addr, len) {
+                Some(bytes) => bytes.to_vec(),
+                None => rec.read_bytes(addr, len).unwrap(),
+            }
+        }
+
+        let reads = [(0x1100, 0x20), (0x1110, 0x20), (0x1300, 0x10)];
+
+        let lending = FakeTarget::new();
+        let rec = Recorder::new(&lending);
+        // The lend is the wrapped target's own storage, not the copy
+        // that went into the log.
+        let lent = rec.pslice(0x1100, 0x20).unwrap();
+        assert!(std::ptr::eq(
+            lent.as_ptr(),
+            lending.at(0x1100, 0x20).unwrap().as_ptr()
+        ));
+        let borrowed: Vec<Vec<u8>> = reads.iter().map(|&(a, l)| read(&rec, a, l)).collect();
+        let from_lends = rec.snapshot().unwrap();
+
+        // The same reads off a target that declines to lend fall through
+        // to `read_bytes` and record identically.
+        let opaque = FakeTarget::no_lend();
+        let rec = Recorder::new(&opaque);
+        assert!(rec.pslice(0x1100, 0x20).is_none());
+        let copied: Vec<Vec<u8>> = reads.iter().map(|&(a, l)| read(&rec, a, l)).collect();
+        let from_copies = rec.snapshot().unwrap();
+
+        assert_eq!(borrowed, copied);
+        assert_eq!(from_lends, from_copies);
+        // And the replay serves those reads back unchanged.
+        for (&(addr, len), want) in reads.iter().zip(&borrowed) {
+            assert_eq!(&from_lends.read_bytes(addr, len).unwrap(), want);
+            assert_eq!(want, &lending.read_bytes(addr, len).unwrap());
+        }
     }
 
     #[test]
