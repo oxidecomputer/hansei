@@ -3,7 +3,7 @@
 
 use crate::debug_type::DisplayNode;
 use crate::target::ReadFromProc;
-use crate::value::TypeInfoRef;
+use crate::value::TypeInfo;
 
 use exegesis::bundle::BundleType;
 
@@ -104,7 +104,7 @@ pub(crate) fn eval_dyn_pointer<'a>(
         } else {
             match proc.read_bytes(pointee_address, concrete_ty.size()) {
                 Ok(pointee_bytes) => {
-                    let pointee = TypeInfoRef {
+                    let pointee = TypeInfo {
                         ty: concrete_ty,
                         addr: pointee_address,
                         bytes: pointee_bytes,
@@ -287,7 +287,7 @@ fn infer_concrete_type<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::TypeInfoRef;
+    use crate::TypeInfo;
     use crate::testhelper::*;
 
     use exegesis::bundle::{BundleView, TypeDef};
@@ -302,7 +302,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&mem, 8));
         assert_eq!(
             shown,
@@ -338,7 +338,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&mem, 8));
         assert!(
             shown.contains("pointer: 0x1234 -> Point {\n        x: 1,\n        y: 2,\n    },"),
@@ -368,7 +368,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(OPT).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&mem, 8));
         assert!(shown.starts_with("Opt::Some {"), "{shown}");
         assert!(!shown.contains("FatPtr"), "{shown}");

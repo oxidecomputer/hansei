@@ -10,7 +10,7 @@ use crate::debug_type::{DisplayNode, FatHeader, TypeKind};
 use crate::parse::ParseCtx;
 use crate::render::scalar::{read_u64_at, read_unsigned_at};
 use crate::target::ReadFromProc;
-use crate::value::TypeInfoRef;
+use crate::value::TypeInfo;
 use crate::{Error, Result};
 
 use exegesis::bundle::BundleType;
@@ -29,7 +29,7 @@ const MAX_ZST_ELEMENTS: u64 = 64 * 1024 * 1024;
 /// read once, up front: the elements borrow from that read, so it costs no
 /// copy at all.
 #[derive(Clone, Debug)]
-pub struct Elements<'buf, 'a> {
+pub struct Elements<'a> {
     element: BundleType<'a>,
     /// The address of element zero.
     base: u64,
@@ -39,10 +39,10 @@ pub struct Elements<'buf, 'a> {
     count: u64,
     /// What the value's length said, when the target could not serve it.
     claimed: Option<u64>,
-    bytes: &'buf [u8],
+    bytes: &'a [u8],
 }
 
-impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
+impl<'a> Elements<'a> {
     /// How many elements are here to be read.
     pub fn len(&self) -> u64 {
         self.count
@@ -71,9 +71,9 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
     /// The element at `index`, handed over as the sequence's own element
     /// type, *unpeeled*: a recorded walk binding roots at that type, so
     /// descending a transparent wrapper here would start the walk below its
-    /// root. A caller that wants the peeled view calls [`TypeInfoRef::peel`]
+    /// root. A caller that wants the peeled view calls [`TypeInfo::peel`]
     /// itself.
-    pub fn get(&self, index: u64) -> TypeInfoRef<'_, 'a> {
+    pub fn get(&self, index: u64) -> TypeInfo<'a> {
         // A zero-sized element has no bytes of its own; every one of
         // them sits at the base address with an empty buffer.
         let offset = index * self.stride;
@@ -81,11 +81,11 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
             .bytes
             .get(offset as usize..(offset + self.stride) as usize)
             .unwrap_or(&[]);
-        TypeInfoRef::new(self.element, self.base + offset, slot)
+        TypeInfo::new(self.element, self.base + offset, slot)
     }
 
     /// The elements, in order; see [`Elements::get`] for what each is.
-    pub fn iter(&self) -> impl Iterator<Item = TypeInfoRef<'_, 'a>> {
+    pub fn iter(&self) -> impl Iterator<Item = TypeInfo<'a>> {
         (0..self.count).map(move |index| self.get(index))
     }
 
@@ -97,12 +97,9 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
     /// its pointer; an inline array, whose elements are the value's own
     /// bytes; and, for a bundle whose detector declined or predates the
     /// formatter, the bare `(data_ptr, length)` fat pointer.
-    pub(crate) fn of<Ctx: ParseCtx<'a>>(
-        info: &TypeInfoRef<'buf, 'a>,
-        ctx: &Ctx,
-    ) -> Result<Elements<'buf, 'a>> {
+    pub(crate) fn of<Ctx: ParseCtx<'a>>(info: &TypeInfo<'a>, ctx: &Ctx) -> Result<Elements<'a>> {
         let ty = info.ty;
-        let proc: &dyn ReadFromProc = ctx.proc();
+        let proc: &'a dyn ReadFromProc = ctx.proc();
 
         if let Some(DisplayNode::Slice {
             header,
@@ -155,15 +152,15 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
         element: BundleType<'a>,
         stride: u64,
         bytes: &[u8],
-        proc: Option<&'buf dyn ReadFromProc>,
-    ) -> std::result::Result<Elements<'buf, 'a>, SeqError> {
+        proc: Option<&'a dyn ReadFromProc>,
+    ) -> std::result::Result<Elements<'a>, SeqError> {
         let (base, count) = decode_header(bytes, header, stride)?;
         let buffer = read_buffer(proc, base, stride, count)?;
         Ok(Self::over(buffer, element, base, stride))
     }
 
     /// The elements a read buffer holds.
-    fn over(buffer: Buffer<'buf>, element: BundleType<'a>, base: u64, stride: u64) -> Self {
+    fn over(buffer: Buffer<'a>, element: BundleType<'a>, base: u64, stride: u64) -> Self {
         let Buffer {
             bytes,
             count,
@@ -232,8 +229,8 @@ fn decode_header(
 /// One buffer read out of the target: the bytes served, how many whole units
 /// of the requested stride they hold, and what the value's length claimed
 /// when that is more than was served.
-pub(crate) struct Buffer<'buf> {
-    pub(crate) bytes: &'buf [u8],
+pub(crate) struct Buffer<'a> {
+    pub(crate) bytes: &'a [u8],
     pub(crate) count: u64,
     pub(crate) claimed: Option<u64>,
 }
@@ -246,10 +243,7 @@ pub(crate) struct Buffer<'buf> {
 /// point is the bytes rather than the elements: same header, same validation,
 /// same bound on a length that cannot be trusted, but one bulk read instead
 /// of a typed view per byte.
-pub(crate) fn utf8<'buf, 'a: 'buf, Ctx: ParseCtx<'a>>(
-    info: &TypeInfoRef<'buf, 'a>,
-    ctx: &Ctx,
-) -> Result<Buffer<'buf>> {
+pub(crate) fn utf8<'a, Ctx: ParseCtx<'a>>(info: &TypeInfo<'a>, ctx: &Ctx) -> Result<Buffer<'a>> {
     let ty = info.ty;
     let proc: &dyn ReadFromProc = ctx.proc();
 
@@ -269,23 +263,23 @@ pub(crate) fn utf8<'buf, 'a: 'buf, Ctx: ParseCtx<'a>>(
 /// Resolve a `Str` display program's header against `bytes` and read the
 /// buffer it describes — [`Elements::read_fat`] for the string renderer and
 /// parser, sharing the same header validation and length corroboration.
-pub(crate) fn utf8_buffer<'buf>(
+pub(crate) fn utf8_buffer<'a>(
     header: &FatHeader,
     bytes: &[u8],
-    proc: Option<&'buf dyn ReadFromProc>,
-) -> std::result::Result<Buffer<'buf>, SeqError> {
+    proc: Option<&'a dyn ReadFromProc>,
+) -> std::result::Result<Buffer<'a>, SeqError> {
     let (base, length) = decode_header(bytes, header, 1)?;
     read_buffer(proc, base, 1, length)
 }
 
 /// Read `count` units of `stride` bytes from `base`, believing the count only
 /// as far as it can be corroborated.
-fn read_buffer<'buf>(
-    proc: Option<&'buf dyn ReadFromProc>,
+fn read_buffer<'a>(
+    proc: Option<&'a dyn ReadFromProc>,
     base: u64,
     stride: u64,
     count: u64,
-) -> std::result::Result<Buffer<'buf>, SeqError> {
+) -> std::result::Result<Buffer<'a>, SeqError> {
     let empty = |count, claimed| Buffer {
         bytes: &[][..],
         count,
@@ -337,7 +331,7 @@ fn read_buffer<'buf>(
 
 #[cfg(test)]
 mod tests {
-    use crate::TypeInfoRef;
+    use crate::TypeInfo;
     use crate::testhelper::*;
 
     use exegesis::bundle::BundleView;
@@ -354,7 +348,7 @@ mod tests {
 
         // Vec { ptr: *u8 @0, len @8, capacity @16 }, elements `u32`.
         let header = u64s(&[0x2000, 3, 4]);
-        let vec = TypeInfoRef::new(v.ty(VEC).unwrap(), 0x1000, &header);
+        let vec = TypeInfo::new(v.ty(VEC).unwrap(), 0x1000, &header);
         let elements = vec.elements(&ctx).expect("vec elements");
         assert_eq!(elements.len(), 3);
         assert_eq!(elements.element_ty().size(), 4);
@@ -386,7 +380,7 @@ mod tests {
         let header = u64s(&[0x2000, 1000]);
         let mem = fake();
         let ctx = TestCtx::new(&mem);
-        let slice = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0x1000, &header);
+        let slice = TypeInfo::new(v.ty(SLICE).unwrap(), 0x1000, &header);
         let elements = slice.elements(&ctx).expect("slice elements");
         assert_eq!(elements.len(), 3);
         assert_eq!(elements.truncated(), Some(1000));
@@ -412,7 +406,7 @@ mod tests {
         let mem = FakeMem::new().at(0x2000, u32s(&[7, 8, 9]));
         let ctx = TestCtx::new(&mem);
         let vec = |header: &[u8]| {
-            TypeInfoRef::new(v.ty(VEC).unwrap(), 0x1000, header)
+            TypeInfo::new(v.ty(VEC).unwrap(), 0x1000, header)
                 .elements(&ctx)
                 .map(|e| e.len())
         };
@@ -430,7 +424,7 @@ mod tests {
         let mem = FakeMem::new().panic_on_unmapped();
         let ctx = TestCtx::new(&mem);
         let header = u64s(&[0xdead_0000, 0, 0]);
-        let empty = TypeInfoRef::new(v.ty(VEC).unwrap(), 0x1000, &header)
+        let empty = TypeInfo::new(v.ty(VEC).unwrap(), 0x1000, &header)
             .elements(&ctx)
             .expect("an empty vec");
         assert!(empty.is_empty());
@@ -448,7 +442,7 @@ mod tests {
         let mem = FakeMem::new().at(0x2000, b"hello".to_vec());
         let ctx = TestCtx::new(&mem);
         let text = |id, header: &[u8]| {
-            TypeInfoRef::new(v.ty(id).unwrap(), 0x1000, header).parse::<String, _>(&ctx)
+            TypeInfo::new(v.ty(id).unwrap(), 0x1000, header).parse::<String, _>(&ctx)
         };
 
         // String { ptr @0, len @8, capacity @16 }, then &str { ptr, len }.
@@ -471,7 +465,7 @@ mod tests {
         let mem = FakeMem::new();
         let ctx = TestCtx::new(&mem);
         let bytes = u32s(&[1, 2]);
-        let point = TypeInfoRef::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
+        let point = TypeInfo::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
         assert!(point.elements(&ctx).is_err());
     }
 }

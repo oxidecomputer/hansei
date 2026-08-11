@@ -142,7 +142,7 @@ impl crate::ReadFromProc for FakeMem {
 }
 
 /// A [`ParseCtx`](crate::ParseCtx) over a [`FakeMem`], for the parsing and
-/// owned-`TypeInfo` paths that take a context rather than a bare reader.
+/// reading paths that take a context rather than a bare reader.
 ///
 /// The reader is borrowed rather than owned so that a read lends for as long
 /// as the memory does, the way a core-backed context's does; a `TestCtx` that

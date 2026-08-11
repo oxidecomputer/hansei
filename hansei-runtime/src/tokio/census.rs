@@ -45,7 +45,7 @@ use anyhow::{Context as _, Result, anyhow, ensure};
 use exegesis::bundle::{BundleTypeId, TypeClass, WalkRole};
 use foldhash::{HashMap, HashSet};
 use proc::Target;
-use reify::{TypeInfo, TypeInfoRef};
+use reify::TypeInfo;
 use std::rc::Rc;
 
 /// The spelling of a future trait object's pointee, which is what makes
@@ -354,19 +354,19 @@ impl Walker {
             // skipped for the same reason — counting it here would put
             // it in two of the three populations the census calls
             // disjoint.
-            for m in payload.as_ref().ty.members() {
+            for m in payload.ty.members() {
                 if m.name().starts_with("__") || m.ty().size() == 0 || frame.inner == Some(m.name())
                 {
                     continue;
                 }
                 let start = m.offset() as usize;
                 let end = start + m.ty().size() as usize;
-                let Some(bytes) = payload.buf.get(start..end) else {
+                let Some(bytes) = payload.bytes.get(start..end) else {
                     continue;
                 };
-                let local = TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes);
+                let local = TypeInfo::new(m.ty(), payload.addr + m.offset(), bytes);
                 let mut found = Vec::new();
-                scan_value(&local, 0, &mut found, &mut self.capped, &mut self.plans);
+                scan_value(local, 0, &mut found, &mut self.capped, &mut self.plans);
                 for find in found {
                     self.record(ctx, list, owner, frame_index, m.name(), via, find, nesting);
                 }
@@ -395,10 +395,10 @@ impl Walker {
         }
         match find {
             Find::Set(value) => {
-                self.record_set(ctx, list, owner, frame, local, via, &value, nesting)
+                self.record_set(ctx, list, owner, frame, local, via, value, nesting)
             }
             Find::JoinSet(value) => {
-                self.record_join_set(ctx, list, owner, frame, local, via, &value)
+                self.record_join_set(ctx, list, owner, frame, local, via, value)
             }
             Find::Future(value) => {
                 let place = (value.addr, value.ty.id());
@@ -454,7 +454,7 @@ impl Walker {
         frame: usize,
         local: &str,
         via: Option<Via>,
-        value: &TypeInfo<'b>,
+        value: TypeInfo<'b>,
         nesting: usize,
     ) {
         let index = self.sets.len();
@@ -518,7 +518,7 @@ impl Walker {
         frame: usize,
         local: &str,
         via: Option<Via>,
-        value: &TypeInfo<'b>,
+        value: TypeInfo<'b>,
     ) {
         // As for a set of futures: a walk that fails part-way keeps the
         // members it reached, and the error says the list is short. The
@@ -572,7 +572,7 @@ enum ScanPlan {
 
 /// Decide [`ScanPlan`] for one value: the type-level tests of the scan,
 /// in order.
-fn scan_plan(value: &TypeInfoRef<'_, '_>) -> ScanPlan {
+fn scan_plan(value: TypeInfo<'_>) -> ScanPlan {
     let name = value.ty.name();
     if name.starts_with(FUTURES_UNORDERED) {
         return ScanPlan::Set;
@@ -587,7 +587,7 @@ fn scan_plan(value: &TypeInfoRef<'_, '_>) -> ScanPlan {
     // front (past the parenthesized spelling), since any dyn whose
     // generics merely mention a future (a `dyn FnOnce(..) -> BoxFuture`)
     // would otherwise match.
-    if let Some(dp) = value.clone().peel().ty.dyn_pointer() {
+    if let Some(dp) = value.peel().ty.dyn_pointer() {
         let pointee = dp.pointee.name();
         if pointee
             .strip_prefix('(')
@@ -616,7 +616,7 @@ fn scan_plan(value: &TypeInfoRef<'_, '_>) -> ScanPlan {
 /// pointers are never followed, so the scan stays inside the frame's
 /// own bytes and terminates.
 fn scan_value<'b>(
-    value: &TypeInfoRef<'_, 'b>,
+    value: TypeInfo<'b>,
     depth: usize,
     found: &mut Vec<Find<'b>>,
     capped: &mut usize,
@@ -643,22 +643,22 @@ fn scan_value<'b>(
         scan_plan(value)
     };
     match plan {
-        ScanPlan::Set => found.push(Find::Set(value.to_owned())),
-        ScanPlan::JoinSet => found.push(Find::JoinSet(value.to_owned())),
-        ScanPlan::Future => found.push(Find::Future(value.to_owned())),
+        ScanPlan::Set => found.push(Find::Set(value)),
+        ScanPlan::JoinSet => found.push(Find::JoinSet(value)),
+        ScanPlan::Future => found.push(Find::Future(value)),
         ScanPlan::Descend(members) => {
             for &(ty, offset, size) in members.iter() {
                 let start = offset as usize;
                 let Some(bytes) = value.bytes.get(start..start + size as usize) else {
                     continue;
                 };
-                let child = TypeInfoRef::new(value.ty.related_type(ty), value.addr + offset, bytes);
-                scan_value(&child, depth + 1, found, capped, plans);
+                let child = TypeInfo::new(value.ty.related_type(ty), value.addr + offset, bytes);
+                scan_value(child, depth + 1, found, capped, plans);
             }
         }
         ScanPlan::Enum => {
             if let Ok((_, payload)) = value.active_variant() {
-                scan_value(&payload, depth + 1, found, capped, plans);
+                scan_value(payload, depth + 1, found, capped, plans);
             }
         }
         ScanPlan::Stop => {}
@@ -732,10 +732,10 @@ type WalkedChild<'b> = (SetChild, Option<AwaitChain<'b>>, (u64, u64));
 fn walk_set<'b, T: Target + Sync>(
     ctx: &Context<'b, T>,
     list: &TaskList,
-    set: &TypeInfo<'b>,
+    set: TypeInfo<'b>,
     children: &mut Vec<WalkedChild<'b>>,
 ) -> Result<()> {
-    let head_member = ctx.walk(WalkRole::SetHeadAll).walk_at(set.as_ref())?;
+    let head_member = ctx.walk(WalkRole::SetHeadAll).walk_at(set)?;
     let head: u64 = head_member.parse(ctx)?;
     // The node layout is the pointer's target, reached by peeling the
     // atomic shims off the `head_all` word.
@@ -761,8 +761,7 @@ fn walk_set<'b, T: Target + Sync>(
             .with_context(|| format!("failed to read the set node at {cur:#x}"))?;
         // Task.future: UnsafeCell<Option<Fut>>; `None` is a completed
         // child the set has not reaped.
-        let slot = ctx.walk(WalkRole::SetNodeFuture).walk_at(node.as_ref())?;
-        let slot = slot.as_ref();
+        let slot = ctx.walk(WalkRole::SetNodeFuture).walk_at(node)?;
         let (variant, payload) = slot
             .active_variant()
             .with_context(|| format!("failed to decode the child slot at {cur:#x}"))?;
@@ -770,7 +769,7 @@ fn walk_set<'b, T: Target + Sync>(
             // The payload peels to the future itself, whose own await
             // chain gives the concrete (dyn-resolved) identity, the
             // suspend state, and the recognized wait target.
-            let fut = payload.peel().to_owned();
+            let fut = payload.peel();
             let slot_root = FutureRoot {
                 addr: fut.addr,
                 ty: fut.ty.id(),
@@ -820,7 +819,7 @@ fn walk_set<'b, T: Target + Sync>(
         };
         children.push((child, chain, (cur, cur + node_ty.size())));
 
-        cur = ctx.walk(WalkRole::SetNodeNext).read(node.as_ref())?;
+        cur = ctx.walk(WalkRole::SetNodeNext).read(node)?;
     }
     Ok(())
 }
@@ -840,22 +839,22 @@ fn walk_set<'b, T: Target + Sync>(
 fn walk_join_set<'b, T: Target + Sync>(
     ctx: &Context<'b, T>,
     list: &TaskList,
-    set: &TypeInfo<'b>,
+    set: TypeInfo<'b>,
     tasks: &mut Vec<JoinedTask>,
     length: &mut u64,
 ) -> Result<()> {
-    *length = ctx.walk(WalkRole::JoinSetLength).read(set.as_ref())?;
+    *length = ctx.walk(WalkRole::JoinSetLength).read(set)?;
     // The lists live behind an Arc, whose target is the `ArcInner`
     // header the payload follows; `data` is the mutex, and its own
     // `data` the guarded value, however the loom shim spells the lock.
     let lists = ctx
         .walk(WalkRole::JoinSetLists)
-        .walk_at(set.as_ref())
+        .walk_at(set)
         .context("failed to read the join set's shared lists")?;
 
     let mut visited = HashSet::default();
     for queue in [WalkRole::JoinSetNotifiedHead, WalkRole::JoinSetIdleHead] {
-        let Some(head) = ctx.walk(queue).walk(lists.as_ref())?.optional() else {
+        let Some(head) = ctx.walk(queue).walk(lists)?.optional() else {
             continue;
         };
         // The recorded steps land on the raw entry pointer inside the
@@ -885,9 +884,7 @@ fn walk_join_set<'b, T: Target + Sync>(
             // a `JoinHandle` leaf is read through. Asking for a member
             // by name in there would peel first and look afterwards,
             // which is to say look past what it asked for.
-            let handle = ctx
-                .walk(WalkRole::JoinSetEntryValue)
-                .walk_at(entry.as_ref())?;
+            let handle = ctx.walk(WalkRole::JoinSetEntryValue).walk_at(entry)?;
             ensure!(
                 handle.ty.pointer_target().is_some(),
                 "the join set entry at {addr:#x} does not peel to a task pointer, \
@@ -908,7 +905,7 @@ fn walk_join_set<'b, T: Target + Sync>(
 
             cur = ctx
                 .walk(WalkRole::JoinSetEntryNext)
-                .walk(entry.as_ref())?
+                .walk(entry)?
                 .optional()
                 .map(|ptr| ptr.parse(ctx).map_err(anyhow::Error::from))
                 .transpose()?;

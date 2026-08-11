@@ -24,7 +24,7 @@ use exegesis::bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::bundle::{Context, TaskStage};
 use proc::Target;
 use proc::snapshot::Snapshot;
-use reify::TypeInfoRef;
+use reify::TypeInfo;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -74,8 +74,8 @@ fn render_local(
     let chain = ctx.await_chain(future);
     let frame = chain.frames.first().expect("a running frame");
     let payload = match &frame.state {
-        Some(state) => state.payload.as_ref(),
-        None => frame.future.as_ref(),
+        Some(state) => state.payload,
+        None => frame.future,
     };
     let m = payload
         .ty
@@ -88,7 +88,7 @@ fn render_local(
     // dispatches the top-level formatter under test (e.g. `MpscRx`'s
     // compact form); peeling would strip `bounded::Receiver` down to its
     // inner `Arc<Chan>` and defeat it.
-    let v = TypeInfoRef::new(m.ty(), payload.addr + m.offset(), bytes);
+    let v = TypeInfo::new(m.ty(), payload.addr + m.offset(), bytes);
     mask(&format!("{:#}", v.display_from_target(snapshot, depth)))
 }
 
@@ -102,7 +102,7 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
     let lwps = snapshot.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
     let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    let list = ctx.enumerate_tasks(&shared).expect("the owned-task walk");
+    let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
     assert!(
         list.errors.is_empty(),
         "task walk errors: {:?}",

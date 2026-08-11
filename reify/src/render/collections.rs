@@ -3,7 +3,7 @@
 
 use crate::debug_type::{DisplayNode, FatHeader, MapEntries};
 use crate::elements::{Elements, SeqError};
-use crate::value::TypeInfoRef;
+use crate::value::TypeInfo;
 
 use exegesis::bundle::BundleType;
 
@@ -187,12 +187,12 @@ pub(crate) fn eval_map<'a>(
                 ));
             }
             write_field_prefix(f, pretty, ctx.prefix, ctx.depth, emitted == 0)?;
-            let key = TypeInfoRef {
+            let key = TypeInfo {
                 ty: key,
                 addr: key_addr,
                 bytes: key_bytes,
             };
-            let value = TypeInfoRef {
+            let value = TypeInfo {
                 ty: value,
                 addr: value_addr,
                 bytes: value_bytes,
@@ -335,12 +335,12 @@ fn write_map_entry<'a>(
     ) else {
         return write!(f, "<unreadable>");
     };
-    let key = TypeInfoRef {
+    let key = TypeInfo {
         ty: key,
         addr: key_addr,
         bytes: key_bytes,
     };
-    let value = TypeInfoRef {
+    let value = TypeInfo {
         ty: value,
         addr: value_addr,
         bytes: value_bytes,
@@ -356,11 +356,11 @@ fn write_map_entry<'a>(
 
 fn walk_map_entries<'a>(
     bytes: &[u8],
-    proc: Option<&(dyn ReadFromProc + Sync)>,
+    proc: Option<&'a (dyn ReadFromProc + Sync)>,
     key: BundleType<'a>,
     value: BundleType<'a>,
     entries: &MapEntries<'a>,
-    emit: &mut impl FnMut(u64, &[u8], u64, &[u8]) -> std::result::Result<(), MapWalkError>,
+    emit: &mut impl FnMut(u64, &'a [u8], u64, &'a [u8]) -> std::result::Result<(), MapWalkError>,
 ) -> std::result::Result<(), MapWalkError> {
     let MapEntries::BTree {
         root,
@@ -421,12 +421,12 @@ fn walk_map_entries<'a>(
 }
 
 fn walk_btree_node<'a>(
-    proc: &(dyn ReadFromProc + Sync),
+    proc: &'a (dyn ReadFromProc + Sync),
     layout: BTreeNodeLayout<'a>,
     address: u64,
     height: u64,
     visited: &mut HashSet<u64>,
-    emit: &mut impl FnMut(u64, &[u8], u64, &[u8]) -> std::result::Result<(), MapWalkError>,
+    emit: &mut impl FnMut(u64, &'a [u8], u64, &'a [u8]) -> std::result::Result<(), MapWalkError>,
 ) -> std::result::Result<(), MapWalkError> {
     if address == 0 {
         return Err(MapWalkError::Invalid("null node pointer"));
@@ -577,7 +577,7 @@ pub(crate) fn eval_list<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::TypeInfoRef;
+    use crate::TypeInfo;
     use crate::testhelper::*;
 
     use exegesis::bundle::BundleView;
@@ -592,7 +592,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(VEC).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "[5, 8, 13]"
@@ -606,7 +606,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &invalid);
+        let value = TypeInfo::new(v.ty(VEC).unwrap(), 0, &invalid);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "<invalid slice: the length exceeds the capacity>"
@@ -628,7 +628,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(SLICE).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "[5, 8, 13]"
@@ -653,7 +653,7 @@ mod tests {
         bytes[..8].copy_from_slice(&0x1000u64.to_le_bytes());
         bytes[8..16].copy_from_slice(&1u64.to_le_bytes());
         bytes[16..].copy_from_slice(&3u64.to_le_bytes());
-        let value = TypeInfoRef::new(v.ty(BTREE_MAP).unwrap(), 0x5000, &bytes);
+        let value = TypeInfo::new(v.ty(BTREE_MAP).unwrap(), 0x5000, &bytes);
 
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
@@ -685,7 +685,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(VEC).unwrap(), 0, &bytes);
 
         let inline = (0..100).map(|i| i.to_string()).collect::<Vec<_>>();
         assert_eq!(
@@ -752,7 +752,7 @@ mod tests {
         bytes[..8].copy_from_slice(&root.to_le_bytes());
         bytes[8..16].copy_from_slice(&3u64.to_le_bytes());
         bytes[16..].copy_from_slice(&80u64.to_le_bytes());
-        let value = TypeInfoRef::new(v.ty(BTREE_MAP).unwrap(), 0x5000, &bytes);
+        let value = TypeInfo::new(v.ty(BTREE_MAP).unwrap(), 0x5000, &bytes);
 
         let entries = (0..80)
             .map(|k| format!("{k}: {}", k + 1000))
@@ -786,7 +786,7 @@ mod tests {
         let mut bytes = [0u8; 24];
         bytes[..8].copy_from_slice(&0x1000u64.to_le_bytes());
         bytes[16..].copy_from_slice(&2u64.to_le_bytes());
-        let value = TypeInfoRef::new(ty, 0x5000, &bytes);
+        let value = TypeInfo::new(ty, 0x5000, &bytes);
         let shown = format!("{}", value.display_from_target(&one_leaf, 8));
         assert!(
             shown.contains("<invalid: tree contains fewer entries than length>"),
@@ -795,7 +795,7 @@ mod tests {
 
         bytes[8..16].copy_from_slice(&1u64.to_le_bytes());
         bytes[16..].copy_from_slice(&1u64.to_le_bytes());
-        let value = TypeInfoRef::new(ty, 0x5000, &bytes);
+        let value = TypeInfo::new(ty, 0x5000, &bytes);
         let shown = format!("{}", value.display_from_target(&self_cycle, 8));
         assert!(shown.contains("<invalid: node cycle>"), "{shown}");
     }
@@ -809,7 +809,7 @@ mod tests {
         let v = BundleView::new(&b);
 
         let empty = thing_bytes(0, 0, 0, 0, 0);
-        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &empty);
+        let value = TypeInfo::new(v.ty(N_THING).unwrap(), 0, &empty);
         assert_eq!(
             format!("{}", value.display_from_target(&no_reads, 16)),
             "Thing { state: state=idle, generation=0, flag: 0, point: Point { x: 0, y: 0 }, queue: [] }"
@@ -817,7 +817,7 @@ mod tests {
 
         // A populated queue with no target reader degrades, not panics.
         let populated = thing_bytes(0, 0, 0, 0, 0x100);
-        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &populated);
+        let value = TypeInfo::new(v.ty(N_THING).unwrap(), 0, &populated);
         let shown = format!("{}", value.display());
         assert!(shown.contains("queue: <target unavailable>"), "{shown}");
     }
@@ -830,7 +830,7 @@ mod tests {
         let b = node_bundle();
         let v = BundleView::new(&b);
         let bytes = thing_bytes(0, 0, 0, 0, 0x100);
-        let value = TypeInfoRef::new(v.ty(N_THING).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(N_THING).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 16)),
             "Thing { state: state=idle, generation=0, flag: 0, point: Point { x: 0, y: 0 }, \
@@ -855,7 +855,7 @@ mod tests {
         let show = |parts: &[u64]| {
             format!(
                 "{}",
-                TypeInfoRef::new(vec_ty, 0, &fat(parts)).display_from_target(&mem, 8)
+                TypeInfo::new(vec_ty, 0, &fat(parts)).display_from_target(&mem, 8)
             )
         };
 
@@ -885,7 +885,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let fat = u64s(&[0x2000, 1000, 1000]);
-        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &fat);
+        let value = TypeInfo::new(v.ty(VEC).unwrap(), 0, &fat);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "[7, 8, 9, <997 more unreadable>]"

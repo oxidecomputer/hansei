@@ -3,7 +3,7 @@
 //! `Name(v0, v1)` rather than `Name { __0: v0, __1: v1 }`.
 
 use crate::debug_type::{DisplayNode, TypeKind};
-use crate::value::TypeInfoRef;
+use crate::value::TypeInfo;
 
 use exegesis::bundle::{BundleMember, BundleType};
 
@@ -61,7 +61,7 @@ fn has_named_single_field<'a>(ty: &BundleType<'a>) -> bool {
 fn write_member_value<'a>(
     f: &mut fmt::Formatter<'_>,
     member: &BundleMember<'a>,
-    bytes: &[u8],
+    bytes: &'a [u8],
     addr: u64,
     ctx: RenderCtx<'_, 'a>,
     pretty: bool,
@@ -71,7 +71,7 @@ fn write_member_value<'a>(
     let end = start + mem_ty.size() as usize;
     match bytes.get(start..end) {
         Some(mem_bytes) => {
-            let child = TypeInfoRef {
+            let child = TypeInfo {
                 ty: mem_ty,
                 addr: addr + member.offset(),
                 bytes: mem_bytes,
@@ -89,7 +89,7 @@ fn write_member_value<'a>(
 fn write_aggregate_body<'a>(
     f: &mut fmt::Formatter<'_>,
     ty: &BundleType<'a>,
-    bytes: &[u8],
+    bytes: &'a [u8],
     addr: u64,
     ctx: RenderCtx<'_, 'a>,
     pretty: bool,
@@ -133,7 +133,7 @@ fn write_aggregate_body<'a>(
 
 pub(crate) fn write_struct_fields<'a>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a>,
+    info: &TypeInfo<'a>,
     name: &str,
     pretty: bool,
     ctx: RenderCtx<'_, 'a>,
@@ -146,7 +146,7 @@ pub(crate) fn write_struct_fields<'a>(
 
 pub(crate) fn write_rust_enum<'a>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a>,
+    info: &TypeInfo<'a>,
     name: &str,
     pretty: bool,
     ctx: RenderCtx<'_, 'a>,
@@ -161,7 +161,7 @@ pub(crate) fn write_rust_enum<'a>(
         return write_named_bytes(f, name, info.bytes);
     };
     let variant_addr = info.addr + offset;
-    let variant_info = TypeInfoRef {
+    let variant_info = TypeInfo {
         ty: var_ty,
         addr: variant_addr,
         bytes: variant_bytes,
@@ -257,7 +257,7 @@ pub(crate) fn write_rust_enum<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::TypeInfoRef;
+    use crate::TypeInfo;
     use crate::testhelper::*;
 
     use exegesis::bundle::{Bundle, BundleView, DisplayNode as BundleNode, TypeDef};
@@ -280,7 +280,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display().ugly()),
             "Opt::Some { data_ptr: 0x3000, length: 8 }"
@@ -295,7 +295,7 @@ mod tests {
 
         // A tuple struct's `__0`/`__1` fields render positionally, eliding the
         // synthetic labels, to match Rust `Debug` (`Pair(1, 2)`).
-        let pair = TypeInfoRef::new(v.ty(PAIR).unwrap(), 0, &bytes);
+        let pair = TypeInfo::new(v.ty(PAIR).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", pair.display_with_depth(2)), "Pair(1, 2)");
         assert_eq!(
             format!("{:#}", pair.display_with_depth(2)),
@@ -303,7 +303,7 @@ mod tests {
         );
 
         // A regular struct still shows its field names (regression guard).
-        let point = TypeInfoRef::new(v.ty(POINT).unwrap(), 0, &bytes);
+        let point = TypeInfo::new(v.ty(POINT).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", point.display_with_depth(2)),
             "Point { x: 1, y: 2 }"
@@ -329,7 +329,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "Opt::Some(\"hi\\nthere\")"
@@ -379,7 +379,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
             "Opt::Some(\"hi\\nthere\")"
@@ -403,7 +403,7 @@ mod tests {
 
         // A(Point): the payload's own fields, prefixed with the variant.
         let a = variant(0, &u32s(&[1, 2]));
-        let a = TypeInfoRef::new(msg, 0, &a);
+        let a = TypeInfo::new(msg, 0, &a);
         assert_eq!(format!("{}", a.display()), "Msg::A { x: 1, y: 2 }");
         assert_eq!(
             format!("{:#}", a.display()),
@@ -412,7 +412,7 @@ mod tests {
 
         // C(unit): a zero-sized payload writes no body at all.
         let c = variant(2, &[]);
-        let c = TypeInfoRef::new(msg, 0, &c);
+        let c = TypeInfo::new(msg, 0, &c);
         assert_eq!(format!("{}", c.display()), "Msg::C");
         assert_eq!(format!("{:#}", c.display()), "Msg::C");
 
@@ -421,7 +421,7 @@ mod tests {
         // like the one-field tuple variant it stands for. Pretty mode has
         // no structure to lay out, so both spellings agree.
         let b_bytes = variant(1, &7u64.to_le_bytes());
-        let b_val = TypeInfoRef::new(msg, 0, &b_bytes);
+        let b_val = TypeInfo::new(msg, 0, &b_bytes);
         assert_eq!(format!("{}", b_val.display()), "Msg::B(7)");
         assert_eq!(format!("{:#}", b_val.display()), "Msg::B(7)");
     }
@@ -441,7 +441,7 @@ mod tests {
         let named = single_field_payload(false);
         let v = BundleView::new(&named);
         let bytes = 7u64.to_le_bytes();
-        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "Opt::Some { value: 7 }");
         assert_eq!(
             format!("{:#}", value.display()),
@@ -453,7 +453,7 @@ mod tests {
         // value reads positionally.
         let tuple = single_field_payload(true);
         let v = BundleView::new(&tuple);
-        let value = TypeInfoRef::new(v.ty(OPT).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "Opt::Some(7)");
     }
 
@@ -496,7 +496,7 @@ mod tests {
         let v = BundleView::new(&b);
         let mut bytes = vec![0u8; 16];
         bytes[0] = 99;
-        let value = TypeInfoRef::new(v.ty(MSG).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(MSG).unwrap(), 0, &bytes);
         let expected = "Msg [0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
                         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]";
         assert_eq!(format!("{}", value.display()), expected);

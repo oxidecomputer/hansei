@@ -17,7 +17,7 @@ pub(crate) mod scalar;
 
 use crate::debug_type::{DisplayNode, TypeClass};
 use crate::target::ReadFromProc;
-use crate::value::{TypeInfo, TypeInfoRef};
+use crate::value::TypeInfo;
 
 use exegesis::bundle::{BundleType, BundleTypeId};
 
@@ -38,26 +38,20 @@ use std::rc::Rc;
 /// succeeded.
 pub(crate) type FormatCache<'a> = RefCell<HashMap<BundleTypeId, Option<Rc<DisplayNode<'a>>>>>;
 
-impl<'a> fmt::Display for TypeInfoRef<'_, 'a> {
+impl<'a> fmt::Display for TypeInfo<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_display_value(f, self, RenderCtx::plain(0, 16), f.alternate())
     }
 }
 
-impl<'a> fmt::Display for TypeInfo<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.as_ref(), f)
-    }
-}
-
-pub struct DisplayValue<'r, 'buf, 'a: 'buf> {
-    info: &'r TypeInfoRef<'buf, 'a>,
+pub struct DisplayValue<'r, 'a> {
+    info: &'r TypeInfo<'a>,
     depth: usize,
     max_depth: usize,
     ugly: bool,
 }
 
-impl<'r, 'buf, 'a: 'buf> DisplayValue<'r, 'buf, 'a> {
+impl<'r, 'a> DisplayValue<'r, 'a> {
     /// Suppress custom formatters and render the base structural view.
     pub fn ugly(mut self) -> Self {
         self.ugly = true;
@@ -65,7 +59,7 @@ impl<'r, 'buf, 'a: 'buf> DisplayValue<'r, 'buf, 'a> {
     }
 }
 
-impl<'a> fmt::Display for DisplayValue<'_, '_, 'a> {
+impl<'a> fmt::Display for DisplayValue<'_, 'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_display_value(
             f,
@@ -85,9 +79,9 @@ impl<'a> fmt::Display for DisplayValue<'_, '_, 'a> {
 /// worker threads; the lifetime lets it borrow the caller's lookup state.
 pub type AddrAnnotator<'r> = dyn Fn(u64) -> Option<String> + Sync + 'r;
 
-pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, P: ReadFromProc + Sync> {
-    info: &'r TypeInfoRef<'buf, 'a>,
-    proc: &'r P,
+pub struct DisplayTargetValue<'r, 'a, P: ReadFromProc + Sync> {
+    info: &'r TypeInfo<'a>,
+    proc: &'a P,
     max_depth: usize,
     ugly: bool,
     elide: Option<&'r ElideOverride>,
@@ -97,7 +91,7 @@ pub struct DisplayTargetValue<'r, 'buf, 'a: 'buf, P: ReadFromProc + Sync> {
     formats: FormatCache<'a>,
 }
 
-impl<'r, 'buf, 'a: 'buf, P: ReadFromProc + Sync> DisplayTargetValue<'r, 'buf, 'a, P> {
+impl<'r, 'a, P: ReadFromProc + Sync> DisplayTargetValue<'r, 'a, P> {
     /// Suppress custom formatters and render the base structural view.
     pub fn ugly(mut self) -> Self {
         self.ugly = true;
@@ -129,7 +123,7 @@ impl<'r, 'buf, 'a: 'buf, P: ReadFromProc + Sync> DisplayTargetValue<'r, 'buf, 'a
     }
 }
 
-impl<'a, P: ReadFromProc + Sync> fmt::Display for DisplayTargetValue<'_, '_, 'a, P> {
+impl<'a, P: ReadFromProc + Sync> fmt::Display for DisplayTargetValue<'_, 'a, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ctx = RenderCtx {
             depth: 0,
@@ -148,8 +142,8 @@ impl<'a, P: ReadFromProc + Sync> fmt::Display for DisplayTargetValue<'_, '_, 'a,
     }
 }
 
-impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
-    pub fn display(&self) -> DisplayValue<'_, 'buf, 'a> {
+impl<'a> TypeInfo<'a> {
+    pub fn display(&self) -> DisplayValue<'_, 'a> {
         DisplayValue {
             info: self,
             depth: 0,
@@ -158,7 +152,7 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
         }
     }
 
-    pub fn display_with_depth(&self, max_depth: usize) -> DisplayValue<'_, 'buf, 'a> {
+    pub fn display_with_depth(&self, max_depth: usize) -> DisplayValue<'_, 'a> {
         DisplayValue {
             info: self,
             depth: 0,
@@ -171,9 +165,9 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
     /// target. Pointer traversal consumes one level of the depth budget.
     pub fn display_from_target<'r, P: ReadFromProc + Sync>(
         &'r self,
-        proc: &'r P,
+        proc: &'a P,
         max_depth: usize,
-    ) -> DisplayTargetValue<'r, 'buf, 'a, P> {
+    ) -> DisplayTargetValue<'r, 'a, P> {
         DisplayTargetValue {
             info: self,
             proc,
@@ -194,11 +188,17 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
 /// whether custom debug formatters are suppressed in favour of the base
 /// structural view. Bundling these keeps the renderer signatures small (they
 /// otherwise take the same trailing arguments everywhere).
+///
+/// `'buf` is the pass's own state — the cycle guard, the format cache, the
+/// caller's overrides — while `'a` is the value lifetime: the reader sits
+/// there rather than at `'buf` because a pointer followed mid-render becomes
+/// a [`TypeInfo`] of the same value lifetime as the one being rendered, and
+/// its bytes are the read's.
 #[derive(Copy, Clone)]
 pub(crate) struct RenderCtx<'buf, 'a> {
     depth: usize,
     max_depth: usize,
-    proc: Option<&'buf (dyn ReadFromProc + Sync)>,
+    proc: Option<&'a (dyn ReadFromProc + Sync)>,
     visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
     /// Where this pass memoizes resolved display programs; `None` renders
     /// resolve on every ask (the plain, targetless displays).
@@ -319,7 +319,7 @@ impl<'buf, 'a> RenderCtx<'buf, 'a> {
 
     /// The `Send + Sync` slice of this context, from which a worker
     /// thread rebuilds a context of its own around task-local caches.
-    pub(crate) fn for_workers(&self) -> WorkerCtx<'buf> {
+    pub(crate) fn for_workers(&self) -> WorkerCtx<'buf, 'a> {
         WorkerCtx {
             depth: self.depth,
             max_depth: self.max_depth,
@@ -380,7 +380,7 @@ impl<'buf, 'a> RenderCtx<'buf, 'a> {
 /// renders millions of nodes of.
 pub(crate) fn write_display_value<'a>(
     f: &mut fmt::Formatter<'_>,
-    info: &TypeInfoRef<'_, 'a>,
+    info: &TypeInfo<'a>,
     ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
@@ -493,7 +493,7 @@ pub(crate) fn write_display_value<'a>(
             }
             let result = match proc.read_bytes(addr, target.size()) {
                 Ok(pointee_bytes) => {
-                    let pointee = TypeInfoRef {
+                    let pointee = TypeInfo {
                         ty: target,
                         addr,
                         bytes: pointee_bytes,
@@ -564,7 +564,7 @@ pub(crate) fn write_display_value<'a>(
                     write!(f, "<truncated>")?;
                     break;
                 };
-                let child = TypeInfoRef {
+                let child = TypeInfo {
                     ty: element,
                     addr: info.addr + start as u64,
                     bytes: elem_bytes,
@@ -801,7 +801,7 @@ pub(crate) fn write_hex_bytes(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::
 
 #[cfg(test)]
 mod tests {
-    use crate::TypeInfoRef;
+    use crate::TypeInfo;
     use crate::testhelper::*;
 
     use exegesis::bundle::BundleView;
@@ -813,7 +813,7 @@ mod tests {
 
         // A `Scalar` format (`RawMutex`) renders its decoded bits normally, but
         // `--ugly` shows the underlying struct field.
-        let mutex = TypeInfoRef::new(v.ty(RAW_MUTEX).unwrap(), 0, &[1u8]);
+        let mutex = TypeInfo::new(v.ty(RAW_MUTEX).unwrap(), 0, &[1u8]);
         assert_eq!(
             format!("{}", mutex.display()),
             "parking_lot::raw_mutex::RawMutex: locked=true, parked=false"
@@ -830,7 +830,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let s = TypeInfoRef::new(v.ty(STR).unwrap(), 0, &str_bytes);
+        let s = TypeInfo::new(v.ty(STR).unwrap(), 0, &str_bytes);
         assert_eq!(
             format!("{}", s.display().ugly()),
             "&str { data_ptr: 0x3000, length: 8 }"
@@ -846,7 +846,7 @@ mod tests {
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect();
-        let array = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &bytes);
+        let array = TypeInfo::new(v.ty(ARR).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", array.display()),
             "[0x00000001, 0x00abcdef, 0xffffffff]"
@@ -856,7 +856,7 @@ mod tests {
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect();
-        let array = TypeInfoRef::new(v.ty(VTABLE_ARRAY).unwrap(), 0, &bytes);
+        let array = TypeInfo::new(v.ty(VTABLE_ARRAY).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", array.display()),
             "[0x0000000000000001, 0x0000000000abcdef, 0xffffffffffffffff]"
@@ -876,7 +876,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes = 0x1000u64.to_le_bytes();
-        let root = TypeInfoRef::new(v.ty(NODE_PTR).unwrap(), 0, &bytes);
+        let root = TypeInfo::new(v.ty(NODE_PTR).unwrap(), 0, &bytes);
         let shown = format!("{:#}", root.display_from_target(&mem, 8));
         assert!(shown.contains("value: 1"), "{shown}");
         assert!(shown.contains("value: 2"), "{shown}");
@@ -892,12 +892,8 @@ mod tests {
     fn test_base_type_encodings_render_by_class() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let show = |id, bytes: &[u8]| {
-            format!(
-                "{}",
-                TypeInfoRef::new(v.ty(id).unwrap(), 0, bytes).display()
-            )
-        };
+        let show =
+            |id, bytes: &[u8]| format!("{}", TypeInfo::new(v.ty(id).unwrap(), 0, bytes).display());
 
         assert_eq!(show(F32, &1.5f32.to_le_bytes()), "1.5");
         assert_eq!(show(F64, &(-0.25f64).to_le_bytes()), "-0.25");
@@ -936,7 +932,7 @@ mod tests {
         let show = |c: u32| {
             format!(
                 "{}",
-                TypeInfoRef::new(v.ty(CHAR).unwrap(), 0, &c.to_le_bytes()).display()
+                TypeInfo::new(v.ty(CHAR).unwrap(), 0, &c.to_le_bytes()).display()
             )
         };
         assert_eq!(show(u32::from('A')), "'A'");
@@ -957,10 +953,7 @@ mod tests {
         let color = v.ty(COLOR).unwrap();
         assert!(color.active_variant(&1u32.to_le_bytes()).is_none());
         assert_eq!(
-            format!(
-                "{}",
-                TypeInfoRef::new(color, 0, &1u32.to_le_bytes()).display()
-            ),
+            format!("{}", TypeInfo::new(color, 0, &1u32.to_le_bytes()).display()),
             "[0x01, 0x00, 0x00, 0x00]"
         );
     }
@@ -976,11 +969,11 @@ mod tests {
         let v = BundleView::new(&b);
 
         // Point is 8 bytes; 4 is not enough to render it at all.
-        let short = TypeInfoRef::new(v.ty(POINT).unwrap(), 0, &[0u8; 4]);
+        let short = TypeInfo::new(v.ty(POINT).unwrap(), 0, &[0u8; 4]);
         assert_eq!(format!("{}", short.display()), "<truncated>");
 
         // `[u32; 3]` is 12 bytes; two elements' worth does not render partially.
-        let arr = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &[1u8, 0, 0, 0, 2, 0, 0, 0]);
+        let arr = TypeInfo::new(v.ty(ARR).unwrap(), 0, &[1u8, 0, 0, 0, 2, 0, 0, 0]);
         assert_eq!(format!("{}", arr.display()), "<truncated>");
     }
 
@@ -991,7 +984,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let point = TypeInfoRef::new(v.ty(POINT).unwrap(), 0, &bytes);
+        let point = TypeInfo::new(v.ty(POINT).unwrap(), 0, &bytes);
 
         // Depth 0 has no budget for the value itself.
         assert_eq!(format!("{}", point.display_with_depth(0)), "...");
@@ -1028,14 +1021,14 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                TypeInfoRef::new(ptr, 0, &head).display_from_target(&unreadable, 16)
+                TypeInfo::new(ptr, 0, &head).display_from_target(&unreadable, 16)
             ),
             "0x100 -> <unreadable>"
         );
         assert_eq!(
             format!(
                 "{}",
-                TypeInfoRef::new(ptr, 0, &head).display_from_target(&self_cycle, 16)
+                TypeInfo::new(ptr, 0, &head).display_from_target(&self_cycle, 16)
             ),
             "0x100 -> Node { value: 1, next: 0x100 -> <cycle> }"
         );
@@ -1050,7 +1043,7 @@ mod tests {
         };
         let shown = format!(
             "{}",
-            TypeInfoRef::new(two, 0, &pair).display_from_target(&diamond, 16)
+            TypeInfo::new(two, 0, &pair).display_from_target(&diamond, 16)
         );
         assert_eq!(
             shown,
@@ -1067,7 +1060,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let point = TypeInfoRef::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
+        let point = TypeInfo::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
 
         // `{}` on the value itself, rather than on a Display* wrapper.
         assert_eq!(format!("{point}"), "Point { x: 1, y: 2 }");
@@ -1076,11 +1069,6 @@ mod tests {
             format!("{}", point.display_with_depth(16))
         );
         assert_eq!(format!("{point:#}"), "Point {\n    x: 1,\n    y: 2,\n}");
-
-        // The owned form renders identically, through the same impl.
-        let owned = crate::TypeInfo::from(point.clone());
-        assert_eq!(format!("{owned}"), format!("{point}"));
-        assert_eq!(format!("{owned:#}"), format!("{point:#}"));
     }
 
     /// `ugly()` on a target-reading display suppresses custom formatters the
@@ -1094,7 +1082,7 @@ mod tests {
             .into_iter()
             .flat_map(u64::to_le_bytes)
             .collect();
-        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &bytes);
+        let value = TypeInfo::new(v.ty(VEC).unwrap(), 0, &bytes);
 
         // The Vec's own format renders its elements.
         assert_eq!(
@@ -1122,7 +1110,7 @@ mod tests {
         // its own depth and its closer lands one level left of them.
         let mem = FakeMem::new().at(0x2000, u32s(&[3, 4]));
         let bytes = 0x2000u64.to_le_bytes();
-        let ptr = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &bytes);
+        let ptr = TypeInfo::new(v.ty(PTR).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{:#}", ptr.display_from_target(&mem, 8)),
             "0x2000 -> Point {\n        x: 3,\n        y: 4,\n    }"
@@ -1130,7 +1118,7 @@ mod tests {
 
         // Three levels of record nesting, from the structural view of a type
         // whose own formatter would otherwise flatten it.
-        let notify = TypeInfoRef::new(v.ty(NOTIFY).unwrap(), 0, &[0u8; 32]);
+        let notify = TypeInfo::new(v.ty(NOTIFY).unwrap(), 0, &[0u8; 32]);
         let shown = format!("{:#}", notify.display().ugly());
         for line in shown.lines() {
             let indent = line.len() - line.trim_start().len();
@@ -1162,7 +1150,7 @@ mod tests {
         let v = BundleView::new(&b);
         let mem = FakeMem::new().at(0x2000, u32s(&[5, 8, 13]));
         let fat = u64s(&[0x2000, 3, 3]);
-        let value = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &fat);
+        let value = TypeInfo::new(v.ty(VEC).unwrap(), 0, &fat);
         assert_eq!(
             format!("{:#}", value.display_from_target(&mem, 8).ugly()),
             "alloc::vec::Vec<u32> {\n    ptr: 0x2000 -> 5,\n    len: 3,\n    capacity: 3,\n}"
@@ -1180,7 +1168,7 @@ mod tests {
         let show = |byte: u8| {
             format!(
                 "{}",
-                TypeInfoRef::new(bool_ty, 0, std::slice::from_ref(&byte)).display()
+                TypeInfo::new(bool_ty, 0, std::slice::from_ref(&byte)).display()
             )
         };
         assert_eq!(show(0), "false");
@@ -1189,10 +1177,7 @@ mod tests {
         assert_eq!(show(7), "true");
 
         assert_eq!(
-            format!(
-                "{}",
-                TypeInfoRef::new(v.ty(UNIT).unwrap(), 0, &[]).display()
-            ),
+            format!("{}", TypeInfo::new(v.ty(UNIT).unwrap(), 0, &[]).display()),
             "Unit"
         );
     }
@@ -1204,7 +1189,7 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let ptr = v.ty(PTR).unwrap();
-        let show = |bytes: &[u8]| format!("{}", TypeInfoRef::new(ptr, 0, bytes).display());
+        let show = |bytes: &[u8]| format!("{}", TypeInfo::new(ptr, 0, bytes).display());
 
         assert_eq!(show(&0x2000u64.to_le_bytes()), "0x2000");
         assert_eq!(show(&0u64.to_le_bytes()), "null");
@@ -1218,12 +1203,8 @@ mod tests {
     fn test_integer_arrays_pad_hex_to_the_element_width() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let show = |id, bytes: &[u8]| {
-            format!(
-                "{}",
-                TypeInfoRef::new(v.ty(id).unwrap(), 0, bytes).display()
-            )
-        };
+        let show =
+            |id, bytes: &[u8]| format!("{}", TypeInfo::new(v.ty(id).unwrap(), 0, bytes).display());
         assert_eq!(
             show(IPV4_OCTETS, &[1, 2, 3, 0xff]),
             "[0x01, 0x02, 0x03, 0xff]"
@@ -1248,7 +1229,7 @@ mod tests {
 
         let mem = FakeMem::new().at(0x2000, u32s(&[3, 4]));
         let bytes = 0x2000u64.to_le_bytes();
-        let ptr = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &bytes);
+        let ptr = TypeInfo::new(v.ty(PTR).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{:#}", ptr.display_from_target(&mem, 8).line_prefix(">> ")),
             "0x2000 -> Point {\n>>         x: 3,\n>>         y: 4,\n>>     }"
@@ -1257,7 +1238,7 @@ mod tests {
         let values: Vec<u32> = (0..100).collect();
         let mem = FakeMem::new().at(0x3000, u32s(&values));
         let fat = u64s(&[0x3000, 100, 100]);
-        let vec = TypeInfoRef::new(v.ty(VEC).unwrap(), 0, &fat);
+        let vec = TypeInfo::new(v.ty(VEC).unwrap(), 0, &fat);
         let shown = format!("{:#}", vec.display_from_target(&mem, 8).line_prefix(">> "));
         let mut lines = shown.lines();
         assert_eq!(lines.next(), Some("["));
@@ -1278,7 +1259,7 @@ mod tests {
         // Followed: the label sits between the address and the pointee.
         let mem = FakeMem::new().at(0x2000, u32s(&[3, 4]));
         let bytes = 0x2000u64.to_le_bytes();
-        let ptr = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &bytes);
+        let ptr = TypeInfo::new(v.ty(PTR).unwrap(), 0, &bytes);
         assert_eq!(
             format!(
                 "{}",
@@ -1302,7 +1283,7 @@ mod tests {
         // is never offered to it.
         let elsewhere = FakeMem::new().at(0x3000, u32s(&[1, 2]));
         let bytes = 0x3000u64.to_le_bytes();
-        let other = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &bytes);
+        let other = TypeInfo::new(v.ty(PTR).unwrap(), 0, &bytes);
         assert_eq!(
             format!(
                 "{}",
@@ -1313,7 +1294,7 @@ mod tests {
             "0x3000 -> Point { x: 1, y: 2 }"
         );
         let null = 0u64.to_le_bytes();
-        let null_ptr = TypeInfoRef::new(v.ty(PTR).unwrap(), 0, &null);
+        let null_ptr = TypeInfo::new(v.ty(PTR).unwrap(), 0, &null);
         assert_eq!(
             format!(
                 "{}",
