@@ -2,15 +2,17 @@
 
 use crate::{Error, Result};
 
-use std::borrow::Cow;
-
 pub trait ReadFromProc {
     /// Read `len` bytes at address, returning an error if the address is
-    /// unmapped. Borrowed straight from the target's own storage when it
-    /// serves the range in one piece (a mapped core segment); owned when
-    /// the read had to be assembled. The renderer holds these across its
-    /// recursion, so what a mapping can lend costs no allocation at all.
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Cow<'_, [u8]>>;
+    /// unmapped. The bytes are lent straight from the target's own storage,
+    /// which the renderer holds across its recursion, so a read costs no
+    /// allocation at all.
+    ///
+    /// A target that cannot serve a range in one piece — a libproc handle,
+    /// which copies through `pread` and has nothing to lend — cannot back
+    /// reify. That path is a proc-level sanity check for the portable core
+    /// readers, compared byte for byte and never rendered.
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]>;
 
     /// How many of the `max` bytes at `addr` the target can serve, without
     /// reading any of them.
@@ -32,13 +34,12 @@ pub trait ReadFromProc {
 }
 
 impl<T: proc::Target> ReadFromProc for T {
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Cow<'_, [u8]>> {
-        if let Some(bytes) = self.pslice(addr, len) {
-            return Ok(Cow::Borrowed(bytes));
-        }
-        proc::Target::read_bytes(self, addr, len)
-            .map(Cow::Owned)
-            .map_err(|e| Error::invalid_addr(addr).with_source(e))
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]> {
+        // What a target cannot lend whole it cannot serve at all: both
+        // core readers spell their own `read_bytes` as this, so the
+        // fallback that used to sit here only ever restated the refusal.
+        self.pslice(addr, len)
+            .ok_or_else(|| Error::invalid_addr(addr).with_source(proc::Error::unmapped(addr, len)))
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {

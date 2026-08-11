@@ -338,12 +338,12 @@ fn write_map_entry<'a>(
     let key = TypeInfoRef {
         ty: key,
         addr: key_addr,
-        bytes: &key_bytes,
+        bytes: key_bytes,
     };
     let value = TypeInfoRef {
         ty: value,
         addr: value_addr,
-        bytes: &value_bytes,
+        bytes: value_bytes,
     };
     write_display_value(f, &key, ctx, pretty)?;
     write!(f, ": ")?;
@@ -447,7 +447,7 @@ fn walk_btree_node<'a>(
         let bytes = proc
             .read_bytes(address, node_type.size())
             .map_err(|_| MapWalkError::Invalid("unreadable node"))?;
-        let len = read_unsigned_at(&bytes, layout.leaf_len_offset, layout.leaf_len.size())
+        let len = read_unsigned_at(bytes, layout.leaf_len_offset, layout.leaf_len.size())
             .ok_or(MapWalkError::Invalid("truncated node length"))?;
         if len > layout.key_slots {
             return Err(MapWalkError::Invalid("node length exceeds capacity"));
@@ -455,7 +455,7 @@ fn walk_btree_node<'a>(
 
         for index in 0..len {
             if height > 0 {
-                let child = btree_edge_address(&bytes, layout, index)?;
+                let child = btree_edge_address(bytes, layout, index)?;
                 walk_btree_node(proc, layout, child, height - 1, visited, emit)?;
             }
             let key_start = layout
@@ -474,9 +474,9 @@ fn walk_btree_node<'a>(
                         .ok_or(MapWalkError::Invalid("value offset overflow"))?,
                 )
                 .ok_or(MapWalkError::Invalid("value offset overflow"))?;
-            let key_bytes = byte_range(&bytes, key_start, layout.key.size())
+            let key_bytes = byte_range(bytes, key_start, layout.key.size())
                 .ok_or(MapWalkError::Invalid("truncated key slot"))?;
-            let value_bytes = byte_range(&bytes, value_start, layout.value.size())
+            let value_bytes = byte_range(bytes, value_start, layout.value.size())
                 .ok_or(MapWalkError::Invalid("truncated value slot"))?;
             let key_addr = address
                 .checked_add(key_start)
@@ -487,7 +487,7 @@ fn walk_btree_node<'a>(
             emit(key_addr, key_bytes, value_addr, value_bytes)?;
         }
         if height > 0 {
-            let child = btree_edge_address(&bytes, layout, len)?;
+            let child = btree_edge_address(bytes, layout, len)?;
             walk_btree_node(proc, layout, child, height - 1, visited, emit)?;
         }
         Ok(())
@@ -562,11 +562,11 @@ pub(crate) fn eval_list<'a>(
         write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, !any)?;
         any = true;
         // Each element renders inline (`pretty = false`) even in pretty mode.
-        eval_node(f, node, node_ty, &node_bytes, cur, ctx.deeper(), false)?;
+        eval_node(f, node, node_ty, node_bytes, cur, ctx.deeper(), false)?;
         if pretty {
             write!(f, ",")?;
         }
-        match read_u64_at(&node_bytes, next_offset) {
+        match read_u64_at(node_bytes, next_offset) {
             Some(next) => cur = next,
             None => break,
         }

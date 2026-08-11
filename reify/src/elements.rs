@@ -15,8 +15,6 @@ use crate::{Error, Result};
 
 use exegesis::bundle::BundleType;
 
-use std::borrow::Cow;
-
 /// The most elements a zero-sized sequence is credited with.
 ///
 /// A sequence of sized elements is believed only as far as the target can
@@ -28,8 +26,8 @@ const MAX_ZST_ELEMENTS: u64 = 64 * 1024 * 1024;
 /// The elements of one sequence-shaped value, read and addressed.
 ///
 /// Held rather than iterated directly because a buffered sequence's bytes are
-/// read once, up front: the elements borrow from that read, and on a mapped
-/// core it costs no copy at all.
+/// read once, up front: the elements borrow from that read, so it costs no
+/// copy at all.
 #[derive(Clone, Debug)]
 pub struct Elements<'buf, 'a> {
     element: BundleType<'a>,
@@ -41,7 +39,7 @@ pub struct Elements<'buf, 'a> {
     count: u64,
     /// What the value's length said, when the target could not serve it.
     claimed: Option<u64>,
-    bytes: Cow<'buf, [u8]>,
+    bytes: &'buf [u8],
 }
 
 impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
@@ -124,7 +122,7 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
                 stride: element.size(),
                 count,
                 claimed: None,
-                bytes: Cow::Borrowed(info.bytes),
+                bytes: info.bytes,
             });
         }
 
@@ -235,7 +233,7 @@ fn decode_header(
 /// of the requested stride they hold, and what the value's length claimed
 /// when that is more than was served.
 pub(crate) struct Buffer<'buf> {
-    pub(crate) bytes: Cow<'buf, [u8]>,
+    pub(crate) bytes: &'buf [u8],
     pub(crate) count: u64,
     pub(crate) claimed: Option<u64>,
 }
@@ -289,7 +287,7 @@ fn read_buffer<'buf>(
     count: u64,
 ) -> std::result::Result<Buffer<'buf>, SeqError> {
     let empty = |count, claimed| Buffer {
-        bytes: Cow::Borrowed(&[][..]),
+        bytes: &[][..],
         count,
         claimed,
     };

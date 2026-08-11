@@ -8,7 +8,6 @@ use crate::value::TypeInfoRef;
 
 use exegesis::bundle::BundleType;
 
-use std::borrow::Cow;
 use std::fmt;
 
 use super::collections::{eval_list, eval_map, eval_slice};
@@ -111,7 +110,7 @@ pub(crate) fn eval_node<'a>(
                     let child = TypeInfoRef {
                         ty: *target,
                         addr: child_addr,
-                        bytes: child_bytes.as_ref(),
+                        bytes: child_bytes,
                     };
                     write_display_value(f, &child, child_ctx, pretty)
                 }
@@ -167,12 +166,12 @@ pub(crate) fn eval_node<'a>(
                     fields,
                     target,
                     Some(name),
-                    &target_bytes,
+                    target_bytes,
                     addr,
                     ctx,
                     pretty,
                 ),
-                other => eval_node(f, other, target, &target_bytes, addr, ctx, pretty),
+                other => eval_node(f, other, target, target_bytes, addr, ctx, pretty),
             }
         }
         DisplayNode::DynPointer { .. } => {
@@ -252,7 +251,7 @@ fn check_place_guards<'a>(
                 let word = proc
                     .read_bytes(at, u64::from(guard.size))
                     .map_err(|_| "<unreadable>")?;
-                u128_from_le(&word)
+                u128_from_le(word)
             }
         };
         if !guard.expect.selects(raw) {
@@ -273,11 +272,11 @@ fn read_place_bytes<'b, 'a>(
     addr: u64,
     ctx: RenderCtx<'b, 'a>,
     size: u64,
-) -> std::result::Result<(u64, Cow<'b, [u8]>), &'static str> {
+) -> std::result::Result<(u64, &'b [u8]), &'static str> {
     check_place_guards(place, 0, None, bytes, ctx)?;
     if place.hops.is_empty() {
         let slice = byte_range(bytes, place.root_offset, size).ok_or("<truncated>")?;
-        return Ok((addr.wrapping_add(place.root_offset), Cow::Borrowed(slice)));
+        return Ok((addr.wrapping_add(place.root_offset), slice));
     }
     let proc = ctx.proc.ok_or("<target unavailable>")?;
     let mut pointer = read_u64_at(bytes, place.root_offset).ok_or("<truncated>")?;
@@ -290,7 +289,7 @@ fn read_place_bytes<'b, 'a>(
         check_place_guards(place, segment, Some(pointer), bytes, ctx)?;
         let addr = pointer.checked_add(*hop).ok_or("<invalid address>")?;
         let word = proc.read_bytes(addr, 8).map_err(|_| "<unreadable>")?;
-        pointer = read_u64_at(&word, 0).ok_or("<unreadable>")?;
+        pointer = read_u64_at(word, 0).ok_or("<unreadable>")?;
         segment += 1;
     }
     if pointer == 0 {
@@ -299,7 +298,7 @@ fn read_place_bytes<'b, 'a>(
     check_place_guards(place, segment, Some(pointer), bytes, ctx)?;
     let target = pointer.checked_add(*last).ok_or("<invalid address>")?;
     let read = if size == 0 {
-        Cow::Borrowed(&[][..])
+        &[][..]
     } else {
         proc.read_bytes(target, size).map_err(|_| "<unreadable>")?
     };
@@ -319,7 +318,7 @@ fn eval_expr<'a>(
         ValueExpr::Const(value) => *value,
         ValueExpr::Read(place, size) => {
             let (_, word) = read_place_bytes(place, bytes, addr, ctx, u64::from(*size))?;
-            read_unsigned_at(word.as_ref(), 0, u64::from(*size)).ok_or("<unreadable>")?
+            read_unsigned_at(word, 0, u64::from(*size)).ok_or("<unreadable>")?
         }
         ValueExpr::And(a, b) => {
             eval_expr(a, vars, bytes, addr, ctx)? & eval_expr(b, vars, bytes, addr, ctx)?
@@ -338,7 +337,7 @@ fn eval_expr<'a>(
             let word = proc
                 .read_bytes(target, u64::from(*size))
                 .map_err(|_| "<unreadable>")?;
-            read_unsigned_at(&word, 0, u64::from(*size)).ok_or("<unreadable>")?
+            read_unsigned_at(word, 0, u64::from(*size)).ok_or("<unreadable>")?
         }
         ValueExpr::Add(a, b) => eval_expr(a, vars, bytes, addr, ctx)?
             .wrapping_add(eval_expr(b, vars, bytes, addr, ctx)?),
@@ -495,7 +494,7 @@ fn eval_stmts<'a>(
                 let child = TypeInfoRef {
                     ty: *element,
                     addr: target,
-                    bytes: &element_bytes,
+                    bytes: element_bytes,
                 };
                 write_display_value(f, &child, ctx.deeper(), pretty)?;
                 if pretty {

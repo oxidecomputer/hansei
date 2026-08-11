@@ -23,43 +23,66 @@ use hansei_runtime::tokio::{census, graph};
 use proc::snapshot::Snapshot;
 use proc::{LwpInfo, Mappings, Regs, SymbolBuf, Target};
 
-use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 /// An address nothing in a small test program's address space reaches.
 const NOWHERE: u64 = 0xdead_beef_0000;
 
-/// A captured snapshot with faults layered on top: denied ranges fail
-/// every read that touches them, patched words read back as the lie.
+/// A captured snapshot with faults baked into memory of its own: a
+/// denied range is cut out of the segments, so every read touching it
+/// fails, and a patched word is written over, so every read of it sees
+/// the lie.
 ///
-/// `pslice` stays at the trait default (`None`), so every read funnels
-/// through [`read_bytes`](Target::read_bytes) and no fault can be
-/// bypassed by a borrowed slice.
+/// The faults live in the bytes rather than in a `read_bytes` that
+/// doctors what it serves, because the renderer reads by borrowing: a
+/// lent slice carries a corruption only if the storage behind it does.
 struct Corrupt<'a> {
     inner: &'a Snapshot,
-    deny: Vec<Range<u64>>,
-    patches: BTreeMap<u64, u64>,
+    /// The snapshot's captured runs, copied so they can be damaged, each
+    /// as `(address, bytes)` and in ascending address order.
+    memory: Vec<(u64, Vec<u8>)>,
 }
 
 impl<'a> Corrupt<'a> {
     fn new(inner: &'a Snapshot) -> Self {
-        Corrupt {
-            inner,
-            deny: Vec::new(),
-            patches: BTreeMap::new(),
-        }
+        let memory = inner
+            .segments()
+            .map(|seg| {
+                let bytes = inner
+                    .read_bytes(seg.start, seg.end - seg.start)
+                    .expect("a recorded segment");
+                (seg.start, bytes)
+            })
+            .collect();
+        Corrupt { inner, memory }
     }
 
     /// Reads overlapping `range` fail, as if the pages were not dumped.
-    fn deny(mut self, range: Range<u64>) -> Self {
-        self.deny.push(range);
-        self
+    fn deny(self, range: Range<u64>) -> Self {
+        let memory = self
+            .memory
+            .into_iter()
+            .flat_map(|(addr, bytes)| {
+                let len = bytes.len() as u64;
+                // What the hole leaves of this run: the part before it
+                // and the part after it, either of which may be empty.
+                let head = range.start.saturating_sub(addr).min(len) as usize;
+                let tail = range.end.saturating_sub(addr).min(len) as usize;
+                [
+                    (head > 0).then(|| (addr, bytes[..head].to_vec())),
+                    (tail < bytes.len()).then(|| (addr + tail as u64, bytes[tail..].to_vec())),
+                ]
+            })
+            .flatten()
+            .collect();
+        Corrupt { memory, ..self }
     }
 
     /// The word at `addr` reads back as `value`.
     fn patch(mut self, addr: u64, value: u64) -> Self {
-        self.patches.insert(addr, value);
+        let patched = self.write(addr, value);
+        assert!(patched, "no recorded segment holds {addr:#x}");
         self
     }
 
@@ -69,53 +92,68 @@ impl<'a> Corrupt<'a> {
     /// head, an intrusive link).
     fn patch_words_equal(mut self, value: u64, lie: u64) -> Self {
         let mut patched = 0;
-        for range in self.inner.segments() {
-            let mut addr = range.start.next_multiple_of(8);
-            while addr + 8 <= range.end {
-                let bytes = self.inner.read_bytes(addr, 8).expect("a recorded segment");
-                if u64::from_le_bytes(bytes.try_into().unwrap()) == value {
-                    self.patches.insert(addr, lie);
+        for (addr, bytes) in &mut self.memory {
+            let skew = (addr.next_multiple_of(8) - *addr) as usize;
+            let Some(aligned) = bytes.get_mut(skew..) else {
+                continue;
+            };
+            for word in aligned.chunks_exact_mut(8) {
+                if u64::from_le_bytes(word.try_into().unwrap()) == value {
+                    word.copy_from_slice(&lie.to_le_bytes());
                     patched += 1;
                 }
-                addr += 8;
             }
         }
         assert!(patched > 0, "no recorded word holds {value:#x}");
         self
     }
+
+    /// Write `value` over the word at `addr`, reporting whether any
+    /// captured run holds it.
+    fn write(&mut self, addr: u64, value: u64) -> bool {
+        for (base, bytes) in &mut self.memory {
+            let Some(start) = addr.checked_sub(*base).map(|o| o as usize) else {
+                continue;
+            };
+            if let Some(word) = bytes
+                .get_mut(start..)
+                .and_then(<[u8]>::first_chunk_mut::<8>)
+            {
+                *word = value.to_le_bytes();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The captured run holding `addr`, if the faults left one.
+    fn segment(&self, addr: u64) -> Option<(u64, &[u8])> {
+        self.memory
+            .iter()
+            .map(|(base, bytes)| (*base, &bytes[..]))
+            .find(|(base, bytes)| addr >= *base && addr - base < bytes.len() as u64)
+    }
 }
 
 impl Target for Corrupt<'_> {
     fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<Vec<u8>> {
-        let end = addr
-            .checked_add(len)
-            .ok_or_else(|| proc::Error::unmapped(addr, len))?;
-        if self.deny.iter().any(|d| addr < d.end && d.start < end) {
-            return Err(proc::Error::unmapped(addr, len));
-        }
-        let mut bytes = self.inner.read_bytes(addr, len)?;
-        for (&at, &value) in self.patches.range(addr.saturating_sub(7)..end) {
-            for (i, b) in value.to_le_bytes().iter().enumerate() {
-                let target = at + i as u64;
-                if (addr..end).contains(&target) {
-                    bytes[(target - addr) as usize] = *b;
-                }
-            }
-        }
-        Ok(bytes)
+        self.pslice(addr, len)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| proc::Error::unmapped(addr, len))
+    }
+
+    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+        let end = addr.checked_add(len)?;
+        let (base, bytes) = self.segment(addr)?;
+        (end - base <= bytes.len() as u64)
+            .then(|| &bytes[(addr - base) as usize..(end - base) as usize])
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
-        if self.deny.iter().any(|d| d.contains(&addr)) {
-            return 0;
+        match self.segment(addr) {
+            Some((base, bytes)) => (base + bytes.len() as u64 - addr).min(max),
+            None => 0,
         }
-        let mut n = self.inner.readable_len(addr, max);
-        for d in &self.deny {
-            if d.start > addr {
-                n = n.min(d.start - addr);
-            }
-        }
-        n
     }
 
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
