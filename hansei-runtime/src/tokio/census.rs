@@ -45,7 +45,7 @@ use anyhow::{Context as _, Result, anyhow, ensure};
 use exegesis::bundle::{BundleTypeId, TypeClass, WalkRole};
 use foldhash::{HashMap, HashSet};
 use proc::Target;
-use reify::TypeInfo;
+use reify::Value;
 use std::rc::Rc;
 
 /// The spelling of a future trait object's pointee, which is what makes
@@ -270,9 +270,9 @@ impl FutureCensus {
 
 /// What one scan hit is; [`Walker::record`] decides what to do with it.
 enum Find<'b> {
-    Set(TypeInfo<'b>),
-    JoinSet(TypeInfo<'b>),
-    Future(TypeInfo<'b>),
+    Set(Value<'b>),
+    JoinSet(Value<'b>),
+    Future(Value<'b>),
 }
 
 /// The census walker's running state.
@@ -364,7 +364,7 @@ impl Walker {
                 let Some(bytes) = payload.bytes.get(start..end) else {
                     continue;
                 };
-                let local = TypeInfo::new(m.ty(), payload.addr + m.offset(), bytes);
+                let local = Value::new(m.ty(), payload.addr + m.offset(), bytes);
                 let mut found = Vec::new();
                 scan_value(local, 0, &mut found, &mut self.capped, &mut self.plans);
                 for find in found {
@@ -454,7 +454,7 @@ impl Walker {
         frame: usize,
         local: &str,
         via: Option<Via>,
-        value: TypeInfo<'b>,
+        value: Value<'b>,
         nesting: usize,
     ) {
         let index = self.sets.len();
@@ -518,7 +518,7 @@ impl Walker {
         frame: usize,
         local: &str,
         via: Option<Via>,
-        value: TypeInfo<'b>,
+        value: Value<'b>,
     ) {
         // As for a set of futures: a walk that fails part-way keeps the
         // members it reached, and the error says the list is short. The
@@ -572,7 +572,7 @@ enum ScanPlan {
 
 /// Decide [`ScanPlan`] for one value: the type-level tests of the scan,
 /// in order.
-fn scan_plan(value: TypeInfo<'_>) -> ScanPlan {
+fn scan_plan(value: Value<'_>) -> ScanPlan {
     let name = value.ty.name();
     if name.starts_with(FUTURES_UNORDERED) {
         return ScanPlan::Set;
@@ -616,7 +616,7 @@ fn scan_plan(value: TypeInfo<'_>) -> ScanPlan {
 /// pointers are never followed, so the scan stays inside the frame's
 /// own bytes and terminates.
 fn scan_value<'b>(
-    value: TypeInfo<'b>,
+    value: Value<'b>,
     depth: usize,
     found: &mut Vec<Find<'b>>,
     capped: &mut usize,
@@ -652,7 +652,7 @@ fn scan_value<'b>(
                 let Some(bytes) = value.bytes.get(start..start + size as usize) else {
                     continue;
                 };
-                let child = TypeInfo::new(value.ty.related_type(ty), value.addr + offset, bytes);
+                let child = Value::new(value.ty.related_type(ty), value.addr + offset, bytes);
                 scan_value(child, depth + 1, found, capped, plans);
             }
         }
@@ -732,7 +732,7 @@ type WalkedChild<'b> = (SetChild, Option<AwaitChain<'b>>, (u64, u64));
 fn walk_set<'b, T: Target + Sync>(
     ctx: &Context<'b, T>,
     list: &TaskList,
-    set: TypeInfo<'b>,
+    set: Value<'b>,
     children: &mut Vec<WalkedChild<'b>>,
 ) -> Result<()> {
     let head_member = ctx.walk(WalkRole::SetHeadAll).walk_at(set)?;
@@ -757,7 +757,7 @@ fn walk_set<'b, T: Target + Sync>(
             "the walk stopped at {MAX_CHILDREN} nodes"
         );
 
-        let node = TypeInfo::from_addr(ctx, node_ty, cur)
+        let node = Value::read(ctx, node_ty, cur)
             .with_context(|| format!("failed to read the set node at {cur:#x}"))?;
         // Task.future: UnsafeCell<Option<Fut>>; `None` is a completed
         // child the set has not reaped.
@@ -839,7 +839,7 @@ fn walk_set<'b, T: Target + Sync>(
 fn walk_join_set<'b, T: Target + Sync>(
     ctx: &Context<'b, T>,
     list: &TaskList,
-    set: TypeInfo<'b>,
+    set: Value<'b>,
     tasks: &mut Vec<JoinedTask>,
     length: &mut u64,
 ) -> Result<()> {
@@ -875,7 +875,7 @@ fn walk_join_set<'b, T: Target + Sync>(
                 "the walk stopped at {MAX_CHILDREN} entries"
             );
 
-            let entry = TypeInfo::from_addr(ctx, entry_ty, addr)
+            let entry = Value::read(ctx, entry_ty, addr)
                 .with_context(|| format!("failed to read the join set entry at {addr:#x}"))?;
             // ListEntry.value is the joined task's `JoinHandle`, behind
             // a cell and a `ManuallyDrop`. Every wrapper from the cell

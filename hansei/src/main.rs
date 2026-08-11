@@ -4,7 +4,7 @@ use exegesis::bundle::{Bundle, BundleMember, BundleType, BundleView, WalkRole};
 use hansei_runtime::tokio::{Lifecycle, bundle, census, contract, graph};
 use proc::Proc;
 use proc::snapshot::Recorder;
-use reify::TypeInfo;
+use reify::Value;
 
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -496,7 +496,7 @@ pub struct Session<'b> {
     lwps: usize,
     /// The multi_thread scheduler's `Handle`: the scheduler state and
     /// the drivers both hang off it.
-    handle: TypeInfo<'b>,
+    handle: Value<'b>,
     tasks: bundle::TaskList,
     /// Task extents, the sub-executor census and the wait analysis,
     /// built on first use: a core does not change, so the address→task
@@ -876,7 +876,7 @@ fn exec_trace_future(
         .view
         .ty(root.ty)
         .context("the census recorded a type the bundle does not carry")?;
-    let value = TypeInfo::from_addr(ctx, ty, root.addr)
+    let value = Value::read(ctx, ty, root.addr)
         .with_context(|| format!("failed to read the future at {:#x}", root.addr))?;
 
     writeln!(out)?;
@@ -1118,8 +1118,7 @@ fn print_await_chain<'b, T: proc::Target + Sync>(
                 let end = start + m.ty().size() as usize;
                 match payload.bytes.get(start..end) {
                     Some(bytes) => {
-                        let v =
-                            reify::TypeInfo::new(m.ty(), payload.addr + m.offset(), bytes).peel();
+                        let v = reify::Value::new(m.ty(), payload.addr + m.offset(), bytes).peel();
                         let mut disp = v
                             .display_from_target(ctx.proc, depth)
                             .elide_override(elide)
@@ -1667,7 +1666,7 @@ fn warm_frame_values<T: proc::Target + Sync>(
             let Some(bytes) = payload.bytes.get(start..end) else {
                 continue;
             };
-            let v = reify::TypeInfo::new(m.ty(), payload.addr + m.offset(), bytes);
+            let v = reify::Value::new(m.ty(), payload.addr + m.offset(), bytes);
             let _ = format!("{:#}", v.display_from_target(ctx.proc, WARM_DEPTH));
             let _ = format!("{:#}", v.peel().display_from_target(ctx.proc, WARM_DEPTH));
         }
@@ -2981,7 +2980,7 @@ fn print_thread_context(
 /// deferred until the current poll returns.
 fn print_worker_state<'b>(
     session: &Session<'_>,
-    worker_ctx: TypeInfo<'b>,
+    worker_ctx: Value<'b>,
     depth: usize,
     ugly: bool,
     out: &mut dyn io::Write,
@@ -3057,7 +3056,7 @@ fn exec_runtime_field(
 /// the text can stream to its destination instead of through a `String`.
 fn render<'r, 'b>(
     session: &'r Session<'b>,
-    value: &'r TypeInfo<'b>,
+    value: &'r Value<'b>,
     depth: usize,
     ugly: bool,
 ) -> reify::DisplayTargetValue<'r, 'b, Proc> {
@@ -3399,7 +3398,7 @@ mod future_trace_tests {
     use hansei_runtime::tokio::census::{self, FutureCensus};
     use proc::Target;
     use proc::snapshot::Snapshot;
-    use reify::TypeInfo;
+    use reify::Value;
 
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -3523,8 +3522,7 @@ mod future_trace_tests {
                 .view
                 .ty(future1.ty)
                 .expect("the root type is in the bundle");
-            let root =
-                TypeInfo::from_addr(ctx, ty, future1.addr).expect("the recorded root reads back");
+            let root = Value::read(ctx, ty, future1.addr).expect("the recorded root reads back");
             let chain = ctx.await_chain(root);
 
             let mut out = Vec::new();
