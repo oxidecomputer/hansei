@@ -97,9 +97,9 @@ impl<'buf, 'a: 'buf> Elements<'buf, 'a> {
     /// its pointer; an inline array, whose elements are the value's own
     /// bytes; and, for a bundle whose detector declined or predates the
     /// formatter, the bare `(data_ptr, length)` fat pointer.
-    pub(crate) fn of<Ctx: ParseCtx>(
+    pub(crate) fn of<Ctx: ParseCtx<'a>>(
         info: &TypeInfoRef<'buf, 'a>,
-        ctx: &'buf Ctx,
+        ctx: &Ctx,
     ) -> Result<Elements<'buf, 'a>> {
         let ty = info.ty;
         let proc: &dyn ReadFromProc = ctx.proc();
@@ -246,9 +246,9 @@ pub(crate) struct Buffer<'buf> {
 /// point is the bytes rather than the elements: same header, same validation,
 /// same bound on a length that cannot be trusted, but one bulk read instead
 /// of a typed view per byte.
-pub(crate) fn utf8<'buf, Ctx: ParseCtx>(
-    info: &TypeInfoRef<'buf, '_>,
-    ctx: &'buf Ctx,
+pub(crate) fn utf8<'buf, 'a: 'buf, Ctx: ParseCtx<'a>>(
+    info: &TypeInfoRef<'buf, 'a>,
+    ctx: &Ctx,
 ) -> Result<Buffer<'buf>> {
     let ty = info.ty;
     let proc: &dyn ReadFromProc = ctx.proc();
@@ -349,7 +349,8 @@ mod tests {
     fn test_a_vec_reads_through_its_display_program() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(FakeMem::new().at(0x2000, u32s(&[7, 8, 9])));
+        let mem = FakeMem::new().at(0x2000, u32s(&[7, 8, 9]));
+        let ctx = TestCtx::new(&mem);
 
         // Vec { ptr: *u8 @0, len @8, capacity @16 }, elements `u32`.
         let header = u64s(&[0x2000, 3, 4]);
@@ -379,11 +380,12 @@ mod tests {
     fn test_a_length_is_believed_only_as_far_as_it_is_served() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let mem = || FakeMem::new().at(0x2000, u32s(&[7, 8, 9]));
+        let fake = || FakeMem::new().at(0x2000, u32s(&[7, 8, 9]));
 
         // A thousand elements claimed, three there to be read.
         let header = u64s(&[0x2000, 1000]);
-        let ctx = TestCtx::new(mem());
+        let mem = fake();
+        let ctx = TestCtx::new(&mem);
         let slice = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0x1000, &header);
         let elements = slice.elements(&ctx).expect("slice elements");
         assert_eq!(elements.len(), 3);
@@ -396,7 +398,8 @@ mod tests {
         // A target that cannot bound a read -- a live process -- refuses the
         // whole read instead of coming up short, and the claim is an error
         // rather than a truncation.
-        let ctx = TestCtx::new(mem().no_bounds());
+        let mem = fake().no_bounds();
+        let ctx = TestCtx::new(&mem);
         assert!(slice.elements(&ctx).is_err());
     }
 
@@ -406,7 +409,8 @@ mod tests {
     fn test_an_impossible_header_is_refused() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(FakeMem::new().at(0x2000, u32s(&[7, 8, 9])));
+        let mem = FakeMem::new().at(0x2000, u32s(&[7, 8, 9]));
+        let ctx = TestCtx::new(&mem);
         let vec = |header: &[u8]| {
             TypeInfoRef::new(v.ty(VEC).unwrap(), 0x1000, header)
                 .elements(&ctx)
@@ -423,7 +427,8 @@ mod tests {
         assert!(vec(&u64s(&[0x2000, 3])).is_err());
 
         // An empty sequence is not read at all, whatever its pointer says.
-        let ctx = TestCtx::new(FakeMem::new().panic_on_unmapped());
+        let mem = FakeMem::new().panic_on_unmapped();
+        let ctx = TestCtx::new(&mem);
         let header = u64s(&[0xdead_0000, 0, 0]);
         let empty = TypeInfoRef::new(v.ty(VEC).unwrap(), 0x1000, &header)
             .elements(&ctx)
@@ -440,7 +445,8 @@ mod tests {
     fn test_a_string_reads_through_its_display_program() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(FakeMem::new().at(0x2000, b"hello".to_vec()));
+        let mem = FakeMem::new().at(0x2000, b"hello".to_vec());
+        let ctx = TestCtx::new(&mem);
         let text = |id, header: &[u8]| {
             TypeInfoRef::new(v.ty(id).unwrap(), 0x1000, header).parse::<String, _>(&ctx)
         };
@@ -462,7 +468,8 @@ mod tests {
     fn test_a_type_that_is_not_a_sequence_declines() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(FakeMem::new());
+        let mem = FakeMem::new();
+        let ctx = TestCtx::new(&mem);
         let bytes = u32s(&[1, 2]);
         let point = TypeInfoRef::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
         assert!(point.elements(&ctx).is_err());

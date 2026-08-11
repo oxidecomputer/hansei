@@ -1081,7 +1081,8 @@ mod tests {
     fn test_array_elements_through_typeinfo() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(FakeMem::new());
+        let mem = FakeMem::new();
+        let ctx = TestCtx::new(&mem);
         let bytes: Vec<u8> = [10u32, 20, 30]
             .iter()
             .flat_map(|x| x.to_le_bytes())

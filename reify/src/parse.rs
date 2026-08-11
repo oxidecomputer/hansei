@@ -4,24 +4,31 @@ use crate::target::ReadFromProc;
 use crate::value::TypeInfoRef;
 use crate::{Error, Result};
 
-pub trait ParseCtx {
+/// A context that can reach the target's memory, parameterized by how long
+/// that memory lives.
+///
+/// `proc` hands back a borrow good for `'mem` rather than one tied to the
+/// `&self` it was asked through, so the bytes a read lends outlive the call
+/// that made it — which is what lets a parsed view keep pointing at the
+/// mapped core instead of at a copy.
+pub trait ParseCtx<'mem> {
     /// The target being read: a live process or core on illumos, or a
     /// captured snapshot anywhere.
-    type Target: ReadFromProc;
+    type Target: ReadFromProc + 'mem;
 
-    fn proc(&self) -> &Self::Target;
+    fn proc(&self) -> &'mem Self::Target;
 }
 
 /// Parse a byte slice as a type using debug type information.
 pub trait ParseWithDbgInfo<'a, Ctx>: Sized
 where
-    Ctx: ParseCtx,
+    Ctx: ParseCtx<'a>,
 {
     /// Attempt to read `Self` from the debug type information.
     fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self>;
 }
 
-impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for bool {
+impl<'a, Ctx: ParseCtx<'a>> ParseWithDbgInfo<'a, Ctx> for bool {
     fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
@@ -35,7 +42,7 @@ impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for bool {
 
 macro_rules! num_impl {
     ($num_ty:ty) => {
-        impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for $num_ty {
+        impl<'a, Ctx: ParseCtx<'a>> ParseWithDbgInfo<'a, Ctx> for $num_ty {
             fn parse_with_dbg(_ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
                 if info.bytes.len() != size_of::<Self>() {
                     return Err(Error::unexpected_len(
@@ -62,7 +69,7 @@ num_impl!(f64);
 impl<'a, V, Ctx> ParseWithDbgInfo<'a, Ctx> for Option<V>
 where
     V: ParseWithDbgInfo<'a, Ctx>,
-    Ctx: ParseCtx,
+    Ctx: ParseCtx<'a>,
 {
     fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         let var = info.active_variant()?;
@@ -92,7 +99,7 @@ where
 impl<'a, V, Ctx> ParseWithDbgInfo<'a, Ctx> for Vec<V>
 where
     V: ParseWithDbgInfo<'a, Ctx>,
-    Ctx: ParseCtx,
+    Ctx: ParseCtx<'a>,
 {
     fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         let elements = info.elements(ctx)?;
@@ -113,7 +120,7 @@ where
 impl<'a, V, Ctx> ParseWithDbgInfo<'a, Ctx> for Box<[V]>
 where
     V: ParseWithDbgInfo<'a, Ctx>,
-    Ctx: ParseCtx,
+    Ctx: ParseCtx<'a>,
 {
     fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         Ok(Vec::<V>::parse_with_dbg(ctx, info)?.into_boxed_slice())
@@ -123,7 +130,7 @@ where
 impl<'a, V, Ctx, const N: usize> ParseWithDbgInfo<'a, Ctx> for [V; N]
 where
     V: ParseWithDbgInfo<'a, Ctx>,
-    Ctx: ParseCtx,
+    Ctx: ParseCtx<'a>,
 {
     fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         let items = Vec::<V>::parse_with_dbg(ctx, info)?;
@@ -139,7 +146,7 @@ where
 /// which is what knows where a `String` keeps its pointer — the same
 /// arrangement, and the same refusal to believe a length further than the
 /// target corroborates it, as the sequences above.
-impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for String {
+impl<'a, Ctx: ParseCtx<'a>> ParseWithDbgInfo<'a, Ctx> for String {
     fn parse_with_dbg(ctx: &Ctx, info: &TypeInfoRef<'_, 'a>) -> Result<Self> {
         let text = crate::elements::utf8(info, ctx)?;
         if let Some(claimed) = text.claimed {
@@ -165,7 +172,8 @@ mod tests {
     fn test_scalars_parse_from_their_own_bytes() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(FakeMem::new());
+        let mem = FakeMem::new();
+        let ctx = TestCtx::new(&mem);
         let u8_ty = v.ty(U8).unwrap();
         let u32_ty = v.ty(U32).unwrap();
         let u64_ty = v.ty(U64).unwrap();
@@ -241,7 +249,8 @@ mod tests {
     fn test_option_parses_through_its_variant() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(FakeMem::new());
+        let mem = FakeMem::new();
+        let ctx = TestCtx::new(&mem);
         let opt = v.ty(OPT).unwrap();
 
         // Opt is a niche enum: discriminant 0 is None, anything else is Some.
@@ -263,7 +272,8 @@ mod tests {
     fn test_array_parses_each_element() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(FakeMem::new());
+        let mem = FakeMem::new();
+        let ctx = TestCtx::new(&mem);
         let bytes = u32s(&[10, 20, 30]);
         let arr = TypeInfoRef::new(v.ty(ARR).unwrap(), 0, &bytes);
         assert_eq!(arr.parse::<[u32; 3], _>(&ctx).unwrap(), [10, 20, 30]);
@@ -280,11 +290,10 @@ mod tests {
     fn test_boxed_slice_and_string_read_through_the_target() {
         let b = test_bundle();
         let v = BundleView::new(&b);
-        let ctx = TestCtx::new(
-            FakeMem::new()
-                .at(0x2000, u32s(&[1, 2, 3, 4]))
-                .at(0x3000, b"hello".to_vec()),
-        );
+        let mem = FakeMem::new()
+            .at(0x2000, u32s(&[1, 2, 3, 4]))
+            .at(0x3000, b"hello".to_vec());
+        let ctx = TestCtx::new(&mem);
 
         // The fixture's `&[u32]` carries a byte-erased `data_ptr`, as a `Vec`
         // does; the element type comes from its display program, so this is a
@@ -306,7 +315,8 @@ mod tests {
         assert_eq!(text.parse::<String, _>(&ctx).unwrap(), "hello");
 
         // An unreadable buffer is an error, not an empty result.
-        let ctx = TestCtx::new(FakeMem::new().unreadable());
+        let mem = FakeMem::new().unreadable();
+        let ctx = TestCtx::new(&mem);
         let fat = u64s(&[0x2000, 4]);
         let slice = TypeInfoRef::new(v.ty(SLICE).unwrap(), 0, &fat);
         assert!(slice.parse::<Box<[u32]>, _>(&ctx).is_err());

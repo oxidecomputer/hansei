@@ -1712,10 +1712,10 @@ struct AcquireFields {
     queued: bool,
 }
 
-impl<T: Target> ParseCtx for Context<'_, T> {
+impl<'b, T: Target> ParseCtx<'b> for Context<'b, T> {
     type Target = T;
 
-    fn proc(&self) -> &T {
+    fn proc(&self) -> &'b T {
         self.proc
     }
 }
