@@ -496,7 +496,7 @@ pub(crate) fn write_display_value<'a>(
                     let pointee = TypeInfoRef {
                         ty: target,
                         addr,
-                        bytes: &pointee_bytes,
+                        bytes: pointee_bytes,
                     };
                     write_annotated_addr(f, addr, ctx.annotate)
                         .and_then(|()| f.write_str(" -> "))

@@ -107,7 +107,7 @@ pub(crate) fn eval_dyn_pointer<'a>(
                     let pointee = TypeInfoRef {
                         ty: concrete_ty,
                         addr: pointee_address,
-                        bytes: &pointee_bytes,
+                        bytes: pointee_bytes,
                     };
                     write!(f, " -> ")?;
                     write_display_value(f, &pointee, ctx.deeper(), pretty)?;

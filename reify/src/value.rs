@@ -22,8 +22,7 @@ pub struct TypeInfo<'a> {
 impl<'buf, 'a: 'buf> TypeInfo<'a> {
     /// Read the type directly at the address provided.
     pub fn from_addr<Ctx: ParseCtx>(ctx: &Ctx, ty: BundleType<'a>, addr: u64) -> Result<Self> {
-        let vec = ctx.proc().read_bytes(addr, ty.size())?;
-        let buf = vec.into_owned().into_boxed_slice();
+        let buf = ctx.proc().read_bytes(addr, ty.size())?.into();
 
         Ok(Self { ty, addr, buf })
     }
@@ -35,10 +34,7 @@ impl<'buf, 'a: 'buf> TypeInfo<'a> {
     /// Refresh the contents of the buffer from `Proc` memory from the current
     /// address.
     pub fn refresh<Ctx: ParseCtx>(&mut self, ctx: &Ctx) -> Result<()> {
-        let vec = ctx.proc().read_bytes(self.addr, self.ty.size())?;
-        let buf = vec.into_owned().into_boxed_slice();
-
-        self.buf = buf;
+        self.buf = ctx.proc().read_bytes(self.addr, self.ty.size())?.into();
         Ok(())
     }
 
@@ -187,24 +183,23 @@ impl<'buf, 'a: 'buf> TypeInfoRef<'buf, 'a> {
         };
 
         let addr = u64::from_le_bytes(bytes);
-        let Ok(vec) = proc.read_bytes(addr, target_ty.size()) else {
+        let Ok(read) = proc.read_bytes(addr, target_ty.size()) else {
             // TODO return an error?
             return Ok(None);
         };
-        let buf = vec.into_owned().into_boxed_slice();
 
         // Remove any wrapper types.
         let unwrapped = TypeInfoRef {
             ty: target_ty,
             addr,
-            bytes: &buf,
+            bytes: read,
         }
         .peel();
 
         Ok(Some(TypeInfo {
             ty: unwrapped.ty,
             addr,
-            buf,
+            buf: read.into(),
         }))
     }
 

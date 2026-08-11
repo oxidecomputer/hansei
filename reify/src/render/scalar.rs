@@ -120,7 +120,7 @@ pub(crate) fn write_utf8_string(
     if text.count == 0 && text.claimed.is_some() {
         return write!(f, "<unreadable string data>");
     }
-    match std::str::from_utf8(&text.bytes) {
+    match std::str::from_utf8(text.bytes) {
         Ok(text) => write!(f, "{text:?}")?,
         // A corrupted string is most useful mostly-shown: the valid
         // runs render escaped as usual and each bad byte renders as

@@ -145,7 +145,7 @@ impl<'a, Ctx: ParseCtx> ParseWithDbgInfo<'a, Ctx> for String {
         if let Some(claimed) = text.claimed {
             return Err(Error::short_sequence(info.ty.name(), claimed, text.count));
         }
-        Ok(String::from_utf8_lossy(&text.bytes).to_string())
+        Ok(String::from_utf8_lossy(text.bytes).to_string())
     }
 }
 
