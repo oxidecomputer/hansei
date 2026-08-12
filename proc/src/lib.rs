@@ -781,17 +781,6 @@ impl PartialOrd for LoadedObject {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Symbol<'a> {
-    pub name: &'a str,
-    pub st_name: usize,
-    pub st_info: u8,
-    pub st_other: u8,
-    pub st_shndx: usize,
-    pub st_value: u64,
-    pub st_size: u64,
-}
-
 #[derive(
     Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
 )]
