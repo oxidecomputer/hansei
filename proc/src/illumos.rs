@@ -1,5 +1,6 @@
-//! The libproc-backed [`Proc`] target: a live process or core dump,
-//! read through `Pgrab`/`Pgrab_core`. illumos-only; everything else in
+//! The libproc-backed [`Proc`] target: an illumos core dump read
+//! through `Pgrab_core`. illumos-only, and kept as the reference the
+//! portable core reader is held against in tests; everything else in
 //! this crate is platform-independent.
 
 use crate::{
@@ -8,14 +9,13 @@ use crate::{
 };
 
 use libproc_sys::{
-    BIND_GLOBAL, BIND_LOCAL, GElf_Sym, Lfree, Lgrab, Lgrab_error, Lstatus, MAXPATHLEN,
-    PGRAB_NOSTOP, PGRAB_RDONLY, PGRAB_RETAIN, PR_SYMTAB, PRELEASE_CLEAR, Paddr_to_map, Pexecname,
-    Pgrab, Pgrab_core, Pgrab_error, Plookup_by_addr, Plookup_by_name, Plwp_getname, Plwp_getregs,
-    Plwp_iter, Plwp_main_stack, Pmapping_iter_resolved, Pread, Prelease, Psetrun, Pstatus, Pstop,
-    Psymbol_iter, REG_CS, REG_DS, REG_ERR, REG_ES, REG_FS, REG_FSBASE, REG_GS, REG_GSBASE, REG_R8,
-    REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15, REG_RAX, REG_RBP, REG_RBX,
-    REG_RCX, REG_RDI, REG_RDX, REG_RFL, REG_RIP, REG_RSI, REG_RSP, REG_SS, REG_TRAPNO, TYPE_FUNC,
-    TYPE_OBJECT, gregset_t, lwpstatus_t, pid_t, prmap_t, ps_lwphandle, ps_prochandle, stack_t,
+    BIND_GLOBAL, BIND_LOCAL, GElf_Sym, MAXPATHLEN, PGRAB_RDONLY, PR_SYMTAB, PRELEASE_CLEAR,
+    Paddr_to_map, Pexecname, Pgrab_core, Pgrab_error, Plookup_by_addr, Plookup_by_name,
+    Plwp_getname, Plwp_getregs, Plwp_iter, Plwp_main_stack, Pmapping_iter_resolved, Pread,
+    Prelease, Pstatus, Psymbol_iter, REG_CS, REG_DS, REG_ERR, REG_ES, REG_FS, REG_FSBASE, REG_GS,
+    REG_GSBASE, REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15, REG_RAX,
+    REG_RBP, REG_RBX, REG_RCX, REG_RDI, REG_RDX, REG_RFL, REG_RIP, REG_RSI, REG_RSP, REG_SS,
+    REG_TRAPNO, TYPE_FUNC, TYPE_OBJECT, gregset_t, lwpstatus_t, prmap_t, ps_prochandle, stack_t,
 };
 
 use std::ffi::{CStr, CString, OsStr, c_char, c_int, c_void};
@@ -77,41 +77,6 @@ impl From<gregset_t> for Regs {
 }
 
 impl Proc {
-    pub fn grab_pid(pid: u32) -> Result<Self> {
-        // Pass empty flags so the process is stopped and any existing flags are
-        // cleared.
-        let flags = 0;
-        Self::open_proc(pid, flags)
-    }
-
-    pub fn grab_pid_no_stop(pid: u32) -> Result<Self> {
-        // Don't stop the process and retain existing flags to avoid setting
-        // PR_KLC, so the process resumes execution even if we die.
-        let flags = (PGRAB_NOSTOP | PGRAB_RETAIN) as i32;
-        Self::open_proc(pid, flags)
-    }
-
-    fn open_proc(pid: u32, flags: i32) -> Result<Self> {
-        let mut perr: c_int = 0;
-
-        let handle = unsafe { Pgrab(pid as pid_t, flags, &mut perr) };
-        let Some(handle) = NonNull::new(handle) else {
-            let err_msg = unsafe { Pgrab_error(perr) };
-
-            // SAFETY: The implementation of Pgrab_error returns a static string.
-            let c_msg = unsafe { CStr::from_ptr(err_msg) };
-
-            // UNWRAP: We know all possible values returned by Pgrab_error are valid UTF-8.
-            let msg = c_msg.to_str().unwrap();
-
-            return Err(Error::grab_failed(msg));
-        };
-        Ok(Proc {
-            handle,
-            libproc: Mutex::new(()),
-        })
-    }
-
     pub fn open_core(core_path: &Path) -> Result<Self> {
         let c_core_path =
             CString::new(core_path.as_os_str().as_bytes()).map_err(Error::bad_path)?;
@@ -158,27 +123,6 @@ impl Proc {
             brk_range: brk_start..brk_end,
             stack_range: stack_start..stack_end,
         }
-    }
-
-    pub fn run(&self) -> Result<()> {
-        let _libproc = self.libproc.lock().unwrap();
-        // Don't set any signals or flags.
-        let ret = unsafe { Psetrun(self.handle.as_ptr(), 0, 0) };
-        if ret != 0 {
-            return Err(Error::start(ret));
-        }
-
-        Ok(())
-    }
-
-    pub fn stop(&self, wait_ms: u32) -> Result<()> {
-        let _libproc = self.libproc.lock().unwrap();
-        let ret = unsafe { Pstop(self.handle.as_ptr(), wait_ms) };
-        if ret != 0 {
-            return Err(Error::stop(ret));
-        }
-
-        Ok(())
     }
 
     pub fn exec_name(&self) -> Result<PathBuf> {
@@ -267,27 +211,6 @@ impl Proc {
         }
 
         Ok(cb_data.data)
-    }
-
-    pub fn lwp_handle(&self, lwpid: u32) -> Result<Lwp> {
-        let _libproc = self.libproc.lock().unwrap();
-        let mut perr: c_int = 0;
-
-        // SAFETY: Our handle is valid.
-        let handle = unsafe { Lgrab(self.handle.as_ptr(), lwpid, &mut perr) };
-        let Some(handle) = NonNull::new(handle) else {
-            // SAFETY: Can't really mess this one up.
-            let err_msg = unsafe { Lgrab_error(perr) };
-
-            // SAFETY: The implementation of Lgrab_error returns a static string.
-            let c_msg = unsafe { CStr::from_ptr(err_msg) };
-
-            // UNWRAP: We know all possible values returned by Pgrab_error are valid UTF-8.
-            let msg = c_msg.to_str().unwrap();
-
-            return Err(Error::lgrab_failed(msg));
-        };
-        Ok(Lwp { handle })
     }
 
     pub fn lwp_name(&self, lwpid: u32) -> Result<String> {
@@ -625,8 +548,8 @@ impl Proc {
 
 impl Target for Proc {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
-        // `len` may itself have been read out of the target, and a live
-        // process declines to bound it (see [`Target::readable_len`]) — so
+        // `len` may itself have been read out of the target, and this
+        // handle declines to bound it (see [`Target::readable_len`]) — so
         // allocate as the bytes arrive rather than sizing a buffer by an
         // unverified claim, and a garbage length fails at the first
         // unreadable page instead of allocating what it named.
@@ -675,35 +598,7 @@ impl Target for Proc {
 
 impl Drop for Proc {
     fn drop(&mut self) {
-        // Clear any flags, let the process resume execution.
         let flags = PRELEASE_CLEAR as i32;
         unsafe { Prelease(self.handle.as_mut(), flags) };
-    }
-}
-
-pub struct Lwp {
-    handle: NonNull<ps_lwphandle>,
-}
-
-impl Lwp {
-    pub fn status(&self) -> Timespec {
-        // SAFETY: Our lwp handle is valid.
-        let ret = unsafe { Lstatus(self.handle.as_ptr()) };
-
-        // SAFETY: libproc guarantees that the pointer returned is valid.
-        match unsafe { ret.as_ref() } {
-            Some(status) => Timespec {
-                tv_sec: status.pr_tstamp.tv_sec,
-                tv_nsec: status.pr_tstamp.tv_nsec,
-            },
-            None => unreachable!("Lstatus returned null"),
-        }
-    }
-}
-
-impl Drop for Lwp {
-    fn drop(&mut self) {
-        // SAFETY: Our lwp handle is valid.
-        unsafe { Lfree(self.handle.as_mut()) };
     }
 }

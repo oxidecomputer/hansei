@@ -1,4 +1,4 @@
-//! [`Proc`]: whichever backend can read the target in hand.
+//! [`Proc`]: whichever backend can read the core in hand.
 //!
 //! A core is identified by what wrote it, not by what is reading it, so
 //! [`Proc::open_core`] looks at the file and picks. Either system's core
@@ -9,18 +9,16 @@
 //! can feel. On illumos libproc remains
 //! the reference reader, held against the portable one in tests via
 //! [`Proc::open_core_libproc`].
-//!
-//! Live processes are the operating system's business and stay with it:
-//! [`Proc::grab_pid`] exists only on illumos, where libproc provides it.
 
 use crate::coredump::{self, Flavour};
 use crate::{LoadedObject, LwpInfo, Mappings, Regs, Result, Status, SymbolBuf, Target};
 
 use std::path::{Path, PathBuf};
 
-/// A target: a core dump of either system, or a live process.
+/// A target: a core dump of either system.
 pub enum Proc {
-    /// A live process, through libproc.
+    /// An illumos core, read through libproc — the reference reader the
+    /// portable one is held against in tests.
     #[cfg(target_os = "illumos")]
     Libproc(crate::illumos::Proc),
     /// A Linux core, read from the file.
@@ -133,58 +131,11 @@ impl Proc {
 
 #[cfg(target_os = "illumos")]
 impl Proc {
-    pub fn grab_pid(pid: u32) -> Result<Self> {
-        Ok(Proc::Libproc(crate::illumos::Proc::grab_pid(pid)?))
-    }
-
     /// Open an illumos core through libproc rather than the portable
     /// reader. libproc is the reference the portable reader is held to,
     /// so this is for the tests that compare the two on one core.
     pub fn open_core_libproc(path: &Path) -> Result<Self> {
         Ok(Proc::Libproc(crate::illumos::Proc::open_core(path)?))
-    }
-
-    pub fn grab_pid_no_stop(pid: u32) -> Result<Self> {
-        Ok(Proc::Libproc(crate::illumos::Proc::grab_pid_no_stop(pid)?))
-    }
-
-    /// Read through libproc's `Pread`, which serves live grabs and
-    /// libproc-opened cores alike. This is the libproc-compat surface
-    /// only: the portable core readers lend borrows via
-    /// [`Target::pslice`] instead and refuse it.
-    pub fn pread(&self, buf: &mut [u8], address: u64) -> Result<u64> {
-        match self {
-            Proc::Libproc(p) => p.pread(buf, address),
-            _ => Err(crate::Error::not_a_live_process()),
-        }
-    }
-
-    pub fn pread_exact(&self, buf: &mut [u8], address: u64) -> Result<()> {
-        match self {
-            Proc::Libproc(p) => p.pread_exact(buf, address),
-            _ => Err(crate::Error::not_a_live_process()),
-        }
-    }
-
-    pub fn run(&self) -> Result<()> {
-        match self {
-            Proc::Libproc(p) => p.run(),
-            _ => Err(crate::Error::not_a_live_process()),
-        }
-    }
-
-    pub fn stop(&self, wait_ms: u32) -> Result<()> {
-        match self {
-            Proc::Libproc(p) => p.stop(wait_ms),
-            _ => Err(crate::Error::not_a_live_process()),
-        }
-    }
-
-    pub fn lwp_handle(&self, lwpid: u32) -> Result<crate::illumos::Lwp> {
-        match self {
-            Proc::Libproc(p) => p.lwp_handle(lwpid),
-            _ => Err(crate::Error::not_a_live_process()),
-        }
     }
 
     pub fn lwp_name(&self, lwpid: u32) -> Result<String> {
@@ -219,7 +170,7 @@ impl std::fmt::Debug for Proc {
     }
 }
 
-// The whole facade crosses threads during parallel rendering, live
+// The whole facade crosses threads during parallel rendering, libproc
 // variant included — libproc calls serialize behind that variant's
 // own mutex.
 const _: () = {
@@ -244,9 +195,9 @@ impl Target for Proc {
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
         match self {
-            // Bounding a live process would mean probing its mappings on
-            // every read; it claims no bound, and its `read_bytes`
-            // allocates only as far as the target actually serves.
+            // libproc reads through a handle: bounding would mean probing
+            // its mappings on every read, so it claims no bound, and its
+            // `read_bytes` allocates only as far as the core serves.
             #[cfg(target_os = "illumos")]
             Proc::Libproc(_) => max,
             Proc::LinuxCore(c) => c.readable_len(addr, max),

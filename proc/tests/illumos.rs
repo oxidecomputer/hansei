@@ -1,6 +1,6 @@
-//! The on-box suite for the libproc-backed [`Proc`] target: the half of
-//! the crate that can only be exercised against a real illumos process.
-//! It compiles nowhere else, so `cargo test -p proc` runs it on the box
+//! The on-box suite that holds the portable illumos core reader to
+//! libproc, the reference reader, on the one machine that has both. It
+//! compiles nowhere else, so `cargo test -p proc` runs it on the box
 //! and skips it everywhere else.
 //!
 //! The target is `test-programs`' `park-target`, built by `regen.sh` the
@@ -8,11 +8,10 @@
 //! parked steady state by blocking on the readiness line it prints —
 //! there are no timing sleeps anywhere. Its symbols, its memory contents
 //! and its threads are all known to this file, and it reports the LWP
-//! ids procfs has for it, which libproc's own enumeration is held to.
+//! ids procfs has for it, an oracle neither reader had a hand in.
 //!
-//! Every read-only test runs twice: against a core taken from the parked
-//! target, and against the live process. libproc serves both through the
-//! same handle, and so does everything built on it.
+//! Every test runs against a core taken from the parked target, read
+//! twice: through the portable reader, and through libproc.
 
 #![cfg(target_os = "illumos")]
 
@@ -21,12 +20,10 @@ use proc::{Proc, Target};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::thread;
-use std::time::{Duration, Instant};
 
 /// The fixture program, and the markers it carries. Keep in step with
 /// `test-programs/src/bin/park-target.rs`.
@@ -41,9 +38,6 @@ const TSD_KEY_SYM: &str = "PARK_TSD_KEY";
 
 /// The first page is never mapped in any process.
 const UNMAPPED: u64 = 0x1000;
-
-/// How long [`Proc::stop`] may wait for the target to come to rest.
-const STOP_WAIT_MS: u32 = 5_000;
 
 fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
@@ -77,11 +71,6 @@ struct Parked {
 impl Parked {
     fn spawn() -> Self {
         Self::start(&[])
-    }
-
-    /// A target with the counter-bumping thread as well.
-    fn spinning() -> Self {
-        Self::start(&["--spin"])
     }
 
     /// Launch the target and block on its stdout until it reports the
@@ -150,19 +139,19 @@ fn gcore(pid: u32, dir: &Path) -> PathBuf {
     core
 }
 
-/// Run `check` against the same parked target twice: once through a core
-/// taken from it, once through the live process. The core is taken first,
-/// while the target is still running, so neither view disturbs the other.
+/// Run `check` against the same core twice: once through the portable
+/// reader, once through libproc — every behavior these tests pin is
+/// pinned for the reference reader and the reader held to it alike.
 fn for_each_target(check: impl Fn(&Proc, &Parked, &str)) {
     let parked = Parked::spawn();
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core = gcore(parked.pid(), dir.path());
 
-    let from_core = Proc::open_core(&core).expect("failed to open the core");
-    check(&from_core, &parked, "core");
+    let portable = Proc::open_core(&core).expect("failed to open the core");
+    check(&portable, &parked, "portable");
 
-    let live = Proc::grab_pid(parked.pid()).expect("failed to grab the live target");
-    check(&live, &parked, "live");
+    let libproc = Proc::open_core_libproc(&core).expect("libproc failed to open the core");
+    check(&libproc, &parked, "libproc");
 }
 
 /// The portable reader is held to libproc, on the same core, on the one
@@ -379,19 +368,15 @@ fn test_reads_see_the_targets_memory() {
         );
 
         // The same bytes as a borrow where the backend has a mapping to
-        // lend — the core does; a live grab reads through a handle and
-        // keeps `pread` as its libproc-compat read instead.
-        let mut buf = [0u8; 8];
+        // lend — the portable reader does; libproc reads through a
+        // handle and has nothing to borrow.
         match p.pslice(addr, 8) {
             Some(bytes) => {
-                assert_eq!(who, "core", "a live grab lent a slice");
+                assert_eq!(who, "portable", "libproc lent a slice");
                 assert_eq!(bytes, MARKER_VALUE.to_le_bytes());
             }
             None => {
-                assert_eq!(who, "live", "the core failed to lend a slice");
-                p.pread_exact(&mut buf, addr).unwrap();
-                assert_eq!(buf, MARKER_VALUE.to_le_bytes());
-                assert_eq!(p.pread(&mut buf, addr).unwrap(), 8);
+                assert_eq!(who, "libproc", "the portable reader failed to lend a slice");
             }
         }
 
@@ -409,16 +394,6 @@ fn test_reads_see_the_targets_memory() {
         assert!(p.read_u8(UNMAPPED).is_err(), "({who})");
         assert!(Target::read_bytes(p, UNMAPPED, 8).is_err(), "({who})");
         assert!(p.pslice(UNMAPPED, 8).is_none(), "({who})");
-        if who == "live" {
-            assert!(p.pread_exact(&mut buf, UNMAPPED).is_err());
-            // A bare pread need not fail: it may just come up short,
-            // which is why pread_exact insists on the count.
-            let short = p.pread(&mut buf, UNMAPPED).unwrap_or(0);
-            assert!(
-                short < buf.len() as u64,
-                "read {short} bytes of unmapped memory"
-            );
-        }
     });
 }
 
@@ -664,20 +639,7 @@ fn test_lwps_match_procfs() {
             );
         }
 
-        // A thread handle reports the stop timestamp the iteration did.
-        // Handles are a live-process affordance: a core's facade
-        // declines them, as a Linux core's always has.
-        let first = &lwps[0];
-        match p.lwp_handle(first.tid) {
-            Ok(handle) => {
-                assert_eq!(who, "live", "({who}) a core handed out an LWP handle");
-                assert_eq!(handle.status(), first.tstamp, "({who})");
-            }
-            Err(e) => assert_eq!(who, "core", "({who}) tid {}: {e}", first.tid),
-        }
-
         // There is no LWP 0.
-        assert!(p.lwp_handle(0).is_err(), "({who})");
         assert!(p.lwp_name(0).is_err(), "({who})");
         assert!(p.regs(0).is_err(), "({who})");
 
@@ -712,158 +674,23 @@ fn test_status_describes_the_process() {
 }
 
 // ---------------------------------------------------------------------------
-// Process control
-// ---------------------------------------------------------------------------
-
-/// Stopping and running the target, observed through the one thing in it
-/// that moves: a spinning thread's counter.
-#[test]
-fn test_stop_and_run_control_the_target() {
-    let parked = Parked::spinning();
-    let p = Proc::grab_pid(parked.pid()).expect("failed to grab the target");
-    let counter = marker_addr(&p, COUNTER_SYM);
-
-    // Grabbing it stopped it, so the spinner cannot advance.
-    assert_stopped(&p, counter);
-
-    // Set running, it advances again.
-    p.run().expect("failed to resume the target");
-    assert_running(&p, counter);
-
-    // And it comes back to rest on demand.
-    p.stop(STOP_WAIT_MS).expect("failed to stop the target");
-    assert_stopped(&p, counter);
-
-    // Releasing the handle clears the stop: PRELEASE_CLEAR in Drop.
-    drop(p);
-    // A no-stop grab leaves it running, and can watch it do so.
-    let p = Proc::grab_pid_no_stop(parked.pid()).expect("failed to re-grab the target");
-    assert_running(&p, counter);
-}
-
-/// A stopped target's spinner cannot run, so its counter holds still
-/// across as many reads as we care to make.
-fn assert_stopped(p: &Proc, counter: u64) {
-    let want = p.read_u64(counter).expect("failed to read the counter");
-    for _ in 0..10_000 {
-        assert_eq!(
-            p.read_u64(counter).expect("failed to read the counter"),
-            want,
-            "the target ran while it was supposed to be stopped"
-        );
-    }
-}
-
-/// A running target's spinner must move the counter. Polled rather than
-/// slept on, and bounded so a stuck target fails instead of hanging.
-fn assert_running(p: &Proc, counter: u64) {
-    let want = p.read_u64(counter).expect("failed to read the counter");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline {
-        if p.read_u64(counter).expect("failed to read the counter") != want {
-            return;
-        }
-    }
-    panic!("the counter never moved: the target is not running");
-}
-
-// ---------------------------------------------------------------------------
-// Cores
-// ---------------------------------------------------------------------------
-
-/// A core and the process it was taken from answer the same questions
-/// the same way. Registers are left out: gcore stops and restarts the
-/// target, so its parked threads may have gone round their park loop
-/// once more by the time the live handle reads them.
-#[test]
-fn test_core_and_live_agree() {
-    let parked = Parked::spawn();
-    let dir = tempfile::tempdir().expect("failed to create a tempdir");
-    let core = Proc::open_core(&gcore(parked.pid(), dir.path())).expect("failed to open the core");
-    let live = Proc::grab_pid(parked.pid()).expect("failed to grab the target");
-
-    assert_eq!(live.exec_name().unwrap(), core.exec_name().unwrap());
-    assert_eq!(
-        live.exec_name().unwrap().file_name(),
-        Some(std::ffi::OsStr::new(PROGRAM))
-    );
-
-    // The core reads through the portable reader and the live process
-    // through libproc, and the two arrive at their tables by different
-    // routes — so compare as name to address, as the portable-reader
-    // parity test does; entry-for-entry agreement is that test's job.
-    let table = |syms: Vec<proc::SymbolBuf>| -> BTreeMap<String, u64> {
-        syms.into_iter().map(|s| (s.name, s.st_value)).collect()
-    };
-    assert_eq!(
-        table(core.symbols().unwrap()),
-        table(live.symbols().unwrap())
-    );
-    assert_eq!(
-        table(core.object_symbols().unwrap()),
-        table(live.object_symbols().unwrap())
-    );
-    for name in [MARKER_FN, MARKER_VALUE_SYM, COUNTER_SYM] {
-        assert_eq!(
-            core.lookup_symbol_by_name(name),
-            live.lookup_symbol_by_name(name),
-            "{name}"
-        );
-    }
-
-    let marker = marker_addr(&live, MARKER_VALUE_SYM);
-    assert_eq!(core.read_u64(marker).unwrap(), MARKER_VALUE);
-
-    // A core keeps the shape of the address space and the permissions on
-    // it, but not every provenance bit procfs has for a live process:
-    // MA_ANON and MA_SHARED do not survive the dump. Compare what a core
-    // is able to carry, laid out the way pmap prints it.
-    let layout = |p: &Proc| -> Vec<String> {
-        p.mappings()
-            .unwrap()
-            .iter()
-            .map(|m| {
-                let bit = |set, c| if set { c } else { '-' };
-                format!(
-                    "{:#018x}..{:#018x} {}{}{} {}",
-                    m.vaddr,
-                    m.range().end,
-                    bit(m.flags.is_read(), 'r'),
-                    bit(m.flags.is_write(), 'w'),
-                    bit(m.flags.is_exec(), 'x'),
-                    m.path.as_deref().unwrap_or("[ anon ]"),
-                )
-            })
-            .collect()
-    };
-    assert_eq!(layout(&core), layout(&live));
-
-    // Thread identity and stacks are fixed for the life of a thread,
-    // whatever its registers are doing.
-    let stacks = |p: &Proc| -> BTreeMap<u32, (u64, Range<u64>)> {
-        p.lwps()
-            .unwrap()
-            .into_iter()
-            .map(|l| (l.tid, (l.regs.fsbase, l.stack_range)))
-            .collect()
-    };
-    assert_eq!(stacks(&core), stacks(&live));
-}
-
-// ---------------------------------------------------------------------------
 // Snapshots
 // ---------------------------------------------------------------------------
 
-/// A snapshot recorded from a real process replays everything the
-/// capture touched, through a file, with the process itself gone from
-/// the picture — the whole point of [`Recorder`].
+/// A snapshot recorded from a real target replays everything the
+/// capture touched, through a file, with the target itself gone from
+/// the picture — the whole point of [`Recorder`]. Recorded through
+/// libproc, which copies through a handle and lends nothing, so this
+/// also pins the recorder against a source with nothing to borrow.
 #[test]
-fn test_snapshot_replays_a_live_target() {
+fn test_snapshot_replays_a_recorded_target() {
     let parked = Parked::spawn();
-    let live = Proc::grab_pid(parked.pid()).expect("failed to grab the target");
-    let recorder = Recorder::new(&live);
+    let dir = tempfile::tempdir().expect("failed to create a tempdir");
+    let core = gcore(parked.pid(), dir.path());
+    let source = Proc::open_core_libproc(&core).expect("libproc failed to open the core");
+    let recorder = Recorder::new(&source);
 
-    let addr = marker_addr(&live, MARKER_VALUE_SYM);
+    let addr = marker_addr(&source, MARKER_VALUE_SYM);
     let bytes = recorder
         .read_bytes(addr, 64)
         .expect("failed to read memory");
@@ -878,7 +705,7 @@ fn test_snapshot_replays_a_live_target() {
             .is_none()
     );
     let lwps = recorder.lwps().expect("failed to list the target's lwps");
-    let key_sym = live
+    let key_sym = source
         .lookup_symbol_by_name(TSD_KEY_SYM)
         .expect("the tsd key is in the symtab");
     let tls: Vec<Option<u64>> = lwps
@@ -908,7 +735,7 @@ fn test_snapshot_replays_a_live_target() {
             .is_none()
     );
     assert_eq!(replay.lwps().unwrap(), lwps);
-    assert_eq!(replay.mappings().unwrap(), live.mappings().unwrap());
+    assert_eq!(replay.mappings().unwrap(), source.mappings().unwrap());
 
     // Every thread-local the capture resolved replays, and one it never
     // asked about is a hole in the snapshot rather than a null answer.
@@ -922,10 +749,10 @@ fn test_snapshot_replays_a_live_target() {
     assert!(replay.tls_var_addr(&unseen, &key_sym).is_err());
 
     // The symtabs come over whole, sorted by address.
-    let mut functions = live.symbols().unwrap();
+    let mut functions = source.symbols().unwrap();
     functions.sort_by_key(|s| s.st_value);
     assert_eq!(replay.symbols().unwrap(), functions);
-    let mut objects = live.object_symbols().unwrap();
+    let mut objects = source.object_symbols().unwrap();
     objects.sort_by_key(|s| s.st_value);
     assert_eq!(replay.object_symbols().unwrap(), objects);
 
@@ -940,20 +767,7 @@ fn test_snapshot_replays_a_live_target() {
 
 /// Everything that can go wrong on the way to a handle does, and says so.
 #[test]
-fn test_grab_failures() {
-    // A pid that has come and gone.
-    let mut child = Command::new("/bin/true")
-        .spawn()
-        .expect("failed to run true");
-    let reaped = child.id();
-    child.wait().expect("failed to reap true");
-    let err = Proc::grab_pid(reaped).expect_err("grabbed a process that had exited");
-    assert!(
-        err.to_string().starts_with("failed to grab process: "),
-        "{err}"
-    );
-    assert!(Proc::grab_pid_no_stop(reaped).is_err());
-
+fn test_open_core_failures() {
     // A core is identified before a backend is chosen, so a file that
     // is not one is turned away by the reader rather than by libproc.
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
@@ -966,4 +780,11 @@ fn test_grab_failures() {
     // operating system will not accept at all.
     assert!(Proc::open_core(&dir.path().join("missing")).is_err());
     assert!(Proc::open_core(Path::new("core\0dump")).is_err());
+
+    // libproc turns away the same junk its own way.
+    let err = Proc::open_core_libproc(&junk).expect_err("libproc opened a non-core");
+    assert!(
+        err.to_string().starts_with("failed to grab process: "),
+        "{err}"
+    );
 }
