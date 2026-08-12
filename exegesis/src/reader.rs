@@ -10,20 +10,21 @@ use crate::{TypeId, VarId};
 
 use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use gimli::{Dwarf, UnitRef};
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+};
 use regex::Regex;
 use tracing::debug;
 
 use std::collections::BTreeSet;
 use std::num::NonZero;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Below this many named-type groups, the parallel layout partitioning in
 /// [`DwReader::named_aliases`] is not worth spawning threads for; run it inline.
 const PARALLEL_ALIAS_GROUP_THRESHOLD: usize = 256;
 
-/// Number of named-type groups a worker claims from the shared cursor at a
-/// time, amortizing the atomic fetch over the many trivial (size-one) groups.
+/// Cap on how few named-type groups a rayon split may carry, amortizing
+/// scheduling over the many trivial (size-one) groups.
 const ALIAS_BATCH: usize = 32;
 
 /// The thread count used when the caller leaves [`ReadArgs::cgu_parallelism`]
@@ -216,7 +217,7 @@ impl<'dw> DwReader<'dw> {
         // Workers have released their borrows now that the parse is done;
         // take ownership of the interned strings.
         collector.strings = interner.freeze();
-        collector.finalize_types(parallelism);
+        pool.install(|| collector.finalize_types());
         Ok(collector)
     }
 
@@ -295,7 +296,7 @@ impl<'dw> DwReader<'dw> {
     /// Anonymous pointers and arrays are deduplicated structurally. That pass
     /// repeats because an outer pointer may only become equal after its
     /// pointee was deduplicated in an earlier pass.
-    fn finalize_types(&mut self, parallelism: usize) {
+    fn finalize_types(&mut self) {
         self.subs.clear();
 
         let specifications: Vec<_> = self
@@ -335,7 +336,7 @@ impl<'dw> DwReader<'dw> {
             }
         }
         let groups: Vec<&[TypeId]> = named.values().map(Vec::as_slice).collect();
-        for (duplicate, canonical) in self.named_aliases(&groups, parallelism) {
+        for (duplicate, canonical) in self.named_aliases(&groups) {
             self.subs.insert(duplicate, canonical);
         }
 
@@ -372,50 +373,27 @@ impl<'dw> DwReader<'dw> {
     ///
     /// The groups are independent and [`Self::compatible_named_aliases`] only
     /// reads `self` (the `subs` map is not mutated until every group has been
-    /// processed), so the work is spread across a thread pool. Each type id
+    /// processed), so the work is spread across the rayon pool. Each type id
     /// belongs to exactly one group, so a `duplicate` is produced by exactly
     /// one group and the merged result does not depend on the order in which
-    /// chunks finish. This is the dominant cost of finalization on large
+    /// batches finish. This is the dominant cost of finalization on large
     /// binaries, and the layout comparisons are CPU-bound and allocation-light,
-    /// so it scales well.
-    fn named_aliases(&self, groups: &[&[TypeId]], threads: usize) -> Vec<(TypeId, TypeId)> {
-        if threads <= 1 || groups.len() < PARALLEL_ALIAS_GROUP_THRESHOLD {
+    /// so it scales well. Group sizes vary by orders of magnitude (a handful
+    /// of ubiquitous types dominate), so splitting is capped at [`ALIAS_BATCH`]
+    /// groups and work stealing keeps every core busy to the end.
+    fn named_aliases(&self, groups: &[&[TypeId]]) -> Vec<(TypeId, TypeId)> {
+        if groups.len() < PARALLEL_ALIAS_GROUP_THRESHOLD {
             return groups
                 .iter()
                 .flat_map(|ids| self.compatible_named_aliases(ids))
                 .collect();
         }
 
-        // Workers claim small batches of groups from a shared cursor. Group
-        // sizes vary by orders of magnitude (a handful of ubiquitous types
-        // dominate), so static chunking would leave one thread with the tail;
-        // claiming on demand keeps every core busy to the end.
-        let cursor = AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..threads)
-                .map(|_| {
-                    let cursor = &cursor;
-                    scope.spawn(move || {
-                        let mut aliases = Vec::new();
-                        loop {
-                            let start = cursor.fetch_add(ALIAS_BATCH, Ordering::Relaxed);
-                            if start >= groups.len() {
-                                break;
-                            }
-                            let end = (start + ALIAS_BATCH).min(groups.len());
-                            for &ids in &groups[start..end] {
-                                aliases.extend(self.compatible_named_aliases(ids));
-                            }
-                        }
-                        aliases
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .flat_map(|h| h.join().unwrap())
-                .collect()
-        })
+        groups
+            .par_iter()
+            .with_max_len(ALIAS_BATCH)
+            .flat_map_iter(|ids| self.compatible_named_aliases(ids))
+            .collect()
     }
 
     fn alias_to_lowest(&mut self, ids: &[TypeId]) {
@@ -1232,7 +1210,7 @@ mod tests {
         insert_pointer(&mut reader, outer_pointer, pointer);
         insert_pointer(&mut reader, duplicate_outer_pointer, duplicate_pointer);
 
-        reader.finalize_types(1);
+        reader.finalize_types();
 
         assert_eq!(reader.canonicalize(duplicate), canonical);
         assert_eq!(reader.canonicalize(duplicate_pointer), pointer);
@@ -1264,7 +1242,7 @@ mod tests {
             }),
         );
 
-        reader.finalize_types(1);
+        reader.finalize_types();
 
         assert_eq!(reader.canonicalize(duplicate_array), array);
     }
@@ -1279,7 +1257,7 @@ mod tests {
         insert_struct(&mut reader, definition, Some("Value"), 8);
         reader.type_declarations.insert(declaration);
 
-        reader.finalize_types(1);
+        reader.finalize_types();
 
         assert_eq!(reader.canonicalize(declaration), definition);
         assert_eq!(reader.canonicalize(definition), definition);
@@ -1303,7 +1281,7 @@ mod tests {
         reader.type_declarations.insert(duplicate_declaration);
         reader.type_specifications.insert(definition, declaration);
 
-        reader.finalize_types(1);
+        reader.finalize_types();
 
         assert_eq!(reader.canonicalize(declaration), definition);
         assert_eq!(reader.canonicalize(duplicate_declaration), definition);
@@ -1325,7 +1303,7 @@ mod tests {
         insert_struct(&mut reader, canonical, Some("Value"), 8);
         insert_struct(&mut reader, duplicate, Some("Value"), 8);
 
-        reader.finalize_types(1);
+        reader.finalize_types();
 
         assert_eq!(reader.canonicalize(duplicate), canonical);
     }
@@ -1344,7 +1322,7 @@ mod tests {
         insert_struct(&mut reader, duplicate_small, Some("Value"), 4);
         reader.type_declarations.insert(declaration);
 
-        reader.finalize_types(1);
+        reader.finalize_types();
 
         assert_eq!(reader.canonicalize(duplicate_small), small);
         assert_eq!(reader.canonicalize(small), small);
@@ -1376,7 +1354,7 @@ mod tests {
             }),
         );
 
-        reader.finalize_types(1);
+        reader.finalize_types();
 
         assert_eq!(reader.canonicalize(anonymous_a), anonymous_a);
         assert_eq!(reader.canonicalize(anonymous_b), anonymous_b);
