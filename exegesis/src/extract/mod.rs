@@ -623,7 +623,11 @@ fn extract_from_view_with_vtable_types(
         })
     });
 
-    let statics = find_statics(view, symbols, &mut stats);
+    // The target's symbol names, stripped of any `.llvm.<n>` suffix, shared
+    // by the statics retention check and the fingerprint filter below.
+    let symtab: BTreeSet<&str> = symbols.iter().map(|s| strip(s)).collect();
+
+    let statics = find_statics(view, symbols, &symtab, &mut stats);
 
     if !opts.allow_missing_infra
         && (!stats.infra_missing.is_empty() || !stats.statics_missing.is_empty())
@@ -670,16 +674,14 @@ fn extract_from_view_with_vtable_types(
     let mut fingerprint: BTreeSet<String> = BTreeSet::new();
     let mut walk_cells: Vec<(String, Option<TypeId>)> = Vec::new();
 
-    // The fingerprint is resolved against a target's symbol table, so it
-    // can only be made of names a symbol table carries. DWARF describes
-    // every instantiation the compiler emitted, including ones the
-    // linker then dropped for want of a caller — `poll` for tokio's
-    // blocking-pool tasks in a program that touches no files, say. Those
-    // are absent from this binary and from any target built the same
-    // way, so keeping them would fail every well-matched target rather
+    // The fingerprint is resolved against a target's symbol table (the
+    // `symtab` set above), so it can only be made of names a symbol table
+    // carries. DWARF describes every instantiation the compiler emitted,
+    // including ones the linker then dropped for want of a caller — `poll`
+    // for tokio's blocking-pool tasks in a program that touches no files,
+    // say. Those are absent from this binary and from any target built the
+    // same way, so keeping them would fail every well-matched target rather
     // than the mismatched ones the check is for.
-    let symtab: BTreeSet<&str> = symbols.iter().map(|s| strip(s)).collect();
-
     for task in &bound {
         let entry_id = TaskEntryId(entries.len() as u32);
         let future = em.emit(task.future);
