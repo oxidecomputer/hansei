@@ -15,7 +15,7 @@ pub use debug_type::TypeKind;
 pub use elements::Elements;
 pub use error::Error;
 pub use parse::ParseWithDbgInfo;
-pub use render::{AddrAnnotator, DisplayTargetValue, DisplayValue, ElideOverride};
+pub use render::{AddrAnnotator, DisplayValue, ElideOverride};
 pub use target::ReadFromProc;
 pub use value::Value;
 

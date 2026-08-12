@@ -68,7 +68,7 @@ impl<'buf, 'a> WorkerCtx<'buf, 'a> {
             max_depth: self.max_depth,
             proc: self.proc,
             visited: Some(visited),
-            formats: Some(formats),
+            formats,
             parallel: false,
             hex_integers: self.hex_integers,
             ugly: self.ugly,
