@@ -10,8 +10,6 @@ pub mod snapshot;
 mod target;
 #[cfg(test)]
 mod tests;
-#[cfg(target_os = "illumos")]
-pub use illumos::Lwp;
 pub use target::Proc;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -42,18 +40,12 @@ enum ErrorKind {
     NoLwpName,
     #[error("no nul byte in C string")]
     NoNul(#[from] FromBytesUntilNulError),
-    #[error("the target is a core dump, not a live process")]
-    NotALiveProcess,
     #[error(
         "{name} is not a thread-local symbol (ELF type {ty}), so it names no per-thread storage"
     )]
     NotThreadLocal { name: String, ty: u8 },
     #[error("error: {0}")] // TODO better message
     Read(#[from] io::Error), // TODO fix name
-    #[error("failed to start process: {0}")]
-    Start(i32), // TODO show name or errno?
-    #[error("failed to stop process: {0}")]
-    Stop(i32),
     #[error("failed to iterate over symbols")]
     SymbolIterFailed,
     #[error("pthread key {key} is outside the fast-TSD range; slow TSD is unsupported")]
@@ -116,10 +108,6 @@ impl Error {
         Self::new(ErrorKind::NoNul(e))
     }
 
-    pub fn not_a_live_process() -> Self {
-        Self::new(ErrorKind::NotALiveProcess)
-    }
-
     pub fn not_thread_local(name: &str, ty: u8) -> Self {
         Self::new(ErrorKind::NotThreadLocal {
             name: name.to_string(),
@@ -129,14 +117,6 @@ impl Error {
 
     pub fn read(e: io::Error) -> Self {
         Self::new(ErrorKind::Read(e))
-    }
-
-    pub fn start(errno: i32) -> Self {
-        Self::new(ErrorKind::Start(errno))
-    }
-
-    pub fn stop(errno: i32) -> Self {
-        Self::new(ErrorKind::Stop(errno))
     }
 
     pub fn symbol_iter_failed() -> Self {

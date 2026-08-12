@@ -572,8 +572,6 @@ fn test_error_messages() {
             "the capture recorded no address for thread-local CONTEXT in the thread at 0x7000",
         ),
         (Error::unexpected_eof(), "failed to fill whole buffer"),
-        (Error::start(2), "failed to start process: 2"),
-        (Error::stop(3), "failed to stop process: 3"),
     ];
     for (err, want) in cases {
         assert_eq!(err.to_string(), want);
