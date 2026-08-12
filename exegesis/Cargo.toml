@@ -28,6 +28,7 @@ gimli.workspace = true
 memmap2.workspace = true
 object.workspace = true
 postcard.workspace = true
+rayon.workspace = true
 regex.workspace = true
 rustc-demangle.workspace = true
 semver = { workspace = true, features = ["serde"] }
