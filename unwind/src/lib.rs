@@ -232,7 +232,7 @@ impl<T: Target> Unwinder<'_, T> {
         let mut regs = initial_regs.clone();
         for reg in REGS {
             // We can't assume anything about the state of caller-saved registers.
-            if !Regs::is_callee_saved(reg) {
+            if !reg.is_callee_saved() {
                 regs[reg] = 0;
             }
         }

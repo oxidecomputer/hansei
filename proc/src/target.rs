@@ -32,7 +32,6 @@ impl Proc {
             Flavour::Illumos => Ok(Proc::IllumosCore(coredump::illumos::Core::open(path)?)),
         }
     }
-
 }
 
 /// Forward an inherent method to whichever backend is in hand.
