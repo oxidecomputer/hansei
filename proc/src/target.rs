@@ -6,9 +6,10 @@
 //! and symbol tables themselves, and every read is lent straight out of
 //! the mapped file ([`Target::pslice`]) rather than copied through
 //! libproc's `pread` — which a render pass issuing one read per string
-//! can feel. On illumos libproc remains
-//! the reference reader, held against the portable one in tests via
-//! [`Proc::open_core_libproc`].
+//! can feel. On illumos libproc remains the reference reader, held
+//! against the portable one in tests via the feature-gated
+//! `libproc::Core` — never through this facade, which holds only
+//! readers that lend.
 
 use crate::coredump::{self, Flavour};
 use crate::{LoadedObject, LwpInfo, Mappings, Regs, Result, Status, SymbolBuf, Target};
@@ -17,10 +18,6 @@ use std::path::{Path, PathBuf};
 
 /// A target: a core dump of either system.
 pub enum Proc {
-    /// An illumos core, read through libproc — the reference reader the
-    /// portable one is held against in tests.
-    #[cfg(target_os = "illumos")]
-    Libproc(crate::libproc::Proc),
     /// A Linux core, read from the file.
     LinuxCore(coredump::linux::Core),
     /// An illumos core, read from the file.
@@ -39,8 +36,6 @@ impl Proc {
     /// The core's format, for a caller that wants to say so.
     pub fn flavour(&self) -> Flavour {
         match self {
-            #[cfg(target_os = "illumos")]
-            Proc::Libproc(_) => Flavour::Illumos,
             Proc::LinuxCore(_) => Flavour::Linux,
             Proc::IllumosCore(_) => Flavour::Illumos,
         }
@@ -51,8 +46,6 @@ impl Proc {
 macro_rules! dispatch {
     ($self:ident, $method:ident($($arg:expr),*)) => {
         match $self {
-            #[cfg(target_os = "illumos")]
-            Proc::Libproc(p) => p.$method($($arg),*),
             Proc::LinuxCore(c) => c.$method($($arg),*),
             Proc::IllumosCore(c) => c.$method($($arg),*),
         }
@@ -125,24 +118,12 @@ impl Proc {
     }
 }
 
-// ---------------------------------------------------------------------------
-// illumos-only
-// ---------------------------------------------------------------------------
-
-#[cfg(target_os = "illumos")]
 impl Proc {
-    /// Open an illumos core through libproc rather than the portable
-    /// reader. libproc is the reference the portable reader is held to,
-    /// so this is for the tests that compare the two on one core.
-    pub fn open_core_libproc(path: &Path) -> Result<Self> {
-        Ok(Proc::Libproc(crate::libproc::Proc::open_core(path)?))
-    }
-
+    /// The LWP's name, which only an illumos core records.
     pub fn lwp_name(&self, lwpid: u32) -> Result<String> {
         match self {
-            Proc::Libproc(p) => p.lwp_name(lwpid),
             Proc::IllumosCore(c) => c.lwp_name(lwpid),
-            _ => Err(crate::Error::no_lwp_name()),
+            Proc::LinuxCore(_) => Err(crate::Error::no_lwp_name()),
         }
     }
 
@@ -161,18 +142,11 @@ impl Proc {
 
 impl std::fmt::Debug for Proc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            #[cfg(target_os = "illumos")]
-            Proc::Libproc(p) => p.fmt(f),
-            Proc::LinuxCore(c) => c.fmt(f),
-            Proc::IllumosCore(c) => c.fmt(f),
-        }
+        dispatch!(self, fmt(f))
     }
 }
 
-// The whole facade crosses threads during parallel rendering, libproc
-// variant included — libproc calls serialize behind that variant's
-// own mutex.
+// The whole facade crosses threads during parallel rendering.
 const _: () = {
     const fn send_sync<T: Send + Sync>() {}
     send_sync::<Proc>();
@@ -184,25 +158,11 @@ impl Target for Proc {
     }
 
     fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
-        match self {
-            // libproc reads through a handle; there is nothing to borrow.
-            #[cfg(target_os = "illumos")]
-            Proc::Libproc(_) => None,
-            Proc::LinuxCore(c) => c.pslice(addr, len),
-            Proc::IllumosCore(c) => c.pslice(addr, len),
-        }
+        dispatch!(self, pslice(addr, len))
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
-        match self {
-            // libproc reads through a handle: bounding would mean probing
-            // its mappings on every read, so it claims no bound, and its
-            // `read_bytes` allocates only as far as the core serves.
-            #[cfg(target_os = "illumos")]
-            Proc::Libproc(_) => max,
-            Proc::LinuxCore(c) => c.readable_len(addr, max),
-            Proc::IllumosCore(c) => c.readable_len(addr, max),
-        }
+        dispatch!(self, readable_len(addr, max))
     }
 
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {

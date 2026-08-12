@@ -895,6 +895,7 @@ dependencies = [
  "libproc-sys",
  "memmap2",
  "postcard",
+ "proc",
  "scroll",
  "serde",
  "tempfile",
