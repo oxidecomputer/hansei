@@ -381,7 +381,6 @@ dependencies = [
  "object",
  "postcard",
  "rayon",
- "regex",
  "rustc-demangle",
  "semver",
  "serde",

@@ -17,7 +17,7 @@ pub use hansei_bundle::symbols;
 mod testhelper;
 
 pub use raw_types::{Encoding, NamespaceTable, NsEntry, NsId};
-pub use reader::{DwReader, ReadArgs, Targets};
+pub use reader::{DwReader, ReadArgs};
 pub use string_table::StrId;
 pub use view::{
     Array, Base, DwView, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace,
