@@ -130,9 +130,6 @@ pub struct ExtractStats {
     pub infra_missing: Vec<String>,
     /// Statics that were not found.
     pub statics_missing: Vec<String>,
-    /// Statics recovered from the symbol table because the DWARF carried no
-    /// `DW_TAG_variable` DIE for them (e.g. illumos builds).
-    pub statics_from_symtab: usize,
     /// `--include-type` roots resolved.
     pub include_roots: usize,
     /// `--include-type` names that matched nothing.
@@ -257,9 +254,6 @@ impl fmt::Display for ExtractStats {
         for name in &self.statics_missing {
             writeln!(f, "  MISSING static:         {name}")?;
         }
-        if self.statics_from_symtab > 0 {
-            writeln!(f, "  statics via symtab:     {}", self.statics_from_symtab)?;
-        }
         if let Some(v) = &self.rustc_below_floor {
             writeln!(
                 f,
@@ -358,11 +352,10 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
     // after the read has already finished; overlapped, it is free.
     let (reader, symbols, vtable_types) = std::thread::scope(|scope| {
         let aux = scope.spawn(|| {
-            // Named statics can be absent from `.debug_info` yet present in the
-            // symbol table: illumos release builds emit no
-            // `DW_TAG_variable` DIE for tokio/std dependency statics such as
-            // `WAKER_VTABLE`, but keep the symbol in `.symtab`/`.dynsym`. Gather
-            // both tables so `find_statics` can fall back to a mangled-name match.
+            // The named statics are recovered from the symbol table alone
+            // (see `find_statics`), and a symbol can live in either table —
+            // illumos release builds keep `WAKER_VTABLE` only in
+            // `.symtab`/`.dynsym` — so gather both.
             // Mach-O's linker prefixes every global symbol with an
             // underscore, so its tables spell a Rust v0 name `__RNv…`
             // where the DWARF linkage name — and the symbol table of any
@@ -623,11 +616,7 @@ fn extract_from_view_with_vtable_types(
         })
     });
 
-    // The target's symbol names, stripped of any `.llvm.<n>` suffix, shared
-    // by the statics retention check and the fingerprint filter below.
-    let symtab: BTreeSet<&str> = symbols.iter().map(|s| strip(s)).collect();
-
-    let statics = find_statics(view, symbols, &symtab, &mut stats);
+    let statics = find_statics(symbols, &mut stats);
 
     if !opts.allow_missing_infra
         && (!stats.infra_missing.is_empty() || !stats.statics_missing.is_empty())
@@ -674,14 +663,16 @@ fn extract_from_view_with_vtable_types(
     let mut fingerprint: BTreeSet<String> = BTreeSet::new();
     let mut walk_cells: Vec<(String, Option<TypeId>)> = Vec::new();
 
-    // The fingerprint is resolved against a target's symbol table (the
-    // `symtab` set above), so it can only be made of names a symbol table
-    // carries. DWARF describes every instantiation the compiler emitted,
-    // including ones the linker then dropped for want of a caller — `poll`
-    // for tokio's blocking-pool tasks in a program that touches no files,
-    // say. Those are absent from this binary and from any target built the
-    // same way, so keeping them would fail every well-matched target rather
+    // The fingerprint is resolved against a target's symbol table, so it
+    // can only be made of names a symbol table carries. DWARF describes
+    // every instantiation the compiler emitted, including ones the
+    // linker then dropped for want of a caller — `poll` for tokio's
+    // blocking-pool tasks in a program that touches no files, say. Those
+    // are absent from this binary and from any target built the same
+    // way, so keeping them would fail every well-matched target rather
     // than the mismatched ones the check is for.
+    let symtab: BTreeSet<&str> = symbols.iter().map(|s| strip(s)).collect();
+
     for task in &bound {
         let entry_id = TaskEntryId(entries.len() as u32);
         let future = em.emit(task.future);
