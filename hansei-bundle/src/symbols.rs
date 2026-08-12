@@ -11,9 +11,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
 
-/// Raw v0 symbols grouped by a build-independent prototype key.
-pub type NormalizedSymbols = BTreeMap<String, Vec<String>>;
-
 /// Build a normalized multimap and collapse raw aliases that resolve to the
 /// same semantic value.
 pub fn normalized_value_index<V: Copy + Ord>(
@@ -42,25 +39,6 @@ pub fn normalized_v0_key(symbol: &str) -> Option<String> {
     }
     let demangled = rustc_demangle::try_demangle(symbol).ok()?;
     Some(format!("{demangled:#}"))
-}
-
-/// Build a deterministic multimap without duplicating aliases repeated in
-/// `.symtab` and `.dynsym`.
-pub fn normalized_symbol_index<'a>(
-    symbols: impl IntoIterator<Item = &'a str>,
-) -> NormalizedSymbols {
-    let mut unique = BTreeSet::new();
-    for symbol in symbols {
-        unique.insert(strip_llvm_suffix(symbol));
-    }
-
-    let mut index = NormalizedSymbols::new();
-    for symbol in unique {
-        if let Some(key) = normalized_v0_key(symbol) {
-            index.entry(key).or_default().push(symbol.to_owned());
-        }
-    }
-    index
 }
 
 /// Recover the concrete `T` named by a demangled vtable function symbol.
@@ -200,7 +178,7 @@ impl Normalized<'_> {
 mod tests {
     use super::{
         GLOBAL_ELISION, concrete_type_from_vtable_symbol, normalized_rust_type_name,
-        normalized_symbol_index, normalized_v0_key, normalized_value_index, rust_type_names_equal,
+        normalized_v0_key, normalized_value_index, rust_type_names_equal,
     };
     use std::borrow::Cow;
     use std::collections::BTreeMap;
@@ -221,13 +199,6 @@ mod tests {
             normalized_v0_key(DEBUG),
             normalized_v0_key(&format!("{DEBUG}.llvm.12345"))
         );
-    }
-
-    #[test]
-    fn index_preserves_colliding_raw_names() {
-        let index = normalized_symbol_index([DEBUG, NODEBUG, DEBUG]);
-        let values = index.values().next().expect("missing normalized key");
-        assert_eq!(values, &[DEBUG.to_owned(), NODEBUG.to_owned()]);
     }
 
     #[test]
