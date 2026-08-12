@@ -567,7 +567,7 @@ fn chained(name: String, count: usize, waits: &Waits, top: usize) -> Row {
 }
 
 /// A count and the noun it counts, pluralized.
-fn counted(n: usize, noun: &str) -> String {
+pub(crate) fn counted(n: usize, noun: &str) -> String {
     let plural = if n == 1 { "" } else { "s" };
     format!("{n} {noun}{plural}")
 }
