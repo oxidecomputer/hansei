@@ -173,10 +173,23 @@ impl<'a> Emitter<'a> {
             self.unresolved_refs += 1;
             return self.unresolved_placeholder();
         }
+        // A placeholder def `emit` overwrites once the conversion is
+        // drained; the name recorded beside it is already final.
         let fq = self.fq_name(id);
-        let bid = self.push_placeholder(fq);
+        let name = self.interner.intern(UNRESOLVED);
+        let bid = self.push_def(TypeDef::Opaque { name, size: None }, fq);
         self.ids.insert(id, bid);
         self.pending.push_back((id, bid));
+        bid
+    }
+
+    /// Append a definition, keeping the parallel `names` slot — what the
+    /// `finish` index and the walk binder's leaf scan read — in step with
+    /// it. Every definition enters the table through here.
+    fn push_def(&mut self, def: TypeDef, fq: Option<String>) -> BundleTypeId {
+        let bid = BundleTypeId(self.defs.len() as u32);
+        self.defs.push(def);
+        self.names.push(fq);
         bid
     }
 
@@ -185,10 +198,7 @@ impl<'a> Emitter<'a> {
         if let Some(bid) = self.unresolved {
             return bid;
         }
-        let name = self.interner.intern(UNRESOLVED);
-        let bid = BundleTypeId(self.defs.len() as u32);
-        self.defs.push(TypeDef::Opaque { name, size: None });
-        self.names.push(None);
+        let bid = self.placeholder(UNRESOLVED);
         self.unresolved = Some(bid);
         bid
     }
@@ -196,21 +206,7 @@ impl<'a> Emitter<'a> {
     /// A named opaque placeholder (missing Cell/Stage/infra).
     pub(super) fn placeholder(&mut self, name: &str) -> BundleTypeId {
         let name = self.interner.intern(name);
-        let bid = BundleTypeId(self.defs.len() as u32);
-        self.defs.push(TypeDef::Opaque { name, size: None });
-        self.names.push(None);
-        bid
-    }
-
-    fn push_placeholder(&mut self, name: Option<String>) -> BundleTypeId {
-        let bid = BundleTypeId(self.defs.len() as u32);
-        let n = self.interner.intern(UNRESOLVED);
-        self.defs.push(TypeDef::Opaque {
-            name: n,
-            size: None,
-        });
-        self.names.push(name);
-        bid
+        self.push_def(TypeDef::Opaque { name, size: None }, None)
     }
 
     /// The fully-qualified name of a named type, if it has one.
@@ -428,14 +424,14 @@ impl<'a> Emitter<'a> {
                                 // an unsigned base of that width.
                                 self.cenum_synth_repr += 1;
                                 let n = self.interner.intern("<enum-repr>");
-                                let bid = BundleTypeId(self.defs.len() as u32);
-                                self.defs.push(TypeDef::Base {
-                                    name: n,
-                                    size: e.size,
-                                    encoding: Encoding::Unsigned,
-                                });
-                                self.names.push(None);
-                                bid
+                                self.push_def(
+                                    TypeDef::Base {
+                                        name: n,
+                                        size: e.size,
+                                        encoding: Encoding::Unsigned,
+                                    },
+                                    None,
+                                )
                             }
                         };
                         TypeDef::CEnum {
