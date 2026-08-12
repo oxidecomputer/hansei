@@ -377,19 +377,19 @@ impl<'a> Emitter<'a> {
     }
 
     fn convert(&mut self, id: TypeId) -> TypeDef {
+        // Copying the reader reference out of `self` gives the type a
+        // borrow independent of `&mut self`, so no clone is needed.
+        let reader = self.reader;
         // `reserve` only queues ids present in the reader.
-        let raw = self.reader.types.get(&id).expect("queued type must exist");
-        match raw.clone() {
+        let raw = reader.types.get(&id).expect("queued type must exist");
+        match raw {
             RawType::Base(b) => TypeDef::Base {
                 name: self.intern_opt(b.name),
                 size: b.size,
                 encoding: b.encoding,
             },
             RawType::Pointer(p) => TypeDef::Pointer {
-                name: p.name.map(|n| {
-                    let s = self.reader.strings.get(n).to_owned();
-                    self.interner.intern(&s)
-                }),
+                name: p.name.map(|n| self.interner.intern(reader.strings.get(n))),
                 target: self.reserve(p.target_type_id),
             },
             RawType::Array(a) => TypeDef::Array {
