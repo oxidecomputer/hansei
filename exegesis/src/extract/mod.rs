@@ -544,7 +544,7 @@ fn extract_from_view_with_vtable_types(
     }
 
     let mut bound: Vec<BoundTask> = Vec::new();
-    for (&(t, s), seed) in &seeds {
+    for ((t, s), seed) in seeds {
         let cell = seed
             .dealloc_param
             .and_then(|p| cell_from_dealloc_param(reader, core_ns, p))
@@ -574,9 +574,9 @@ fn extract_from_view_with_vtable_types(
             scheduler: s,
             cell,
             stage,
-            symbols: seed.symbols.clone(),
-            poll_symbols: seed.poll_symbols.clone(),
-            poll_func_loc: seed.poll_func_loc.clone(),
+            symbols: seed.symbols,
+            poll_symbols: seed.poll_symbols,
+            poll_func_loc: seed.poll_func_loc,
         });
     }
 
