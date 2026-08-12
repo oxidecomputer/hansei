@@ -15,6 +15,7 @@
 
 #![cfg(target_os = "illumos")]
 
+use proc::libproc::Core as LibprocCore;
 use proc::snapshot::{Recorder, Snapshot};
 use proc::{Proc, Target};
 
@@ -139,19 +140,111 @@ fn gcore(pid: u32, dir: &Path) -> PathBuf {
     core
 }
 
+/// One core, two readers behind one set of method names: the portable
+/// facade and the reference reader dispatch here the way the facade
+/// used to dispatch when libproc was one of its variants, so a check
+/// written once pins both.
+enum Reader {
+    Portable(Proc),
+    Libproc(LibprocCore),
+}
+
+/// Forward a method call to whichever reader is in hand. Both spell the
+/// whole surface these tests use identically, inherent or via [`Target`].
+macro_rules! forward {
+    ($self:ident, $method:ident($($arg:expr),*)) => {
+        match $self {
+            Reader::Portable(p) => p.$method($($arg),*),
+            Reader::Libproc(c) => c.$method($($arg),*),
+        }
+    };
+}
+
+impl Reader {
+    /// The reader as a [`Target`], for the asserts that pin the trait
+    /// surface against the inherent one.
+    fn as_target(&self) -> &dyn Target {
+        match self {
+            Reader::Portable(p) => p,
+            Reader::Libproc(c) => c,
+        }
+    }
+
+    fn read_u64(&self, addr: u64) -> proc::Result<u64> {
+        forward!(self, read_u64(addr))
+    }
+    fn read_u32(&self, addr: u64) -> proc::Result<u32> {
+        forward!(self, read_u32(addr))
+    }
+    fn read_u16(&self, addr: u64) -> proc::Result<u16> {
+        forward!(self, read_u16(addr))
+    }
+    fn read_u8(&self, addr: u64) -> proc::Result<u8> {
+        forward!(self, read_u8(addr))
+    }
+    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+        forward!(self, pslice(addr, len))
+    }
+    fn lookup_symbol_by_name(&self, name: &str) -> Option<proc::SymbolBuf> {
+        forward!(self, lookup_symbol_by_name(name))
+    }
+    fn lookup_symbol_by_addr(&self, addr: u64) -> Option<proc::SymbolBuf> {
+        forward!(self, lookup_symbol_by_addr(addr))
+    }
+    fn lookup_symbol_name_by_addr(&self, addr: u64) -> Option<String> {
+        forward!(self, lookup_symbol_name_by_addr(addr))
+    }
+    fn symbols(&self) -> proc::Result<Vec<proc::SymbolBuf>> {
+        forward!(self, symbols())
+    }
+    fn object_symbols(&self) -> proc::Result<Vec<proc::SymbolBuf>> {
+        forward!(self, object_symbols())
+    }
+    fn mappings(&self) -> proc::Result<proc::Mappings> {
+        forward!(self, mappings())
+    }
+    fn addr_to_map(&self, addr: u64) -> Option<proc::LoadedObject> {
+        forward!(self, addr_to_map(addr))
+    }
+    fn addr_is_mapped(&self, addr: u64) -> bool {
+        forward!(self, addr_is_mapped(addr))
+    }
+    fn regs(&self, lwp: u32) -> proc::Result<proc::Regs> {
+        forward!(self, regs(lwp))
+    }
+    fn lwps(&self) -> proc::Result<Vec<proc::LwpInfo>> {
+        forward!(self, lwps())
+    }
+    fn lwp_name(&self, lwpid: u32) -> proc::Result<String> {
+        forward!(self, lwp_name(lwpid))
+    }
+    fn lwp_tsd(&self, lwp: u32) -> proc::Result<[u64; 9]> {
+        forward!(self, lwp_tsd(lwp))
+    }
+    fn tsd_from_regs(&self, regs: &proc::Regs) -> proc::Result<[u64; 9]> {
+        forward!(self, tsd_from_regs(regs))
+    }
+    fn tls_var_addr(&self, regs: &proc::Regs, sym: &proc::SymbolBuf) -> proc::Result<Option<u64>> {
+        forward!(self, tls_var_addr(regs, sym))
+    }
+    fn status(&self) -> proc::Status {
+        forward!(self, status())
+    }
+}
+
 /// Run `check` against the same core twice: once through the portable
 /// reader, once through libproc — every behavior these tests pin is
 /// pinned for the reference reader and the reader held to it alike.
-fn for_each_target(check: impl Fn(&Proc, &Parked, &str)) {
+fn for_each_target(check: impl Fn(&Reader, &Parked, &str)) {
     let parked = Parked::spawn();
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core = gcore(parked.pid(), dir.path());
 
     let portable = Proc::open_core(&core).expect("failed to open the core");
-    check(&portable, &parked, "portable");
+    check(&Reader::Portable(portable), &parked, "portable");
 
-    let libproc = Proc::open_core_libproc(&core).expect("libproc failed to open the core");
-    check(&libproc, &parked, "libproc");
+    let libproc = LibprocCore::open(&core).expect("libproc failed to open the core");
+    check(&Reader::Libproc(libproc), &parked, "libproc");
 }
 
 /// The portable reader is held to libproc, on the same core, on the one
@@ -170,7 +263,7 @@ fn test_the_portable_reader_agrees_with_libproc() {
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core_path = gcore(parked.pid(), dir.path());
 
-    let libproc = Proc::open_core_libproc(&core_path).expect("libproc failed to open the core");
+    let libproc = LibprocCore::open(&core_path).expect("libproc failed to open the core");
     let portable = Core::open(&core_path).expect("the portable reader failed to open the core");
 
     // Threads, their registers, and the stacks they are running on.
@@ -266,7 +359,10 @@ fn test_the_portable_reader_agrees_with_libproc() {
     }
 
     // Memory, at an address whose contents the fixture fixes.
-    let addr = marker_addr(&libproc, MARKER_VALUE_SYM);
+    let addr = libproc
+        .lookup_symbol_by_name(MARKER_VALUE_SYM)
+        .expect("the marker static is in the symtab")
+        .st_value;
     assert_eq!(portable.read_u64(addr).unwrap(), MARKER_VALUE);
     assert_eq!(
         Target::read_bytes(&portable, addr, 64).unwrap(),
@@ -339,7 +435,7 @@ fn compare_tables(what: &str, got: &BTreeMap<String, u64>, want: &BTreeMap<Strin
 }
 
 /// The runtime address of one of the target's marker symbols.
-fn marker_addr(p: &Proc, name: &str) -> u64 {
+fn marker_addr(p: &Reader, name: &str) -> u64 {
     p.lookup_symbol_by_name(name)
         .unwrap_or_else(|| panic!("{name} is not in the target's symtab"))
         .st_value
@@ -382,17 +478,24 @@ fn test_reads_see_the_targets_memory() {
 
         // And the same bytes through the Target trait.
         assert_eq!(
-            Target::read_bytes(p, addr, 8).unwrap(),
+            Target::read_bytes(p.as_target(), addr, 8).unwrap(),
             MARKER_VALUE.to_le_bytes(),
             "({who})"
         );
-        assert_eq!(Target::read_u64(p, addr).unwrap(), MARKER_VALUE, "({who})");
+        assert_eq!(
+            Target::read_u64(p.as_target(), addr).unwrap(),
+            MARKER_VALUE,
+            "({who})"
+        );
 
         // Nothing is mapped at the first page, so every read that has to
         // fill its buffer fails there.
         assert!(p.read_u64(UNMAPPED).is_err(), "({who})");
         assert!(p.read_u8(UNMAPPED).is_err(), "({who})");
-        assert!(Target::read_bytes(p, UNMAPPED, 8).is_err(), "({who})");
+        assert!(
+            Target::read_bytes(p.as_target(), UNMAPPED, 8).is_err(),
+            "({who})"
+        );
         assert!(p.pslice(UNMAPPED, 8).is_none(), "({who})");
     });
 }
@@ -457,15 +560,23 @@ fn test_symbol_lookups_round_trip() {
         assert!(functions.iter().any(|s| s.name == "main"), "({who})");
 
         // The trait sees exactly what the inherent methods do.
-        assert_eq!(Target::symbols(p).unwrap(), functions, "({who})");
-        assert_eq!(Target::object_symbols(p).unwrap(), objects, "({who})");
         assert_eq!(
-            Target::lookup_symbol_by_name(p, MARKER_FN).as_ref(),
+            Target::symbols(p.as_target()).unwrap(),
+            functions,
+            "({who})"
+        );
+        assert_eq!(
+            Target::object_symbols(p.as_target()).unwrap(),
+            objects,
+            "({who})"
+        );
+        assert_eq!(
+            Target::lookup_symbol_by_name(p.as_target(), MARKER_FN).as_ref(),
             Some(&sym),
             "({who})"
         );
         assert_eq!(
-            Target::lookup_symbol_by_addr(p, sym.st_value).as_ref(),
+            Target::lookup_symbol_by_addr(p.as_target(), sym.st_value).as_ref(),
             Some(&back),
             "({who})"
         );
@@ -539,7 +650,7 @@ fn test_mappings_cover_the_address_space() {
             assert_eq!(m.range(), m.vaddr..m.vaddr + m.size, "({who}) {m:#?}");
         }
 
-        assert_eq!(Target::mappings(p).unwrap(), maps, "({who})");
+        assert_eq!(Target::mappings(p.as_target()).unwrap(), maps, "({who})");
     });
 }
 
@@ -643,7 +754,7 @@ fn test_lwps_match_procfs() {
         assert!(p.lwp_name(0).is_err(), "({who})");
         assert!(p.regs(0).is_err(), "({who})");
 
-        assert_eq!(Target::lwps(p).unwrap(), lwps, "({who})");
+        assert_eq!(Target::lwps(p.as_target()).unwrap(), lwps, "({who})");
     });
 }
 
@@ -687,10 +798,13 @@ fn test_snapshot_replays_a_recorded_target() {
     let parked = Parked::spawn();
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core = gcore(parked.pid(), dir.path());
-    let source = Proc::open_core_libproc(&core).expect("libproc failed to open the core");
+    let source = LibprocCore::open(&core).expect("libproc failed to open the core");
     let recorder = Recorder::new(&source);
 
-    let addr = marker_addr(&source, MARKER_VALUE_SYM);
+    let addr = source
+        .lookup_symbol_by_name(MARKER_VALUE_SYM)
+        .expect("the marker static is in the symtab")
+        .st_value;
     let bytes = recorder
         .read_bytes(addr, 64)
         .expect("failed to read memory");
@@ -782,7 +896,7 @@ fn test_open_core_failures() {
     assert!(Proc::open_core(Path::new("core\0dump")).is_err());
 
     // libproc turns away the same junk its own way.
-    let err = Proc::open_core_libproc(&junk).expect_err("libproc opened a non-core");
+    let err = LibprocCore::open(&junk).expect_err("libproc opened a non-core");
     assert!(
         err.to_string().starts_with("failed to grab process: "),
         "{err}"

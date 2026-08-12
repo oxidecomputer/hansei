@@ -4,8 +4,8 @@ use std::io;
 use std::ops::Range;
 
 pub mod coredump;
-#[cfg(target_os = "illumos")]
-mod libproc;
+#[cfg(all(target_os = "illumos", feature = "libproc"))]
+pub mod libproc;
 pub mod snapshot;
 mod target;
 #[cfg(test)]

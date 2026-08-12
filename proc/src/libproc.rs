@@ -1,7 +1,9 @@
-//! The libproc-backed [`Proc`] target: an illumos core dump read
-//! through `Pgrab_core`. illumos-only, and kept as the reference the
-//! portable core reader is held against in tests; everything else in
-//! this crate is platform-independent.
+//! The libproc-backed [`Core`] reader: an illumos core dump read
+//! through `Pgrab_core`. This is the reference the portable illumos
+//! core reader is held against in tests, and nothing but the tests —
+//! it compiles only under the `libproc` feature (which the suite turns
+//! on through a dev-dependency), so building the crate needs neither
+//! bindgen nor libproc.
 
 use crate::{
     Error, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs, Result, Status,
@@ -27,7 +29,7 @@ use std::ptr::{self, NonNull};
 use std::sync::Mutex;
 
 #[derive(Debug)]
-pub struct Proc {
+pub struct Core {
     handle: NonNull<ps_prochandle>,
     /// Serializes every libproc call. A `ps_prochandle` caches state
     /// across calls and is not thread-safe, but it has no thread
@@ -38,8 +40,8 @@ pub struct Proc {
 // SAFETY: the raw handle is only ever dereferenced by libproc, and
 // every libproc call runs under the `libproc` mutex; between calls the
 // handle is just an address.
-unsafe impl Send for Proc {}
-unsafe impl Sync for Proc {}
+unsafe impl Send for Core {}
+unsafe impl Sync for Core {}
 
 impl From<gregset_t> for Regs {
     fn from(regs: gregset_t) -> Self {
@@ -76,8 +78,8 @@ impl From<gregset_t> for Regs {
     }
 }
 
-impl Proc {
-    pub fn open_core(core_path: &Path) -> Result<Self> {
+impl Core {
+    pub fn open(core_path: &Path) -> Result<Self> {
         let c_core_path =
             CString::new(core_path.as_os_str().as_bytes()).map_err(Error::bad_path)?;
         let mut perr: c_int = 0;
@@ -95,7 +97,7 @@ impl Proc {
 
             return Err(Error::grab_failed(msg));
         };
-        Ok(Proc {
+        Ok(Core {
             handle,
             libproc: Mutex::new(()),
         })
@@ -546,7 +548,7 @@ impl Proc {
     }
 }
 
-impl Target for Proc {
+impl Target for Core {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
         // `len` may itself have been read out of the target, and this
         // handle declines to bound it (see [`Target::readable_len`]) — so
@@ -568,27 +570,27 @@ impl Target for Proc {
     }
 
     fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {
-        Proc::lookup_symbol_by_addr(self, address)
+        Core::lookup_symbol_by_addr(self, address)
     }
 
     fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
-        Proc::lookup_symbol_by_name(self, name)
+        Core::lookup_symbol_by_name(self, name)
     }
 
     fn symbols(&self) -> Result<Vec<SymbolBuf>> {
-        Proc::symbols(self)
+        Core::symbols(self)
     }
 
     fn object_symbols(&self) -> Result<Vec<SymbolBuf>> {
-        Proc::object_symbols(self)
+        Core::object_symbols(self)
     }
 
     fn mappings(&self) -> Result<Mappings> {
-        Proc::mappings(self)
+        Core::mappings(self)
     }
 
     fn lwps(&self) -> Result<Vec<LwpInfo>> {
-        Proc::lwps(self)
+        Core::lwps(self)
     }
 
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
@@ -596,7 +598,7 @@ impl Target for Proc {
     }
 }
 
-impl Drop for Proc {
+impl Drop for Core {
     fn drop(&mut self) {
         let flags = PRELEASE_CLEAR as i32;
         unsafe { Prelease(self.handle.as_mut(), flags) };
