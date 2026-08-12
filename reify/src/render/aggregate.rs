@@ -4,6 +4,7 @@
 
 use crate::debug_type::{DisplayNode, TypeKind};
 use crate::value::Value;
+use proc::Target;
 
 use exegesis::bundle::{BundleMember, BundleType};
 
@@ -58,12 +59,12 @@ fn has_named_single_field<'a>(ty: &BundleType<'a>) -> bool {
 
 /// Render one member's value (or `<truncated>`) at its offset, recursing with
 /// the deeper context. Shared by the tuple and named aggregate bodies.
-fn write_member_value<'a>(
+fn write_member_value<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     member: &BundleMember<'a>,
     bytes: &'a [u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     let mem_ty = member.ty();
@@ -86,12 +87,12 @@ fn write_member_value<'a>(
 /// has been written: a tuple aggregate as `(v0, v1)` (labels elided), a named
 /// aggregate as ` { field: v, … }`, and an empty/all-ZST aggregate as nothing
 /// (a unit). Zero-sized members are never displayed.
-fn write_aggregate_body<'a>(
+fn write_aggregate_body<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     ty: &BundleType<'a>,
     bytes: &'a [u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     // Two cheap passes over the member slice rather than a collected
@@ -131,12 +132,12 @@ fn write_aggregate_body<'a>(
     }
 }
 
-pub(crate) fn write_struct_fields<'a>(
+pub(crate) fn write_struct_fields<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     info: &Value<'a>,
     name: &str,
     pretty: bool,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
 ) -> fmt::Result {
     if !name.is_empty() {
         f.write_str(name)?;
@@ -144,12 +145,12 @@ pub(crate) fn write_struct_fields<'a>(
     write_aggregate_body(f, &info.ty, info.bytes, info.addr, ctx, pretty)
 }
 
-pub(crate) fn write_rust_enum<'a>(
+pub(crate) fn write_rust_enum<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     info: &Value<'a>,
     name: &str,
     pretty: bool,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
 ) -> fmt::Result {
     let Some(Ok(active)) = info.ty.active_variant(info.bytes) else {
         return write_named_bytes(f, name, info.bytes);

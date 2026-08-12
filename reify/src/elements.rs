@@ -96,7 +96,7 @@ impl<'a> Elements<'a> {
     /// its pointer; an inline array, whose elements are the value's own
     /// bytes; and, for a bundle whose detector declined or predates the
     /// formatter, the bare `(data_ptr, length)` fat pointer.
-    pub(crate) fn of(info: &Value<'a>, proc: &'a dyn Target) -> Result<Elements<'a>> {
+    pub(crate) fn of<T: Target>(info: &Value<'a>, proc: &'a T) -> Result<Elements<'a>> {
         let ty = info.ty;
 
         if let Some(DisplayNode::Slice {
@@ -139,12 +139,12 @@ impl<'a> Elements<'a> {
     /// the buffer it describes — the one sequence read both the parse path
     /// and the slice renderer perform, so the validation of a header and the
     /// refusal to believe an uncorroborated length are written once.
-    pub(crate) fn read_fat(
+    pub(crate) fn read_fat<T: Target>(
         header: &FatHeader,
         element: BundleType<'a>,
         stride: u64,
         bytes: &[u8],
-        proc: Option<&'a dyn Target>,
+        proc: Option<&'a T>,
     ) -> std::result::Result<Elements<'a>, SeqError> {
         let (base, count) = decode_header(bytes, header, stride)?;
         let buffer = read_buffer(proc, base, stride, count)?;
@@ -235,7 +235,7 @@ pub(crate) struct Buffer<'a> {
 /// point is the bytes rather than the elements: same header, same validation,
 /// same bound on a length that cannot be trusted, but one bulk read instead
 /// of a typed view per byte.
-pub(crate) fn utf8<'a>(info: &Value<'a>, proc: &'a dyn Target) -> Result<Buffer<'a>> {
+pub(crate) fn utf8<'a, T: Target>(info: &Value<'a>, proc: &'a T) -> Result<Buffer<'a>> {
     let ty = info.ty;
 
     if let Some(DisplayNode::Str { header }) = DisplayNode::resolve(ty) {
@@ -251,7 +251,7 @@ pub(crate) fn utf8<'a>(info: &Value<'a>, proc: &'a dyn Target) -> Result<Buffer<
 /// `Slice` formatters — to the pointer's own view (whose type names the
 /// element), the base address, and the claimed count. A value without the
 /// pair is not a sequence at all.
-fn bare_fat_pointer<'a>(info: &Value<'a>, proc: &'a dyn Target) -> Result<(Value<'a>, u64, u64)> {
+fn bare_fat_pointer<'a, T: Target>(info: &Value<'a>, proc: &'a T) -> Result<(Value<'a>, u64, u64)> {
     let (Some(pointer), Some(length)) = (info.try_member("data_ptr")?, info.try_member("length")?)
     else {
         return Err(Error::not_a_sequence(info.ty.name()));
@@ -264,10 +264,10 @@ fn bare_fat_pointer<'a>(info: &Value<'a>, proc: &'a dyn Target) -> Result<(Value
 /// Resolve a `Str` display program's header against `bytes` and read the
 /// buffer it describes — [`Elements::read_fat`] for the string renderer and
 /// parser, sharing the same header validation and length corroboration.
-pub(crate) fn utf8_buffer<'a>(
+pub(crate) fn utf8_buffer<'a, T: Target>(
     header: &FatHeader,
     bytes: &[u8],
-    proc: Option<&'a dyn Target>,
+    proc: Option<&'a T>,
 ) -> std::result::Result<Buffer<'a>, SeqError> {
     let (base, length) = decode_header(bytes, header, 1)?;
     read_buffer(proc, base, 1, length)
@@ -275,8 +275,8 @@ pub(crate) fn utf8_buffer<'a>(
 
 /// Read `count` units of `stride` bytes from `base`, believing the count only
 /// as far as it can be corroborated.
-fn read_buffer<'a>(
-    proc: Option<&'a dyn Target>,
+fn read_buffer<'a, T: Target>(
+    proc: Option<&'a T>,
     base: u64,
     stride: u64,
     count: u64,

@@ -30,18 +30,17 @@ use super::{
 /// shortfall renders the elements that are there and says how many are
 /// missing; nothing served at all degrades whole. Unlike [`eval_list`] the
 /// elements are contiguous, read in one target access.
-pub(crate) fn eval_slice<'a>(
+pub(crate) fn eval_slice<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     header: &FatHeader,
     element: &BundleType<'a>,
     element_size: u32,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
-    let proc = ctx.proc.map(|proc| proc as &dyn Target);
     let stride = u64::from(element_size);
-    let elements = match Elements::read_fat(header, *element, stride, bytes, proc) {
+    let elements = match Elements::read_fat(header, *element, stride, bytes, ctx.proc) {
         Ok(elements) => elements,
         Err(SeqError::Invalid(why)) => return write!(f, "<invalid slice: {why}>"),
         Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable slice buffer>"),
@@ -138,11 +137,11 @@ impl From<fmt::Error> for MapWalkError {
 /// owns storage traversal; this function owns recursive key/value display,
 /// exact-length accounting, and inline/pretty punctuation.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn eval_map<'a>(
+pub(crate) fn eval_map<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     ty: &BundleType<'a>,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
     length_offset: u64,
     length_size: u32,
@@ -251,11 +250,11 @@ fn write_map_tail(
 /// core — and format chunks of entries into buffers stitched back in
 /// walk order.
 #[allow(clippy::too_many_arguments)]
-fn eval_map_parallel<'a>(
+fn eval_map_parallel<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a>,
-    entry_ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
+    entry_ctx: RenderCtx<'_, 'a, T>,
     visited: &RefCell<HashSet<(u64, &'a str)>>,
     pretty: bool,
     map_length: u64,
@@ -317,13 +316,13 @@ fn eval_map_parallel<'a>(
 /// addresses the collect pass recorded. The walk had these very bytes in
 /// hand; a target that stops answering between the walk and the format
 /// degrades like any other failed read.
-fn write_map_entry<'a>(
+fn write_map_entry<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     key: BundleType<'a>,
     key_addr: u64,
     value: BundleType<'a>,
     value_addr: u64,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     let Some(proc) = ctx.proc else {
@@ -354,9 +353,9 @@ fn write_map_entry<'a>(
     Ok(())
 }
 
-fn walk_map_entries<'a>(
+fn walk_map_entries<'a, T: Target>(
     bytes: &[u8],
-    proc: Option<&'a (dyn Target + Sync)>,
+    proc: Option<&'a T>,
     key: BundleType<'a>,
     value: BundleType<'a>,
     entries: &MapEntries<'a>,
@@ -420,8 +419,8 @@ fn walk_map_entries<'a>(
     )
 }
 
-fn walk_btree_node<'a>(
-    proc: &'a (dyn Target + Sync),
+fn walk_btree_node<'a, T: Target>(
+    proc: &'a T,
     layout: BTreeNodeLayout<'a>,
     address: u64,
     height: u64,
@@ -522,7 +521,7 @@ fn btree_edge_address<'a>(
 /// puts each on its own indented line. A queue entry is small, so this reads
 /// far better than expanding every entry across several lines.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn eval_list<'a>(
+pub(crate) fn eval_list<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     head_offset: u64,
     next_offset: u64,
@@ -530,7 +529,7 @@ pub(crate) fn eval_list<'a>(
     node_ty: &BundleType<'a>,
     node_size: u32,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     let Some(head) = read_u64_at(bytes, head_offset) else {

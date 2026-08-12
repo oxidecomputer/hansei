@@ -41,7 +41,7 @@ impl<'a> Value<'a> {
     }
 
     /// Read the type directly at the address provided.
-    pub fn read(proc: &'a dyn Target, ty: BundleType<'a>, addr: u64) -> Result<Self> {
+    pub fn read<T: Target>(proc: &'a T, ty: BundleType<'a>, addr: u64) -> Result<Self> {
         let bytes = crate::target::read_bytes(proc, addr, ty.size())?;
 
         Ok(Self { ty, addr, bytes })
@@ -90,7 +90,7 @@ impl<'a> Value<'a> {
     /// The pointee, read from the target and peeled. A read the target
     /// refuses is an error naming the pointee's address — the address that
     /// failed — not this value's own.
-    pub fn deref_ptr(&self, proc: &'a dyn Target) -> Result<Value<'a>> {
+    pub fn deref_ptr<T: Target>(&self, proc: &'a T) -> Result<Value<'a>> {
         let Some(target_ty) = self.peel().ty.pointer_target() else {
             return Err(Error::unexpected_type(
                 self.ty.kind(),
@@ -144,14 +144,16 @@ impl<'a> Value<'a> {
         Ok(info)
     }
 
-    pub fn parse<V: ParseWithDbgInfo<'a>>(&self, proc: &'a dyn Target) -> Result<V> {
+    // `impl Target` rather than a named parameter so `parse::<u64>(…)`
+    // keeps naming only `V`: turbofish must supply every named generic.
+    pub fn parse<V: ParseWithDbgInfo<'a>>(&self, proc: &'a impl Target) -> Result<V> {
         V::parse_with_dbg(proc, self).map_err(|e| Error::parse_type(self.ty.name()).with_source(e))
     }
 
     /// The elements of a sequence-shaped value — an owned `Vec`, a boxed or
     /// borrowed slice, an inline array — read and addressed; see
     /// [`Elements`].
-    pub fn elements(&self, proc: &'a dyn Target) -> Result<Elements<'a>> {
+    pub fn elements<T: Target>(&self, proc: &'a T) -> Result<Elements<'a>> {
         Elements::of(self, proc)
     }
 

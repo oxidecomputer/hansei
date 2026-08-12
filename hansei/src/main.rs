@@ -3059,7 +3059,7 @@ fn render<'r, 'b>(
     value: &'r Value<'b>,
     depth: usize,
     ugly: bool,
-) -> reify::DisplayValue<'r, 'b> {
+) -> reify::DisplayValue<'r, 'b, Proc> {
     let display = value.display_from_target(session.ctx.proc, depth);
     if ugly { display.ugly() } else { display }
 }

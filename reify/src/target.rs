@@ -13,7 +13,7 @@ use proc::Target;
 /// error vocabulary. The render paths call the target directly and
 /// degrade to a marker instead; this is for the navigation and parse
 /// entry points, whose failures are [`Error`]s.
-pub(crate) fn read_bytes(proc: &dyn Target, addr: u64, len: u64) -> Result<&[u8]> {
+pub(crate) fn read_bytes<T: Target>(proc: &T, addr: u64, len: u64) -> Result<&[u8]> {
     proc.read_bytes(addr, len)
         .map_err(|e| Error::invalid_addr(addr).with_source(e))
 }
@@ -22,7 +22,7 @@ pub(crate) fn read_bytes(proc: &dyn Target, addr: u64, len: u64) -> Result<&[u8]
 /// Vtable rendering resolves code pointers without ever following one
 /// as data, so only a symbol that starts at the address and is a
 /// function (`STT_FUNC`) counts; anything else preserves the raw entry.
-pub(crate) fn function_symbol(proc: &dyn Target, addr: u64) -> Option<String> {
+pub(crate) fn function_symbol<T: Target>(proc: &T, addr: u64) -> Option<String> {
     let symbol = proc.lookup_symbol_by_addr(addr)?;
     (symbol.st_value == addr && symbol.st_info & 0x0f == 2).then_some(symbol.name)
 }
