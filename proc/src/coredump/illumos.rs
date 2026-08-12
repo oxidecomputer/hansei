@@ -555,7 +555,7 @@ impl Core {
     /// headers of the ELF image at `base`.
     fn object_span(&self, base: u64) -> Option<Range<u64>> {
         let header = self.read_bytes(base, SIZEOF_EHDR as u64).ok()?;
-        let header = Header::parse(&header).ok()?;
+        let header = Header::parse(header).ok()?;
 
         // An executable's program headers carry absolute addresses, so
         // where it was mapped is not a bias to add to them; a shared
@@ -786,7 +786,7 @@ impl Core {
     /// slots — the same walk libproc's callers do, over this core's
     /// memory instead.
     pub fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
-        crate::tls_addr_from_pthread_key(self, regs, sym)
+        crate::tls_addr_from_pthread_key(&|addr| self.read_u64(addr), regs, sym)
     }
 }
 
@@ -1046,14 +1046,8 @@ const _: () = {
 };
 
 impl Target for Core {
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
-        self.pslice(addr, len)
-            .map(<[u8]>::to_vec)
-            .ok_or_else(|| Error::unmapped(addr, len))
-    }
-
-    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
-        Core::pslice(self, addr, len)
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]> {
+        Core::pslice(self, addr, len).ok_or_else(|| Error::unmapped(addr, len))
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
@@ -1568,8 +1562,8 @@ mod tests {
             .dumped(0x9000, PF_R | PF_W, bytes.clone())
             .proc();
 
-        assert_eq!(p.read_bytes(0x9000, 16).unwrap(), bytes[..16]);
-        assert_eq!(p.read_bytes(0x9100, 8).unwrap(), bytes[0x100..0x108]);
+        assert_eq!(p.read_bytes(0x9000, 16).unwrap(), &bytes[..16]);
+        assert_eq!(p.read_bytes(0x9100, 8).unwrap(), &bytes[0x100..0x108]);
         assert_eq!(
             p.read_u64(0x9000).unwrap(),
             u64::from_le_bytes(bytes[..8].try_into().unwrap())

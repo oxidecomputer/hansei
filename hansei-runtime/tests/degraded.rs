@@ -51,7 +51,8 @@ impl<'a> Corrupt<'a> {
             .map(|seg| {
                 let bytes = inner
                     .read_bytes(seg.start, seg.end - seg.start)
-                    .expect("a recorded segment");
+                    .expect("a recorded segment")
+                    .to_vec();
                 (seg.start, bytes)
             })
             .collect();
@@ -136,17 +137,14 @@ impl<'a> Corrupt<'a> {
 }
 
 impl Target for Corrupt<'_> {
-    fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<Vec<u8>> {
-        self.pslice(addr, len)
-            .map(<[u8]>::to_vec)
-            .ok_or_else(|| proc::Error::unmapped(addr, len))
-    }
-
-    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
-        let end = addr.checked_add(len)?;
-        let (base, bytes) = self.segment(addr)?;
-        (end - base <= bytes.len() as u64)
-            .then(|| &bytes[(addr - base) as usize..(end - base) as usize])
+    fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
+        let lent = || {
+            let end = addr.checked_add(len)?;
+            let (base, bytes) = self.segment(addr)?;
+            (end - base <= bytes.len() as u64)
+                .then(|| &bytes[(addr - base) as usize..(end - base) as usize])
+        };
+        lent().ok_or_else(|| proc::Error::unmapped(addr, len))
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {

@@ -163,17 +163,12 @@ impl std::error::Error for Error {}
 /// snapshots captured from one, which replay on any platform. The
 /// layers interpreting a target run against whichever is to hand.
 pub trait Target {
-    /// Read exactly `len` bytes at `addr`.
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>>;
-
-    /// The bytes at `addr`, borrowed from the target's own storage when
-    /// one piece of it serves the whole read — a mapped core segment or
-    /// backing file. `None` means this backend cannot lend it whole —
-    /// it reads through a handle, or records what it serves; fall back
-    /// to [`read_bytes`](Target::read_bytes).
-    fn pslice(&self, _addr: u64, _len: u64) -> Option<&[u8]> {
-        None
-    }
+    /// Read exactly `len` bytes at `addr`, lent straight from the
+    /// target's own storage — a mapped core segment, a snapshot's
+    /// captured run. Every target lends: what a backend cannot lend
+    /// whole it does not serve at all, which is what lets a render pass
+    /// hold millions of borrowed views without copying one of them.
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]>;
 
     /// How many of the `max` bytes at `addr` this target can actually
     /// serve, without reading any of them.
@@ -182,9 +177,7 @@ pub trait Target {
     /// own memory: a length word read from a corrupt `Vec` header claims
     /// whatever its bits say, and believing it means allocating that much
     /// before the read fails. A core knows its segments, so it can answer
-    /// exactly; a reader that only has a handle would have to probe, so
-    /// it declines to bound and returns `max`. Answering `0` means
-    /// nothing at `addr` is readable at all.
+    /// exactly. Answering `0` means nothing at `addr` is readable at all.
     fn readable_len(&self, _addr: u64, max: u64) -> u64 {
         max
     }
@@ -256,13 +249,13 @@ pub trait Target {
 ///
 /// Both illumos backends use it — libproc's and the core reader's — so
 /// it is built everywhere the latter is, which is everywhere.
-pub(crate) fn tls_addr_from_pthread_key<T: Target + ?Sized>(
-    target: &T,
+pub(crate) fn tls_addr_from_pthread_key(
+    read_u64: &dyn Fn(u64) -> Result<u64>,
     regs: &Regs,
     sym: &SymbolBuf,
 ) -> Result<Option<u64>> {
-    let key = target.read_u64(sym.st_value)?;
-    let slots = tsd_from_fsbase(target, regs)?;
+    let key = read_u64(sym.st_value)?;
+    let slots = tsd_from_fsbase(read_u64, regs)?;
     // A key past the fast slots would live in the slow TSD array, which
     // no tokio process observed so far uses.
     let addr = *slots
@@ -280,18 +273,16 @@ pub(crate) fn tls_addr_from_pthread_key<T: Target + ?Sized>(
 /// obviously not reliable, but it's been ten years since the last
 /// time `ulwp_t` changed format, so we can probably get away with this
 /// hack for a while.
-pub(crate) fn tsd_from_fsbase<T: Target + ?Sized>(target: &T, regs: &Regs) -> Result<[u64; 9]> {
+pub(crate) fn tsd_from_fsbase(
+    read_u64: &dyn Fn(u64) -> Result<u64>,
+    regs: &Regs,
+) -> Result<[u64; 9]> {
     const UL_FTSD_OFFSET: u64 = 320;
     const UL_FTSD_LEN: usize = 9;
 
-    let bytes = target.read_bytes(
-        regs.fsbase + UL_FTSD_OFFSET,
-        (UL_FTSD_LEN * size_of::<u64>()) as u64,
-    )?;
-
     let mut tsd = [0u64; UL_FTSD_LEN];
-    for (slot, chunk) in tsd.iter_mut().zip(bytes.chunks_exact(size_of::<u64>())) {
-        *slot = u64::from_le_bytes(chunk.try_into().unwrap());
+    for (i, slot) in tsd.iter_mut().enumerate() {
+        *slot = read_u64(regs.fsbase + UL_FTSD_OFFSET + (i * size_of::<u64>()) as u64)?;
     }
     Ok(tsd)
 }

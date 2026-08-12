@@ -349,7 +349,7 @@ impl MemTarget {
 }
 
 impl Target for MemTarget {
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]> {
         self.last_read.set(Some((addr, len)));
         let start = addr
             .checked_sub(self.base)
@@ -359,7 +359,6 @@ impl Target for MemTarget {
             .ok_or_else(|| Error::unmapped(addr, len))?;
         self.bytes
             .get(start..end)
-            .map(<[u8]>::to_vec)
             .ok_or_else(|| Error::unmapped(addr, len))
     }
 
@@ -384,7 +383,7 @@ impl Target for MemTarget {
     }
 
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
-        tls_addr_from_pthread_key(self, regs, sym)
+        tls_addr_from_pthread_key(&|addr| self.read_u64(addr), regs, sym)
     }
 }
 
@@ -425,11 +424,12 @@ fn test_tsd_reads_ul_ftsd_past_fsbase() {
         fsbase: FSBASE,
         ..Regs::default()
     };
-    assert_eq!(tsd_from_fsbase(&target, &regs).unwrap(), slots);
+    let read_u64 = |addr| target.read_u64(addr);
+    assert_eq!(tsd_from_fsbase(&read_u64, &regs).unwrap(), slots);
     assert_eq!(
         target.last_read.get(),
-        Some((FSBASE + UL_FTSD_OFFSET, 9 * 8)),
-        "the TSD read moved off ul_ftsd"
+        Some((FSBASE + UL_FTSD_OFFSET + 8 * 8, 8)),
+        "the TSD reads moved off ul_ftsd"
     );
 }
 
@@ -441,13 +441,13 @@ fn test_tsd_fails_when_fsbase_is_not_readable() {
         ..Regs::default()
     };
     // The slots run past the end of the mapping.
-    assert!(tsd_from_fsbase(&target, &regs).is_err());
+    assert!(tsd_from_fsbase(&|addr| target.read_u64(addr), &regs).is_err());
 
     let regs = Regs {
         fsbase: 0,
         ..Regs::default()
     };
-    assert!(tsd_from_fsbase(&target, &regs).is_err());
+    assert!(tsd_from_fsbase(&|addr| target.read_u64(addr), &regs).is_err());
 }
 
 // ---------------------------------------------------------------------------

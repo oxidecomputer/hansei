@@ -35,11 +35,10 @@ pub trait ReadFromProc {
 
 impl<T: proc::Target> ReadFromProc for T {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]> {
-        // What a target cannot lend whole it cannot serve at all: both
-        // core readers spell their own `read_bytes` as this, so the
-        // fallback that used to sit here only ever restated the refusal.
-        self.pslice(addr, len)
-            .ok_or_else(|| Error::invalid_addr(addr).with_source(proc::Error::unmapped(addr, len)))
+        // Lending is Target's own contract now; this only restates the
+        // refusal in reify's error vocabulary.
+        proc::Target::read_bytes(self, addr, len)
+            .map_err(|e| Error::invalid_addr(addr).with_source(e))
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
