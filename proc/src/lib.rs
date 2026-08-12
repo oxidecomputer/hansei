@@ -558,7 +558,16 @@ pub struct Timespec {
 }
 
 #[derive(
-    Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub struct Mappings {
     pub(crate) inner: Vec<LoadedObjectWithPath>,

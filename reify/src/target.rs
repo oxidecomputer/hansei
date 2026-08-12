@@ -1,52 +1,28 @@
-//! Reading bytes from a live process, core file, or snapshot.
+//! reify's contract over a [`proc::Target`]: every read is lent
+//! straight from the target's own storage ([`proc::Target::read_bytes`]),
+//! which the renderer holds across its recursion, so a read costs no
+//! allocation at all. This module holds the two things reify layers on
+//! top — its error vocabulary, and the one policy decision of which
+//! symtab answers count as a code symbol.
 
 use crate::{Error, Result};
 
-pub trait ReadFromProc {
-    /// Read `len` bytes at address, returning an error if the address is
-    /// unmapped. The bytes are lent straight from the target's own storage,
-    /// which the renderer holds across its recursion, so a read costs no
-    /// allocation at all.
-    ///
-    /// A target that cannot serve a range in one piece — a libproc handle,
-    /// which copies through `pread` and has nothing to lend — cannot back
-    /// reify. That path is a proc-level sanity check for the portable core
-    /// readers, compared byte for byte and never rendered.
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]>;
+use proc::Target;
 
-    /// How many of the `max` bytes at `addr` the target can serve, without
-    /// reading any of them.
-    ///
-    /// A reader that cannot answer cheaply claims no bound and returns
-    /// `max`. See [`proc::Target::readable_len`]: this is what keeps a
-    /// length word read out of corrupt target memory from being believed
-    /// far enough to allocate for it.
-    fn readable_len(&self, _addr: u64, max: u64) -> u64 {
-        max
-    }
-
-    /// The mangled function symbol beginning exactly at `addr`, if one is
-    /// available from the target. Display-only readers can leave this
-    /// unresolved; vtable formatting then preserves the raw entry.
-    fn function_symbol(&self, _addr: u64) -> Option<String> {
-        None
-    }
+/// Read `len` bytes at `addr`, restating a target's refusal in reify's
+/// error vocabulary. The render paths call the target directly and
+/// degrade to a marker instead; this is for the navigation and parse
+/// entry points, whose failures are [`Error`]s.
+pub(crate) fn read_bytes(proc: &dyn Target, addr: u64, len: u64) -> Result<&[u8]> {
+    proc.read_bytes(addr, len)
+        .map_err(|e| Error::invalid_addr(addr).with_source(e))
 }
 
-impl<T: proc::Target> ReadFromProc for T {
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]> {
-        // Lending is Target's own contract now; this only restates the
-        // refusal in reify's error vocabulary.
-        proc::Target::read_bytes(self, addr, len)
-            .map_err(|e| Error::invalid_addr(addr).with_source(e))
-    }
-
-    fn readable_len(&self, addr: u64, max: u64) -> u64 {
-        proc::Target::readable_len(self, addr, max)
-    }
-
-    fn function_symbol(&self, addr: u64) -> Option<String> {
-        let symbol = proc::Target::lookup_symbol_by_addr(self, addr)?;
-        (symbol.st_value == addr && symbol.st_info & 0x0f == 2).then_some(symbol.name)
-    }
+/// The mangled function symbol beginning exactly at `addr`, if any.
+/// Vtable rendering resolves code pointers without ever following one
+/// as data, so only a symbol that starts at the address and is a
+/// function (`STT_FUNC`) counts; anything else preserves the raw entry.
+pub(crate) fn function_symbol(proc: &dyn Target, addr: u64) -> Option<String> {
+    let symbol = proc.lookup_symbol_by_addr(addr)?;
+    (symbol.st_value == addr && symbol.st_info & 0x0f == 2).then_some(symbol.name)
 }

@@ -21,7 +21,7 @@ use std::num::NonZeroU8;
 ///
 /// Render tests need three things from a process: bytes at an address, a
 /// function symbol at an address, and the ability to make a read fail. Rather
-/// than a bespoke `ReadFromProc` per test asserting on the exact address and
+/// than a bespoke `Target` per test asserting on the exact address and
 /// length it expects, describe the memory that should exist and let an
 /// unsatisfiable read degrade the way it would against a real target.
 ///
@@ -89,12 +89,12 @@ impl FakeMem {
     }
 }
 
-impl crate::ReadFromProc for FakeMem {
+impl proc::Target for FakeMem {
     // Lent out of a region, like a mapped core lends its bytes: the tests
     // then hold the renderer to the lifetimes a real reader produces.
-    fn read_bytes(&self, addr: u64, len: u64) -> crate::Result<&[u8]> {
+    fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
         if self.all_reads_fail {
-            return Err(crate::Error::invalid_addr(addr));
+            return Err(proc::Error::unmapped(addr, len));
         }
         for (base, bytes) in &self.regions {
             let Some(start) = addr.checked_sub(*base) else {
@@ -110,7 +110,7 @@ impl crate::ReadFromProc for FakeMem {
             }
         }
         match self.unmapped {
-            Unmapped::Fail => Err(crate::Error::invalid_addr(addr)),
+            Unmapped::Fail => Err(proc::Error::unmapped(addr, len)),
             Unmapped::Panic => panic!("unexpected read of {len} bytes at {addr:#x}"),
         }
     }
@@ -136,8 +136,43 @@ impl crate::ReadFromProc for FakeMem {
         0
     }
 
-    fn function_symbol(&self, addr: u64) -> Option<String> {
-        self.symbols.get(&addr).cloned()
+    // The symbol map answers exactly the way reify's `function_symbol`
+    // policy wants: a function symbol starting at the asked-for address.
+    fn lookup_symbol_by_addr(&self, addr: u64) -> Option<proc::SymbolBuf> {
+        let name = self.symbols.get(&addr)?.clone();
+        Some(proc::SymbolBuf {
+            name,
+            st_name: 0,
+            st_info: 2, // STT_FUNC
+            st_other: 0,
+            st_shndx: 1,
+            st_value: addr,
+            st_size: 1,
+        })
+    }
+
+    fn lookup_symbol_by_name(&self, _name: &str) -> Option<proc::SymbolBuf> {
+        None
+    }
+
+    fn symbols(&self) -> proc::Result<Vec<proc::SymbolBuf>> {
+        Ok(Vec::new())
+    }
+
+    fn mappings(&self) -> proc::Result<proc::Mappings> {
+        Ok(proc::Mappings::default())
+    }
+
+    fn lwps(&self) -> proc::Result<Vec<proc::LwpInfo>> {
+        Ok(Vec::new())
+    }
+
+    fn tls_var_addr(
+        &self,
+        _regs: &proc::Regs,
+        _sym: &proc::SymbolBuf,
+    ) -> proc::Result<Option<u64>> {
+        Ok(None)
     }
 }
 

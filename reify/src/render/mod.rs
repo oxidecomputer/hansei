@@ -16,8 +16,8 @@ pub(crate) mod par;
 pub(crate) mod scalar;
 
 use crate::debug_type::{DisplayNode, TypeClass};
-use crate::target::ReadFromProc;
 use crate::value::Value;
+use proc::Target;
 
 use exegesis::bundle::{BundleType, BundleTypeId};
 
@@ -64,7 +64,7 @@ pub struct DisplayValue<'r, 'a> {
     info: &'r Value<'a>,
     /// Where pointees are read from; `None` renders only the bytes in hand,
     /// showing a pointer as its bare address.
-    proc: Option<&'a (dyn ReadFromProc + Sync)>,
+    proc: Option<&'a (dyn Target + Sync)>,
     max_depth: usize,
     ugly: bool,
     elide: Option<&'r ElideOverride>,
@@ -156,7 +156,7 @@ impl<'a> Value<'a> {
     /// target. Pointer traversal consumes one level of the depth budget.
     pub fn display_from_target<'r>(
         &'r self,
-        proc: &'a (dyn ReadFromProc + Sync),
+        proc: &'a (dyn Target + Sync),
         max_depth: usize,
     ) -> DisplayValue<'r, 'a> {
         DisplayValue {
@@ -183,7 +183,7 @@ impl<'a> Value<'a> {
 pub(crate) struct RenderCtx<'buf, 'a> {
     depth: usize,
     max_depth: usize,
-    proc: Option<&'a (dyn ReadFromProc + Sync)>,
+    proc: Option<&'a (dyn Target + Sync)>,
     visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
     /// Where this pass memoizes resolved display programs.
     formats: &'buf FormatCache<'a>,

@@ -11,7 +11,7 @@
 //! boundary.
 
 use crate::render::{AddrAnnotator, ElideOverride};
-use crate::target::ReadFromProc;
+use proc::Target;
 
 use super::{FormatCache, RenderCtx};
 
@@ -42,7 +42,7 @@ impl<F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result> fmt::Display for DisplayWith
 pub(crate) struct WorkerCtx<'buf, 'a> {
     pub(super) depth: usize,
     pub(super) max_depth: usize,
-    pub(super) proc: Option<&'a (dyn ReadFromProc + Sync)>,
+    pub(super) proc: Option<&'a (dyn Target + Sync)>,
     pub(super) hex_integers: bool,
     pub(super) ugly: bool,
     pub(super) elide: Option<&'buf ElideOverride>,

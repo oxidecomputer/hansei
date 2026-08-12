@@ -8,9 +8,9 @@
 
 use crate::debug_type::{DisplayNode, FatHeader, TypeKind};
 use crate::render::scalar::{read_u64_at, read_unsigned_at};
-use crate::target::ReadFromProc;
 use crate::value::Value;
 use crate::{Error, Result};
+use proc::Target;
 
 use exegesis::bundle::BundleType;
 
@@ -96,7 +96,7 @@ impl<'a> Elements<'a> {
     /// its pointer; an inline array, whose elements are the value's own
     /// bytes; and, for a bundle whose detector declined or predates the
     /// formatter, the bare `(data_ptr, length)` fat pointer.
-    pub(crate) fn of(info: &Value<'a>, proc: &'a dyn ReadFromProc) -> Result<Elements<'a>> {
+    pub(crate) fn of(info: &Value<'a>, proc: &'a dyn Target) -> Result<Elements<'a>> {
         let ty = info.ty;
 
         if let Some(DisplayNode::Slice {
@@ -144,7 +144,7 @@ impl<'a> Elements<'a> {
         element: BundleType<'a>,
         stride: u64,
         bytes: &[u8],
-        proc: Option<&'a dyn ReadFromProc>,
+        proc: Option<&'a dyn Target>,
     ) -> std::result::Result<Elements<'a>, SeqError> {
         let (base, count) = decode_header(bytes, header, stride)?;
         let buffer = read_buffer(proc, base, stride, count)?;
@@ -235,7 +235,7 @@ pub(crate) struct Buffer<'a> {
 /// point is the bytes rather than the elements: same header, same validation,
 /// same bound on a length that cannot be trusted, but one bulk read instead
 /// of a typed view per byte.
-pub(crate) fn utf8<'a>(info: &Value<'a>, proc: &'a dyn ReadFromProc) -> Result<Buffer<'a>> {
+pub(crate) fn utf8<'a>(info: &Value<'a>, proc: &'a dyn Target) -> Result<Buffer<'a>> {
     let ty = info.ty;
 
     if let Some(DisplayNode::Str { header }) = DisplayNode::resolve(ty) {
@@ -251,10 +251,7 @@ pub(crate) fn utf8<'a>(info: &Value<'a>, proc: &'a dyn ReadFromProc) -> Result<B
 /// `Slice` formatters — to the pointer's own view (whose type names the
 /// element), the base address, and the claimed count. A value without the
 /// pair is not a sequence at all.
-fn bare_fat_pointer<'a>(
-    info: &Value<'a>,
-    proc: &'a dyn ReadFromProc,
-) -> Result<(Value<'a>, u64, u64)> {
+fn bare_fat_pointer<'a>(info: &Value<'a>, proc: &'a dyn Target) -> Result<(Value<'a>, u64, u64)> {
     let (Some(pointer), Some(length)) = (info.try_member("data_ptr")?, info.try_member("length")?)
     else {
         return Err(Error::not_a_sequence(info.ty.name()));
@@ -270,7 +267,7 @@ fn bare_fat_pointer<'a>(
 pub(crate) fn utf8_buffer<'a>(
     header: &FatHeader,
     bytes: &[u8],
-    proc: Option<&'a dyn ReadFromProc>,
+    proc: Option<&'a dyn Target>,
 ) -> std::result::Result<Buffer<'a>, SeqError> {
     let (base, length) = decode_header(bytes, header, 1)?;
     read_buffer(proc, base, 1, length)
@@ -279,7 +276,7 @@ pub(crate) fn utf8_buffer<'a>(
 /// Read `count` units of `stride` bytes from `base`, believing the count only
 /// as far as it can be corroborated.
 fn read_buffer<'a>(
-    proc: Option<&'a dyn ReadFromProc>,
+    proc: Option<&'a dyn Target>,
     base: u64,
     stride: u64,
     count: u64,
@@ -322,9 +319,7 @@ fn read_buffer<'a>(
     if served == 0 {
         return Ok(empty(0, Some(count)));
     }
-    let bytes = proc
-        .read_bytes(base, served)
-        .map_err(SeqError::Unreadable)?;
+    let bytes = crate::target::read_bytes(proc, base, served).map_err(SeqError::Unreadable)?;
     let got = served / stride;
     Ok(Buffer {
         bytes,

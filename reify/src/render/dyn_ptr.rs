@@ -2,8 +2,8 @@
 //! recovering the concrete type from a vtable function symbol where possible.
 
 use crate::debug_type::DisplayNode;
-use crate::target::ReadFromProc;
 use crate::value::Value;
+use proc::Target;
 
 use exegesis::bundle::BundleType;
 
@@ -192,13 +192,13 @@ pub(crate) fn eval_dyn_pointer<'a>(
 }
 
 pub(crate) fn resolve_function_symbol(
-    proc: Option<&(dyn ReadFromProc + Sync)>,
+    proc: Option<&(dyn Target + Sync)>,
     address: u64,
 ) -> Option<String> {
     if address == 0 {
         return None;
     }
-    let symbol = proc?.function_symbol(address)?;
+    let symbol = crate::target::function_symbol(proc?, address)?;
     let stripped = exegesis::bundle::strip_llvm_suffix(&symbol);
     Some(
         rustc_demangle::try_demangle(stripped)
@@ -227,7 +227,7 @@ fn write_dyn_field_prefix(
 fn read_vtable_words<'a>(
     vtable: BundleType<'a>,
     address: u64,
-    proc: Option<&(dyn ReadFromProc + Sync)>,
+    proc: Option<&(dyn Target + Sync)>,
 ) -> Option<Vec<u64>> {
     if address == 0 {
         return None;
