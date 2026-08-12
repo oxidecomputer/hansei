@@ -49,7 +49,8 @@
 //! checked-in files as the macOS rendering until a second platform
 //! needs them.
 
-use exegesis::bundle::{Bundle, BundleView, describe_debug_format};
+use exegesis::bundle::{Bundle, BundleView};
+use exegesis::describe::describe_debug_format;
 use exegesis::detect::Family;
 use exegesis::extract::{ExtractOptions, extract_file};
 use exegesis::summary::portable_summary;

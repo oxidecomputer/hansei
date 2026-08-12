@@ -1,13 +1,17 @@
-pub mod bundle;
 mod cgu;
+pub mod describe;
 pub mod detect;
 pub mod extract;
 pub mod raw_types;
 pub mod reader;
 pub mod string_table;
 pub mod summary;
-pub mod symbols;
 pub mod view;
+
+/// The bundle wire format lives in its own crate, which carries no DWARF
+/// dependencies. Re-exported under the module paths it has always had.
+pub use hansei_bundle as bundle;
+pub use hansei_bundle::symbols;
 
 #[cfg(test)]
 mod testhelper;

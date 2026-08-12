@@ -12,7 +12,7 @@
 //! the type graph prints a marker in place of the datum, since this now runs
 //! over whatever a bundle file happens to contain.
 
-use crate::bundle::schema::{
+use hansei_bundle::{
     Bundle, BundleTypeId, DisplayNode, Field, MapEntries, MemberDef, MemberRef, Selector, Step,
     Stmt, TypeDef, ValueExpr,
 };

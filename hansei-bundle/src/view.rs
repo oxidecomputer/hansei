@@ -4,11 +4,11 @@
 //! Everything here is backend-side structure plus the variant decoding that
 //! makes `active_variant` a direct decode with no heuristics.
 
-use crate::bundle::schema::{
+use crate::Encoding;
+use crate::schema::{
     Bundle, BundleTypeId, MemberDef, Provenance, SymbolLookup, TaskEntryId, TaskFutureEntry,
     TypeDef, VariantDef, VariantShape,
 };
-use crate::raw_types::Encoding;
 
 use std::fmt;
 
@@ -155,7 +155,7 @@ impl<'a> BundleView<'a> {
     }
 
     /// Resolve an interned string.
-    pub fn str(&self, r: crate::bundle::strings::StrRef) -> Option<&'a str> {
+    pub fn str(&self, r: crate::strings::StrRef) -> Option<&'a str> {
         self.bundle.strings.get(r)
     }
 
@@ -257,7 +257,7 @@ impl<'a> BundleType<'a> {
 
     /// Custom display instructions resolved from this type's DWARF at
     /// extraction time.
-    pub fn debug_format(&self) -> Option<&'a crate::bundle::DisplayNode> {
+    pub fn debug_format(&self) -> Option<&'a crate::DisplayNode> {
         let types = &self.bundle.types;
         let (positions, nodes) = types.format_index.0.get_or_init(|| {
             let mut positions = vec![u32::MAX; types.types.len()];
@@ -295,13 +295,13 @@ impl<'a> BundleType<'a> {
         }
     }
 
-    fn str(&self, r: crate::bundle::strings::StrRef) -> &'a str {
+    fn str(&self, r: crate::strings::StrRef) -> &'a str {
         self.bundle.strings.get(r).unwrap_or(ANON)
     }
 
     /// Resolve an interned string ref against this type's bundle. Used by
     /// consumers (reify) to read the labels carried in a `ScalarDecode` table.
-    pub fn resolve_str(&self, r: crate::bundle::strings::StrRef) -> &'a str {
+    pub fn resolve_str(&self, r: crate::strings::StrRef) -> &'a str {
         self.str(r)
     }
 
@@ -391,7 +391,7 @@ impl<'a> BundleType<'a> {
     pub fn is_display_leaf(&self) -> bool {
         matches!(
             self.debug_format(),
-            Some(node) if !matches!(node, crate::bundle::DisplayNode::Alias { .. })
+            Some(node) if !matches!(node, crate::DisplayNode::Alias { .. })
         )
     }
 

@@ -13,8 +13,8 @@
 //!   [`Bundle::validate`](super::Bundle::validate), so readers may index
 //!   without per-access checks.
 
-use crate::bundle::strings::{StrRef, StringTable};
-use crate::raw_types::Encoding;
+use crate::Encoding;
+use crate::strings::{StrRef, StringTable};
 use crate::symbols::normalized_v0_key;
 
 use serde::{Deserialize, Serialize};
@@ -829,7 +829,7 @@ impl TypeTable {
     /// whose size DWARF did not record, an array whose element size is itself
     /// unknown, or a cyclic element chain. Arrays are the one kind that has to
     /// recurse, so the walk carries a seen-set and terminates on any input.
-    pub(crate) fn size_of(&self, id: BundleTypeId) -> Option<u64> {
+    pub fn size_of(&self, id: BundleTypeId) -> Option<u64> {
         fn go(table: &TypeTable, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> Option<u64> {
             if seen.contains(&id) {
                 return None;

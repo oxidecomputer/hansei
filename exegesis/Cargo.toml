@@ -25,6 +25,7 @@ blake3.workspace = true
 clap = { workspace = true, optional = true }
 foldhash.workspace = true
 gimli.workspace = true
+hansei-bundle.workspace = true
 memmap2.workspace = true
 object.workspace = true
 postcard.workspace = true

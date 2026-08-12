@@ -1,8 +1,8 @@
-use crate::bundle::io::FORMAT_VERSION;
-use crate::bundle::schema::*;
-use crate::bundle::strings::{StrRef, StringInterner};
-use crate::bundle::{Error, MAGIC};
-use crate::raw_types::Encoding;
+use crate::Encoding;
+use crate::io::FORMAT_VERSION;
+use crate::schema::*;
+use crate::strings::{StrRef, StringInterner};
+use crate::{Error, MAGIC};
 
 use std::collections::BTreeMap;
 
@@ -1148,10 +1148,10 @@ fn test_discr_values_matches() {
 // ---------------------------------------------------------------------------
 
 mod view_tests {
-    use crate::bundle::schema::*;
-    use crate::bundle::strings::StringInterner;
-    use crate::bundle::view::{BundleView, VariantError};
-    use crate::raw_types::Encoding;
+    use crate::Encoding;
+    use crate::schema::*;
+    use crate::strings::StringInterner;
+    use crate::view::{BundleView, VariantError};
 
     /// Build a bundle whose type 0 is `u64`, type 1 is a zero-sized unit
     /// struct, and type 2 is an enum with the given shape. Additional
@@ -1816,7 +1816,7 @@ mod view_tests {
         assert!(s.member("z").is_none());
 
         let p = view.ty(BundleTypeId(2)).unwrap();
-        assert_eq!(p.size(), crate::bundle::view::POINTER_SIZE);
+        assert_eq!(p.size(), crate::view::POINTER_SIZE);
         assert_eq!(p.pointer_target().unwrap().name(), "Point");
 
         let a = view.ty(BundleTypeId(3)).unwrap();
@@ -1832,7 +1832,7 @@ mod view_tests {
 // ---------------------------------------------------------------------------
 
 mod source_path_tests {
-    use crate::bundle::strip_build_prefix;
+    use crate::strip_build_prefix;
 
     /// A `file!()` string reaches the reader without a line-table directory
     /// to join, so the same cut has to work on the whole path alone.
