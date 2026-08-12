@@ -1,4 +1,4 @@
-//! The real-core suite for the ELF-backed [`Proc`] target: the half of
+//! The real-core suite for the ELF-backed Linux reader: the half of
 //! the Linux backend that can only be checked against a core something
 //! else wrote. It compiles nowhere else.
 //!
@@ -29,7 +29,8 @@
 
 #![cfg(target_os = "linux")]
 
-use proc::{Proc, Target};
+use proc::Target;
+use proc::coredump::linux::Core;
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -188,8 +189,8 @@ fn hex(field: &str) -> u64 {
     u64::from_str_radix(digits, 16).unwrap_or_else(|_| panic!("{field} is not hex"))
 }
 
-fn target() -> Proc {
-    Proc::open_core(&dumped().core).expect("failed to open the core")
+fn target() -> Core {
+    Core::open(&dumped().core).expect("failed to open the core")
 }
 
 // ---------------------------------------------------------------------------

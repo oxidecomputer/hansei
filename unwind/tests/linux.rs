@@ -16,7 +16,7 @@
 
 #![cfg(target_os = "linux")]
 
-use proc::Proc;
+use proc::{Proc, Target};
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

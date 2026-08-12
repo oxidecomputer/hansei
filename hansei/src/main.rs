@@ -2,8 +2,8 @@ use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use hansei_bundle::{Bundle, BundleMember, BundleType, BundleView, WalkRole};
 use hansei_runtime::tokio::{Lifecycle, bundle, census, contract, graph};
-use proc::Proc;
 use proc::snapshot::Recorder;
+use proc::{Proc, Target};
 use reify::Value;
 
 use std::cell::OnceCell;
