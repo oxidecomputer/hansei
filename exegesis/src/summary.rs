@@ -8,8 +8,12 @@
 //! builds on. Both golden suites diff it (the extraction goldens for the
 //! primary fixtures, the matrix suite per cell); keeping one renderer is
 //! what keeps their review surfaces the same.
+//!
+//! It reads a bundle but does not belong to one: deciding which walk roles
+//! to print is [`crate::detect::walk::leaf_rooted`]'s call, a builder-side
+//! judgment about what a role means that the wire format itself never makes.
 
-use crate::bundle::schema::{Bundle, StaticRole, TypeDef, WalkBinding, WalkOutcome, WalkRole};
+use crate::bundle::{Bundle, StaticRole, TypeDef, WalkBinding, WalkOutcome, WalkRole};
 
 use std::fmt::Write as _;
 

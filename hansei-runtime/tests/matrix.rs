@@ -49,9 +49,10 @@
 //! checked-in files as the macOS rendering until a second platform
 //! needs them.
 
-use exegesis::bundle::{Bundle, BundleView, describe_debug_format, portable_summary};
+use exegesis::bundle::{Bundle, BundleView, describe_debug_format};
 use exegesis::detect::Family;
 use exegesis::extract::{ExtractOptions, extract_file};
+use exegesis::summary::portable_summary;
 use hansei_runtime::tokio::contract::verify_walk_contract;
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 
 /// An index into a bundle's [`StringTable`].
 ///
-/// Unlike [`crate::string_table::StrId`], which borrows from mapped DWARF
-/// sections, this refers into the owned, serialized table inside a bundle.
+/// Unlike exegesis's DWARF-borrowing interner, whose ids point back into
+/// mapped debug sections, this refers into the owned, serialized table
+/// carried inside a bundle.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct StrRef(pub u32);
 
