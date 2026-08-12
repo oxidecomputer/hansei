@@ -33,13 +33,6 @@ impl Proc {
         }
     }
 
-    /// The core's format, for a caller that wants to say so.
-    pub fn flavour(&self) -> Flavour {
-        match self {
-            Proc::LinuxCore(_) => Flavour::Linux,
-            Proc::IllumosCore(_) => Flavour::Illumos,
-        }
-    }
 }
 
 /// Forward an inherent method to whichever backend is in hand.
