@@ -20,7 +20,7 @@ pub enum Proc {
     /// An illumos core, read through libproc — the reference reader the
     /// portable one is held against in tests.
     #[cfg(target_os = "illumos")]
-    Libproc(crate::illumos::Proc),
+    Libproc(crate::libproc::Proc),
     /// A Linux core, read from the file.
     LinuxCore(coredump::linux::Core),
     /// An illumos core, read from the file.
@@ -135,7 +135,7 @@ impl Proc {
     /// reader. libproc is the reference the portable reader is held to,
     /// so this is for the tests that compare the two on one core.
     pub fn open_core_libproc(path: &Path) -> Result<Self> {
-        Ok(Proc::Libproc(crate::illumos::Proc::open_core(path)?))
+        Ok(Proc::Libproc(crate::libproc::Proc::open_core(path)?))
     }
 
     pub fn lwp_name(&self, lwpid: u32) -> Result<String> {

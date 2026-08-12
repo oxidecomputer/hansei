@@ -5,7 +5,7 @@ use std::ops::Range;
 
 pub mod coredump;
 #[cfg(target_os = "illumos")]
-mod illumos;
+mod libproc;
 pub mod snapshot;
 mod target;
 #[cfg(test)]
@@ -159,10 +159,9 @@ impl std::error::Error for Error {}
 /// bytes, symbol lookups, mappings, LWP state, and where a thread-local
 /// lives in a given thread.
 ///
-/// Implemented by [`Proc`] — a core dump of either system, or a live
-/// process through libproc — and by snapshots captured from one, which
-/// replay on any platform. The layers interpreting a target run against
-/// whichever is to hand.
+/// Implemented by [`Proc`] — a core dump of either system — and by
+/// snapshots captured from one, which replay on any platform. The
+/// layers interpreting a target run against whichever is to hand.
 pub trait Target {
     /// Read exactly `len` bytes at `addr`.
     fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>>;
@@ -183,9 +182,9 @@ pub trait Target {
     /// own memory: a length word read from a corrupt `Vec` header claims
     /// whatever its bits say, and believing it means allocating that much
     /// before the read fails. A core knows its segments, so it can answer
-    /// exactly; a live process would have to probe, so it declines to
-    /// bound and returns `max`. Answering `0` means nothing at `addr` is
-    /// readable at all.
+    /// exactly; a reader that only has a handle would have to probe, so
+    /// it declines to bound and returns `max`. Answering `0` means
+    /// nothing at `addr` is readable at all.
     fn readable_len(&self, _addr: u64, max: u64) -> u64 {
         max
     }
