@@ -753,11 +753,6 @@ impl<'dw> DwReader<'dw> {
             .filter(|(id, _)| !self.subs.contains_key(id))
             .map(|(&id, ty)| (id, ty))
     }
-
-    /// The number of canonical (deduplicated) types.
-    pub fn canonical_type_count(&self) -> usize {
-        self.canonical_types().count()
-    }
 }
 
 /// A fully-interned CGU, produced by [`intern_cgu`] on a worker thread and
