@@ -5,7 +5,6 @@ use foldhash::{HashMap, HashMapExt};
 use gimli::{Attribute, AttributeValue, DebuggingInformationEntry, UnitRef, UnitSectionOffset};
 use tracing::debug;
 
-use std::fmt;
 use std::num::NonZero;
 
 /// An index into a [`NamespaceTable`].
@@ -91,17 +90,6 @@ impl<S: Copy + Eq + std::hash::Hash> NamespaceTable<S> {
         });
         self.index.insert((parent, name), id);
         id
-    }
-}
-
-impl<S: Copy + fmt::Display> NamespaceTable<S> {
-    /// Writes the fully-qualified namespace path for `id` to `f`.
-    pub fn full_name(&self, id: NsId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let entry = self.get(id);
-        if let Some(parent) = entry.parent {
-            self.full_name(parent, f)?;
-        }
-        write!(f, "{}::", entry.name)
     }
 }
 

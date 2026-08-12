@@ -111,26 +111,3 @@ impl fmt::Debug for FuncId {
         write!(f, "{inner:#x}")
     }
 }
-
-// trait DwU128 {
-//     fn attr_u128(&self, unit: &UnitRef<Slice>) -> Option<u128>;
-// }
-//
-// impl DwU128 for AttributeValue<Slice<'_>> {
-//     fn attr_u128(&self, unit: &UnitRef<Slice>) -> Option<u128> {
-//         Some(match *self {
-//             AttributeValue::Data1(data) => u128::from(data),
-//             AttributeValue::Data2(data) => u128::from(data),
-//             AttributeValue::Data4(data) => u128::from(data),
-//             AttributeValue::Data8(data) => u128::from(data),
-//             AttributeValue::Udata(data) => u128::from(data),
-//             AttributeValue::Sdata(data) => {
-//                 if data < 0 {
-//                     return None;
-//                 }
-//                 data as u128
-//             }
-//             _ => return None,
-//         })
-//     }
-// }

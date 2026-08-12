@@ -396,18 +396,7 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
             .into(),
     };
 
-    extract_from_view_with_vtable_types(&view, &symbols, ident, opts, &vtable_types)
-}
-
-/// Extract a bundle from an already-parsed DWARF view. Split from
-/// [`extract_file`] so tests can drive extraction on in-memory objects.
-pub fn extract_from_view(
-    view: &DwView<'_>,
-    symbols: &[&str],
-    ident: BinaryIdent,
-    opts: &ExtractOptions,
-) -> Result<(Bundle, ExtractStats)> {
-    extract_from_view_with_vtable_types(view, symbols, ident, opts, &[])
+    extract_from_view(&view, &symbols, ident, opts, &vtable_types)
 }
 
 /// One infra type's slot: the DWARF path it is found under, and the type
@@ -460,7 +449,7 @@ impl InfraIds {
     }
 }
 
-fn extract_from_view_with_vtable_types(
+fn extract_from_view(
     view: &DwView<'_>,
     symbols: &[&str],
     ident: BinaryIdent,
