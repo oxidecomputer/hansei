@@ -1738,10 +1738,20 @@ fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) 
 
 /// How a task is referred to in passing: by id, or by Header address
 /// when it has none.
+/// How output names a task bare: its decimal id, or its Header address
+/// where the target records none.
+fn task_id(list: &bundle::TaskList, index: usize) -> String {
+    match list.tasks[index].task_id {
+        Some(id) => id.to_string(),
+        None => format!("{:?}", list.tasks[index].addr),
+    }
+}
+
+/// [`task_id`] worded as a noun phrase: `task 42`, or `task at 0x…`.
 fn task_label(list: &bundle::TaskList, index: usize) -> String {
     match list.tasks[index].task_id {
-        Some(id) => format!("task {id}"),
-        None => format!("task at {:?}", list.tasks[index].addr),
+        Some(_) => format!("task {}", task_id(list, index)),
+        None => format!("task at {}", task_id(list, index)),
     }
 }
 
@@ -2064,7 +2074,7 @@ fn task_state(task: &bundle::Task, polling: &HashMap<u64, u32>) -> String {
 fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>) -> String {
     let who = match child.id {
         Some(id) => format!("task {id}"),
-        None => format!("the task at {:#x}", child.task),
+        None => format!("task at {:#x}", child.task),
     };
     if let Some(task) = listing.list.tasks.iter().find(|t| t.addr.0 == child.task) {
         let state = task_state(task, listing.polling);
@@ -2131,10 +2141,7 @@ fn report_whatis(
 
     if let Some((index, offset)) = extents.locate(addr) {
         let task = &list.tasks[index];
-        let id = match task.task_id {
-            Some(id) => id.to_string(),
-            None => format!("{:?}", task.addr),
-        };
+        let id = task_id(list, index);
         separate(&mut blocks, out)?;
         writeln!(out, "Task {id}: {}", future_name(&task.future))?;
         writeln!(
@@ -2379,10 +2386,7 @@ fn print_tasks(
             continue;
         }
         shown += 1;
-        let id = match task.task_id {
-            Some(id) => id.to_string(),
-            None => format!("{:?}", task.addr),
-        };
+        let id = task_id(list, index);
         writeln!(out, "Task {id}: {}", future_name(&task.future))?;
         writeln!(out, "    State: {}", task_state(task, polling))?;
         // Every block carries every row, so the two source locations sit
@@ -2825,15 +2829,6 @@ impl GraphWalk<'_> {
             self.visit(child.to, &below, Some(i + 1 == children.len()), child.kind);
         }
         self.path.pop();
-    }
-}
-
-/// How the graph names a task: its id, or its Header where the target
-/// records none.
-fn task_id(list: &bundle::TaskList, task: usize) -> String {
-    match list.tasks[task].task_id {
-        Some(id) => id.to_string(),
-        None => format!("{:?}", list.tasks[task].addr),
     }
 }
 
