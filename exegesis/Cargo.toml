@@ -15,11 +15,6 @@ name = "exegesis"
 path = "src/main.rs"
 required-features = ["cli"]
 
-[[bin]]
-name = "compare-symbols"
-path = "src/bin/compare-symbols.rs"
-required-features = ["cli"]
-
 [dependencies]
 blake3.workspace = true
 clap = { workspace = true, optional = true }
