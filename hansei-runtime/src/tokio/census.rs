@@ -736,7 +736,7 @@ fn walk_set<'b, T: Target + Sync>(
     children: &mut Vec<WalkedChild<'b>>,
 ) -> Result<()> {
     let head_member = ctx.walk(WalkRole::SetHeadAll).walk_at(set)?;
-    let head: u64 = head_member.parse(ctx)?;
+    let head: u64 = head_member.parse(ctx.proc)?;
     // The node layout is the pointer's target, reached by peeling the
     // atomic shims off the `head_all` word.
     let node_ty = head_member
@@ -757,7 +757,7 @@ fn walk_set<'b, T: Target + Sync>(
             "the walk stopped at {MAX_CHILDREN} nodes"
         );
 
-        let node = Value::read(ctx, node_ty, cur)
+        let node = Value::read(ctx.proc, node_ty, cur)
             .with_context(|| format!("failed to read the set node at {cur:#x}"))?;
         // Task.future: UnsafeCell<Option<Fut>>; `None` is a completed
         // child the set has not reaped.
@@ -863,7 +863,7 @@ fn walk_join_set<'b, T: Target + Sync>(
             .ty
             .pointer_target()
             .ok_or_else(|| anyhow!("the {} list head is not pointer-shaped", queue.name()))?;
-        let mut cur = Some(head.parse::<u64, _>(ctx)?);
+        let mut cur = Some(head.parse::<u64>(ctx.proc)?);
         while let Some(addr) = cur {
             ensure!(
                 ctx.mappings.contains_addr(addr),
@@ -875,7 +875,7 @@ fn walk_join_set<'b, T: Target + Sync>(
                 "the walk stopped at {MAX_CHILDREN} entries"
             );
 
-            let entry = Value::read(ctx, entry_ty, addr)
+            let entry = Value::read(ctx.proc, entry_ty, addr)
                 .with_context(|| format!("failed to read the join set entry at {addr:#x}"))?;
             // ListEntry.value is the joined task's `JoinHandle`, behind
             // a cell and a `ManuallyDrop`. Every wrapper from the cell
@@ -891,7 +891,7 @@ fn walk_join_set<'b, T: Target + Sync>(
                  but to {}",
                 handle.ty.name()
             );
-            let task: u64 = handle.parse(ctx)?;
+            let task: u64 = handle.parse(ctx.proc)?;
             let (id, state) = ctx
                 .header_task_ref(task)
                 .with_context(|| format!("failed to identify the task joined at {addr:#x}"))?;
@@ -907,7 +907,7 @@ fn walk_join_set<'b, T: Target + Sync>(
                 .walk(WalkRole::JoinSetEntryNext)
                 .walk(entry)?
                 .optional()
-                .map(|ptr| ptr.parse(ctx).map_err(anyhow::Error::from))
+                .map(|ptr| ptr.parse(ctx.proc).map_err(anyhow::Error::from))
                 .transpose()?;
         }
     }

@@ -14,7 +14,7 @@ mod testhelper;
 pub use debug_type::TypeKind;
 pub use elements::Elements;
 pub use error::Error;
-pub use parse::{ParseCtx, ParseWithDbgInfo};
+pub use parse::ParseWithDbgInfo;
 pub use render::{AddrAnnotator, DisplayTargetValue, DisplayValue, ElideOverride};
 pub use target::ReadFromProc;
 pub use value::Value;

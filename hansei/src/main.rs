@@ -876,7 +876,7 @@ fn exec_trace_future(
         .view
         .ty(root.ty)
         .context("the census recorded a type the bundle does not carry")?;
-    let value = Value::read(ctx, ty, root.addr)
+    let value = Value::read(ctx.proc, ty, root.addr)
         .with_context(|| format!("failed to read the future at {:#x}", root.addr))?;
 
     writeln!(out)?;
@@ -3007,7 +3007,7 @@ fn print_worker_state<'b>(
         writeln!(out, "  core: not held by this thread")?;
         return Ok(());
     };
-    let core = boxed.deref_ptr(ctx)?;
+    let core = boxed.deref_ptr(ctx.proc)?;
     print_variable(
         out,
         "  ",
@@ -3522,7 +3522,8 @@ mod future_trace_tests {
                 .view
                 .ty(future1.ty)
                 .expect("the root type is in the bundle");
-            let root = Value::read(ctx, ty, future1.addr).expect("the recorded root reads back");
+            let root =
+                Value::read(ctx.proc, ty, future1.addr).expect("the recorded root reads back");
             let chain = ctx.await_chain(root);
 
             let mut out = Vec::new();

@@ -21,7 +21,7 @@ use exegesis::bundle::{
 };
 use exegesis::symbols::normalized_v0_key;
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
-use reify::{ParseCtx, Value};
+use reify::Value;
 
 use foldhash::{HashMap, HashSet};
 use std::cell::RefCell;
@@ -429,7 +429,8 @@ impl<'b, T: Target> Context<'b, T> {
             self.view.bundle().infra.context,
             "tokio::runtime::context::Context",
         )?;
-        Value::read(self, ty, addr).with_context(|| format!("failed to read Context at {addr:#x}"))
+        Value::read(self.proc, ty, addr)
+            .with_context(|| format!("failed to read Context at {addr:#x}"))
     }
 
     /// Navigate from the workers' `Context`s to the multi_thread
@@ -505,7 +506,7 @@ impl<'b, T: Target> Context<'b, T> {
         // The driver's lock lives under the parkers' own shared state,
         // which every `Inner` points at; the first one answers for all.
         let mut driver_held = None;
-        let remotes = remotes.elements(self)?;
+        let remotes = remotes.elements(self.proc)?;
         ensure!(
             remotes.truncated().is_none(),
             "the remotes array claims {} workers, only {} readable",
@@ -564,7 +565,7 @@ impl<'b, T: Target> Context<'b, T> {
         let mut visited = HashSet::default();
 
         let shards = lists
-            .elements(self)
+            .elements(self.proc)
             .context("failed to walk OwnedTasks shards")?;
         ensure!(
             shards.truncated().is_none(),
@@ -578,7 +579,7 @@ impl<'b, T: Target> Context<'b, T> {
             // the enumeration rather than reporting it once per shard.
             let head_addr = match self.walk(WalkRole::ShardHead).walk(elem) {
                 Ok(Walked::At(head)) => head
-                    .parse::<u64, _>(self)
+                    .parse::<u64>(self.proc)
                     .context("failed to walk OwnedTasks shards")?,
                 // An empty shard.
                 Ok(_) => continue,
@@ -617,7 +618,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// next Header in the owned list (via `Trailer.owned`).
     fn parse_task(&self, addr: u64) -> Result<(Task, Option<u64>)> {
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
-        let info = Value::read(self, header_ty, addr)
+        let info = Value::read(self.proc, header_ty, addr)
             .with_context(|| format!("failed to read task Header at {addr:#x}"))?;
 
         let state = TaskState(self.walk(WalkRole::HeaderState).read(info)?);
@@ -677,7 +678,7 @@ impl<'b, T: Target> Context<'b, T> {
         }
 
         let ty = self.infra_ty(self.view.bundle().infra.vtable, "task Vtable")?;
-        let info = Value::read(self, ty, vtable_addr)?;
+        let info = Value::read(self.proc, ty, vtable_addr)?;
 
         let vt = TaskVtable {
             poll: self.walk(WalkRole::VtablePoll).read(info)?,
@@ -801,7 +802,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// in the *target's* rodata; the bundle only supplies the layout.
     fn read_location(&self, loc_ptr: u64) -> Result<Location> {
         let ty = self.infra_ty(self.view.bundle().infra.location, "core::panic::Location")?;
-        let info = Value::read(self, ty, loc_ptr)
+        let info = Value::read(self.proc, ty, loc_ptr)
             .with_context(|| format!("failed to read Location at {loc_ptr:#x}"))?;
         // `file!()` records the path as rustc saw it on the build machine,
         // so a registry crate names itself in full. Cut it down the same way
@@ -822,14 +823,14 @@ impl<'b, T: Target> Context<'b, T> {
     /// next/prev pointers live in `Trailer.owned`, not the Header).
     fn owned_next(&self, trailer_addr: u64) -> Result<Option<u64>> {
         let ty = self.infra_ty(self.view.bundle().infra.trailer, "task Trailer")?;
-        let info = Value::read(self, ty, trailer_addr)
+        let info = Value::read(self.proc, ty, trailer_addr)
             .with_context(|| format!("failed to read Trailer at {trailer_addr:#x}"))?;
         // Trailer.owned: linked_list::Pointers<Header>, which peels down to
         // its inner { prev, next } struct.
         self.walk(WalkRole::TrailerNext)
             .walk(info)?
             .optional()
-            .map(|ptr| ptr.parse(self).map_err(anyhow::Error::from))
+            .map(|ptr| ptr.parse(self.proc).map_err(anyhow::Error::from))
             .transpose()
     }
 
@@ -861,7 +862,7 @@ impl<'b, T: Target> Context<'b, T> {
         };
         let entry = self.task_entry(known.entry);
         let cell_ty = self.infra_ty(entry.cell, &format!("the Cell of {}", known.display_name))?;
-        let cell = Value::read(self, cell_ty, task.addr.0)
+        let cell = Value::read(self.proc, cell_ty, task.addr.0)
             .with_context(|| format!("failed to read the task Cell at {:?}", task.addr))?;
         // Cell.core.stage peels through CoreStage and the UnsafeCells down
         // to the Stage<T> enum.
@@ -1102,7 +1103,7 @@ impl<'b, T: Target> Context<'b, T> {
         // shape; [`Context::wait_target`] interprets it.
         {
             // `(&mut fut).await`, `Box<fut>`: follow the thin pointer.
-            return match peeled.deref_ptr(self) {
+            return match peeled.deref_ptr(self.proc) {
                 Ok(future) => Follow::Next {
                     future,
                     symbol: None,
@@ -1235,7 +1236,7 @@ impl<'b, T: Target> Context<'b, T> {
             match self.dyn_future_ids_memoized(&symbol) {
                 SymbolLookup::Unique(id) => {
                     let ty = self.view.ty(id).expect("validated bundle type id");
-                    let future = Value::read(self, ty, data)
+                    let future = Value::read(self.proc, ty, data)
                         .with_context(|| format!("failed to read {} at {data:#x}", ty.name()))?;
                     return Ok(DynAwaitee::Resolved { future, symbol });
                 }
@@ -1327,7 +1328,7 @@ impl<'b, T: Target> Context<'b, T> {
             "task Header pointer {addr:#x} is unmapped"
         );
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
-        let header = Value::read(self, header_ty, addr)
+        let header = Value::read(self.proc, header_ty, addr)
             .with_context(|| format!("failed to read the task Header at {addr:#x}"))?;
         let state = TaskState(self.walk(WalkRole::HeaderState).read(header)?);
         let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
@@ -1361,7 +1362,7 @@ impl<'b, T: Target> Context<'b, T> {
             }
         }
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
-        let header = Value::read(self, header_ty, task.addr.0)
+        let header = Value::read(self.proc, header_ty, task.addr.0)
             .with_context(|| format!("failed to read the task Header at {:?}", task.addr))?;
         let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
         let vtable = self
@@ -1394,7 +1395,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// Acquire names which primitive wraps it.
     fn read_acquire(&self, acquire: Value<'b>, chain: &AwaitChain<'b>) -> Result<WaitTarget> {
         let semaphore = self.walk(WalkRole::AcquireSemaphore).walk_at(acquire)?;
-        let addr: u64 = semaphore.parse(self)?;
+        let addr: u64 = semaphore.parse(self.proc)?;
         let num_permits: u64 = self.walk(WalkRole::AcquireNumPermits).read(acquire)?;
         // Read the pointee as its own type, not deref_ptr's peeled view:
         // the semaphore walks root at the Semaphore itself.
@@ -1402,7 +1403,7 @@ impl<'b, T: Target> Context<'b, T> {
             .ty
             .pointer_target()
             .ok_or_else(|| anyhow!("Acquire.semaphore is not pointer-shaped"))?;
-        let sem = Value::read(self, sem_ty, addr).context("failed to read the Semaphore")?;
+        let sem = Value::read(self.proc, sem_ty, addr).context("failed to read the Semaphore")?;
         // `permits` keeps the available count shifted above the CLOSED
         // bit.
         let raw: u64 = self.walk(WalkRole::SemaphorePermits).read(sem)?;
@@ -1443,14 +1444,14 @@ impl<'b, T: Target> Context<'b, T> {
 
         let mut waiters = Vec::new();
         let mut visited = HashSet::default();
-        let mut cur = Some(head.parse::<u64, _>(self)?);
+        let mut cur = Some(head.parse::<u64>(self.proc)?);
         while let Some(addr) = cur {
             ensure!(
                 self.mappings.contains_addr(addr),
                 "wait-queue pointer {addr:#x} is unmapped"
             );
             ensure!(visited.insert(addr), "wait-queue cycle at {addr:#x}");
-            let node = Value::read(self, waiter_ty, addr)
+            let node = Value::read(self.proc, waiter_ty, addr)
                 .with_context(|| format!("failed to read the Waiter at {addr:#x}"))?;
             waiters.push(SemaphoreWaiter {
                 addr,
@@ -1461,7 +1462,7 @@ impl<'b, T: Target> Context<'b, T> {
                 .walk(WalkRole::WaiterNext)
                 .walk(node)?
                 .optional()
-                .map(|ptr| ptr.parse(self).map_err(anyhow::Error::from))
+                .map(|ptr| ptr.parse(self.proc).map_err(anyhow::Error::from))
                 .transpose()?;
         }
         waiters.reverse();
@@ -1659,14 +1660,6 @@ struct AcquireFields {
     /// grant until the future is polled again — which is exactly what
     /// makes an abandoned grant observable.
     queued: bool,
-}
-
-impl<'b, T: Target> ParseCtx<'b> for Context<'b, T> {
-    type Target = T;
-
-    fn proc(&self) -> &'b T {
-        self.proc
-    }
 }
 
 /// The normalized v0 key of every symbol, demangled across however many

@@ -7,7 +7,6 @@
 //! pointer, which is the bundle's business and not reify's.
 
 use crate::debug_type::{DisplayNode, FatHeader, TypeKind};
-use crate::parse::ParseCtx;
 use crate::render::scalar::{read_u64_at, read_unsigned_at};
 use crate::target::ReadFromProc;
 use crate::value::Value;
@@ -97,9 +96,8 @@ impl<'a> Elements<'a> {
     /// its pointer; an inline array, whose elements are the value's own
     /// bytes; and, for a bundle whose detector declined or predates the
     /// formatter, the bare `(data_ptr, length)` fat pointer.
-    pub(crate) fn of<Ctx: ParseCtx<'a>>(info: &Value<'a>, ctx: &Ctx) -> Result<Elements<'a>> {
+    pub(crate) fn of(info: &Value<'a>, proc: &'a dyn ReadFromProc) -> Result<Elements<'a>> {
         let ty = info.ty;
-        let proc: &'a dyn ReadFromProc = ctx.proc();
 
         if let Some(DisplayNode::Slice {
             header,
@@ -135,8 +133,8 @@ impl<'a> Elements<'a> {
                 ty.name().to_string(),
             ));
         };
-        let count: u64 = length.parse(ctx)?;
-        let base: u64 = pointer.parse(ctx)?;
+        let count: u64 = length.parse(proc)?;
+        let base: u64 = pointer.parse(proc)?;
         let stride = element.size();
         let buffer =
             read_buffer(Some(proc), base, stride, count).map_err(|e| e.into_error(ty.name()))?;
@@ -243,9 +241,8 @@ pub(crate) struct Buffer<'a> {
 /// point is the bytes rather than the elements: same header, same validation,
 /// same bound on a length that cannot be trusted, but one bulk read instead
 /// of a typed view per byte.
-pub(crate) fn utf8<'a, Ctx: ParseCtx<'a>>(info: &Value<'a>, ctx: &Ctx) -> Result<Buffer<'a>> {
+pub(crate) fn utf8<'a>(info: &Value<'a>, proc: &'a dyn ReadFromProc) -> Result<Buffer<'a>> {
     let ty = info.ty;
-    let proc: &dyn ReadFromProc = ctx.proc();
 
     if let Some(DisplayNode::Str { header }) = DisplayNode::resolve(ty) {
         return utf8_buffer(&header, info.bytes, Some(proc)).map_err(|e| e.into_error(ty.name()));
@@ -255,8 +252,8 @@ pub(crate) fn utf8<'a, Ctx: ParseCtx<'a>>(info: &Value<'a>, ctx: &Ctx) -> Result
     else {
         return Err(Error::not_a_sequence(ty.name()));
     };
-    let length: u64 = length.parse(ctx)?;
-    let base: u64 = pointer.parse(ctx)?;
+    let length: u64 = length.parse(proc)?;
+    let base: u64 = pointer.parse(proc)?;
     read_buffer(Some(proc), base, 1, length).map_err(|e| e.into_error(ty.name()))
 }
 
@@ -344,12 +341,11 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let mem = FakeMem::new().at(0x2000, u32s(&[7, 8, 9]));
-        let ctx = TestCtx::new(&mem);
 
         // Vec { ptr: *u8 @0, len @8, capacity @16 }, elements `u32`.
         let header = u64s(&[0x2000, 3, 4]);
         let vec = Value::new(v.ty(VEC).unwrap(), 0x1000, &header);
-        let elements = vec.elements(&ctx).expect("vec elements");
+        let elements = vec.elements(&mem).expect("vec elements");
         assert_eq!(elements.len(), 3);
         assert_eq!(elements.element_ty().size(), 4);
         assert_eq!(
@@ -363,7 +359,7 @@ mod tests {
                 (0x2008, "9".to_owned())
             ]
         );
-        assert_eq!(vec.parse::<Vec<u32>, _>(&ctx).unwrap(), [7, 8, 9]);
+        assert_eq!(vec.parse::<Vec<u32>>(&mem).unwrap(), [7, 8, 9]);
     }
 
     /// A length is read out of the target like any other word, so a corrupt
@@ -379,22 +375,20 @@ mod tests {
         // A thousand elements claimed, three there to be read.
         let header = u64s(&[0x2000, 1000]);
         let mem = fake();
-        let ctx = TestCtx::new(&mem);
         let slice = Value::new(v.ty(SLICE).unwrap(), 0x1000, &header);
-        let elements = slice.elements(&ctx).expect("slice elements");
+        let elements = slice.elements(&mem).expect("slice elements");
         assert_eq!(elements.len(), 3);
         assert_eq!(elements.truncated(), Some(1000));
 
         // A short read is not a short sequence: collecting one is an error,
         // not a `Vec` quietly missing its tail.
-        assert!(slice.parse::<Vec<u32>, _>(&ctx).is_err());
+        assert!(slice.parse::<Vec<u32>>(&mem).is_err());
 
         // A target that cannot bound a read -- a live process -- refuses the
         // whole read instead of coming up short, and the claim is an error
         // rather than a truncation.
         let mem = fake().no_bounds();
-        let ctx = TestCtx::new(&mem);
-        assert!(slice.elements(&ctx).is_err());
+        assert!(slice.elements(&mem).is_err());
     }
 
     /// A header that cannot describe any sequence is refused before it is
@@ -404,10 +398,9 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let mem = FakeMem::new().at(0x2000, u32s(&[7, 8, 9]));
-        let ctx = TestCtx::new(&mem);
         let vec = |header: &[u8]| {
             Value::new(v.ty(VEC).unwrap(), 0x1000, header)
-                .elements(&ctx)
+                .elements(&mem)
                 .map(|e| e.len())
         };
 
@@ -422,10 +415,9 @@ mod tests {
 
         // An empty sequence is not read at all, whatever its pointer says.
         let mem = FakeMem::new().panic_on_unmapped();
-        let ctx = TestCtx::new(&mem);
         let header = u64s(&[0xdead_0000, 0, 0]);
         let empty = Value::new(v.ty(VEC).unwrap(), 0x1000, &header)
-            .elements(&ctx)
+            .elements(&mem)
             .expect("an empty vec");
         assert!(empty.is_empty());
         assert_eq!(empty.iter().count(), 0);
@@ -440,10 +432,8 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let mem = FakeMem::new().at(0x2000, b"hello".to_vec());
-        let ctx = TestCtx::new(&mem);
-        let text = |id, header: &[u8]| {
-            Value::new(v.ty(id).unwrap(), 0x1000, header).parse::<String, _>(&ctx)
-        };
+        let text =
+            |id, header: &[u8]| Value::new(v.ty(id).unwrap(), 0x1000, header).parse::<String>(&mem);
 
         // String { ptr @0, len @8, capacity @16 }, then &str { ptr, len }.
         assert_eq!(text(STRING, &u64s(&[0x2000, 5, 8])).unwrap(), "hello");
@@ -463,9 +453,8 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let mem = FakeMem::new();
-        let ctx = TestCtx::new(&mem);
         let bytes = u32s(&[1, 2]);
         let point = Value::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
-        assert!(point.elements(&ctx).is_err());
+        assert!(point.elements(&mem).is_err());
     }
 }
