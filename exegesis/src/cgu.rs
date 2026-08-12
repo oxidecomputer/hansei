@@ -1,8 +1,7 @@
 use crate::raw_types::{
     CommonAttrs, Encoding, NamespaceTable, NsId, RawArray, RawAwaitee, RawBase, RawEnum,
-    RawEnumerator, RawFunc, RawGenericParameter, RawInlinedSubroutine, RawMember, RawPointer,
-    RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion, RawVariant, SourceLoc,
-    VariantShape, resolve_file_index,
+    RawEnumerator, RawFunc, RawGenericParameter, RawMember, RawPointer, RawStaticVariable,
+    RawStruct, RawSubParameter, RawType, RawUnion, RawVariant, SourceLoc, VariantShape,
 };
 use crate::{Error, FuncId, Result, Slice, TypeId, VarId};
 
@@ -10,9 +9,7 @@ use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use gimli::{
     Attribute, AttributeValue, EntriesCursor, EvaluationResult, Reader, UnitRef, UnitSectionOffset,
 };
-use tracing::{debug, warn};
-
-use std::num::NonZero;
+use tracing::debug;
 
 const ANON: &str = "<anon>";
 const UNNAMED_CGU: &str = "<unnamed_cgu>";
@@ -711,9 +708,6 @@ impl<'dw> CodegenUnit<'dw> {
                         gimli::DW_TAG_template_type_parameter => {
                             template_params.extend(process_generic_parameter(unit, cursor)?);
                         }
-                        // gimli::DW_TAG_inlined_subroutine => {
-                        //     inlines.push(process_inlined_subroutine(unit, cursor)?);
-                        // }
                         gimli::DW_TAG_lexical_block if resume_fn => {
                             collect_awaitees(unit, cursor, &mut awaitees)?;
                         }
@@ -1099,124 +1093,6 @@ fn process_sub_parameter<'dw>(
         type_id: common.type_id.map(|t| t.into()),
         abstract_origin,
         const_value,
-    })
-}
-
-// Retained for when inlined-subroutine collection is re-enabled in the
-// function walker (see the commented-out call site above); it is currently
-// only reachable via its own recursion, which clippy flags as unused.
-#[allow(dead_code)]
-fn process_inlined_subroutine<'dw>(
-    unit: &UnitRef<Slice<'dw>>,
-    cursor: &mut EntriesCursor<Slice<'dw>>,
-) -> Result<RawInlinedSubroutine<&'dw str>> {
-    let entry = cursor.current().unwrap();
-    assert!(entry.tag() == gimli::DW_TAG_inlined_subroutine);
-
-    let mut abstract_origin = None;
-    let mut call_coord = SourceLoc::default();
-    let mut pc_ranges = vec![];
-    let mut lo_pc = None;
-    let mut hi_pc = None;
-
-    let mut attrs = entry.attrs();
-    while let Some(attr) = attrs.next()? {
-        match attr.name() {
-            gimli::DW_AT_ranges => {
-                if let gimli::AttributeValue::RangeListsRef(roff) = attr.value() {
-                    let roff = unit.ranges_offset_from_raw(roff);
-                    let mut riter = unit.ranges(roff)?;
-                    while let Some(range) = riter.next()? {
-                        pc_ranges.push(range);
-                    }
-                } else {
-                    debug!("unexpected ranges type: {:?}", attr.value());
-                }
-            }
-            gimli::DW_AT_call_file => {
-                let AttributeValue::FileIndex(f) = attr.value() else {
-                    debug!("unexpected call_file type: {:?}", attr.value());
-                    continue;
-                };
-                resolve_file_index(unit, f, "call_file", &mut call_coord)?;
-            }
-            gimli::DW_AT_call_line => {
-                call_coord.line = NonZero::new(attr.value().udata_value().unwrap());
-            }
-            gimli::DW_AT_call_column => {
-                call_coord.column = NonZero::new(attr.value().udata_value().unwrap());
-            }
-            gimli::DW_AT_low_pc => {
-                if let gimli::AttributeValue::Addr(a) = attr.value() {
-                    lo_pc = Some(a);
-                } else {
-                    debug!("WARN: unexpected low_pc type: {:?}", attr.value());
-                }
-            }
-            gimli::DW_AT_high_pc => {
-                hi_pc = attr.value().udata_value();
-                if hi_pc.is_none() {
-                    debug!("non-udata hi_pc {:?}", attr.value());
-                }
-            }
-            gimli::DW_AT_abstract_origin => {
-                if let gimli::AttributeValue::UnitRef(o) = attr.value() {
-                    abstract_origin = Some(o.to_unit_section_offset(unit));
-                } else if let gimli::AttributeValue::DebugInfoRef(o) = attr.value() {
-                    abstract_origin = Some(o.into());
-                } else {
-                    warn!("unexpected abstract_origin type: {:?}", attr.value());
-                }
-            }
-            _ => {
-                //println!("skipping inlined subroutine attr: {:x?}", attr.name());
-            }
-        }
-    }
-
-    if let (Some(begin), Some(off)) = (lo_pc, hi_pc) {
-        pc_ranges.push(gimli::Range {
-            begin,
-            end: begin + off,
-        });
-    }
-
-    let mut inlines = vec![];
-    let mut formal_parameters = vec![];
-    if entry.has_children() {
-        while let Some(()) = cursor.next_entry()? {
-            if let Some(child) = cursor.current() {
-                match child.tag() {
-                    gimli::DW_TAG_inlined_subroutine => {
-                        inlines.push(process_inlined_subroutine(unit, cursor)?);
-                    }
-                    gimli::DW_TAG_formal_parameter => {
-                        formal_parameters.push(process_sub_parameter(unit, cursor)?);
-                    }
-                    // lexical_block
-                    _ => {
-                        debug!("skipping subroutine content: {:x?}", child.tag());
-                        cursor.consume_entry()?;
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-    }
-
-    let call_coord = if !call_coord.is_empty() {
-        Some(Box::new(call_coord))
-    } else {
-        None
-    };
-
-    Ok(RawInlinedSubroutine {
-        pc_ranges: pc_ranges.into_boxed_slice(),
-        abstract_origin,
-        call_coord,
-        inlines: inlines.into_boxed_slice(),
-        formal_parameters: formal_parameters.into_boxed_slice(),
     })
 }
 
