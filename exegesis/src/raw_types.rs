@@ -446,21 +446,6 @@ pub struct RawSubParameter<S> {
     pub source_loc: Option<Box<SourceLoc<S>>>,
 }
 
-/// Information about a subroutine that has been inlined into a function.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct RawInlinedSubroutine<S> {
-    /// Location of the function abstract root that defines this.
-    pub abstract_origin: Option<gimli::UnitSectionOffset>,
-    /// Ranges of PC values that are included in this inlined subroutine.
-    pub pc_ranges: Box<[gimli::Range]>,
-    /// Location of the callsite that was inlined.
-    pub call_coord: Option<Box<SourceLoc<S>>>,
-    /// Further inlined subroutines within this one.
-    pub inlines: Box<[RawInlinedSubroutine<S>]>,
-    /// Definition of the formal parameters to this inlined subroutine.
-    pub formal_parameters: Box<[RawSubParameter<S>]>,
-}
-
 /// A static variable with a fixed address.
 #[derive(Clone, Debug)]
 pub struct RawStaticVariable<S> {
