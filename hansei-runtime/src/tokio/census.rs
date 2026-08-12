@@ -275,8 +275,11 @@ enum Find<'b> {
     Future(Value<'b>),
 }
 
-/// The census walker's running state.
-struct Walker {
+/// The census walker: the context and task listing it scans over, and
+/// its running state.
+struct Walker<'a, 'b, T> {
+    ctx: &'a Context<'b, T>,
+    list: &'a TaskList,
     sets: Vec<FutureSet>,
     join_sets: Vec<JoinSet>,
     held: Vec<HeldFuture>,
@@ -297,8 +300,10 @@ struct Walker {
 /// A task whose stage or chain does not decode contributes nothing —
 /// those failures already surface wherever the task itself is asked
 /// about — while a *found* set or future whose walk fails is reported.
-pub fn census<T: Target + Sync>(ctx: &Context<'_, T>, list: &TaskList) -> FutureCensus {
+pub fn census<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> FutureCensus {
     let mut walker = Walker {
+        ctx,
+        list,
         sets: Vec::new(),
         join_sets: Vec::new(),
         held: Vec::new(),
@@ -314,7 +319,7 @@ pub fn census<T: Target + Sync>(ctx: &Context<'_, T>, list: &TaskList) -> Future
             continue;
         };
         let chain = ctx.await_chain(root);
-        walker.scan_chain(ctx, list, owner, None, &chain, 0);
+        walker.scan_chain(owner, None, &chain, 0);
     }
 
     walker.spans.sort_unstable();
@@ -328,15 +333,12 @@ pub fn census<T: Target + Sync>(ctx: &Context<'_, T>, list: &TaskList) -> Future
     }
 }
 
-impl Walker {
+impl<'b, T: Target> Walker<'_, 'b, T> {
     /// Scan every frame of `chain` for sets and held futures, recursing
     /// through what it finds. `via` says how the census reached this
     /// chain when it is not a task's own.
-    #[allow(clippy::too_many_arguments)]
-    fn scan_chain<'b, T: Target + Sync>(
+    fn scan_chain(
         &mut self,
-        ctx: &Context<'b, T>,
-        list: &TaskList,
         owner: usize,
         via: Option<Via>,
         chain: &AwaitChain<'b>,
@@ -368,18 +370,15 @@ impl Walker {
                 let mut found = Vec::new();
                 scan_value(local, 0, &mut found, &mut self.capped, &mut self.plans);
                 for find in found {
-                    self.record(ctx, list, owner, frame_index, m.name(), via, find, nesting);
+                    self.record(owner, frame_index, m.name(), via, find, nesting);
                 }
             }
         }
     }
 
     /// Record one find and recurse into it.
-    #[allow(clippy::too_many_arguments)]
-    fn record<'b, T: Target + Sync>(
+    fn record(
         &mut self,
-        ctx: &Context<'b, T>,
-        list: &TaskList,
         owner: usize,
         frame: usize,
         local: &str,
@@ -394,16 +393,12 @@ impl Walker {
             return;
         }
         match find {
-            Find::Set(value) => {
-                self.record_set(ctx, list, owner, frame, local, via, value, nesting)
-            }
-            Find::JoinSet(value) => {
-                self.record_join_set(ctx, list, owner, frame, local, via, value)
-            }
+            Find::Set(value) => self.record_set(owner, frame, local, via, value, nesting),
+            Find::JoinSet(value) => self.record_join_set(owner, frame, local, via, value),
             Find::Future(value) => {
                 let place = (value.addr, value.ty.id());
-                let chain = ctx.await_chain(value);
-                let summary = summarize(ctx, list, &chain);
+                let chain = self.ctx.await_chain(value);
+                let summary = self.summarize(&chain);
                 // The future itself when the chain decoded (behind a
                 // box, that is the heap allocation rather than the
                 // local's pointer slot); the slot when it did not.
@@ -428,14 +423,7 @@ impl Walker {
                     leaf: summary.leaf,
                 });
                 if nesting < MAX_NESTING {
-                    self.scan_chain(
-                        ctx,
-                        list,
-                        owner,
-                        Some(Via::Held(index)),
-                        &chain,
-                        nesting + 1,
-                    );
+                    self.scan_chain(owner, Some(Via::Held(index)), &chain, nesting + 1);
                 } else {
                     self.capped += 1;
                 }
@@ -445,11 +433,8 @@ impl Walker {
 
     /// Record one set: walk its child nodes, then scan each resident
     /// child's own chain.
-    #[allow(clippy::too_many_arguments)]
-    fn record_set<'b, T: Target + Sync>(
+    fn record_set(
         &mut self,
-        ctx: &Context<'b, T>,
-        list: &TaskList,
         owner: usize,
         frame: usize,
         local: &str,
@@ -471,7 +456,7 @@ impl Walker {
         // keeps what it found: the children up to the failure are real,
         // and the error says the list is incomplete.
         let mut children = Vec::new();
-        if let Err(e) = walk_set(ctx, list, value, &mut children) {
+        if let Err(e) = self.walk_set(value, &mut children) {
             self.errors.push(e.context(format!(
                 "the FuturesUnordered at {:#x} lists only {} of its children",
                 value.addr,
@@ -498,7 +483,7 @@ impl Walker {
         self.sets.push(set);
         for (child, chain) in scan {
             let via = Via::SetChild { set: index, child };
-            self.scan_chain(ctx, list, owner, Some(via), &chain, nesting + 1);
+            self.scan_chain(owner, Some(via), &chain, nesting + 1);
         }
     }
 
@@ -509,11 +494,8 @@ impl Walker {
     /// and the listing already carries, so its frames are scanned as its
     /// own — a second scan from here would report every future it holds
     /// twice, under a task that does not poll it.
-    #[allow(clippy::too_many_arguments)]
-    fn record_join_set<'b, T: Target + Sync>(
+    fn record_join_set(
         &mut self,
-        ctx: &Context<'b, T>,
-        list: &TaskList,
         owner: usize,
         frame: usize,
         local: &str,
@@ -526,7 +508,7 @@ impl Walker {
         // list is visible in the listing and not only on stderr.
         let mut children = Vec::new();
         let mut length = 0;
-        if let Err(e) = walk_join_set(ctx, list, value, &mut children, &mut length) {
+        if let Err(e) = self.walk_join_set(value, &mut children, &mut length) {
             self.errors.push(e.context(format!(
                 "the JoinSet at {:#x} lists only {} of its tasks",
                 value.addr,
@@ -677,48 +659,46 @@ struct Summary {
     leaf: Option<String>,
 }
 
-/// Reduce a future's await chain to one listing row. An empty chain is
-/// a trait object the join could not resolve; the pointee is the most
-/// that can be said of it.
-fn summarize<'b, T: Target + Sync>(
-    ctx: &Context<'b, T>,
-    list: &TaskList,
-    chain: &AwaitChain<'b>,
-) -> Summary {
-    let Some(first) = chain.frames.first() else {
-        let future = match &chain.end {
-            ChainEnd::UnknownDyn { pointee, .. } | ChainEnd::AmbiguousDyn { pointee, .. } => {
-                format!("<unresolved: {pointee}>")
-            }
-            _ => "<undecoded>".to_string(),
+impl<'b, T: Target> Walker<'_, 'b, T> {
+    /// Reduce a future's await chain to one listing row. An empty chain
+    /// is a trait object the join could not resolve; the pointee is the
+    /// most that can be said of it.
+    fn summarize(&self, chain: &AwaitChain<'b>) -> Summary {
+        let Some(first) = chain.frames.first() else {
+            let future = match &chain.end {
+                ChainEnd::UnknownDyn { pointee, .. } | ChainEnd::AmbiguousDyn { pointee, .. } => {
+                    format!("<unresolved: {pointee}>")
+                }
+                _ => "<undecoded>".to_string(),
+            };
+            return Summary {
+                depth: 0,
+                future,
+                state: None,
+                waiting_on: None,
+                wait: None,
+                leaf: None,
+            };
         };
-        return Summary {
-            depth: 0,
-            future,
-            state: None,
-            waiting_on: None,
-            wait: None,
-            leaf: None,
+        let state = first.state.as_ref().map(|state| {
+            let loc = state
+                .await_loc
+                .map(|(file, line)| format!(" — {file}:{line}"))
+                .unwrap_or_default();
+            format!("{}{loc}", state.name)
+        });
+        let target = match self.ctx.wait_target(chain, self.list) {
+            Some(Ok(target)) => Some(target),
+            _ => None,
         };
-    };
-    let state = first.state.as_ref().map(|state| {
-        let loc = state
-            .await_loc
-            .map(|(file, line)| format!(" — {file}:{line}"))
-            .unwrap_or_default();
-        format!("{}{loc}", state.name)
-    });
-    let target = match ctx.wait_target(chain, list) {
-        Some(Ok(target)) => Some(target),
-        _ => None,
-    };
-    Summary {
-        depth: chain.frames.len(),
-        future: first.future.ty.name().to_string(),
-        state,
-        waiting_on: target.as_ref().map(|t| t.to_string()),
-        wait: target.as_ref().map(|t| t.kind()),
-        leaf: chain.leaf().map(str::to_string),
+        Summary {
+            depth: chain.frames.len(),
+            future: first.future.ty.name().to_string(),
+            state,
+            waiting_on: target.as_ref().map(|t| t.to_string()),
+            wait: target.as_ref().map(|t| t.kind()),
+            leaf: chain.leaf().map(str::to_string),
+        }
     }
 }
 
@@ -726,190 +706,189 @@ fn summarize<'b, T: Target + Sync>(
 /// chain (`None` for an empty slot), and the node's extent.
 type WalkedChild<'b> = (SetChild, Option<AwaitChain<'b>>, (u64, u64));
 
-/// Walk one set's intrusive `head_all` → `next_all` node list, pushing
-/// each child slot as it goes, so a caller keeps the prefix a failing
-/// walk found.
-fn walk_set<'b, T: Target + Sync>(
-    ctx: &Context<'b, T>,
-    list: &TaskList,
-    set: Value<'b>,
-    children: &mut Vec<WalkedChild<'b>>,
-) -> Result<()> {
-    let head_member = ctx.walk(WalkRole::SetHeadAll).walk_at(set)?;
-    let head: u64 = head_member.parse(ctx.proc)?;
-    // The node layout is the pointer's target, reached by peeling the
-    // atomic shims off the `head_all` word.
-    let node_ty = head_member
-        .ty
-        .pointer_target()
-        .ok_or_else(|| anyhow!("head_all does not peel to a pointer"))?;
-
-    let mut visited = HashSet::default();
-    let mut cur = head;
-    while cur != 0 {
-        ensure!(
-            ctx.mappings.contains_addr(cur),
-            "set node pointer {cur:#x} is unmapped"
-        );
-        ensure!(visited.insert(cur), "set node cycle at {cur:#x}");
-        ensure!(
-            children.len() < MAX_CHILDREN,
-            "the walk stopped at {MAX_CHILDREN} nodes"
-        );
-
-        let node = Value::read(ctx.proc, node_ty, cur)
-            .with_context(|| format!("failed to read the set node at {cur:#x}"))?;
-        // Task.future: UnsafeCell<Option<Fut>>; `None` is a completed
-        // child the set has not reaped.
-        let slot = ctx.walk(WalkRole::SetNodeFuture).walk_at(node)?;
-        let (variant, payload) = slot
-            .active_variant()
-            .with_context(|| format!("failed to decode the child slot at {cur:#x}"))?;
-        let (child, chain) = if variant == "Some" {
-            // The payload peels to the future itself, whose own await
-            // chain gives the concrete (dyn-resolved) identity, the
-            // suspend state, and the recognized wait target.
-            let fut = payload.peel();
-            let slot_root = FutureRoot {
-                addr: fut.addr,
-                ty: fut.ty.id(),
-            };
-            let chain = ctx.await_chain(fut);
-            let summary = summarize(ctx, list, &chain);
-            // As for a held future: the chain root itself when the
-            // chain decoded (past a dyn wide pointer, that is the heap
-            // future), the slot when it did not.
-            let root = chain
-                .frames
-                .first()
-                .map(|f| FutureRoot {
-                    addr: f.future.addr,
-                    ty: f.future.ty.id(),
-                })
-                .unwrap_or(slot_root);
-            (
-                SetChild {
-                    node: cur,
-                    depth: summary.depth,
-                    future: Some(summary.future),
-                    root: Some(root),
-                    state: summary.state,
-                    waiting_on: summary.waiting_on,
-                    wait: summary.wait,
-                    leaf: summary.leaf,
-                },
-                Some(chain),
-            )
-        } else {
-            (
-                SetChild {
-                    node: cur,
-                    // A reaped slot holds no future, so it stands on no
-                    // frames either.
-                    depth: 0,
-                    future: None,
-                    root: None,
-                    state: None,
-                    waiting_on: None,
-                    wait: None,
-                    leaf: None,
-                },
-                None,
-            )
-        };
-        children.push((child, chain, (cur, cur + node_ty.size())));
-
-        cur = ctx.walk(WalkRole::SetNodeNext).read(node)?;
-    }
-    Ok(())
-}
-
-/// Walk one join set's two entry lists for the tasks it holds, returning
-/// the length the set keeps for itself.
-///
-/// A `JoinSet<T>` is an `IdleNotifiedSet<JoinHandle<T>>`: a `length` in
-/// the frame beside an `Arc` to a mutex over *two* intrusive lists, one
-/// of entries whose task has woken and one of the rest. Which list an
-/// entry is in says nothing about the task — a completed task waits in
-/// `notified` for its output to be taken — so both are walked and the
-/// tasks reported together, in the order the lists hold them.
-///
-/// Every entry's `value` is live by construction: an entry leaves the
-/// two lists before its `JoinHandle` is consumed.
-fn walk_join_set<'b, T: Target + Sync>(
-    ctx: &Context<'b, T>,
-    list: &TaskList,
-    set: Value<'b>,
-    tasks: &mut Vec<JoinedTask>,
-    length: &mut u64,
-) -> Result<()> {
-    *length = ctx.walk(WalkRole::JoinSetLength).read(set)?;
-    // The lists live behind an Arc, whose target is the `ArcInner`
-    // header the payload follows; `data` is the mutex, and its own
-    // `data` the guarded value, however the loom shim spells the lock.
-    let lists = ctx
-        .walk(WalkRole::JoinSetLists)
-        .walk_at(set)
-        .context("failed to read the join set's shared lists")?;
-
-    let mut visited = HashSet::default();
-    for queue in [WalkRole::JoinSetNotifiedHead, WalkRole::JoinSetIdleHead] {
-        let Some(head) = ctx.walk(queue).walk(lists)?.optional() else {
-            continue;
-        };
-        // The recorded steps land on the raw entry pointer inside the
-        // NonNull: its target is the layout each entry decodes with.
-        let entry_ty = head
+impl<'b, T: Target> Walker<'_, 'b, T> {
+    /// Walk one set's intrusive `head_all` → `next_all` node list,
+    /// pushing each child slot as it goes, so a caller keeps the prefix
+    /// a failing walk found.
+    fn walk_set(&self, set: Value<'b>, children: &mut Vec<WalkedChild<'b>>) -> Result<()> {
+        let ctx = self.ctx;
+        let head_member = ctx.walk(WalkRole::SetHeadAll).walk_at(set)?;
+        let head: u64 = head_member.parse(ctx.proc)?;
+        // The node layout is the pointer's target, reached by peeling the
+        // atomic shims off the `head_all` word.
+        let node_ty = head_member
             .ty
             .pointer_target()
-            .ok_or_else(|| anyhow!("the {} list head is not pointer-shaped", queue.name()))?;
-        let mut cur = Some(head.parse::<u64>(ctx.proc)?);
-        while let Some(addr) = cur {
+            .ok_or_else(|| anyhow!("head_all does not peel to a pointer"))?;
+
+        let mut visited = HashSet::default();
+        let mut cur = head;
+        while cur != 0 {
             ensure!(
-                ctx.mappings.contains_addr(addr),
-                "join set entry pointer {addr:#x} is unmapped"
+                ctx.mappings.contains_addr(cur),
+                "set node pointer {cur:#x} is unmapped"
             );
-            ensure!(visited.insert(addr), "join set entry cycle at {addr:#x}");
+            ensure!(visited.insert(cur), "set node cycle at {cur:#x}");
             ensure!(
-                tasks.len() < MAX_CHILDREN,
-                "the walk stopped at {MAX_CHILDREN} entries"
+                children.len() < MAX_CHILDREN,
+                "the walk stopped at {MAX_CHILDREN} nodes"
             );
 
-            let entry = Value::read(ctx.proc, entry_ty, addr)
-                .with_context(|| format!("failed to read the join set entry at {addr:#x}"))?;
-            // ListEntry.value is the joined task's `JoinHandle`, behind
-            // a cell and a `ManuallyDrop`. Every wrapper from the cell
-            // down to the `Header` pointer holds one value, the handle
-            // included, so peeling lands on that pointer — the same word
-            // a `JoinHandle` leaf is read through. Asking for a member
-            // by name in there would peel first and look afterwards,
-            // which is to say look past what it asked for.
-            let handle = ctx.walk(WalkRole::JoinSetEntryValue).walk_at(entry)?;
-            ensure!(
-                handle.ty.pointer_target().is_some(),
-                "the join set entry at {addr:#x} does not peel to a task pointer, \
-                 but to {}",
-                handle.ty.name()
-            );
-            let task: u64 = handle.parse(ctx.proc)?;
-            let (id, state) = ctx
-                .header_task_ref(task)
-                .with_context(|| format!("failed to identify the task joined at {addr:#x}"))?;
-            tasks.push(JoinedTask {
-                entry: addr,
-                task,
-                id,
-                state,
-                listed: list.contains(task),
-            });
+            let node = Value::read(ctx.proc, node_ty, cur)
+                .with_context(|| format!("failed to read the set node at {cur:#x}"))?;
+            // Task.future: UnsafeCell<Option<Fut>>; `None` is a completed
+            // child the set has not reaped.
+            let slot = ctx.walk(WalkRole::SetNodeFuture).walk_at(node)?;
+            let (variant, payload) = slot
+                .active_variant()
+                .with_context(|| format!("failed to decode the child slot at {cur:#x}"))?;
+            let (child, chain) = if variant == "Some" {
+                // The payload peels to the future itself, whose own await
+                // chain gives the concrete (dyn-resolved) identity, the
+                // suspend state, and the recognized wait target.
+                let fut = payload.peel();
+                let slot_root = FutureRoot {
+                    addr: fut.addr,
+                    ty: fut.ty.id(),
+                };
+                let chain = ctx.await_chain(fut);
+                let summary = self.summarize(&chain);
+                // As for a held future: the chain root itself when the
+                // chain decoded (past a dyn wide pointer, that is the heap
+                // future), the slot when it did not.
+                let root = chain
+                    .frames
+                    .first()
+                    .map(|f| FutureRoot {
+                        addr: f.future.addr,
+                        ty: f.future.ty.id(),
+                    })
+                    .unwrap_or(slot_root);
+                (
+                    SetChild {
+                        node: cur,
+                        depth: summary.depth,
+                        future: Some(summary.future),
+                        root: Some(root),
+                        state: summary.state,
+                        waiting_on: summary.waiting_on,
+                        wait: summary.wait,
+                        leaf: summary.leaf,
+                    },
+                    Some(chain),
+                )
+            } else {
+                (
+                    SetChild {
+                        node: cur,
+                        // A reaped slot holds no future, so it stands on
+                        // no frames either.
+                        depth: 0,
+                        future: None,
+                        root: None,
+                        state: None,
+                        waiting_on: None,
+                        wait: None,
+                        leaf: None,
+                    },
+                    None,
+                )
+            };
+            children.push((child, chain, (cur, cur + node_ty.size())));
 
-            cur = ctx
-                .walk(WalkRole::JoinSetEntryNext)
-                .walk(entry)?
-                .optional()
-                .map(|ptr| ptr.parse(ctx.proc).map_err(anyhow::Error::from))
-                .transpose()?;
+            cur = ctx.walk(WalkRole::SetNodeNext).read(node)?;
         }
+        Ok(())
     }
-    Ok(())
+
+    /// Walk one join set's two entry lists for the tasks it holds,
+    /// returning the length the set keeps for itself.
+    ///
+    /// A `JoinSet<T>` is an `IdleNotifiedSet<JoinHandle<T>>`: a `length`
+    /// in the frame beside an `Arc` to a mutex over *two* intrusive
+    /// lists, one of entries whose task has woken and one of the rest.
+    /// Which list an entry is in says nothing about the task — a
+    /// completed task waits in `notified` for its output to be taken —
+    /// so both are walked and the tasks reported together, in the order
+    /// the lists hold them.
+    ///
+    /// Every entry's `value` is live by construction: an entry leaves
+    /// the two lists before its `JoinHandle` is consumed.
+    fn walk_join_set(
+        &self,
+        set: Value<'b>,
+        tasks: &mut Vec<JoinedTask>,
+        length: &mut u64,
+    ) -> Result<()> {
+        let ctx = self.ctx;
+        *length = ctx.walk(WalkRole::JoinSetLength).read(set)?;
+        // The lists live behind an Arc, whose target is the `ArcInner`
+        // header the payload follows; `data` is the mutex, and its own
+        // `data` the guarded value, however the loom shim spells the lock.
+        let lists = ctx
+            .walk(WalkRole::JoinSetLists)
+            .walk_at(set)
+            .context("failed to read the join set's shared lists")?;
+
+        let mut visited = HashSet::default();
+        for queue in [WalkRole::JoinSetNotifiedHead, WalkRole::JoinSetIdleHead] {
+            let Some(head) = ctx.walk(queue).walk(lists)?.optional() else {
+                continue;
+            };
+            // The recorded steps land on the raw entry pointer inside the
+            // NonNull: its target is the layout each entry decodes with.
+            let entry_ty = head
+                .ty
+                .pointer_target()
+                .ok_or_else(|| anyhow!("the {} list head is not pointer-shaped", queue.name()))?;
+            let mut cur = Some(head.parse::<u64>(ctx.proc)?);
+            while let Some(addr) = cur {
+                ensure!(
+                    ctx.mappings.contains_addr(addr),
+                    "join set entry pointer {addr:#x} is unmapped"
+                );
+                ensure!(visited.insert(addr), "join set entry cycle at {addr:#x}");
+                ensure!(
+                    tasks.len() < MAX_CHILDREN,
+                    "the walk stopped at {MAX_CHILDREN} entries"
+                );
+
+                let entry = Value::read(ctx.proc, entry_ty, addr)
+                    .with_context(|| format!("failed to read the join set entry at {addr:#x}"))?;
+                // ListEntry.value is the joined task's `JoinHandle`, behind
+                // a cell and a `ManuallyDrop`. Every wrapper from the cell
+                // down to the `Header` pointer holds one value, the handle
+                // included, so peeling lands on that pointer — the same word
+                // a `JoinHandle` leaf is read through. Asking for a member
+                // by name in there would peel first and look afterwards,
+                // which is to say look past what it asked for.
+                let handle = ctx.walk(WalkRole::JoinSetEntryValue).walk_at(entry)?;
+                ensure!(
+                    handle.ty.pointer_target().is_some(),
+                    "the join set entry at {addr:#x} does not peel to a task pointer, \
+                     but to {}",
+                    handle.ty.name()
+                );
+                let task: u64 = handle.parse(ctx.proc)?;
+                let (id, state) = ctx
+                    .header_task_ref(task)
+                    .with_context(|| format!("failed to identify the task joined at {addr:#x}"))?;
+                tasks.push(JoinedTask {
+                    entry: addr,
+                    task,
+                    id,
+                    state,
+                    listed: self.list.contains(task),
+                });
+
+                cur = ctx
+                    .walk(WalkRole::JoinSetEntryNext)
+                    .walk(entry)?
+                    .optional()
+                    .map(|ptr| ptr.parse(ctx.proc).map_err(anyhow::Error::from))
+                    .transpose()?;
+            }
+        }
+        Ok(())
+    }
 }
