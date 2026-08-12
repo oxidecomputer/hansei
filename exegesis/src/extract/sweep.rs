@@ -11,6 +11,8 @@ use crate::raw_types::{NsId, RawType};
 use crate::view::{DwView, Func};
 use crate::{DwReader, FuncId, TypeId};
 
+use rayon::iter::ParallelIterator;
+use rayon::slice::ParallelSlice;
 use tracing::debug;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -112,8 +114,7 @@ pub(super) fn sweep_functions(
     funcs.sort_unstable_by_key(|&(id, _)| id);
     let funcs: Vec<Func> = funcs.into_iter().map(|(_, func)| func).collect();
 
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    if threads <= 1 || funcs.len() < SWEEP_PARALLEL_THRESHOLD {
+    if funcs.len() < SWEEP_PARALLEL_THRESHOLD {
         let mut out = Sweep::default();
         for func in &funcs {
             sweep_function(reader, raw_ns, glue_ns, func, &mut out);
@@ -121,26 +122,24 @@ pub(super) fn sweep_functions(
         return out;
     }
 
-    let chunk = funcs.len().div_ceil(threads);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = funcs
-            .chunks(chunk)
-            .map(|chunk| {
-                scope.spawn(move || {
-                    let mut out = Sweep::default();
-                    for func in chunk {
-                        sweep_function(reader, raw_ns, glue_ns, func, &mut out);
-                    }
-                    out
-                })
-            })
-            .collect();
-        let mut merged = Sweep::default();
-        for handle in handles {
-            merged.merge(handle.join().expect("function-sweep thread panicked"));
-        }
-        merged
-    })
+    // Collecting the per-chunk sweeps keeps the merge in chunk (i.e. source)
+    // order, which the "first wins" fields require.
+    let chunk = funcs.len().div_ceil(rayon::current_num_threads());
+    let sweeps: Vec<Sweep> = funcs
+        .par_chunks(chunk)
+        .map(|chunk| {
+            let mut out = Sweep::default();
+            for func in chunk {
+                sweep_function(reader, raw_ns, glue_ns, func, &mut out);
+            }
+            out
+        })
+        .collect();
+    let mut merged = Sweep::default();
+    for sweep in sweeps {
+        merged.merge(sweep);
+    }
+    merged
 }
 
 /// Classify one subprogram into `out`: a task vtable fn, drop glue, a coroutine
