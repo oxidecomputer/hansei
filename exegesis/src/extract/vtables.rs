@@ -7,6 +7,8 @@ use super::{ExtractStats, fq_name, raw_type_size, strip};
 use crate::{DwReader, TypeId};
 
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
+use rayon::iter::ParallelIterator;
+use rayon::slice::ParallelSlice;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -158,25 +160,22 @@ pub(super) fn resolve_vtable_type_hints(
     // pass per type -- over tens of thousands of types dominates emission and
     // is read-only, so fan it out and merge the per-thread shards.
     let ids: Vec<TypeId> = reader.canonical_types().map(|(id, _)| id).collect();
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let by_name = if threads <= 1 || ids.len() < VTABLE_INDEX_PARALLEL_THRESHOLD {
+    let by_name = if ids.len() < VTABLE_INDEX_PARALLEL_THRESHOLD {
         vtable_name_index(reader, &ids)
     } else {
-        let chunk = ids.len().div_ceil(threads);
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = ids
-                .chunks(chunk)
-                .map(|c| scope.spawn(move || vtable_name_index(reader, c)))
-                .collect();
-            let mut merged: foldhash::HashMap<String, Vec<(TypeId, u64)>> =
-                foldhash::HashMap::default();
-            for handle in handles {
-                for (name, mut entries) in handle.join().expect("vtable-index thread panicked") {
-                    merged.entry(name).or_default().append(&mut entries);
-                }
+        let chunk = ids.len().div_ceil(rayon::current_num_threads());
+        let shards: Vec<_> = ids
+            .par_chunks(chunk)
+            .map(|c| vtable_name_index(reader, c))
+            .collect();
+        let mut merged: foldhash::HashMap<String, Vec<(TypeId, u64)>> =
+            foldhash::HashMap::default();
+        for shard in shards {
+            for (name, mut entries) in shard {
+                merged.entry(name).or_default().append(&mut entries);
             }
-            merged
-        })
+        }
+        merged
     };
 
     stats.vtable_type_hints = hints.len();
