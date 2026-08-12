@@ -8,13 +8,13 @@
 //! There is no cross-version compatibility: a bundle is read by the same
 //! tool version that wrote it (`format_version` bumps freely).
 
-use crate::bundle::schema::{
+use crate::schema::{
     Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MapEntries, MemberDef, MemberRef,
     Notation, ScalarDecode, Selector, StaticsTable, Step, Stmt, TypeDef, ValueExpr, WalkOutcome,
     strip_llvm_suffix,
 };
-use crate::bundle::shape::{Addressed, Shape};
-use crate::bundle::strings::StrRef;
+use crate::shape::{Addressed, Shape};
+use crate::strings::StrRef;
 use crate::symbols::normalized_value_index;
 
 use std::fs::File;
@@ -25,7 +25,7 @@ use std::path::Path;
 pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
-/// indirect ones (e.g. new [`crate::raw_types::Encoding`] variants).
+/// indirect ones (e.g. new [`crate::Encoding`] variants).
 pub const FORMAT_VERSION: u32 = 32;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -67,9 +67,9 @@ fn unresolved(at: &MemberRef) -> String {
 /// Uniqueness follows [`MemberRef`]'s rule: a name that no variant, or more
 /// than one, answers to resolves to nothing.
 fn variant_named(
-    shape: &crate::bundle::schema::VariantShape,
+    shape: &crate::schema::VariantShape,
     name: StrRef,
-) -> Option<&crate::bundle::schema::VariantDef> {
+) -> Option<&crate::schema::VariantDef> {
     let mut matches = shape.variants.iter().filter(|v| v.name == name);
     let found = matches.next()?;
     matches.next().is_none().then_some(found)
@@ -341,12 +341,10 @@ fn shape_matches(bundle: &Bundle, id: BundleTypeId, shape: Shape) -> bool {
         Shape::Word => matches!(type_size(bundle, id, &mut Vec::new()), Some(1..=8)),
         Shape::Uint(size) => matches!(
             landed,
-            Some(TypeDef::Base { size: found, encoding: crate::raw_types::Encoding::Unsigned, .. })
+            Some(TypeDef::Base { size: found, encoding: crate::Encoding::Unsigned, .. })
                 if *found == size
         ),
-        Shape::PointerSized => {
-            type_size(bundle, id, &mut Vec::new()) == Some(crate::bundle::POINTER_SIZE)
-        }
+        Shape::PointerSized => type_size(bundle, id, &mut Vec::new()) == Some(crate::POINTER_SIZE),
         Shape::Pointer => matches!(landed, Some(TypeDef::Pointer { .. })),
         Shape::Array => matches!(landed, Some(TypeDef::Array { .. })),
         Shape::Any => true,
@@ -616,7 +614,7 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             let Some(TypeDef::Base { size, encoding, .. }) = bundle.types.get(*elem) else {
                 return corrupt("a byte-array notation does not target a base type".to_string());
             };
-            if *size != 1 || !matches!(encoding, crate::raw_types::Encoding::Unsigned) {
+            if *size != 1 || !matches!(encoding, crate::Encoding::Unsigned) {
                 return corrupt("a byte-array notation does not target unsigned bytes".to_string());
             }
             // Each notation is defined only for the lengths it spells; reading
@@ -692,9 +690,7 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             else {
                 return corrupt("dyn-pointer vtable element is not an integer".to_string());
             };
-            if *word_size != crate::bundle::POINTER_SIZE
-                || !matches!(encoding, crate::raw_types::Encoding::Unsigned)
-            {
+            if *word_size != crate::POINTER_SIZE || !matches!(encoding, crate::Encoding::Unsigned) {
                 return corrupt("dyn-pointer vtable element is not usize-sized".to_string());
             }
             let slots = [*drop_in_place, *size, *align];
@@ -931,7 +927,7 @@ fn check_map_entries(
             bundle.types.get(ty),
             Some(TypeDef::Base {
                 size,
-                encoding: crate::raw_types::Encoding::Unsigned,
+                encoding: crate::Encoding::Unsigned,
                 ..
             }) if *size > 0 && *size <= 8
         )
@@ -1014,7 +1010,7 @@ fn type_size(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) ->
         | TypeDef::Union { size, .. }
         | TypeDef::Enum { size, .. }
         | TypeDef::CEnum { size, .. } => Some(*size),
-        TypeDef::Pointer { .. } => Some(crate::bundle::POINTER_SIZE),
+        TypeDef::Pointer { .. } => Some(crate::POINTER_SIZE),
         TypeDef::Array { elem, count } => {
             seen.push(id);
             let size = type_size(bundle, *elem, seen)?.checked_mul(*count);
@@ -1163,7 +1159,7 @@ impl Bundle {
                 corrupt(format!("{what}: type id {} out of range", id.0))
             }
         };
-        let check_member = |what: &str, m: &crate::bundle::schema::MemberDef| -> Result<()> {
+        let check_member = |what: &str, m: &crate::schema::MemberDef| -> Result<()> {
             check_str(what, m.name)?;
             check_ty(what, m.ty)
         };

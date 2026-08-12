@@ -209,30 +209,9 @@ pub struct RawPointer<S> {
     pub target_type_id: TypeId,
 }
 
-/// The encoding of a `Base` type.
-/// Section 5.1.1, page 104.
-///
-/// Also serialized directly into bundles (see [`crate::bundle`]); the
-/// bundle format version must be bumped if variants change.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
-pub enum Encoding {
-    /// Linear machine address.
-    Address,
-    /// True or false.
-    Boolean,
-    /// A floating-point number.
-    Float,
-    /// A signed integer.
-    Signed,
-    /// An unsigned integer.
-    Unsigned,
-    /// A signed character.
-    SignedChar,
-    /// An unsigned character.
-    UnsignedChar,
-    /// A UTF-encoded character. Not necessarily UTF-8.
-    UtfChar,
-}
+/// The encoding of a `Base` type is wire data, defined by the bundle crate.
+/// Re-exported here so the DWARF-side spelling stays `raw_types::Encoding`.
+pub use hansei_bundle::Encoding;
 
 /// An enum type: either a Rust-style discriminated union (from
 /// `DW_TAG_structure_type` with `DW_TAG_variant_part`) or a C-style

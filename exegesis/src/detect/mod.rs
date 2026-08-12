@@ -182,7 +182,7 @@ impl FormatExplanation {
             Some(node) => writeln!(
                 out,
                 "  => {}",
-                crate::bundle::describe_node(bundle, self.id, node)
+                crate::describe::describe_node(bundle, self.id, node)
             ),
             None => writeln!(out, "  => no formatter; renders structurally"),
         };

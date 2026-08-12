@@ -14,7 +14,7 @@
 //! any pointer, so camino's typed one also validates — but it may not accept
 //! less.
 
-use crate::bundle::schema::{DisplayNode, MapEntries, Selector};
+use crate::schema::{DisplayNode, MapEntries, Selector};
 
 /// What a resolved [`Selector`] is expected to land on.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -107,7 +107,7 @@ impl DisplayNode {
     /// recurses into a child node either — a child is rendered against a type
     /// its parent determines.
     pub fn addressed(&self) -> Vec<Addressed<'_>> {
-        let word = crate::bundle::POINTER_SIZE;
+        let word = crate::POINTER_SIZE;
         match self {
             DisplayNode::Scalar { at, .. } => {
                 vec![Addressed::new("a scalar word", at, Shape::Word)]

@@ -417,7 +417,7 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             // as one more entry in a list it is not part of.
             println!(
                 "  debug: {}",
-                exegesis::bundle::describe_node(&bundle, id, format)
+                exegesis::describe::describe_node(&bundle, id, format)
             );
         }
     }

@@ -386,6 +386,7 @@ dependencies = [
  "clap",
  "foldhash 0.2.0",
  "gimli",
+ "hansei-bundle",
  "memmap2",
  "mimalloc",
  "object",
@@ -512,6 +513,22 @@ dependencies = [
  "subprocess",
  "tempfile",
  "unwind",
+]
+
+[[package]]
+name = "hansei-bundle"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "foldhash 0.2.0",
+ "postcard",
+ "rustc-demangle",
+ "semver",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zstd",
+ "zstd-sys",
 ]
 
 [[package]]

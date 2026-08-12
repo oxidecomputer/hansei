@@ -5,7 +5,7 @@
 //! as a conservative prototype: alternate display omits crate-root
 //! disambiguators while preserving the rest of the demangled structure.
 
-use crate::bundle::strip_llvm_suffix;
+use crate::strip_llvm_suffix;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
