@@ -121,11 +121,7 @@ impl<'a> Elements<'a> {
             });
         }
 
-        let (Some(pointer), Some(length)) =
-            (info.try_member("data_ptr")?, info.try_member("length")?)
-        else {
-            return Err(Error::not_a_sequence(ty.name()));
-        };
+        let (pointer, base, count) = bare_fat_pointer(info, proc)?;
         let Some(element) = pointer.ty.pointer_target() else {
             return Err(Error::unexpected_type(
                 pointer.ty.kind(),
@@ -133,8 +129,6 @@ impl<'a> Elements<'a> {
                 ty.name().to_string(),
             ));
         };
-        let count: u64 = length.parse(proc)?;
-        let base: u64 = pointer.parse(proc)?;
         let stride = element.size();
         let buffer =
             read_buffer(Some(proc), base, stride, count).map_err(|e| e.into_error(ty.name()))?;
@@ -248,13 +242,26 @@ pub(crate) fn utf8<'a>(info: &Value<'a>, proc: &'a dyn ReadFromProc) -> Result<B
         return utf8_buffer(&header, info.bytes, Some(proc)).map_err(|e| e.into_error(ty.name()));
     }
 
+    let (_, base, length) = bare_fat_pointer(info, proc)?;
+    read_buffer(Some(proc), base, 1, length).map_err(|e| e.into_error(ty.name()))
+}
+
+/// Decode the bare `(data_ptr, length)` members of `info` — the shared
+/// fallback for a bundle whose detector declined or predates the `Str`/
+/// `Slice` formatters — to the pointer's own view (whose type names the
+/// element), the base address, and the claimed count. A value without the
+/// pair is not a sequence at all.
+fn bare_fat_pointer<'a>(
+    info: &Value<'a>,
+    proc: &'a dyn ReadFromProc,
+) -> Result<(Value<'a>, u64, u64)> {
     let (Some(pointer), Some(length)) = (info.try_member("data_ptr")?, info.try_member("length")?)
     else {
-        return Err(Error::not_a_sequence(ty.name()));
+        return Err(Error::not_a_sequence(info.ty.name()));
     };
-    let length: u64 = length.parse(proc)?;
+    let count: u64 = length.parse(proc)?;
     let base: u64 = pointer.parse(proc)?;
-    read_buffer(Some(proc), base, 1, length).map_err(|e| e.into_error(ty.name()))
+    Ok((pointer, base, count))
 }
 
 /// Resolve a `Str` display program's header against `bytes` and read the
