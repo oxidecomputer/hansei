@@ -296,16 +296,16 @@ mod tests {
         // A tuple struct's `__0`/`__1` fields render positionally, eliding the
         // synthetic labels, to match Rust `Debug` (`Pair(1, 2)`).
         let pair = Value::new(v.ty(PAIR).unwrap(), 0, &bytes);
-        assert_eq!(format!("{}", pair.display_with_depth(2)), "Pair(1, 2)");
+        assert_eq!(format!("{}", pair.display().depth(2)), "Pair(1, 2)");
         assert_eq!(
-            format!("{:#}", pair.display_with_depth(2)),
+            format!("{:#}", pair.display().depth(2)),
             "Pair(\n    1,\n    2,\n)"
         );
 
         // A regular struct still shows its field names (regression guard).
         let point = Value::new(v.ty(POINT).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", point.display_with_depth(2)),
+            format!("{}", point.display().depth(2)),
             "Point { x: 1, y: 2 }"
         );
     }

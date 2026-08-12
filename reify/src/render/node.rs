@@ -621,7 +621,7 @@ mod tests {
         let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
         let value = Value::new(v.ty(WRAP).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", value.display_with_depth(2)),
+            format!("{}", value.display().depth(2)),
             "Point { x: 3, y: 4 }"
         );
     }
@@ -632,7 +632,7 @@ mod tests {
         let v = BundleView::new(&b);
         let bytes = 42u32.to_le_bytes();
         let value = Value::new(v.ty(ATOMIC).unwrap(), 0, &bytes);
-        assert_eq!(format!("{}", value.display_with_depth(1)), "42");
+        assert_eq!(format!("{}", value.display().depth(1)), "42");
     }
 
     #[test]
@@ -642,12 +642,12 @@ mod tests {
 
         let bytes = 42u32.to_le_bytes();
         let atomic = Value::new(v.ty(LOOM_ATOMIC).unwrap(), 0, &bytes);
-        assert_eq!(format!("{}", atomic.display_with_depth(1)), "42");
+        assert_eq!(format!("{}", atomic.display().depth(1)), "42");
 
         let bytes: Vec<u8> = [3u32, 4u32].iter().flat_map(|x| x.to_le_bytes()).collect();
         let cell = Value::new(v.ty(LOOM_CELL).unwrap(), 0, &bytes);
         assert_eq!(
-            format!("{}", cell.display_with_depth(2)),
+            format!("{}", cell.display().depth(2)),
             "Point { x: 3, y: 4 }"
         );
     }

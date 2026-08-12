@@ -38,35 +38,13 @@ use std::rc::Rc;
 /// succeeded.
 pub(crate) type FormatCache<'a> = RefCell<HashMap<BundleTypeId, Option<Rc<DisplayNode<'a>>>>>;
 
+/// The depth budget a display renders with when the caller does not pick
+/// one — `format!("{value}")` and [`Value::display`] alike.
+const DEFAULT_DEPTH: usize = 8;
+
 impl<'a> fmt::Display for Value<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(f, self, RenderCtx::plain(0, 16), f.alternate())
-    }
-}
-
-pub struct DisplayValue<'r, 'a> {
-    info: &'r Value<'a>,
-    depth: usize,
-    max_depth: usize,
-    ugly: bool,
-}
-
-impl<'r, 'a> DisplayValue<'r, 'a> {
-    /// Suppress custom formatters and render the base structural view.
-    pub fn ugly(mut self) -> Self {
-        self.ugly = true;
-        self
-    }
-}
-
-impl<'a> fmt::Display for DisplayValue<'_, 'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_display_value(
-            f,
-            self.info,
-            RenderCtx::plain(self.depth, self.max_depth).with_ugly(self.ugly),
-            f.alternate(),
-        )
+        self.display().fmt(f)
     }
 }
 
@@ -79,9 +57,14 @@ impl<'a> fmt::Display for DisplayValue<'_, 'a> {
 /// worker threads; the lifetime lets it borrow the caller's lookup state.
 pub type AddrAnnotator<'r> = dyn Fn(u64) -> Option<String> + Sync + 'r;
 
-pub struct DisplayTargetValue<'r, 'a, P: ReadFromProc + Sync> {
+/// A value formatted for display: what [`Value::display`] and
+/// [`Value::display_from_target`] build, with or without a target to read
+/// pointees through, and what the render-time options chain onto.
+pub struct DisplayValue<'r, 'a> {
     info: &'r Value<'a>,
-    proc: &'a P,
+    /// Where pointees are read from; `None` renders only the bytes in hand,
+    /// showing a pointer as its bare address.
+    proc: Option<&'a (dyn ReadFromProc + Sync)>,
     max_depth: usize,
     ugly: bool,
     elide: Option<&'r ElideOverride>,
@@ -91,7 +74,14 @@ pub struct DisplayTargetValue<'r, 'a, P: ReadFromProc + Sync> {
     formats: FormatCache<'a>,
 }
 
-impl<'r, 'a, P: ReadFromProc + Sync> DisplayTargetValue<'r, 'a, P> {
+impl<'r, 'a> DisplayValue<'r, 'a> {
+    /// Override the depth budget (default 8). Each level of nesting — a
+    /// member, an element, a followed pointer — spends one.
+    pub fn depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
+
     /// Suppress custom formatters and render the base structural view.
     pub fn ugly(mut self) -> Self {
         self.ugly = true;
@@ -123,61 +113,56 @@ impl<'r, 'a, P: ReadFromProc + Sync> DisplayTargetValue<'r, 'a, P> {
     }
 }
 
-impl<'a, P: ReadFromProc + Sync> fmt::Display for DisplayTargetValue<'_, 'a, P> {
+impl<'a> fmt::Display for DisplayValue<'_, 'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ctx = RenderCtx {
             depth: 0,
             max_depth: self.max_depth,
-            proc: Some(self.proc),
+            proc: self.proc,
             visited: Some(&self.visited),
             hex_integers: false,
             ugly: self.ugly,
             elide: self.elide,
             annotate: self.annotate,
             prefix: self.prefix,
-            formats: Some(&self.formats),
-            parallel: true,
+            formats: &self.formats,
+            // A collection only fans out when its entries read through a
+            // target; the bytes in hand render inline.
+            parallel: self.proc.is_some(),
         };
         write_display_value(f, self.info, ctx, f.alternate())
     }
 }
 
 impl<'a> Value<'a> {
+    /// Format this value from the bytes in hand, reading nothing: a pointer
+    /// shows its bare address. Chain the [`DisplayValue`] options to adjust
+    /// the rendering.
     pub fn display(&self) -> DisplayValue<'_, 'a> {
         DisplayValue {
             info: self,
-            depth: 0,
-            max_depth: 8,
-            ugly: false,
-        }
-    }
-
-    pub fn display_with_depth(&self, max_depth: usize) -> DisplayValue<'_, 'a> {
-        DisplayValue {
-            info: self,
-            depth: 0,
-            max_depth,
-            ugly: false,
-        }
-    }
-
-    /// Format this value while recursively reading typed pointees from a
-    /// target. Pointer traversal consumes one level of the depth budget.
-    pub fn display_from_target<'r, P: ReadFromProc + Sync>(
-        &'r self,
-        proc: &'a P,
-        max_depth: usize,
-    ) -> DisplayTargetValue<'r, 'a, P> {
-        DisplayTargetValue {
-            info: self,
-            proc,
-            max_depth,
+            proc: None,
+            max_depth: DEFAULT_DEPTH,
             ugly: false,
             elide: None,
             annotate: None,
             prefix: "",
             visited: RefCell::new(HashSet::default()),
             formats: FormatCache::default(),
+        }
+    }
+
+    /// Format this value while recursively reading typed pointees from a
+    /// target. Pointer traversal consumes one level of the depth budget.
+    pub fn display_from_target<'r>(
+        &'r self,
+        proc: &'a (dyn ReadFromProc + Sync),
+        max_depth: usize,
+    ) -> DisplayValue<'r, 'a> {
+        DisplayValue {
+            proc: Some(proc),
+            max_depth,
+            ..self.display()
         }
     }
 }
@@ -200,9 +185,8 @@ pub(crate) struct RenderCtx<'buf, 'a> {
     max_depth: usize,
     proc: Option<&'a (dyn ReadFromProc + Sync)>,
     visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
-    /// Where this pass memoizes resolved display programs; `None` renders
-    /// resolve on every ask (the plain, targetless displays).
-    formats: Option<&'buf FormatCache<'a>>,
+    /// Where this pass memoizes resolved display programs.
+    formats: &'buf FormatCache<'a>,
     /// Whether a collection may fan its entries out across worker
     /// threads. True at the root of a target-backed render; the
     /// collection that spends it hands its workers `false`, so fan-out
@@ -218,11 +202,11 @@ pub(crate) struct RenderCtx<'buf, 'a> {
     /// the bundle's choices alone.
     elide: Option<&'buf ElideOverride>,
     /// Labels for pointer addresses; see
-    /// [`DisplayTargetValue::annotate_addrs`].
+    /// [`DisplayValue::annotate_addrs`].
     annotate: Option<&'buf AddrAnnotator<'buf>>,
     /// Text opening every pretty-mode line after the first, written by
     /// [`write_indent`] ahead of the depth indentation; see
-    /// [`DisplayTargetValue::line_prefix`]. Empty for a bare display.
+    /// [`DisplayValue::line_prefix`]. Empty for a bare display.
     prefix: &'buf str,
 }
 
@@ -300,23 +284,6 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 }
 
 impl<'buf, 'a> RenderCtx<'buf, 'a> {
-    /// A context with no target to read from (structural rendering only).
-    fn plain(depth: usize, max_depth: usize) -> Self {
-        Self {
-            depth,
-            max_depth,
-            proc: None,
-            visited: None,
-            formats: None,
-            parallel: false,
-            hex_integers: false,
-            ugly: false,
-            elide: None,
-            annotate: None,
-            prefix: "",
-        }
-    }
-
     /// The `Send + Sync` slice of this context, from which a worker
     /// thread rebuilds a context of its own around task-local caches.
     pub(crate) fn for_workers(&self) -> WorkerCtx<'buf, 'a> {
@@ -338,15 +305,12 @@ impl<'buf, 'a> RenderCtx<'buf, 'a> {
     /// once per value — a map of ten thousand `String`s asks ten thousand
     /// times and resolves once.
     fn debug_format(&self, ty: &BundleType<'a>) -> Option<Rc<DisplayNode<'a>>> {
-        let Some(cache) = self.formats else {
-            return DisplayNode::resolve(*ty).map(Rc::new);
-        };
         let key = ty.id();
-        if let Some(hit) = cache.borrow().get(&key) {
+        if let Some(hit) = self.formats.borrow().get(&key) {
             return hit.clone();
         }
         let resolved = DisplayNode::resolve(*ty).map(Rc::new);
-        cache.borrow_mut().insert(key, resolved.clone());
+        self.formats.borrow_mut().insert(key, resolved.clone());
         resolved
     }
 
@@ -365,11 +329,6 @@ impl<'buf, 'a> RenderCtx<'buf, 'a> {
             hex_integers,
             ..self
         }
-    }
-
-    /// The same context with custom formatters suppressed (or not).
-    fn with_ugly(self, ugly: bool) -> Self {
-        Self { ugly, ..self }
     }
 }
 
@@ -585,7 +544,7 @@ pub(crate) fn write_display_value<'a>(
 /// Open a pretty-mode line: the caller's line prefix, then four spaces
 /// per depth level. Every newline the renderer writes is followed by
 /// this, which is what lets a caller get final-form lines out of
-/// [`DisplayTargetValue::line_prefix`] instead of re-indenting them.
+/// [`DisplayValue::line_prefix`] instead of re-indenting them.
 /// The spaces come off a static run in slices as large as it allows,
 /// not a write per level.
 pub(crate) fn write_indent(f: &mut fmt::Formatter<'_>, prefix: &str, depth: usize) -> fmt::Result {
@@ -987,15 +946,15 @@ mod tests {
         let point = Value::new(v.ty(POINT).unwrap(), 0, &bytes);
 
         // Depth 0 has no budget for the value itself.
-        assert_eq!(format!("{}", point.display_with_depth(0)), "...");
+        assert_eq!(format!("{}", point.display().depth(0)), "...");
         // Depth 1 renders the struct but not its fields.
         assert_eq!(
-            format!("{}", point.display_with_depth(1)),
+            format!("{}", point.display().depth(1)),
             "Point { x: ..., y: ... }"
         );
         // Depth 2 reaches the leaves.
         assert_eq!(
-            format!("{}", point.display_with_depth(2)),
+            format!("{}", point.display().depth(2)),
             "Point { x: 1, y: 2 }"
         );
     }
@@ -1051,12 +1010,11 @@ mod tests {
         );
     }
 
-    /// The bare `Display` impls are a separate entry point from `display()`,
-    /// with their own depth budget -- 16 rather than 8 -- so a value nested
-    /// past eight levels renders through one and truncates through the other.
-    /// Both spellings, borrowed and owned, reach the same renderer.
+    /// The bare `Display` impl and `display()` are the same rendering with
+    /// the same default depth, so `{}` on a value and on its display wrapper
+    /// agree -- including in pretty mode, whose flag survives the delegation.
     #[test]
-    fn test_bare_display_impls_use_their_own_depth() {
+    fn test_bare_display_matches_the_default_display() {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
@@ -1064,11 +1022,9 @@ mod tests {
 
         // `{}` on the value itself, rather than on a Display* wrapper.
         assert_eq!(format!("{point}"), "Point { x: 1, y: 2 }");
-        assert_eq!(
-            format!("{point}"),
-            format!("{}", point.display_with_depth(16))
-        );
+        assert_eq!(format!("{point}"), format!("{}", point.display()));
         assert_eq!(format!("{point:#}"), "Point {\n    x: 1,\n    y: 2,\n}");
+        assert_eq!(format!("{point:#}"), format!("{:#}", point.display()));
     }
 
     /// `ugly()` on a target-reading display suppresses custom formatters the

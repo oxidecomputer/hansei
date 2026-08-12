@@ -783,7 +783,7 @@ fn exec_trace_task(
                 out,
                 "The task has finished; its output has not been consumed:"
             )?;
-            let mut value = result.display_with_depth(4);
+            let mut value = result.display().depth(4);
             if ugly {
                 value = value.ugly();
             }
@@ -1466,7 +1466,7 @@ fn async_kind(name: &str, state: Option<&str>) -> &'static str {
 ///
 /// The value's own lines arrive final-form: a multi-line value must be
 /// rendered with a reify line prefix of this `indent` plus two spaces
-/// (see [`reify::DisplayTargetValue::line_prefix`]), so this function
+/// (see [`reify::DisplayValue::line_prefix`]), so this function
 /// lays out only the heading and the first line, and everything after
 /// the first newline passes through to the sink untouched — no per-line
 /// scan or re-copy, on values that run to gigabytes.
@@ -3059,7 +3059,7 @@ fn render<'r, 'b>(
     value: &'r Value<'b>,
     depth: usize,
     ugly: bool,
-) -> reify::DisplayTargetValue<'r, 'b, Proc> {
+) -> reify::DisplayValue<'r, 'b> {
     let display = value.display_from_target(session.ctx.proc, depth);
     if ugly { display.ugly() } else { display }
 }
