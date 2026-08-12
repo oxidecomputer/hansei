@@ -5,7 +5,7 @@
 
 use crate::debug_type::{BitField, FatHeader, FieldRender, ScalarDecode};
 use crate::elements::{SeqError, utf8_buffer};
-use crate::target::ReadFromProc;
+use proc::Target;
 
 use exegesis::bundle::Notation;
 
@@ -82,7 +82,7 @@ pub(crate) fn write_symbol(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     offset: u64,
-    proc: Option<&(dyn ReadFromProc + Sync)>,
+    proc: Option<&(dyn Target + Sync)>,
 ) -> fmt::Result {
     let Some(address) = read_u64_at(bytes, offset) else {
         return write!(f, "<truncated>");
@@ -108,9 +108,9 @@ pub(crate) fn write_utf8_string(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     header: &FatHeader,
-    proc: Option<&(dyn ReadFromProc + Sync)>,
+    proc: Option<&(dyn Target + Sync)>,
 ) -> fmt::Result {
-    let proc = proc.map(|proc| proc as &dyn ReadFromProc);
+    let proc = proc.map(|proc| proc as &dyn Target);
     let text = match utf8_buffer(header, bytes, proc) {
         Ok(text) => text,
         Err(SeqError::Invalid(why)) => return write!(f, "<invalid string: {why}>"),

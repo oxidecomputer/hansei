@@ -7,7 +7,7 @@ use crate::value::Value;
 
 use exegesis::bundle::BundleType;
 
-use crate::target::ReadFromProc;
+use proc::Target;
 
 use foldhash::HashSet;
 
@@ -39,7 +39,7 @@ pub(crate) fn eval_slice<'a>(
     ctx: RenderCtx<'_, 'a>,
     pretty: bool,
 ) -> fmt::Result {
-    let proc = ctx.proc.map(|proc| proc as &dyn ReadFromProc);
+    let proc = ctx.proc.map(|proc| proc as &dyn Target);
     let stride = u64::from(element_size);
     let elements = match Elements::read_fat(header, *element, stride, bytes, proc) {
         Ok(elements) => elements,
@@ -356,7 +356,7 @@ fn write_map_entry<'a>(
 
 fn walk_map_entries<'a>(
     bytes: &[u8],
-    proc: Option<&'a (dyn ReadFromProc + Sync)>,
+    proc: Option<&'a (dyn Target + Sync)>,
     key: BundleType<'a>,
     value: BundleType<'a>,
     entries: &MapEntries<'a>,
@@ -421,7 +421,7 @@ fn walk_map_entries<'a>(
 }
 
 fn walk_btree_node<'a>(
-    proc: &'a (dyn ReadFromProc + Sync),
+    proc: &'a (dyn Target + Sync),
     layout: BTreeNodeLayout<'a>,
     address: u64,
     height: u64,

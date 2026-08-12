@@ -5,14 +5,14 @@
 //!
 //! The bytes are borrowed, never owned: every read the target serves is a
 //! window into memory it already holds mapped (see
-//! [`ReadFromProc`](crate::target::ReadFromProc)), so a view costs a pointer
+//! [`proc::Target::read_bytes`]), so a view costs a pointer
 //! and a length and copies nothing.
 
 use crate::debug_type::{TypeKind, bundle_variant_error};
 use crate::elements::Elements;
 use crate::parse::ParseWithDbgInfo;
-use crate::target::ReadFromProc;
 use crate::{Error, Result};
+use proc::Target;
 
 use exegesis::bundle::{BundleType, VariantError};
 
@@ -41,8 +41,8 @@ impl<'a> Value<'a> {
     }
 
     /// Read the type directly at the address provided.
-    pub fn read(proc: &'a dyn ReadFromProc, ty: BundleType<'a>, addr: u64) -> Result<Self> {
-        let bytes = proc.read_bytes(addr, ty.size())?;
+    pub fn read(proc: &'a dyn Target, ty: BundleType<'a>, addr: u64) -> Result<Self> {
+        let bytes = crate::target::read_bytes(proc, addr, ty.size())?;
 
         Ok(Self { ty, addr, bytes })
     }
@@ -90,7 +90,7 @@ impl<'a> Value<'a> {
     /// The pointee, read from the target and peeled. A read the target
     /// refuses is an error naming the pointee's address — the address that
     /// failed — not this value's own.
-    pub fn deref_ptr(&self, proc: &'a dyn ReadFromProc) -> Result<Value<'a>> {
+    pub fn deref_ptr(&self, proc: &'a dyn Target) -> Result<Value<'a>> {
         let Some(target_ty) = self.peel().ty.pointer_target() else {
             return Err(Error::unexpected_type(
                 self.ty.kind(),
@@ -104,7 +104,7 @@ impl<'a> Value<'a> {
         };
 
         let addr = u64::from_le_bytes(bytes);
-        let bytes = proc.read_bytes(addr, target_ty.size())?;
+        let bytes = crate::target::read_bytes(proc, addr, target_ty.size())?;
 
         // Remove any wrapper types.
         Ok(Value {
@@ -144,14 +144,14 @@ impl<'a> Value<'a> {
         Ok(info)
     }
 
-    pub fn parse<V: ParseWithDbgInfo<'a>>(&self, proc: &'a dyn ReadFromProc) -> Result<V> {
+    pub fn parse<V: ParseWithDbgInfo<'a>>(&self, proc: &'a dyn Target) -> Result<V> {
         V::parse_with_dbg(proc, self).map_err(|e| Error::parse_type(self.ty.name()).with_source(e))
     }
 
     /// The elements of a sequence-shaped value — an owned `Vec`, a boxed or
     /// borrowed slice, an inline array — read and addressed; see
     /// [`Elements`].
-    pub fn elements(&self, proc: &'a dyn ReadFromProc) -> Result<Elements<'a>> {
+    pub fn elements(&self, proc: &'a dyn Target) -> Result<Elements<'a>> {
         Elements::of(self, proc)
     }
 
