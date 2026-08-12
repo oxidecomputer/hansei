@@ -338,13 +338,13 @@ fn check_walks(bundle: &Bundle) -> Result<()> {
 fn shape_matches(bundle: &Bundle, id: BundleTypeId, shape: Shape) -> bool {
     let landed = bundle.types.get(id);
     match shape {
-        Shape::Word => matches!(type_size(bundle, id, &mut Vec::new()), Some(1..=8)),
+        Shape::Word => matches!(bundle.types.size_of(id), Some(1..=8)),
         Shape::Uint(size) => matches!(
             landed,
             Some(TypeDef::Base { size: found, encoding: crate::Encoding::Unsigned, .. })
                 if *found == size
         ),
-        Shape::PointerSized => type_size(bundle, id, &mut Vec::new()) == Some(crate::POINTER_SIZE),
+        Shape::PointerSized => bundle.types.size_of(id) == Some(crate::POINTER_SIZE),
         Shape::Pointer => matches!(landed, Some(TypeDef::Pointer { .. })),
         Shape::Array => matches!(landed, Some(TypeDef::Array { .. })),
         Shape::Any => true,
@@ -529,8 +529,10 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             // The shape table has already required a machine word; its exact
             // width is what the decode table is checked against.
             let landed = selector_target(bundle, scope, at, what)?;
-            let size =
-                type_size(bundle, landed, &mut Vec::new()).expect("a Word-shaped type is sized");
+            let size = bundle
+                .types
+                .size_of(landed)
+                .expect("a Word-shaped type is sized");
             check_scalar_decode(bundle, decode, (size * 8) as u8, what)?;
         }
         DisplayNode::Computed { value, decode } => {
@@ -599,7 +601,7 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                     element.0
                 ));
             }
-            if type_size(bundle, *element, &mut Vec::new()).is_none() {
+            if bundle.types.size_of(*element).is_none() {
                 return corrupt(format!(
                     "slice node has an unsized element type {}",
                     element.0
@@ -717,7 +719,7 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 if bundle.types.get(ty).is_none() {
                     return corrupt(format!("map {kind} type id {} out of range", ty.0));
                 }
-                if type_size(bundle, ty, &mut Vec::new()).is_none() {
+                if bundle.types.size_of(ty).is_none() {
                     return corrupt(format!("map has an unsized {kind} type {}", ty.0));
                 }
             }
@@ -769,7 +771,7 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                     element.0
                 ));
             }
-            if type_size(bundle, *element, &mut Vec::new()).is_none() {
+            if bundle.types.size_of(*element).is_none() {
                 return corrupt(format!(
                     "CustomList has an unsized element type {}",
                     element.0
@@ -960,13 +962,10 @@ fn check_map_entries(
     else {
         unreachable!("check_selector verified an array");
     };
-    let key_sizes = (
-        type_size(bundle, *key_slot, &mut Vec::new()),
-        type_size(bundle, key, &mut Vec::new()),
-    );
+    let key_sizes = (bundle.types.size_of(*key_slot), bundle.types.size_of(key));
     let value_sizes = (
-        type_size(bundle, *value_slot, &mut Vec::new()),
-        type_size(bundle, value, &mut Vec::new()),
+        bundle.types.size_of(*value_slot),
+        bundle.types.size_of(value),
     );
     if *key_slots == 0
         || key_slots != value_slots
@@ -998,27 +997,6 @@ fn check_map_entries(
         return corrupt("B-tree edge does not point to its leaf type".to_string());
     }
     Ok(())
-}
-
-fn type_size(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> Option<u64> {
-    if seen.contains(&id) {
-        return None;
-    }
-    match bundle.types.get(id)? {
-        TypeDef::Base { size, .. }
-        | TypeDef::Struct { size, .. }
-        | TypeDef::Union { size, .. }
-        | TypeDef::Enum { size, .. }
-        | TypeDef::CEnum { size, .. } => Some(*size),
-        TypeDef::Pointer { .. } => Some(crate::POINTER_SIZE),
-        TypeDef::Array { elem, count } => {
-            seen.push(id);
-            let size = type_size(bundle, *elem, seen)?.checked_mul(*count);
-            seen.pop();
-            size
-        }
-        TypeDef::Opaque { .. } => None,
-    }
 }
 
 fn has_dyn_tail(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> bool {
