@@ -21,7 +21,6 @@ These are the workspace members that may be useful:
   of the bundle's types for humans.
 * proc: Target access — readers for illumos and Linux core dumps, minimal
   bindings for illumos `libproc`, and replayable target snapshots.
-* durin: Read and write CTF files.
 
 A core is read according to what wrote it rather than what is reading it, so an
 illumos core opens on Linux and a Linux core opens on illumos. hansei inspects
