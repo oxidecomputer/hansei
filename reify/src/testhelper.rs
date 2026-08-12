@@ -80,9 +80,9 @@ impl FakeMem {
         self
     }
 
-    /// Decline to bound reads, the way a live process does: `readable_len`
-    /// claims everything asked for, and a read past the regions fails
-    /// outright rather than coming up short.
+    /// Decline to bound reads: `readable_len` claims everything asked
+    /// for, and a read past the regions fails outright rather than
+    /// coming up short.
     pub fn no_bounds(mut self) -> Self {
         self.no_bounds = true;
         self

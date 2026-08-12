@@ -386,9 +386,9 @@ mod tests {
         // not a `Vec` quietly missing its tail.
         assert!(slice.parse::<Vec<u32>>(&mem).is_err());
 
-        // A target that cannot bound a read -- a live process -- refuses the
-        // whole read instead of coming up short, and the claim is an error
-        // rather than a truncation.
+        // A target that cannot bound a read refuses the whole read
+        // instead of coming up short, and the claim is an error rather
+        // than a truncation.
         let mem = fake().no_bounds();
         assert!(slice.elements(&mem).is_err());
     }

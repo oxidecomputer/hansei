@@ -179,8 +179,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// The target's monotonic clock at the moment it stopped: the latest lwp
     /// stop timestamp (`pr_tstamp`, which illumos stamps from the same
     /// `gethrtime` clock `Instant` reads). For a core that is the moment it
-    /// was dumped; for a live target, the moment the grab halted it — either
-    /// way, "now" as of everything else this session reads. `None` when no
+    /// was dumped — "now" as of everything else this session reads. `None` when no
     /// lwp reports a usable stamp — a Linux core records no stop times, and
     /// its reader fills the field with zero, which no real clock reads.
     fn stopped_at(&self) -> Option<RawInstant> {

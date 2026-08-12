@@ -5,10 +5,9 @@
 //! the host looking at it. A Linux core read on illumos and an illumos
 //! core read on Linux are the same operation as reading either at home.
 //!
-//! What is *not* here is live processes: attaching to one is the
-//! operating system's business, and each has its own way (libproc on
-//! illumos, procfs and ptrace on Linux). Those backends stay beside
-//! this module and stay gated to the host that has them.
+//! The one other reader in the crate — the feature-gated libproc
+//! reference the illumos reader here is compared against in tests —
+//! stays beside this module, gated to the host that has libproc.
 
 pub mod illumos;
 pub mod linux;
