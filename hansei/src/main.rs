@@ -543,9 +543,7 @@ impl<'b> Session<'b> {
         let handle = ctx.find_handle(&workers)?;
         let shared = ctx.walk(WalkRole::HandleShared).walk_at(handle)?;
         let tasks = ctx.enumerate_tasks(shared)?;
-        for err in &tasks.errors {
-            writeln!(io::stderr(), "warning: {err:#}")?;
-        }
+        print_warnings(&tasks.errors)?;
 
         Ok(Session {
             ctx,
@@ -724,11 +722,7 @@ fn exec_trace_task(
     let list = &session.tasks;
 
     let Some(task) = list.tasks.iter().find(|t| t.task_id == Some(task_id)) else {
-        let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
-        anyhow::bail!(
-            "the runtime owns no task with id {task_id}; it owns {} task(s): {ids:?}",
-            list.tasks.len()
-        );
+        return Err(no_such_task(list, task_id));
     };
 
     let name = future_name(&task.future);
@@ -745,12 +739,7 @@ fn exec_trace_task(
     // A mid-poll task is being mutated while we read it; anything below
     // may be torn.
     if task.state.lifecycle() == Lifecycle::Running {
-        let lwp = session
-            .workers
-            .iter()
-            .find(|w| w.current_task_id == Some(task_id))
-            .map(|w| format!(" on LWP {}", w.tid))
-            .unwrap_or_default();
+        let lwp = polling_lwp(session, Some(task_id));
         writeln!(
             io::stderr(),
             "warning: task {task_id} is running{lwp}; its state may be torn"
@@ -839,16 +828,7 @@ fn exec_trace_future(
     // with them — while we read; anything below may be torn.
     let task = &list.tasks[owner];
     if task.state.lifecycle() == Lifecycle::Running {
-        let lwp = task
-            .task_id
-            .and_then(|id| {
-                session
-                    .workers
-                    .iter()
-                    .find(|w| w.current_task_id == Some(id))
-            })
-            .map(|w| format!(" on LWP {}", w.tid))
-            .unwrap_or_default();
+        let lwp = polling_lwp(session, task.task_id);
         writeln!(
             io::stderr(),
             "warning: {} is running{lwp}; the future's state may be torn",
@@ -1588,9 +1568,9 @@ fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool)
 
 /// Find the LWPs holding a tokio `Context`, through the thread-local
 /// the bundle names.
-fn discover_workers(
+fn discover_workers<T: proc::Target>(
     lwps: &[proc::LwpInfo],
-    ctx: &bundle::Context<'_, Proc>,
+    ctx: &bundle::Context<'_, T>,
 ) -> Result<Vec<bundle::Worker>> {
     let workers = ctx.find_workers(lwps)?;
     anyhow::ensure!(
@@ -1661,16 +1641,10 @@ fn exec_snapshot(session: &Session<'_>, output: &Path, out: &mut dyn io::Write) 
     let _ = ctx.validate_fingerprint();
 
     let lwps = proc.lwps().context("failed to read lwps")?;
-    let workers = ctx.find_workers(&lwps)?;
-    anyhow::ensure!(
-        !workers.is_empty(),
-        "no LWP has a tokio Context in thread-local storage; is this a tokio program?"
-    );
+    let workers = discover_workers(&lwps, &ctx)?;
     let shared = ctx.find_shared(&workers)?;
     let list = ctx.enumerate_tasks(shared)?;
-    for err in &list.errors {
-        writeln!(io::stderr(), "warning: {err:#}")?;
-    }
+    print_warnings(&list.errors)?;
 
     let mut chains = 0usize;
     for task in &list.tasks {
@@ -1873,10 +1847,49 @@ impl Entry<'_> {
     }
 }
 
-/// A count and the noun it counts, pluralized.
-fn counted(n: usize, noun: &str) -> String {
-    let plural = if n == 1 { "" } else { "s" };
-    format!("{n} {noun}{plural}")
+/// The ` on LWP N` suffix of a torn-state warning, when some worker is
+/// mid-poll in the task.
+fn polling_lwp(session: &Session<'_>, id: Option<u64>) -> String {
+    id.and_then(|id| {
+        session
+            .workers
+            .iter()
+            .find(|w| w.current_task_id == Some(id))
+    })
+    .map(|w| format!(" on LWP {}", w.tid))
+    .unwrap_or_default()
+}
+
+/// Report a walk's non-fatal errors the way every command does: one
+/// warning line per error, on stderr.
+fn print_warnings<'a>(errors: impl IntoIterator<Item = &'a anyhow::Error>) -> io::Result<()> {
+    for err in errors {
+        writeln!(io::stderr(), "warning: {err:#}")?;
+    }
+    Ok(())
+}
+
+/// A capped census walk looks like completeness, so say it is not:
+/// `fate` is what the listing or count would otherwise claim to cover.
+fn warn_census_capped(capped: usize, fate: &str) -> io::Result<()> {
+    if capped > 0 {
+        writeln!(
+            io::stderr(),
+            "warning: the scan stopped at a depth limit in {capped} place(s); \
+             anything held deeper is not {fate}"
+        )?;
+    }
+    Ok(())
+}
+
+/// The error for a task id the runtime does not own, naming the ids it
+/// does.
+fn no_such_task(list: &bundle::TaskList, id: u64) -> anyhow::Error {
+    let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
+    anyhow::anyhow!(
+        "the runtime owns no task with id {id}; it owns {} task(s): {ids:?}",
+        list.tasks.len()
+    )
 }
 
 /// One task's share of the census.
@@ -1933,10 +1946,10 @@ impl Counts {
         }
         let mut holds = Vec::new();
         if self.join_sets > 0 {
-            holds.push(counted(self.joined, "task"));
+            holds.push(summary::counted(self.joined, "task"));
         }
         if self.sets > 0 {
-            holds.push(counted(self.children_live, "future"));
+            holds.push(summary::counted(self.children_live, "future"));
         }
         format!("{sets} ({})", holds.join(" and "))
     }
@@ -2299,21 +2312,12 @@ fn exec_tasks(
     // listed beneath it.
     let census = session.census();
     if futures {
-        for err in &census.errors {
-            writeln!(io::stderr(), "warning: {err:#}")?;
-        }
+        print_warnings(&census.errors)?;
         // A walk that failed says so above; one that hit a limit says so
         // here, because it looks like completeness otherwise. The listing
         // is a lower bound either way (`help tasks`), but this is the part
         // of it that varies by target rather than being inherent.
-        if census.capped > 0 {
-            writeln!(
-                io::stderr(),
-                "warning: the scan stopped at a depth limit in {} place(s); \
-                 anything held deeper is not listed",
-                census.capped
-            )?;
-        }
+        warn_census_capped(census.capped, "listed")?;
     }
 
     print_tasks(
@@ -2327,9 +2331,7 @@ fn exec_tasks(
         out,
     )?;
 
-    for err in &list.errors {
-        writeln!(io::stderr(), "warning: {err:#}")?;
-    }
+    print_warnings(&list.errors)?;
 
     Ok(())
 }
@@ -2361,11 +2363,7 @@ fn print_tasks(
     let mut only = BTreeSet::new();
     for &id in tasks {
         let Some(index) = list.tasks.iter().position(|t| t.task_id == Some(id)) else {
-            let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
-            anyhow::bail!(
-                "the runtime owns no task with id {id}; it owns {} task(s): {ids:?}",
-                list.tasks.len()
-            );
+            return Err(no_such_task(list, id));
         };
         only.insert(index);
     }
@@ -2450,19 +2448,10 @@ fn print_tasks(
 fn exec_census(session: &Session<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
     let analysis = session.analysis();
     let census = session.census();
-    for err in analysis.errors.iter().chain(&census.errors) {
-        writeln!(io::stderr(), "warning: {err:#}")?;
-    }
+    print_warnings(analysis.errors.iter().chain(&census.errors))?;
     // As `tasks --futures`: a walk that hit a depth limit looks like
     // completeness in a count, so it says so.
-    if census.capped > 0 {
-        writeln!(
-            io::stderr(),
-            "warning: the scan stopped at a depth limit in {} place(s); \
-             anything held deeper is not counted",
-            census.capped
-        )?;
-    }
+    warn_census_capped(census.capped, "counted")?;
 
     // The two reads a census makes of its own: which worker each thread
     // is running, and what every worker's parker says. Neither is worth
@@ -2535,9 +2524,7 @@ fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
 
 fn exec_graph(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
     let analysis = session.analysis();
-    for err in &analysis.errors {
-        writeln!(io::stderr(), "warning: {err:#}")?;
-    }
+    print_warnings(&analysis.errors)?;
     let census = session.census();
     print_graph(
         &session.tasks,
@@ -2921,14 +2908,25 @@ fn print_thread_context(
     let info = session.ctx.context_info(worker.context_addr)?;
     for field in ["thread_id", "runtime", "budget"] {
         let value = info.member(field)?;
-        print_variable(
-            out,
-            "  ",
-            field,
-            &format_args!("{:#}", render(session, &value, opts).line_prefix("    ")),
-        )?;
+        print_rendered(session, field, &value, opts, out)?;
     }
     Ok(())
+}
+
+/// Print one named value the way the threads listing indents them.
+fn print_rendered(
+    session: &Session<'_>,
+    name: &str,
+    value: &Value<'_>,
+    opts: RenderOpts,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    print_variable(
+        out,
+        "  ",
+        name,
+        &format_args!("{:#}", render(session, value, opts).line_prefix("    ")),
+    )
 }
 
 /// A worker thread's own state: which worker it is, the `Core` it holds
@@ -2945,12 +2943,7 @@ fn print_worker_state<'b>(
     writeln!(out, "  worker {}", ctx.worker_index(worker_ctx)?)?;
 
     let defer = worker_ctx.member("defer")?;
-    print_variable(
-        out,
-        "  ",
-        "defer",
-        &format_args!("{:#}", render(session, &defer, opts).line_prefix("    ")),
-    )?;
+    print_rendered(session, "defer", &defer, opts, out)?;
 
     // The core is moved out of the thread's context while the scheduler
     // parks or hands it to another thread, so its absence is a state
@@ -2961,12 +2954,7 @@ fn print_worker_state<'b>(
         return Ok(());
     };
     let core = boxed.deref_ptr(ctx.proc)?;
-    print_variable(
-        out,
-        "  ",
-        "core",
-        &format_args!("{:#}", render(session, &core, opts).line_prefix("    ")),
-    )?;
+    print_rendered(session, "core", &core, opts, out)?;
     Ok(())
 }
 
