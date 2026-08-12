@@ -89,14 +89,11 @@ fn test_register_names() {
     assert_eq!(format!("{:?}", Reg(10)), "0xa");
 }
 
-/// The System V callee-saved set, spelled the same way by both helpers.
+/// The System V callee-saved set.
 #[test]
 fn test_callee_saved_set() {
     let saved: Vec<Reg> = (0..=16).map(Reg).filter(|r| r.is_callee_saved()).collect();
     assert_eq!(saved, [RBX, RBP, R12, R13, R14, R15]);
-    for n in 0..=16 {
-        assert_eq!(Reg(n).is_callee_saved(), Regs::is_callee_saved(Reg(n)));
-    }
 }
 
 #[test]

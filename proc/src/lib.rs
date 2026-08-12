@@ -403,17 +403,6 @@ pub struct Regs {
     pub gsbase: u64,
 }
 
-impl Regs {
-    pub fn is_callee_saved(reg: Reg) -> bool {
-        match reg.0 {
-            3 => true,       // rbx
-            6 => true,       // rbp
-            12..=15 => true, // r12, r13, r14, r15
-            _ => false,
-        }
-    }
-}
-
 impl fmt::Display for Regs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "%rax = {:#018x}\t%r8  = {:#018x}", self.rax, self.r8)?;
