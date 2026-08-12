@@ -1,6 +1,6 @@
 //! Render values from a debug-info-described process image.
 
-pub mod debug_type;
+mod debug_type;
 mod elements;
 mod error;
 mod parse;
