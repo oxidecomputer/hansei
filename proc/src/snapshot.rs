@@ -4,9 +4,9 @@
 //! read from a target — memory runs, symbol lookups, the function
 //! symtab, mappings, and LWP state — into a compact file that
 //! implements [`Target`] on any platform. [`Recorder`] wraps a real
-//! target (a live process or core on illumos) and records everything
-//! the wrapped reads touch, so capturing a snapshot is just driving
-//! the ordinary analysis once with the recorder in place.
+//! target and records everything the wrapped reads touch, so capturing
+//! a snapshot is just driving the ordinary analysis once with the
+//! recorder in place.
 //!
 //! Snapshots are test fixtures, not an interchange format: the same
 //! tool version writes and reads them, and the version check rejects
@@ -153,20 +153,17 @@ const _: () = {
 };
 
 impl Target for Snapshot {
-    fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<Vec<u8>> {
-        self.pslice(addr, len)
-            .map(<[u8]>::to_vec)
-            .ok_or_else(|| TargetError::unmapped(addr, len))
-    }
-
-    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+    fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<&[u8]> {
         // Merging made runs maximal, so any fully-captured read lies
         // within a single segment — what a snapshot cannot lend whole it
         // cannot serve at all.
-        let end = addr.checked_add(len)?;
-        let seg = self.segment(addr).filter(|seg| end <= seg.end())?;
-        let start = (addr - seg.addr) as usize;
-        Some(&seg.bytes[start..start + len as usize])
+        let lent = || {
+            let end = addr.checked_add(len)?;
+            let seg = self.segment(addr).filter(|seg| end <= seg.end())?;
+            let start = (addr - seg.addr) as usize;
+            Some(&seg.bytes[start..start + len as usize])
+        };
+        lent().ok_or_else(|| TargetError::unmapped(addr, len))
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
@@ -312,26 +309,15 @@ fn merge_reads(reads: &[Segment]) -> Vec<Segment> {
 }
 
 impl<T: Target> Target for Recorder<'_, T> {
-    fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<Vec<u8>> {
-        let bytes = self.target.read_bytes(addr, len)?;
-        self.reads.lock().unwrap().push(Segment {
-            addr,
-            bytes: bytes.clone(),
-        });
-        Ok(bytes)
-    }
-
-    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+    fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<&[u8]> {
         // Recording and lending are not in tension: log a copy, then
-        // hand back the wrapped target's own storage. A target that
-        // declines to lend still records everything, through the
-        // `read_bytes` above.
-        let bytes = self.target.pslice(addr, len)?;
+        // hand back the wrapped target's own storage.
+        let bytes = self.target.read_bytes(addr, len)?;
         self.reads.lock().unwrap().push(Segment {
             addr,
             bytes: bytes.to_vec(),
         });
-        Some(bytes)
+        Ok(bytes)
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
@@ -396,10 +382,6 @@ mod tests {
         memory: Vec<u8>,
         functions: Vec<SymbolBuf>,
         objects: Vec<SymbolBuf>,
-        /// Whether this fake lends its memory, standing in for the two
-        /// kinds of target the recorder wraps: cores, which lend, and
-        /// live libproc handles, which have nothing to borrow.
-        lends: bool,
     }
 
     fn sym(name: &str, value: u64, size: u64) -> SymbolBuf {
@@ -421,20 +403,10 @@ mod tests {
                 memory: (0..=255).cycle().take(0x2000).collect(),
                 functions: vec![sym("poll_a", 0x100, 0x40), sym("poll_b", 0x140, 0x10)],
                 objects: vec![sym("TLS_KEY", 0x2000, 8)],
-                lends: true,
             }
         }
 
-        /// The same fake, but declining to lend.
-        fn no_lend() -> Self {
-            FakeTarget {
-                lends: false,
-                ..FakeTarget::new()
-            }
-        }
-
-        /// The captured bytes at `addr`, regardless of whether this fake
-        /// is willing to lend them out.
+        /// The bytes at `addr`, when the fake maps them.
         fn at(&self, addr: u64, len: u64) -> Option<&[u8]> {
             let start = addr.checked_sub(self.base)? as usize;
             self.memory.get(start..start + len as usize)
@@ -442,14 +414,9 @@ mod tests {
     }
 
     impl Target for FakeTarget {
-        fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<Vec<u8>> {
+        fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<&[u8]> {
             self.at(addr, len)
-                .map(<[u8]>::to_vec)
                 .ok_or_else(|| TargetError::unmapped(addr, len))
-        }
-
-        fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
-            self.lends.then(|| self.at(addr, len)).flatten()
         }
 
         fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
@@ -506,12 +473,12 @@ mod tests {
     fn test_replay_recorded_reads() {
         let target = FakeTarget::new();
         let rec = Recorder::new(&target);
-        let want = rec.read_bytes(0x1100, 32).unwrap();
+        let want = rec.read_bytes(0x1100, 32).unwrap().to_vec();
         let snap = rec.snapshot().unwrap();
 
         // The exact read, and any sub-range of it, replays.
         assert_eq!(snap.read_bytes(0x1100, 32).unwrap(), want);
-        assert_eq!(snap.read_bytes(0x1108, 8).unwrap(), want[8..16]);
+        assert_eq!(snap.read_bytes(0x1108, 8).unwrap(), &want[8..16]);
         // read_u64 (a provided method) reads through the same bytes.
         assert_eq!(
             snap.read_u64(0x1100).unwrap(),
@@ -537,7 +504,7 @@ mod tests {
     /// than copied, and what it cannot lend whole it does not serve at
     /// all — the same rule the core readers follow.
     #[test]
-    fn test_pslice_lends_captured_reads() {
+    fn test_reads_lend_captured_runs() {
         let target = FakeTarget::new();
         let rec = Recorder::new(&target);
         rec.read_bytes(0x1100, 32).unwrap();
@@ -546,63 +513,46 @@ mod tests {
         let snap = rec.snapshot().unwrap();
         assert_eq!(snap.memory.len(), 2);
 
-        let lent = snap.pslice(0x1100, 32).unwrap();
-        assert_eq!(lent, snap.read_bytes(0x1100, 32).unwrap());
+        let lent = snap.read_bytes(0x1100, 32).unwrap();
         assert!(std::ptr::eq(lent.as_ptr(), snap.memory[0].bytes.as_ptr()));
         // Sub-ranges lend from the same run.
-        assert_eq!(snap.pslice(0x1108, 8).unwrap(), &lent[8..16]);
+        let sub = snap.read_bytes(0x1108, 8).unwrap();
+        assert_eq!(sub, &lent[8..16]);
+        assert!(std::ptr::eq(sub.as_ptr(), lent[8..].as_ptr()));
 
-        // A range spanning the gap belongs to no single run, so neither
-        // call serves it...
-        assert!(snap.pslice(0x1100, 0x240).is_none());
+        // A range spanning the gap belongs to no single run, so it is
+        // not served...
         assert!(snap.read_bytes(0x1100, 0x240).is_err());
         // ...nor one running off a run's edge, or outside both.
-        assert!(snap.pslice(0x1110, 32).is_none());
-        assert!(snap.pslice(0x1200, 8).is_none());
+        assert!(snap.read_bytes(0x1110, 32).is_err());
+        assert!(snap.read_bytes(0x1200, 8).is_err());
     }
 
-    /// Recording and lending are not in tension: a read served as a
-    /// borrow is captured byte-for-byte, so a caller that prefers the
-    /// borrow snapshots exactly what a copying one does — and a target
-    /// with nothing to lend still records everything.
+    /// Recording and lending are not in tension: a read is served as a
+    /// borrow of the wrapped target's own storage, and captured
+    /// byte-for-byte on the way through.
     #[test]
     fn test_recorder_records_lent_reads() {
-        /// What a borrowing caller does: take the lend when the target
-        /// offers one, copy when it does not.
-        fn read<T: Target>(rec: &Recorder<'_, T>, addr: u64, len: u64) -> Vec<u8> {
-            match rec.pslice(addr, len) {
-                Some(bytes) => bytes.to_vec(),
-                None => rec.read_bytes(addr, len).unwrap(),
-            }
-        }
-
         let reads = [(0x1100, 0x20), (0x1110, 0x20), (0x1300, 0x10)];
 
         let lending = FakeTarget::new();
         let rec = Recorder::new(&lending);
         // The lend is the wrapped target's own storage, not the copy
         // that went into the log.
-        let lent = rec.pslice(0x1100, 0x20).unwrap();
+        let lent = rec.read_bytes(0x1100, 0x20).unwrap();
         assert!(std::ptr::eq(
             lent.as_ptr(),
             lending.at(0x1100, 0x20).unwrap().as_ptr()
         ));
-        let borrowed: Vec<Vec<u8>> = reads.iter().map(|&(a, l)| read(&rec, a, l)).collect();
-        let from_lends = rec.snapshot().unwrap();
+        let borrowed: Vec<Vec<u8>> = reads
+            .iter()
+            .map(|&(a, l)| rec.read_bytes(a, l).unwrap().to_vec())
+            .collect();
+        let snap = rec.snapshot().unwrap();
 
-        // The same reads off a target that declines to lend fall through
-        // to `read_bytes` and record identically.
-        let opaque = FakeTarget::no_lend();
-        let rec = Recorder::new(&opaque);
-        assert!(rec.pslice(0x1100, 0x20).is_none());
-        let copied: Vec<Vec<u8>> = reads.iter().map(|&(a, l)| read(&rec, a, l)).collect();
-        let from_copies = rec.snapshot().unwrap();
-
-        assert_eq!(borrowed, copied);
-        assert_eq!(from_lends, from_copies);
-        // And the replay serves those reads back unchanged.
+        // The replay serves those reads back unchanged.
         for (&(addr, len), want) in reads.iter().zip(&borrowed) {
-            assert_eq!(&from_lends.read_bytes(addr, len).unwrap(), want);
+            assert_eq!(&snap.read_bytes(addr, len).unwrap(), want);
             assert_eq!(want, &lending.read_bytes(addr, len).unwrap());
         }
     }
@@ -629,12 +579,18 @@ mod tests {
     fn test_later_reads_win_overlaps() {
         use std::cell::RefCell;
 
-        struct Changing(RefCell<u8>);
+        /// Lends a different pre-made buffer per read, so overlapping
+        /// reads observe different bytes the way a changing target's
+        /// would.
+        struct Changing {
+            generations: [Vec<u8>; 2],
+            reads: RefCell<usize>,
+        }
         impl Target for Changing {
-            fn read_bytes(&self, _addr: u64, len: u64) -> TargetResult<Vec<u8>> {
-                let mut generation = self.0.borrow_mut();
-                *generation += 1;
-                Ok(vec![*generation; len as usize])
+            fn read_bytes(&self, _addr: u64, len: u64) -> TargetResult<&[u8]> {
+                let read = *self.reads.borrow();
+                *self.reads.borrow_mut() += 1;
+                Ok(&self.generations[read][..len as usize])
             }
             fn lookup_symbol_by_addr(&self, _: u64) -> Option<SymbolBuf> {
                 None
@@ -656,7 +612,10 @@ mod tests {
             }
         }
 
-        let target = Changing(RefCell::new(0));
+        let target = Changing {
+            generations: [vec![1; 8], vec![2; 8]],
+            reads: RefCell::new(0),
+        };
         let rec = Recorder::new(&target);
         rec.read_bytes(0x1000, 8).unwrap(); // all 1s
         rec.read_bytes(0x1004, 8).unwrap(); // all 2s

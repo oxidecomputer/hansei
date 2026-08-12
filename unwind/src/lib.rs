@@ -139,7 +139,7 @@ fn load_images<T: Target>(target: &T, mappings: &Mappings) -> Vec<Image> {
                 continue;
             };
             let at = (part.vaddr - base) as usize;
-            bytes[at..at + chunk.len()].copy_from_slice(&chunk);
+            bytes[at..at + chunk.len()].copy_from_slice(chunk);
             any = true;
         }
         if any {

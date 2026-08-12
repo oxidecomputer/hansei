@@ -7,7 +7,7 @@
 
 use crate::{
     Error, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs, Result, Status,
-    SymbolBuf, Target, Timespec,
+    SymbolBuf, Timespec,
 };
 
 use libproc_sys::{
@@ -314,7 +314,7 @@ impl Core {
     /// field from its `ulwp_t`. This contains the thread-local storage (TLS)
     /// for the LWP, also known as thread-specific data (TSD).
     pub fn tsd_from_regs(&self, regs: &Regs) -> Result<[u64; 9]> {
-        crate::tsd_from_fsbase(self, regs)
+        crate::tsd_from_fsbase(&|addr| self.read_u64(addr), regs)
     }
 
     pub fn mappings(&self) -> Result<Mappings> {
@@ -548,13 +548,18 @@ impl Core {
     }
 }
 
-impl Target for Core {
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
-        // `len` may itself have been read out of the target, and this
-        // handle declines to bound it (see [`Target::readable_len`]) — so
-        // allocate as the bytes arrive rather than sizing a buffer by an
-        // unverified claim, and a garbage length fails at the first
-        // unreadable page instead of allocating what it named.
+// No `Target` impl: the trait's read lends from the target's own
+// storage, and libproc copies through a handle with nothing to lend —
+// which is exactly why this reader lives outside the facade. The
+// inherent surface below mirrors the trait's shape so the comparison
+// tests can hold the two readers to the same questions.
+impl Core {
+    /// Read `len` bytes at `addr`, copied through `Pread`. `len` may
+    /// itself have been read out of the target and nothing bounds it,
+    /// so allocate as the bytes arrive rather than sizing a buffer by
+    /// an unverified claim: a garbage length fails at the first
+    /// unreadable page instead of allocating what it named.
+    pub fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
         const CHUNK: u64 = 4 * 1024 * 1024;
         let mut buf = Vec::new();
         while (buf.len() as u64) < len {
@@ -569,32 +574,8 @@ impl Target for Core {
         Ok(buf)
     }
 
-    fn lookup_symbol_by_addr(&self, address: u64) -> Option<SymbolBuf> {
-        Core::lookup_symbol_by_addr(self, address)
-    }
-
-    fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
-        Core::lookup_symbol_by_name(self, name)
-    }
-
-    fn symbols(&self) -> Result<Vec<SymbolBuf>> {
-        Core::symbols(self)
-    }
-
-    fn object_symbols(&self) -> Result<Vec<SymbolBuf>> {
-        Core::object_symbols(self)
-    }
-
-    fn mappings(&self) -> Result<Mappings> {
-        Core::mappings(self)
-    }
-
-    fn lwps(&self) -> Result<Vec<LwpInfo>> {
-        Core::lwps(self)
-    }
-
-    fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
-        crate::tls_addr_from_pthread_key(self, regs, sym)
+    pub fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
+        crate::tls_addr_from_pthread_key(&|addr| self.read_u64(addr), regs, sym)
     }
 }
 

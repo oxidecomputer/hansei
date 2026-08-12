@@ -162,11 +162,22 @@ macro_rules! forward {
 
 impl Reader {
     /// The reader as a [`Target`], for the asserts that pin the trait
-    /// surface against the inherent one.
-    fn as_target(&self) -> &dyn Target {
+    /// surface against the inherent one. Only the portable reader is
+    /// one: libproc copies through a handle and cannot lend, which is
+    /// exactly what keeps it out of the facade.
+    fn as_target(&self) -> Option<&dyn Target> {
         match self {
-            Reader::Portable(p) => p,
-            Reader::Libproc(c) => c,
+            Reader::Portable(p) => Some(p),
+            Reader::Libproc(_) => None,
+        }
+    }
+
+    /// An owning read both readers can answer: the portable reader
+    /// copies out of the lend, libproc copies through its handle.
+    fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<Vec<u8>> {
+        match self {
+            Reader::Portable(p) => Target::read_bytes(p, addr, len).map(<[u8]>::to_vec),
+            Reader::Libproc(c) => c.read_bytes(addr, len),
         }
     }
 
@@ -181,9 +192,6 @@ impl Reader {
     }
     fn read_u8(&self, addr: u64) -> proc::Result<u8> {
         forward!(self, read_u8(addr))
-    }
-    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
-        forward!(self, pslice(addr, len))
     }
     fn lookup_symbol_by_name(&self, name: &str) -> Option<proc::SymbolBuf> {
         forward!(self, lookup_symbol_by_name(name))
@@ -366,9 +374,9 @@ fn test_the_portable_reader_agrees_with_libproc() {
     assert_eq!(portable.read_u64(addr).unwrap(), MARKER_VALUE);
     assert_eq!(
         Target::read_bytes(&portable, addr, 64).unwrap(),
-        Target::read_bytes(&libproc, addr, 64).unwrap()
+        libproc.read_bytes(addr, 64).unwrap().as_slice()
     );
-    assert!(portable.read_bytes(UNMAPPED, 8).is_err());
+    assert!(Target::read_bytes(&portable, UNMAPPED, 8).is_err());
 
     // Thread-locals, walked through the core's own memory rather than
     // through libproc's handle.
@@ -463,40 +471,31 @@ fn test_reads_see_the_targets_memory() {
             "({who})"
         );
 
-        // The same bytes as a borrow where the backend has a mapping to
-        // lend — the portable reader does; libproc reads through a
-        // handle and has nothing to borrow.
-        match p.pslice(addr, 8) {
-            Some(bytes) => {
-                assert_eq!(who, "portable", "libproc lent a slice");
-                assert_eq!(bytes, MARKER_VALUE.to_le_bytes());
-            }
-            None => {
-                assert_eq!(who, "libproc", "the portable reader failed to lend a slice");
-            }
-        }
-
-        // And the same bytes through the Target trait.
+        // An owning read serves the same bytes from both readers; the
+        // portable reader also lends them straight from the mapped core
+        // through the Target trait, which libproc — copying through a
+        // handle — is not.
         assert_eq!(
-            Target::read_bytes(p.as_target(), addr, 8).unwrap(),
+            p.read_bytes(addr, 8).unwrap(),
             MARKER_VALUE.to_le_bytes(),
             "({who})"
         );
-        assert_eq!(
-            Target::read_u64(p.as_target(), addr).unwrap(),
-            MARKER_VALUE,
-            "({who})"
-        );
+        if let Some(t) = p.as_target() {
+            let lent = t.read_bytes(addr, 8).expect("the core lends the marker");
+            assert_eq!(lent, MARKER_VALUE.to_le_bytes());
+            assert_eq!(t.read_u64(addr).unwrap(), MARKER_VALUE);
+        } else {
+            assert_eq!(who, "libproc", "only libproc is not a Target");
+        }
 
         // Nothing is mapped at the first page, so every read that has to
         // fill its buffer fails there.
         assert!(p.read_u64(UNMAPPED).is_err(), "({who})");
         assert!(p.read_u8(UNMAPPED).is_err(), "({who})");
-        assert!(
-            Target::read_bytes(p.as_target(), UNMAPPED, 8).is_err(),
-            "({who})"
-        );
-        assert!(p.pslice(UNMAPPED, 8).is_none(), "({who})");
+        assert!(p.read_bytes(UNMAPPED, 8).is_err(), "({who})");
+        if let Some(t) = p.as_target() {
+            assert!(t.read_bytes(UNMAPPED, 8).is_err(), "({who})");
+        }
     });
 }
 
@@ -560,26 +559,20 @@ fn test_symbol_lookups_round_trip() {
         assert!(functions.iter().any(|s| s.name == "main"), "({who})");
 
         // The trait sees exactly what the inherent methods do.
-        assert_eq!(
-            Target::symbols(p.as_target()).unwrap(),
-            functions,
-            "({who})"
-        );
-        assert_eq!(
-            Target::object_symbols(p.as_target()).unwrap(),
-            objects,
-            "({who})"
-        );
-        assert_eq!(
-            Target::lookup_symbol_by_name(p.as_target(), MARKER_FN).as_ref(),
-            Some(&sym),
-            "({who})"
-        );
-        assert_eq!(
-            Target::lookup_symbol_by_addr(p.as_target(), sym.st_value).as_ref(),
-            Some(&back),
-            "({who})"
-        );
+        if let Some(t) = p.as_target() {
+            assert_eq!(t.symbols().unwrap(), functions, "({who})");
+            assert_eq!(t.object_symbols().unwrap(), objects, "({who})");
+            assert_eq!(
+                t.lookup_symbol_by_name(MARKER_FN).as_ref(),
+                Some(&sym),
+                "({who})"
+            );
+            assert_eq!(
+                t.lookup_symbol_by_addr(sym.st_value).as_ref(),
+                Some(&back),
+                "({who})"
+            );
+        }
     });
 }
 
@@ -650,7 +643,9 @@ fn test_mappings_cover_the_address_space() {
             assert_eq!(m.range(), m.vaddr..m.vaddr + m.size, "({who}) {m:#?}");
         }
 
-        assert_eq!(Target::mappings(p.as_target()).unwrap(), maps, "({who})");
+        if let Some(t) = p.as_target() {
+            assert_eq!(t.mappings().unwrap(), maps, "({who})");
+        }
     });
 }
 
@@ -754,7 +749,9 @@ fn test_lwps_match_procfs() {
         assert!(p.lwp_name(0).is_err(), "({who})");
         assert!(p.regs(0).is_err(), "({who})");
 
-        assert_eq!(Target::lwps(p.as_target()).unwrap(), lwps, "({who})");
+        if let Some(t) = p.as_target() {
+            assert_eq!(t.lwps().unwrap(), lwps, "({who})");
+        }
     });
 }
 
@@ -790,15 +787,13 @@ fn test_status_describes_the_process() {
 
 /// A snapshot recorded from a real target replays everything the
 /// capture touched, through a file, with the target itself gone from
-/// the picture — the whole point of [`Recorder`]. Recorded through
-/// libproc, which copies through a handle and lends nothing, so this
-/// also pins the recorder against a source with nothing to borrow.
+/// the picture — the whole point of [`Recorder`].
 #[test]
 fn test_snapshot_replays_a_recorded_target() {
     let parked = Parked::spawn();
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core = gcore(parked.pid(), dir.path());
-    let source = LibprocCore::open(&core).expect("libproc failed to open the core");
+    let source = Proc::open_core(&core).expect("failed to open the core");
     let recorder = Recorder::new(&source);
 
     let addr = source
@@ -807,7 +802,8 @@ fn test_snapshot_replays_a_recorded_target() {
         .st_value;
     let bytes = recorder
         .read_bytes(addr, 64)
-        .expect("failed to read memory");
+        .expect("failed to read memory")
+        .to_vec();
     let by_name = recorder
         .lookup_symbol_by_name(MARKER_FN)
         .expect("the marker fn is in the symtab");

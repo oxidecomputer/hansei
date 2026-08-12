@@ -4,7 +4,7 @@
 //! [`Proc::open_core`] looks at the file and picks. Either system's core
 //! reads from the file, anywhere: the portable readers parse the notes
 //! and symbol tables themselves, and every read is lent straight out of
-//! the mapped file ([`Target::pslice`]) rather than copied through
+//! the mapped file ([`Target::read_bytes`]) rather than copied through
 //! libproc's `pread` — which a render pass issuing one read per string
 //! can feel. On illumos libproc remains the reference reader, held
 //! against the portable one in tests via the feature-gated
@@ -136,7 +136,7 @@ impl Proc {
     }
 
     pub fn tsd_from_regs(&self, regs: &Regs) -> Result<[u64; 9]> {
-        crate::tsd_from_fsbase(self, regs)
+        crate::tsd_from_fsbase(&|addr| self.read_u64(addr), regs)
     }
 }
 
@@ -153,12 +153,11 @@ const _: () = {
 };
 
 impl Target for Proc {
-    fn read_bytes(&self, addr: u64, len: u64) -> Result<Vec<u8>> {
-        dispatch!(self, read_bytes(addr, len))
-    }
-
-    fn pslice(&self, addr: u64, len: u64) -> Option<&[u8]> {
-        dispatch!(self, pslice(addr, len))
+    fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]> {
+        match self {
+            Proc::LinuxCore(c) => Target::read_bytes(c, addr, len),
+            Proc::IllumosCore(c) => Target::read_bytes(c, addr, len),
+        }
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
