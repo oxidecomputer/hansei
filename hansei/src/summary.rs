@@ -16,7 +16,7 @@
 //! be tested from values laid out by hand rather than from a core that
 //! happens to hold the shape under test.
 
-use crate::future_name;
+use crate::tasks::future_name;
 
 use anyhow::Result;
 use hansei_runtime::tokio::Lifecycle;
