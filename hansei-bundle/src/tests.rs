@@ -1,8 +1,8 @@
 use crate::Encoding;
-use crate::io::FORMAT_VERSION;
+use crate::Error;
+use crate::io::{FORMAT_VERSION, MAGIC};
 use crate::schema::*;
 use crate::strings::{StrRef, StringInterner};
-use crate::{Error, MAGIC};
 
 use std::collections::BTreeMap;
 

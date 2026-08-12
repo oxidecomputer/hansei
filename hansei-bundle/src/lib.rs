@@ -10,7 +10,7 @@ mod strings;
 pub mod symbols;
 mod view;
 
-pub use io::{Error, FORMAT_VERSION, MAGIC, Result};
+pub use io::{Error, FORMAT_VERSION, Result};
 pub use schema::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode, DynFutureTable, Field, FieldRender, FutureKind, InfraTypes, MapEntries, MemberDef,
@@ -19,7 +19,7 @@ pub use schema::{
     TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape, WalkBinding, WalkOutcome,
     WalkRole, WalksTable, strip_build_prefix, strip_llvm_suffix,
 };
-pub use shape::{Addressed, Shape};
+pub use shape::Shape;
 pub use strings::{StrRef, StringInterner, StringTable};
 pub use view::{
     ActiveVariant, BundleMember, BundleMemberIter, BundleType, BundleVariant, BundleView,

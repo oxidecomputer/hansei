@@ -793,7 +793,7 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     fn task_entry(&self, id: TaskEntryId) -> &'b TaskFutureEntry {
-        // Ids handed out by task_entry_for_symbol always index the table.
+        // Ids handed out by task_ids_for_symbol always index the table.
         &self.view.bundle().tasks.entries[id.0 as usize]
     }
 
