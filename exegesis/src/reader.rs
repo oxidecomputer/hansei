@@ -13,7 +13,7 @@ use gimli::{Dwarf, UnitRef};
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
 };
-use regex::Regex;
+
 use tracing::debug;
 
 use std::collections::BTreeSet;
@@ -64,20 +64,9 @@ pub struct DwReader<'dw> {
     pub producer: Option<StrId>,
 }
 
-/// The namespaces and targets to collect from the DWARF.
-#[derive(Default, Debug)]
-pub struct Targets {
-    /// The top-level namespaces to capture, e.g., `tokio`.
-    pub namespaces: Vec<String>,
-    /// The type name patterns to capture, e.g., `Foo.*`, `.*async_fn.*`.
-    pub type_patterns: Vec<Regex>,
-}
-
 /// Configuration for [`DwarfReader::read_types`].
 #[derive(Default)]
 pub struct ReadArgs {
-    /// The namespaces and types to collect.
-    pub targets: Option<Targets>,
     /// Number of worker threads for parsing CGUs in parallel; also bounds the
     /// parallel type finalization. Defaults to [`thread::available_parallelism`].
     pub cgu_parallelism: Option<NonZero<usize>>,
@@ -131,9 +120,6 @@ impl<'dw> DwReader<'dw> {
     ///     this needs no slack for out-of-order results and can be lowered
     ///     to tighten peak memory; it only throttles throughput once it is
     ///     too small to keep the collector fed.
-    ///
-    ///   - [`ReadArgs::targets`]: Reserved for future namespace/type
-    ///     filtering. Currently unused — all types are collected.
     pub fn read_types(dwarf: &Dwarf<Slice<'dw>>, args: ReadArgs) -> Result<DwReader<'dw>> {
         // Unit headers carry only offsets, so enumerating them up front is
         // cheap and gives the parallel walk an indexable work list.
