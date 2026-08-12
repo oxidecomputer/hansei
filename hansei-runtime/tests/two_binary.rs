@@ -460,7 +460,8 @@ fn test_futurelock_census_offline() {
         .view
         .ty(future1.ty)
         .expect("the root type is in the bundle");
-    let root = reify::Value::read(&ctx, ty, future1.addr).expect("the recorded root reads back");
+    let root =
+        reify::Value::read(ctx.proc, ty, future1.addr).expect("the recorded root reads back");
     let chain = ctx.await_chain(root);
     let first = chain.frames.first().expect("the re-rooted chain decodes");
     assert_eq!(first.future.ty.name(), future1.future, "{future1:#?}");
@@ -609,7 +610,7 @@ fn test_unordered_census_offline() {
         .view
         .ty(root.ty)
         .expect("the root type is in the bundle");
-    let future = reify::Value::read(&ctx, ty, root.addr).expect("the recorded root reads back");
+    let future = reify::Value::read(ctx.proc, ty, root.addr).expect("the recorded root reads back");
     let chain = ctx.await_chain(future);
     assert_eq!(
         chain

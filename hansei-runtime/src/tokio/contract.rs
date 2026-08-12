@@ -235,23 +235,23 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
     /// Walk to the terminal and parse a value out of it.
     pub fn read<V>(&self, root: Value<'b>) -> Result<V>
     where
-        V: ParseWithDbgInfo<'b, Context<'b, T>>,
+        V: ParseWithDbgInfo<'b>,
     {
         let info = self.walk_at(root)?;
-        info.parse(self.ctx)
+        info.parse(self.ctx.proc)
             .with_context(|| format!("walk path {}", self.name()))
     }
 
     /// [`Bound::read`] for a member whose absence is expected.
     pub fn try_read<V>(&self, root: Value<'b>) -> Result<Option<V>>
     where
-        V: ParseWithDbgInfo<'b, Context<'b, T>>,
+        V: ParseWithDbgInfo<'b>,
     {
         match self.try_walk(root)? {
             Some(w) => {
                 let info = w.at(self.name())?;
                 let v = info
-                    .parse(self.ctx)
+                    .parse(self.ctx.proc)
                     .with_context(|| format!("walk path {}", self.name()))?;
                 Ok(Some(v))
             }
@@ -376,7 +376,7 @@ fn walk_steps<'b, T: Target>(
             if addr == 0 {
                 return Ok(Walked::Null);
             }
-            let pointee = Value::read(ctx, target, addr)
+            let pointee = Value::read(ctx.proc, target, addr)
                 .map_err(|e| anyhow!(e).context(format!("dereferencing {}", cur.ty.name())))?;
             walk_steps(ctx, pointee, rest)
         }

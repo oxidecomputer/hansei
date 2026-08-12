@@ -1082,14 +1082,13 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let mem = FakeMem::new();
-        let ctx = TestCtx::new(&mem);
         let bytes: Vec<u8> = [10u32, 20, 30]
             .iter()
             .flat_map(|x| x.to_le_bytes())
             .collect();
         let r = Value::new(v.ty(ARR).unwrap(), 0, &bytes);
         let shown: Vec<String> = r
-            .elements(&ctx)
+            .elements(&mem)
             .expect("array elements")
             .iter()
             .map(|e| format!("{}", e.display()))

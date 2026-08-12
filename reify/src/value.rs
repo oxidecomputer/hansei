@@ -10,7 +10,7 @@
 
 use crate::debug_type::{TypeKind, bundle_variant_error};
 use crate::elements::Elements;
-use crate::parse::{ParseCtx, ParseWithDbgInfo};
+use crate::parse::ParseWithDbgInfo;
 use crate::target::ReadFromProc;
 use crate::{Error, Result};
 
@@ -41,8 +41,8 @@ impl<'a> Value<'a> {
     }
 
     /// Read the type directly at the address provided.
-    pub fn read<Ctx: ParseCtx<'a>>(ctx: &Ctx, ty: BundleType<'a>, addr: u64) -> Result<Self> {
-        let bytes = ctx.proc().read_bytes(addr, ty.size())?;
+    pub fn read(proc: &'a dyn ReadFromProc, ty: BundleType<'a>, addr: u64) -> Result<Self> {
+        let bytes = proc.read_bytes(addr, ty.size())?;
 
         Ok(Self { ty, addr, bytes })
     }
@@ -87,9 +87,7 @@ impl<'a> Value<'a> {
         Ok(member)
     }
 
-    pub fn try_deref_ptr<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<Option<Value<'a>>> {
-        let proc = ctx.proc();
-
+    pub fn try_deref_ptr(&self, proc: &'a dyn ReadFromProc) -> Result<Option<Value<'a>>> {
         let Some(target_ty) = self.peel().ty.pointer_target() else {
             return Err(Error::unexpected_type(
                 self.ty.kind(),
@@ -119,8 +117,8 @@ impl<'a> Value<'a> {
         ))
     }
 
-    pub fn deref_ptr<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<Value<'a>> {
-        match self.try_deref_ptr(ctx) {
+    pub fn deref_ptr(&self, proc: &'a dyn ReadFromProc) -> Result<Value<'a>> {
+        match self.try_deref_ptr(proc) {
             Ok(Some(i)) => Ok(i),
             Ok(None) => Err(Error::invalid_addr(self.addr)),
             Err(e) => Err(Error::invalid_addr(self.addr).with_source(e)),
@@ -156,15 +154,15 @@ impl<'a> Value<'a> {
         Ok(info)
     }
 
-    pub fn parse<V: ParseWithDbgInfo<'a, Ctx>, Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<V> {
-        V::parse_with_dbg(ctx, self).map_err(|e| Error::parse_type(self.ty.name()).with_source(e))
+    pub fn parse<V: ParseWithDbgInfo<'a>>(&self, proc: &'a dyn ReadFromProc) -> Result<V> {
+        V::parse_with_dbg(proc, self).map_err(|e| Error::parse_type(self.ty.name()).with_source(e))
     }
 
     /// The elements of a sequence-shaped value — an owned `Vec`, a boxed or
     /// borrowed slice, an inline array — read and addressed; see
     /// [`Elements`].
-    pub fn elements<Ctx: ParseCtx<'a>>(&self, ctx: &Ctx) -> Result<Elements<'a>> {
-        Elements::of(self, ctx)
+    pub fn elements(&self, proc: &'a dyn ReadFromProc) -> Result<Elements<'a>> {
+        Elements::of(self, proc)
     }
 
     pub fn active_variant(&self) -> Result<(&'a str, Value<'a>)> {
@@ -291,10 +289,9 @@ mod tests {
         let v = BundleView::new(&b);
         let point_bytes = u32s(&[1, 2]);
         let mem = FakeMem::new().at(0x1000, point_bytes.clone());
-        let ctx = TestCtx::new(&mem);
 
         let info =
-            Value::read(&ctx, v.ty(POINT).unwrap(), 0x1000).expect("Point reads from the target");
+            Value::read(&mem, v.ty(POINT).unwrap(), 0x1000).expect("Point reads from the target");
         assert_eq!(info.addr, 0x1000);
         assert_eq!(info.bytes, &point_bytes[..]);
         assert_eq!(format!("{info}"), "Point { x: 1, y: 2 }");
@@ -306,8 +303,7 @@ mod tests {
 
         // A read that fails surfaces as an error rather than an empty value.
         let dead_mem = FakeMem::new().unreadable();
-        let dead = TestCtx::new(&dead_mem);
-        assert!(Value::read(&dead, v.ty(POINT).unwrap(), 0x1000).is_err());
+        assert!(Value::read(&dead_mem, v.ty(POINT).unwrap(), 0x1000).is_err());
     }
 
     /// Pointer and variant navigation from a value read at an address,
@@ -320,23 +316,21 @@ mod tests {
         let mem = FakeMem::new()
             .at(0x1000, u64s(&[0x2000]))
             .at(0x2000, u32s(&[3, 4]));
-        let ctx = TestCtx::new(&mem);
 
         // `*Point` at 0x1000 points at a Point at 0x2000.
-        let ptr = Value::read(&ctx, v.ty(PTR).unwrap(), 0x1000).unwrap();
-        let pointee = ptr.deref_ptr(&ctx).expect("deref reads the pointee");
+        let ptr = Value::read(&mem, v.ty(PTR).unwrap(), 0x1000).unwrap();
+        let pointee = ptr.deref_ptr(&mem).expect("deref reads the pointee");
         assert_eq!(pointee.addr, 0x2000);
         assert_eq!(format!("{pointee}"), "Point { x: 3, y: 4 }");
-        assert!(ptr.try_deref_ptr(&ctx).unwrap().is_some());
+        assert!(ptr.try_deref_ptr(&mem).unwrap().is_some());
 
         // Dereferencing something that is not a pointer is an error.
-        let point = Value::read(&ctx, v.ty(POINT).unwrap(), 0x2000).unwrap();
-        assert!(point.deref_ptr(&ctx).is_err());
+        let point = Value::read(&mem, v.ty(POINT).unwrap(), 0x2000).unwrap();
+        assert!(point.deref_ptr(&mem).is_err());
 
         // Variant selection: Opt is a niche enum, so 42 is `Some`.
         let mem = FakeMem::new().at(0x3000, u64s(&[42]));
-        let ctx = TestCtx::new(&mem);
-        let opt = Value::read(&ctx, v.ty(OPT).unwrap(), 0x3000).unwrap();
+        let opt = Value::read(&mem, v.ty(OPT).unwrap(), 0x3000).unwrap();
         assert_eq!(
             format!("{}", opt.select_variant("Some").unwrap().display()),
             "42"
@@ -357,10 +351,9 @@ mod tests {
             .at(0x1000, u32s(&[10, 20, 30]))
             .at(0x4000, u64s(&[0x5000, 3]))
             .at(0x5000, u32s(&[7, 8, 9]));
-        let ctx = TestCtx::new(&mem);
 
-        let arr = Value::read(&ctx, v.ty(ARR).unwrap(), 0x1000).unwrap();
-        let elements = arr.elements(&ctx).expect("array elements");
+        let arr = Value::read(&mem, v.ty(ARR).unwrap(), 0x1000).unwrap();
+        let elements = arr.elements(&mem).expect("array elements");
         assert_eq!(elements.len(), 3);
         assert_eq!(elements.truncated(), None);
         let shown: Vec<String> = elements
@@ -373,9 +366,9 @@ mod tests {
         // `Vec`'s is; its elements are `u32` because its display program says
         // so, addressed from the buffer they were read from rather than from
         // the fat pointer.
-        let slice = Value::read(&ctx, v.ty(SLICE).unwrap(), 0x4000).unwrap();
+        let slice = Value::read(&mem, v.ty(SLICE).unwrap(), 0x4000).unwrap();
         let seen: Vec<(u64, String)> = slice
-            .elements(&ctx)
+            .elements(&mem)
             .expect("slice elements")
             .iter()
             .map(|e| (e.addr, format!("{}", e.display())))
@@ -396,10 +389,9 @@ mod tests {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let mem = FakeMem::new().at(0x1000, u32s(&[1, 2]));
-        let ctx = TestCtx::new(&mem);
-        let point = Value::read(&ctx, v.ty(POINT).unwrap(), 0x1000).unwrap();
-        assert_eq!(point.member("x").unwrap().parse::<u32, _>(&ctx).unwrap(), 1);
-        assert_eq!(point.parse::<u32, _>(&ctx).ok(), None, "Point is not a u32");
+        let point = Value::read(&mem, v.ty(POINT).unwrap(), 0x1000).unwrap();
+        assert_eq!(point.member("x").unwrap().parse::<u32>(&mem).unwrap(), 1);
+        assert_eq!(point.parse::<u32>(&mem).ok(), None, "Point is not a u32");
     }
 
     /// A member past 64 KiB is sliced at its real offset. The member range
