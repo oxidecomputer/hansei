@@ -17,6 +17,7 @@ const WAKER_NS: &str = "tokio::runtime::task::waker";
 pub(super) fn find_statics(
     view: &DwView<'_>,
     symbols: &[&str],
+    symtab: &BTreeSet<&str>,
     stats: &mut ExtractStats,
 ) -> BTreeMap<StaticRole, StaticDef> {
     let waker_ns = view.find_ns(WAKER_NS).map(|n| n.id());
@@ -64,7 +65,6 @@ pub(super) fn find_statics(
     // keeps `{closure#0}`, and the two mangle differently. A name the
     // symtab does not have is no use to a consumer that resolves it by
     // name, so drop it here and let the symbol table answer instead.
-    let symtab: BTreeSet<&str> = symbols.iter().map(|s| strip(s)).collect();
     out.retain(|_, def| symtab.contains(def.symbol.as_str()));
 
     // Fall back to the symbol table for any static the DWARF sweep missed
