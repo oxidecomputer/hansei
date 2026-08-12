@@ -87,7 +87,10 @@ impl<'a> Value<'a> {
         Ok(member)
     }
 
-    pub fn try_deref_ptr(&self, proc: &'a dyn ReadFromProc) -> Result<Option<Value<'a>>> {
+    /// The pointee, read from the target and peeled. A read the target
+    /// refuses is an error naming the pointee's address — the address that
+    /// failed — not this value's own.
+    pub fn deref_ptr(&self, proc: &'a dyn ReadFromProc) -> Result<Value<'a>> {
         let Some(target_ty) = self.peel().ty.pointer_target() else {
             return Err(Error::unexpected_type(
                 self.ty.kind(),
@@ -101,28 +104,15 @@ impl<'a> Value<'a> {
         };
 
         let addr = u64::from_le_bytes(bytes);
-        let Ok(read) = proc.read_bytes(addr, target_ty.size()) else {
-            // TODO return an error?
-            return Ok(None);
-        };
+        let bytes = proc.read_bytes(addr, target_ty.size())?;
 
         // Remove any wrapper types.
-        Ok(Some(
-            Value {
-                ty: target_ty,
-                addr,
-                bytes: read,
-            }
-            .peel(),
-        ))
-    }
-
-    pub fn deref_ptr(&self, proc: &'a dyn ReadFromProc) -> Result<Value<'a>> {
-        match self.try_deref_ptr(proc) {
-            Ok(Some(i)) => Ok(i),
-            Ok(None) => Err(Error::invalid_addr(self.addr)),
-            Err(e) => Err(Error::invalid_addr(self.addr).with_source(e)),
+        Ok(Value {
+            ty: target_ty,
+            addr,
+            bytes,
         }
+        .peel())
     }
 
     pub fn is_enum(&self) -> bool {
@@ -135,7 +125,7 @@ impl<'a> Value<'a> {
         };
         let Some((var_ty, offset)) = result.map_err(|e| match e {
             VariantError::NoSuchVariant => {
-                Error::no_enumerator(self.ty.name().to_string(), name.to_string())
+                Error::no_variant(self.ty.name().to_string(), name.to_string())
             }
             other => bundle_variant_error(&self.ty, other),
         })?
@@ -307,8 +297,8 @@ mod tests {
     }
 
     /// Pointer and variant navigation from a value read at an address,
-    /// including the `try_` spellings that return `None`/`Ok(None)` rather
-    /// than erroring.
+    /// including variant selection's `try_` spelling, which answers
+    /// `Ok(None)` for an inactive variant rather than erroring.
     #[test]
     fn test_a_value_derefs_and_selects_variants() {
         let b = test_bundle();
@@ -322,7 +312,12 @@ mod tests {
         let pointee = ptr.deref_ptr(&mem).expect("deref reads the pointee");
         assert_eq!(pointee.addr, 0x2000);
         assert_eq!(format!("{pointee}"), "Point { x: 3, y: 4 }");
-        assert!(ptr.try_deref_ptr(&mem).unwrap().is_some());
+
+        // A pointee the target refuses is an error naming the address that
+        // failed, not the pointer's own location.
+        let dead = FakeMem::new().unreadable();
+        let err = ptr.deref_ptr(&dead).expect_err("unreadable pointee");
+        assert!(format!("{err}").contains("0x2000"), "{err}");
 
         // Dereferencing something that is not a pointer is an error.
         let point = Value::read(&mem, v.ty(POINT).unwrap(), 0x2000).unwrap();

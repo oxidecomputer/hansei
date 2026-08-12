@@ -62,10 +62,7 @@ where
             ("Some", var_info) => V::parse_with_dbg(proc, &var_info)?,
             ("None", _) => return Ok(None),
             (s, _) => {
-                return Err(Error::no_enumerator(
-                    info.ty.name().to_string(),
-                    s.to_string(),
-                ));
+                return Err(Error::no_variant(info.ty.name().to_string(), s.to_string()));
             }
         };
 
