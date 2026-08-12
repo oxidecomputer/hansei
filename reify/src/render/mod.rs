@@ -39,14 +39,9 @@ use std::rc::Rc;
 pub(crate) type FormatCache<'a> = RefCell<HashMap<BundleTypeId, Option<Rc<DisplayNode<'a>>>>>;
 
 /// The depth budget a display renders with when the caller does not pick
-/// one — `format!("{value}")` and [`Value::display`] alike.
+/// one — what [`Value::display`] starts from.
+#[cfg(test)]
 const DEFAULT_DEPTH: usize = 8;
-
-impl<'a> fmt::Display for Value<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.display().fmt(f)
-    }
-}
 
 /// A caller-supplied label for addresses the renderer prints. A followed
 /// pointer keeps its address and gains the label — `0x… (label) -> …` —
@@ -136,9 +131,12 @@ impl<'a> fmt::Display for DisplayValue<'_, 'a> {
 
 impl<'a> Value<'a> {
     /// Format this value from the bytes in hand, reading nothing: a pointer
-    /// shows its bare address. Chain the [`DisplayValue`] options to adjust
-    /// the rendering.
-    pub fn display(&self) -> DisplayValue<'_, 'a> {
+    /// shows its bare address. This is the view the renderer itself switches
+    /// to for a non-following [`DisplayNode::Alias`] (an atomic's snapshot);
+    /// tests drive it directly, but a caller always attaches a target —
+    /// [`Value::display_from_target`] is the production entry.
+    #[cfg(test)]
+    pub(crate) fn display(&self) -> DisplayValue<'_, 'a> {
         DisplayValue {
             info: self,
             proc: None,
@@ -160,9 +158,15 @@ impl<'a> Value<'a> {
         max_depth: usize,
     ) -> DisplayValue<'r, 'a> {
         DisplayValue {
+            info: self,
             proc: Some(proc),
             max_depth,
-            ..self.display()
+            ugly: false,
+            elide: None,
+            annotate: None,
+            prefix: "",
+            visited: RefCell::new(HashSet::default()),
+            formats: FormatCache::default(),
         }
     }
 }
@@ -1008,23 +1012,6 @@ mod tests {
             shown,
             "Node { value: 1, next: 0x300 -> Node { value: 9, next: null } }"
         );
-    }
-
-    /// The bare `Display` impl and `display()` are the same rendering with
-    /// the same default depth, so `{}` on a value and on its display wrapper
-    /// agree -- including in pretty mode, whose flag survives the delegation.
-    #[test]
-    fn test_bare_display_matches_the_default_display() {
-        let b = test_bundle();
-        let v = BundleView::new(&b);
-        let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
-        let point = Value::new(v.ty(POINT).unwrap(), 0x1000, &bytes);
-
-        // `{}` on the value itself, rather than on a Display* wrapper.
-        assert_eq!(format!("{point}"), "Point { x: 1, y: 2 }");
-        assert_eq!(format!("{point}"), format!("{}", point.display()));
-        assert_eq!(format!("{point:#}"), "Point {\n    x: 1,\n    y: 2,\n}");
-        assert_eq!(format!("{point:#}"), format!("{:#}", point.display()));
     }
 
     /// `ugly()` on a target-reading display suppresses custom formatters the

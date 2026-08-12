@@ -783,7 +783,7 @@ fn exec_trace_task(
                 out,
                 "The task has finished; its output has not been consumed:"
             )?;
-            let mut value = result.display().depth(4);
+            let mut value = result.display_from_target(ctx.proc, 4);
             if ugly {
                 value = value.ugly();
             }
