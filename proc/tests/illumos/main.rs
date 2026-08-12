@@ -15,8 +15,10 @@
 
 #![cfg(target_os = "illumos")]
 
-use proc::libproc::Core as LibprocCore;
 use proc::snapshot::{Recorder, Snapshot};
+
+mod libproc;
+use libproc::Core as LibprocCore;
 use proc::{Proc, Target};
 
 use std::collections::{BTreeMap, BTreeSet};
