@@ -390,6 +390,7 @@ dependencies = [
  "mimalloc",
  "object",
  "postcard",
+ "rayon",
  "regex",
  "rustc-demangle",
  "semver",

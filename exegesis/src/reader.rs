@@ -1,5 +1,4 @@
 use crate::cgu::CodegenUnit;
-use crate::parallel_fold::BoundedParallelFold;
 use crate::raw_types::{
     NamespaceTable, NsId, RawAwaitee, RawBase, RawEnum, RawEnumerator, RawFunc,
     RawGenericParameter, RawMember, RawPointer, RawStaticVariable, RawStruct, RawSubParameter,
@@ -11,6 +10,7 @@ use crate::{TypeId, VarId};
 
 use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use gimli::{Dwarf, UnitRef};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use regex::Regex;
 use tracing::debug;
 
@@ -27,8 +27,7 @@ const PARALLEL_ALIAS_GROUP_THRESHOLD: usize = 256;
 const ALIAS_BATCH: usize = 32;
 
 /// The thread count used when the caller leaves [`ReadArgs::cgu_parallelism`]
-/// unset. Mirrors [`BoundedParallelFold`]'s own default so parsing and
-/// finalization agree.
+/// unset, for both the CGU parse pool and the parallel finalization.
 fn default_parallelism() -> usize {
     std::thread::available_parallelism().map_or(1, NonZero::get)
 }
@@ -82,7 +81,7 @@ pub struct ReadArgs {
     /// parallel type finalization. Defaults to [`thread::available_parallelism`].
     pub cgu_parallelism: Option<NonZero<usize>>,
     /// Maximum number of CGUs that may be in-flight (parsed but not yet
-    /// ingested by the collector). Defaults to `2 * cgu_parallelism`.
+    /// ingested by the collector). Defaults to `4 * cgu_parallelism`.
     pub cgus_in_flight: Option<NonZero<usize>>,
 }
 
@@ -124,19 +123,24 @@ impl<'dw> DwReader<'dw> {
     ///     the collector.
     ///
     ///   - [`ReadArgs::cgus_in_flight`]: The maximum number of parsed CGUs
-    ///     that may exist between the worker threads and the collector at
-    ///     any given time — the memory ceiling, since each is a large,
-    ///     fully-parsed unit. Defaults to `2 × cgu_parallelism`. Because CGUs
-    ///     are folded as they complete rather than buffered for reordering,
+    ///     that may be buffered between the worker threads and the collector
+    ///     at any given time — the memory ceiling, since each is a large,
+    ///     fully-parsed unit. Defaults to `4 × cgu_parallelism`. Because CGUs
+    ///     are ingested as they complete rather than buffered for reordering,
     ///     this needs no slack for out-of-order results and can be lowered
-    ///     toward `cgu_parallelism` to tighten peak memory; it only throttles
-    ///     throughput once it is too small to keep the collector fed. Setting
-    ///     it to `1` serialises ingestion entirely.
+    ///     to tighten peak memory; it only throttles throughput once it is
+    ///     too small to keep the collector fed.
     ///
     ///   - [`ReadArgs::targets`]: Reserved for future namespace/type
     ///     filtering. Currently unused — all types are collected.
     pub fn read_types(dwarf: &Dwarf<Slice<'dw>>, args: ReadArgs) -> Result<DwReader<'dw>> {
+        // Unit headers carry only offsets, so enumerating them up front is
+        // cheap and gives the parallel walk an indexable work list.
+        let mut headers = Vec::new();
         let mut units = dwarf.units();
+        while let Some(header) = units.next()? {
+            headers.push(header);
+        }
 
         // Interning is the single most expensive part of collection (tens of
         // millions of strings), so it runs on the parallel workers via a
@@ -144,44 +148,73 @@ impl<'dw> DwReader<'dw> {
         // insertion stay on the serial collector, keyed by unique DIE ids.
         let interner = ShardedInterner::new();
 
-        // The collector ingests CGUs in whatever order they finish parsing:
-        // every cross-DIE reference is a global section offset resolved after
-        // the whole program is collected, and dedup is deferred to
-        // `finalize_types`, so the result does not depend on arrival order.
-        // Folding as-completed avoids the head-of-line blocking a single large
-        // CGU would otherwise cause under source-ordered delivery.
-        let mut fold = BoundedParallelFold::new(
-            || Ok(units.next()?),
-            |header| {
-                let unit = dwarf.unit(header)?;
-                let unit_ref = UnitRef::new(dwarf, &unit);
-                let mut cursor = unit.entries();
-                cursor.next_entry()?;
-                let cgu = CodegenUnit::from_cursor(&unit_ref, &mut cursor)?;
-                debug!("processed unit {}", cgu.name);
-                Ok::<_, Error>(intern_cgu(&interner, cgu))
-            },
-            DwReader::new(),
-            |c: &mut DwReader<'dw>, cgu| {
-                c.ingest(cgu);
-            },
-        )
-        .unordered();
-
-        // Resolve the parallelism knob to a concrete thread count so both the
-        // parallel fold and the parallel finalization honour it (finalization
-        // has no source to pull from, so it can't recover the default itself).
         let parallelism = args
             .cgu_parallelism
             .map_or_else(default_parallelism, NonZero::get);
-        fold = fold.parallelism(parallelism);
-        if let Some(n) = args.cgus_in_flight {
-            fold = fold.max_in_flight(n.get());
-        }
+        // Default buffer: the old bounded fold budgeted `2 × parallelism` for
+        // parsing *and* queued units together, gating workers before they
+        // pulled a unit; the channel bounds only the queue, and a worker
+        // blocks holding a finished unit. `4 × parallelism` restores the
+        // slack: measured on a 413 MB-.debug_info target, `2p` costs ~15%
+        // of the parse phase in send-blocking stalls while `4p` is at
+        // parity with the old fold, for ~1% of peak RSS on a 4.4 GB one.
+        let in_flight = args.cgus_in_flight.map_or(4 * parallelism, NonZero::get);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(parallelism)
+            .build()
+            .expect("failed to build the CGU parse pool");
 
-        let mut collector = fold.run()?;
-        // Workers have released their borrows now that the fold is done; take
-        // ownership of the interned strings.
+        // Pool workers parse and intern CGUs; one collector thread ingests
+        // them in whatever order they finish. Arrival order cannot affect the
+        // result: every cross-DIE reference is a global section offset
+        // resolved after the whole program is collected, and dedup is
+        // deferred to `finalize_types`. The bounded channel is the memory
+        // ceiling — a worker with a finished CGU blocks until the collector
+        // frees a slot, so at most `in_flight` parsed-but-uningested CGUs
+        // are ever buffered (the workers' own in-progress units come on top).
+        let (tx, rx) = std::sync::mpsc::sync_channel::<InternedCgu>(in_flight);
+        let (mut collector, parsed) = std::thread::scope(|scope| {
+            let collector = scope.spawn(move || {
+                let mut collector = DwReader::new();
+                for cgu in rx {
+                    collector.ingest(cgu);
+                }
+                collector
+            });
+            // `with_max_len(1)` forces one unit per job. CGU sizes are
+            // skewed by orders of magnitude, and rayon's default splitting
+            // hands each thread a contiguous chunk — a giant unit then
+            // serializes behind its chunk-mates instead of starting the
+            // moment a thread frees up (measured ~2× on the parse phase).
+            let parsed = pool.install(|| {
+                headers
+                    .into_par_iter()
+                    .with_max_len(1)
+                    .try_for_each_with(tx, |tx, header| {
+                        let unit = dwarf.unit(header)?;
+                        let unit_ref = UnitRef::new(dwarf, &unit);
+                        let mut cursor = unit.entries();
+                        cursor.next_entry()?;
+                        let cgu = CodegenUnit::from_cursor(&unit_ref, &mut cursor)?;
+                        debug!("processed unit {}", cgu.name);
+                        // The collector hangs up only after every sender is
+                        // dropped, so a failed send can only follow its panic —
+                        // which the join below propagates.
+                        tx.send(intern_cgu(&interner, cgu)).ok();
+                        Ok::<_, Error>(())
+                    })
+            });
+            // `install` returning dropped the last sender, so the collector's
+            // receive loop has ended; on a parse error it ingested whatever
+            // was already in the channel, and the partial result is dropped
+            // with the error return below.
+            let collector = collector.join().expect("CGU collector thread panicked");
+            (collector, parsed)
+        });
+        parsed?;
+
+        // Workers have released their borrows now that the parse is done;
+        // take ownership of the interned strings.
         collector.strings = interner.freeze();
         collector.finalize_types(parallelism);
         Ok(collector)
