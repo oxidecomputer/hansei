@@ -18,13 +18,13 @@
 //! structures the guards watch, whatever the snapshot's layout.
 
 use hansei_bundle::{Bundle, BundleView};
+use hansei_runtime::testkit::{load, tasks as tasks_of};
 use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
 use hansei_runtime::tokio::{census, graph};
 use proc::snapshot::Snapshot;
 use proc::{LwpInfo, Mappings, Regs, SymbolBuf, Target};
 
 use std::ops::Range;
-use std::path::{Path, PathBuf};
 
 /// An address nothing in a small test program's address space reaches.
 const NOWHERE: u64 = 0xdead_beef_0000;
@@ -181,28 +181,6 @@ impl Target for Corrupt<'_> {
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> proc::Result<Option<u64>> {
         self.inner.tls_var_addr(regs, sym)
     }
-}
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
-}
-
-fn load(program: &str) -> (Bundle, Snapshot) {
-    let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
-        .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
-    let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
-        .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
-    (bundle, snapshot)
-}
-
-/// Discovery and enumeration against an arbitrary target.
-fn tasks_of<'a, T: Target>(ctx: &Context<'a, T>, snapshot: &Snapshot) -> TaskList {
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    ctx.enumerate_tasks(shared).expect("the owned-task walk")
 }
 
 /// The healthy pipeline, run first to learn the addresses a corruption

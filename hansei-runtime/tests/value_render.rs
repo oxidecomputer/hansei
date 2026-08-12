@@ -20,28 +20,14 @@
 //! after an intended change with `VALUE_RENDER_BLESS=1 cargo test -p
 //! hansei-runtime --test value_render` and review the diff.
 
-use hansei_bundle::{Bundle, BundleView};
+use hansei_bundle::Bundle;
+use hansei_runtime::testkit::load;
 use hansei_runtime::tokio::bundle::{Context, TaskStage};
-use proc::Target;
 use proc::snapshot::Snapshot;
 use reify::Value;
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
-}
-
-fn load(program: &str) -> (Bundle, Snapshot) {
-    let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
-        .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
-    let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
-        .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
-    (bundle, snapshot)
-}
+use std::path::Path;
 
 /// Mask the run-varying heap/text addresses so the golden compares
 /// exactly; the decoded semantics (permit counts, queued values, waiter
@@ -96,13 +82,8 @@ fn render_local(
 /// Task 4 is the holder parked owning every primitive; task 3 is the
 /// waiter parked in the shared `Notify`'s queue.
 fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
-    let view = BundleView::new(bundle);
-    let ctx = Context::new(snapshot, view).expect("snapshot has mappings");
-
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
+    let ctx = hansei_runtime::testkit::context(bundle, snapshot);
+    let list = hansei_runtime::testkit::tasks(&ctx, snapshot);
     assert!(
         list.errors.is_empty(),
         "task walk errors: {:?}",

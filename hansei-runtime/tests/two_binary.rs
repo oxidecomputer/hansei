@@ -23,6 +23,7 @@
 //! nothing else here would notice the programs moving on without them.
 
 use hansei_bundle::{Bundle, BundleView};
+use hansei_runtime::testkit::{fixture, load};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd, Context, FutureInfo, Task, TaskStage};
 use hansei_runtime::tokio::{census, graph};
@@ -31,7 +32,7 @@ use proc::snapshot::Snapshot;
 
 use std::collections::HashSet;
 use std::fmt::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Every program `capture-snapshots.sh` captures a fixture pair for.
 const PROGRAMS: &[&str] = &[
@@ -44,12 +45,6 @@ const PROGRAMS: &[&str] = &[
     "unordered",
     "joinset",
 ];
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
-}
 
 /// What a fixture pair was captured from: the program's own source, and
 /// the crate every program calls into before it parks.
@@ -107,14 +102,6 @@ fn test_fixtures_record_the_current_programs() {
          Recapture with test-programs/capture-snapshots.sh, then re-bless the \
          goldens here and in value_render.rs.\n"
     );
-}
-
-fn load(program: &str) -> (Bundle, Snapshot) {
-    let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
-        .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
-    let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
-        .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
-    (bundle, snapshot)
 }
 
 /// Mask the run-varying values the analysis output carries — heap
@@ -423,13 +410,8 @@ task 4 idle sleep_join::joiner::{async_fn_env#0}
 #[test]
 fn test_futurelock_census_offline() {
     let (bundle, snapshot) = load("futurelock");
-    let view = BundleView::new(&bundle);
-    let ctx = Context::new(&snapshot, view).expect("snapshot has mappings");
-
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
+    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+    let list = hansei_runtime::testkit::tasks(&ctx, &snapshot);
 
     let census = census::census(&ctx, &list);
     let future1 = census
@@ -543,12 +525,8 @@ fn census_of<'a>(
     hansei_runtime::tokio::bundle::TaskList,
     census::FutureCensus,
 ) {
-    let view = BundleView::new(bundle);
-    let ctx = Context::new(snapshot, view).expect("snapshot has mappings");
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
+    let ctx = hansei_runtime::testkit::context(bundle, snapshot);
+    let list = hansei_runtime::testkit::tasks(&ctx, snapshot);
     let census = census::census(&ctx, &list);
     assert!(census.errors.is_empty(), "{:?}", census.errors);
     assert_eq!(census.capped, 0, "the walk hit a hard limit");
