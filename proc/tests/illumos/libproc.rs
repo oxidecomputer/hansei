@@ -1,11 +1,10 @@
 //! The libproc-backed [`Core`] reader: an illumos core dump read
 //! through `Pgrab_core`. This is the reference the portable illumos
-//! core reader is held against in tests, and nothing but the tests —
-//! it compiles only under the `libproc` feature (which the suite turns
-//! on through a dev-dependency), so building the crate needs neither
-//! bindgen nor libproc.
+//! core reader is held against, and it lives inside the test target on
+//! purpose: libproc-sys is a dev-dependency, so no build of the `proc`
+//! library — on illumos included — needs bindgen or libproc.
 
-use crate::{
+use proc::{
     Error, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs, Result, Status,
     SymbolBuf, Timespec,
 };
@@ -43,38 +42,38 @@ pub struct Core {
 unsafe impl Send for Core {}
 unsafe impl Sync for Core {}
 
-impl From<gregset_t> for Regs {
-    fn from(regs: gregset_t) -> Self {
-        Regs {
-            r15: regs[REG_R15 as usize] as u64,
-            r14: regs[REG_R14 as usize] as u64,
-            r13: regs[REG_R13 as usize] as u64,
-            r12: regs[REG_R12 as usize] as u64,
-            r11: regs[REG_R11 as usize] as u64,
-            r10: regs[REG_R10 as usize] as u64,
-            r9: regs[REG_R9 as usize] as u64,
-            r8: regs[REG_R8 as usize] as u64,
-            rdi: regs[REG_RDI as usize] as u64,
-            rsi: regs[REG_RSI as usize] as u64,
-            rbp: regs[REG_RBP as usize] as u64,
-            rbx: regs[REG_RBX as usize] as u64,
-            rdx: regs[REG_RDX as usize] as u64,
-            rcx: regs[REG_RCX as usize] as u64,
-            rax: regs[REG_RAX as usize] as u64,
-            trapno: regs[REG_TRAPNO as usize] as u64,
-            err: regs[REG_ERR as usize] as u64,
-            rip: regs[REG_RIP as usize] as u64,
-            cs: regs[REG_CS as usize] as u64,
-            rfl: regs[REG_RFL as usize] as u64,
-            rsp: regs[REG_RSP as usize] as u64,
-            ss: regs[REG_SS as usize] as u64,
-            fs: regs[REG_FS as usize] as u64,
-            gs: regs[REG_GS as usize] as u64,
-            es: regs[REG_ES as usize] as u64,
-            ds: regs[REG_DS as usize] as u64,
-            fsbase: regs[REG_FSBASE as usize] as u64,
-            gsbase: regs[REG_GSBASE as usize] as u64,
-        }
+/// A [`Regs`] from libproc's register array. A function rather than a
+/// `From` impl: both types are foreign to this test crate.
+fn regs_from(regs: gregset_t) -> Regs {
+    Regs {
+        r15: regs[REG_R15 as usize] as u64,
+        r14: regs[REG_R14 as usize] as u64,
+        r13: regs[REG_R13 as usize] as u64,
+        r12: regs[REG_R12 as usize] as u64,
+        r11: regs[REG_R11 as usize] as u64,
+        r10: regs[REG_R10 as usize] as u64,
+        r9: regs[REG_R9 as usize] as u64,
+        r8: regs[REG_R8 as usize] as u64,
+        rdi: regs[REG_RDI as usize] as u64,
+        rsi: regs[REG_RSI as usize] as u64,
+        rbp: regs[REG_RBP as usize] as u64,
+        rbx: regs[REG_RBX as usize] as u64,
+        rdx: regs[REG_RDX as usize] as u64,
+        rcx: regs[REG_RCX as usize] as u64,
+        rax: regs[REG_RAX as usize] as u64,
+        trapno: regs[REG_TRAPNO as usize] as u64,
+        err: regs[REG_ERR as usize] as u64,
+        rip: regs[REG_RIP as usize] as u64,
+        cs: regs[REG_CS as usize] as u64,
+        rfl: regs[REG_RFL as usize] as u64,
+        rsp: regs[REG_RSP as usize] as u64,
+        ss: regs[REG_SS as usize] as u64,
+        fs: regs[REG_FS as usize] as u64,
+        gs: regs[REG_GS as usize] as u64,
+        es: regs[REG_ES as usize] as u64,
+        ds: regs[REG_DS as usize] as u64,
+        fsbase: regs[REG_FSBASE as usize] as u64,
+        gsbase: regs[REG_GSBASE as usize] as u64,
     }
 }
 
@@ -174,7 +173,7 @@ impl Core {
                         return 0;
                     }
 
-                    let regs = status.pr_reg.into();
+                    let regs = regs_from(status.pr_reg);
 
                     let stack = stack.assume_init();
                     let stack_start = stack.ss_sp as u64;
@@ -296,7 +295,7 @@ impl Core {
         let mut regs: gregset_t = [0; 28];
         let ret = unsafe { Plwp_getregs(self.handle.as_ptr(), lwp, regs.as_mut_ptr()) };
         if ret == 0 {
-            Ok(Regs::from(regs))
+            Ok(regs_from(regs))
         } else {
             Err(Error::read(io::Error::from_raw_os_error(ret)))
         }
@@ -314,7 +313,7 @@ impl Core {
     /// field from its `ulwp_t`. This contains the thread-local storage (TLS)
     /// for the LWP, also known as thread-specific data (TSD).
     pub fn tsd_from_regs(&self, regs: &Regs) -> Result<[u64; 9]> {
-        crate::tsd_from_fsbase(&|addr| self.read_u64(addr), regs)
+        proc::tsd_from_fsbase(&|addr| self.read_u64(addr), regs)
     }
 
     pub fn mappings(&self) -> Result<Mappings> {
@@ -359,9 +358,9 @@ impl Core {
                 &mut objs as *mut _ as *mut c_void,
             )
         };
-        objs.sort_unstable();
         if ret == 0 {
-            Ok(Mappings { inner: objs })
+            // Collecting sorts, the way every reader hands a table out.
+            Ok(objs.into_iter().collect())
         } else {
             Err(Error::map_iter_failed())
         }
@@ -575,7 +574,7 @@ impl Core {
     }
 
     pub fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
-        crate::tls_addr_from_pthread_key(&|addr| self.read_u64(addr), regs, sym)
+        proc::tls_addr_from_pthread_key(&|addr| self.read_u64(addr), regs, sym)
     }
 }
 

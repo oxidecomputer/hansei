@@ -4,8 +4,6 @@ use std::io;
 use std::ops::Range;
 
 pub mod coredump;
-#[cfg(all(target_os = "illumos", feature = "libproc"))]
-pub mod libproc;
 pub mod snapshot;
 mod target;
 #[cfg(test)]
@@ -249,7 +247,7 @@ pub trait Target {
 ///
 /// Both illumos backends use it — libproc's and the core reader's — so
 /// it is built everywhere the latter is, which is everywhere.
-pub(crate) fn tls_addr_from_pthread_key(
+pub fn tls_addr_from_pthread_key(
     read_u64: &dyn Fn(u64) -> Result<u64>,
     regs: &Regs,
     sym: &SymbolBuf,
@@ -273,10 +271,7 @@ pub(crate) fn tls_addr_from_pthread_key(
 /// obviously not reliable, but it's been ten years since the last
 /// time `ulwp_t` changed format, so we can probably get away with this
 /// hack for a while.
-pub(crate) fn tsd_from_fsbase(
-    read_u64: &dyn Fn(u64) -> Result<u64>,
-    regs: &Regs,
-) -> Result<[u64; 9]> {
+pub fn tsd_from_fsbase(read_u64: &dyn Fn(u64) -> Result<u64>, regs: &Regs) -> Result<[u64; 9]> {
     const UL_FTSD_OFFSET: u64 = 320;
     const UL_FTSD_LEN: usize = 9;
 
@@ -571,6 +566,17 @@ pub struct Timespec {
 )]
 pub struct Mappings {
     pub(crate) inner: Vec<LoadedObjectWithPath>,
+}
+
+/// Collect a mapping table, sorted by address the way every reader
+/// hands one out — the spelling an external reader (the test suite's
+/// libproc reference) builds its table with.
+impl FromIterator<LoadedObjectWithPath> for Mappings {
+    fn from_iter<I: IntoIterator<Item = LoadedObjectWithPath>>(iter: I) -> Self {
+        let mut inner: Vec<_> = iter.into_iter().collect();
+        inner.sort_unstable();
+        Mappings { inner }
+    }
 }
 
 impl Mappings {

@@ -3,13 +3,6 @@ name = "proc"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-# The libproc-backed reference reader (`proc::libproc`), which the test
-# suite holds the portable illumos core reader against. Off by default
-# so building proc — on illumos included — needs neither bindgen nor
-# libproc; the suite turns it on through the self dev-dependency below.
-libproc = ["dep:libproc-sys"]
-
 [dev-dependencies]
 tempfile = { workspace = true }
 
@@ -26,15 +19,13 @@ thiserror = { workspace = true }
 zstd = { workspace = true }
 
 [target.'cfg(target_os = "illumos")'.dependencies]
-libproc-sys = { workspace = true, optional = true }
 # zstd-sys's vendored C fails to assemble with the illumos gcc/gas
 # toolchain (Sun-syntax cmov mnemonics); link the system libzstd via
 # pkg-config instead, as exegesis already does.
 zstd-sys = { workspace = true, features = ["pkg-config"] }
 
-# The suite's libproc-vs-portable comparison needs the reference reader,
-# so test builds — and only test builds — turn the feature on: a
-# dev-dependency on the crate itself is how a test enables a feature
-# without every consumer inheriting it.
+# The libproc-backed reference reader lives inside the on-box test
+# target, so only test builds bind libproc — building the library needs
+# neither bindgen nor libproc, on illumos included.
 [target.'cfg(target_os = "illumos")'.dev-dependencies]
-proc = { path = ".", features = ["libproc"] }
+libproc-sys = { workspace = true }
