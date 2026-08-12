@@ -284,7 +284,7 @@ mod tests {
             Value::read(&mem, v.ty(POINT).unwrap(), 0x1000).expect("Point reads from the target");
         assert_eq!(info.addr, 0x1000);
         assert_eq!(info.bytes, &point_bytes[..]);
-        assert_eq!(format!("{info}"), "Point { x: 1, y: 2 }");
+        assert_eq!(format!("{}", info.display()), "Point { x: 1, y: 2 }");
 
         // Members, sliced out of the bytes the read lent.
         assert_eq!(format!("{}", info.member("y").unwrap().display()), "2");
@@ -311,7 +311,7 @@ mod tests {
         let ptr = Value::read(&mem, v.ty(PTR).unwrap(), 0x1000).unwrap();
         let pointee = ptr.deref_ptr(&mem).expect("deref reads the pointee");
         assert_eq!(pointee.addr, 0x2000);
-        assert_eq!(format!("{pointee}"), "Point { x: 3, y: 4 }");
+        assert_eq!(format!("{}", pointee.display()), "Point { x: 3, y: 4 }");
 
         // A pointee the target refuses is an error naming the address that
         // failed, not the pointer's own location.
