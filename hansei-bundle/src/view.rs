@@ -6,8 +6,8 @@
 
 use crate::Encoding;
 use crate::schema::{
-    Bundle, BundleTypeId, MemberDef, Provenance, SymbolLookup, TaskEntryId, TaskFutureEntry,
-    TypeDef, VariantDef, VariantShape,
+    Bundle, BundleTypeId, MemberDef, Provenance, SymbolLookup, TaskEntryId, TypeDef, VariantDef,
+    VariantShape,
 };
 
 use std::fmt;
@@ -125,25 +125,6 @@ impl<'a> BundleView<'a> {
             .filter_map(move |&(r, id)| Some((bundle.strings.get(r)?, BundleType { bundle, id })))
     }
 
-    /// Look up a task vtable-fn symbol (as read from the target's symtab)
-    /// in the task join table.
-    pub fn task_for_symbol(&self, symbol: &str) -> Option<&'a TaskFutureEntry> {
-        self.bundle.tasks.lookup(symbol)
-    }
-
-    /// Like [`BundleView::task_for_symbol`], but also returns the entry id,
-    /// which indexes the parallel [`Provenance`] table.
-    pub fn task_entry_for_symbol(
-        &self,
-        symbol: &str,
-    ) -> Option<(TaskEntryId, &'a TaskFutureEntry)> {
-        let SymbolLookup::Unique(id) = self.bundle.tasks.lookup_id(symbol) else {
-            return None;
-        };
-        let entry = self.bundle.tasks.entries.get(id.0 as usize)?;
-        Some((id, entry))
-    }
-
     /// Resolve a task symbol without discarding semantic ambiguity.
     pub fn task_ids_for_symbol(&self, symbol: &str) -> SymbolLookup<TaskEntryId> {
         self.bundle.tasks.lookup_id(symbol)
@@ -157,13 +138,6 @@ impl<'a> BundleView<'a> {
     /// Resolve an interned string.
     pub fn str(&self, r: crate::strings::StrRef) -> Option<&'a str> {
         self.bundle.strings.get(r)
-    }
-
-    /// Look up a dyn-future symbol (`<T as Future>::poll` or
-    /// `drop_glue::<T>`) and return `T`.
-    pub fn dyn_future_for_symbol(&self, symbol: &str) -> Option<BundleType<'a>> {
-        let id = self.bundle.dyn_futures.lookup(symbol)?;
-        self.ty(id)
     }
 
     /// Resolve a dyn-future symbol without discarding semantic ambiguity.
@@ -393,14 +367,6 @@ impl<'a> BundleType<'a> {
             self.debug_format(),
             Some(node) if !matches!(node, crate::DisplayNode::Alias { .. })
         )
-    }
-
-    /// The base-type encoding, if this is a base type.
-    pub fn encoding(&self) -> Option<Encoding> {
-        match self.def() {
-            TypeDef::Base { encoding, .. } => Some(*encoding),
-            _ => None,
-        }
     }
 
     /// The members of a struct or union; empty for other kinds (Rust enum
