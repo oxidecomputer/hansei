@@ -11,7 +11,6 @@
 //! boundary.
 
 use crate::render::{AddrAnnotator, ElideOverride};
-use proc::Target;
 
 use super::{FormatCache, RenderCtx};
 
@@ -38,11 +37,10 @@ impl<F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result> fmt::Display for DisplayWith
 
 /// The `Send + Sync` slice of a [`RenderCtx`]: what it carries minus the
 /// cycle guard and format cache, which each worker owns for itself.
-#[derive(Copy, Clone)]
-pub(crate) struct WorkerCtx<'buf, 'a> {
+pub(crate) struct WorkerCtx<'buf, 'a, T> {
     pub(super) depth: usize,
     pub(super) max_depth: usize,
-    pub(super) proc: Option<&'a (dyn Target + Sync)>,
+    pub(super) proc: Option<&'a T>,
     pub(super) hex_integers: bool,
     pub(super) ugly: bool,
     pub(super) elide: Option<&'buf ElideOverride>,
@@ -50,7 +48,16 @@ pub(crate) struct WorkerCtx<'buf, 'a> {
     pub(super) prefix: &'buf str,
 }
 
-impl<'buf, 'a> WorkerCtx<'buf, 'a> {
+// Derived `Copy`/`Clone` would demand `T: Copy` even though only `&T` is
+// held, so both are spelled out.
+impl<T> Copy for WorkerCtx<'_, '_, T> {}
+impl<T> Clone for WorkerCtx<'_, '_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'buf, 'a, T> WorkerCtx<'buf, 'a, T> {
     /// A worker's own [`RenderCtx`]: this slice around the task-local
     /// cycle guard and format cache, with no further fan-out — the
     /// entries of the collection that spawned the worker are the one
@@ -59,7 +66,7 @@ impl<'buf, 'a> WorkerCtx<'buf, 'a> {
         &self,
         visited: &'x RefCell<HashSet<(u64, &'a str)>>,
         formats: &'x FormatCache<'a>,
-    ) -> RenderCtx<'x, 'a>
+    ) -> RenderCtx<'x, 'a, T>
     where
         'buf: 'x,
     {

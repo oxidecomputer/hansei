@@ -78,11 +78,11 @@ pub(crate) fn apply(decode: &ScalarDecode, word: u64) -> String {
 /// data pointer. A null pointer is `null`; an address that resolves appends
 /// ` -> <symbol>`, and one that does not appends ` -> <unknown symbol>` only
 /// when a target is attached to resolve against.
-pub(crate) fn write_symbol(
+pub(crate) fn write_symbol<T: Target>(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     offset: u64,
-    proc: Option<&(dyn Target + Sync)>,
+    proc: Option<&T>,
 ) -> fmt::Result {
     let Some(address) = read_u64_at(bytes, offset) else {
         return write!(f, "<truncated>");
@@ -104,13 +104,12 @@ pub(crate) fn write_symbol(
 /// validation, and one refusal to believe a length further than the target
 /// corroborates it. A shortfall renders the bytes that are there and says
 /// how many are missing; nothing served at all degrades whole.
-pub(crate) fn write_utf8_string(
+pub(crate) fn write_utf8_string<T: Target>(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     header: &FatHeader,
-    proc: Option<&(dyn Target + Sync)>,
+    proc: Option<&T>,
 ) -> fmt::Result {
-    let proc = proc.map(|proc| proc as &dyn Target);
     let text = match utf8_buffer(header, bytes, proc) {
         Ok(text) => text,
         Err(SeqError::Invalid(why)) => return write!(f, "<invalid string: {why}>"),

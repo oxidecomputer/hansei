@@ -22,13 +22,13 @@ struct VtableFunction {
     concrete: Option<String>,
 }
 
-pub(crate) fn eval_dyn_pointer<'a>(
+pub(crate) fn eval_dyn_pointer<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     ty: BundleType<'a>,
     name: Option<&str>,
     node: &DisplayNode<'a>,
     bytes: &[u8],
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     let DisplayNode::DynPointer {
@@ -191,10 +191,7 @@ pub(crate) fn eval_dyn_pointer<'a>(
     write!(f, "}}")
 }
 
-pub(crate) fn resolve_function_symbol(
-    proc: Option<&(dyn Target + Sync)>,
-    address: u64,
-) -> Option<String> {
+pub(crate) fn resolve_function_symbol<T: Target>(proc: Option<&T>, address: u64) -> Option<String> {
     if address == 0 {
         return None;
     }
@@ -224,10 +221,10 @@ fn write_dyn_field_prefix(
     }
 }
 
-fn read_vtable_words<'a>(
+fn read_vtable_words<'a, T: Target>(
     vtable: BundleType<'a>,
     address: u64,
-    proc: Option<&(dyn Target + Sync)>,
+    proc: Option<&T>,
 ) -> Option<Vec<u64>> {
     if address == 0 {
         return None;

@@ -55,11 +55,11 @@ pub type AddrAnnotator<'r> = dyn Fn(u64) -> Option<String> + Sync + 'r;
 /// A value formatted for display: what [`Value::display`] and
 /// [`Value::display_from_target`] build, with or without a target to read
 /// pointees through, and what the render-time options chain onto.
-pub struct DisplayValue<'r, 'a> {
+pub struct DisplayValue<'r, 'a, T> {
     info: &'r Value<'a>,
     /// Where pointees are read from; `None` renders only the bytes in hand,
     /// showing a pointer as its bare address.
-    proc: Option<&'a (dyn Target + Sync)>,
+    proc: Option<&'a T>,
     max_depth: usize,
     ugly: bool,
     elide: Option<&'r ElideOverride>,
@@ -69,7 +69,7 @@ pub struct DisplayValue<'r, 'a> {
     formats: FormatCache<'a>,
 }
 
-impl<'r, 'a> DisplayValue<'r, 'a> {
+impl<'r, 'a, T> DisplayValue<'r, 'a, T> {
     /// Override the depth budget (default 8). Each level of nesting — a
     /// member, an element, a followed pointer — spends one.
     pub fn depth(mut self, max_depth: usize) -> Self {
@@ -108,7 +108,7 @@ impl<'r, 'a> DisplayValue<'r, 'a> {
     }
 }
 
-impl<'a> fmt::Display for DisplayValue<'_, 'a> {
+impl<'a, T: Target + Sync> fmt::Display for DisplayValue<'_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ctx = RenderCtx {
             depth: 0,
@@ -136,7 +136,7 @@ impl<'a> Value<'a> {
     /// tests drive it directly, but a caller always attaches a target —
     /// [`Value::display_from_target`] is the production entry.
     #[cfg(test)]
-    pub(crate) fn display(&self) -> DisplayValue<'_, 'a> {
+    pub(crate) fn display(&self) -> DisplayValue<'_, 'a, crate::testhelper::FakeMem> {
         DisplayValue {
             info: self,
             proc: None,
@@ -152,11 +152,11 @@ impl<'a> Value<'a> {
 
     /// Format this value while recursively reading typed pointees from a
     /// target. Pointer traversal consumes one level of the depth budget.
-    pub fn display_from_target<'r>(
+    pub fn display_from_target<'r, T: Target + Sync>(
         &'r self,
-        proc: &'a (dyn Target + Sync),
+        proc: &'a T,
         max_depth: usize,
-    ) -> DisplayValue<'r, 'a> {
+    ) -> DisplayValue<'r, 'a, T> {
         DisplayValue {
             info: self,
             proc: Some(proc),
@@ -183,11 +183,10 @@ impl<'a> Value<'a> {
 /// there rather than at `'buf` because a pointer followed mid-render becomes
 /// a [`Value`] of the same value lifetime as the one being rendered, and
 /// its bytes are the read's.
-#[derive(Copy, Clone)]
-pub(crate) struct RenderCtx<'buf, 'a> {
+pub(crate) struct RenderCtx<'buf, 'a, T> {
     depth: usize,
     max_depth: usize,
-    proc: Option<&'a (dyn Target + Sync)>,
+    proc: Option<&'a T>,
     visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
     /// Where this pass memoizes resolved display programs.
     formats: &'buf FormatCache<'a>,
@@ -287,10 +286,19 @@ fn glob_match(pattern: &str, name: &str) -> bool {
     pattern[pi..].iter().all(|&ch| ch == b'*')
 }
 
-impl<'buf, 'a> RenderCtx<'buf, 'a> {
+// Derived `Copy`/`Clone` would demand `T: Copy` even though only `&T` is
+// held, so both are spelled out.
+impl<T> Copy for RenderCtx<'_, '_, T> {}
+impl<T> Clone for RenderCtx<'_, '_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
     /// The `Send + Sync` slice of this context, from which a worker
     /// thread rebuilds a context of its own around task-local caches.
-    pub(crate) fn for_workers(&self) -> WorkerCtx<'buf, 'a> {
+    pub(crate) fn for_workers(&self) -> WorkerCtx<'buf, 'a, T> {
         WorkerCtx {
             depth: self.depth,
             max_depth: self.max_depth,
@@ -341,10 +349,10 @@ impl<'buf, 'a> RenderCtx<'buf, 'a> {
 /// a `{:#}` format spec — re-entering `core::fmt::write` per child value
 /// costs an `Arguments` and several frames at every level of a tree this
 /// renders millions of nodes of.
-pub(crate) fn write_display_value<'a>(
+pub(crate) fn write_display_value<'a, T: Target + Sync>(
     f: &mut fmt::Formatter<'_>,
     info: &Value<'a>,
-    ctx: RenderCtx<'_, 'a>,
+    ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     let ty = info.ty;

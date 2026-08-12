@@ -11,11 +11,11 @@ use proc::Target;
 /// pointing at the mapped core instead of at a copy.
 pub trait ParseWithDbgInfo<'a>: Sized {
     /// Attempt to read `Self` from the debug type information.
-    fn parse_with_dbg(proc: &'a dyn Target, info: &Value<'a>) -> Result<Self>;
+    fn parse_with_dbg<T: Target>(proc: &'a T, info: &Value<'a>) -> Result<Self>;
 }
 
 impl<'a> ParseWithDbgInfo<'a> for bool {
-    fn parse_with_dbg(_proc: &'a dyn Target, info: &Value<'a>) -> Result<Self> {
+    fn parse_with_dbg<T: Target>(_proc: &'a T, info: &Value<'a>) -> Result<Self> {
         if info.bytes.len() != size_of::<Self>() {
             return Err(Error::unexpected_len(
                 info.bytes.len() as u32,
@@ -29,7 +29,7 @@ impl<'a> ParseWithDbgInfo<'a> for bool {
 macro_rules! num_impl {
     ($num_ty:ty) => {
         impl<'a> ParseWithDbgInfo<'a> for $num_ty {
-            fn parse_with_dbg(_proc: &'a dyn Target, info: &Value<'a>) -> Result<Self> {
+            fn parse_with_dbg<T: Target>(_proc: &'a T, info: &Value<'a>) -> Result<Self> {
                 if info.bytes.len() != size_of::<Self>() {
                     return Err(Error::unexpected_len(
                         info.bytes.len() as u32,
@@ -56,7 +56,7 @@ impl<'a, V> ParseWithDbgInfo<'a> for Option<V>
 where
     V: ParseWithDbgInfo<'a>,
 {
-    fn parse_with_dbg(proc: &'a dyn Target, info: &Value<'a>) -> Result<Self> {
+    fn parse_with_dbg<T: Target>(proc: &'a T, info: &Value<'a>) -> Result<Self> {
         let var = info.active_variant()?;
         let value = match var {
             ("Some", var_info) => V::parse_with_dbg(proc, &var_info)?,
@@ -82,7 +82,7 @@ impl<'a, V> ParseWithDbgInfo<'a> for Vec<V>
 where
     V: ParseWithDbgInfo<'a>,
 {
-    fn parse_with_dbg(proc: &'a dyn Target, info: &Value<'a>) -> Result<Self> {
+    fn parse_with_dbg<T: Target>(proc: &'a T, info: &Value<'a>) -> Result<Self> {
         let elements = info.elements(proc)?;
         if let Some(claimed) = elements.truncated() {
             return Err(Error::short_sequence(
@@ -102,7 +102,7 @@ impl<'a, V> ParseWithDbgInfo<'a> for Box<[V]>
 where
     V: ParseWithDbgInfo<'a>,
 {
-    fn parse_with_dbg(proc: &'a dyn Target, info: &Value<'a>) -> Result<Self> {
+    fn parse_with_dbg<T: Target>(proc: &'a T, info: &Value<'a>) -> Result<Self> {
         Ok(Vec::<V>::parse_with_dbg(proc, info)?.into_boxed_slice())
     }
 }
@@ -111,7 +111,7 @@ impl<'a, V, const N: usize> ParseWithDbgInfo<'a> for [V; N]
 where
     V: ParseWithDbgInfo<'a>,
 {
-    fn parse_with_dbg(proc: &'a dyn Target, info: &Value<'a>) -> Result<Self> {
+    fn parse_with_dbg<T: Target>(proc: &'a T, info: &Value<'a>) -> Result<Self> {
         let items = Vec::<V>::parse_with_dbg(proc, info)?;
         // The array's own length is the type's, not the target's, so a
         // count that disagrees is a type mismatch rather than bad data.
@@ -126,7 +126,7 @@ where
 /// arrangement, and the same refusal to believe a length further than the
 /// target corroborates it, as the sequences above.
 impl<'a> ParseWithDbgInfo<'a> for String {
-    fn parse_with_dbg(proc: &'a dyn Target, info: &Value<'a>) -> Result<Self> {
+    fn parse_with_dbg<T: Target>(proc: &'a T, info: &Value<'a>) -> Result<Self> {
         let text = crate::elements::utf8(info, proc)?;
         if let Some(claimed) = text.claimed {
             return Err(Error::short_sequence(info.ty.name(), claimed, text.count));
