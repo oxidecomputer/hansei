@@ -3142,36 +3142,18 @@ mod variable_format_tests {
 #[cfg(test)]
 mod whatis_tests {
     use super::{parse_hex_addr, report_whatis};
-    use hansei_bundle::{Bundle, BundleView};
-    use hansei_runtime::tokio::bundle::{Context, TaskExtents, TaskList};
+    use hansei_bundle::BundleView;
+    use hansei_runtime::testkit;
+    use hansei_runtime::tokio::bundle::{TaskExtents, TaskList};
     use hansei_runtime::tokio::census::{self, FutureCensus};
-    use proc::Target;
-    use proc::snapshot::Snapshot;
-
-    use std::path::PathBuf;
-
-    fn fixture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("hansei-runtime/tests/fixtures")
-            .join(name)
-    }
 
     fn with_tasks(
         program: &str,
         check: impl FnOnce(&BundleView<'_>, &TaskList, &TaskExtents, &FutureCensus),
     ) {
-        let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
-            .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
-        let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
-            .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
-        let ctx = Context::new(&snapshot, BundleView::new(&bundle)).expect("snapshot has mappings");
-
-        let lwps = snapshot.lwps().unwrap();
-        let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-        let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-        let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
+        let (bundle, snapshot) = testkit::load(program);
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
         let extents = ctx.task_extents(&list);
         let census = census::census(&ctx, &list);
         check(&ctx.view, &list, &extents, &census);
@@ -3328,39 +3310,22 @@ mod future_trace_tests {
         FutureAt, RenderOpts, TraceOpts, TraceTarget, future_at, future_name, parse_trace_target,
         print_await_chain, print_tasks,
     };
-    use hansei_bundle::{Bundle, BundleView};
+    use hansei_runtime::testkit;
     use hansei_runtime::tokio::TaskState;
     use hansei_runtime::tokio::bundle::{self, Context, TaskExtents, TaskList};
     use hansei_runtime::tokio::census::{self, FutureCensus};
-    use proc::Target;
     use proc::snapshot::Snapshot;
     use reify::Value;
 
     use std::collections::HashMap;
-    use std::path::PathBuf;
-
-    fn fixture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("hansei-runtime/tests/fixtures")
-            .join(name)
-    }
 
     fn with_target(
         program: &str,
         check: impl FnOnce(&Context<'_, Snapshot>, &TaskList, &TaskExtents, &FutureCensus),
     ) {
-        let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
-            .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
-        let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
-            .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
-        let ctx = Context::new(&snapshot, BundleView::new(&bundle)).expect("snapshot has mappings");
-
-        let lwps = snapshot.lwps().unwrap();
-        let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-        let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-        let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
+        let (bundle, snapshot) = testkit::load(program);
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
         let extents = ctx.task_extents(&list);
         let census = census::census(&ctx, &list);
         check(&ctx, &list, &extents, &census);
@@ -3796,34 +3761,15 @@ mod future_trace_tests {
 #[cfg(test)]
 mod trace_render_tests {
     use super::{RenderOpts, TraceOpts, print_await_chain};
-    use hansei_bundle::{Bundle, BundleView};
-    use hansei_runtime::tokio::bundle::{Context, TaskStage};
-    use proc::Target;
-    use proc::snapshot::Snapshot;
-
-    use std::path::PathBuf;
-
-    fn fixture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("hansei-runtime/tests/fixtures")
-            .join(name)
-    }
+    use hansei_runtime::testkit;
+    use hansei_runtime::tokio::bundle::TaskStage;
 
     /// Render task `task_id`'s await chain from the named fixture pair,
     /// with heap addresses masked so the expectation compares exactly.
     fn trace(program: &str, future: &str, verbose: bool) -> String {
-        let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
-            .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
-        let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
-            .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
-        let ctx = Context::new(&snapshot, BundleView::new(&bundle)).expect("snapshot has mappings");
-
-        let lwps = snapshot.lwps().unwrap();
-        let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-        let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-        let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
+        let (bundle, snapshot) = testkit::load(program);
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
 
         let task = list
             .tasks
@@ -3943,16 +3889,9 @@ mod trace_render_tests {
     /// which must name the task a reader would trace next.
     #[test]
     fn test_verbose_labels_pointers_into_other_tasks() {
-        let bundle = Bundle::load(&fixture("sleep-join.bundle"))
-            .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
-        let snapshot = Snapshot::load(&fixture("sleep-join.snapshot"))
-            .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
-        let ctx = Context::new(&snapshot, BundleView::new(&bundle)).expect("snapshot has mappings");
-
-        let lwps = snapshot.lwps().unwrap();
-        let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-        let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-        let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
+        let (bundle, snapshot) = testkit::load("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
 
         let joiner = list
             .tasks

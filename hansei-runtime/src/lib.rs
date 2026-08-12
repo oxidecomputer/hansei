@@ -5,3 +5,6 @@
 //! Useful types for building async debuggers based on tokio
 
 pub mod tokio;
+
+#[doc(hidden)]
+pub mod testkit;

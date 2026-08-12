@@ -754,13 +754,7 @@ mod tests {
 
     fn fixture() -> &'static (Bundle, Snapshot) {
         static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
-        PAIR.get_or_init(|| {
-            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-            (
-                Bundle::load(&dir.join("futurelock.bundle")).expect("fixture bundle loads"),
-                Snapshot::load(&dir.join("futurelock.snapshot")).expect("fixture snapshot loads"),
-            )
-        })
+        PAIR.get_or_init(|| crate::testkit::load("futurelock"))
     }
 
     fn walk_ctx() -> Context<'static, Snapshot> {
