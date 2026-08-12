@@ -108,7 +108,7 @@ impl<'r, 'a, T> DisplayValue<'r, 'a, T> {
     }
 }
 
-impl<'a, T: Target + Sync> fmt::Display for DisplayValue<'_, 'a, T> {
+impl<'a, T: Target> fmt::Display for DisplayValue<'_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ctx = RenderCtx {
             depth: 0,
@@ -152,7 +152,7 @@ impl<'a> Value<'a> {
 
     /// Format this value while recursively reading typed pointees from a
     /// target. Pointer traversal consumes one level of the depth budget.
-    pub fn display_from_target<'r, T: Target + Sync>(
+    pub fn display_from_target<'r, T: Target>(
         &'r self,
         proc: &'a T,
         max_depth: usize,
@@ -349,7 +349,7 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
 /// a `{:#}` format spec — re-entering `core::fmt::write` per child value
 /// costs an `Arguments` and several frames at every level of a tree this
 /// renders millions of nodes of.
-pub(crate) fn write_display_value<'a, T: Target + Sync>(
+pub(crate) fn write_display_value<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     info: &Value<'a>,
     ctx: RenderCtx<'_, 'a, T>,

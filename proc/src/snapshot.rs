@@ -577,19 +577,18 @@ mod tests {
 
     #[test]
     fn test_later_reads_win_overlaps() {
-        use std::cell::RefCell;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         /// Lends a different pre-made buffer per read, so overlapping
         /// reads observe different bytes the way a changing target's
         /// would.
         struct Changing {
             generations: [Vec<u8>; 2],
-            reads: RefCell<usize>,
+            reads: AtomicUsize,
         }
         impl Target for Changing {
             fn read_bytes(&self, _addr: u64, len: u64) -> TargetResult<&[u8]> {
-                let read = *self.reads.borrow();
-                *self.reads.borrow_mut() += 1;
+                let read = self.reads.fetch_add(1, Ordering::Relaxed);
                 Ok(&self.generations[read][..len as usize])
             }
             fn lookup_symbol_by_addr(&self, _: u64) -> Option<SymbolBuf> {
@@ -614,7 +613,7 @@ mod tests {
 
         let target = Changing {
             generations: [vec![1; 8], vec![2; 8]],
-            reads: RefCell::new(0),
+            reads: AtomicUsize::new(0),
         };
         let rec = Recorder::new(&target);
         rec.read_bytes(0x1000, 8).unwrap(); // all 1s

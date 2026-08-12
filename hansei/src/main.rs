@@ -1013,7 +1013,7 @@ fn print_trace_chain<'b>(
 /// from its depth alone, and a state listed after the active one is
 /// printed once the subtree that grew out of the active one is closed.
 #[allow(clippy::too_many_arguments)]
-fn print_await_chain<'b, T: proc::Target + Sync>(
+fn print_await_chain<'b, T: proc::Target>(
     ctx: &bundle::Context<'b, T>,
     list: &bundle::TaskList,
     chain: &bundle::AwaitChain<'b>,
@@ -1647,7 +1647,7 @@ fn discover_workers(
 /// strip away). The two read slightly different page sets, so warming
 /// both keeps the snapshot faithful to either rendering path.
 #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
-fn warm_frame_values<T: proc::Target + Sync>(
+fn warm_frame_values<T: proc::Target>(
     ctx: &bundle::Context<'_, T>,
     chain: &bundle::AwaitChain<'_>,
 ) {

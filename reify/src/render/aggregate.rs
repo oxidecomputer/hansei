@@ -59,7 +59,7 @@ fn has_named_single_field<'a>(ty: &BundleType<'a>) -> bool {
 
 /// Render one member's value (or `<truncated>`) at its offset, recursing with
 /// the deeper context. Shared by the tuple and named aggregate bodies.
-fn write_member_value<'a, T: Target + Sync>(
+fn write_member_value<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     member: &BundleMember<'a>,
     bytes: &'a [u8],
@@ -87,7 +87,7 @@ fn write_member_value<'a, T: Target + Sync>(
 /// has been written: a tuple aggregate as `(v0, v1)` (labels elided), a named
 /// aggregate as ` { field: v, … }`, and an empty/all-ZST aggregate as nothing
 /// (a unit). Zero-sized members are never displayed.
-fn write_aggregate_body<'a, T: Target + Sync>(
+fn write_aggregate_body<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     ty: &BundleType<'a>,
     bytes: &'a [u8],
@@ -132,7 +132,7 @@ fn write_aggregate_body<'a, T: Target + Sync>(
     }
 }
 
-pub(crate) fn write_struct_fields<'a, T: Target + Sync>(
+pub(crate) fn write_struct_fields<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     info: &Value<'a>,
     name: &str,
@@ -145,7 +145,7 @@ pub(crate) fn write_struct_fields<'a, T: Target + Sync>(
     write_aggregate_body(f, &info.ty, info.bytes, info.addr, ctx, pretty)
 }
 
-pub(crate) fn write_rust_enum<'a, T: Target + Sync>(
+pub(crate) fn write_rust_enum<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     info: &Value<'a>,
     name: &str,
