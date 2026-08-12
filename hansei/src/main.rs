@@ -138,14 +138,8 @@ pub enum Command {
     /// The bundle's elisions (which hide runtime internals inside user
     /// values) never apply to this view.
     Drivers {
-        /// Maximum depth to recurse when formatting values.
-        #[arg(long, short, default_value_t = 4)]
-        depth: usize,
-
-        /// Disable every type's custom formatter and show the raw
-        /// structural view of values instead.
-        #[arg(long, short)]
-        ugly: bool,
+        #[command(flatten)]
+        render: RenderOpts,
     },
 
     /// List the types whose name contains a substring.
@@ -209,14 +203,8 @@ pub enum Command {
     /// The bundle's elisions (which hide runtime internals inside user
     /// values) never apply to this view.
     SharedState {
-        /// Maximum depth to recurse when formatting values.
-        #[arg(long, short, default_value_t = 4)]
-        depth: usize,
-
-        /// Disable every type's custom formatter and show the raw
-        /// structural view of values instead.
-        #[arg(long, short)]
-        ugly: bool,
+        #[command(flatten)]
+        render: RenderOpts,
     },
 
     /// Capture a replayable snapshot of everything the bundle-backed
@@ -326,14 +314,8 @@ pub enum Command {
         #[arg(long, short, default_value_t = 50)]
         frames: usize,
 
-        /// Maximum depth to recurse when formatting the worker core.
-        #[arg(long, short, default_value_t = 4)]
-        depth: usize,
-
-        /// Disable every type's custom formatter and show the raw
-        /// structural view of values instead.
-        #[arg(long, short)]
-        ugly: bool,
+        #[command(flatten)]
+        render: RenderOpts,
     },
 
     /// Print an await chain: a task's, selected by its decimal id
@@ -353,14 +335,8 @@ pub enum Command {
         #[arg(long, short)]
         verbose: bool,
 
-        /// Maximum depth to recurse when formatting variable values.
-        #[arg(long, short, default_value_t = 4, requires = "verbose")]
-        depth: usize,
-
-        /// Disable every type's custom formatter and show the raw
-        /// structural view of values instead.
-        #[arg(long, short)]
-        ugly: bool,
+        #[command(flatten)]
+        render: RenderOpts,
 
         /// Show the values the bundle renders as `<elided>` (runtime
         /// handles, loggers) instead of hiding them.
@@ -427,6 +403,29 @@ pub enum Command {
     // `quit` under the name a gdb habit reaches for.
     #[command(hide = true)]
     Exit,
+}
+
+/// How values read from the target are rendered. Shared by every
+/// command that formats target memory, so the flags spell the same and
+/// thread through the render path as one value.
+#[derive(clap::Args, Copy, Clone)]
+pub struct RenderOpts {
+    /// Maximum depth to recurse when formatting values.
+    #[arg(long, short, default_value_t = 4)]
+    depth: usize,
+
+    /// Disable every type's custom formatter and show the raw
+    /// structural view of values instead.
+    #[arg(long, short)]
+    ugly: bool,
+}
+
+/// Everything `trace` was told about rendering a chain: the shared
+/// render options plus the flags only tracing takes.
+struct TraceOpts<'a> {
+    verbose: bool,
+    render: RenderOpts,
+    elide: &'a reify::ElideOverride,
 }
 
 /// Parse a target address: hex digits behind a required `0x`. The
@@ -585,28 +584,19 @@ impl<'b> Session<'b> {
 pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write) -> Result<Flow> {
     match command {
         Command::Census { top } => exec_census(session, top, out)?,
-        Command::Drivers { depth, ugly } => {
-            exec_runtime_field(session, "driver", depth, ugly, out)?
-        }
+        Command::Drivers { render } => exec_runtime_field(session, "driver", render, out)?,
         Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
         Command::Graph => exec_graph(session, out)?,
         Command::Info => exec_info(session, out)?,
-        Command::SharedState { depth, ugly } => {
-            exec_runtime_field(session, "shared", depth, ugly, out)?
-        }
+        Command::SharedState { render } => exec_runtime_field(session, "shared", render, out)?,
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => exec_snapshot(session, &output, out)?,
         Command::Tasks { futures, task } => exec_tasks(session, futures, &task, out)?,
-        Command::Threads {
-            frames,
-            depth,
-            ugly,
-        } => exec_threads(session, frames, depth, ugly, out)?,
+        Command::Threads { frames, render } => exec_threads(session, frames, render, out)?,
         Command::Trace {
             target,
             verbose,
-            depth,
-            ugly,
+            render,
             no_elide,
             elide,
         } => {
@@ -614,7 +604,12 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
                 no_elide,
                 types: elide,
             };
-            exec_trace(session, target, verbose, depth, ugly, &elide, out)?
+            let opts = TraceOpts {
+                verbose,
+                render,
+                elide: &elide,
+            };
+            exec_trace(session, target, &opts, out)?
         }
         Command::Type {
             name,
@@ -710,27 +705,19 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
 fn exec_trace(
     session: &Session<'_>,
     target: TraceTarget,
-    verbose: bool,
-    depth: usize,
-    ugly: bool,
-    elide: &reify::ElideOverride,
+    opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     match target {
-        TraceTarget::Task(id) => exec_trace_task(session, id, verbose, depth, ugly, elide, out),
-        TraceTarget::Future(addr) => {
-            exec_trace_future(session, addr, verbose, depth, ugly, elide, out)
-        }
+        TraceTarget::Task(id) => exec_trace_task(session, id, opts, out),
+        TraceTarget::Future(addr) => exec_trace_future(session, addr, opts, out),
     }
 }
 
 fn exec_trace_task(
     session: &Session<'_>,
     task_id: u64,
-    verbose: bool,
-    depth: usize,
-    ugly: bool,
-    elide: &reify::ElideOverride,
+    opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let ctx = &session.ctx;
@@ -774,7 +761,7 @@ fn exec_trace_task(
     match ctx.task_stage(task)? {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
-            print_trace_chain(session, &chain, verbose, depth, ugly, elide, out)?;
+            print_trace_chain(session, &chain, opts, out)?;
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
@@ -783,8 +770,8 @@ fn exec_trace_task(
                 out,
                 "The task has finished; its output has not been consumed:"
             )?;
-            let mut value = result.display_from_target(ctx.proc, 4);
-            if ugly {
+            let mut value = result.display_from_target(ctx.proc, opts.render.depth);
+            if opts.render.ugly {
                 value = value.ugly();
             }
             writeln!(out, "  {:#}", value)?;
@@ -802,10 +789,7 @@ fn exec_trace_task(
 fn exec_trace_future(
     session: &Session<'_>,
     addr: u64,
-    verbose: bool,
-    depth: usize,
-    ugly: bool,
-    elide: &reify::ElideOverride,
+    opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let ctx = &session.ctx;
@@ -881,7 +865,7 @@ fn exec_trace_future(
 
     writeln!(out)?;
     let chain = ctx.await_chain(value);
-    print_trace_chain(session, &chain, verbose, depth, ugly, elide, out)
+    print_trace_chain(session, &chain, opts, out)
 }
 
 /// What a future address resolved to: the census row that names it,
@@ -970,14 +954,11 @@ fn future_at<'c>(
 fn print_trace_chain<'b>(
     session: &Session<'b>,
     chain: &bundle::AwaitChain<'b>,
-    verbose: bool,
-    depth: usize,
-    ugly: bool,
-    elide: &reify::ElideOverride,
+    opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let list = &session.tasks;
-    let lookups = verbose.then(|| (session.extents(), session.census()));
+    let lookups = opts.verbose.then(|| (session.extents(), session.census()));
     let annotate = lookups.map(|(extents, census)| {
         move |ptr: u64| {
             if let Some((index, _)) = extents.locate(ptr) {
@@ -991,17 +972,7 @@ fn print_trace_chain<'b>(
         }
     });
     let annotate = annotate.as_ref().map(|a| a as &reify::AddrAnnotator<'_>);
-    print_await_chain(
-        &session.ctx,
-        list,
-        chain,
-        verbose,
-        depth,
-        ugly,
-        elide,
-        annotate,
-        out,
-    )
+    print_await_chain(&session.ctx, list, chain, opts, annotate, out)
 }
 
 /// Render an await chain, one line per future, each coroutine frame
@@ -1012,15 +983,11 @@ fn print_trace_chain<'b>(
 /// frame indents follows from its predecessors' inventories rather than
 /// from its depth alone, and a state listed after the active one is
 /// printed once the subtree that grew out of the active one is closed.
-#[allow(clippy::too_many_arguments)]
 fn print_await_chain<'b, T: proc::Target>(
     ctx: &bundle::Context<'b, T>,
     list: &bundle::TaskList,
     chain: &bundle::AwaitChain<'b>,
-    verbose: bool,
-    depth: usize,
-    ugly: bool,
-    elide: &reify::ElideOverride,
+    opts: &TraceOpts<'_>,
     annotate: Option<&reify::AddrAnnotator<'_>>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -1059,7 +1026,7 @@ fn print_await_chain<'b, T: proc::Target>(
         }
 
         detail_indent = frame_detail_indent(node_indent);
-        let table = SuspendTable::new(suspend_rows(frame), verbose, detail_indent.clone());
+        let table = SuspendTable::new(suspend_rows(frame), opts.verbose, detail_indent.clone());
         let rows_empty = table.is_empty();
         tables.push(table);
 
@@ -1087,7 +1054,7 @@ fn print_await_chain<'b, T: proc::Target>(
             tables.last().expect("just pushed").print_to_active(out)?;
         }
 
-        if verbose && (frame.state.is_some() || active) {
+        if opts.verbose && (frame.state.is_some() || active) {
             let payload = match &frame.state {
                 Some(state) => state.payload,
                 None => frame.future,
@@ -1120,13 +1087,13 @@ fn print_await_chain<'b, T: proc::Target>(
                     Some(bytes) => {
                         let v = reify::Value::new(m.ty(), payload.addr + m.offset(), bytes).peel();
                         let mut disp = v
-                            .display_from_target(ctx.proc, depth)
-                            .elide_override(elide)
+                            .display_from_target(ctx.proc, opts.render.depth)
+                            .elide_override(opts.elide)
                             .line_prefix(&value_prefix);
                         if let Some(annotate) = annotate {
                             disp = disp.annotate_addrs(annotate);
                         }
-                        if ugly {
+                        if opts.render.ugly {
                             disp = disp.ugly();
                         }
                         print_variable(out, &value_indent, m.name(), &format_args!("{disp:#}"))?;
@@ -2876,8 +2843,7 @@ fn task_id(list: &bundle::TaskList, task: usize) -> String {
 fn exec_threads(
     session: &Session<'_>,
     frames: usize,
-    depth: usize,
-    ugly: bool,
+    opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     // Unwinding reads the CFI of every mapped object, so it is done once
@@ -2901,12 +2867,12 @@ fn exec_threads(
         }
         writeln!(out, "LWP {}  {}", worker.tid, polling(session, worker))?;
 
-        if let Err(e) = print_thread_context(session, worker, depth, ugly, out) {
+        if let Err(e) = print_thread_context(session, worker, opts, out) {
             writeln!(out, "  thread context unreadable: {e:#}")?;
         }
 
         match session.ctx.worker_context(worker) {
-            Ok(Some(worker_ctx)) => print_worker_state(session, worker_ctx, depth, ugly, out)?,
+            Ok(Some(worker_ctx)) => print_worker_state(session, worker_ctx, opts, out)?,
             // A thread inside the runtime without a scheduler context is
             // ordinary: `block_on` enters the runtime from a thread that
             // never runs the worker loop.
@@ -2954,8 +2920,7 @@ fn polling(session: &Session<'_>, worker: &bundle::Worker) -> String {
 fn print_thread_context(
     session: &Session<'_>,
     worker: &bundle::Worker,
-    depth: usize,
-    ugly: bool,
+    opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let info = session.ctx.context_info(worker.context_addr)?;
@@ -2965,10 +2930,7 @@ fn print_thread_context(
             out,
             "  ",
             field,
-            &format_args!(
-                "{:#}",
-                render(session, &value, depth, ugly).line_prefix("    ")
-            ),
+            &format_args!("{:#}", render(session, &value, opts).line_prefix("    ")),
         )?;
     }
     Ok(())
@@ -2981,8 +2943,7 @@ fn print_thread_context(
 fn print_worker_state<'b>(
     session: &Session<'_>,
     worker_ctx: Value<'b>,
-    depth: usize,
-    ugly: bool,
+    opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let ctx = &session.ctx;
@@ -2993,10 +2954,7 @@ fn print_worker_state<'b>(
         out,
         "  ",
         "defer",
-        &format_args!(
-            "{:#}",
-            render(session, &defer, depth, ugly).line_prefix("    ")
-        ),
+        &format_args!("{:#}", render(session, &defer, opts).line_prefix("    ")),
     )?;
 
     // The core is moved out of the thread's context while the scheduler
@@ -3012,10 +2970,7 @@ fn print_worker_state<'b>(
         out,
         "  ",
         "core",
-        &format_args!(
-            "{:#}",
-            render(session, &core, depth, ugly).line_prefix("    ")
-        ),
+        &format_args!("{:#}", render(session, &core, opts).line_prefix("    ")),
     )?;
     Ok(())
 }
@@ -3029,8 +2984,7 @@ fn print_worker_state<'b>(
 fn exec_runtime_field(
     session: &Session<'_>,
     field: &str,
-    depth: usize,
-    ugly: bool,
+    opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let value = session.handle.member(field)?;
@@ -3045,7 +2999,7 @@ fn exec_runtime_field(
     writeln!(
         out,
         "{:#}",
-        render(session, &value, depth, ugly).elide_override(&no_elide)
+        render(session, &value, opts).elide_override(&no_elide)
     )?;
     Ok(())
 }
@@ -3057,11 +3011,10 @@ fn exec_runtime_field(
 fn render<'r, 'b>(
     session: &'r Session<'b>,
     value: &'r Value<'b>,
-    depth: usize,
-    ugly: bool,
+    opts: RenderOpts,
 ) -> reify::DisplayValue<'r, 'b, Proc> {
-    let display = value.display_from_target(session.ctx.proc, depth);
-    if ugly { display.ugly() } else { display }
+    let display = value.display_from_target(session.ctx.proc, opts.depth);
+    if opts.ugly { display.ugly() } else { display }
 }
 
 /// Render one futurelock diagnosis: who holds what, where the
@@ -3389,8 +3342,8 @@ mod whatis_tests {
 #[cfg(test)]
 mod future_trace_tests {
     use super::{
-        FutureAt, TraceTarget, future_at, future_name, parse_trace_target, print_await_chain,
-        print_tasks,
+        FutureAt, RenderOpts, TraceOpts, TraceTarget, future_at, future_name, parse_trace_target,
+        print_await_chain, print_tasks,
     };
     use hansei_bundle::{Bundle, BundleView};
     use hansei_runtime::tokio::TaskState;
@@ -3527,18 +3480,16 @@ mod future_trace_tests {
             let chain = ctx.await_chain(root);
 
             let mut out = Vec::new();
-            print_await_chain(
-                ctx,
-                list,
-                &chain,
-                false,
-                4,
-                false,
-                &Default::default(),
-                None,
-                &mut out,
-            )
-            .expect("the chain renders");
+            let elide = Default::default();
+            let opts = TraceOpts {
+                verbose: false,
+                render: RenderOpts {
+                    depth: 4,
+                    ugly: false,
+                },
+                elide: &elide,
+            };
+            print_await_chain(ctx, list, &chain, &opts, None, &mut out).expect("the chain renders");
             let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
             assert!(
                 rendered.contains("futurelock::do_async_thing::{async_fn_env#0}"),
@@ -3861,7 +3812,7 @@ mod future_trace_tests {
 /// while it is being changed.
 #[cfg(test)]
 mod trace_render_tests {
-    use super::print_await_chain;
+    use super::{RenderOpts, TraceOpts, print_await_chain};
     use hansei_bundle::{Bundle, BundleView};
     use hansei_runtime::tokio::bundle::{Context, TaskStage};
     use proc::Target;
@@ -3908,18 +3859,16 @@ mod trace_render_tests {
 
         let chain = ctx.await_chain(root);
         let mut out = Vec::new();
-        print_await_chain(
-            &ctx,
-            &list,
-            &chain,
+        let elide = Default::default();
+        let opts = TraceOpts {
             verbose,
-            4,
-            false,
-            &Default::default(),
-            None,
-            &mut out,
-        )
-        .expect("the chain renders");
+            render: RenderOpts {
+                depth: 4,
+                ugly: false,
+            },
+            elide: &elide,
+        };
+        print_await_chain(&ctx, &list, &chain, &opts, None, &mut out).expect("the chain renders");
         let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
         regex::Regex::new(r"0x[0-9a-f]+")
             .unwrap()
@@ -4040,18 +3989,17 @@ mod trace_render_tests {
 
         let chain = ctx.await_chain(root);
         let mut out = Vec::new();
-        print_await_chain(
-            &ctx,
-            &list,
-            &chain,
-            true,
-            4,
-            false,
-            &Default::default(),
-            Some(&annotate),
-            &mut out,
-        )
-        .expect("the chain renders");
+        let elide = Default::default();
+        let opts = TraceOpts {
+            verbose: true,
+            render: RenderOpts {
+                depth: 4,
+                ugly: false,
+            },
+            elide: &elide,
+        };
+        print_await_chain(&ctx, &list, &chain, &opts, Some(&annotate), &mut out)
+            .expect("the chain renders");
         let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
         assert!(rendered.contains("(task 3)"), "{rendered}");
     }
