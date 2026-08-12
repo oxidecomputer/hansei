@@ -652,29 +652,6 @@ impl Core {
         self.core.get(at..at + len as usize)
     }
 
-    /// A word borrowed via [`pslice`](Core::pslice), as its array.
-    fn word<const N: usize>(&self, address: u64) -> Result<[u8; N]> {
-        self.pslice(address, N as u64)
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| Error::unmapped(address, N as u64))
-    }
-
-    pub fn read_u64(&self, address: u64) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.word(address)?))
-    }
-
-    pub fn read_u32(&self, address: u64) -> Result<u32> {
-        Ok(u32::from_le_bytes(self.word(address)?))
-    }
-
-    pub fn read_u16(&self, address: u64) -> Result<u16> {
-        Ok(u16::from_le_bytes(self.word(address)?))
-    }
-
-    pub fn read_u8(&self, address: u64) -> Result<u8> {
-        Ok(self.word::<1>(address)?[0])
-    }
-
     pub fn exec_name(&self) -> Result<PathBuf> {
         self.exec
             .as_ref()

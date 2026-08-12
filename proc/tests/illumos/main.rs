@@ -19,6 +19,7 @@ use proc::snapshot::{Recorder, Snapshot};
 
 mod libproc;
 use libproc::Core as LibprocCore;
+use proc::coredump::illumos::Core as PortableCore;
 use proc::{Proc, Target};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -143,11 +144,11 @@ fn gcore(pid: u32, dir: &Path) -> PathBuf {
 }
 
 /// One core, two readers behind one set of method names: the portable
-/// facade and the reference reader dispatch here the way the facade
-/// used to dispatch when libproc was one of its variants, so a check
-/// written once pins both.
+/// core reader and the reference reader dispatch here the way the
+/// facade used to dispatch when libproc was one of its variants, so a
+/// check written once pins both.
 enum Reader {
-    Portable(Proc),
+    Portable(PortableCore),
     Libproc(LibprocCore),
 }
 
@@ -229,10 +230,16 @@ impl Reader {
         forward!(self, lwp_name(lwpid))
     }
     fn lwp_tsd(&self, lwp: u32) -> proc::Result<[u64; 9]> {
-        forward!(self, lwp_tsd(lwp))
+        match self {
+            Reader::Portable(p) => self.tsd_from_regs(&p.regs(lwp)?),
+            Reader::Libproc(c) => c.lwp_tsd(lwp),
+        }
     }
     fn tsd_from_regs(&self, regs: &proc::Regs) -> proc::Result<[u64; 9]> {
-        forward!(self, tsd_from_regs(regs))
+        match self {
+            Reader::Portable(p) => proc::tsd_from_fsbase(&|addr| Target::read_u64(p, addr), regs),
+            Reader::Libproc(c) => c.tsd_from_regs(regs),
+        }
     }
     fn tls_var_addr(&self, regs: &proc::Regs, sym: &proc::SymbolBuf) -> proc::Result<Option<u64>> {
         forward!(self, tls_var_addr(regs, sym))
@@ -250,7 +257,7 @@ fn for_each_target(check: impl Fn(&Reader, &Parked, &str)) {
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core = gcore(parked.pid(), dir.path());
 
-    let portable = Proc::open_core(&core).expect("failed to open the core");
+    let portable = PortableCore::open(&core).expect("failed to open the core");
     check(&Reader::Portable(portable), &parked, "portable");
 
     let libproc = LibprocCore::open(&core).expect("libproc failed to open the core");
