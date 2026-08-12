@@ -20,7 +20,7 @@
 //! after an intended change with `VALUE_RENDER_BLESS=1 cargo test -p
 //! hansei-runtime --test value_render` and review the diff.
 
-use exegesis::bundle::{Bundle, BundleView};
+use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::bundle::{Context, TaskStage};
 use proc::Target;
 use proc::snapshot::Snapshot;

@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-exegesis = { workspace = true }
 foldhash.workspace = true
+hansei-bundle = { workspace = true }
 proc = { workspace = true }
 rayon = { workspace = true }
 rustc-demangle = { workspace = true }

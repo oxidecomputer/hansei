@@ -9,7 +9,7 @@
 //! line that names it.
 
 use anyhow::{Result, bail};
-use exegesis::bundle::{
+use hansei_bundle::{
     BundleType, BundleTypeId, BundleView, DiscrValue, TypeDef, VariantDef, variant_name,
 };
 
@@ -429,11 +429,11 @@ fn label(ty: BundleType<'_>) -> String {
 mod tests {
     use super::*;
 
-    use exegesis::bundle::{
+    use hansei_bundle::Encoding;
+    use hansei_bundle::{
         Bundle, DiscrDef, DiscrValues, FORMAT_VERSION, InfraTypes, MemberDef, Meta, StrRef,
         StringInterner, TypeTable, VariantShape,
     };
-    use exegesis::raw_types::Encoding;
 
     /// A bundle exercising every shape the describer renders: a
     /// self-reaching list node, empty and opaque types, a c-enum, a
@@ -481,7 +481,7 @@ mod tests {
             decl: None,
             await_site: None,
         };
-        use exegesis::bundle::DiscrValue::{Range, Value};
+        use hansei_bundle::DiscrValue::{Range, Value};
 
         let types = vec![
             // 0: u64

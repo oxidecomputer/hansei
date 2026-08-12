@@ -17,7 +17,7 @@
 //! (task headers, set nodes, the semaphore), so they land on the exact
 //! structures the guards watch, whatever the snapshot's layout.
 
-use exegesis::bundle::{Bundle, BundleView};
+use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
 use hansei_runtime::tokio::{census, graph};
 use proc::snapshot::Snapshot;

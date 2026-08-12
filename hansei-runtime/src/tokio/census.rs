@@ -42,8 +42,8 @@ use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind
 use super::contract::{FUTURES_UNORDERED, JOIN_SET};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
-use exegesis::bundle::{BundleTypeId, TypeClass, WalkRole};
 use foldhash::{HashMap, HashSet};
+use hansei_bundle::{BundleTypeId, TypeClass, WalkRole};
 use proc::Target;
 use reify::Value;
 use std::rc::Rc;

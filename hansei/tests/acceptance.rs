@@ -52,8 +52,8 @@
 
 #![cfg(any(target_os = "linux", target_os = "illumos"))]
 
-use exegesis::bundle::{Bundle, BundleView};
 use exegesis::extract::{ExtractOptions, extract_file};
+use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::bundle::Context as BundleContext;
 use proc::Proc;
 

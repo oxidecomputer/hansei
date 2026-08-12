@@ -34,7 +34,7 @@
 use super::bundle::Context;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use exegesis::bundle::{
+use hansei_bundle::{
     BundleMember, BundleType, BundleView, MemberRef, StaticRole, Step, WalkOutcome, WalkRole,
 };
 use proc::Target;
@@ -747,7 +747,7 @@ mod tests {
     // bytes — so the runtime outcomes (`Null`, `Inactive`) and every
     // refusal are pinned directly.
 
-    use exegesis::bundle::{Bundle, BundleTypeId, DiscrValue, StrRef, TypeDef};
+    use hansei_bundle::{Bundle, BundleTypeId, DiscrValue, StrRef, TypeDef};
     use proc::snapshot::Snapshot;
 
     use std::sync::OnceLock;

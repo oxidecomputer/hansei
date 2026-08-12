@@ -12,7 +12,7 @@ use crate::value::Value;
 use crate::{Error, Result};
 use proc::Target;
 
-use exegesis::bundle::BundleType;
+use hansei_bundle::BundleType;
 
 /// The most elements a zero-sized sequence is credited with.
 ///
@@ -333,7 +333,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use exegesis::bundle::BundleView;
+    use hansei_bundle::BundleView;
 
     /// The elements of an owned buffer come from the display program the
     /// bundle carries, not from the pointer: a `Vec`'s is byte-erased, so the

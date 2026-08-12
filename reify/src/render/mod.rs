@@ -4,7 +4,7 @@
 //! (zero-sized, depth budget, short buffer), hands a type carrying its own
 //! [`DisplayNode`](crate::debug_type::DisplayNode) format to [`node`], and
 //! otherwise renders structurally through
-//! [`classify`](exegesis::bundle::BundleType::classify). [`RenderCtx`] carries
+//! [`classify`](hansei_bundle::BundleType::classify). [`RenderCtx`] carries
 //! depth, the optional target reader, the pointer cycle guard, and the `ugly`
 //! override down every recursion.
 
@@ -19,7 +19,7 @@ use crate::debug_type::{DisplayNode, TypeClass};
 use crate::value::Value;
 use proc::Target;
 
-use exegesis::bundle::{BundleType, BundleTypeId};
+use hansei_bundle::{BundleType, BundleTypeId};
 
 use aggregate::{write_rust_enum, write_struct_fields};
 use node::eval_node;
@@ -242,10 +242,10 @@ impl ElideOverride {
         if self.types.is_empty() {
             return false;
         }
-        let name = exegesis::symbols::normalized_rust_type_name(name);
+        let name = hansei_bundle::symbols::normalized_rust_type_name(name);
         let base = name.split_once('<').map_or(&*name, |(base, _)| base);
         self.types.iter().any(|spec| {
-            let spec = exegesis::symbols::normalized_rust_type_name(spec);
+            let spec = hansei_bundle::symbols::normalized_rust_type_name(spec);
             if spec.contains('*') {
                 glob_match(&spec, &name)
             } else {
@@ -775,7 +775,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use exegesis::bundle::BundleView;
+    use hansei_bundle::BundleView;
 
     #[test]
     fn test_ugly_suppresses_custom_formatters() {

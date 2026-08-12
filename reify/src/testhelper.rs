@@ -4,8 +4,8 @@
 //! need, so a render assertion cannot drift because an extractor changed what
 //! it emits.
 
-use exegesis::Encoding;
-use exegesis::bundle::{
+use hansei_bundle::Encoding;
+use hansei_bundle::{
     Arm, BitField as BundleBitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION, Field as BundleField,
     FieldRender as BundleFieldRender, InfraTypes, MapEntries as BundleMapEntries, MemberDef,

@@ -7,7 +7,7 @@ use crate::debug_type::{BitField, FatHeader, FieldRender, ScalarDecode};
 use crate::elements::{SeqError, utf8_buffer};
 use proc::Target;
 
-use exegesis::bundle::Notation;
+use hansei_bundle::Notation;
 
 use std::fmt;
 
@@ -236,7 +236,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use exegesis::bundle::BundleView;
+    use hansei_bundle::BundleView;
 
     #[test]
     fn test_ip_addresses_use_standard_notation() {
