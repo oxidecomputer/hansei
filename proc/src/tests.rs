@@ -9,8 +9,8 @@
 use crate::x86_64::*;
 use crate::*;
 
-use std::cell::Cell;
 use std::cmp::Ordering;
+use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Registers
@@ -335,7 +335,7 @@ fn test_mappings_expose_their_slice() {
 struct MemTarget {
     base: u64,
     bytes: Vec<u8>,
-    last_read: Cell<Option<(u64, u64)>>,
+    last_read: Mutex<Option<(u64, u64)>>,
 }
 
 impl MemTarget {
@@ -343,14 +343,14 @@ impl MemTarget {
         Self {
             base,
             bytes,
-            last_read: Cell::new(None),
+            last_read: Mutex::new(None),
         }
     }
 }
 
 impl Target for MemTarget {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]> {
-        self.last_read.set(Some((addr, len)));
+        *self.last_read.lock().unwrap() = Some((addr, len));
         let start = addr
             .checked_sub(self.base)
             .ok_or_else(|| Error::unmapped(addr, len))? as usize;
@@ -391,7 +391,7 @@ impl Target for MemTarget {
 fn test_read_u64_decodes_little_endian() {
     let target = MemTarget::new(0x1000, (1..=16).collect());
     assert_eq!(target.read_u64(0x1000).unwrap(), 0x0807_0605_0403_0201);
-    assert_eq!(target.last_read.get(), Some((0x1000, 8)));
+    assert_eq!(*target.last_read.lock().unwrap(), Some((0x1000, 8)));
     assert_eq!(target.read_u64(0x1008).unwrap(), 0x100f_0e0d_0c0b_0a09);
     // A word straddling the end of memory is an error, not a short read.
     assert!(target.read_u64(0x100c).is_err());
@@ -427,7 +427,7 @@ fn test_tsd_reads_ul_ftsd_past_fsbase() {
     let read_u64 = |addr| target.read_u64(addr);
     assert_eq!(tsd_from_fsbase(&read_u64, &regs).unwrap(), slots);
     assert_eq!(
-        target.last_read.get(),
+        *target.last_read.lock().unwrap(),
         Some((FSBASE + UL_FTSD_OFFSET + 8 * 8, 8)),
         "the TSD reads moved off ul_ftsd"
     );

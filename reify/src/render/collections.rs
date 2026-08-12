@@ -30,7 +30,7 @@ use super::{
 /// shortfall renders the elements that are there and says how many are
 /// missing; nothing served at all degrades whole. Unlike [`eval_list`] the
 /// elements are contiguous, read in one target access.
-pub(crate) fn eval_slice<'a, T: Target + Sync>(
+pub(crate) fn eval_slice<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     header: &FatHeader,
     element: &BundleType<'a>,
@@ -137,7 +137,7 @@ impl From<fmt::Error> for MapWalkError {
 /// owns storage traversal; this function owns recursive key/value display,
 /// exact-length accounting, and inline/pretty punctuation.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn eval_map<'a, T: Target + Sync>(
+pub(crate) fn eval_map<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     ty: &BundleType<'a>,
     bytes: &[u8],
@@ -250,7 +250,7 @@ fn write_map_tail(
 /// core — and format chunks of entries into buffers stitched back in
 /// walk order.
 #[allow(clippy::too_many_arguments)]
-fn eval_map_parallel<'a, T: Target + Sync>(
+fn eval_map_parallel<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     ctx: RenderCtx<'_, 'a, T>,
@@ -316,7 +316,7 @@ fn eval_map_parallel<'a, T: Target + Sync>(
 /// addresses the collect pass recorded. The walk had these very bytes in
 /// hand; a target that stops answering between the walk and the format
 /// degrades like any other failed read.
-fn write_map_entry<'a, T: Target + Sync>(
+fn write_map_entry<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     key: BundleType<'a>,
     key_addr: u64,
@@ -521,7 +521,7 @@ fn btree_edge_address<'a>(
 /// puts each on its own indented line. A queue entry is small, so this reads
 /// far better than expanding every entry across several lines.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn eval_list<'a, T: Target + Sync>(
+pub(crate) fn eval_list<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     head_offset: u64,
     next_offset: u64,

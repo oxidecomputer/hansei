@@ -29,7 +29,7 @@ use super::{
 /// value's buffer and target address; a node's offsets are relative to them.
 /// `pretty` requests multi-line layout. All pretty-vs-inline, cycle-guard, and
 /// degradation-string handling lives here, written once.
-pub(crate) fn eval_node<'a, T: Target + Sync>(
+pub(crate) fn eval_node<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     node: &DisplayNode<'a>,
     ty: &BundleType<'a>,
@@ -234,7 +234,7 @@ fn u128_from_le(bytes: &[u8]) -> u128 {
 /// check it selects the variant the path descended into. A live read that
 /// finds another variant degrades to `<inactive variant>` — the datum is not
 /// there, not unreadable.
-fn check_place_guards<'a, T: Target + Sync>(
+fn check_place_guards<'a, T: Target>(
     place: &Place,
     segment: usize,
     base: Option<u64>,
@@ -267,7 +267,7 @@ fn check_place_guards<'a, T: Target + Sync>(
 /// `hops` is the common case: a borrowed local slice, no process read. On
 /// failure the `Err` carries the exact degradation marker to print in the
 /// value's place.
-fn read_place_bytes<'a, T: Target + Sync>(
+fn read_place_bytes<'a, T: Target>(
     place: &Place,
     bytes: &'a [u8],
     addr: u64,
@@ -308,7 +308,7 @@ fn read_place_bytes<'a, T: Target + Sync>(
 
 /// Evaluate a resolved [`ValueExpr`] against `bytes`, crossing pointer hops via
 /// `ctx.proc`. `Err` carries a degradation marker for a failed read.
-fn eval_expr<'a, T: Target + Sync>(
+fn eval_expr<'a, T: Target>(
     expr: &ValueExpr,
     vars: &[u64],
     bytes: &'a [u8],
@@ -379,7 +379,7 @@ fn write_seq_marker(f: &mut fmt::Formatter<'_>, marker: &str, any: bool) -> fmt:
 /// nodes. This is the general escape hatch a windowed/paged walk (the mpsc block
 /// chain) uses in place of a bespoke leaf.
 #[allow(clippy::too_many_arguments)]
-fn eval_custom_list<'a, T: Target + Sync>(
+fn eval_custom_list<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     vars_init: &[ValueExpr],
     condition: &ValueExpr,
@@ -426,7 +426,7 @@ fn eval_custom_list<'a, T: Target + Sync>(
 /// mutating `vars`, emitting elements, and returning whether the loop continues.
 /// A read that degrades writes its marker inline and stops the loop.
 #[allow(clippy::too_many_arguments)]
-fn eval_stmts<'a, T: Target + Sync>(
+fn eval_stmts<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     stmts: &[Stmt],
     vars: &mut Vec<u64>,
@@ -512,7 +512,7 @@ fn eval_stmts<'a, T: Target + Sync>(
 /// same no-silent-state contract the scalar decoder follows). Only the selected
 /// arm is evaluated, so an unseen watch receiver never reads its value.
 #[allow(clippy::too_many_arguments)]
-fn eval_variant<'a, T: Target + Sync>(
+fn eval_variant<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     discriminant: &ValueExpr,
     arms: &[Arm<'a>],
@@ -554,7 +554,7 @@ fn eval_variant<'a, T: Target + Sync>(
 /// either a real member shown structurally or a label whose value is a nested
 /// node.
 #[allow(clippy::too_many_arguments)]
-fn eval_struct<'a, T: Target + Sync>(
+fn eval_struct<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     fields: &[Field<'a>],
     ty: &BundleType<'a>,

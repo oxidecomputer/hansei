@@ -22,7 +22,7 @@ struct VtableFunction {
     concrete: Option<String>,
 }
 
-pub(crate) fn eval_dyn_pointer<'a, T: Target + Sync>(
+pub(crate) fn eval_dyn_pointer<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     ty: BundleType<'a>,
     name: Option<&str>,

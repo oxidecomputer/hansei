@@ -160,7 +160,12 @@ impl std::error::Error for Error {}
 /// Implemented by [`Proc`] — a core dump of either system — and by
 /// snapshots captured from one, which replay on any platform. The
 /// layers interpreting a target run against whichever is to hand.
-pub trait Target {
+///
+/// `Sync` is part of the contract: a render pass fans a collection's
+/// entries out across worker threads that all read through the one
+/// target, so a reader that cannot be shared cannot serve a render at
+/// all.
+pub trait Target: Sync {
     /// Read exactly `len` bytes at `addr`, lent straight from the
     /// target's own storage — a mapped core segment, a snapshot's
     /// captured run. Every target lends: what a backend cannot lend
