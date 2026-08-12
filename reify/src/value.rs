@@ -35,7 +35,7 @@ impl<'a> PartialEq for Value<'a> {
 
 impl<'a> Value<'a> {
     /// Wrap an already-read buffer. Useful when the bytes come from
-    /// somewhere other than a live target (tests, snapshots).
+    /// somewhere other than an open target (tests, byte fixtures).
     pub fn new(ty: BundleType<'a>, addr: u64, bytes: &'a [u8]) -> Self {
         Self { ty, addr, bytes }
     }
