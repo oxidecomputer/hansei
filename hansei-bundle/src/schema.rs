@@ -1067,20 +1067,30 @@ pub enum SymbolLookup<T> {
     Ambiguous(Vec<T>),
 }
 
+/// Exact-then-normalized resolution over a symbol table and its
+/// normalized index, shared by the task and dyn-future tables.
+fn lookup_symbol_id<T: Copy>(
+    by_symbol: &BTreeMap<String, T>,
+    by_normalized_symbol: &BTreeMap<String, Vec<T>>,
+    symbol: &str,
+) -> SymbolLookup<T> {
+    let symbol = strip_llvm_suffix(symbol);
+    if let Some(id) = by_symbol.get(symbol) {
+        return SymbolLookup::Unique(*id);
+    }
+    let Some(key) = normalized_v0_key(symbol) else {
+        return SymbolLookup::Missing;
+    };
+    match by_normalized_symbol.get(&key).map(Vec::as_slice) {
+        Some([id]) => SymbolLookup::Unique(*id),
+        Some(ids) if !ids.is_empty() => SymbolLookup::Ambiguous(ids.to_vec()),
+        _ => SymbolLookup::Missing,
+    }
+}
+
 impl TaskTable {
     pub fn lookup_id(&self, symbol: &str) -> SymbolLookup<TaskEntryId> {
-        let symbol = strip_llvm_suffix(symbol);
-        if let Some(id) = self.by_symbol.get(symbol) {
-            return SymbolLookup::Unique(*id);
-        }
-        let Some(key) = normalized_v0_key(symbol) else {
-            return SymbolLookup::Missing;
-        };
-        match self.by_normalized_symbol.get(&key).map(Vec::as_slice) {
-            Some([id]) => SymbolLookup::Unique(*id),
-            Some(ids) if !ids.is_empty() => SymbolLookup::Ambiguous(ids.to_vec()),
-            _ => SymbolLookup::Missing,
-        }
+        lookup_symbol_id(&self.by_symbol, &self.by_normalized_symbol, symbol)
     }
 
     /// Look up a mangled symbol as read from the target's symtab.
@@ -1121,18 +1131,7 @@ pub struct DynFutureTable {
 
 impl DynFutureTable {
     pub fn lookup_id(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
-        let symbol = strip_llvm_suffix(symbol);
-        if let Some(id) = self.by_symbol.get(symbol) {
-            return SymbolLookup::Unique(*id);
-        }
-        let Some(key) = normalized_v0_key(symbol) else {
-            return SymbolLookup::Missing;
-        };
-        match self.by_normalized_symbol.get(&key).map(Vec::as_slice) {
-            Some([id]) => SymbolLookup::Unique(*id),
-            Some(ids) if !ids.is_empty() => SymbolLookup::Ambiguous(ids.to_vec()),
-            _ => SymbolLookup::Missing,
-        }
+        lookup_symbol_id(&self.by_symbol, &self.by_normalized_symbol, symbol)
     }
 
     /// Look up a mangled symbol as read from the target's symtab.
