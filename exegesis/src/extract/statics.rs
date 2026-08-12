@@ -1,87 +1,38 @@
 //! Named-statics recovery: locate the tokio statics hansei resolves by
-//! symbol name — the TLS context key and the task waker vtable — from
-//! DWARF variables where they exist, and from the symbol table's mangled
-//! names where they do not.
+//! symbol name — the TLS context key and the task waker vtable — by their
+//! v0-mangled shape in the symbol table.
+//!
+//! A DWARF variable sweep used to run first, with this as the fallback,
+//! but its answer was only ever trusted when the symbol existed in the
+//! symbol table — the surviving DIE need not be the one whose symbol
+//! survived (on Linux the DWARF names `CONTEXT::{K#0}::{closure#1}`
+//! while the symtab keeps `{closure#0}`), and illumos release builds
+//! emit no `DW_TAG_variable` for these statics at all. That filter made
+//! the sweep answer from exactly the set this matcher searches, and a
+//! check across every reachable target (macOS/Linux/illumos, every
+//! version-matrix cell, two production-scale binaries) found the two
+//! routes agreeing everywhere, with exactly one matching symbol per
+//! role, so the sweep was removed.
 
 use super::{ExtractStats, strip};
 use crate::bundle::{StaticDef, StaticRole};
-use crate::view::DwView;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-const WAKER_NS: &str = "tokio::runtime::task::waker";
-
-/// Locate the named statics by DWARF shape, not by hardcoded
-/// mangled names: the TLS key static's path spelling is a std internal
-/// that differs across platforms and std versions.
+/// Locate the named statics in the symbol table: the mangled v0 name is
+/// all the bundle needs, since the consumer resolves the address by name
+/// anyway.
 pub(super) fn find_statics(
-    view: &DwView<'_>,
     symbols: &[&str],
-    symtab: &BTreeSet<&str>,
     stats: &mut ExtractStats,
 ) -> BTreeMap<StaticRole, StaticDef> {
-    let waker_ns = view.find_ns(WAKER_NS).map(|n| n.id());
-
     let mut out = BTreeMap::new();
-    for (_, var) in view.variables() {
-        let Some(linkage) = var.linkage_name() else {
-            continue;
-        };
-        match var.name() {
-            // std's thread_local storage for tokio's CONTEXT: named
-            // `__RUST_STD_INTERNAL_VAL` (1.97-era std), nested under
-            // namespaces rooted at tokio::runtime::context::CONTEXT.
-            Some("__RUST_STD_INTERNAL_VAL") => {
-                let mut segments = Vec::new();
-                let mut ns = var.namespace();
-                while let Some(n) = ns {
-                    segments.push(n.name().to_owned());
-                    ns = n.parent();
-                }
-                segments.reverse();
-                if segments.len() >= 4
-                    && segments[..4] == ["tokio", "runtime", "context", "CONTEXT"]
-                {
-                    out.entry(StaticRole::TlsContextKey).or_insert(StaticDef {
-                        symbol: strip(linkage).to_owned(),
-                        display: format!("{:#}", rustc_demangle::demangle(linkage)),
-                    });
-                }
-            }
-            Some("WAKER_VTABLE") if var.raw().namespace == waker_ns && waker_ns.is_some() => {
-                out.entry(StaticRole::TaskWakerVtable).or_insert(StaticDef {
-                    symbol: strip(linkage).to_owned(),
-                    display: format!("{:#}", rustc_demangle::demangle(linkage)),
-                });
-            }
-            _ => {}
-        }
-    }
-
-    // A DWARF sweep can name a symbol the binary does not have. The
-    // CONTEXT thread-local is emitted once per codegen unit, and the DIE
-    // that survives need not be the one whose symbol did: on Linux the
-    // DWARF names `CONTEXT::{K#0}::{closure#1}` while the symbol table
-    // keeps `{closure#0}`, and the two mangle differently. A name the
-    // symtab does not have is no use to a consumer that resolves it by
-    // name, so drop it here and let the symbol table answer instead.
-    out.retain(|_, def| symtab.contains(def.symbol.as_str()));
-
-    // Fall back to the symbol table for any static the DWARF sweep missed
-    // or named unusably. On some targets (notably illumos release builds)
-    // rustc emits no `DW_TAG_variable` DIE for these tokio/std dependency
-    // statics, yet the symbol survives in `.symtab`/`.dynsym`; the mangled
-    // v0 name is all the bundle needs, since the consumer resolves the
-    // address by name anyway.
     for &sym in symbols {
         let stripped = strip(sym);
         if let Some(role) = match_static_symbol(stripped) {
-            out.entry(role).or_insert_with(|| {
-                stats.statics_from_symtab += 1;
-                StaticDef {
-                    symbol: stripped.to_owned(),
-                    display: format!("{:#}", rustc_demangle::demangle(sym)),
-                }
+            out.entry(role).or_insert_with(|| StaticDef {
+                symbol: stripped.to_owned(),
+                display: format!("{:#}", rustc_demangle::demangle(sym)),
             });
         }
     }
@@ -99,10 +50,7 @@ pub(super) fn find_statics(
     out
 }
 
-/// Match an ELF symbol-table name to a named static by its v0-mangled
-/// shape. Used as a fallback when the DWARF carries no `DW_TAG_variable` DIE
-/// for the static (e.g. illumos release builds), where the symbol is still
-/// present in `.symtab`/`.dynsym`.
+/// Match a symbol-table name to a named static by its v0-mangled shape.
 ///
 /// The match keys on the length-prefixed path segments of the mangled name so
 /// it is independent of the crate disambiguator (which varies per build) and
