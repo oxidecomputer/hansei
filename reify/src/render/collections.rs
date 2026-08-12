@@ -5,7 +5,7 @@ use crate::debug_type::{DisplayNode, FatHeader, MapEntries};
 use crate::elements::{Elements, SeqError};
 use crate::value::Value;
 
-use exegesis::bundle::BundleType;
+use hansei_bundle::BundleType;
 
 use proc::Target;
 
@@ -579,7 +579,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use exegesis::bundle::BundleView;
+    use hansei_bundle::BundleView;
 
     #[test]
     fn test_vec_displays_initialized_elements() {

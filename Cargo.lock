@@ -503,6 +503,7 @@ dependencies = [
  "anyhow",
  "clap",
  "exegesis",
+ "hansei-bundle",
  "hansei-runtime",
  "proc",
  "rayon",
@@ -539,6 +540,7 @@ dependencies = [
  "blake3",
  "exegesis",
  "foldhash 0.2.0",
+ "hansei-bundle",
  "proc",
  "regex",
  "reify",
@@ -1027,8 +1029,8 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "reify"
 version = "0.1.0"
 dependencies = [
- "exegesis",
  "foldhash 0.2.0",
+ "hansei-bundle",
  "proc",
  "rayon",
  "rustc-demangle",

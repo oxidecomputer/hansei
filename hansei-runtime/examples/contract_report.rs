@@ -9,7 +9,7 @@
 //!
 //! Usage: `cargo run -p hansei-runtime --example contract_report -- <bundle>`
 
-use exegesis::bundle::{Bundle, BundleView};
+use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::contract::verify_walk_contract;
 
 fn main() -> anyhow::Result<()> {

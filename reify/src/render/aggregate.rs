@@ -6,7 +6,7 @@ use crate::debug_type::{DisplayNode, TypeKind};
 use crate::value::Value;
 use proc::Target;
 
-use exegesis::bundle::{BundleMember, BundleType};
+use hansei_bundle::{BundleMember, BundleType};
 
 use std::fmt;
 
@@ -261,7 +261,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use exegesis::bundle::{Bundle, BundleView, DisplayNode as BundleNode, TypeDef};
+    use hansei_bundle::{Bundle, BundleView, DisplayNode as BundleNode, TypeDef};
 
     #[test]
     fn test_ugly_suppresses_enum_payload_formatter() {

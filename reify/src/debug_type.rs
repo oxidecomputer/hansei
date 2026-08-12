@@ -1,17 +1,17 @@
 //! The resolved form of a bundle's display programs.
 //!
 //! A bundle addresses the data a [`DisplayNode`] reads with name-based
-//! [`Selector`](exegesis::bundle::Selector)s, which say nothing about layout.
+//! [`Selector`](hansei_bundle::Selector)s, which say nothing about layout.
 //! [`DisplayNode::resolve`] reduces those to byte offsets against a concrete
 //! [`BundleType`], once per type, and `render::node` interprets the result.
 
-use exegesis::bundle::{BundleMember, BundleType, VariantError};
+use hansei_bundle::{BundleMember, BundleType, VariantError};
 
 use std::num::NonZeroU8;
 
-pub use exegesis::bundle::{Notation, TypeClass, TypeKind};
+pub use hansei_bundle::{Notation, TypeClass, TypeKind};
 
-/// Resolved form of a bundle [`exegesis::bundle::ScalarDecode`]: the bit layout
+/// Resolved form of a bundle [`hansei_bundle::ScalarDecode`]: the bit layout
 /// of one machine word, with labels resolved from the bundle's string table to
 /// owned strings. reify's `apply` interprets it, enforcing the two "no silent
 /// state" rules documented on the bundle type.
@@ -48,8 +48,8 @@ pub enum FieldRender {
     Uint,
 }
 
-/// Resolved form of a bundle [`exegesis::bundle::DisplayNode`]: the same tree
-/// shape, but every [`exegesis::bundle::Selector`] is reduced to a byte offset
+/// Resolved form of a bundle [`hansei_bundle::DisplayNode`]: the same tree
+/// shape, but every [`hansei_bundle::Selector`] is reduced to a byte offset
 /// (relative to the value the node is rendered against) and every related type
 /// id is resolved to a concrete [`BundleType`]. reify's `eval_node` walks it
 /// with one generic interpreter.
@@ -154,7 +154,7 @@ pub enum DisplayNode<'a> {
     },
     /// Select one of `arms` (else `default`) by matching the value the
     /// `discriminant` expression computes. See the bundle
-    /// [`exegesis::bundle::DisplayNode::Variant`] for the model.
+    /// [`hansei_bundle::DisplayNode::Variant`] for the model.
     Variant {
         discriminant: ValueExpr,
         arms: Vec<Arm<'a>>,
@@ -162,7 +162,7 @@ pub enum DisplayNode<'a> {
     },
     /// Interpret a small imperative program to generate a `[e, e, …]` sequence:
     /// the resolved form of the bundle
-    /// [`exegesis::bundle::DisplayNode::CustomList`]. `vars` seed loop
+    /// [`hansei_bundle::DisplayNode::CustomList`]. `vars` seed loop
     /// variables, `body` runs each iteration while `condition` holds, and each
     /// [`Stmt::Emit`] renders `element` against the bytes read at a computed
     /// address. The evaluator caps iterations, so a cyclic walk terminates.
@@ -189,7 +189,7 @@ pub struct FatHeader {
 }
 
 /// One resolved [`DisplayNode::CustomList`] body statement, mirroring the bundle
-/// [`exegesis::bundle::Stmt`]. Carries no type parameter: a statement only moves
+/// [`hansei_bundle::Stmt`]. Carries no type parameter: a statement only moves
 /// words and addresses, and the sole element type lives on the list itself.
 #[derive(Clone, Debug)]
 pub enum Stmt {
@@ -210,8 +210,8 @@ pub enum Stmt {
 /// A resolved location that may cross pointer hops, read at render time. An
 /// empty `hops` is a plain local offset (the common case); each hop follows the
 /// pointer word located so far and advances into the pointee. This is the
-/// resolved form of an [`exegesis::bundle::Selector`] that contains a
-/// [`exegesis::bundle::Step::Deref`].
+/// resolved form of an [`hansei_bundle::Selector`] that contains a
+/// [`hansei_bundle::Step::Deref`].
 #[derive(Clone, Debug)]
 pub struct Place {
     /// Offset from the enclosing value's base to the first pointer word (when
@@ -276,7 +276,7 @@ pub struct Arm<'a> {
     pub(crate) payload: Option<Box<DisplayNode<'a>>>,
 }
 
-/// Resolved [`exegesis::bundle::ValueExpr`]: a `Read` carries its resolved
+/// Resolved [`hansei_bundle::ValueExpr`]: a `Read` carries its resolved
 /// [`Place`] and word width; the rest mirror the bundle form. Not generic over
 /// the type parameter — an expression only ever yields a machine word.
 #[derive(Clone, Debug)]
@@ -347,7 +347,7 @@ impl<'a> DisplayNode<'a> {
     /// Resolve `ty`'s bundle display program into this offset-carrying form —
     /// the selector→offset reduction a render pass performs once per type.
     pub fn resolve(ty: BundleType<'a>) -> Option<Self> {
-        use exegesis::bundle::{MemberRef, Selector, Step};
+        use hansei_bundle::{MemberRef, Selector, Step};
 
         /// The member a [`MemberRef`] addresses in `ty`, resolved the way the
         /// bundle resolves it: by position, or by the one member bearing the
@@ -426,11 +426,11 @@ impl<'a> DisplayNode<'a> {
         /// for a univariant enum, which has no discriminant to check.
         fn resolve_variant_step(
             ty: BundleType<'_>,
-            name: exegesis::bundle::StrRef,
+            name: hansei_bundle::StrRef,
             segment: usize,
             offset: u64,
         ) -> Option<((BundleType<'_>, u64), Option<VariantGuard>)> {
-            use exegesis::bundle::{DiscrValue, VariantDef};
+            use hansei_bundle::{DiscrValue, VariantDef};
 
             let shape = ty.variant_shape()?;
             let mut matches = shape.variants.iter().filter(|v| v.name == name);
@@ -489,13 +489,13 @@ impl<'a> DisplayNode<'a> {
             (place.hops.is_empty() && place.guards.is_empty()).then_some((ty, place.root_offset))
         }
 
-        /// Resolve a bundle [`exegesis::bundle::ValueExpr`] into reify's form,
+        /// Resolve a bundle [`hansei_bundle::ValueExpr`] into reify's form,
         /// resolving each `Read` selector to a [`Place`] plus its word width.
         fn resolve_value_expr<'a>(
             scope: BundleType<'a>,
-            expr: &exegesis::bundle::ValueExpr,
+            expr: &hansei_bundle::ValueExpr,
         ) -> Option<ValueExpr> {
-            use exegesis::bundle::ValueExpr as BundleExpr;
+            use hansei_bundle::ValueExpr as BundleExpr;
             Some(match expr {
                 BundleExpr::Read(sel) => {
                     let (ty, place) = resolve_place(scope, sel)?;
@@ -537,10 +537,10 @@ impl<'a> DisplayNode<'a> {
             })
         }
 
-        /// Resolve a bundle [`exegesis::bundle::Stmt`] into reify's form,
+        /// Resolve a bundle [`hansei_bundle::Stmt`] into reify's form,
         /// resolving every embedded [`ValueExpr`] against `scope`.
-        fn resolve_stmt(scope: BundleType<'_>, stmt: &exegesis::bundle::Stmt) -> Option<Stmt> {
-            use exegesis::bundle::Stmt as BundleStmt;
+        fn resolve_stmt(scope: BundleType<'_>, stmt: &hansei_bundle::Stmt) -> Option<Stmt> {
+            use hansei_bundle::Stmt as BundleStmt;
             Some(match stmt {
                 BundleStmt::Set { var, value } => Stmt::Set {
                     var: *var,
@@ -597,13 +597,13 @@ impl<'a> DisplayNode<'a> {
             })
         }
 
-        /// Resolve a bundle [`exegesis::bundle::ScalarDecode`] into reify's
+        /// Resolve a bundle [`hansei_bundle::ScalarDecode`] into reify's
         /// owned form, resolving each label [`StrRef`] against `root`'s bundle.
         fn resolve_decode(
             root: BundleType<'_>,
-            decode: &exegesis::bundle::ScalarDecode,
+            decode: &hansei_bundle::ScalarDecode,
         ) -> ScalarDecode {
-            use exegesis::bundle::{FieldRender as BundleRender, ScalarDecode as BundleDecode};
+            use hansei_bundle::{FieldRender as BundleRender, ScalarDecode as BundleDecode};
             match decode {
                 BundleDecode::Raw => ScalarDecode::Raw,
                 BundleDecode::Millis => ScalarDecode::Millis,
@@ -629,14 +629,14 @@ impl<'a> DisplayNode<'a> {
             }
         }
 
-        /// Recursively resolve a bundle [`exegesis::bundle::DisplayNode`] into
+        /// Recursively resolve a bundle [`hansei_bundle::DisplayNode`] into
         /// reify's offset-carrying form, rooted at `scope` (the type the node
         /// is rendered against). Mirrors the recursion in io.rs `check_node`.
         fn resolve_node<'a>(
             scope: BundleType<'a>,
-            node: &exegesis::bundle::DisplayNode,
+            node: &hansei_bundle::DisplayNode,
         ) -> Option<DisplayNode<'a>> {
-            use exegesis::bundle::DisplayNode as BundleNode;
+            use hansei_bundle::DisplayNode as BundleNode;
             match node {
                 BundleNode::Scalar { at, decode } => {
                     let (landed, offset) = resolve_selector(scope, at)?;
@@ -835,9 +835,9 @@ impl<'a> DisplayNode<'a> {
             scope: BundleType<'a>,
             key: BundleType<'a>,
             value: BundleType<'a>,
-            entries: &exegesis::bundle::MapEntries,
+            entries: &hansei_bundle::MapEntries,
         ) -> Option<MapEntries<'a>> {
-            let exegesis::bundle::MapEntries::BTree {
+            let hansei_bundle::MapEntries::BTree {
                 root,
                 root_node,
                 height,
@@ -904,14 +904,14 @@ impl<'a> DisplayNode<'a> {
             })
         }
 
-        /// Resolve one bundle [`exegesis::bundle::Field`]. A member whose value
+        /// Resolve one bundle [`hansei_bundle::Field`]. A member whose value
         /// a node computes and a synthesized field both become `Computed`;
         /// they differ only in where the label comes from.
         fn resolve_field<'a>(
             scope: BundleType<'a>,
-            field: &exegesis::bundle::Field,
+            field: &hansei_bundle::Field,
         ) -> Option<Field<'a>> {
-            use exegesis::bundle::Field as BundleField;
+            use hansei_bundle::Field as BundleField;
             match field {
                 BundleField::Member { at, node } => {
                     let member = member_at(scope, at)?;
@@ -956,7 +956,7 @@ mod tests {
     use crate::testhelper::*;
     use crate::{TypeKind, Value};
 
-    use exegesis::bundle::BundleView;
+    use hansei_bundle::BundleView;
 
     #[test]
     fn test_kind_mapping() {

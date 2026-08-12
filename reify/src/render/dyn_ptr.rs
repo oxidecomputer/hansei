@@ -5,7 +5,7 @@ use crate::debug_type::DisplayNode;
 use crate::value::Value;
 use proc::Target;
 
-use exegesis::bundle::BundleType;
+use hansei_bundle::BundleType;
 
 use std::fmt;
 
@@ -62,8 +62,8 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
             let Some(display) = resolve_function_symbol(Some(proc), address) else {
                 continue;
             };
-            let concrete =
-                exegesis::symbols::concrete_type_from_vtable_symbol(&display).map(str::to_owned);
+            let concrete = hansei_bundle::symbols::concrete_type_from_vtable_symbol(&display)
+                .map(str::to_owned);
             functions.push(VtableFunction {
                 slot,
                 display,
@@ -196,7 +196,7 @@ pub(crate) fn resolve_function_symbol<T: Target>(proc: Option<&T>, address: u64)
         return None;
     }
     let symbol = crate::target::function_symbol(proc?, address)?;
-    let stripped = exegesis::bundle::strip_llvm_suffix(&symbol);
+    let stripped = hansei_bundle::strip_llvm_suffix(&symbol);
     Some(
         rustc_demangle::try_demangle(stripped)
             .map(|symbol| format!("{symbol:#}"))
@@ -287,7 +287,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use exegesis::bundle::{BundleView, TypeDef};
+    use hansei_bundle::{BundleView, TypeDef};
 
     #[test]
     fn test_dyn_pointer_formats_unknown_concrete_type() {

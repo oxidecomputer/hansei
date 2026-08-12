@@ -140,7 +140,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use exegesis::bundle::BundleView;
+    use hansei_bundle::BundleView;
 
     /// Every scalar parses from its own bytes, little-endian, and a buffer of
     /// the wrong width is an error rather than a silent misread.

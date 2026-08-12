@@ -677,7 +677,7 @@ fn level(rows: &[Row], indent: &str, branch: bool, out: &mut dyn io::Write) -> R
 mod tests {
     use super::*;
 
-    use exegesis::bundle::{BundleTypeId, FutureKind, TaskEntryId};
+    use hansei_bundle::{BundleTypeId, FutureKind, TaskEntryId};
     use hansei_runtime::tokio::bundle::{KnownFuture, Task, WaitTarget};
     use hansei_runtime::tokio::census::SetChild;
     use hansei_runtime::tokio::graph::TaskRef;

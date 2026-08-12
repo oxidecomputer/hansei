@@ -15,11 +15,11 @@ use super::contract::{self, ContractReport, WalkPolicy, Walked};
 use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
-use exegesis::bundle::{
+use hansei_bundle::symbols::normalized_v0_key;
+use hansei_bundle::{
     BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, SymbolLookup,
     TaskEntryId, TaskFutureEntry, TypeDef, WalkRole, strip_build_prefix, strip_llvm_suffix,
 };
-use exegesis::symbols::normalized_v0_key;
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
 

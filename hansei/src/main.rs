@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
-use exegesis::bundle::{Bundle, BundleMember, BundleType, BundleView, WalkRole};
+use hansei_bundle::{Bundle, BundleMember, BundleType, BundleView, WalkRole};
 use hansei_runtime::tokio::{Lifecycle, bundle, census, contract, graph};
 use proc::Proc;
 use proc::snapshot::Recorder;
@@ -3206,7 +3206,7 @@ mod variable_format_tests {
 #[cfg(test)]
 mod whatis_tests {
     use super::{parse_hex_addr, report_whatis};
-    use exegesis::bundle::{Bundle, BundleView};
+    use hansei_bundle::{Bundle, BundleView};
     use hansei_runtime::tokio::bundle::{Context, TaskExtents, TaskList};
     use hansei_runtime::tokio::census::{self, FutureCensus};
     use proc::Target;
@@ -3392,7 +3392,7 @@ mod future_trace_tests {
         FutureAt, TraceTarget, future_at, future_name, parse_trace_target, print_await_chain,
         print_tasks,
     };
-    use exegesis::bundle::{Bundle, BundleView};
+    use hansei_bundle::{Bundle, BundleView};
     use hansei_runtime::tokio::TaskState;
     use hansei_runtime::tokio::bundle::{self, Context, TaskExtents, TaskList};
     use hansei_runtime::tokio::census::{self, FutureCensus};
@@ -3862,7 +3862,7 @@ mod future_trace_tests {
 #[cfg(test)]
 mod trace_render_tests {
     use super::print_await_chain;
-    use exegesis::bundle::{Bundle, BundleView};
+    use hansei_bundle::{Bundle, BundleView};
     use hansei_runtime::tokio::bundle::{Context, TaskStage};
     use proc::Target;
     use proc::snapshot::Snapshot;
@@ -4080,7 +4080,7 @@ mod trace_render_tests {
 mod graph_tests {
     use super::print_graph;
 
-    use exegesis::bundle::BundleTypeId;
+    use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::bundle::{
         AbandonedAcquire, FutureInfo, Task, TaskList, WaitKind, WaitTarget,
     };

@@ -22,7 +22,7 @@
 //! and checked by [`test_fixtures_record_the_current_programs`], since
 //! nothing else here would notice the programs moving on without them.
 
-use exegesis::bundle::{Bundle, BundleView};
+use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd, Context, FutureInfo, Task, TaskStage};
 use hansei_runtime::tokio::{census, graph};

@@ -5,11 +5,14 @@ edition = "2024"
 
 [dev-dependencies]
 blake3.workspace = true
+# Only the matrix goldens build a bundle per cell; the crate itself reads
+# bundles and never produces one.
+exegesis.workspace = true
 regex.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-exegesis.workspace = true
 foldhash.workspace = true
+hansei-bundle.workspace = true
 proc.workspace = true
 reify.workspace = true

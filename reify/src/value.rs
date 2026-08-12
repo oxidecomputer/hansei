@@ -14,7 +14,7 @@ use crate::parse::ParseWithDbgInfo;
 use crate::{Error, Result};
 use proc::Target;
 
-use exegesis::bundle::{BundleType, VariantError};
+use hansei_bundle::{BundleType, VariantError};
 
 use std::fmt;
 
@@ -241,7 +241,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use exegesis::bundle::BundleView;
+    use hansei_bundle::BundleView;
 
     /// `peel` descends through single-member wrappers, and stops at the last
     /// type the buffer covers. A value read short must not take it past the end

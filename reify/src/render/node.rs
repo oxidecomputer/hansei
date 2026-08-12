@@ -7,7 +7,7 @@ use crate::debug_type::{Arm, DisplayNode, Field, Place, Stmt, ValueExpr};
 use crate::value::Value;
 use proc::Target;
 
-use exegesis::bundle::BundleType;
+use hansei_bundle::BundleType;
 
 use std::fmt;
 
@@ -610,7 +610,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use exegesis::bundle::{
+    use hansei_bundle::{
         Arm, BundleView, DisplayNode as BundleNode, MemberRef, ScalarDecode, Selector, Step,
         ValueExpr,
     };

@@ -8,7 +8,7 @@
 //! bundle missing a recorded binding must be loud, not a silent
 //! structural decline.
 
-use exegesis::bundle::{Bundle, BundleView, WalkOutcome, WalkRole};
+use hansei_bundle::{Bundle, BundleView, WalkOutcome, WalkRole};
 use hansei_runtime::tokio::contract::{Class, verify_walk_contract};
 
 use std::path::{Path, PathBuf};
