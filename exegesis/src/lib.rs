@@ -5,6 +5,7 @@ pub mod extract;
 pub mod raw_types;
 pub mod reader;
 pub mod string_table;
+pub mod summary;
 pub mod symbols;
 pub mod view;
 

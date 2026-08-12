@@ -183,7 +183,7 @@ fn extract(
                 Some(binding) => {
                     println!(
                         "  => {}",
-                        exegesis::bundle::walk_entry_line(explanation.role, binding)
+                        exegesis::summary::walk_entry_line(explanation.role, binding)
                     );
                 }
                 None => println!("  => no binding recorded"),
@@ -461,7 +461,7 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("== walks ({}) ==", bundle.walks.entries.len());
     for (role, binding) in &bundle.walks.entries {
-        println!("{}", exegesis::bundle::walk_entry_line(*role, binding));
+        println!("{}", exegesis::summary::walk_entry_line(*role, binding));
         if binding.steps.is_empty() {
             continue;
         }

@@ -14,10 +14,9 @@
 //! serves macOS and illumos. Regenerate with `EXEGESIS_BLESS=1 cargo test
 //! -p exegesis --test golden`.
 
-use exegesis::bundle::{
-    Bundle, DisplayNode, TypeDef, describe_debug_format, portable_summary, walk_entry_line,
-};
+use exegesis::bundle::{Bundle, DisplayNode, TypeDef, describe_debug_format};
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
+use exegesis::summary::{portable_summary, walk_entry_line};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
