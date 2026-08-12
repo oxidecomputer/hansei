@@ -5,7 +5,7 @@ use crate::raw_types::{
 };
 use crate::reader::DwReader;
 use crate::string_table::StrId;
-use crate::{FuncId, TypeId, TypeKind, VarId};
+use crate::{TypeId, TypeKind};
 
 use std::fmt;
 use std::num::NonZero;
@@ -198,14 +198,6 @@ impl<'a> Base<'a> {
     pub fn size(&self) -> u64 {
         self.raw.size
     }
-
-    pub fn alignment(&self) -> Option<NonZero<u64>> {
-        self.raw.alignment
-    }
-
-    pub fn raw(&self) -> &RawBase<StrId> {
-        self.raw
-    }
 }
 
 impl<'a> From<Base<'a>> for Type<'a> {
@@ -251,10 +243,6 @@ impl<'a> Pointer<'a> {
     pub fn target_type_id(&self) -> TypeId {
         self.raw.target_type_id
     }
-
-    pub fn raw(&self) -> &RawPointer<StrId> {
-        self.raw
-    }
 }
 
 impl<'a> From<Pointer<'a>> for Type<'a> {
@@ -293,10 +281,6 @@ impl<'a> Enum<'a> {
 
     pub fn size(&self) -> u64 {
         self.raw.size
-    }
-
-    pub fn alignment(&self) -> Option<NonZero<u64>> {
-        self.raw.alignment
     }
 
     /// Return an iterator over the generic type arguments of this
@@ -378,10 +362,6 @@ impl<'a> Enum<'a> {
             _ => None,
         }
     }
-
-    pub fn raw(&self) -> &RawEnum<StrId> {
-        self.raw
-    }
 }
 
 impl<'a> From<Enum<'a>> for Type<'a> {
@@ -442,10 +422,6 @@ impl<'a> Enumerator<'a> {
     /// Returns the constant value.
     pub fn value(&self) -> u128 {
         self.raw.value
-    }
-
-    pub fn raw(&self) -> &RawEnumerator<StrId> {
-        self.raw
     }
 }
 
@@ -525,10 +501,6 @@ impl<'a> Variant<'a> {
     /// Shortcut: returns the payload type of this variant.
     pub fn ty(&self) -> Type<'a> {
         self.member().ty()
-    }
-
-    pub fn raw(&self) -> &RawVariant<StrId> {
-        self.raw
     }
 }
 
@@ -643,10 +615,6 @@ impl<'a> Struct<'a> {
                 collector: self.collector,
             })
     }
-
-    pub fn raw(&self) -> &RawStruct<StrId> {
-        self.raw
-    }
 }
 
 impl<'a> From<Struct<'a>> for Type<'a> {
@@ -727,10 +695,6 @@ impl<'a> Union<'a> {
                 collector: self.collector,
             })
     }
-
-    pub fn raw(&self) -> &RawUnion<StrId> {
-        self.raw
-    }
 }
 
 impl<'a> From<Union<'a>> for Type<'a> {
@@ -769,18 +733,9 @@ impl<'a> Array<'a> {
         Type::from_raw(raw, self.collector)
     }
 
-    /// Returns the element's `TypeId`.
-    pub fn elem_type_id(&self) -> TypeId {
-        self.raw.elem_type_id
-    }
-
     /// The number of elements.
     pub fn count(&self) -> u64 {
         self.raw.count
-    }
-
-    pub fn raw(&self) -> &RawArray {
-        self.raw
     }
 }
 
@@ -839,10 +794,6 @@ impl<'a> Member<'a> {
             .source_loc
             .as_deref()
             .map(|loc| SourceLocView::new(loc, self.collector))
-    }
-
-    pub fn raw(&self) -> &RawMember<StrId> {
-        self.raw
     }
 }
 
@@ -947,102 +898,6 @@ impl<'a> Iterator for MemberIter<'a> {
 
 impl ExactSizeIterator for MemberIter<'_> {}
 
-// --- NsTypeIter ---
-
-/// Iterator over canonical types within a namespace.
-#[derive(Clone, Debug)]
-pub struct NsTypeIter<'a> {
-    ids: &'a [TypeId],
-    index: usize,
-    collector: &'a DwReader<'a>,
-}
-
-impl<'a> Iterator for NsTypeIter<'a> {
-    type Item = Type<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let &id = self.ids.get(self.index)?;
-        self.index += 1;
-        let raw = self
-            .collector
-            .types
-            .get(&id)
-            .expect("indexed TypeId not in collector");
-        Some(Type::from_raw(raw, self.collector))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.ids.len() - self.index;
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for NsTypeIter<'_> {}
-
-// --- NsVarIter ---
-
-/// Iterator over static variables within a namespace.
-#[derive(Clone, Debug)]
-pub struct NsVarIter<'a> {
-    ids: &'a [VarId],
-    index: usize,
-    collector: &'a DwReader<'a>,
-}
-
-impl<'a> Iterator for NsVarIter<'a> {
-    type Item = StaticVariable<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let &id = self.ids.get(self.index)?;
-        self.index += 1;
-        let raw = self
-            .collector
-            .variables
-            .get(&id)
-            .expect("indexed VarId not in collector");
-        Some(StaticVariable::new(raw, self.collector))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.ids.len() - self.index;
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for NsVarIter<'_> {}
-
-// --- NsFuncIter ---
-
-/// Iterator over functions within a namespace.
-#[derive(Clone, Debug)]
-pub struct NsFuncIter<'a> {
-    ids: &'a [FuncId],
-    index: usize,
-    collector: &'a DwReader<'a>,
-}
-
-impl<'a> Iterator for NsFuncIter<'a> {
-    type Item = Func<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let &id = self.ids.get(self.index)?;
-        self.index += 1;
-        let raw = self
-            .collector
-            .functions
-            .get(&id)
-            .expect("indexed FuncId not in collector");
-        Some(Func::new(raw, self.collector))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.ids.len() - self.index;
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for NsFuncIter<'_> {}
-
 // --- StaticVariable ---
 
 #[derive(Copy, Clone)]
@@ -1105,10 +960,6 @@ impl<'a> StaticVariable<'a> {
             return None;
         }
         Some(SourceLocView::new(&self.raw.source_loc, self.collector))
-    }
-
-    pub fn raw(&self) -> &RawStaticVariable<StrId> {
-        self.raw
     }
 }
 
@@ -1307,10 +1158,6 @@ impl<'a> TemplateParam<'a> {
     pub fn type_id(&self) -> TypeId {
         self.raw.type_id
     }
-
-    pub fn raw(&self) -> &RawGenericParameter<StrId> {
-        self.raw
-    }
 }
 
 impl fmt::Debug for TemplateParam<'_> {
@@ -1398,15 +1245,6 @@ impl<'a> SourceLocView<'a> {
     /// 1-indexed line number.
     pub fn line(&self) -> Option<NonZero<u64>> {
         self.raw.line
-    }
-
-    /// 1-indexed column number.
-    pub fn column(&self) -> Option<NonZero<u64>> {
-        self.raw.column
-    }
-
-    pub fn raw(&self) -> &SourceLoc<StrId> {
-        self.raw
     }
 }
 

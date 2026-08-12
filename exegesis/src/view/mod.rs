@@ -1,9 +1,9 @@
 mod types;
 
 pub use types::{
-    Array, Base, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace, NsFuncIter,
-    NsTypeIter, NsVarIter, Param, ParamIter, Pointer, SourceLocView, StaticVariable, Struct,
-    TemplateParam, TemplateParamIter, Type, Union, Variant, VariantIter, VariantShapeView,
+    Array, Base, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace, Param,
+    ParamIter, Pointer, SourceLocView, StaticVariable, Struct, TemplateParam, TemplateParamIter,
+    Type, Union, Variant, VariantIter, VariantShapeView,
 };
 
 use crate::raw_types::NsId;
@@ -147,17 +147,10 @@ impl<'a> DwView<'a> {
             .unwrap_or_default()
     }
 
-    /// Iterate over all canonical types.
-    pub fn types(&self) -> impl Iterator<Item = (TypeId, Type<'a>)> + '_ {
-        self.collector
-            .canonical_types()
-            .map(|(id, raw)| (id, Type::from_raw(raw, self.collector)))
-    }
-
     // --- Variables ---
 
     /// Get a static variable by its ID.
-    pub fn get_var(&self, id: VarId) -> StaticVariable<'a> {
+    fn get_var(&self, id: VarId) -> StaticVariable<'a> {
         let raw = self
             .collector
             .variables
@@ -179,34 +172,10 @@ impl<'a> DwView<'a> {
             .find(|v| v.namespace_id() == ns_id)
     }
 
-    /// Find all static variables matching a path.
-    pub fn find_all_vars(&self, path: &str) -> Vec<StaticVariable<'a>> {
-        let Some((ns_id, var_name)) = self.resolve_path(path) else {
-            return Vec::new();
-        };
-        self.vars_by_name
-            .get(var_name)
-            .map(|ids| {
-                ids.iter()
-                    .map(|&id| self.get_var(id))
-                    .filter(|v| v.namespace_id() == ns_id)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Iterate over all static variables.
-    pub fn variables(&self) -> impl Iterator<Item = (VarId, StaticVariable<'a>)> + '_ {
-        self.collector
-            .variables
-            .iter()
-            .map(|(&id, raw)| (id, StaticVariable::new(raw, self.collector)))
-    }
-
     // --- Funcs ---
 
     /// Get a function by its ID.
-    pub fn get_func(&self, id: FuncId) -> Func<'a> {
+    fn get_func(&self, id: FuncId) -> Func<'a> {
         let raw = self
             .collector
             .functions
@@ -226,22 +195,6 @@ impl<'a> DwView<'a> {
             .iter()
             .map(|&id| self.get_func(id))
             .find(|f| f.namespace_id() == ns_id)
-    }
-
-    /// Find all functions matching a path.
-    pub fn find_all_funcs(&self, path: &str) -> Vec<Func<'a>> {
-        let Some((ns_id, func_name)) = self.resolve_path(path) else {
-            return Vec::new();
-        };
-        self.funcs_by_name
-            .get(func_name)
-            .map(|ids| {
-                ids.iter()
-                    .map(|&id| self.get_func(id))
-                    .filter(|f| f.namespace_id() == ns_id)
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// Iterate over all functions.
