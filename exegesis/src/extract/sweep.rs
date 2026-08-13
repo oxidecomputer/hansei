@@ -220,9 +220,11 @@ fn sweep_function(
             return;
         };
         let poll_shaped = func
-            .return_type()
+            .raw()
+            .return_type_id
+            .and_then(|id| reader.canonical_type(id))
             .and_then(|t| t.name())
-            .is_some_and(|n| n.starts_with("Poll<"));
+            .is_some_and(|n| reader.strings.get(n).starts_with("Poll<"));
         if !poll_shaped {
             return;
         }
