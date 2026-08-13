@@ -787,6 +787,11 @@ fn test_golden_joinset() {
     run_golden("joinset");
 }
 
+#[test]
+fn test_golden_ct_runtime() {
+    run_golden("ct-runtime");
+}
+
 /// Two extractions of one binary agree byte for byte.
 ///
 /// The sweep resolves several fields first-wins, so whichever function

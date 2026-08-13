@@ -26,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 32;
+pub const FORMAT_VERSION: u32 = 33;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -1306,6 +1306,7 @@ impl Bundle {
             ("infra.context", infra.context),
             ("infra.scheduler_handle", infra.scheduler_handle),
             ("infra.mt_handle", infra.mt_handle),
+            ("infra.ct_handle", infra.ct_handle),
             ("infra.location", infra.location),
             ("infra.raw_waker_vtable", infra.raw_waker_vtable),
         ] {

@@ -1222,7 +1222,9 @@ macro_rules! walk_roles {
 walk_roles! {
     CurrentTaskId = "Context.current_task_id",
     WorkerHandle = "Context.handle",
+    CtWorkerHandle = "Context.handle.current_thread",
     WorkerContext = "Context.scheduler",
+    CtWorkerContext = "Context.scheduler.current_thread",
     WorkerIndex = "worker::Context.index",
     HandleShared = "Handle.shared",
     SharedRemotes = "Shared.remotes",
@@ -1351,7 +1353,12 @@ pub struct InfraTypes {
     /// `tokio::runtime::scheduler::Handle` (enum).
     pub scheduler_handle: BundleTypeId,
     /// `tokio::runtime::scheduler::multi_thread::Handle` (behind an `Arc`).
+    /// An opaque placeholder on a target built without `rt-multi-thread`.
     pub mt_handle: BundleTypeId,
+    /// `tokio::runtime::scheduler::current_thread::Handle` (behind an
+    /// `Arc`) — the other scheduler flavor's handle. At least one of the
+    /// two flavor handles resolves on any tokio target.
+    pub ct_handle: BundleTypeId,
     /// `core::panic::Location`.
     pub location: BundleTypeId,
     /// `core::task::RawWakerVTable`.

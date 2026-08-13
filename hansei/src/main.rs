@@ -1,10 +1,9 @@
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
-use hansei_bundle::{Bundle, BundleView, WalkRole};
+use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
 use hansei_runtime::tokio::{bundle, census, contract};
 use proc::{Proc, Target};
-use reify::Value;
 
 use std::cell::OnceCell;
 use std::io::{self, Write};
@@ -521,9 +520,10 @@ pub struct Session<'b> {
     /// workers above are the ones holding a tokio `Context`; the
     /// difference is what the runtime is *not* running.
     lwps: usize,
-    /// The multi_thread scheduler's `Handle`: the scheduler state and
-    /// the drivers both hang off it.
-    handle: Value<'b>,
+    /// Every runtime discovered in the target, of either scheduler
+    /// flavor. One on nearly every real target; current_thread makes
+    /// more ordinary, and the task list below merges them all.
+    runtimes: Vec<bundle::RuntimeRef<'b>>,
     tasks: bundle::TaskList,
     /// Task extents, the sub-executor census and the wait analysis,
     /// built on first use: a core does not change, so the address→task
@@ -568,9 +568,8 @@ impl<'b> Session<'b> {
 
         let lwps = proc.lwps().context("failed to read lwps")?;
         let workers = discover_workers(&lwps, &ctx)?;
-        let handle = ctx.find_handle(&workers)?;
-        let shared = ctx.walk(WalkRole::HandleShared).walk_at(handle)?;
-        let tasks = ctx.enumerate_tasks(shared)?;
+        let runtimes = ctx.find_runtimes(&workers)?;
+        let tasks = ctx.enumerate_all_tasks(&runtimes)?;
         print_warnings(&tasks.errors)?;
 
         Ok(Session {
@@ -582,7 +581,7 @@ impl<'b> Session<'b> {
             bundle_path: &args.bundle,
             workers,
             lwps: lwps.len(),
-            handle,
+            runtimes,
             tasks,
             extents: OnceCell::new(),
             census: OnceCell::new(),

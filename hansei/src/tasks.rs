@@ -577,10 +577,23 @@ pub(crate) fn exec_census(
     }
 
     let (runtime, parks, pool) = if sections.threads {
+        // Park states are the multi_thread scheduler's parker array; a
+        // current_thread runtime has none. The blocking pool's chain is
+        // spelled the same on both flavors' handles.
+        let mt = session
+            .runtimes
+            .iter()
+            .find(|r| r.flavor == bundle::RuntimeFlavor::MultiThread);
         (
             runtime_threads(session)?,
-            optional(session.ctx.park_states(session.handle), "park state")?,
-            optional(session.ctx.blocking_pool(session.handle), "blocking pool")?,
+            match mt {
+                Some(rt) => optional(session.ctx.park_states(rt.handle), "park state")?,
+                None => None,
+            },
+            optional(
+                session.ctx.blocking_pool(session.runtimes[0].handle),
+                "blocking pool",
+            )?,
         )
     } else {
         (Vec::new(), None, None)

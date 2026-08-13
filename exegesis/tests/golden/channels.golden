@@ -38,6 +38,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -48,7 +49,9 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes

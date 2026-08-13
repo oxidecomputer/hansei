@@ -95,6 +95,13 @@ enum Terminal {
 enum Capability {
     /// `--cfg tokio_unstable` task instrumentation.
     TokioUnstable,
+    /// The multi_thread scheduler (`rt-multi-thread`), probed
+    /// structurally: whether its `Handle` type is in the DWARF.
+    MultiThreadScheduler,
+    /// The current_thread scheduler, probed the same way. Always
+    /// compiled with tokio's `rt` feature, so an absence in practice
+    /// means a very old or unusual tokio.
+    CurrentThreadScheduler,
 }
 
 /// The infra roots the table navigates below.
@@ -113,6 +120,12 @@ enum InfraRoot {
 enum WalkRoot {
     /// One of the types extraction located as infrastructure.
     Infra(InfraRoot),
+    /// Every scheduler-flavor `Handle` the target compiled in — the
+    /// union root for the rows both flavors spell identically
+    /// (`shared`, the blocking-pool chain). The present subset resolves
+    /// with a note naming any absent flavor; a target with neither is
+    /// broken the way a missing infra root is.
+    AnyHandle,
     /// Every emitted type a leaf key names ([`leaf_matches`]). None in
     /// the bundle is an expected absence — the target does not use the
     /// primitive — not a breakage.
@@ -158,6 +171,26 @@ fn decl(role: WalkRole, root: WalkRoot, terminal: Terminal, spellings: Spellings
     }
 }
 
+/// A [`decl`] whose datum exists only under one scheduler flavor: its
+/// breakage is the expected shape of a target that did not compile the
+/// flavor in. Rows chained below one inherit the absence through their
+/// root, so only the top of each flavor-specific chain declares it.
+fn flavor_decl(
+    role: WalkRole,
+    root: WalkRoot,
+    terminal: Terminal,
+    needs: Capability,
+    spellings: Spellings,
+) -> WalkDecl {
+    WalkDecl {
+        role,
+        root,
+        terminal,
+        spellings: Row::All(spellings),
+        needs: Some(needs),
+    }
+}
+
 /// The one versioned row: tokio restructured where `Sleep` keeps its
 /// deadline in 1.49 and again in 1.53, and each family module declares
 /// its spelling beside its timer formatter builders.
@@ -193,10 +226,11 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
-        decl(
+        flavor_decl(
             WalkRole::WorkerHandle,
             Infra(InfraRoot::Context),
             Aggregate,
+            Capability::MultiThreadScheduler,
             || {
                 vec![reach![
                     Named("current"),
@@ -214,10 +248,36 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
-        decl(
+        // The current_thread sibling: the same chain crossing the other
+        // flavor's variant. A separate role because the variant step
+        // names differ; everything below the flavor handles is shared.
+        flavor_decl(
+            WalkRole::CtWorkerHandle,
+            Infra(InfraRoot::Context),
+            Aggregate,
+            Capability::CurrentThreadScheduler,
+            || {
+                vec![reach![
+                    Named("current"),
+                    Named("handle"),
+                    Named("value"),
+                    Named("value"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Variant("CurrentThread"),
+                    Named("__0"),
+                    Named("ptr"),
+                    Named("pointer"),
+                    Deref,
+                    Named("data"),
+                ]]
+            },
+        ),
+        flavor_decl(
             WalkRole::WorkerContext,
             Infra(InfraRoot::Context),
             Aggregate,
+            Capability::MultiThreadScheduler,
             || {
                 vec![reach![
                     Named("scheduler"),
@@ -226,6 +286,25 @@ fn decls() -> Vec<WalkDecl> {
                     Named("value"),
                     Deref,
                     Variant("MultiThread"),
+                    Named("__0"),
+                ]]
+            },
+        ),
+        // The CT analog of "this thread is inside the scheduler": the
+        // `block_on` thread's `current_thread::Context`.
+        flavor_decl(
+            WalkRole::CtWorkerContext,
+            Infra(InfraRoot::Context),
+            Aggregate,
+            Capability::CurrentThreadScheduler,
+            || {
+                vec![reach![
+                    Named("scheduler"),
+                    Named("inner"),
+                    Named("value"),
+                    Named("value"),
+                    Deref,
+                    Variant("CurrentThread"),
                     Named("__0"),
                 ]]
             },
@@ -245,19 +324,26 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
+        // Both flavor handles spell `shared` — one binding serves every
+        // handle the target compiled in, and the task walk below roots
+        // at whichever `Shared` a discovered handle actually has.
         decl(
             WalkRole::HandleShared,
-            Infra(InfraRoot::MtHandle),
+            WalkRoot::AnyHandle,
             Aggregate,
             || vec![reach![Named("shared")]],
         ),
         // Parkers: every worker's state word and the io driver's lock,
         // reached through the `Unparker`s hanging off the shared state.
-        decl(
+        // MT-only, so rooted at the MT handle rather than at
+        // `HandleShared`, whose union root also lands on the CT `Shared`
+        // (which has no `remotes` to bind).
+        flavor_decl(
             WalkRole::SharedRemotes,
-            End(WalkRole::HandleShared),
+            Infra(InfraRoot::MtHandle),
             Slice,
-            || vec![reach![Named("remotes")]],
+            Capability::MultiThreadScheduler,
+            || vec![reach![Named("shared"), Named("remotes")]],
         ),
         decl(
             WalkRole::RemoteUnpark,
@@ -297,10 +383,11 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
-        // The blocking pool's own counters.
+        // The blocking pool's own counters. Both flavor handles spell
+        // the whole chain identically, so the union root serves here too.
         decl(
             WalkRole::BlockingMetrics,
-            Infra(InfraRoot::MtHandle),
+            WalkRoot::AnyHandle,
             Aggregate,
             || {
                 vec![reach![
@@ -751,6 +838,7 @@ pub(crate) struct WalkRoots<'a> {
     pub vtable: Option<TypeId>,
     pub location: Option<TypeId>,
     pub mt_handle: Option<TypeId>,
+    pub ct_handle: Option<TypeId>,
     /// Each task entry's display label and its `Cell<T, S>`; `None` for a
     /// cell extraction could not recover.
     pub cells: &'a [(String, Option<TypeId>)],
@@ -842,6 +930,20 @@ fn bind_decl(
             );
         }
         Roots::Broken(errors) => {
+            // A flavor-specific row whose root type the target never
+            // compiled is the expected shape of that target, not
+            // breakage — the same judgment the spelling-miss path makes
+            // below.
+            if let Some(reason) = expected_absence(decl, roots) {
+                trace.push(format!("absence is expected: {reason}"));
+                return (
+                    unbound(WalkOutcome::Absent {
+                        reason: reason.clone(),
+                    }),
+                    Chained::Absent(reason),
+                    trace,
+                );
+            }
             trace.push(format!("roots broken: {}", errors.join("; ")));
             return (
                 unbound(WalkOutcome::Broken {
@@ -1006,6 +1108,14 @@ fn expected_absence(decl: &WalkDecl, roots: &WalkRoots<'_>) -> Option<String> {
             Some(false) => Some("the target was built without tokio_unstable".to_owned()),
             Some(true) | None => None,
         },
+        Capability::MultiThreadScheduler => roots
+            .mt_handle
+            .is_none()
+            .then(|| "the target has no multi_thread scheduler compiled in".to_owned()),
+        Capability::CurrentThreadScheduler => roots
+            .ct_handle
+            .is_none()
+            .then(|| "the target has no current_thread scheduler compiled in".to_owned()),
     }
 }
 
@@ -1036,6 +1146,28 @@ fn resolve_root(
                 types: vec![(type_label(reader, id), id)],
                 note: None,
             }
+        }
+        WalkRoot::AnyHandle => {
+            let mut types = Vec::new();
+            let mut absent = Vec::new();
+            for (flavor, id) in [
+                ("multi_thread", roots.mt_handle),
+                ("current_thread", roots.ct_handle),
+            ] {
+                match id {
+                    Some(id) => types.push((type_label(reader, id), id)),
+                    None => absent.push(flavor),
+                }
+            }
+            if types.is_empty() {
+                return Roots::Broken(vec![
+                    "the bundle has no layout for either scheduler flavor's Handle \
+                     (was it extracted with --allow-missing-infra?)"
+                        .to_owned(),
+                ]);
+            }
+            let note = (!absent.is_empty()).then(|| format!("no {} Handle", absent.join(" or ")));
+            Roots::Types { types, note }
         }
         WalkRoot::Leaf(key) => {
             let types: Vec<(String, TypeId)> = em
@@ -1235,7 +1367,7 @@ pub fn leaf_rooted(role: WalkRole) -> bool {
     for decl in decls() {
         let is_leaf = match decl.root {
             WalkRoot::Leaf(_) => true,
-            WalkRoot::Infra(_) | WalkRoot::TaskCells => false,
+            WalkRoot::Infra(_) | WalkRoot::AnyHandle | WalkRoot::TaskCells => false,
             WalkRoot::End(parent) | WalkRoot::Pointee(parent) | WalkRoot::Elem(parent) => {
                 rooted.get(&parent).copied().unwrap_or(false)
             }

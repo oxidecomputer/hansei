@@ -166,7 +166,10 @@ pub(crate) fn exec_runtime_field(
         RuntimeField::Drivers => "driver",
         RuntimeField::Shared => "shared",
     };
-    let value = session.handle.member(member)?;
+    // Both scheduler flavors' handles carry these members. Sessions
+    // holding more than one runtime show the first discovered; a
+    // per-runtime selector is multi-runtime UX still to come.
+    let value = session.runtimes[0].handle.member(member)?;
     // The bundle's `Elided` formats hide the runtime graph from *user*
     // values; these commands exist to show the runtime's own insides, so
     // they must never apply here — a new elided row must not be able to

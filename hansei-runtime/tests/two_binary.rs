@@ -25,7 +25,9 @@
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::testkit::{fixture, load};
 use hansei_runtime::tokio::Lifecycle;
-use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd, Context, FutureInfo, Task, TaskStage};
+use hansei_runtime::tokio::bundle::{
+    AwaitChain, ChainEnd, Context, FutureInfo, RuntimeFlavor, Task, TaskStage,
+};
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
 use proc::snapshot::Snapshot;
@@ -44,6 +46,7 @@ const PROGRAMS: &[&str] = &[
     "channels",
     "unordered",
     "joinset",
+    "ct-runtime",
 ];
 
 /// What a fixture pair was captured from: the program's own source, and
@@ -130,8 +133,10 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
     writeln!(out, "workers {}", workers.len()).unwrap();
 
-    let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    let list = ctx.enumerate_tasks(shared).expect("the owned-task walk");
+    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let list = ctx
+        .enumerate_all_tasks(&runtimes)
+        .expect("the owned-task walk");
     assert!(
         list.errors.is_empty(),
         "task walk reported errors: {:?}",
@@ -662,6 +667,63 @@ fn test_joinset_census_offline() {
             "{child:#?}"
         );
     }
+}
+
+/// The current_thread pair: discovery lands on the CT flavor's chain,
+/// and everything downstream — enumeration, the stage decode, await
+/// chains, the timer and semaphore leaf readers — runs unchanged, since
+/// the task subsystem is shared between flavors.
+///
+/// Property assertions rather than an exact summary: the shapes worth
+/// pinning (the flavor, the leaves) hold across recaptures without
+/// re-quoting line numbers.
+#[test]
+fn test_ct_runtime_offline() {
+    let (bundle, snapshot) = load("ct-runtime");
+    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+
+    let lwps = snapshot.lwps().unwrap();
+    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let [runtime] = runtimes.as_slice() else {
+        panic!("expected one runtime, got {}", runtimes.len());
+    };
+    assert_eq!(runtime.flavor, RuntimeFlavor::CurrentThread);
+    assert!(!runtime.worker_tids.is_empty());
+
+    let list = ctx
+        .enumerate_all_tasks(&runtimes)
+        .expect("the owned-task walk");
+    assert!(list.errors.is_empty(), "{:?}", list.errors);
+
+    let analysis = graph::analyze(&ctx, &list);
+    assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+
+    // The two spawned tasks parked at their leaves, decoded through the
+    // same leaf readers the multi_thread fixtures exercise.
+    let mut leaves = Vec::new();
+    for (task, wait) in list.tasks.iter().zip(&analysis.waits) {
+        let name = known_name(task);
+        if !name.starts_with("ct_runtime::") {
+            continue;
+        }
+        let target = wait
+            .target
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} decodes no wait target"));
+        leaves.push((name.to_owned(), mask(&target.to_string())));
+    }
+    leaves.sort_unstable();
+    let [(acquirer, acquirer_wait), (sleeper, sleeper_wait)] = leaves.as_slice() else {
+        panic!("expected the two fixture tasks, got {leaves:#?}");
+    };
+    assert!(acquirer.contains("acquirer"), "{leaves:#?}");
+    assert!(
+        acquirer_wait.contains("semaphore") && acquirer_wait.contains("1 permit requested"),
+        "{leaves:#?}"
+    );
+    assert!(sleeper.contains("sleeper"), "{leaves:#?}");
+    assert!(sleeper_wait.contains("the timer"), "{leaves:#?}");
 }
 
 /// The wrong-bundle failure mode: a bundle from a

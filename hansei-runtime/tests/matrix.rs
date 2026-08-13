@@ -76,6 +76,7 @@ const PROGRAMS: &[&str] = &[
     "channels",
     "unordered",
     "joinset",
+    "ct-runtime",
 ];
 
 fn test_programs_dir() -> PathBuf {
