@@ -131,11 +131,25 @@ pub enum Command {
     /// for what each waits on, once for the futures off those chains —
     /// so on a large target it is the slowest command here. Both walks
     /// are kept, though, so a `tasks --futures`, `graph` or `whatis`
-    /// after it costs nothing.
+    /// after it costs nothing. A census narrowed to sections walks only
+    /// what those sections need, which is nothing at all for the
+    /// threads.
     Census {
+        /// Print the thread section. Naming no section prints them all.
+        #[arg(long, short = 'T')]
+        threads: bool,
+
+        /// Print the task section.
+        #[arg(long, short)]
+        tasks: bool,
+
+        /// Print the future section.
+        #[arg(long, short)]
+        futures: bool,
+
         /// How many entries each "most of them are this" listing shows
         /// before the rest are summed into a final row.
-        #[arg(long, short, default_value_t = 5)]
+        #[arg(long, short = 'n', default_value_t = 5)]
         top: usize,
     },
 
@@ -595,7 +609,15 @@ impl<'b> Session<'b> {
 /// Run one command against an attached session.
 pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write) -> Result<Flow> {
     match command {
-        Command::Census { top } => tasks::exec_census(session, top, out)?,
+        Command::Census {
+            threads,
+            tasks,
+            futures,
+            top,
+        } => {
+            let sections = summary::Sections::select(threads, tasks, futures);
+            tasks::exec_census(session, sections, top, out)?
+        }
         Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
         Command::Graph => graph::exec_graph(session, out)?,
         Command::Info => exec_info(session, out)?,
