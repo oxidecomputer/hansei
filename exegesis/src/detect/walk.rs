@@ -113,6 +113,7 @@ enum InfraRoot {
     Vtable,
     Location,
     MtHandle,
+    CtHandle,
 }
 
 /// Where a role's navigation starts.
@@ -324,6 +325,36 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
+        // The CT scheduler's core, when it is checked *in*: the run loop
+        // stores it in the context's `RefCell` while it parks the driver
+        // or polls the `block_on` future, and takes it back out to run
+        // tasks — so an inactive `Some` here means the thread is inside
+        // the scheduler with the core on its stack.
+        decl(
+            WalkRole::CtWorkerCore,
+            End(WalkRole::CtWorkerContext),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("core"),
+                    Named("value"),
+                    Named("value"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Deref,
+                ]]
+            },
+        ),
+        // The driver is moved out of the core for exactly as long as the
+        // thread parks in it, so this member's presence distinguishes
+        // "polling the block_on future" from "parked in the driver" when
+        // the core above is checked in.
+        decl(
+            WalkRole::CtCoreDriver,
+            End(WalkRole::CtWorkerCore),
+            Aggregate,
+            || vec![reach![Named("driver"), Variant("Some"), Named("__0")]],
+        ),
         // Both flavor handles spell `shared` — one binding serves every
         // handle the target compiled in, and the task walk below roots
         // at whichever `Shared` a discovered handle actually has.
@@ -379,6 +410,22 @@ fn decls() -> Vec<WalkDecl> {
                     Named("data"),
                     Named("driver"),
                     Named("locked"),
+                    PeelTo(Shape::Uint(1)),
+                ]]
+            },
+        ),
+        // Whether the CT runtime's `block_on` future has a wakeup
+        // pending — the CT sibling of the parker states, rooted at the
+        // CT handle because only its `Shared` carries the member.
+        flavor_decl(
+            WalkRole::CtSharedWoken,
+            Infra(InfraRoot::CtHandle),
+            Word,
+            Capability::CurrentThreadScheduler,
+            || {
+                vec![reach![
+                    Named("shared"),
+                    Named("woken"),
                     PeelTo(Shape::Uint(1)),
                 ]]
             },
@@ -1135,6 +1182,7 @@ fn resolve_root(
                 InfraRoot::Vtable => ("the task Vtable", roots.vtable),
                 InfraRoot::Location => ("core::panic::Location", roots.location),
                 InfraRoot::MtHandle => ("the multi_thread Handle", roots.mt_handle),
+                InfraRoot::CtHandle => ("the current_thread Handle", roots.ct_handle),
             };
             let Some(id) = id else {
                 return Roots::Broken(vec![format!(

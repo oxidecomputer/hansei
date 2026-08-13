@@ -542,9 +542,8 @@ impl<'b, T: Target> Context<'b, T> {
     ///
     /// `None` when the thread is in the runtime without being inside the
     /// scheduler — the pointer is set only for the duration of a
-    /// worker's run loop — or when it runs a scheduler this walk does
-    /// not read (a current_thread runtime, whose analog is phase-2
-    /// work).
+    /// worker's run loop — or when it runs the other scheduler flavor
+    /// ([`Context::ct_worker_context`] is the current_thread sibling).
     pub fn worker_context(&self, worker: &Worker) -> Result<Option<Value<'b>>> {
         let info = self.context_info(worker.context_addr)?;
         // The scoped pointer is null outside the run loop, another
@@ -563,6 +562,38 @@ impl<'b, T: Target> Context<'b, T> {
     /// [`Context::worker_context`] returned.
     pub fn worker_index(&self, worker_ctx: Value<'b>) -> Result<u64> {
         self.walk(WalkRole::WorkerIndex).read(worker_ctx)
+    }
+
+    /// The current_thread scheduler context a thread is running under —
+    /// [`Context::worker_context`]'s sibling for the other flavor. A
+    /// thread with one active is a CT runtime's `block_on` thread, the
+    /// single "worker" that flavor has.
+    pub fn ct_worker_context(&self, worker: &Worker) -> Result<Option<Value<'b>>> {
+        let info = self.context_info(worker.context_addr)?;
+        Ok(self
+            .walk(WalkRole::CtWorkerContext)
+            .try_walk(info)?
+            .and_then(Walked::optional))
+    }
+
+    /// What a CT runtime's `block_on` thread is doing, from the handle
+    /// [`Context::find_runtimes`] reached and the scheduler context
+    /// [`Context::ct_worker_context`] returned for that thread.
+    ///
+    /// The core's whereabouts are the state: checked into the context's
+    /// `RefCell` while the thread parks (driver taken out of it) or
+    /// polls the root future (driver still in it), held on the stack —
+    /// unreadable from here — while it runs tasks.
+    pub fn ct_park_state(&self, handle: Value<'b>, ct_ctx: Value<'b>) -> Result<CtParkState> {
+        let woken = self.walk(WalkRole::CtSharedWoken).read(handle)?;
+        let activity = match self.walk(WalkRole::CtWorkerCore).walk(ct_ctx)?.optional() {
+            None => CtActivity::RunningTasks,
+            Some(core) => match self.walk(WalkRole::CtCoreDriver).walk(core)? {
+                Walked::At(_) => CtActivity::PollingBlockOn,
+                Walked::Inactive(_) | Walked::Null => CtActivity::Parked,
+            },
+        };
+        Ok(CtParkState { woken, activity })
     }
 
     /// What every worker's parker says, in worker-index order.
