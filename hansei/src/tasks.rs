@@ -429,6 +429,7 @@ pub(crate) fn exec_tasks(
 
     print_tasks(
         list,
+        &session.runtime_tags(),
         &polling,
         &census.held,
         &census.sets,
@@ -448,6 +449,8 @@ pub(crate) fn exec_tasks(
 /// under.
 /// `tasks` narrows the listing to the named tasks, and is empty for the
 /// whole list.
+/// `runtime_tags` labels each task's runtime on the targets holding
+/// more than one, and is empty — no row — for the rest.
 ///
 /// It takes what it prints rather than a session so the offline tests
 /// can drive it, the census as its flat lists so a test can lay out a
@@ -455,6 +458,7 @@ pub(crate) fn exec_tasks(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn print_tasks(
     list: &bundle::TaskList,
+    runtime_tags: &[String],
     polling: &HashMap<u64, u32>,
     census_held: &[census::HeldFuture],
     census_sets: &[census::FutureSet],
@@ -494,6 +498,9 @@ pub(crate) fn print_tasks(
         let id = task_id(list, index);
         writeln!(out, "Task {id}: {}", future_name(&task.future))?;
         writeln!(out, "    State: {}", task_state(task, polling))?;
+        if let Some(tag) = runtime_tags.get(task.runtime) {
+            writeln!(out, "    Runtime: {tag}")?;
+        }
         // Every block carries every row, so the two source locations sit
         // at the same place in each and a missing one reads as a gap in
         // what the target recorded rather than as a shorter block.
@@ -612,41 +619,19 @@ pub(crate) fn exec_census(
     summary::print(&facts, sections, top, out)
 }
 
-/// The threads holding a tokio `Context`, each with the worker it runs
-/// and the task it is polling.
+/// The threads holding a tokio `Context`, each with the place it holds
+/// in a scheduler's run loop and the task it is polling.
 ///
-/// This is the read a census makes of its own: which worker each thread
-/// is running. It is not worth failing the command over — a census
-/// without it still counts everything else — so a failure costs the
-/// thread its worker and warns.
+/// This is the read a census makes of its own: which worker — or which
+/// runtime's `block_on` thread — each thread is. It is not worth
+/// failing the command over — a census without it still counts
+/// everything else — so a failure costs the thread its role and warns.
 fn runtime_threads(session: &Session<'_>) -> Result<Vec<summary::Thread>> {
     let mut runtime = Vec::new();
     for worker in &session.workers {
-        let index = match session.ctx.worker_context(worker) {
-            Ok(Some(ctx)) => match session.ctx.worker_index(ctx) {
-                Ok(index) => Some(index),
-                Err(e) => {
-                    writeln!(
-                        io::stderr(),
-                        "warning: cannot read which worker lwp {} runs: {e:#}",
-                        worker.tid
-                    )?;
-                    None
-                }
-            },
-            Ok(None) => None,
-            Err(e) => {
-                writeln!(
-                    io::stderr(),
-                    "warning: cannot read the scheduler context of lwp {}: {e:#}",
-                    worker.tid
-                )?;
-                None
-            }
-        };
         runtime.push(summary::Thread {
             tid: worker.tid,
-            worker: index,
+            role: thread_role(session, worker)?,
             polling: worker.current_task_id.filter(|id| {
                 session
                     .tasks
@@ -657,6 +642,66 @@ fn runtime_threads(session: &Session<'_>) -> Result<Vec<summary::Thread>> {
         });
     }
     Ok(runtime)
+}
+
+/// The run-loop role one thread holds, of either scheduler flavor, or
+/// `None` for a thread that merely entered the runtime. A failed read
+/// warns and costs only what it could not read: the worker its index,
+/// the block_on thread its park state.
+fn thread_role(
+    session: &Session<'_>,
+    worker: &bundle::Worker,
+) -> Result<Option<summary::ThreadRole>> {
+    match session.ctx.worker_context(worker) {
+        Ok(Some(ctx)) => match session.ctx.worker_index(ctx) {
+            Ok(index) => return Ok(Some(summary::ThreadRole::Worker(index))),
+            Err(e) => {
+                writeln!(
+                    io::stderr(),
+                    "warning: cannot read which worker lwp {} runs: {e:#}",
+                    worker.tid
+                )?;
+                return Ok(None);
+            }
+        },
+        Ok(None) => {}
+        Err(e) => {
+            writeln!(
+                io::stderr(),
+                "warning: cannot read the scheduler context of lwp {}: {e:#}",
+                worker.tid
+            )?;
+            return Ok(None);
+        }
+    }
+    match session.ctx.ct_worker_context(worker) {
+        Ok(Some(ct_ctx)) => {
+            let state = match session.runtime_of(worker.tid) {
+                Some((_, rt)) => match session.ctx.ct_park_state(rt.handle, ct_ctx) {
+                    Ok(state) => Some(state),
+                    Err(e) => {
+                        writeln!(
+                            io::stderr(),
+                            "warning: cannot read the block_on state of lwp {}: {e:#}",
+                            worker.tid
+                        )?;
+                        None
+                    }
+                },
+                None => None,
+            };
+            Ok(Some(summary::ThreadRole::BlockOn(state)))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => {
+            writeln!(
+                io::stderr(),
+                "warning: cannot read the scheduler context of lwp {}: {e:#}",
+                worker.tid
+            )?;
+            Ok(None)
+        }
+    }
 }
 
 /// A census section that is worth having and not worth failing over:

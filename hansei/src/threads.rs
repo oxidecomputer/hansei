@@ -39,18 +39,32 @@ pub(crate) fn exec_threads(
         if i > 0 {
             writeln!(out)?;
         }
-        writeln!(out, "LWP {}  {}", worker.tid, polling(session, worker))?;
+        // Which runtime the thread runs is only worth a tag when the
+        // target holds more than one.
+        let tag = match session.runtimes.len() {
+            0 | 1 => String::new(),
+            _ => match session.runtime_of(worker.tid) {
+                Some((index, rt)) => format!("  runtime {index} ({})", rt.flavor),
+                None => String::new(),
+            },
+        };
+        writeln!(out, "LWP {}  {}{tag}", worker.tid, polling(session, worker))?;
 
         if let Err(e) = print_thread_context(session, worker, opts, out) {
             writeln!(out, "  thread context unreadable: {e:#}")?;
         }
 
-        match session.ctx.worker_context(worker) {
-            Ok(Some(worker_ctx)) => print_worker_state(session, worker_ctx, opts, out)?,
+        match scheduler_state(session, worker) {
+            Ok(SchedulerState::Worker(worker_ctx)) => {
+                print_worker_state(session, worker_ctx, opts, out)?
+            }
+            Ok(SchedulerState::BlockOn(ct_ctx)) => {
+                print_block_on_state(session, worker, ct_ctx, opts, out)?
+            }
             // A thread inside the runtime without a scheduler context is
             // ordinary: `block_on` enters the runtime from a thread that
             // never runs the worker loop.
-            Ok(None) => writeln!(out, "  not in the scheduler's run loop")?,
+            Ok(SchedulerState::None) => writeln!(out, "  not in the scheduler's run loop")?,
             Err(e) => writeln!(out, "  scheduler context unreadable: {e:#}")?,
         }
 
@@ -121,6 +135,26 @@ fn print_rendered(
     )
 }
 
+/// The scheduler context a thread's stack holds, of whichever flavor.
+enum SchedulerState<'b> {
+    Worker(Value<'b>),
+    BlockOn(Value<'b>),
+    None,
+}
+
+fn scheduler_state<'b>(
+    session: &Session<'b>,
+    worker: &bundle::Worker,
+) -> Result<SchedulerState<'b>> {
+    if let Some(worker_ctx) = session.ctx.worker_context(worker)? {
+        return Ok(SchedulerState::Worker(worker_ctx));
+    }
+    match session.ctx.ct_worker_context(worker)? {
+        Some(ct_ctx) => Ok(SchedulerState::BlockOn(ct_ctx)),
+        None => Ok(SchedulerState::None),
+    }
+}
+
 /// A worker thread's own state: which worker it is, the `Core` it holds
 /// while it runs — the run queue, the LIFO slot, the park state and the
 /// counters the scheduler keeps per worker — and the wakers it has
@@ -131,8 +165,7 @@ fn print_worker_state<'b>(
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let ctx = &session.ctx;
-    writeln!(out, "  worker {}", ctx.worker_index(worker_ctx)?)?;
+    writeln!(out, "  worker {}", session.ctx.worker_index(worker_ctx)?)?;
 
     let defer = worker_ctx.member("defer")?;
     print_rendered(session, "defer", &defer, opts, out)?;
@@ -140,12 +173,64 @@ fn print_worker_state<'b>(
     // The core is moved out of the thread's context while the scheduler
     // parks or hands it to another thread, so its absence is a state
     // worth naming rather than an error.
-    let core = worker_ctx.member("core")?.member("value")?;
+    print_checked_in_core(session, worker_ctx, "not held by this thread", opts, out)
+}
+
+/// A current_thread `block_on` thread's state: what it is doing — read
+/// from where its core and driver are — and the `Core` itself while it
+/// is checked into the context, which is exactly while the thread parks
+/// or polls the `block_on` future.
+fn print_block_on_state<'b>(
+    session: &Session<'_>,
+    worker: &bundle::Worker,
+    ct_ctx: Value<'b>,
+    opts: RenderOpts,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    writeln!(out, "  block_on thread of its current_thread runtime")?;
+    if let Some((_, rt)) = session.runtime_of(worker.tid) {
+        match session.ctx.ct_park_state(rt.handle, ct_ctx) {
+            Ok(state) => {
+                let woken = if state.woken {
+                    ", a wakeup pending"
+                } else {
+                    ""
+                };
+                writeln!(out, "  {}{woken}", state.activity)?;
+            }
+            Err(e) => writeln!(out, "  park state unreadable: {e:#}")?,
+        }
+    }
+
+    let defer = ct_ctx.member("defer")?;
+    print_rendered(session, "defer", &defer, opts, out)?;
+
+    print_checked_in_core(
+        session,
+        ct_ctx,
+        "checked out, on the thread's stack",
+        opts,
+        out,
+    )
+}
+
+/// Print the `Core` a scheduler context has checked in, or the absence
+/// line the flavor words its checked-out state with. Both flavors keep
+/// it in the same place: a `RefCell<Option<Box<Core>>>` member named
+/// `core`.
+fn print_checked_in_core(
+    session: &Session<'_>,
+    sched_ctx: Value<'_>,
+    absent: &str,
+    opts: RenderOpts,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let core = sched_ctx.member("core")?.member("value")?;
     let Some(boxed) = core.try_select_variant("Some")? else {
-        writeln!(out, "  core: not held by this thread")?;
+        writeln!(out, "  core: {absent}")?;
         return Ok(());
     };
-    let core = boxed.deref_ptr(ctx.proc)?;
+    let core = boxed.deref_ptr(session.ctx.proc)?;
     print_rendered(session, "core", &core, opts, out)?;
     Ok(())
 }
@@ -166,10 +251,6 @@ pub(crate) fn exec_runtime_field(
         RuntimeField::Drivers => "driver",
         RuntimeField::Shared => "shared",
     };
-    // Both scheduler flavors' handles carry these members. Sessions
-    // holding more than one runtime show the first discovered; a
-    // per-runtime selector is multi-runtime UX still to come.
-    let value = session.runtimes[0].handle.member(member)?;
     // The bundle's `Elided` formats hide the runtime graph from *user*
     // values; these commands exist to show the runtime's own insides, so
     // they must never apply here — a new elided row must not be able to
@@ -178,11 +259,22 @@ pub(crate) fn exec_runtime_field(
         no_elide: true,
         types: Vec::new(),
     };
-    writeln!(
-        out,
-        "{:#}",
-        render(session, &value, opts).elide_override(&no_elide)
-    )?;
+    // Both scheduler flavors' handles carry these members: one section
+    // per discovered runtime, headed only when there is more than one.
+    for (i, rt) in session.runtimes.iter().enumerate() {
+        if session.runtimes.len() > 1 {
+            if i > 0 {
+                writeln!(out)?;
+            }
+            writeln!(out, "runtime {i} ({}):", rt.flavor)?;
+        }
+        let value = rt.handle.member(member)?;
+        writeln!(
+            out,
+            "{:#}",
+            render(session, &value, opts).elide_override(&no_elide)
+        )?;
+    }
     Ok(())
 }
 

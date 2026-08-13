@@ -68,6 +68,12 @@ struct SessionArgs {
     /// broken path refuses the attach with a report of what moved.
     #[arg(long)]
     best_effort: bool,
+
+    /// Read only one of the target's runtimes, by its index in the
+    /// discovered list (`info` names them). By default every runtime is
+    /// read, merged with a tag where there is more than one.
+    #[arg(long, value_name = "INDEX")]
+    runtime: Option<usize>,
 }
 
 /// Everything a session can be asked. These are read from stdin, never
@@ -568,7 +574,22 @@ impl<'b> Session<'b> {
 
         let lwps = proc.lwps().context("failed to read lwps")?;
         let workers = discover_workers(&lwps, &ctx)?;
-        let runtimes = ctx.find_runtimes(&workers)?;
+        let mut runtimes = ctx.find_runtimes(&workers)?;
+        if let Some(index) = args.runtime {
+            if index >= runtimes.len() {
+                let listed: Vec<String> = runtimes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| format!("{i}: {}", r.flavor))
+                    .collect();
+                anyhow::bail!(
+                    "--runtime {index}: the target has {} runtime(s): {}",
+                    runtimes.len(),
+                    listed.join(", ")
+                );
+            }
+            runtimes = vec![runtimes.swap_remove(index)];
+        }
         let tasks = ctx.enumerate_all_tasks(&runtimes)?;
         print_warnings(&tasks.errors)?;
 
@@ -602,6 +623,29 @@ impl<'b> Session<'b> {
     fn analysis(&self) -> &Analysis {
         self.analysis
             .get_or_init(|| rt_graph::analyze(&self.ctx, &self.tasks))
+    }
+
+    /// The runtime a worker thread belongs to, by the discovery
+    /// grouping, with its index in the session's list.
+    fn runtime_of(&self, tid: u32) -> Option<(usize, &bundle::RuntimeRef<'b>)> {
+        self.runtimes
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.worker_tids.contains(&tid))
+    }
+
+    /// The per-runtime tags the listings mark tasks with: one label per
+    /// discovered runtime when there is more than one, empty — no tags —
+    /// for the single-runtime targets that are nearly all of them.
+    fn runtime_tags(&self) -> Vec<String> {
+        if self.runtimes.len() <= 1 {
+            return Vec::new();
+        }
+        self.runtimes
+            .iter()
+            .enumerate()
+            .map(|(i, r)| format!("{i} ({})", r.flavor))
+            .collect()
     }
 }
 
@@ -733,6 +777,15 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         session.workers.len(),
         session.tasks.tasks.len()
     )?;
+    for (i, rt) in session.runtimes.iter().enumerate() {
+        let tids: Vec<String> = rt.worker_tids.iter().map(|t| t.to_string()).collect();
+        writeln!(
+            out,
+            "runtime {i}: {}, on lwp {}",
+            rt.flavor,
+            tids.join(", ")
+        )?;
+    }
     Ok(())
 }
 
