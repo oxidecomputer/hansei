@@ -26,7 +26,8 @@ use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::testkit::{fixture, load};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
-    AwaitChain, ChainEnd, Context, FutureInfo, RuntimeFlavor, Task, TaskStage,
+    AwaitChain, ChainEnd, Context, FutureInfo, LocalSetRoute, RuntimeFlavor, Task, TaskStage,
+    UnlistedTaskKind,
 };
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
@@ -47,6 +48,7 @@ const PROGRAMS: &[&str] = &[
     "unordered",
     "joinset",
     "ct-runtime",
+    "local-set",
 ];
 
 /// What a fixture pair was captured from: the program's own source, and
@@ -724,6 +726,124 @@ fn test_ct_runtime_offline() {
     );
     assert!(sleeper.contains("sleeper"), "{leaves:#?}");
     assert!(sleeper_wait.contains("the timer"), "{leaves:#?}");
+}
+
+/// The `LocalSet` pair: tasks bound into a set's own list are found and
+/// enumerated offline, from a snapshot of a parked target — the whole
+/// discovery chain, replayed on any platform.
+///
+/// The set is reached by the cell bootstrap alone: nothing polls it in
+/// a parked core, so the TLS anchor reads empty and the only evidence
+/// is the scheduler task's `JoinHandle` on one of its members. One
+/// member redeems the set, which is what makes the *other* local task —
+/// externally invisible, parked on a semaphore nobody else holds —
+/// listed at all.
+///
+/// Property assertions rather than an exact summary, like the
+/// current_thread pair: what is worth pinning is the shapes, which hold
+/// across recaptures without re-quoting addresses.
+#[test]
+fn test_local_set_offline() {
+    let (bundle, snapshot) = load("local-set");
+    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+
+    let lwps = snapshot.lwps().unwrap();
+    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let mut list = ctx
+        .enumerate_all_tasks(&runtimes)
+        .expect("the owned-task walk");
+
+    // Before discovery the scheduler owns one task, and the one it
+    // joins is not in any list this session can show.
+    assert_eq!(list.tasks.len(), 1, "{:#?}", list.tasks);
+    let joiner = list.tasks[0].addr;
+    let joined = match graph::analyze(&ctx, &list).waits[0].target.clone() {
+        Some(hansei_runtime::tokio::bundle::WaitTarget::Task {
+            addr, listed, kind, ..
+        }) => {
+            assert!(!listed, "the local task must not be listed yet");
+            // Classified from the cell's recorded scheduler type, not
+            // guessed: this is a local task, definitely.
+            assert_eq!(kind, Some(UnlistedTaskKind::LocalSet));
+            addr
+        }
+        other => panic!("the joiner does not await a task: {other:?}"),
+    };
+
+    // Discovery finds the set through that one handle, and both its
+    // tasks — the joined one and its invisible sibling — join the
+    // population, stamped with the set's own group.
+    let sets = ctx.discover_local_tasks(&lwps, &workers, &mut list, runtimes.len());
+    assert!(list.errors.is_empty(), "{:?}", list.errors);
+    let [set] = sets.as_slice() else {
+        panic!("expected one local set, got {}", sets.len());
+    };
+    assert_eq!(set.route, LocalSetRoute::JoinHandle);
+    assert_ne!(set.owned_id, 0);
+
+    assert_eq!(list.tasks.len(), 3, "{:#?}", list.tasks);
+    let group = runtimes.len();
+    let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
+    assert_eq!(local.len(), 2, "{local:#?}");
+    // Every member carries the set's owned-list id — the cross-check
+    // that says the set claims them — and the scheduler task keeps its
+    // runtime's group.
+    for task in &local {
+        assert_eq!(task.owner_id, Some(set.owned_id), "{task:#?}");
+        assert!(
+            known_name(task).starts_with("local_set::local_"),
+            "{task:#?}"
+        );
+    }
+    assert!(local.iter().any(|t| t.addr.0 == joined), "{local:#?}");
+    assert_eq!(
+        list.tasks.iter().filter(|t| t.addr == joiner).count(),
+        1,
+        "the scheduler's own task is not duplicated"
+    );
+
+    // And the local tasks read like any other: both leaves decode
+    // through the readers the scheduler-owned fixtures exercise.
+    let analysis = graph::analyze(&ctx, &list);
+    assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+    let mut leaves: Vec<String> = list
+        .tasks
+        .iter()
+        .zip(&analysis.waits)
+        .filter(|(task, _)| task.group == group)
+        .map(|(task, wait)| {
+            let target = wait
+                .target
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} decodes no wait target", known_name(task)));
+            mask(&target.to_string())
+        })
+        .collect();
+    leaves.sort_unstable();
+    let [semaphore, timer] = leaves.as_slice() else {
+        panic!("expected the set's two leaves, got {leaves:#?}");
+    };
+    assert!(
+        semaphore.contains("semaphore") && semaphore.contains("1 permit requested"),
+        "{leaves:#?}"
+    );
+    assert!(timer.contains("the timer"), "{leaves:#?}");
+
+    // The joined task is now simply listed — the third `listed: false`
+    // case the plan called for, closed by discovery rather than worded.
+    let rejoined = graph::analyze(&ctx, &list);
+    let joiner_wait = rejoined
+        .waits
+        .iter()
+        .find(|wait| wait.task.addr == joiner)
+        .expect("the joiner is still in the population");
+    match &joiner_wait.target {
+        Some(hansei_runtime::tokio::bundle::WaitTarget::Task { listed, .. }) => {
+            assert!(listed, "the joined local task is listed after discovery");
+        }
+        other => panic!("the joiner does not await a task: {other:?}"),
+    }
 }
 
 /// The wrong-bundle failure mode: a bundle from a

@@ -527,6 +527,36 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "std::sys::time::unix::Instant :: Node Alias { t@+0, follow }",
         );
     }
+    if program == "local-set" {
+        // The local-set rows root at leaf types, so the portable summary
+        // filters them; that they bound on the one fixture that
+        // instantiates a LocalSet is asserted here instead — the loud
+        // version of the plan's "does the sweep emit local::Shared".
+        use exegesis::bundle::{StaticRole, WalkOutcome, WalkRole};
+        for role in [
+            WalkRole::CellScheduler,
+            WalkRole::LocalOwnedId,
+            WalkRole::LocalOwnedHead,
+            WalkRole::LocalSetOwner,
+            WalkRole::LocalTlsCtx,
+            WalkRole::LocalCtxShared,
+        ] {
+            let binding = &bundle.walks.entries[&role];
+            assert!(
+                matches!(binding.outcome, WalkOutcome::Bound { .. }),
+                "{program}: {} did not bind: {:?}",
+                role.name(),
+                binding.outcome
+            );
+        }
+        assert!(
+            bundle
+                .statics
+                .entries
+                .contains_key(&StaticRole::TlsLocalSetKey),
+            "{program}: the task::local::CURRENT static was not recorded"
+        );
+    }
     if program == "channels" {
         // The tokio-sync formatters have no fixture elsewhere, and are the
         // most intricate detectors (multi-path, cross-pointer, waiter queues).
@@ -796,6 +826,11 @@ fn test_golden_joinset() {
 #[test]
 fn test_golden_ct_runtime() {
     run_golden("ct-runtime");
+}
+
+#[test]
+fn test_golden_local_set() {
+    run_golden("local-set");
 }
 
 /// Two extractions of one binary agree byte for byte.
