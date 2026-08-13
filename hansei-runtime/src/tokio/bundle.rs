@@ -101,6 +101,34 @@ fn semaphore_owner(chain: &AwaitChain<'_>) -> Option<&'static str> {
     })
 }
 
+/// A get-or-compute cache behind a `RefCell`, for the per-target
+/// lookup memos below: one command asks about the same few dozen keys
+/// tens of thousands of times.
+struct Memo<K, V>(RefCell<HashMap<K, V>>);
+
+// Not derived: the derive would demand `K: Default + V: Default` for a
+// bound neither the map nor the cell needs.
+impl<K, V> Default for Memo<K, V> {
+    fn default() -> Self {
+        Memo(RefCell::new(HashMap::default()))
+    }
+}
+
+impl<K: Eq + std::hash::Hash, V: Clone> Memo<K, V> {
+    fn get_or<Q>(&self, key: &Q, compute: impl FnOnce() -> V) -> V
+    where
+        Q: Eq + std::hash::Hash + ToOwned<Owned = K> + ?Sized,
+        K: std::borrow::Borrow<Q>,
+    {
+        if let Some(hit) = self.0.borrow().get(key) {
+            return hit.clone();
+        }
+        let value = compute();
+        self.0.borrow_mut().insert(key.to_owned(), value.clone());
+        value
+    }
+}
+
 /// Everything needed to interpret a target process through a loaded bundle.
 pub struct Context<'b, T> {
     pub proc: &'b T,
@@ -109,7 +137,7 @@ pub struct Context<'b, T> {
     /// Target text address → mangled symtab name (`None` when the address
     /// resolves to no symbol). Mangled names are the join keys; demangling
     /// is display-only.
-    symbols: RefCell<HashMap<u64, Option<String>>>,
+    symbols: Memo<u64, Option<String>>,
     /// Normalized object-symbol name → target symbols. Populated lazily
     /// because most commands do not need named statics.
     object_symbols: RefCell<Option<HashMap<String, Vec<SymbolBuf>>>>,
@@ -125,9 +153,9 @@ pub struct Context<'b, T> {
     /// target every lookup misses the exact table and pays a demangle,
     /// and the same few dozen symbols are asked about tens of thousands
     /// of times in one command.
-    task_lookups: RefCell<HashMap<String, SymbolLookup<TaskEntryId>>>,
+    task_lookups: Memo<String, SymbolLookup<TaskEntryId>>,
     /// The same memo for the dyn-future join.
-    dyn_future_lookups: RefCell<HashMap<String, SymbolLookup<BundleTypeId>>>,
+    dyn_future_lookups: Memo<String, SymbolLookup<BundleTypeId>>,
     /// Every type the bundle recorded a `Future::poll` impl for, which is
     /// what lets the await chain tell a wrapper's inner future from the
     /// rest of its members. Collected once: the walk asks per member of
@@ -157,13 +185,13 @@ impl<'b, T: Target> Context<'b, T> {
             proc,
             view,
             mappings,
-            symbols: RefCell::new(HashMap::default()),
+            symbols: Memo::default(),
             object_symbols: RefCell::new(None),
             vtables: RefCell::new(HashMap::default()),
             waker_vtable: RefCell::new(None),
             stopped: RefCell::new(None),
-            task_lookups: RefCell::new(HashMap::default()),
-            dyn_future_lookups: RefCell::new(HashMap::default()),
+            task_lookups: Memo::default(),
+            dyn_future_lookups: Memo::default(),
             futures: view.future_type_ids().collect(),
             contract,
         })
@@ -217,39 +245,24 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// The mangled symtab name covering `addr`, if any (cached).
     fn symbol_at(&self, addr: u64) -> Option<String> {
-        if let Some(cached) = self.symbols.borrow().get(&addr) {
-            return cached.clone();
-        }
-        let name = self.proc.lookup_symbol_by_addr(addr).map(|s| s.name);
-        self.symbols.borrow_mut().insert(addr, name.clone());
-        name
+        self.symbols.get_or(&addr, || {
+            self.proc.lookup_symbol_by_addr(addr).map(|s| s.name)
+        })
     }
 
     /// [`BundleView::task_ids_for_symbol`], answered from
     /// [`Context::task_lookups`] when the symbol has been asked before.
     fn task_ids_memoized(&self, symbol: &str) -> SymbolLookup<TaskEntryId> {
-        if let Some(hit) = self.task_lookups.borrow().get(symbol) {
-            return hit.clone();
-        }
-        let answer = self.view.task_ids_for_symbol(symbol);
         self.task_lookups
-            .borrow_mut()
-            .insert(symbol.to_owned(), answer.clone());
-        answer
+            .get_or(symbol, || self.view.task_ids_for_symbol(symbol))
     }
 
     /// [`BundleView::dyn_future_ids_for_symbol`], answered from
     /// [`Context::dyn_future_lookups`] when the symbol has been asked
     /// before.
     fn dyn_future_ids_memoized(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
-        if let Some(hit) = self.dyn_future_lookups.borrow().get(symbol) {
-            return hit.clone();
-        }
-        let answer = self.view.dyn_future_ids_for_symbol(symbol);
         self.dyn_future_lookups
-            .borrow_mut()
-            .insert(symbol.to_owned(), answer.clone());
-        answer
+            .get_or(symbol, || self.view.dyn_future_ids_for_symbol(symbol))
     }
 
     /// Resolve a named static exactly when possible, then by a normalized v0
