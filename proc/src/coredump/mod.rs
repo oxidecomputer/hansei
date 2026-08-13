@@ -5,9 +5,10 @@
 //! the host looking at it. A Linux core read on illumos and an illumos
 //! core read on Linux are the same operation as reading either at home.
 //!
-//! The one other reader in the crate — the feature-gated libproc
-//! reference the illumos reader here is compared against in tests —
-//! stays beside this module, gated to the host that has libproc.
+//! The one other reader — the libproc reference the illumos reader
+//! here is compared against — lives inside the on-box test target
+//! (`tests/illumos/libproc.rs`), so only test builds on the host that
+//! has libproc ever bind it.
 
 mod common;
 pub mod illumos;
