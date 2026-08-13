@@ -793,18 +793,15 @@ impl Target for Core {
 mod tests {
     use super::*;
 
-    use goblin::container::{Container, Ctx};
+    use crate::coredump::common::elf_ctx;
+    use crate::coredump::testkit::{Load, PAGE, note, phdr, regs_at};
+
     use goblin::elf::header::header64::SIZEOF_EHDR;
     use goblin::elf::header::{EM_X86_64, ET_CORE, Header};
+    use goblin::elf::program_header::PT_NOTE;
     use goblin::elf::program_header::program_header64::SIZEOF_PHDR;
-    use goblin::elf::program_header::{PT_NOTE, ProgramHeader};
     use scroll::Pwrite;
     use std::io::Write;
-
-    /// A core is ELF64 and little-endian, as everything this builds is.
-    fn elf_ctx() -> Ctx {
-        Ctx::new(Container::Big, scroll::Endian::Little)
-    }
 
     /// Builds an `ET_CORE` file in memory, so the reader can be held to
     /// cores a real one is awkward to produce: a region dumped and
@@ -826,21 +823,6 @@ mod tests {
         /// malformed-core tests.
         raw_notes: Option<Vec<u8>>,
     }
-
-    struct Load {
-        vaddr: u64,
-        memsz: u64,
-        flags: u32,
-        /// The bytes actually written to the core; shorter than `memsz`
-        /// when the kernel left the region out.
-        bytes: Vec<u8>,
-    }
-
-    const PAGE: u64 = 0x1000;
-
-    /// The builder pads its notes to four bytes, which is what a core
-    /// actually uses whatever its `PT_NOTE` alignment claims.
-    const NOTE_ALIGN: usize = 4;
 
     impl CoreBuilder {
         /// A region whose bytes are in the core.
@@ -892,7 +874,7 @@ mod tests {
             let mut out = Vec::new();
             out.extend(elf_header(phnum as u16));
 
-            let mut offset = (64 + phnum * 56) as u64;
+            let mut offset = (SIZEOF_EHDR + phnum * SIZEOF_PHDR) as u64;
             let note_offset = offset;
             out.extend(phdr(PT_NOTE, 0, note_offset, 0, notes.len() as u64, 0, 4));
             offset += notes.len() as u64;
@@ -980,50 +962,6 @@ mod tests {
         out
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn phdr(
-        p_type: u32,
-        p_flags: u32,
-        p_offset: u64,
-        p_vaddr: u64,
-        p_filesz: u64,
-        p_memsz: u64,
-        p_align: u64,
-    ) -> Vec<u8> {
-        let header = ProgramHeader {
-            p_type,
-            p_flags,
-            p_offset,
-            p_vaddr,
-            p_paddr: p_vaddr,
-            p_filesz,
-            p_memsz,
-            p_align,
-        };
-        let mut out = vec![0u8; SIZEOF_PHDR];
-        out.pwrite_with(header, 0, elf_ctx())
-            .expect("failed to write a program header");
-        out
-    }
-
-    fn note(ntype: u32, name: &str, desc: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let namesz = name.len() + 1;
-        out.extend((namesz as u32).to_le_bytes());
-        out.extend((desc.len() as u32).to_le_bytes());
-        out.extend(ntype.to_le_bytes());
-        out.extend(name.as_bytes());
-        out.push(0);
-        while out.len() % NOTE_ALIGN != 0 {
-            out.push(0);
-        }
-        out.extend(desc);
-        while out.len() % NOTE_ALIGN != 0 {
-            out.push(0);
-        }
-        out
-    }
-
     fn prstatus(tid: u32, regs: &Regs) -> Vec<u8> {
         let mut out = vec![0u8; PRSTATUS_LEN];
         out[PR_PID..PR_PID + 4].copy_from_slice(&tid.to_le_bytes());
@@ -1077,14 +1015,6 @@ mod tests {
             out.push(0);
         }
         out
-    }
-
-    fn regs_at(rip: u64, rsp: u64) -> Regs {
-        Regs {
-            rip,
-            rsp,
-            ..Regs::default()
-        }
     }
 
     // -----------------------------------------------------------------------

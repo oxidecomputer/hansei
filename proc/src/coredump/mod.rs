@@ -12,6 +12,8 @@
 mod common;
 pub mod illumos;
 pub mod linux;
+#[cfg(test)]
+mod testkit;
 
 use crate::{Error, Result};
 
