@@ -15,6 +15,7 @@ pub mod bundle;
 pub mod census;
 pub mod contract;
 pub mod graph;
+mod model;
 
 use std::fmt;
 use std::mem;
