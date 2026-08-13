@@ -441,20 +441,21 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         // The timer formatter behind `sleep`/`timeout`, resolved end to end:
         // the deadline tick out of the entry's `StateCell` (crossing the
         // `Option<TimerShared>` variant), and the wheel clock reached through
-        // the entry's own scheduler handle (crossing the handle enum, the
-        // `Option` time handle, and the `Traditional` driver variant). A
-        // wrong member anywhere on either path changes this string.
+        // the entry's own scheduler handle — crossing the handle enum with an
+        // active-variant step, so the read carries one guarded candidate per
+        // scheduler flavor and the description spells both chains. A wrong
+        // member anywhere on any path changes this string.
         //
-        // The wheel path crosses the runtime's `driver::Handle`, whose io and
+        // The wheel paths cross the runtime's `driver::Handle`, whose io and
         // signal members embed OS-specific types, so — unlike every other
-        // offset these asserts pin — its terminal offset is per-platform:
+        // offset these asserts pin — their terminal offsets are per-platform:
         // one arm per system the suite runs on, since no two agree.
-        let wheel_offset = if cfg!(target_os = "macos") {
-            672
+        let (ct_wheel, mt_wheel) = if cfg!(target_os = "macos") {
+            (1056, 672)
         } else if cfg!(target_os = "linux") {
-            648
+            (1056, 648)
         } else {
-            656
+            (1040, 656)
         };
         assert_format(
             program,
@@ -467,8 +468,10 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                  discr=(Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) != 0xffffffffffffffff), \
                  arms=[0=>(Alias {{ deadline@+88, follow }}), 1=>(Computed(\
                  (Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) - \
-                 Read(driver.{{MultiThread}}.__0.ptr.pointer.*.data.driver.time.{{Some}}.__0.inner.\
-                 {{Traditional}}.state.__1.data.value.wheel.elapsed@+{wheel_offset}))))] }} }}, \
+                 Read(driver.{{CurrentThread}}.__0.ptr.pointer.*.data.driver.time.{{Some}}.__0.inner.\
+                 {{Traditional}}.state.__1.data.value.wheel.elapsed@+{ct_wheel} | \
+                 driver.{{MultiThread}}.__0.ptr.pointer.*.data.driver.time.{{Some}}.__0.inner.\
+                 {{Traditional}}.state.__1.data.value.wheel.elapsed@+{mt_wheel}))))] }} }}, \
                  state: Variant {{ discr=Read(registered@+104), arms=[0=>unregistered], \
                  default=Variant {{ \
                  discr=(Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) != 0xffffffffffffffff), \
@@ -491,9 +494,12 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                  arms=[0=>(Alias {{ entry.{{Traditional}}.__0.deadline@+88, follow }}), \
                  1=>(Computed(\
                  (Read(entry.{{Traditional}}.__0.inner.{{Some}}.__0.state.state.v.value.__0@+48) - \
-                 Read(entry.{{Traditional}}.__0.driver.{{MultiThread}}.__0.ptr.pointer.*.data.driver.\
+                 Read(entry.{{Traditional}}.__0.driver.{{CurrentThread}}.__0.ptr.pointer.*.data.\
+                 driver.time.{{Some}}.__0.inner.{{Traditional}}.state.__1.data.value.wheel.elapsed\
+                 @+{ct_wheel} | \
+                 entry.{{Traditional}}.__0.driver.{{MultiThread}}.__0.ptr.pointer.*.data.driver.\
                  time.{{Some}}.__0.inner.{{Traditional}}.state.__1.data.value.wheel.elapsed\
-                 @+{wheel_offset}))))] }} }}, \
+                 @+{mt_wheel}))))] }} }}, \
                  state: Variant {{ discr=Read(entry.{{Traditional}}.__0.registered@+104), \
                  arms=[0=>unregistered], default=Variant {{ \
                  discr=(Read(entry.{{Traditional}}.__0.inner.{{Some}}.__0.state.state.v.value.__0@+48) \

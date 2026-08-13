@@ -76,21 +76,31 @@ fn unresolved(bundle: &Bundle, at: &MemberRef) -> String {
     }
 }
 
-/// Walk a selector from `root`, returning the dotted field-name chain, the
-/// terminal byte offset, and the type the path lands on. This is the portable,
-/// layout-sensitive rendering of a path: a wrong member changes the name or the
-/// offset even when the path still validates.
-fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, BundleTypeId) {
+/// Walk selector steps from `root`, returning one `(dotted field-name chain,
+/// terminal byte offset, landed type)` per path the steps can take: exactly
+/// one for the selectors (nearly all) that cross no [`Step::ActiveVariant`],
+/// and one per variant — each chain naming its variant the way a named
+/// variant hop reads — where a value-expression read crosses one, since
+/// every variant's continuation is part of what the program addresses. This
+/// is the portable, layout-sensitive rendering of a path: a wrong member
+/// changes the name or the offset even when the path still validates.
+fn walk_all(
+    bundle: &Bundle,
+    root: BundleTypeId,
+    steps: &[Step],
+    names: Vec<String>,
+    start: u64,
+) -> Vec<(String, u64, BundleTypeId)> {
     let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>").to_owned();
-    let mut names = Vec::new();
-    let mut offset = 0u64;
+    let mut names = names;
+    let mut offset = start;
     let mut cur = root;
-    for step in sel.steps() {
+    for (index, step) in steps.iter().enumerate() {
         match step {
             Step::Member(at) => {
                 let Some(members) = members_of(bundle, cur) else {
                     names.push("<non-aggregate>".to_owned());
-                    return (names.join("."), offset, cur);
+                    return vec![(names.join("."), offset, cur)];
                 };
                 match member_at(members, at) {
                     Some(m) => {
@@ -108,7 +118,7 @@ fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, Bu
                     }
                     None => {
                         names.push(unresolved(bundle, at));
-                        return (names.join("."), offset, cur);
+                        return vec![(names.join("."), offset, cur)];
                     }
                 }
             }
@@ -120,7 +130,7 @@ fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, Bu
                 }
                 _ => {
                     names.push("<non-pointer-deref>".to_owned());
-                    return (names.join("."), offset, cur);
+                    return vec![(names.join("."), offset, cur)];
                 }
             },
             Step::Variant(name) => {
@@ -145,30 +155,66 @@ fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, Bu
                     None => {
                         let name = bundle.strings.get(*name).unwrap_or("<bad strref>");
                         names.push(format!("<no unique variant `{name}`>"));
-                        return (names.join("."), offset, cur);
+                        return vec![(names.join("."), offset, cur)];
                     }
                 }
             }
             Step::ActiveVariant => {
-                // Which variant continues is a runtime fact, so the chain
-                // ends here: there is no one type or offset to keep walking.
-                names.push("{<active variant>}".to_owned());
-                return (names.join("."), offset, cur);
+                // Which variant continues is a runtime fact, so every one is
+                // a path of its own, spelled like a named variant hop.
+                let Some(TypeDef::Enum { shape, .. }) = type_def(bundle, cur) else {
+                    names.push("<active variant of a non-enum>".to_owned());
+                    return vec![(names.join("."), offset, cur)];
+                };
+                let rest = &steps[index + 1..];
+                let mut out = Vec::new();
+                for v in &shape.variants {
+                    let mut branch = names.clone();
+                    branch.push(format!("{{{}}}", s(v.name)));
+                    out.extend(walk_all(
+                        bundle,
+                        v.payload.ty,
+                        rest,
+                        branch,
+                        offset + v.payload.offset,
+                    ));
+                }
+                if out.is_empty() {
+                    names.push("<active variant of an empty enum>".to_owned());
+                    return vec![(names.join("."), offset, cur)];
+                }
+                return out;
             }
         }
     }
-    (names.join("."), offset, cur)
+    vec![(names.join("."), offset, cur)]
 }
 
-/// Render one path as `chain@+offset` (rooted at `root`).
+/// Walk a selector from `root` to the one place it addresses. The adapter for
+/// the callers that need a single landing — the selectors they resolve may
+/// not cross a [`Step::ActiveVariant`], so the first path is the only one.
+fn walk(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> (String, u64, BundleTypeId) {
+    walk_all(bundle, root, sel.steps(), Vec::new(), 0)
+        .into_iter()
+        .next()
+        .expect("walk_all returns at least one path")
+}
+
+/// Render one path as `chain@+offset` (rooted at `root`), with the paths of a
+/// fanning selector joined as `chain@+offset | chain@+offset`.
 fn field(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> String {
-    let (chain, offset, _) = walk(bundle, root, sel);
-    let chain = if chain.is_empty() {
-        "<self>".to_owned()
-    } else {
-        chain
-    };
-    format!("{chain}@+{offset}")
+    walk_all(bundle, root, sel.steps(), Vec::new(), 0)
+        .into_iter()
+        .map(|(chain, offset, _)| {
+            let chain = if chain.is_empty() {
+                "<self>".to_owned()
+            } else {
+                chain
+            };
+            format!("{chain}@+{offset}")
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 fn ptr_target(bundle: &Bundle, id: BundleTypeId) -> Option<BundleTypeId> {

@@ -317,9 +317,27 @@ fn eval_expr<'a, T: Target>(
 ) -> std::result::Result<u64, &'static str> {
     Ok(match expr {
         ValueExpr::Const(value) => *value,
-        ValueExpr::Read(place, size) => {
-            let (_, word) = read_place_bytes(place, bytes, addr, ctx, u64::from(*size))?;
-            read_unsigned_at(word, 0, u64::from(*size)).ok_or("<unreadable>")?
+        ValueExpr::Read(candidates) => {
+            // One candidate per variant an active-variant step crossed (one
+            // total for the selectors that crossed none): the live candidate
+            // is the one whose guards select, so an inactive-variant miss
+            // moves on to the next, and only every candidate missing — or a
+            // real read failure on the live one — degrades the expression.
+            let mut result = Err("<inactive variant>");
+            for (place, size) in candidates {
+                match read_place_bytes(place, bytes, addr, ctx, u64::from(*size)) {
+                    Ok((_, word)) => {
+                        result = read_unsigned_at(word, 0, u64::from(*size)).ok_or("<unreadable>");
+                        break;
+                    }
+                    Err("<inactive variant>") => continue,
+                    Err(marker) => {
+                        result = Err(marker);
+                        break;
+                    }
+                }
+            }
+            result?
         }
         ValueExpr::And(a, b) => {
             eval_expr(a, vars, bytes, addr, ctx)? & eval_expr(b, vars, bytes, addr, ctx)?
@@ -1404,6 +1422,78 @@ mod tests {
         let bytes = msg_wrap(0, 7);
         let value = Value::new(v.ty(MSG_WRAP).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "<inactive variant>");
+    }
+
+    /// A `ValueExpr::Read` crossing an active-variant step resolves one
+    /// guarded candidate per variant and reads through whichever is live —
+    /// the same member name landing at a *different* offset per variant, the
+    /// shape the scheduler-handle enum keeps its flavor handles in.
+    #[test]
+    fn test_value_expr_read_crosses_the_active_variant() {
+        let mut b = test_bundle();
+        let path = Selector(vec![
+            Step::ActiveVariant,
+            Step::Member(MemberRef::Named(strref(&b, "x"))),
+        ]);
+        b.types.debug_formats.insert(
+            FLAVOR,
+            BundleNode::Computed {
+                value: ValueExpr::Read(path),
+                decode: ScalarDecode::Raw,
+            },
+        );
+        b.validate().expect("an active-variant read must validate");
+        let v = BundleView::new(&b);
+
+        // Flavor: tag u8 @0, payloads @8 — A keeps x at +8, B at +16.
+        let flavor = |tag: u8, a_x: u64, b_x: u64| {
+            let mut out = vec![0u8; 24];
+            out[0] = tag;
+            out[8..16].copy_from_slice(&a_x.to_le_bytes());
+            out[16..24].copy_from_slice(&b_x.to_le_bytes());
+            out
+        };
+        let show =
+            |bytes: &[u8]| format!("{}", Value::new(v.ty(FLAVOR).unwrap(), 0, bytes).display());
+
+        assert_eq!(show(&flavor(0, 5, 9)), "5");
+        assert_eq!(show(&flavor(1, 5, 9)), "9");
+        // A tag no variant claims selects no candidate: the read degrades
+        // rather than picking an offset.
+        assert_eq!(show(&flavor(7, 5, 9)), "<inactive variant>");
+    }
+
+    /// An active-variant step outside a value-expression read has no way to
+    /// try candidates: validation rejects it, and reify's resolution
+    /// independently declines to structural display if such a bundle is
+    /// ever loaded.
+    #[test]
+    fn test_active_variant_outside_a_read_is_rejected_and_declined() {
+        let mut b = test_bundle();
+        let path = Selector(vec![
+            Step::ActiveVariant,
+            Step::Member(MemberRef::Named(strref(&b, "x"))),
+        ]);
+        b.types.debug_formats.insert(
+            FLAVOR,
+            BundleNode::Alias {
+                at: path,
+                follow_pointers: true,
+            },
+        );
+        let err = b
+            .validate()
+            .expect_err("an active-variant alias must not validate");
+        assert!(
+            format!("{err}").contains("which only a walk binding or a value-expression read may"),
+            "{err}"
+        );
+
+        let v = BundleView::new(&b);
+        let mut bytes = vec![0u8; 24];
+        bytes[8..16].copy_from_slice(&5u64.to_le_bytes());
+        let shown = format!("{}", Value::new(v.ty(FLAVOR).unwrap(), 0, &bytes).display());
+        assert!(shown.starts_with("Flavor::A"), "{shown}");
     }
 
     /// A node that resolves its selector to a bare offset cannot carry the
