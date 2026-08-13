@@ -75,6 +75,7 @@ const PROGRAMS: &[&str] = &[
     "unordered",
     "joinset",
     "ct-runtime",
+    "local-set",
 ];
 
 fn workspace_root() -> &'static Path {
@@ -397,6 +398,10 @@ struct TaskRow {
     id: String,
     state: String,
     future: String,
+    /// The group tag — which runtime or local set owns the task —
+    /// printed only when the population holds more than one group, so
+    /// empty on most fixtures.
+    runtime: String,
     /// How many futures the task holds in its own frames beside its
     /// await chain, `0` when it holds none.
     futures: String,
@@ -430,6 +435,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             id: id.to_string(),
             state: String::new(),
             future: future.to_string(),
+            runtime: String::new(),
             futures: String::new(),
             sets: String::new(),
             spawned: String::new(),
@@ -449,6 +455,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 .unwrap_or_else(|| panic!("unexpected tasks line {line:?}"));
             let field = match label {
                 "State" => &mut row.state,
+                "Runtime" => &mut row.runtime,
                 "Held futures" => &mut row.futures,
                 "Join sets" => &mut row.sets,
                 "Spawned at" => &mut row.spawned,
@@ -458,6 +465,8 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             assert!(field.is_empty(), "repeated tasks attribute {line:?}");
             *field = value.to_string();
         }
+        // Every attribute except the group tag, which only a
+        // multi-group population prints.
         for (label, value) in [
             ("State", &row.state),
             ("Held futures", &row.futures),
@@ -1050,6 +1059,61 @@ Task {id}: ct_runtime::sleeper::{{async_fn_env#0}} (idle)
         let out = hansei_ok(&bundle, core, "census --threads");
         assert!(out.contains("1 in the scheduler's run loop"), "{out}");
         assert!(out.contains("block_on thread, lwp"), "{out}");
+    });
+}
+
+/// A `LocalSet` on a current_thread runtime: its two tasks live in the
+/// set's own list, which the ordinary spawned task's JoinHandle edge
+/// bootstraps — the whole set from one member. They merge into the flat
+/// listing tagged with the set (and the LWP it is pinned to, joined
+/// through the runtime context's thread id), the joined local task is
+/// simply listed with no unlisted caveat, and `info` names the set with
+/// the route that found it. The TLS route finds nothing here on
+/// purpose: a parked core reads the `CURRENT` anchor empty.
+#[test]
+fn test_local_set_acceptance() {
+    let bundle = fixtures().bundle("local-set");
+    with_core("local-set", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 3, "{rows:#?}");
+        let joiner = task_with_future(&rows, "local_set::joiner::{async_fn_env#0}");
+        let sleeper = task_with_future(&rows, "local_set::local_sleeper::{async_fn_env#0}");
+        let acquirer = task_with_future(&rows, "local_set::local_acquirer::{async_fn_env#0}");
+
+        // Groups: the scheduler task carries the runtime's tag, the two
+        // local tasks the set's, with the owner LWP joined on.
+        assert_eq!(joiner.runtime, "0 (current_thread)", "{rows:#?}");
+        let set_tag = regex::Regex::new(r"^local set at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        assert!(set_tag.is_match(&sleeper.runtime), "{rows:#?}");
+        assert_eq!(sleeper.runtime, acquirer.runtime, "{rows:#?}");
+
+        // The join edge names the local task with no "not in the
+        // scheduler's owned tasks" caveat: it is simply listed now.
+        let out = trace(&bundle, core, &joiner.id, false);
+        assert!(
+            out.contains(&format!("waiting on task {} (JoinHandle)\n", sleeper.id)),
+            "{out}"
+        );
+
+        // The local tasks read like any listed task: the sleeper's
+        // timer leaf decodes, and the acquirer's semaphore names its
+        // queued waker as the task it would wake.
+        let out = normalize(&trace(&bundle, core, &sleeper.id, false));
+        assert!(out.contains("tokio::time::sleep::Sleep"), "{out}");
+        assert!(out.contains("waiting on the timer: deadline TS"), "{out}");
+        let out = normalize(&trace(&bundle, core, &acquirer.id, false));
+        assert!(
+            out.contains(&format!("wake queue: task {}", acquirer.id)),
+            "{out}"
+        );
+
+        // info names the set, its owner thread, its population, and the
+        // route that found it.
+        let out = normalize(&hansei_ok(&bundle, core, "info"));
+        let set_line =
+            regex::Regex::new(r"local set 0: at 0xADDR, on lwp \d+, 2 tasks, found via a JoinHandle held by an enumerated task")
+                .unwrap();
+        assert!(set_line.is_match(&out), "{out}");
     });
 }
 
