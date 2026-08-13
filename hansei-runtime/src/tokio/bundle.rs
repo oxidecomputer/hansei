@@ -1644,29 +1644,42 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(waiters)
     }
 
-    /// Decode the waker registered in a wait-queue node. Task wakers are
-    /// recognized by their vtable: tokio builds them as `(data = the
-    /// task's Header, vtable = &WAKER_VTABLE)`, and the bundle names that
-    /// static.
+    /// Decode the waker registered in a wait-queue node. Waiters keep
+    /// theirs in an `UnsafeCell<Option<Waker>>`, whose `Some` payload
+    /// peels through the `Waker` to the `RawWaker` pair.
     fn read_queued_waker(&self, node: Value<'b>) -> Result<QueuedWaker> {
-        // Waiter.waker: UnsafeCell<Option<Waker>>; the Some payload
-        // peels through the Waker to its RawWaker.
         let Some(raw) = self.walk(WalkRole::WaiterWaker).walk(node)?.optional() else {
             return Ok(QueuedWaker::Unarmed);
         };
+        self.raw_waker(raw)
+    }
+
+    /// Decode one `RawWaker`, wherever it was registered — a semaphore's
+    /// wait queue, a timer entry's `AtomicWaker`. The two halves are read
+    /// through the same recorded steps in either case, since the landing
+    /// type is the same `RawWaker`.
+    fn raw_waker(&self, raw: Value<'b>) -> Result<QueuedWaker> {
         let data: u64 = self.walk(WalkRole::WakerData).read(raw)?;
         let vtable: u64 = self.walk(WalkRole::WakerVtable).read(raw)?;
-        if self.task_waker_vtable()? == Some(vtable) {
-            let (task_id, _) = self
-                .header_task_ref(data)
-                .context("failed to identify the task behind a queued waker")?;
-            Ok(QueuedWaker::Task {
-                addr: data,
-                task_id,
-            })
-        } else {
-            Ok(QueuedWaker::Other { vtable })
+        self.task_waker(data, vtable)
+    }
+
+    /// Classify a `(data, vtable)` waker pair. Task wakers are recognized
+    /// by their vtable: tokio builds them as `(data = the task's Header,
+    /// vtable = &WAKER_VTABLE)`, and the bundle names that static — an
+    /// address-equality join against the target's own symtab, never a
+    /// guess about what the data word points at.
+    fn task_waker(&self, data: u64, vtable: u64) -> Result<QueuedWaker> {
+        if self.task_waker_vtable()? != Some(vtable) {
+            return Ok(QueuedWaker::Other { vtable });
         }
+        let (task_id, _) = self
+            .header_task_ref(data)
+            .context("failed to identify the task behind a registered waker")?;
+        Ok(QueuedWaker::Task {
+            addr: data,
+            task_id,
+        })
     }
 
     /// The target address of tokio's task `WAKER_VTABLE` static,
@@ -1805,13 +1818,16 @@ impl<'b, T: Target> Context<'b, T> {
     /// queue — through its cell's recorded scheduler: an
     /// `Arc<task::local::Shared>` is the way home, and the set must
     /// claim the task that led there (its `owned.id` equal to the
-    /// task's own `owner_id`) before it is admitted. Every route
-    /// converges on `Shared` addresses and dedups there.
+    /// task's own `owner_id`) before it is admitted. Route 2 harvests
+    /// the runtimes' own timer wheels, which register a task's waker
+    /// whatever list owns it — the only route that reaches a set no
+    /// enumerated task points at. Every route converges on `Shared`
+    /// addresses and dedups there.
     ///
     /// Each admitted set's list is then walked like one more shard, its
-    /// tasks stamped `first_group + set index` and merged — including
-    /// into further rounds of the sweep, since a local task's own chain
-    /// can reach another set.
+    /// tasks stamped `runtimes.len() + set index` and merged —
+    /// including into further rounds of the sweep, since a local task's
+    /// own chain can reach another set.
     ///
     /// Failures degrade per candidate into `list.errors`; the returned
     /// sets are in admission order, which is the group order their
@@ -1820,9 +1836,10 @@ impl<'b, T: Target> Context<'b, T> {
         &self,
         lwps: &[LwpInfo],
         workers: &[Worker],
+        runtimes: &[RuntimeRef<'b>],
         list: &mut TaskList,
-        first_group: usize,
     ) -> Vec<LocalSetRef<'b>> {
+        let first_group = runtimes.len();
         if !self.local_sets_possible() {
             return Vec::new();
         }
@@ -1863,19 +1880,28 @@ impl<'b, T: Target> Context<'b, T> {
                 .push(e.context("the local-set TLS probe failed")),
         }
 
-        // Route 1, to a fixed point: enumerate what was admitted, sweep
-        // the chains of what was enumerated, admit what the sweep
-        // found. Both sides are monotone and bounded — sets dedup by
-        // address, tasks by the lists' own cycle guards — so the loop
+        // Routes 1 and 2, to a fixed point: enumerate what was admitted,
+        // produce more candidates from what was enumerated, admit what
+        // they found. Both sides are monotone and bounded — sets dedup
+        // by address, tasks by the lists' own cycle guards — so the loop
         // ends; the round cap is a backstop against nothing real.
         //
-        // The sweep is what costs anything here, so it runs only where
-        // it could find something: a target with no local task
-        // instantiation still gets its TLS-found sets enumerated above,
-        // and pays no chain walk.
+        // The chain sweep is what costs anything here, so it runs only
+        // where it could find something: a target with no local task
+        // instantiation has nothing route 1 could reach, and pays no
+        // chain walk. It also goes first, so a set an enumerated task
+        // points at is credited to that edge rather than to whichever
+        // of its members happens to hold a timer.
+        //
+        // The wheel harvest needs no such gate — its cost is bounded by
+        // the wheel (six levels of 64 slots), not by the task
+        // population — and runs once the sweep has nothing new to walk,
+        // since the wheel's contents do not change as sets are
+        // enumerated. What it admits feeds the sweep in turn.
         let sweep = self.local_task_entries_exist();
         let mut walked = 0;
         let mut enumerated = 0;
+        let mut harvested = false;
         for _round in 0..64 {
             while enumerated < sets.len() {
                 let set = &sets[enumerated];
@@ -1895,16 +1921,20 @@ impl<'b, T: Target> Context<'b, T> {
                 }
                 enumerated += 1;
             }
-            if !sweep || walked == list.tasks.len() {
+            let found = if sweep && walked < list.tasks.len() {
+                let range = walked..list.tasks.len();
+                walked = list.tasks.len();
+                self.unlisted_task_pointers(list, range)
+            } else if !harvested {
+                harvested = true;
+                let (found, errors) = self.wheel_task_pointers(runtimes, list);
+                list.errors.extend(errors);
+                found
+            } else {
                 break;
-            }
-            let range = walked..list.tasks.len();
-            walked = list.tasks.len();
-            for (addr, route) in self.unlisted_task_pointers(list, range) {
+            };
+            for (addr, route) in found {
                 self.bootstrap_local_set(addr, route, &thread_ids, &mut sets, &mut list.errors);
-            }
-            if enumerated == sets.len() {
-                break;
             }
         }
         if !sets.is_empty() {
@@ -2032,6 +2062,121 @@ impl<'b, T: Target> Context<'b, T> {
             }
         }
         found
+    }
+
+    /// Route 2: the task-Header pointers armed on timer entries parked
+    /// in `runtimes`' own wheels that no enumerated task claims.
+    ///
+    /// The wheel is a registry of parked tasks whatever list owns them:
+    /// every `tokio::time::Sleep` registers its `TimerShared` into it
+    /// and arms the entry's `AtomicWaker` with the task's own waker, so
+    /// a `LocalSet` member sleeping in a set nothing else points at is
+    /// visible here and nowhere else. What identifies a waker as a
+    /// task's is the same address-equality join on tokio's
+    /// `WAKER_VTABLE` static that the wait-queue readers make; a waker
+    /// that is not a task's, or a task that is already listed, is
+    /// simply not a candidate.
+    ///
+    /// Failures degrade at the finest grain the walk allows: a runtime
+    /// whose wheel cannot be reached costs its own wheel, a corrupt
+    /// slot list costs the rest of that list, and everything else is
+    /// still harvested.
+    fn wheel_task_pointers(
+        &self,
+        runtimes: &[RuntimeRef<'b>],
+        list: &TaskList,
+    ) -> (Vec<(u64, LocalSetRoute)>, Vec<anyhow::Error>) {
+        let mut found = Vec::new();
+        let mut errors = Vec::new();
+        // Across the whole harvest: the same entry is in exactly one
+        // slot, so a repeat is corrupt memory, not a second sighting.
+        let mut visited = HashSet::default();
+        for (index, runtime) in runtimes.iter().enumerate() {
+            if let Err(e) = self.harvest_wheel(runtime, list, &mut visited, &mut found, &mut errors)
+            {
+                errors.push(e.context(format!("failed to walk runtime {index}'s timer wheel")));
+            }
+        }
+        (found, errors)
+    }
+
+    /// Walk one runtime's wheel: six levels of 64 slots, each slot an
+    /// intrusive list of `TimerShared`s. The levels and slots are plain
+    /// arrays, read whole and iterated; only the lists are walked.
+    fn harvest_wheel(
+        &self,
+        runtime: &RuntimeRef<'b>,
+        list: &TaskList,
+        visited: &mut HashSet<u64>,
+        found: &mut Vec<(u64, LocalSetRoute)>,
+        errors: &mut Vec<anyhow::Error>,
+    ) -> Result<()> {
+        // `driver.time` is an `Option`: a runtime built without the time
+        // driver has no wheel, which is a runtime state, not a failure.
+        let Some(levels) = self
+            .walk(WalkRole::WheelLevels)
+            .try_walk(runtime.handle)?
+            .and_then(Walked::optional)
+        else {
+            return Ok(());
+        };
+        for level in levels.elements(self.proc)?.iter() {
+            let slots = self.walk(WalkRole::LevelSlots).walk_at(level)?;
+            for slot in slots.elements(self.proc)?.iter() {
+                let Some(head) = self.walk(WalkRole::SlotHead).walk(slot)?.optional() else {
+                    continue;
+                };
+                let addr = head.parse::<u64>(self.proc)?;
+                let entry_ty = head
+                    .ty
+                    .pointer_target()
+                    .ok_or_else(|| anyhow!("a wheel slot's head is not pointer-shaped"))?;
+                if let Err(e) = self.walk_wheel_slot(addr, entry_ty, list, visited, found) {
+                    errors.push(e.context(format!("failed to walk the wheel slot at {addr:#x}")));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Walk one slot's `TimerShared` list, collecting the task Headers
+    /// its entries' wakers name.
+    fn walk_wheel_slot(
+        &self,
+        head: u64,
+        entry_ty: BundleType<'b>,
+        list: &TaskList,
+        visited: &mut HashSet<u64>,
+        found: &mut Vec<(u64, LocalSetRoute)>,
+    ) -> Result<()> {
+        let mut cur = Some(head);
+        while let Some(addr) = cur {
+            ensure!(
+                self.mappings.contains_addr(addr),
+                "timer-entry pointer {addr:#x} is unmapped"
+            );
+            ensure!(visited.insert(addr), "timer list cycle at {addr:#x}");
+            let entry = Value::read(self.proc, entry_ty, addr)
+                .with_context(|| format!("failed to read the TimerShared at {addr:#x}"))?;
+            // An entry in the wheel with no waker registered has simply
+            // not been polled since it was armed.
+            if let Some(raw) = self
+                .walk(WalkRole::TimerSharedWaker)
+                .walk(entry)?
+                .optional()
+                && let QueuedWaker::Task { addr, .. } = self.raw_waker(raw)?
+                && !list.contains(addr)
+            {
+                found.push((addr, LocalSetRoute::Wheel));
+            }
+            cur = self
+                .walk(WalkRole::TimerSharedNext)
+                .walk(entry)?
+                .optional()
+                .map(|ptr| ptr.parse(self.proc).map_err(anyhow::Error::from))
+                .transpose()?;
+        }
+        Ok(())
     }
 
     /// Route 1's tail: follow one unlisted Header home through its

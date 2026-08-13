@@ -41,6 +41,6 @@ pub fn tasks<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> TaskList {
     let mut list = ctx
         .enumerate_all_tasks(&runtimes)
         .expect("the owned-task walk");
-    ctx.discover_local_tasks(&lwps, &workers, &mut list, runtimes.len());
+    ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut list);
     list
 }

@@ -100,6 +100,10 @@ pub enum LocalSetRoute {
     JoinHandle,
     /// A task waker in a walked waiter queue pointed at one of them.
     QueuedWaker,
+    /// A timer entry parked in the runtime's own wheel was armed with
+    /// one of their wakers — the route that reaches a set no enumerated
+    /// task points at.
+    Wheel,
     /// The thread's `task::local::CURRENT` anchor, populated only while
     /// a set is being polled (or held entered).
     Tls,
@@ -110,6 +114,7 @@ impl fmt::Display for LocalSetRoute {
         match self {
             Self::JoinHandle => f.write_str("a JoinHandle held by an enumerated task"),
             Self::QueuedWaker => f.write_str("a task waker in a walked waiter queue"),
+            Self::Wheel => f.write_str("a task waker on a timer parked in the runtime's wheel"),
             Self::Tls => f.write_str("the polling thread's TLS anchor"),
         }
     }

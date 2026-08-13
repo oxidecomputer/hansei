@@ -82,7 +82,7 @@ pub(crate) fn exec_snapshot(
     // A snapshot records only the reads the capture performs, so
     // local-set discovery must be driven here for the offline pairs to
     // replay it.
-    ctx.discover_local_tasks(&lwps, &workers, &mut list, runtimes.len());
+    ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut list);
     print_warnings(&list.errors)?;
 
     let mut chains = 0usize;

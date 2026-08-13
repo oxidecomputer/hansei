@@ -774,7 +774,7 @@ fn test_local_set_offline() {
     // Discovery finds the set through that one handle, and both its
     // tasks — the joined one and its invisible sibling — join the
     // population, stamped with the set's own group.
-    let sets = ctx.discover_local_tasks(&lwps, &workers, &mut list, runtimes.len());
+    let sets = ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut list);
     assert!(list.errors.is_empty(), "{:?}", list.errors);
     let [set] = sets.as_slice() else {
         panic!("expected one local set, got {}", sets.len());
