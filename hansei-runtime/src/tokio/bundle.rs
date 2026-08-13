@@ -446,38 +446,94 @@ impl<'b, T: Target> Context<'b, T> {
             .with_context(|| format!("failed to read Context at {addr:#x}"))
     }
 
-    /// Navigate from the workers' `Context`s to the multi_thread
-    /// scheduler's `Handle` (`Context.current.handle` →
-    /// `Option<scheduler::Handle>` → `MultiThread(Arc<Handle>)` → deref →
-    /// `.data`).
+    /// Navigate from the workers' `Context`s to every runtime they run:
+    /// `Context.current.handle` → `Option<scheduler::Handle>` → the
+    /// flavor's variant (`MultiThread(Arc<Handle>)` or
+    /// `CurrentThread(Arc<Handle>)`) → deref → `.data`, grouped by
+    /// handle address.
     ///
-    /// The handle is the root of everything the runtime shares: the
+    /// Each handle is the root of everything its runtime shares: the
     /// scheduler state under `shared`, the io/time/signal drivers under
-    /// `driver`.
-    pub fn find_handle(&self, workers: &[Worker]) -> Result<Value<'b>> {
-        let mut saw_other_scheduler = false;
+    /// `driver`. The grouping is what current_thread makes necessary:
+    /// each `block_on` thread can carry its own runtime, so a process
+    /// holding several is ordinary. A multi_thread target's workers all
+    /// share one handle, so its vec has one element.
+    pub fn find_runtimes(&self, workers: &[Worker]) -> Result<Vec<RuntimeRef<'b>>> {
+        let mut runtimes: Vec<RuntimeRef<'b>> = Vec::new();
         for worker in workers {
             let info = self.context_info(worker.context_addr)?;
-            match self.walk(WalkRole::WorkerHandle).walk(info)? {
-                Walked::At(handle) => return Ok(handle),
-                // current_thread is out of scope.
-                Walked::Inactive("MultiThread") => saw_other_scheduler = true,
+            let Some((flavor, handle)) = self.flavor_handle(info)? else {
                 // No handle in this thread's Context.
-                Walked::Inactive(_) => {}
-                Walked::Null => bail!("the runtime handle's Arc is null"),
+                continue;
+            };
+            match runtimes.iter_mut().find(|r| r.handle.addr == handle.addr) {
+                Some(runtime) => runtime.worker_tids.push(worker.tid),
+                None => runtimes.push(RuntimeRef {
+                    flavor,
+                    handle,
+                    worker_tids: vec![worker.tid],
+                }),
             }
         }
-        if saw_other_scheduler {
-            bail!("only MultiThread runtimes are supported, and none was found");
+        if runtimes.is_empty() {
+            let outcomes: Vec<String> = [WalkRole::WorkerHandle, WalkRole::CtWorkerHandle]
+                .iter()
+                .filter_map(|role| self.contract.entry(role.name()))
+                .map(|entry| format!("  {}", entry.line()))
+                .collect();
+            bail!(
+                "no worker thread's Context reaches a runtime handle of either \
+                 scheduler flavor:\n{}",
+                outcomes.join("\n")
+            );
         }
-        bail!("no worker thread has a runtime handle in its Context");
+        Ok(runtimes)
     }
 
-    /// The scheduler state the workers share, from the runtime handle
-    /// [`Context::find_handle`] reaches.
-    pub fn find_shared(&self, workers: &[Worker]) -> Result<Value<'b>> {
-        let handle = self.find_handle(workers)?;
-        self.walk(WalkRole::HandleShared).walk_at(handle)
+    /// The flavor handle one thread's `Context` points at, if any. Each
+    /// flavor's discovery row is consulted through `try_walk`: a flavor
+    /// the target never compiled in is recorded absent, which here means
+    /// only that this thread does not run it.
+    fn flavor_handle(&self, info: Value<'b>) -> Result<Option<(RuntimeFlavor, Value<'b>)>> {
+        for (flavor, role) in [
+            (RuntimeFlavor::MultiThread, WalkRole::WorkerHandle),
+            (RuntimeFlavor::CurrentThread, WalkRole::CtWorkerHandle),
+        ] {
+            match self.walk(role).try_walk(info)? {
+                Some(Walked::At(handle)) => return Ok(Some((flavor, handle))),
+                // The other flavor's variant (or no handle) is live, or
+                // the row is absent on this build — try the next flavor.
+                Some(Walked::Inactive(_)) | None => {}
+                Some(Walked::Null) => bail!("the runtime handle's Arc is null"),
+            }
+        }
+        Ok(None)
+    }
+
+    /// The scheduler state a runtime's workers share, from the handle
+    /// [`Context::find_runtimes`] reached. Both flavors' `Handle`s spell
+    /// the member identically, and the recorded steps resolve by name
+    /// against whichever `Shared` this handle actually has.
+    pub fn find_shared(&self, runtime: &RuntimeRef<'b>) -> Result<Value<'b>> {
+        self.walk(WalkRole::HandleShared).walk_at(runtime.handle)
+    }
+
+    /// Every discovered runtime's tasks, merged into one list with the
+    /// per-runtime enumeration's own ordering applied across the whole.
+    pub fn enumerate_all_tasks(&self, runtimes: &[RuntimeRef<'b>]) -> Result<TaskList> {
+        let mut all = TaskList {
+            tasks: Vec::new(),
+            errors: Vec::new(),
+        };
+        for runtime in runtimes {
+            let shared = self.find_shared(runtime)?;
+            let list = self.enumerate_tasks(shared)?;
+            all.tasks.extend(list.tasks);
+            all.errors.extend(list.errors);
+        }
+        all.tasks
+            .sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
+        Ok(all)
     }
 
     /// The scheduler context a worker thread is running under: the
@@ -486,16 +542,20 @@ impl<'b, T: Target> Context<'b, T> {
     ///
     /// `None` when the thread is in the runtime without being inside the
     /// scheduler — the pointer is set only for the duration of a
-    /// worker's run loop — or when it runs a scheduler hansei does not
-    /// read.
+    /// worker's run loop — or when it runs a scheduler this walk does
+    /// not read (a current_thread runtime, whose analog is phase-2
+    /// work).
     pub fn worker_context(&self, worker: &Worker) -> Result<Option<Value<'b>>> {
         let info = self.context_info(worker.context_addr)?;
-        // The scoped pointer is null outside the run loop, and a
-        // scheduler other than multi_thread is not one this reads —
-        // both ordinary. Anything else has to be readable: an
-        // unreadable pointer is a failure to report, not a thread to
-        // pass over.
-        Ok(self.walk(WalkRole::WorkerContext).walk(info)?.optional())
+        // The scoped pointer is null outside the run loop, another
+        // scheduler flavor may be the live variant, and a build without
+        // the multi_thread scheduler records the row absent — all
+        // ordinary. Anything else has to be readable: an unreadable
+        // pointer is a failure to report, not a thread to pass over.
+        Ok(self
+            .walk(WalkRole::WorkerContext)
+            .try_walk(info)?
+            .and_then(Walked::optional))
     }
 
     /// Which worker of the scheduler a thread is running, as the
@@ -513,9 +573,11 @@ impl<'b, T: Target> Context<'b, T> {
     /// same allocation, though, and that hangs off the shared scheduler
     /// state, so every worker's state word is readable from one place
     /// whether or not the thread holding it can be walked.
+    ///
+    /// Multi_thread only — `handle` must be an MT runtime's; a
+    /// current_thread runtime has no remotes and no parker array.
     pub fn park_states(&self, handle: Value<'b>) -> Result<ParkStates> {
-        let shared = self.walk(WalkRole::HandleShared).walk_at(handle)?;
-        let remotes = self.walk(WalkRole::SharedRemotes).walk_at(shared)?;
+        let remotes = self.walk(WalkRole::SharedRemotes).walk_at(handle)?;
         // The driver's lock lives under the parkers' own shared state,
         // which every `Inner` points at; the first one answers for all.
         let mut driver_held = None;

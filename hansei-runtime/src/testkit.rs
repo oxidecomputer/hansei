@@ -37,6 +37,7 @@ pub fn context<'a>(bundle: &'a Bundle, snapshot: &'a Snapshot) -> Context<'a, Sn
 pub fn tasks<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> TaskList {
     let lwps = snapshot.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let shared = ctx.find_shared(&workers).expect("a MultiThread runtime");
-    ctx.enumerate_tasks(shared).expect("the owned-task walk")
+    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    ctx.enumerate_all_tasks(&runtimes)
+        .expect("the owned-task walk")
 }

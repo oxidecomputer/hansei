@@ -74,6 +74,7 @@ const PROGRAMS: &[&str] = &[
     "sleep-join",
     "unordered",
     "joinset",
+    "ct-runtime",
 ];
 
 fn workspace_root() -> &'static Path {
@@ -981,6 +982,63 @@ Task {id}: sleep_join::joiner::{{async_fn_env#0}} (idle)
             spawned = spawned_at("src/bin/sleep-join.rs:29:23")
         );
         assert_eq!(trace(&bundle, core, &joiner.id, false), expected);
+    });
+}
+
+/// A current_thread runtime: discovery crosses the `CurrentThread`
+/// variant and everything downstream — listing, tracing, the timer and
+/// semaphore leaf readers — runs unchanged. Only the two spawned tasks
+/// are listed: the `block_on` root future lives on the caller's stack,
+/// not in `OwnedTasks`, the same as on multi_thread.
+#[test]
+fn test_ct_runtime_acceptance() {
+    let bundle = fixtures().bundle("ct-runtime");
+    with_core("ct-runtime", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 2, "{rows:#?}");
+        let sleeper = task_with_future(&rows, "ct_runtime::sleeper::{async_fn_env#0}");
+        let acquirer = task_with_future(&rows, "ct_runtime::acquirer::{async_fn_env#0}");
+        assert_eq!(sleeper.state, "idle");
+        assert_eq!(acquirer.state, "idle");
+
+        let expected = format!(
+            "\
+Task {id}: ct_runtime::sleeper::{{async_fn_env#0}} (idle)
+{spawned}Defined at: src/bin/ct-runtime.rs:10
+
+  0  async fn      ct_runtime::sleeper::{{async_fn_env#0}}
+     suspends:
+     ▸ Suspend0  src/bin/ct-runtime.rs:12
+       └─* 1  future        tokio::time::sleep::Sleep
+          waiting on the timer: deadline TS
+",
+            id = sleeper.id,
+            spawned = spawned_at("src/bin/ct-runtime.rs:31:24")
+        );
+        assert_eq!(
+            normalize(&trace(&bundle, core, &sleeper.id, false)),
+            expected
+        );
+
+        // The acquirer bottoms out in the semaphore leaf; the frames
+        // between are tokio's own and shift with the cell's version.
+        let out = normalize(&trace(&bundle, core, &acquirer.id, false));
+        assert!(
+            out.contains("tokio::sync::batch_semaphore::Acquire"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "waiting on a tokio::sync::Semaphore (semaphore 0xADDR): \
+                 1 permit requested, 0 available"
+            ),
+            "{out}"
+        );
+
+        // The block_on thread holds a Context but never a multi_thread
+        // worker core; the CT scheduler introspection is still to come.
+        let out = hansei_ok(&bundle, core, "threads");
+        assert!(out.contains("not in the scheduler's run loop"), "{out}");
     });
 }
 

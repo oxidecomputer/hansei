@@ -44,6 +44,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -54,7 +55,9 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes
@@ -120,6 +123,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -130,7 +134,9 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes
@@ -196,6 +202,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -206,7 +213,9 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes
@@ -284,6 +293,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -294,7 +304,9 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes
@@ -374,6 +386,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -384,7 +397,9 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes
@@ -448,6 +463,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -458,7 +474,9 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes
@@ -534,6 +552,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -544,7 +563,9 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes
@@ -620,6 +641,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -630,7 +652,9 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes
@@ -697,6 +721,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -707,7 +732,9 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes
@@ -785,6 +812,7 @@ trailer: ok
 context: ok
 scheduler_handle: ok
 mt_handle: ok
+ct_handle: ok
 location: ok
 raw_waker_vtable: ok
 
@@ -795,7 +823,98 @@ task-waker-vtable: ok
 [walks]
 ok      Context.current_task_id
 ok      Context.handle
+ok      Context.handle.current_thread
 ok      Context.scheduler
+ok      Context.scheduler.current_thread
+ok      worker::Context.index
+ok      Handle.shared
+ok      Shared.remotes
+ok      Remote.unpark
+ok      parker::Inner.state
+ok      parker::Inner.driver_lock
+ok      Handle.blocking_metrics
+ok      SpawnerMetrics.num_threads
+ok      SpawnerMetrics.num_idle_threads
+ok      SpawnerMetrics.queue_depth
+ok      Shared.owned_lists
+ok      Shard.head
+ok      Header.state
+ok      Header.owner_id
+ok      Header.vtable
+ok      Trailer.owned_next
+ok      Vtable.poll
+ok      Vtable.trailer_offset
+ok      Vtable.id_offset
+ok      Vtable.dealloc
+ok      Vtable.try_read_output
+ok      Vtable.drop_join_handle_slow
+ok      Vtable.drop_abort_handle
+ok      Vtable.shutdown
+ok      Vtable.spawn_location_offset
+ok      Location.file (spelling 1 of 3)
+ok      Location.line
+ok      Location.col
+ok      Cell.stage
+ok      Cell.stage_running
+ok      Cell.stage_finished
+ok      Cell.stage_consumed
+ok      Cell.trailer
+ok      Cell.task_id
+
+program: ct-runtime
+
+[tasks]
+task: ct_runtime::sleeper::{async_fn_env#0}
+  kind: AsyncFn
+  decl: ct-runtime.rs:10
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<ct_runtime::sleeper::{async_fn_env#0}>
+  variants:
+    Unresumed @ ct-runtime.rs:10
+    Returned @ ct-runtime.rs:14
+    Panicked @ ct-runtime.rs:14
+    Suspend0 @ ct-runtime.rs:12
+task: ct_runtime::acquirer::{async_fn_env#0}
+  kind: AsyncFn
+  decl: ct-runtime.rs:16
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<ct_runtime::acquirer::{async_fn_env#0}>
+  variants:
+    Unresumed @ ct-runtime.rs:16
+    Returned @ ct-runtime.rs:20
+    Panicked @ ct-runtime.rs:20
+    Suspend0 @ ct-runtime.rs:18
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<ct_runtime::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut ct_runtime::main::{async_block_env#0}> (poll)
+dyn: ct_runtime::acquirer::{async_fn_env#0} (poll, drop_glue)
+dyn: ct_runtime::main::{async_block_env#0} (poll, drop_glue)
+dyn: ct_runtime::sleeper::{async_fn_env#0} (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+ct_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+[walks]
+ok      Context.current_task_id
+ok      Context.handle
+ok      Context.handle.current_thread
+ok      Context.scheduler
+ok      Context.scheduler.current_thread
 ok      worker::Context.index
 ok      Handle.shared
 ok      Shared.remotes

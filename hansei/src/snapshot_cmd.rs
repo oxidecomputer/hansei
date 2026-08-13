@@ -77,8 +77,8 @@ pub(crate) fn exec_snapshot(
 
     let lwps = proc.lwps().context("failed to read lwps")?;
     let workers = discover_workers(&lwps, &ctx)?;
-    let shared = ctx.find_shared(&workers)?;
-    let list = ctx.enumerate_tasks(shared)?;
+    let runtimes = ctx.find_runtimes(&workers)?;
+    let list = ctx.enumerate_all_tasks(&runtimes)?;
     print_warnings(&list.errors)?;
 
     let mut chains = 0usize;

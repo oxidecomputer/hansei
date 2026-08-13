@@ -115,9 +115,15 @@ pub enum Class {
 pub fn classify(role: WalkRole) -> Class {
     use WalkRole::*;
     match role {
-        // Runtime discovery and task enumeration.
-        CurrentTaskId | WorkerHandle | HandleShared | OwnedLists | ShardHead | HeaderState
-        | HeaderOwnerId | HeaderVtable | TrailerNext => Class::Required,
+        // Runtime discovery and task enumeration. The two flavor
+        // discovery rows are each Optional — either may be absent on a
+        // build without the other scheduler — and the real requirement,
+        // *at least one* bound, is enforced where discovery runs
+        // ([`Context::find_runtimes`]), which names both rows' recorded
+        // outcomes when neither serves.
+        CurrentTaskId | HandleShared | OwnedLists | ShardHead | HeaderState | HeaderOwnerId
+        | HeaderVtable | TrailerNext => Class::Required,
+        WorkerHandle | CtWorkerHandle => Class::Optional,
         // The target-recorded vtable offsets and the poll join key.
         VtablePoll | VtableTrailerOffset | VtableIdOffset => Class::Required,
         // Spawn locations' Location layout.
@@ -126,8 +132,8 @@ pub fn classify(role: WalkRole) -> Class {
         CellStage | CellStageRunning | CellStageFinished | CellStageConsumed | CellTrailer
         | CellTaskId => Class::Required,
         // Scheduler introspection beyond the listing.
-        WorkerContext | WorkerIndex | SharedRemotes | RemoteUnpark | ParkerState
-        | ParkerDriverLock | BlockingMetrics | BlockingThreads | BlockingIdle
+        WorkerContext | CtWorkerContext | WorkerIndex | SharedRemotes | RemoteUnpark
+        | ParkerState | ParkerDriverLock | BlockingMetrics | BlockingThreads | BlockingIdle
         | BlockingQueueDepth => Class::Optional,
         // The sibling vtable fns the future join falls through.
         VtableDealloc
@@ -442,7 +448,7 @@ impl ContractEntry {
         matches!(self.outcome, WalkOutcome::Broken { .. })
     }
 
-    fn line(&self) -> String {
+    pub(crate) fn line(&self) -> String {
         match &self.outcome {
             WalkOutcome::Bound {
                 spelling,

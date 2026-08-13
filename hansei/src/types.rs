@@ -619,6 +619,7 @@ mod tests {
                 context: ty,
                 scheduler_handle: ty,
                 mt_handle: ty,
+                ct_handle: ty,
                 location: ty,
                 raw_waker_vtable: ty,
             },

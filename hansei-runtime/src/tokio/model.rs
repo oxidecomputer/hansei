@@ -37,6 +37,37 @@ pub struct Worker {
     pub current_task_id: Option<u64>,
 }
 
+/// Which scheduler a discovered runtime runs.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum RuntimeFlavor {
+    MultiThread,
+    CurrentThread,
+}
+
+impl fmt::Display for RuntimeFlavor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MultiThread => f.write_str("multi_thread"),
+            Self::CurrentThread => f.write_str("current_thread"),
+        }
+    }
+}
+
+/// One runtime discovered in the target: the flavor's `Handle`
+/// (deref'd — everything the runtime shares hangs off it) and the
+/// threads whose `Context` points at it. current_thread makes more than
+/// one runtime per process ordinary — each `block_on` thread can carry
+/// its own — so discovery reports them all; see
+/// [`Context::find_runtimes`].
+#[derive(Clone, Debug)]
+pub struct RuntimeRef<'b> {
+    pub flavor: RuntimeFlavor,
+    pub handle: Value<'b>,
+    /// The tids of the workers whose `Context` reaches this handle, in
+    /// discovery order.
+    pub worker_tids: Vec<u32>,
+}
+
 /// What every worker's parker says, and whether the io driver is held
 /// at all; see [`Context::park_states`].
 #[derive(Clone, PartialEq, Eq, Debug)]

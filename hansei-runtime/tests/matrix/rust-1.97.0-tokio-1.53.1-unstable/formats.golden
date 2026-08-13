@@ -79,6 +79,8 @@ core::cell::UnsafeCell<tokio::runtime::scheduler::inject::synced::Synced> :: Nod
 core::cell::UnsafeCell<tokio::runtime::scheduler::multi_thread::worker::Synced> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::hold::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::notify_waiter::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::acquirer::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::sleeper::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::driver::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::set_member::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<futurelock::main::{async_block#0}::{async_block_env#0}>> :: Node Alias { value, follow }
@@ -229,6 +231,8 @@ tokio::loom::std::unsafe_cell::UnsafeCell<core::result::Result<(), tokio::time::
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::metrics::schedule_latency_mock::ScheduleLatencyInstant> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::hold::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::notify_waiter::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::acquirer::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::sleeper::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::driver::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::set_member::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<futurelock::main::{async_block#0}::{async_block_env#0}>> :: Node Alias { __0, follow }

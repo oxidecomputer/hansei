@@ -419,33 +419,51 @@ struct InfraIds {
     context: InfraSlot,
     scheduler_handle: InfraSlot,
     mt_handle: InfraSlot,
+    ct_handle: InfraSlot,
     location: InfraSlot,
     raw_waker_vtable: InfraSlot,
 }
 
 impl InfraIds {
     /// Look every role up in the target's DWARF, recording each miss.
+    ///
+    /// The two scheduler-flavor handles are an at-least-one group: which
+    /// flavors a target compiles in is a build fact (`rt-multi-thread`
+    /// off leaves no multi_thread types), so one flavor missing is an
+    /// expected shape the walk binder records per row, and only both
+    /// missing is a missing-infra failure.
     fn resolve(view: &DwView<'_>, reader: &DwReader<'_>, stats: &mut ExtractStats) -> InfraIds {
-        let mut slot = |path: &'static str| {
-            let id = match view.find_all_ids(path).first() {
-                Some(&id) => Some(reader.canonicalize(id)),
-                None => {
-                    stats.infra_missing.push(path.to_owned());
-                    None
-                }
-            };
-            InfraSlot { path, id }
+        let lookup = |path: &'static str| InfraSlot {
+            path,
+            id: view
+                .find_all_ids(path)
+                .first()
+                .map(|&id| reader.canonicalize(id)),
         };
-        InfraIds {
+        let mut slot = |path: &'static str| {
+            let slot = lookup(path);
+            if slot.id.is_none() {
+                stats.infra_missing.push(path.to_owned());
+            }
+            slot
+        };
+        let ids = InfraIds {
             header: slot("tokio::runtime::task::core::Header"),
             vtable: slot("tokio::runtime::task::raw::Vtable"),
             trailer: slot("tokio::runtime::task::core::Trailer"),
             context: slot("tokio::runtime::context::Context"),
             scheduler_handle: slot("tokio::runtime::scheduler::Handle"),
-            mt_handle: slot("tokio::runtime::scheduler::multi_thread::handle::Handle"),
+            mt_handle: lookup("tokio::runtime::scheduler::multi_thread::handle::Handle"),
+            ct_handle: lookup("tokio::runtime::scheduler::current_thread::Handle"),
             location: slot("core::panic::location::Location"),
             raw_waker_vtable: slot("core::task::wake::RawWakerVTable"),
+        };
+        if ids.mt_handle.id.is_none() && ids.ct_handle.id.is_none() {
+            for slot in [&ids.mt_handle, &ids.ct_handle] {
+                stats.infra_missing.push(slot.path.to_owned());
+            }
         }
+        ids
     }
 }
 
@@ -724,6 +742,7 @@ fn extract_from_view(
         context: emit_infra(&infra.context),
         scheduler_handle: emit_infra(&infra.scheduler_handle),
         mt_handle: emit_infra(&infra.mt_handle),
+        ct_handle: emit_infra(&infra.ct_handle),
         location: emit_infra(&infra.location),
         raw_waker_vtable: emit_infra(&infra.raw_waker_vtable),
     };
@@ -747,6 +766,7 @@ fn extract_from_view(
         vtable: infra.vtable.id,
         location: infra.location.id,
         mt_handle: infra.mt_handle.id,
+        ct_handle: infra.ct_handle.id,
         cells: &walk_cells,
         tokio_unstable,
     };

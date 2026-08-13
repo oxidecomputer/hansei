@@ -175,6 +175,7 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
         ("context", infra.context),
         ("scheduler_handle", infra.scheduler_handle),
         ("mt_handle", infra.mt_handle),
+        ("ct_handle", infra.ct_handle),
         ("location", infra.location),
         ("raw_waker_vtable", infra.raw_waker_vtable),
     ] {
