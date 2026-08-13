@@ -716,9 +716,10 @@ fn step_into<'r>(
 /// on. The DWARF counterpart of the bundle's own `selector_target`; where that
 /// one validates a finished bundle, this one lets a detector be held to the
 /// same addressing contract while the node is still being built.
-/// [`Step::ActiveVariant`] declines here: it is legal only in a walk binding,
-/// whose validation fans out over every variant; a display selector never
-/// carries one.
+/// [`Step::ActiveVariant`] declines here, as it does in `selector_target`: it
+/// is legal only where validation fans out over every variant — a walk
+/// binding, a value-expression read — and no [`DisplayNode::addressed`]
+/// selector may carry one.
 fn selector_lands(
     reader: &DwReader<'_>,
     strings: &StringInterner,
@@ -826,9 +827,10 @@ enum ReachStep<'a> {
     /// Which variant that is cannot be known here, so the lowering requires
     /// *every* variant to satisfy the remaining steps — with one spelling,
     /// since what is recorded is one path — and lowers to
-    /// [`Step::ActiveVariant`] rather than away. Legal only in a walk
-    /// binding's steps; a display selector never carries one (see
-    /// [`Step::ActiveVariant`]).
+    /// [`Step::ActiveVariant`] rather than away. Legal in a walk binding's
+    /// steps and in a value-expression read, whose render resolves one
+    /// guarded candidate per variant; every other display selector rejects
+    /// it (see [`Step::ActiveVariant`]).
     ActiveVariant,
     /// Descend the zero-offset wrapper chain to the one value of this shape.
     ///

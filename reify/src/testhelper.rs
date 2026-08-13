@@ -484,6 +484,11 @@ fixture_ids! {
     // A struct with a member past 64 KiB, so member slicing is exercised
     // beyond the offsets a 16-bit computation can represent.
     BIG,
+    // Host for `Step::ActiveVariant` reads: a tagged enum whose two struct
+    // payloads keep the same-named word at *different* offsets, so a read
+    // crossing the step must pick the live variant's candidate rather than
+    // resolve one offset.
+    FLAVOR_A, FLAVOR_B, FLAVOR,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -1624,6 +1629,55 @@ pub fn test_bundle() -> Bundle {
             name: bign,
             size: 0x10004,
             members: vec![m(tailn, U32, 0x10000)],
+        },
+    );
+    // Flavor — tagged enum, u8 discr @0: `A(FlavorA)@8 | B(FlavorB)@8`,
+    // where both payloads spell an `x: u64` but keep it at different
+    // offsets (@0 and @8). The shape a `Step::ActiveVariant` read fans
+    // over: one guarded candidate per variant, the guards picking which
+    // offset is live.
+    let (flavorn, flavor_an, flavor_bn) = (s("Flavor"), s("FlavorA"), s("FlavorB"));
+    let (fan, fbn, padn) = (s("A"), s("B"), s("pad"));
+    types.add(
+        FLAVOR_A,
+        TypeDef::Struct {
+            name: flavor_an,
+            size: 8,
+            members: vec![m(xn, U64, 0)],
+        },
+    );
+    types.add(
+        FLAVOR_B,
+        TypeDef::Struct {
+            name: flavor_bn,
+            size: 16,
+            members: vec![m(padn, U64, 0), m(xn, U64, 8)],
+        },
+    );
+    types.add(
+        FLAVOR,
+        TypeDef::Enum {
+            name: flavorn,
+            size: 24,
+            shape: VariantShape {
+                discr: Some(DiscrDef { offset: 0, ty: U8 }),
+                variants: vec![
+                    VariantDef {
+                        name: fan,
+                        discr_values: tag(0),
+                        payload: m(fan, FLAVOR_A, 8),
+                        decl: None,
+                        await_site: None,
+                    },
+                    VariantDef {
+                        name: fbn,
+                        discr_values: tag(1),
+                        payload: m(fbn, FLAVOR_B, 8),
+                        decl: None,
+                        await_site: None,
+                    },
+                ],
+            },
         },
     );
     let types = types.finish();

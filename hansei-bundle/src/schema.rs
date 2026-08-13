@@ -194,13 +194,16 @@ pub enum Step {
     ///
     /// Which variant holds the storage is a property of the running process,
     /// not of the layout, so this step cannot lower to a fixed payload offset
-    /// the way [`Step::Variant`] does. It is legal only in a [`WalkBinding`]'s
-    /// steps, where the runtime walker decodes the discriminant and continues
-    /// in the live variant's payload — and where validation requires *every*
-    /// variant to satisfy the remaining steps, since any of them may be the
-    /// one found. Validation rejects it in every display selector, and
-    /// reify's resolution declines a program carrying one (falling back to
-    /// structural display) rather than guessing a variant.
+    /// the way [`Step::Variant`] does. It is legal in two positions, and
+    /// validation of both fans out over every variant, since any of them may
+    /// be the one found: a [`WalkBinding`]'s steps, where the runtime walker
+    /// decodes the discriminant and continues in the live variant's payload;
+    /// and a [`ValueExpr::Read`]'s selector, which reify resolves to one
+    /// guarded place per variant and reads through whichever candidate's
+    /// guard selects. Every other display selector rejects it — their reads
+    /// resolve to a bare offset, which can carry neither the fan-out nor the
+    /// guard — and reify's resolution declines such a program (falling back
+    /// to structural display) rather than guessing a variant.
     ActiveVariant,
 }
 

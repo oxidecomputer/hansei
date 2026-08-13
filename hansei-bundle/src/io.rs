@@ -169,11 +169,12 @@ fn selector_target(
             }
             Step::ActiveVariant => {
                 // Which variant is live is a runtime fact; only a walk
-                // binding may take it (validated by `walk_targets`, which
-                // fans out over every variant).
+                // binding or a value-expression read may take it (both
+                // validated by `walk_targets`, which fans out over every
+                // variant).
                 return Err(Error::Corrupt(format!(
                     "{what} for type {}: step {step} takes whichever variant is live, \
-                     which only a walk binding may",
+                     which only a walk binding or a value-expression read may",
                     root.0
                 )));
             }
@@ -799,16 +800,27 @@ fn check_value_expr(
         ValueExpr::Const(_) => Ok(()),
         ValueExpr::Read(sel) => {
             // A read resolves to a guarded place, so it may cross a
-            // `Step::Variant`; the guard degrades an inactive variant's read
-            // at render time.
-            check_selector(
-                bundle,
-                scope,
-                sel,
-                Shape::Word,
-                true,
-                &format!("{what}: a value-expression read"),
-            )?;
+            // `Step::Variant` — the guard degrades an inactive variant's
+            // read at render time — and a `Step::ActiveVariant`, which
+            // resolves to one guarded candidate per variant with the live
+            // one selected by its guard. Validation fans out the same way
+            // ([`walk_targets`]) and holds every landing to the word shape,
+            // since any variant may be the one read.
+            let what = format!("{what}: a value-expression read");
+            if sel.is_empty() {
+                return Err(Error::Corrupt(format!(
+                    "{what} for type {} has an empty selector",
+                    scope.0
+                )));
+            }
+            for target in walk_targets(bundle, scope, sel.steps(), &what, &mut vec![scope])? {
+                if !shape_matches(bundle, target, Shape::Word) {
+                    return Err(Error::Corrupt(format!(
+                        "{what} for type {} lands on a type incompatible with the expected shape",
+                        scope.0
+                    )));
+                }
+            }
             Ok(())
         }
         ValueExpr::Var(id) => {

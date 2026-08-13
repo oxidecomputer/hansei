@@ -4,7 +4,7 @@
 //! layout a release has restructured lives in a per-family module
 //! (`tokio_v1_47`) instead.
 
-use super::ReachStep::{Deref, FindParam, Named, PeelTo, Resolved, Variant};
+use super::ReachStep::{ActiveVariant, Deref, FindParam, Named, PeelTo, Resolved, Variant};
 use super::crates::{is_raw_mutex, mutex_byte_path};
 use super::std::{is_generic_atomic, unsafe_cell_layout};
 use super::{
@@ -794,14 +794,18 @@ pub(super) fn loom_parking_lot_node(emitter: &mut Emitter<'_>, id: TypeId) -> Op
 
 /// The driver wheel's clock — `elapsed`, ms since the runtime's
 /// `TimeSource` epoch, advanced each time the wheel is processed — reached
-/// from a timer entry's own scheduler handle under `prefix`: driver → the
-/// `MultiThread` variant's `Arc` → the runtime's `driver::Handle` → the
-/// time handle → the `Traditional` driver's mutex-guarded `InnerState`.
-/// `time` is an `Option<time::Handle>` (`None` only for a runtime built
-/// without a time driver) and the mutex spelling varies by feature set, so
-/// the guarded steps and the parameter search do the navigating. Every enum
-/// on the path is crossed with a guarded variant step, so a current-thread
-/// runtime (or an alternative timer) degrades the field to
+/// from a timer entry's own scheduler handle under `prefix`: driver →
+/// whichever flavor variant is live → its `Arc` → the runtime's
+/// `driver::Handle` → the time handle → the `Traditional` driver's
+/// mutex-guarded `InnerState`. Both flavor handles spell every member below
+/// the variant identically (`driver` on each is the same `driver::Handle`),
+/// which is what lets the scheduler enum be crossed with an active-variant
+/// step — one recorded path serving either flavor, the read selecting the
+/// live candidate by its guard. `time` is an `Option<time::Handle>` (`None`
+/// only for a runtime built without a time driver) and the mutex spelling
+/// varies by feature set, so the guarded steps and the parameter search do
+/// the navigating. The remaining enums on the path are crossed with guarded
+/// variant steps, so an alternative timer degrades the field to
 /// `<inactive variant>` rather than misreading; the mutex is not taken, the
 /// usual torn-read caveat for a live target.
 ///
@@ -822,7 +826,7 @@ pub(super) fn wheel_elapsed(
     let mut path = prefix.clone();
     path.extend(reach![
         Named("driver"),
-        Variant("MultiThread"),
+        ActiveVariant,
         Named("__0"),
         Named("ptr"),
         Named("pointer"),

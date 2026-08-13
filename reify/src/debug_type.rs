@@ -277,11 +277,16 @@ pub struct Arm<'a> {
 }
 
 /// Resolved [`hansei_bundle::ValueExpr`]: a `Read` carries its resolved
-/// [`Place`] and word width; the rest mirror the bundle form. Not generic over
-/// the type parameter — an expression only ever yields a machine word.
+/// [`Place`] candidates, each with its word width; the rest mirror the bundle
+/// form. Not generic over the type parameter — an expression only ever yields
+/// a machine word.
 #[derive(Clone, Debug)]
 pub enum ValueExpr {
-    Read(Place, u32),
+    /// Read the machine word at the first candidate whose guards select.
+    /// A selector crossing no [`hansei_bundle::Step::ActiveVariant`] — nearly
+    /// all — resolves to exactly one candidate; one that does resolves to a
+    /// candidate per variant, guards deciding which is live at render time.
+    Read(Vec<(Place, u32)>),
     Const(u64),
     And(Box<ValueExpr>, Box<ValueExpr>),
     Not(Box<ValueExpr>),
@@ -362,82 +367,127 @@ impl<'a> DisplayNode<'a> {
             members.get(index).copied()
         }
 
-        /// Resolve a selector against `root` to `(landed type, Place)`. The one
-        /// traversal primitive: `Member` steps accumulate offsets, a `Deref`
-        /// step segments the [`Place`] (stashing the offset so far and
-        /// restarting inside the pointee). Its flat sibling `resolve_selector`
-        /// is the adapter used by every node that reads within one allocation.
-        fn resolve_place<'a>(
+        /// Resolve a selector against `root` to every `(landed type, Place)`
+        /// it can reach — one candidate per variant crossed by a
+        /// [`Step::ActiveVariant`], each carrying that variant's guard, and
+        /// exactly one for the selectors (nearly all) that cross none. The
+        /// one traversal primitive: `Member` steps accumulate offsets, a
+        /// `Deref` step segments the [`Place`] (stashing the offset so far
+        /// and restarting inside the pointee). Every candidate must resolve —
+        /// any branch failing declines the whole selector, since any variant
+        /// may be the live one at read time.
+        fn resolve_places<'a>(
             root: BundleType<'a>,
             sel: &Selector,
-        ) -> Option<(BundleType<'a>, Place)> {
-            let mut ty = root;
-            let mut offset = 0u64;
-            let mut segment = 0usize;
-            let mut place = Place {
+        ) -> Option<Vec<(BundleType<'a>, Place)>> {
+            fn go<'a>(
+                mut ty: BundleType<'a>,
+                mut offset: u64,
+                mut segment: usize,
+                mut place: Place,
+                mut before_first_deref: bool,
+                steps: &[Step],
+                out: &mut Vec<(BundleType<'a>, Place)>,
+            ) -> Option<()> {
+                for (index, step) in steps.iter().enumerate() {
+                    match step {
+                        Step::Member(at) => {
+                            let member = member_at(ty, at)?;
+                            offset = offset.checked_add(member.offset())?;
+                            ty = member.ty();
+                        }
+                        Step::Deref => {
+                            if before_first_deref {
+                                place.root_offset = offset;
+                                before_first_deref = false;
+                            } else {
+                                place.hops.push(offset);
+                            }
+                            ty = ty.pointer_target()?;
+                            offset = 0;
+                            segment += 1;
+                        }
+                        Step::Variant(name) => {
+                            let (variant, guard) =
+                                resolve_variant_step(ty, *name, segment, offset)?;
+                            if let Some(guard) = guard {
+                                place.guards.push(guard);
+                            }
+                            offset = offset.checked_add(variant.1)?;
+                            ty = variant.0;
+                        }
+                        Step::ActiveVariant => {
+                            let rest = &steps[index + 1..];
+                            for (variant, guard) in resolve_active_variants(ty, segment, offset)? {
+                                let mut branch = place.clone();
+                                if let Some(guard) = guard {
+                                    branch.guards.push(guard);
+                                }
+                                go(
+                                    variant.0,
+                                    offset.checked_add(variant.1)?,
+                                    segment,
+                                    branch,
+                                    before_first_deref,
+                                    rest,
+                                    out,
+                                )?;
+                            }
+                            return Some(());
+                        }
+                    }
+                }
+                if before_first_deref {
+                    place.root_offset = offset;
+                } else {
+                    place.hops.push(offset);
+                }
+                out.push((ty, place));
+                Some(())
+            }
+            let mut out = Vec::new();
+            let place = Place {
                 root_offset: 0,
                 hops: Vec::new(),
                 guards: Vec::new(),
             };
-            let mut before_first_deref = true;
-            for step in sel.steps() {
-                match step {
-                    Step::Member(at) => {
-                        let member = member_at(ty, at)?;
-                        offset = offset.checked_add(member.offset())?;
-                        ty = member.ty();
-                    }
-                    Step::Deref => {
-                        if before_first_deref {
-                            place.root_offset = offset;
-                            before_first_deref = false;
-                        } else {
-                            place.hops.push(offset);
-                        }
-                        ty = ty.pointer_target()?;
-                        offset = 0;
-                        segment += 1;
-                    }
-                    Step::Variant(name) => {
-                        let (variant, guard) = resolve_variant_step(ty, *name, segment, offset)?;
-                        if let Some(guard) = guard {
-                            place.guards.push(guard);
-                        }
-                        offset = offset.checked_add(variant.1)?;
-                        ty = variant.0;
-                    }
-                    // Legal only in a bundle's walk bindings, which display
-                    // programs never carry (validation enforces it); decline
-                    // to structural display rather than guess a variant.
-                    Step::ActiveVariant => return None,
-                }
-            }
-            if before_first_deref {
-                place.root_offset = offset;
-            } else {
-                place.hops.push(offset);
-            }
-            Some((ty, place))
+            go(root, 0, 0, place, true, sel.steps(), &mut out)?;
+            (!out.is_empty()).then_some(out)
         }
 
-        /// Resolve one `Step::Variant` against the enum `ty` at `offset`
-        /// within `segment`: the named variant's `(payload type, payload
-        /// offset)` and the discriminant guard the read must verify — `None`
-        /// for a univariant enum, which has no discriminant to check.
-        fn resolve_variant_step(
+        /// [`resolve_places`] for the nodes whose read carries exactly one
+        /// place: the single candidate, or a decline when the selector fans —
+        /// only a value-expression read can try several at render time.
+        fn resolve_place<'a>(
+            root: BundleType<'a>,
+            sel: &Selector,
+        ) -> Option<(BundleType<'a>, Place)> {
+            let mut places = resolve_places(root, sel)?;
+            match places.len() {
+                1 => places.pop(),
+                _ => None,
+            }
+        }
+
+        /// One guarded read candidate a variant descent yields: the payload's
+        /// `(type, offset)` and the discriminant guard, when the enum has one
+        /// to check.
+        type Candidate<'a> = ((BundleType<'a>, u64), Option<VariantGuard>);
+
+        /// One variant of the enum `ty` (at `offset` within `segment`) as a
+        /// read candidate — `None` for the guard on a univariant enum, which
+        /// has no discriminant to check, and `None` overall when the enum is
+        /// undecodable.
+        fn variant_candidate(
             ty: BundleType<'_>,
-            name: hansei_bundle::StrRef,
+            index: usize,
             segment: usize,
             offset: u64,
-        ) -> Option<((BundleType<'_>, u64), Option<VariantGuard>)> {
+        ) -> Option<Candidate<'_>> {
             use hansei_bundle::{DiscrValue, VariantDef};
 
             let shape = ty.variant_shape()?;
-            let mut matches = shape.variants.iter().filter(|v| v.name == name);
-            let variant = matches.next()?;
-            if matches.next().is_some() {
-                return None;
-            }
+            let variant = shape.variants.get(index)?;
             let payload = (ty.related_type(variant.payload.ty), variant.payload.offset);
 
             let Some(discr) = &shape.discr else {
@@ -474,6 +524,47 @@ impl<'a> DisplayNode<'a> {
             Some((payload, Some(guard)))
         }
 
+        /// Resolve one `Step::Variant` against the enum `ty` at `offset`
+        /// within `segment`: the named variant's candidate. Like a named
+        /// member, a name that no variant (or more than one) answers to
+        /// resolves to nothing.
+        fn resolve_variant_step(
+            ty: BundleType<'_>,
+            name: hansei_bundle::StrRef,
+            segment: usize,
+            offset: u64,
+        ) -> Option<Candidate<'_>> {
+            let shape = ty.variant_shape()?;
+            let mut matches = shape
+                .variants
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| v.name == name);
+            let (index, _) = matches.next()?;
+            if matches.next().is_some() {
+                return None;
+            }
+            variant_candidate(ty, index, segment, offset)
+        }
+
+        /// Resolve one `Step::ActiveVariant`: every variant of the enum as a
+        /// guarded candidate, for a read to try in turn — the live one is
+        /// whichever candidate's guard selects. An enum with no variants, or
+        /// any undecodable one, declines the whole step.
+        fn resolve_active_variants(
+            ty: BundleType<'_>,
+            segment: usize,
+            offset: u64,
+        ) -> Option<Vec<Candidate<'_>>> {
+            let count = ty.variant_shape()?.variants.len();
+            if count == 0 {
+                return None;
+            }
+            (0..count)
+                .map(|index| variant_candidate(ty, index, segment, offset))
+                .collect()
+        }
+
         /// Resolve a selector that stays within the value's own bytes to
         /// `(landed type, byte offset)`. Returns `None` if the selector
         /// unexpectedly crosses a pointer or descends into an enum variant —
@@ -497,10 +588,12 @@ impl<'a> DisplayNode<'a> {
         ) -> Option<ValueExpr> {
             use hansei_bundle::ValueExpr as BundleExpr;
             Some(match expr {
-                BundleExpr::Read(sel) => {
-                    let (ty, place) = resolve_place(scope, sel)?;
-                    ValueExpr::Read(place, ty.size() as u32)
-                }
+                BundleExpr::Read(sel) => ValueExpr::Read(
+                    resolve_places(scope, sel)?
+                        .into_iter()
+                        .map(|(ty, place)| (place, ty.size() as u32))
+                        .collect(),
+                ),
                 BundleExpr::Const(value) => ValueExpr::Const(*value),
                 BundleExpr::And(a, b) => ValueExpr::And(
                     Box::new(resolve_value_expr(scope, a)?),
