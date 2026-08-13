@@ -34,7 +34,7 @@ use std::path::PathBuf;
 // executable and drop it. `about` is set explicitly because clap would
 // otherwise lift this crate-internal note into the user's `help`.
 // `infer_subcommands` accepts any leading substring that names one
-// command and no other, so `dr` runs `drivers` — what a prompt is for.
+// command and no other, so `ce` runs `census` — what a prompt is for.
 #[derive(Parser)]
 #[command(
     name = "",
