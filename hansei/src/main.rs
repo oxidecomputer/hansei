@@ -598,7 +598,7 @@ impl<'b> Session<'b> {
         // Local sets merge into the same population, tagged as groups
         // after the runtimes. On targets whose bundle shows no
         // local-set machinery this is free — no chain is walked.
-        let local_sets = ctx.discover_local_tasks(&lwps, &workers, &mut tasks, runtimes.len());
+        let local_sets = ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut tasks);
         print_warnings(&tasks.errors)?;
 
         Ok(Session {
