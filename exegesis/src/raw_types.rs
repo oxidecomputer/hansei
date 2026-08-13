@@ -623,8 +623,7 @@ impl<S> SourceLoc<S> {
 mod tests {
     use super::*;
     use crate::DwReader;
-    use crate::Type;
-    use crate::TypeKind;
+    use crate::view::Namespace;
 
     #[test]
     fn test_namespace_table_depth() {
@@ -654,12 +653,15 @@ mod tests {
 
         // testlib::qux::Foo<u64> lives in namespace testlib::qux (depth 2).
         let foo = view
-            .find("testlib::qux::Foo<u64>", TypeKind::Struct)
+            .find_all_ids("testlib::qux::Foo<u64>")
+            .into_iter()
+            .find_map(|id| match types.canonical_type(id) {
+                Some(RawType::Struct(s)) => Some(s),
+                _ => None,
+            })
             .expect("Foo<u64> should exist");
-        let Type::Struct(s) = foo else {
-            panic!("expected struct");
-        };
-        let ns = s.namespace().expect("Foo should have a namespace");
+        let ns = foo.namespace.expect("Foo should have a namespace");
+        let ns = Namespace::new(ns, &types);
         assert_eq!(ns.full_name(), "testlib::qux");
         assert_eq!(ns.depth(), 2);
 
