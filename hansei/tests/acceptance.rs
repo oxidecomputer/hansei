@@ -1035,10 +1035,21 @@ Task {id}: ct_runtime::sleeper::{{async_fn_env#0}} (idle)
             "{out}"
         );
 
-        // The block_on thread holds a Context but never a multi_thread
-        // worker core; the CT scheduler introspection is still to come.
+        // The block_on thread is the CT scheduler's one worker: the
+        // threads listing names it as such, with what it is doing read
+        // from where its core and driver are rather than from the
+        // parker array it does not have.
         let out = hansei_ok(&bundle, core, "threads");
-        assert!(out.contains("not in the scheduler's run loop"), "{out}");
+        assert!(
+            out.contains("block_on thread of its current_thread runtime"),
+            "{out}"
+        );
+        assert!(!out.contains("not in the scheduler's run loop"), "{out}");
+
+        // And the census's thread section classifies it the same way.
+        let out = hansei_ok(&bundle, core, "census --threads");
+        assert!(out.contains("1 in the scheduler's run loop"), "{out}");
+        assert!(out.contains("block_on thread, lwp"), "{out}");
     });
 }
 

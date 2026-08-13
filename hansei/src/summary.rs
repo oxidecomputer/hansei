@@ -21,7 +21,8 @@ use crate::tasks::future_name;
 use anyhow::Result;
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
-    BlockingPool, FutureInfo, ParkState, ParkStates, Task, TaskList, WaitKind,
+    BlockingPool, CtActivity, CtParkState, FutureInfo, ParkState, ParkStates, Task, TaskList,
+    WaitKind,
 };
 use hansei_runtime::tokio::census::{FutureSet, HeldFuture};
 use hansei_runtime::tokio::graph::TaskWait;
@@ -32,13 +33,23 @@ use std::io;
 /// One thread of the target that holds a tokio `Context`.
 pub struct Thread {
     pub tid: u32,
-    /// Which worker of the scheduler it is running, when it is inside
-    /// the run loop; `None` for a thread that has merely entered the
-    /// runtime (a `block_on` caller, a blocking-pool thread).
-    pub worker: Option<u64>,
+    /// The place the thread holds in a scheduler's run loop; `None` for
+    /// a thread that has merely entered the runtime (a plain `block_on`
+    /// caller on a multi_thread target, a blocking-pool thread).
+    pub role: Option<ThreadRole>,
     /// The task it is polling, where the runtime still calls that task
     /// running — the same claim `tasks` makes in its `State` row.
     pub polling: Option<u64>,
+}
+
+/// How a thread runs a scheduler: as one of a multi_thread scheduler's
+/// numbered workers, or as the `block_on` thread that *is* a
+/// current_thread scheduler's one worker.
+pub enum ThreadRole {
+    Worker(u64),
+    /// What the block_on thread's checked-in core said, when it was
+    /// readable — the CT analog of the parker states.
+    BlockOn(Option<CtParkState>),
 }
 
 /// Everything a census counts, as the session read it.
@@ -132,6 +143,7 @@ pub fn print(
 enum ThreadKind {
     Driver,
     Polling,
+    BlockOnPoll,
     Awake,
     Notified,
     Parked,
@@ -143,6 +155,7 @@ impl ThreadKind {
         match self {
             Self::Driver => "parked in the io driver",
             Self::Polling => "polling a task",
+            Self::BlockOnPoll => "polling the block_on future",
             Self::Awake => "awake, polling no task",
             Self::Notified => "notified, waking",
             Self::Parked => "parked",
@@ -154,16 +167,12 @@ impl ThreadKind {
     /// holds the driver and which worker is polling what are the two
     /// facts a reader goes on to ask about; the rest are a count.
     fn names_threads(self) -> bool {
-        matches!(self, Self::Driver | Self::Polling)
+        matches!(self, Self::Driver | Self::Polling | Self::BlockOnPoll)
     }
 }
 
 fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
-    let in_loop: Vec<&Thread> = facts
-        .runtime
-        .iter()
-        .filter(|t| t.worker.is_some())
-        .collect();
+    let in_loop: Vec<&Thread> = facts.runtime.iter().filter(|t| t.role.is_some()).collect();
     let entered = facts.runtime.len() - in_loop.len();
     writeln!(
         out,
@@ -183,15 +192,16 @@ fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
             continue;
         }
         for thread in threads {
-            let worker = match thread.worker {
-                Some(index) => format!("worker {index}"),
+            let role = match &thread.role {
+                Some(ThreadRole::Worker(index)) => format!("worker {index}"),
+                Some(ThreadRole::BlockOn(_)) => "block_on thread".to_string(),
                 None => "no worker".to_string(),
             };
             let task = match thread.polling {
                 Some(id) => format!("  task {id}"),
                 None => String::new(),
             };
-            writeln!(out, "            {worker}, lwp {}{task}", thread.tid)?;
+            writeln!(out, "            {role}, lwp {}{task}", thread.tid)?;
         }
     }
 
@@ -210,9 +220,31 @@ fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
         )?;
     }
 
+    // A woken flag on a parked block_on thread is a wakeup that was owed
+    // and had not been consumed when the target stopped — the CT sibling
+    // of the held-driver note above.
+    for thread in &in_loop {
+        if let Some(ThreadRole::BlockOn(Some(state))) = &thread.role
+            && state.woken
+        {
+            writeln!(
+                out,
+                "        the block_on future of lwp {} was woken and not yet polled",
+                thread.tid
+            )?;
+        }
+    }
+
     if entered > 0 {
         writeln!(out, "    {entered} in the runtime, outside the run loop")?;
-        blocking_pool(facts, in_loop.len(), entered, out)?;
+        // Only a multi_thread scheduler's workers are launched through
+        // spawn_blocking and so counted among the pool's threads; a
+        // block_on thread is the caller's own.
+        let launched = in_loop
+            .iter()
+            .filter(|t| matches!(t.role, Some(ThreadRole::Worker(_))))
+            .count();
+        blocking_pool(facts, launched, entered, out)?;
     }
     let outside = facts.lwps.saturating_sub(facts.runtime.len());
     if outside > 0 {
@@ -287,10 +319,26 @@ fn blocking_pool(
 /// everything: a worker parked there is parked on the whole runtime's
 /// behalf, and it is the one thread a reader came looking for.
 fn kind(facts: &Facts<'_>, thread: &Thread) -> ThreadKind {
+    // A block_on thread's state comes from its own checked-in core
+    // rather than a parker word: parked in the driver, polling the root
+    // future, or running tasks with the core on its stack.
+    if let Some(ThreadRole::BlockOn(state)) = &thread.role {
+        return match state.map(|s| s.activity) {
+            Some(CtActivity::Parked) => ThreadKind::Driver,
+            Some(CtActivity::PollingBlockOn) => ThreadKind::BlockOnPoll,
+            Some(CtActivity::RunningTasks) if thread.polling.is_some() => ThreadKind::Polling,
+            Some(CtActivity::RunningTasks) => ThreadKind::Awake,
+            None => ThreadKind::Unread,
+        };
+    }
+    let worker = match thread.role {
+        Some(ThreadRole::Worker(index)) => Some(index),
+        _ => None,
+    };
     let park = facts
         .parks
         .as_ref()
-        .zip(thread.worker)
+        .zip(worker)
         .and_then(|(parks, index)| parks.workers.get(index as usize).copied());
     match park {
         Some(ParkState::Driver) => ThreadKind::Driver,
@@ -754,6 +802,7 @@ mod tests {
                 decl: None,
                 symbol: "_ZN1x".to_string(),
             }),
+            runtime: 0,
         }
     }
 
@@ -884,22 +933,22 @@ mod tests {
         facts.runtime = vec![
             Thread {
                 tid: 11,
-                worker: Some(0),
+                role: Some(ThreadRole::Worker(0)),
                 polling: None,
             },
             Thread {
                 tid: 12,
-                worker: Some(1),
+                role: Some(ThreadRole::Worker(1)),
                 polling: Some(42),
             },
             Thread {
                 tid: 13,
-                worker: Some(2),
+                role: Some(ThreadRole::Worker(2)),
                 polling: None,
             },
             Thread {
                 tid: 14,
-                worker: None,
+                role: None,
                 polling: None,
             },
         ];
@@ -943,12 +992,12 @@ mod tests {
         facts.runtime = vec![
             Thread {
                 tid: 11,
-                worker: Some(0),
+                role: Some(ThreadRole::Worker(0)),
                 polling: None,
             },
             Thread {
                 tid: 12,
-                worker: None,
+                role: None,
                 polling: None,
             },
         ];
@@ -973,6 +1022,94 @@ mod tests {
         );
     }
 
+    /// A current_thread runtime's block_on thread is classified from
+    /// its own core rather than a parker word: parked in the driver
+    /// here, named like the driver-holding worker it is — and its
+    /// pending wakeup is called out, since a woken parked thread is a
+    /// wakeup owed and not yet delivered. The pool needs no netting:
+    /// no worker of this flavor was launched through spawn_blocking.
+    #[test]
+    fn test_a_block_on_thread_is_classified_from_its_core() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.lwps = 3;
+        facts.runtime = vec![
+            Thread {
+                tid: 11,
+                role: Some(ThreadRole::BlockOn(Some(CtParkState {
+                    woken: true,
+                    activity: CtActivity::Parked,
+                }))),
+                polling: None,
+            },
+            Thread {
+                tid: 12,
+                role: None,
+                polling: None,
+            },
+        ];
+        facts.pool = Some(BlockingPool {
+            threads: 1,
+            idle: 1,
+            queued: 0,
+        });
+
+        let page = census(&facts, 5);
+        let threads = page.split("\n\n").next().unwrap();
+        assert_eq!(
+            threads,
+            "Threads: 3 lwps, 2 in the runtime\n    \
+             1 in the scheduler's run loop\n        \
+             1 parked in the io driver\n            \
+             block_on thread, lwp 11\n        \
+             the block_on future of lwp 11 was woken and not yet polled\n    \
+             1 in the runtime, outside the run loop\n        \
+             1 in the blocking pool (1 idle, 0 tasks queued)\n    \
+             1 holding no runtime context"
+        );
+    }
+
+    /// The two states only a block_on thread can be in: polling the
+    /// root future (core checked in, driver kept), and running tasks
+    /// with the core on its stack — the latter counted as polling when
+    /// a task id says which.
+    #[test]
+    fn test_block_on_activities_have_their_own_buckets() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.lwps = 2;
+        facts.runtime = vec![
+            Thread {
+                tid: 11,
+                role: Some(ThreadRole::BlockOn(Some(CtParkState {
+                    woken: false,
+                    activity: CtActivity::PollingBlockOn,
+                }))),
+                polling: None,
+            },
+            Thread {
+                tid: 12,
+                role: Some(ThreadRole::BlockOn(Some(CtParkState {
+                    woken: false,
+                    activity: CtActivity::RunningTasks,
+                }))),
+                polling: Some(7),
+            },
+        ];
+
+        let page = census(&facts, 5);
+        assert!(
+            page.contains(
+                "        1 polling a task\n            \
+                 block_on thread, lwp 12  task 7\n        \
+                 1 polling the block_on future\n            \
+                 block_on thread, lwp 11\n"
+            ),
+            "{page}"
+        );
+        assert!(!page.contains("was woken"), "{page}");
+    }
+
     /// A driver held by a worker that is not parked in it is a thread
     /// polling it without sleeping — which the listing says, rather
     /// than leaving a reader to conclude the census missed it.
@@ -983,7 +1120,7 @@ mod tests {
         facts.lwps = 1;
         facts.runtime = vec![Thread {
             tid: 11,
-            worker: Some(0),
+            role: Some(ThreadRole::Worker(0)),
             polling: None,
         }];
         facts.parks = Some(ParkStates {
@@ -1273,7 +1410,7 @@ mod tests {
         facts.lwps = 1;
         facts.runtime = vec![Thread {
             tid: 11,
-            worker: Some(0),
+            role: Some(ThreadRole::Worker(0)),
             polling: None,
         }];
 

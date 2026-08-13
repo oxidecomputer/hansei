@@ -374,6 +374,7 @@ mod graph_tests {
             task_id: Some(id),
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
+            runtime: 0,
         }
     }
 

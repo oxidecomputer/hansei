@@ -236,6 +236,10 @@ pub struct Task {
     /// (`tokio_unstable` task instrumentation).
     pub spawn_location: Option<Location>,
     pub future: FutureInfo,
+    /// Which runtime owns it: an index into the [`RuntimeRef`] list the
+    /// enumeration merged, stamped by [`Context::enumerate_all_tasks`].
+    /// 0 on the single-runtime targets that are nearly all of them.
+    pub runtime: usize,
 }
 
 /// The task's concrete future type, resolved via the symbol join — or not.

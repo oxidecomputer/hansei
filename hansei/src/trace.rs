@@ -1127,6 +1127,7 @@ mod future_trace_tests {
         let mut out: Vec<u8> = Vec::new();
         print_tasks(
             list,
+            &[],
             &HashMap::new(),
             held,
             sets,
@@ -1393,6 +1394,7 @@ mod future_trace_tests {
             let mut out = Vec::new();
             let err = print_tasks(
                 list,
+                &[],
                 &HashMap::new(),
                 &census.held,
                 &census.sets,

@@ -520,14 +520,19 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// Every discovered runtime's tasks, merged into one list with the
     /// per-runtime enumeration's own ordering applied across the whole.
+    /// Each task is stamped with the index of the runtime that owns it,
+    /// so a listing over the merge can still say which is whose.
     pub fn enumerate_all_tasks(&self, runtimes: &[RuntimeRef<'b>]) -> Result<TaskList> {
         let mut all = TaskList {
             tasks: Vec::new(),
             errors: Vec::new(),
         };
-        for runtime in runtimes {
+        for (index, runtime) in runtimes.iter().enumerate() {
             let shared = self.find_shared(runtime)?;
-            let list = self.enumerate_tasks(shared)?;
+            let mut list = self.enumerate_tasks(shared)?;
+            for task in &mut list.tasks {
+                task.runtime = index;
+            }
             all.tasks.extend(list.tasks);
             all.errors.extend(list.errors);
         }
@@ -771,6 +776,7 @@ impl<'b, T: Target> Context<'b, T> {
             task_id,
             spawn_location,
             future,
+            runtime: 0,
         };
         Ok((task, next))
     }
