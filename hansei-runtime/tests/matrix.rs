@@ -102,6 +102,7 @@ struct Matrix {
     toolchain_versions: Vec<String>,
     no_unstable_tokio: Vec<String>,
     secondary_toolchain_tokio: Vec<String>,
+    ct_only_tokio: Vec<String>,
 }
 
 /// The quoted strings in a line, in order.
@@ -128,6 +129,7 @@ impl Matrix {
             toolchain_versions: Vec::new(),
             no_unstable_tokio: Vec::new(),
             secondary_toolchain_tokio: Vec::new(),
+            ct_only_tokio: Vec::new(),
         };
         for line in text.lines() {
             let line = line.trim();
@@ -156,6 +158,7 @@ impl Matrix {
                 ("toolchain", "versions") => m.toolchain_versions = values,
                 ("cells", "no_unstable_tokio") => m.no_unstable_tokio = values,
                 ("cells", "secondary_toolchain_tokio") => m.secondary_toolchain_tokio = values,
+                ("cells", "ct_only_tokio") => m.ct_only_tokio = values,
                 _ => panic!("unrecognized matrix.toml key: {line}"),
             }
         }
@@ -190,34 +193,31 @@ impl Matrix {
 
     /// Every cell the matrix builds, primary first: the whole tokio
     /// axis on the primary toolchain with the cfg on, then the trimmed
-    /// secondary axes.
+    /// secondary axes, then the features-limited cells.
     fn cells(&self) -> Vec<Cell> {
+        let cell = |toolchain: &str, tokio: String, unstable: bool, ct_only: bool| Cell {
+            toolchain: toolchain.to_owned(),
+            tokio,
+            unstable,
+            ct_only,
+        };
         let mut cells = Vec::new();
         for tokio in &self.tokio_versions {
-            cells.push(Cell {
-                toolchain: self.primary_toolchain.clone(),
-                tokio: tokio.clone(),
-                unstable: true,
-            });
+            cells.push(cell(&self.primary_toolchain, tokio.clone(), true, false));
         }
         for tokio in self.roles(&self.no_unstable_tokio) {
-            cells.push(Cell {
-                toolchain: self.primary_toolchain.clone(),
-                tokio,
-                unstable: false,
-            });
+            cells.push(cell(&self.primary_toolchain, tokio, false, false));
         }
         for toolchain in &self.toolchain_versions {
             if *toolchain == self.primary_toolchain {
                 continue;
             }
             for tokio in self.roles(&self.secondary_toolchain_tokio) {
-                cells.push(Cell {
-                    toolchain: toolchain.clone(),
-                    tokio,
-                    unstable: true,
-                });
+                cells.push(cell(toolchain, tokio, true, false));
             }
+        }
+        for tokio in self.roles(&self.ct_only_tokio) {
+            cells.push(cell(&self.primary_toolchain, tokio, false, true));
         }
         cells
     }
@@ -231,14 +231,35 @@ struct Cell {
     toolchain: String,
     tokio: String,
     unstable: bool,
+    /// tokio built without `rt-multi-thread` (`regen.sh --ct-only`):
+    /// only `ct-runtime` compiles, so the cell holds one fixture, and
+    /// its goldens pin the multi_thread rows as flavor absences.
+    ct_only: bool,
 }
 
 impl Cell {
     /// The fixture-dir spelling `regen.sh` uses, which also names the
     /// golden dir.
     fn name(&self) -> String {
-        let cfg = if self.unstable { "unstable" } else { "stable" };
+        let cfg = if self.ct_only {
+            "ctonly"
+        } else if self.unstable {
+            "unstable"
+        } else {
+            "stable"
+        };
         format!("rust-{}-tokio-{}-{cfg}", self.toolchain, self.tokio)
+    }
+
+    /// The fixtures the cell builds and extracts: everything, except
+    /// that a ct-only build compiles only the fixture that never asks
+    /// for the multi_thread scheduler.
+    fn programs(&self) -> &'static [&'static str] {
+        if self.ct_only {
+            &["ct-runtime"]
+        } else {
+            PROGRAMS
+        }
     }
 
     fn is_primary(&self, m: &Matrix) -> bool {
@@ -284,12 +305,14 @@ impl Cell {
             .arg(&self.tokio)
             .arg("--toolchain")
             .arg(&self.toolchain)
-            .args(if self.unstable {
+            .args(if self.ct_only {
+                &["--ct-only"][..]
+            } else if self.unstable {
                 &[][..]
             } else {
                 &["--no-unstable"][..]
             })
-            .args(PROGRAMS)
+            .args(self.programs())
             .status()
             .expect("failed to run regen.sh");
         assert!(status.success(), "regen.sh failed for cell {}", self.name());
@@ -470,7 +493,8 @@ fn test_matrix() {
         }
         ran += 1;
 
-        let bundles: Vec<(&str, Bundle)> = PROGRAMS
+        let bundles: Vec<(&str, Bundle)> = cell
+            .programs()
             .iter()
             .map(|program| {
                 let opts = ExtractOptions {

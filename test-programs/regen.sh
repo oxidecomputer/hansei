@@ -19,7 +19,12 @@
 #                    own Cargo.lock when that is what it resolves)
 #   --toolchain VER  build with the named toolchain instead of the pin
 #   --no-unstable    drop --cfg tokio_unstable and the oxide-tokio-rt
-#                    runtime (--no-default-features)
+#                    runtime (--no-default-features --features full-tokio)
+#   --ct-only        build tokio without rt-multi-thread (--features
+#                    ct-tokio, no unstable cfg): the features-limited
+#                    cell, whose goldens pin the "multi_thread rows
+#                    absent" shape. Only ct-runtime builds without that
+#                    scheduler, so it is the default program set.
 #   --no-debug-info  build without debug info — the shape of a binary a
 #                    production core comes from. A bundle can never be
 #                    extracted from such a build; pair it with a full
@@ -46,6 +51,7 @@ FIXTURES="$PWD/fixtures"
 TOOLCHAIN="$PRIMARY_TOOLCHAIN"
 TOKIO=""
 UNSTABLE=1
+CT_ONLY=0
 DEBUG_INFO=1
 PROGRAMS=()
 while [[ $# -gt 0 ]]; do
@@ -53,13 +59,18 @@ while [[ $# -gt 0 ]]; do
         --tokio) TOKIO="$2"; shift 2 ;;
         --toolchain) TOOLCHAIN="$2"; shift 2 ;;
         --no-unstable) UNSTABLE=0; shift ;;
+        --ct-only) CT_ONLY=1; UNSTABLE=0; shift ;;
         --no-debug-info) DEBUG_INFO=0; shift ;;
         --*) echo "regen.sh: unknown option $1" >&2; exit 2 ;;
         *) PROGRAMS+=("$1"); shift ;;
     esac
 done
 if [[ ${#PROGRAMS[@]} -eq 0 ]]; then
-    PROGRAMS=("${ALL_PROGRAMS[@]}")
+    if [[ "$CT_ONLY" == 1 ]]; then
+        PROGRAMS=(ct-runtime)
+    else
+        PROGRAMS=("${ALL_PROGRAMS[@]}")
+    fi
 fi
 
 if ! command -v rustup >/dev/null; then
@@ -94,7 +105,9 @@ else
     TOKIO="$(locked_tokio)"
 fi
 
-if [[ "$UNSTABLE" == 1 ]]; then
+if [[ "$CT_ONLY" == 1 ]]; then
+    CFG_SUFFIX=ctonly
+elif [[ "$UNSTABLE" == 1 ]]; then
     CFG_SUFFIX=unstable
 else
     CFG_SUFFIX=stable
@@ -126,12 +139,15 @@ fi
 # needs. A dedicated target dir keeps this profile from thrashing the
 # regular build cache. (--no-debug-info drops all of it instead; see
 # above.)
-if [[ "$UNSTABLE" == 1 ]]; then
+if [[ "$CT_ONLY" == 1 ]]; then
+    export RUSTFLAGS=""
+    FEATURES=(--no-default-features --features ct-tokio)
+elif [[ "$UNSTABLE" == 1 ]]; then
     export RUSTFLAGS="--cfg tokio_unstable"
     FEATURES=()
 else
     export RUSTFLAGS=""
-    FEATURES=(--no-default-features)
+    FEATURES=(--no-default-features --features full-tokio)
 fi
 export CARGO_PROFILE_RELEASE_DEBUG=$((DEBUG_INFO ? 2 : 0))
 export CARGO_TARGET_DIR="$TARGET_DIR"

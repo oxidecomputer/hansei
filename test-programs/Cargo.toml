@@ -4,16 +4,26 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["unstable"]
+default = ["unstable", "full-tokio"]
 # The bundle-compatible recipe builds with `--cfg tokio_unstable`, which
 # oxide-tokio-rt requires; the no-unstable matrix cells build with
-# `--no-default-features` and a plain `tokio::runtime::Builder` main.
+# `--no-default-features --features full-tokio` and a plain
+# `tokio::runtime::Builder` main.
 unstable = ["dep:oxide-tokio-rt"]
+# The tokio the ordinary cells build, split out of the dependency spec
+# so a cell can build a narrower one — cargo features are additive, so
+# leaving one off means never asking for it.
+full-tokio = ["tokio/full", "tokio/test-util"]
+# The ct-only cell's tokio: what ct-runtime touches, with rt-multi-thread
+# deliberately absent, so the extraction records the multi_thread rows as
+# a flavor absence. `net` is included for the io driver the runtime
+# parks in.
+ct-tokio = ["tokio/rt", "tokio/time", "tokio/sync", "tokio/net"]
 
 [dependencies]
 futures = "0.3.32"
 oxide-tokio-rt = { version = "0.1.2", optional = true }
-tokio = { version = ">=1.47", features = [ "full", "test-util" ] }
+tokio = { version = ">=1.47", default-features = false }
 
 # For the `prctl` that lets a test harness core a fixture by pid; see
 # `allow_any_tracer`.

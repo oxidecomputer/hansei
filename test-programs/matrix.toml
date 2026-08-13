@@ -42,3 +42,8 @@ versions = ["1.97.0", "1.97.1"]
 [cells]
 no_unstable_tokio = ["floor", "primary", "latest"]
 secondary_toolchain_tokio = ["floor", "primary", "latest"]
+# The features-limited cell: tokio without rt-multi-thread (regen.sh
+# --ct-only), pinning the "multi_thread rows absent, current_thread rows
+# bound" shape the flavor capability machinery emits. Only ct-runtime
+# builds without that scheduler, so the cell holds one fixture.
+ct_only_tokio = ["primary"]
