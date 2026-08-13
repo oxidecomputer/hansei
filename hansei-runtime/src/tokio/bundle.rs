@@ -1173,11 +1173,18 @@ impl<'b, T: Target> Context<'b, T> {
     /// that is a future decides. Testing only the fully unwrapped type
     /// would walk past `IntoFuture` and the connection inside it alike,
     /// and land on the `Option` at the bottom of both.
+    /// The bundle's poll table: the types whose `<T as Future>::poll`
+    /// extraction recorded. A floor, not a census — an inlined-away
+    /// `poll` leaves no symbol and so no entry.
+    pub(crate) fn known_futures(&self) -> &HashSet<BundleTypeId> {
+        &self.futures
+    }
+
     fn is_future(&self, ty: BundleType<'b>) -> bool {
         let mut ty = ty;
         for _ in 0..MAX_WRAPPER_DEPTH {
             if let Some(dp) = ty.dyn_pointer() {
-                return dp.pointee.name().contains("core::future::future::Future");
+                return contract::is_dyn_future_pointee(dp.pointee.name());
             }
             if self.futures.contains(&ty.id())
                 || ty.is_coroutine()

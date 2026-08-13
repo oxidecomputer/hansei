@@ -57,6 +57,21 @@ pub const FUTURES_UNORDERED: &str = "futures_util::stream::futures_unordered::Fu
 /// The by-value type every join set is recognized as.
 pub const JOIN_SET: &str = "tokio::task::join_set::JoinSet<";
 
+/// The spelling of a future trait object's pointee.
+pub const DYN_FUTURE: &str = "dyn core::future::future::Future<";
+
+/// Whether a dyn pointee *is* a future trait object — anchored at the
+/// front, past the parenthesized spelling, since any dyn whose generics
+/// merely mention a future (a `dyn FnOnce(..) -> BoxFuture`) would
+/// otherwise match. The one test both the chain walk and the census
+/// answer this question with.
+pub fn is_dyn_future_pointee(pointee: &str) -> bool {
+    pointee
+        .strip_prefix('(')
+        .unwrap_or(pointee)
+        .starts_with(DYN_FUTURE)
+}
+
 /// Whether `name` is a type a leaf key names. A key ending in `<` is a
 /// generic: the prefix of every monomorphization's name. Any other key
 /// is an exact fully-qualified name — a bare prefix match would take
@@ -710,6 +725,25 @@ mod tests {
         let shown = r.to_string();
         assert!(shown.contains("spelling 2 of 2"), "{shown}");
         assert!(shown.contains("family v1_49"), "{shown}");
+    }
+
+    /// The dyn-future test answers for the trait object itself, in
+    /// either DWARF spelling, and not for a dyn whose generics merely
+    /// mention a future — a real sled-agent bundle carries
+    /// `dyn FnOnce(..) -> BoxFuture` callbacks that must not match.
+    #[test]
+    fn test_dyn_future_pointee_is_anchored() {
+        assert!(is_dyn_future_pointee(
+            "dyn core::future::future::Future<Output=()>"
+        ));
+        assert!(is_dyn_future_pointee(
+            "(dyn core::future::future::Future<Output=()> + core::marker::Send)"
+        ));
+        assert!(!is_dyn_future_pointee(
+            "dyn core::ops::function::FnOnce<(), Output=core::pin::Pin<alloc::boxed::Box<\
+             dyn core::future::future::Future<Output=()>>>>"
+        ));
+        assert!(!is_dyn_future_pointee("dyn core::fmt::Debug"));
     }
 
     /// An exact leaf key must not take lookalike siblings with it —

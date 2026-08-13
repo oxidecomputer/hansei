@@ -1359,7 +1359,16 @@ mod future_trace_tests {
     #[test]
     fn test_futures_narrowed_to_a_task_holding_none() {
         with_target("channels", |_ctx, list, _extents, census| {
-            let id = list.tasks[0].task_id.expect("the first task has an id");
+            // Any task with no finds serves; which tasks hold something
+            // legitimately grows as the census learns to see more.
+            let empty = (0..list.tasks.len())
+                .find(|i| {
+                    !census.held.iter().any(|h| h.owner == *i)
+                        && !census.sets.iter().any(|s| s.owner == *i)
+                        && !census.join_sets.iter().any(|s| s.owner == *i)
+                })
+                .expect("some task holds nothing");
+            let id = list.tasks[empty].task_id.expect("the task has an id");
             let rendered = render(list, &census.held, &census.sets, true, &[id]);
             assert!(rendered.starts_with(&format!("Task {id}: ")), "{rendered}");
             assert!(rendered.contains("    Held futures: 0\n"), "{rendered}");
