@@ -144,7 +144,16 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
         // cannot be one golden file. The fixture's own futures and their
         // tokio/core plumbing, which is what this canary is for, are
         // unaffected.
-        if name.starts_with("futures_util::") || name.starts_with("futures_core::") {
+        // `LocalSet::run_until`'s own wrappers — the `RunUntil` future
+        // and the async fn env around it — are skipped for the same
+        // reason: which of them survives as its own monomorphization is
+        // the target's call. Two fixtures differing only in what their
+        // spawned task captures already disagree about `RunUntil` across
+        // Mach-O and ELF, so a row for it could not be one golden file.
+        if name.starts_with("futures_util::")
+            || name.starts_with("futures_core::")
+            || name.starts_with("tokio::task::local::")
+        {
             continue;
         }
         let e = dyn_types.entry(name).or_default();

@@ -1105,8 +1105,118 @@ dyn: local_set::local_acquirer::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set::local_sleeper::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
 dyn: local_set::main::{async_block_env#0} (poll, drop_glue)
-dyn: tokio::task::local::RunUntil<local_set::main::{async_block#0}::{async_block_env#0}> (poll, drop_glue)
-dyn: tokio::task::local::{impl#4}::run_until::{async_fn_env#0}<local_set::main::{async_block#0}::{async_block_env#0}> (poll, drop_glue)
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+ct_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+[walks]
+ok      Context.current_task_id
+ok      Context.thread_id
+ok      Context.handle
+ok      Context.handle.current_thread
+ok      Context.scheduler
+ok      Context.scheduler.current_thread
+ok      worker::Context.index
+ok      current_thread::Context.core
+ok      current_thread::Core.driver
+ok      Handle.shared
+ok      Shared.remotes
+ok      Remote.unpark
+ok      parker::Inner.state
+ok      parker::Inner.driver_lock
+ok      current_thread::Shared.woken
+ok      Handle.blocking_metrics
+ok      SpawnerMetrics.num_threads
+ok      SpawnerMetrics.num_idle_threads
+ok      SpawnerMetrics.queue_depth
+ok      Shared.owned_lists
+ok      Shard.head
+ok      Header.state
+ok      Header.owner_id
+ok      Header.vtable
+ok      Trailer.owned_next
+ok      Vtable.poll
+ok      Vtable.trailer_offset
+ok      Vtable.id_offset
+ok      Vtable.dealloc
+ok      Vtable.try_read_output
+ok      Vtable.drop_join_handle_slow
+ok      Vtable.drop_abort_handle
+ok      Vtable.shutdown
+ok      Vtable.spawn_location_offset
+ok      Location.file (spelling 1 of 3)
+ok      Location.line
+ok      Location.col
+ok      Cell.stage
+ok      Cell.stage_running
+ok      Cell.stage_finished
+ok      Cell.stage_consumed
+ok      Cell.trailer
+ok      Cell.task_id
+ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
+
+program: local-set-timer
+
+[tasks]
+task: local_set_timer::local_sleeper::{async_fn_env#0}
+  kind: AsyncFn
+  decl: local-set-timer.rs:15
+  entries: 1
+  symbols-per-entry: 6
+  stage: Stage<local_set_timer::local_sleeper::{async_fn_env#0}>
+  variants:
+    Unresumed @ local-set-timer.rs:15
+    Returned @ local-set-timer.rs:19
+    Panicked @ local-set-timer.rs:19
+    Suspend0 @ local-set-timer.rs:17
+task: local_set_timer::local_acquirer::{async_fn_env#0}
+  kind: AsyncFn
+  decl: local-set-timer.rs:21
+  entries: 1
+  symbols-per-entry: 6
+  stage: Stage<local_set_timer::local_acquirer::{async_fn_env#0}>
+  variants:
+    Unresumed @ local-set-timer.rs:21
+    Returned @ local-set-timer.rs:25
+    Panicked @ local-set-timer.rs:25
+    Suspend0 @ local-set-timer.rs:23
+task: local_set_timer::sleeper::{async_fn_env#0}
+  kind: AsyncFn
+  decl: local-set-timer.rs:33
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<local_set_timer::sleeper::{async_fn_env#0}>
+  variants:
+    Unresumed @ local-set-timer.rs:33
+    Returned @ local-set-timer.rs:37
+    Panicked @ local-set-timer.rs:37
+    Suspend0 @ local-set-timer.rs:35
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set_timer::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut local_set_timer::main::{async_block_env#0}> (poll)
+dyn: local_set_timer::local_acquirer::{async_fn_env#0} (poll, drop_glue)
+dyn: local_set_timer::local_sleeper::{async_fn_env#0} (poll, drop_glue)
+dyn: local_set_timer::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
+dyn: local_set_timer::main::{async_block_env#0} (poll, drop_glue)
+dyn: local_set_timer::sleeper::{async_fn_env#0} (poll, drop_glue)
 
 [infra]
 header: ok

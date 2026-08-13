@@ -1018,3 +1018,88 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0
   ok      TimerShared.next
   ok      TimerShared.waker
 
+program: local-set-timer
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 10 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      statics.tls_local_set_key
+  ok      Context.current_task_id
+  ok      Context.thread_id
+  ok      Context.handle
+  ok      Context.handle.current_thread
+  ok      Context.scheduler
+  ok      Context.scheduler.current_thread
+  ok      worker::Context.index
+  ok      current_thread::Context.core
+  ok      current_thread::Core.driver
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock
+  ok      current_thread::Shared.woken
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (spelling 1 of 3)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (5 cells)
+  ok      Cell.stage_running (5 cells)
+  ok      Cell.stage_finished (5 cells)
+  ok      Cell.stage_consumed (5 cells)
+  ok      Cell.trailer (5 cells)
+  ok      Cell.task_id (5 cells)
+  ok      Cell.scheduler (5 cells)
+  ok      Sleep.deadline (family v1_49)
+  ok      Sleep.deadline.tv_sec
+  ok      Sleep.deadline.tv_nsec
+  ok      JoinHandle.raw
+  ok      Acquire.semaphore
+  ok      Acquire.num_permits
+  ok      Acquire.node
+  ok      Acquire.node.state
+  ok      Acquire.queued
+  ok      Semaphore.permits
+  ok      Semaphore.queue_head
+  ok      Waiter.state
+  ok      Waiter.next
+  ok      Waiter.waker
+  ok      RawWaker.data
+  ok      RawWaker.vtable
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  ok      local::Shared.owned_id
+  ok      local::Shared.owned_head
+  ok      local::Shared.owner
+  ok      LocalData.ctx
+  ok      local::Context.shared
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
+

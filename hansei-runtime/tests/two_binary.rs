@@ -49,6 +49,7 @@ const PROGRAMS: &[&str] = &[
     "joinset",
     "ct-runtime",
     "local-set",
+    "local-set-timer",
 ];
 
 /// What a fixture pair was captured from: the program's own source, and
@@ -844,6 +845,94 @@ fn test_local_set_offline() {
         }
         other => panic!("the joiner does not await a task: {other:?}"),
     }
+}
+
+/// The wheel harvest: a `LocalSet` nothing points at, found through the
+/// timer its sleeper parked in the runtime's own wheel.
+///
+/// This is the case route 1 provably cannot reach. Both handles were
+/// dropped when the set's tasks were spawned, the semaphore the second
+/// one waits on is nobody else's, and a parked core reads the TLS
+/// anchor empty — so the cell bootstrap sweeps every enumerated chain
+/// and comes back with nothing. The set is redeemed by a member the
+/// wheel names, and its externally invisible sibling comes with it.
+#[test]
+fn test_local_set_timer_offline() {
+    let (bundle, snapshot) = load("local-set-timer");
+    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+
+    let lwps = snapshot.lwps().unwrap();
+    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let mut list = ctx
+        .enumerate_all_tasks(&runtimes)
+        .expect("the owned-task walk");
+
+    // Before discovery: the scheduler owns one task, and it points at
+    // nothing outside its own list — it is parked on a timer of its
+    // own, which is what makes the wheel the only way in.
+    assert_eq!(list.tasks.len(), 1, "{:#?}", list.tasks);
+    let scheduler_task = list.tasks[0].addr;
+    match graph::analyze(&ctx, &list).waits[0].target.clone() {
+        Some(hansei_runtime::tokio::bundle::WaitTarget::Timer { .. }) => {}
+        other => panic!("the spawned task does not await a timer: {other:?}"),
+    }
+
+    let sets = ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut list);
+    assert!(list.errors.is_empty(), "{:?}", list.errors);
+    let [set] = sets.as_slice() else {
+        panic!("expected one local set, got {}", sets.len());
+    };
+    assert_eq!(set.route, LocalSetRoute::Wheel);
+    assert_ne!(set.owned_id, 0);
+
+    // Both members join the population under the set's group, the
+    // scheduler's own task keeps its runtime's, and the harvest did not
+    // take the listed task its own wheel entry names.
+    assert_eq!(list.tasks.len(), 3, "{:#?}", list.tasks);
+    let group = runtimes.len();
+    let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
+    assert_eq!(local.len(), 2, "{local:#?}");
+    for task in &local {
+        assert_eq!(task.owner_id, Some(set.owned_id), "{task:#?}");
+        assert!(
+            known_name(task).starts_with("local_set_timer::local_"),
+            "{task:#?}"
+        );
+    }
+    assert_eq!(
+        list.tasks
+            .iter()
+            .filter(|t| t.addr == scheduler_task)
+            .count(),
+        1,
+        "the scheduler's own task is not duplicated"
+    );
+
+    // Both members read like any listed task, including the one the
+    // wheel never named: nothing outside the set points at the
+    // semaphore waiter, and it is listed all the same.
+    let analysis = graph::analyze(&ctx, &list);
+    assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+    let mut leaves: Vec<String> = list
+        .tasks
+        .iter()
+        .zip(&analysis.waits)
+        .filter(|(task, _)| task.group == group)
+        .map(|(task, wait)| {
+            let target = wait
+                .target
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} decodes no wait target", known_name(task)));
+            mask(&target.to_string())
+        })
+        .collect();
+    leaves.sort_unstable();
+    let [semaphore, timer] = leaves.as_slice() else {
+        panic!("expected the set's two leaves, got {leaves:#?}");
+    };
+    assert!(semaphore.contains("semaphore"), "{leaves:#?}");
+    assert!(timer.contains("the timer"), "{leaves:#?}");
 }
 
 /// The wrong-bundle failure mode: a bundle from a
