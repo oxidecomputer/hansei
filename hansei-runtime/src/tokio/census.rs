@@ -39,7 +39,7 @@ use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind
 // reported apart from a set of futures; anything built on one
 // (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
 // reached by the same scan, since it holds its `JoinSet` by value.
-use super::contract::{FUTURES_UNORDERED, JOIN_SET};
+use super::contract::{FUTURES_UNORDERED, JOIN_SET, is_dyn_future_pointee};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use foldhash::{HashMap, HashSet};
@@ -47,11 +47,6 @@ use hansei_bundle::{BundleTypeId, TypeClass, WalkRole};
 use proc::Target;
 use reify::Value;
 use std::rc::Rc;
-
-/// The spelling of a future trait object's pointee, which is what makes
-/// a wide pointer worth chaining even before the vtable join names the
-/// concrete type behind it.
-const DYN_FUTURE: &str = "dyn core::future::future::Future<";
 
 /// Hard bound on one set's child walk. Real sets run to thousands of
 /// children (a `buffer_unordered` over a large stream), so the bound is
@@ -368,7 +363,14 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 };
                 let local = Value::new(m.ty(), payload.addr + m.offset(), bytes);
                 let mut found = Vec::new();
-                scan_value(local, 0, &mut found, &mut self.capped, &mut self.plans);
+                scan_value(
+                    local,
+                    self.ctx.known_futures(),
+                    0,
+                    &mut found,
+                    &mut self.capped,
+                    &mut self.plans,
+                );
                 for find in found {
                     self.record(owner, frame_index, m.name(), via, find, nesting);
                 }
@@ -553,8 +555,11 @@ enum ScanPlan {
 }
 
 /// Decide [`ScanPlan`] for one value: the type-level tests of the scan,
-/// in order.
-fn scan_plan(value: Value<'_>) -> ScanPlan {
+/// in order. `futures` is the bundle's poll table — the types whose
+/// `<T as Future>::poll` extraction recorded — so a future the chain
+/// walk would follow is one the census counts, even where rustc left
+/// no coroutine shape or leaf name to recognize it by.
+fn scan_plan(value: Value<'_>, futures: &HashSet<BundleTypeId>) -> ScanPlan {
     let name = value.ty.name();
     if name.starts_with(FUTURES_UNORDERED) {
         return ScanPlan::Set;
@@ -562,22 +567,15 @@ fn scan_plan(value: Value<'_>) -> ScanPlan {
     if name.starts_with(JOIN_SET) {
         return ScanPlan::JoinSet;
     }
-    if value.ty.is_coroutine() || leaf_kind(name).is_some() {
+    if value.ty.is_coroutine() || leaf_kind(name).is_some() || futures.contains(&value.ty.id()) {
         return ScanPlan::Future;
     }
-    // The pointee must *be* a future trait object — anchored at the
-    // front (past the parenthesized spelling), since any dyn whose
-    // generics merely mention a future (a `dyn FnOnce(..) -> BoxFuture`)
-    // would otherwise match.
-    if let Some(dp) = value.peel().ty.dyn_pointer() {
-        let pointee = dp.pointee.name();
-        if pointee
-            .strip_prefix('(')
-            .unwrap_or(pointee)
-            .starts_with(DYN_FUTURE)
-        {
-            return ScanPlan::Future;
-        }
+    // The pointee must *be* a future trait object itself, not a dyn
+    // whose generics merely mention one.
+    if let Some(dp) = value.peel().ty.dyn_pointer()
+        && is_dyn_future_pointee(dp.pointee.name())
+    {
+        return ScanPlan::Future;
     }
     match value.ty.classify() {
         TypeClass::Struct | TypeClass::Union => ScanPlan::Descend(Rc::new(
@@ -599,6 +597,7 @@ fn scan_plan(value: Value<'_>) -> ScanPlan {
 /// own bytes and terminates.
 fn scan_value<'b>(
     value: Value<'b>,
+    futures: &HashSet<BundleTypeId>,
     depth: usize,
     found: &mut Vec<Find<'b>>,
     capped: &mut usize,
@@ -616,13 +615,13 @@ fn scan_value<'b>(
         match plans.get(&value.ty.id()) {
             Some(plan) => plan.clone(),
             None => {
-                let plan = scan_plan(value);
+                let plan = scan_plan(value, futures);
                 plans.insert(value.ty.id(), plan.clone());
                 plan
             }
         }
     } else {
-        scan_plan(value)
+        scan_plan(value, futures)
     };
     match plan {
         ScanPlan::Set => found.push(Find::Set(value)),
@@ -635,12 +634,12 @@ fn scan_value<'b>(
                     continue;
                 };
                 let child = Value::new(value.ty.related_type(ty), value.addr + offset, bytes);
-                scan_value(child, depth + 1, found, capped, plans);
+                scan_value(child, futures, depth + 1, found, capped, plans);
             }
         }
         ScanPlan::Enum => {
             if let Ok((_, payload)) = value.active_variant() {
-                scan_value(payload, depth + 1, found, capped, plans);
+                scan_value(payload, futures, depth + 1, found, capped, plans);
             }
         }
         ScanPlan::Stop => {}
