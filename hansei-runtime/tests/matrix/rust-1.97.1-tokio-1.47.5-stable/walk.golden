@@ -1,8 +1,10 @@
 program: futurelock
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 10 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 16 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -44,6 +46,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
+  ok      Cell.scheduler (5 cells)
   ok      Sleep.deadline (family v1_47)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
@@ -69,12 +72,19 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 
 program: simple-await
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 25 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 31 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -116,6 +126,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (3 cells)
   ok      Cell.trailer (3 cells)
   ok      Cell.task_id (3 cells)
+  ok      Cell.scheduler (3 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
@@ -141,12 +152,19 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 
 program: nested-await
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 25 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 31 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -188,6 +206,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (3 cells)
   ok      Cell.trailer (3 cells)
   ok      Cell.task_id (3 cells)
+  ok      Cell.scheduler (3 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
@@ -213,12 +232,19 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 
 program: dyn-future
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 19 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 25 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -260,6 +286,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
+  ok      Cell.scheduler (5 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
@@ -285,12 +312,19 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      JoinSet.idle_head
   ok      ListEntry.value
   ok      ListEntry.next
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 
 program: select-combinator
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 25 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 31 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -332,6 +366,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
+  ok      Cell.scheduler (5 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
@@ -357,12 +392,19 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 
 program: many-tasks
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 26 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 32 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -404,6 +446,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (3 cells)
   ok      Cell.trailer (3 cells)
   ok      Cell.task_id (3 cells)
+  ok      Cell.scheduler (3 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
@@ -429,12 +472,19 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 
 program: sleep-join
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 22 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 28 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -476,6 +526,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
+  ok      Cell.scheduler (5 cells)
   ok      Sleep.deadline (family v1_47)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
@@ -501,12 +552,19 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 
 program: channels
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 13 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 19 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -548,6 +606,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
+  ok      Cell.scheduler (5 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
@@ -573,12 +632,19 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 
 program: unordered
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 22 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 28 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -620,6 +686,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (3 cells)
   ok      Cell.trailer (3 cells)
   ok      Cell.task_id (3 cells)
+  ok      Cell.scheduler (3 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
@@ -645,12 +712,19 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 
 program: joinset
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 7 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 13 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -692,6 +766,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
+  ok      Cell.scheduler (5 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
@@ -717,12 +792,19 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      JoinSet.idle_head
   ok      ListEntry.value
   ok      ListEntry.next
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 
 program: ct-runtime
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 10 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 16 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   ok      Context.handle
   ok      Context.handle.current_thread
   ok      Context.scheduler
@@ -764,6 +846,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (5 cells)
   ok      Cell.trailer (5 cells)
   ok      Cell.task_id (5 cells)
+  ok      Cell.scheduler (5 cells)
   ok      Sleep.deadline (family v1_47)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
@@ -789,4 +872,9 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 

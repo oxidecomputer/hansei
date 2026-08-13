@@ -47,6 +47,9 @@ pub(super) fn find_statics(
             .statics_missing
             .push("TaskWakerVtable (tokio::runtime::task::waker::WAKER_VTABLE)".to_owned());
     }
+    // TlsLocalSetKey is deliberately not checked: the `task::local::CURRENT`
+    // thread-local exists only in binaries that link tokio's local module,
+    // so its absence is the expected shape of most targets.
     out
 }
 
@@ -61,11 +64,16 @@ fn match_static_symbol(sym: &str) -> Option<StaticRole> {
     if sym.ends_with("5tokio7runtime4task5waker12WAKER_VTABLE") {
         return Some(StaticRole::TaskWakerVtable);
     }
-    // Several crates define a `__RUST_STD_INTERNAL_VAL` thread-local; take the
-    // one under `tokio::runtime::context::CONTEXT`, not, say,
-    // `std::sync::mpmc::context` or `tokio::task::local::CURRENT`.
+    // Several crates define a `__RUST_STD_INTERNAL_VAL` thread-local; the
+    // path segments say whose it is: `tokio::runtime::context::CONTEXT` is
+    // the runtime context key, `tokio::task::local::CURRENT` the LocalSet
+    // anchor, and anything else (`std::sync::mpmc::context`, parking_lot's
+    // `THREAD_DATA`) is nobody's.
     if sym.contains("5tokio7runtime7context7CONTEXT") && sym.ends_with("__RUST_STD_INTERNAL_VAL") {
         return Some(StaticRole::TlsContextKey);
+    }
+    if sym.contains("5tokio4task5local7CURRENT") && sym.ends_with("__RUST_STD_INTERNAL_VAL") {
+        return Some(StaticRole::TlsLocalSetKey);
     }
     None
 }
@@ -89,16 +97,20 @@ mod tests {
         assert_eq!(match_static_symbol(sym), Some(StaticRole::TlsContextKey));
     }
 
-    // Other crates define a `__RUST_STD_INTERNAL_VAL`; only the one nested
-    // under `tokio::runtime::context::CONTEXT` is the tokio context key.
+    // The LocalSet anchor is its own role, not the context key.
+    #[test]
+    fn test_match_local_set_tls_symbol() {
+        let sym = "_RNvNCNvNtNtCsjd01hASgEtw_5tokio4task5local7CURRENT023___RUST_STD_INTERNAL_VAL";
+        assert_eq!(match_static_symbol(sym), Some(StaticRole::TlsLocalSetKey));
+    }
+
+    // Other crates define a `__RUST_STD_INTERNAL_VAL`; only the ones nested
+    // under a tokio path this recognizes name a role.
     #[test]
     fn test_reject_foreign_internal_val_symbols() {
         let mpmc_context = "_RNvNCNvNvMNtNtNtCsijgp68BdGXk_3std4sync4mpmc7contextNtB8_7Context4with7CONTEXT023___RUST_STD_INTERNAL_VAL";
-        let tokio_local =
-            "_RNvNCNvNtNtCsjd01hASgEtw_5tokio4task5local7CURRENT023___RUST_STD_INTERNAL_VAL";
         let parking_lot = "_RNvNCNvNvNtCs6eIw0jaMQft_16parking_lot_core11parking_lot16with_thread_data11THREAD_DATA023___RUST_STD_INTERNAL_VAL";
         assert_eq!(match_static_symbol(mpmc_context), None);
-        assert_eq!(match_static_symbol(tokio_local), None);
         assert_eq!(match_static_symbol(parking_lot), None);
     }
 

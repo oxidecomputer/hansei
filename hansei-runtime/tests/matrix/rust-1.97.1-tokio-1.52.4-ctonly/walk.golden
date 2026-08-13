@@ -1,8 +1,10 @@
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 17 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 23 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
   ok      Context.current_task_id
+  ok      Context.thread_id
   absent  Context.handle — the target has no multi_thread scheduler compiled in
   ok      Context.handle.current_thread
   absent  Context.scheduler — the target has no multi_thread scheduler compiled in
@@ -44,6 +46,7 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   ok      Cell.stage_consumed (2 cells)
   ok      Cell.trailer (2 cells)
   ok      Cell.task_id (2 cells)
+  ok      Cell.scheduler (2 cells)
   ok      Sleep.deadline (family v1_49)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
@@ -69,4 +72,9 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0
   absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
 

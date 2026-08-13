@@ -455,6 +455,7 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let role = match role {
             StaticRole::TlsContextKey => "tls-context-key",
             StaticRole::TaskWakerVtable => "task-waker-vtable",
+            StaticRole::TlsLocalSetKey => "tls-local-set-key",
         };
         println!("{role}: {} ({})", def.symbol, def.display);
     }
