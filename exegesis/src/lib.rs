@@ -20,23 +20,10 @@ pub use raw_types::{Encoding, NamespaceTable, NsEntry, NsId};
 pub use reader::{DwReader, ReadArgs};
 pub use string_table::StrId;
 pub use view::{
-    Array, Base, DwView, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace,
-    Param, ParamIter, Pointer, SourceLocView, StaticVariable, Struct, TemplateParam,
-    TemplateParamIter, Type, Union, Variant, VariantIter, VariantShapeView,
+    DwView, Func, Namespace, Param, ParamIter, SourceLocView, TemplateParam, TemplateParamIter,
 };
 
 use gimli::{EndianSlice, RunTimeEndian, UnitSectionOffset};
-
-/// The kind of a DWARF type.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum TypeKind {
-    Base,
-    Pointer,
-    Enum,
-    Struct,
-    Union,
-    Array,
-}
 
 use std::fmt;
 

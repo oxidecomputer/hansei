@@ -1,37 +1,34 @@
 mod types;
 
 pub use types::{
-    Array, Base, Enum, Enumerator, EnumeratorIter, Func, Member, MemberIter, Namespace, Param,
-    ParamIter, Pointer, SourceLocView, StaticVariable, Struct, TemplateParam, TemplateParamIter,
-    Type, Union, Variant, VariantIter, VariantShapeView,
+    Func, Namespace, Param, ParamIter, SourceLocView, TemplateParam, TemplateParamIter,
 };
 
 use crate::raw_types::NsId;
 use crate::reader::DwReader;
-use crate::{FuncId, TypeId, TypeKind, VarId};
+use crate::{FuncId, TypeId};
 
 use foldhash::{HashMap, HashMapExt};
 
 /// An indexed, read-only view into the deduplicated DWARF type data.
 ///
 /// `DwView` borrows from a [`DwReader`] and provides efficient
-/// name-based type lookups over canonical (deduplicated) types,
-/// static variables, and functions.
+/// name-based lookups over canonical (deduplicated) types and
+/// functions.
 pub struct DwView<'a> {
     collector: &'a DwReader<'a>,
     by_name: HashMap<&'a str, Vec<TypeId>>,
-    vars_by_name: HashMap<&'a str, Vec<VarId>>,
     funcs_by_name: HashMap<&'a str, Vec<FuncId>>,
 }
 
 impl<'a> DwView<'a> {
     /// Build an indexed view from a collector.
     pub fn new(collector: &'a DwReader<'a>) -> Self {
-        // The three name indexes are independent and each scans a different
+        // The two name indexes are independent and each scans a different
         // (large) table, so build them concurrently. `collector` is only read
         // here, and the type index — which walks every type — dominates, so it
-        // gets its own thread while the two smaller ones share the caller's.
-        let (by_name, vars_by_name, funcs_by_name) = std::thread::scope(|scope| {
+        // gets its own thread while the function index runs on the caller's.
+        let (by_name, funcs_by_name) = std::thread::scope(|scope| {
             let types = scope.spawn(|| {
                 let mut by_name: HashMap<&'a str, Vec<TypeId>> = HashMap::new();
                 for (id, raw_ty) in collector.canonical_types() {
@@ -43,18 +40,6 @@ impl<'a> DwView<'a> {
                     }
                 }
                 by_name
-            });
-            let vars = scope.spawn(|| {
-                let mut vars_by_name: HashMap<&'a str, Vec<VarId>> = HashMap::new();
-                for (&id, var) in &collector.variables {
-                    if let Some(str_id) = var.name {
-                        vars_by_name
-                            .entry(collector.strings.get(str_id))
-                            .or_default()
-                            .push(id);
-                    }
-                }
-                vars_by_name
             });
 
             let mut funcs_by_name: HashMap<&'a str, Vec<FuncId>> = HashMap::new();
@@ -69,7 +54,6 @@ impl<'a> DwView<'a> {
 
             (
                 types.join().expect("type-index thread panicked"),
-                vars.join().expect("var-index thread panicked"),
                 funcs_by_name,
             )
         });
@@ -77,61 +61,16 @@ impl<'a> DwView<'a> {
         Self {
             collector,
             by_name,
-            vars_by_name,
             funcs_by_name,
         }
     }
 
     // --- Types ---
 
-    /// Get a type by its ID (automatically canonicalized).
-    pub fn get(&self, id: TypeId) -> Type<'a> {
-        let canonical_id = self.collector.canonicalize(id);
-        let raw = self
-            .collector
-            .types
-            .get(&canonical_id)
-            .expect("TypeId not found in collector");
-        Type::from_raw(raw, self.collector)
-    }
-
-    /// Find a type by path and kind.
-    ///
-    /// The path may be a bare name (`"Foo"`) or a fully-qualified path
-    /// (`"foo::bar::Foo"`). If multiple types share the same name, only
-    /// the first matching the given kind is returned.
-    pub fn find(&self, path: &str, kind: TypeKind) -> Option<Type<'a>> {
-        let (ns_id, type_name) = self.resolve_path(path)?;
-        self.by_name
-            .get(type_name)?
-            .iter()
-            .map(|&id| self.get(id))
-            .find(|ty| ty.kind() == kind && ty.namespace_id() == ns_id)
-    }
-
-    /// Find all canonical types matching a path.
+    /// Find the canonical [`TypeId`]s of all types matching a path.
     ///
     /// The path may be a bare name (`"Foo"`) or a fully-qualified path
     /// (`"foo::bar::Foo"`).
-    pub fn find_all(&self, path: &str) -> Vec<Type<'a>> {
-        let Some((ns_id, type_name)) = self.resolve_path(path) else {
-            return Vec::new();
-        };
-        self.by_name
-            .get(type_name)
-            .map(|ids| {
-                ids.iter()
-                    .map(|&id| self.get(id))
-                    .filter(|ty| ty.namespace_id() == ns_id)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Find the canonical [`TypeId`]s of all types matching a path.
-    ///
-    /// Like [`DwView::find_all`], but returns the ids for callers that
-    /// need to track type identity (e.g. extraction).
     pub fn find_all_ids(&self, path: &str) -> Vec<TypeId> {
         let Some((ns_id, type_name)) = self.resolve_path(path) else {
             return Vec::new();
@@ -140,36 +79,15 @@ impl<'a> DwView<'a> {
             .get(type_name)
             .map(|ids| {
                 ids.iter()
-                    .filter(|&&id| self.get(id).namespace_id() == ns_id)
+                    .filter(|&&id| {
+                        self.collector
+                            .canonical_type(id)
+                            .is_some_and(|raw| raw.namespace() == ns_id)
+                    })
                     .copied()
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    // --- Variables ---
-
-    /// Get a static variable by its ID.
-    fn get_var(&self, id: VarId) -> StaticVariable<'a> {
-        let raw = self
-            .collector
-            .variables
-            .get(&id)
-            .expect("VarId not found in collector");
-        StaticVariable::new(raw, self.collector)
-    }
-
-    /// Find a static variable by path.
-    ///
-    /// The path may be a bare name (`"X"`) or a fully-qualified path
-    /// (`"foo::bar::X"`).
-    pub fn find_var(&self, path: &str) -> Option<StaticVariable<'a>> {
-        let (ns_id, var_name) = self.resolve_path(path)?;
-        self.vars_by_name
-            .get(var_name)?
-            .iter()
-            .map(|&id| self.get_var(id))
-            .find(|v| v.namespace_id() == ns_id)
     }
 
     // --- Funcs ---
