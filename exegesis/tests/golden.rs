@@ -14,7 +14,7 @@
 //! serves macOS and illumos. Regenerate with `EXEGESIS_BLESS=1 cargo test
 //! -p exegesis --test golden`.
 
-use exegesis::bundle::{Bundle, DisplayNode, TypeDef};
+use exegesis::bundle::{Bundle, DisplayNode, MemberRef, Step, TypeDef, WalkOutcome, WalkRole};
 use exegesis::describe::describe_debug_format;
 use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
 use exegesis::summary::{portable_summary, walk_entry_line};
@@ -197,6 +197,47 @@ fn assert_format(program: &str, bundle: &Bundle, type_name: &str, expected: &str
         ),
         None => panic!("{program}: no `Known` debug format was extracted for {type_name}"),
     }
+}
+
+/// The member-name chain a walk row bound to, in `--explain-walk`'s
+/// spelling.
+///
+/// This is [`assert_format`]'s sibling for the walk contract: the
+/// portable summary and the matrix goldens say only that a row bound,
+/// which a row navigating to the wrong member satisfies just as well.
+/// Names rather than offsets because names are what the contract pins —
+/// offsets move between tokio versions and between platforms, the chain
+/// does not.
+fn walk_path(program: &str, bundle: &Bundle, role: WalkRole) -> String {
+    let binding = &bundle.walks.entries[&role];
+    assert!(
+        matches!(binding.outcome, WalkOutcome::Bound { .. }),
+        "{program}: {} did not bind: {:?}",
+        role.name(),
+        binding.outcome
+    );
+    let s = |name| bundle.strings.get(name).unwrap_or("<bad strref>");
+    binding
+        .steps
+        .iter()
+        .map(|step| match step {
+            Step::Member(MemberRef::Named(name)) => s(*name).to_owned(),
+            Step::Member(MemberRef::Index(index)) => format!("#{index}"),
+            Step::Variant(name) => format!("<{}>", s(*name)),
+            Step::ActiveVariant => "<active variant>".to_owned(),
+            Step::Deref => "*".to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn assert_walk(program: &str, bundle: &Bundle, role: WalkRole, expected: &str) {
+    assert_eq!(
+        walk_path(program, bundle, role),
+        expected,
+        "{program}: {} bound to an unexpected path",
+        role.name()
+    );
 }
 
 /// Structural assertions that hold for every fixture — the "zero silent
@@ -527,6 +568,42 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "std::sys::time::unix::Instant :: Node Alias { t@+0, follow }",
         );
     }
+    if program == "local-set-timer" {
+        // The wheel rows root at the scheduler handles, so the portable
+        // summary above already carries them; what it cannot say is
+        // *where* they land, which is what a harvest walking the wrong
+        // member would get wrong while still binding.
+        // The middle of the wheel chain crosses whichever loom mutex the
+        // build linked, whose payload member no two flavors spell alike,
+        // so only the ends are pinned: from the runtime handle into the
+        // time driver, and out of the guarded state onto the level
+        // array. Everything below is spelled exactly.
+        let levels = walk_path(program, bundle, WalkRole::WheelLevels);
+        assert!(
+            levels.starts_with("driver.time.<Some>.__0.inner.<Traditional>.state.")
+                && levels.ends_with(".wheel.levels.*"),
+            "{program}: Wheel.levels bound to an unexpected path: {levels}"
+        );
+        assert_walk(program, bundle, WalkRole::LevelSlots, "slot");
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::SlotHead,
+            "head.<Some>.__0.pointer",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::TimerSharedNext,
+            "pointers.inner.value.next.<Some>.__0.pointer",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::TimerSharedWaker,
+            "state.waker.waker.__0.value.<Some>.__0.waker",
+        );
+    }
     if program == "local-set" {
         // The local-set rows root at leaf types, so the portable summary
         // filters them; that they bound on the one fixture that
@@ -831,6 +908,11 @@ fn test_golden_ct_runtime() {
 #[test]
 fn test_golden_local_set() {
     run_golden("local-set");
+}
+
+#[test]
+fn test_golden_local_set_timer() {
+    run_golden("local-set-timer");
 }
 
 /// Two extractions of one binary agree byte for byte.

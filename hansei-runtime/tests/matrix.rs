@@ -78,6 +78,7 @@ const PROGRAMS: &[&str] = &[
     "joinset",
     "ct-runtime",
     "local-set",
+    "local-set-timer",
 ];
 
 fn test_programs_dir() -> PathBuf {

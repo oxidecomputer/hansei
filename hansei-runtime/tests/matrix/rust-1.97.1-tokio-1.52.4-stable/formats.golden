@@ -90,6 +90,9 @@ core::cell::UnsafeCell<tokio::runtime::task::core::Stage<joinset::member::{async
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set::joiner::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set::local_acquirer::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set::local_sleeper::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set_timer::local_acquirer::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set_timer::local_sleeper::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set_timer::sleeper::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<many_tasks::park_task::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<nested_await::outer::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<select_combinator::joiner::{async_fn_env#0}>> :: Node Alias { value, follow }
@@ -243,6 +246,9 @@ tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<join
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set::joiner::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set::local_acquirer::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set::local_sleeper::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set_timer::local_acquirer::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set_timer::local_sleeper::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<local_set_timer::sleeper::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<many_tasks::park_task::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<nested_await::outer::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<select_combinator::joiner::{async_fn_env#0}>> :: Node Alias { __0, follow }

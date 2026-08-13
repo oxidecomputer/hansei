@@ -43,7 +43,7 @@
 set -euo pipefail
 
 PRIMARY_TOOLCHAIN=1.97.1
-ALL_PROGRAMS=(futurelock simple-await nested-await dyn-future select-combinator many-tasks sleep-join channels park-target core-target unordered joinset ct-runtime local-set)
+ALL_PROGRAMS=(futurelock simple-await nested-await dyn-future select-combinator many-tasks sleep-join channels park-target core-target unordered joinset ct-runtime local-set local-set-timer)
 
 cd "$(dirname "$0")"
 FIXTURES="$PWD/fixtures"
