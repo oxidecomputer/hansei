@@ -2,7 +2,7 @@
 //! state read straight through the bundle’s layouts.
 
 use crate::trace::print_variable;
-use crate::{Proc, RenderOpts, Session};
+use crate::{Proc, RenderOpts, RuntimeField, Session};
 
 use anyhow::Result;
 use hansei_runtime::tokio::{Lifecycle, bundle};
@@ -158,11 +158,15 @@ fn print_worker_state<'b>(
 /// up without hansei being taught about it.
 pub(crate) fn exec_runtime_field(
     session: &Session<'_>,
-    field: &str,
+    field: RuntimeField,
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let value = session.handle.member(field)?;
+    let member = match field {
+        RuntimeField::Drivers => "driver",
+        RuntimeField::Shared => "shared",
+    };
+    let value = session.handle.member(member)?;
     // The bundle's `Elided` formats hide the runtime graph from *user*
     // values; these commands exist to show the runtime's own insides, so
     // they must never apply here — a new elided row must not be able to

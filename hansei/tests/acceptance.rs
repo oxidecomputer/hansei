@@ -1563,13 +1563,13 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
 fn test_shared_state_and_drivers() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let shared = hansei_ok(&bundle, core, "shared-state");
+        let shared = hansei_ok(&bundle, core, "runtime shared");
         assert!(shared.contains("multi_thread::worker::Shared"), "{shared}");
         assert!(shared.contains("owned:"), "{shared}");
         assert!(shared.contains("inject:"), "{shared}");
         assert!(shared.contains("num_workers:"), "{shared}");
 
-        let drivers = hansei_ok(&bundle, core, "drivers");
+        let drivers = hansei_ok(&bundle, core, "runtime drivers");
         assert!(drivers.contains("runtime::driver::Handle"), "{drivers}");
         assert!(drivers.contains("io:"), "{drivers}");
         assert!(drivers.contains("time:"), "{drivers}");
@@ -1578,7 +1578,7 @@ fn test_shared_state_and_drivers() {
         // elisions never apply to them: however deep the sweep goes, no
         // subtree may come back `<elided>` — a regression here means a new
         // elided row leaked into runtime introspection.
-        for command in ["shared-state -d 64", "drivers -d 64"] {
+        for command in ["runtime shared -d 64", "runtime drivers -d 64"] {
             let deep = hansei_ok(&bundle, core, command);
             assert!(!deep.contains("<elided>"), "`{command}`: {deep}");
         }
@@ -1720,7 +1720,7 @@ fn test_exec_asks_from_the_command_line() {
     with_core("simple-await", |core| {
         // Two commands in one flag, and a second flag after it: both
         // spellings of "more than one question".
-        let out = hansei_exec(&bundle, core, &["info ; drivers -d 1", "tasks"]);
+        let out = hansei_exec(&bundle, core, &["info ; runtime drivers -d 1", "tasks"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success(),
@@ -1747,11 +1747,11 @@ fn test_exec_asks_from_the_command_line() {
 fn test_a_line_can_hold_several_commands() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let out = hansei_ok(&bundle, core, "info ; drivers");
+        let out = hansei_ok(&bundle, core, "info ; runtime drivers");
         assert!(out.contains("symbols resolved:"), "{out}");
         assert!(out.contains("runtime::driver::Handle"), "{out}");
 
-        let out = hansei(&bundle, core, "info ; trace 99999 ; drivers");
+        let out = hansei(&bundle, core, "info ; trace 99999 ; runtime drivers");
         assert!(
             !out.status.success(),
             "a failing command must end the line:\n{}",
@@ -1775,11 +1775,10 @@ fn test_a_unique_prefix_names_a_command() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
         assert!(hansei_ok(&bundle, core, "i").contains("symbols resolved:"));
-        assert!(hansei_ok(&bundle, core, "dr -d 1").contains("runtime::driver::Handle"));
+        // The prefix names the command; its arguments are never inferred.
+        assert!(hansei_ok(&bundle, core, "ru drivers -d 1").contains("runtime::driver::Handle"));
         assert!(hansei_ok(&bundle, core, "thr -f 0").contains("LWP "));
-        // `snapshot` is not in a default build, so nothing else starts
-        // with an `s`.
-        assert!(hansei_ok(&bundle, core, "s").contains("multi_thread::worker::Shared"));
+        assert!(hansei_ok(&bundle, core, "ru shared").contains("multi_thread::worker::Shared"));
 
         let out = hansei(&bundle, core, "t");
         assert!(

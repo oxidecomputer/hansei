@@ -139,14 +139,6 @@ pub enum Command {
         top: usize,
     },
 
-    /// Show the runtime's drivers: io, signal, time and the clock.
-    /// The bundle's elisions (which hide runtime internals inside user
-    /// values) never apply to this view.
-    Drivers {
-        #[command(flatten)]
-        render: RenderOpts,
-    },
-
     /// List the types whose name contains a substring.
     FindTypes {
         /// The substring to look for.
@@ -203,11 +195,15 @@ pub enum Command {
     /// Show the target, the bundle, and how far its symbols resolve.
     Info,
 
-    /// Show the scheduler state the workers share: the owned-task set,
-    /// the injection queue, the idle set and the per-worker remotes.
+    /// Show the runtime's own state, read straight through the bundle's
+    /// layouts: its drivers, or the scheduler state the workers share.
     /// The bundle's elisions (which hide runtime internals inside user
     /// values) never apply to this view.
-    SharedState {
+    Runtime {
+        /// Which state to show.
+        #[arg(value_enum)]
+        field: RuntimeField,
+
         #[command(flatten)]
         render: RenderOpts,
     },
@@ -425,6 +421,17 @@ pub struct RenderOpts {
     ugly: bool,
 }
 
+/// What `runtime` shows: each choice is one member of the runtime
+/// handle, read out of the target.
+#[derive(clap::ValueEnum, Copy, Clone)]
+pub enum RuntimeField {
+    /// The io, signal and time drivers, and the clock.
+    Drivers,
+    /// The scheduler state the workers share: the owned-task set, the
+    /// injection queue, the idle set and the per-worker remotes.
+    Shared,
+}
+
 /// Everything `trace` was told about rendering a chain: the shared
 /// render options plus the flags only tracing takes.
 struct TraceOpts<'a> {
@@ -589,12 +596,11 @@ impl<'b> Session<'b> {
 pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write) -> Result<Flow> {
     match command {
         Command::Census { top } => tasks::exec_census(session, top, out)?,
-        Command::Drivers { render } => threads::exec_runtime_field(session, "driver", render, out)?,
         Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
         Command::Graph => graph::exec_graph(session, out)?,
         Command::Info => exec_info(session, out)?,
-        Command::SharedState { render } => {
-            threads::exec_runtime_field(session, "shared", render, out)?
+        Command::Runtime { field, render } => {
+            threads::exec_runtime_field(session, field, render, out)?
         }
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
