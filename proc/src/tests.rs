@@ -2,9 +2,9 @@
 //! register model, the mapping table, and the memory helpers every
 //! [`Target`] inherits.
 //!
-//! The libproc-backed [`crate::Proc`] is covered on-box by
-//! `tests/illumos.rs`; snapshot capture and replay by the tests in
-//! [`crate::snapshot`].
+//! The core readers are covered by their own unit tests and the
+//! on-box suites under `tests/`; snapshot capture and replay by the
+//! tests in [`crate::snapshot`].
 
 use crate::x86_64::*;
 use crate::*;

@@ -5,7 +5,7 @@
 //! Stack unwinding for a target using DWARF `.eh_frame` CFI.
 //!
 //! Everything here reads through [`proc::Target`], so a backtrace comes
-//! out of a live process, a core dump or a snapshot alike. What it needs
+//! out of a core dump or a replayed snapshot alike. What it needs
 //! from the target is the unwind information of whichever object the
 //! program counter is in, which means every mapped object that carries
 //! any — not just the executable and libc, since a thread parked in the
@@ -106,7 +106,7 @@ pub fn load_frames<T: Target>(target: &T) -> Result<BTreeMap<u32, Backtrace>> {
 
 /// The mapped image of every file-backed object in the target, read
 /// through the target so that it works the same whether the bytes are
-/// in a core, in a live process, or on disk behind it.
+/// in the core or on disk behind it.
 ///
 /// An object's mappings are read one at a time and laid out at their
 /// own offsets, leaving anything unreadable — an alignment gap between
