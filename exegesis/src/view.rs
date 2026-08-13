@@ -1,9 +1,177 @@
-use crate::TypeId;
 use crate::raw_types::{NsId, RawFunc, RawGenericParameter, RawSubParameter, SourceLoc};
 use crate::reader::DwReader;
 use crate::string_table::StrId;
+use crate::{FuncId, TypeId};
+
+use foldhash::{HashMap, HashMapExt};
 
 use std::num::NonZero;
+
+/// An indexed, read-only view into the deduplicated DWARF type data.
+///
+/// `DwView` borrows from a [`DwReader`] and provides efficient
+/// name-based lookups over canonical (deduplicated) types and
+/// functions.
+pub struct DwView<'a> {
+    collector: &'a DwReader<'a>,
+    by_name: HashMap<&'a str, Vec<TypeId>>,
+    funcs_by_name: HashMap<&'a str, Vec<FuncId>>,
+}
+
+impl<'a> DwView<'a> {
+    /// Build an indexed view from a collector.
+    pub fn new(collector: &'a DwReader<'a>) -> Self {
+        // The two name indexes are independent and each scans a different
+        // (large) table, so build them concurrently. `collector` is only read
+        // here, and the type index — which walks every type — dominates, so it
+        // gets its own thread while the function index runs on the caller's.
+        let (by_name, funcs_by_name) = std::thread::scope(|scope| {
+            let types = scope.spawn(|| {
+                let mut by_name: HashMap<&'a str, Vec<TypeId>> = HashMap::new();
+                for (id, raw_ty) in collector.canonical_types() {
+                    if let Some(str_id) = raw_ty.name() {
+                        by_name
+                            .entry(collector.strings.get(str_id))
+                            .or_default()
+                            .push(id);
+                    }
+                }
+                by_name
+            });
+
+            let mut funcs_by_name: HashMap<&'a str, Vec<FuncId>> = HashMap::new();
+            for (&id, func) in &collector.functions {
+                if let Some(str_id) = func.name {
+                    funcs_by_name
+                        .entry(collector.strings.get(str_id))
+                        .or_default()
+                        .push(id);
+                }
+            }
+
+            (
+                types.join().expect("type-index thread panicked"),
+                funcs_by_name,
+            )
+        });
+
+        Self {
+            collector,
+            by_name,
+            funcs_by_name,
+        }
+    }
+
+    // --- Types ---
+
+    /// Find the canonical [`TypeId`]s of all types matching a path.
+    ///
+    /// The path may be a bare name (`"Foo"`) or a fully-qualified path
+    /// (`"foo::bar::Foo"`).
+    pub fn find_all_ids(&self, path: &str) -> Vec<TypeId> {
+        let Some((ns_id, type_name)) = self.resolve_path(path) else {
+            return Vec::new();
+        };
+        self.by_name
+            .get(type_name)
+            .map(|ids| {
+                ids.iter()
+                    .filter(|&&id| {
+                        self.collector
+                            .canonical_type(id)
+                            .is_some_and(|raw| raw.namespace() == ns_id)
+                    })
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    // --- Funcs ---
+
+    /// Get a function by its ID.
+    fn get_func(&self, id: FuncId) -> Func<'a> {
+        let raw = self
+            .collector
+            .functions
+            .get(&id)
+            .expect("FuncId not found in collector");
+        Func::new(raw, self.collector)
+    }
+
+    /// Find a function by path.
+    ///
+    /// The path may be a bare name (`"bar"`) or a fully-qualified path
+    /// (`"foo::bar"`).
+    pub fn find_func(&self, path: &str) -> Option<Func<'a>> {
+        let (ns_id, func_name) = self.resolve_path(path)?;
+        self.funcs_by_name
+            .get(func_name)?
+            .iter()
+            .map(|&id| self.get_func(id))
+            .find(|f| f.namespace_id() == ns_id)
+    }
+
+    /// Iterate over all functions.
+    pub fn functions(&self) -> impl Iterator<Item = (FuncId, Func<'a>)> + '_ {
+        self.collector
+            .functions
+            .iter()
+            .map(|(&id, raw)| (id, Func::new(raw, self.collector)))
+    }
+
+    // --- Namespace queries ---
+
+    /// Resolve a namespace path to a [`Namespace`] wrapper.
+    ///
+    /// The path is a `::` separated sequence such as `"testlib::shapes"`.
+    /// Returns `None` if any segment does not exist.
+    pub fn find_ns(&self, path: &str) -> Option<Namespace<'a>> {
+        let ns_id = self.resolve_ns(path)?;
+        Some(Namespace::new(ns_id, self.collector))
+    }
+
+    // --- Shared ---
+
+    /// Resolve a namespace path such as `"foo::bar"` to its [`NsId`].
+    ///
+    /// Returns `None` if any segment does not exist in the namespace table.
+    fn resolve_ns(&self, path: &str) -> Option<NsId> {
+        let mut ns_id: Option<NsId> = None;
+        for segment in path.split("::") {
+            let str_id = self.collector.strings.find(segment)?;
+            ns_id = Some(self.collector.namespaces.find(ns_id, str_id)?);
+        }
+        ns_id
+    }
+
+    /// Resolve a `"foo::bar::Baz"` path into a namespace and leaf name.
+    ///
+    /// Returns `(None, path)` for bare names, or
+    /// `(Some(ns_id), leaf_name)` for qualified paths. Returns `None`
+    /// if any namespace segment doesn't exist.
+    fn resolve_path<'p>(&self, path: &'p str) -> Option<(Option<NsId>, &'p str)> {
+        let Some(sep) = path.rfind("::") else {
+            return Some((None, path));
+        };
+
+        let ns_path = &path[..sep];
+        let leaf_name = &path[sep + 2..];
+
+        let mut ns_id: Option<NsId> = None;
+        for segment in ns_path.split("::") {
+            let str_id = self.collector.strings.find(segment)?;
+            ns_id = Some(self.collector.namespaces.find(ns_id, str_id)?);
+        }
+
+        Some((ns_id, leaf_name))
+    }
+
+    /// Returns a reference to the underlying collector.
+    pub fn collector(&self) -> &'a DwReader<'a> {
+        self.collector
+    }
+}
 
 // --- Namespace ---
 
@@ -265,14 +433,13 @@ impl<'a> SourceLocView<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::Namespace;
+    use super::{DwView, Namespace};
     use crate::raw_types::{
         Encoding, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember,
         RawStaticVariable, RawStruct, RawType, RawUnion, RawVariant, VariantShape,
     };
     use crate::reader::DwReader;
     use crate::string_table::StrId;
-    use crate::view::DwView;
     use crate::{TypeId, testhelper};
 
     /// Set up the view test fixture. Object bytes are cached across calls;
