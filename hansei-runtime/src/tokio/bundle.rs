@@ -20,7 +20,8 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::{
     BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, SymbolLookup,
-    TaskEntryId, TaskFutureEntry, TypeDef, WalkRole, strip_build_prefix, strip_llvm_suffix,
+    TaskEntryId, TaskFutureEntry, TypeDef, WalkOutcome, WalkRole, strip_build_prefix,
+    strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -66,6 +67,31 @@ pub(crate) enum LeafKind {
     Sleep,
     JoinHandle,
     SemaphoreAcquire,
+}
+
+/// The list a task's recorded scheduler `S` binds it into — see
+/// [`Context::scheduler_kind`].
+#[derive(Copy, Clone, Debug)]
+enum SchedulerKind {
+    LocalSet,
+    Blocking,
+    MultiThread,
+    CurrentThread,
+    Unknown,
+}
+
+/// Whether an `Arc<…>` type name's first parameter is exactly `inner`.
+/// The next character must close the parameter — `,` before the
+/// allocator or `>` without one — so a name cannot take a lookalike
+/// sibling with it, the same exactness the leaf keys keep.
+fn arc_of(name: &str, inner: &str) -> bool {
+    let Some(rest) = name.strip_prefix("alloc::sync::Arc<") else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(inner) else {
+        return false;
+    };
+    rest.starts_with(',') || rest.starts_with('>')
 }
 
 pub(crate) fn leaf_kind(name: &str) -> Option<LeafKind> {
@@ -531,7 +557,7 @@ impl<'b, T: Target> Context<'b, T> {
             let shared = self.find_shared(runtime)?;
             let mut list = self.enumerate_tasks(shared)?;
             for task in &mut list.tasks {
-                task.runtime = index;
+                task.group = index;
             }
             all.tasks.extend(list.tasks);
             all.errors.extend(list.errors);
@@ -696,33 +722,53 @@ impl<'b, T: Target> Context<'b, T> {
                 Ok(_) => continue,
                 Err(e) => return Err(e.context("failed to walk OwnedTasks shards")),
             };
-
-            let mut cur = Some(head_addr);
-            while let Some(addr) = cur {
-                let step = (|| -> Result<Option<u64>> {
-                    ensure!(
-                        self.mappings.contains_addr(addr),
-                        "task pointer {addr:#x} is unmapped"
-                    );
-                    ensure!(visited.insert(addr), "owned-task list cycle at {addr:#x}");
-                    let (task, next) = self.parse_task(addr)?;
-                    tasks.push(task);
-                    Ok(next)
-                })();
-                match step {
-                    Ok(next) => cur = next,
-                    Err(e) => {
-                        errors.push(e.context(format!(
-                            "task walk failed in shard {this_shard} at {addr:#x}"
-                        )));
-                        break;
-                    }
-                }
-            }
+            self.walk_owned_list(
+                head_addr,
+                &mut visited,
+                &mut tasks,
+                &mut errors,
+                &format!("shard {this_shard}"),
+            );
         }
 
         tasks.sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
         Ok(TaskList { tasks, errors })
+    }
+
+    /// Walk one intrusive owned-task list from its head, appending every
+    /// parsed task. Corrupt memory degrades per list: the failing node
+    /// contributes an error under `what`'s name, the rest of the
+    /// caller's enumeration is unaffected. The caller owns the cycle
+    /// guard, so lists that (corruptly) share a node are caught across
+    /// calls.
+    fn walk_owned_list(
+        &self,
+        head_addr: u64,
+        visited: &mut HashSet<u64>,
+        tasks: &mut Vec<Task>,
+        errors: &mut Vec<anyhow::Error>,
+        what: &str,
+    ) {
+        let mut cur = Some(head_addr);
+        while let Some(addr) = cur {
+            let step = (|| -> Result<Option<u64>> {
+                ensure!(
+                    self.mappings.contains_addr(addr),
+                    "task pointer {addr:#x} is unmapped"
+                );
+                ensure!(visited.insert(addr), "owned-task list cycle at {addr:#x}");
+                let (task, next) = self.parse_task(addr)?;
+                tasks.push(task);
+                Ok(next)
+            })();
+            match step {
+                Ok(next) => cur = next,
+                Err(e) => {
+                    errors.push(e.context(format!("task walk failed in {what} at {addr:#x}")));
+                    break;
+                }
+            }
+        }
     }
 
     /// Parse one task from its `Header` address; returns the task and the
@@ -776,7 +822,7 @@ impl<'b, T: Target> Context<'b, T> {
             task_id,
             spawn_location,
             future,
-            runtime: 0,
+            group: 0,
         };
         Ok((task, next))
     }
@@ -1427,11 +1473,21 @@ impl<'b, T: Target> Context<'b, T> {
         let (task_id, state) = self
             .header_task_ref(addr)
             .context("failed to identify the joined task")?;
+        let listed = list.contains(addr);
+        // An unlisted task gets classified by its cell's recorded
+        // scheduler type — a definite statement where the vtable join
+        // resolves, silence where it does not.
+        let kind = if listed {
+            None
+        } else {
+            self.header_unlisted_kind(addr)
+        };
         Ok(WaitTarget::Task {
             addr,
             task_id,
             state,
-            listed: list.contains(addr),
+            listed,
+            kind,
         })
     }
 
@@ -1635,6 +1691,501 @@ impl<'b, T: Target> Context<'b, T> {
         })();
         *self.waker_vtable.borrow_mut() = Some(resolved.clone());
         resolved.map_err(anyhow::Error::msg)
+    }
+
+    // -----------------------------------------------------------------------
+    // Local-set discovery
+    // -----------------------------------------------------------------------
+
+    /// Classify a task entry by its recorded scheduler type — the `S`
+    /// of its `Cell<T, S>`, resolved in the type table. Name-keyed and
+    /// fail safe like the leaf keys: an unrecognized spelling is
+    /// `Unknown`, never a guess.
+    fn scheduler_kind(&self, entry: &TaskFutureEntry) -> SchedulerKind {
+        let Some(ty) = self.view.ty(entry.scheduler) else {
+            return SchedulerKind::Unknown;
+        };
+        let name = ty.name();
+        if arc_of(name, "tokio::task::local::Shared") {
+            SchedulerKind::LocalSet
+        } else if name == "tokio::runtime::blocking::schedule::BlockingSchedule" {
+            SchedulerKind::Blocking
+        } else if arc_of(
+            name,
+            "tokio::runtime::scheduler::multi_thread::handle::Handle",
+        ) {
+            SchedulerKind::MultiThread
+        } else if arc_of(name, "tokio::runtime::scheduler::current_thread::Handle") {
+            SchedulerKind::CurrentThread
+        } else {
+            SchedulerKind::Unknown
+        }
+    }
+
+    /// The task-table entry behind a bare Header pointer, via the
+    /// vtable join — `None` when the future is unknown or ambiguous,
+    /// never a guess.
+    fn header_entry(&self, addr: u64) -> Result<Option<TaskEntryId>> {
+        ensure!(
+            self.mappings.contains_addr(addr),
+            "task Header pointer {addr:#x} is unmapped"
+        );
+        let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
+        let header = Value::read(self.proc, header_ty, addr)?;
+        let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
+        let vtable = self.task_vtable(vtable_addr)?;
+        match self.resolve_future(&vtable) {
+            FutureInfo::Known(known) => Ok(Some(known.entry)),
+            FutureInfo::Unknown { .. } | FutureInfo::Ambiguous { .. } => Ok(None),
+        }
+    }
+
+    /// [`Context::scheduler_kind`] for a bare unlisted Header, as
+    /// [`UnlistedTaskKind`] words it. `None` when the join cannot
+    /// resolve the future or a read on the way fails — the
+    /// classification is extra information, never worth an error.
+    fn header_unlisted_kind(&self, addr: u64) -> Option<UnlistedTaskKind> {
+        let entry_id = self.header_entry(addr).ok().flatten()?;
+        match self.scheduler_kind(self.task_entry(entry_id)) {
+            SchedulerKind::LocalSet => Some(UnlistedTaskKind::LocalSet),
+            SchedulerKind::Blocking => Some(UnlistedTaskKind::Blocking),
+            SchedulerKind::MultiThread => {
+                Some(UnlistedTaskKind::OtherRuntime(RuntimeFlavor::MultiThread))
+            }
+            SchedulerKind::CurrentThread => {
+                Some(UnlistedTaskKind::OtherRuntime(RuntimeFlavor::CurrentThread))
+            }
+            SchedulerKind::Unknown => None,
+        }
+    }
+
+    /// Whether a set's list could be walked at all: the layout rows
+    /// bound against this target's DWARF. False on a binary that never
+    /// links tokio's local module, where every route is moot.
+    pub fn local_sets_possible(&self) -> bool {
+        matches!(
+            self.view
+                .bundle()
+                .walks
+                .entries
+                .get(&WalkRole::LocalOwnedHead)
+                .map(|binding| &binding.outcome),
+            Some(WalkOutcome::Bound { .. })
+        )
+    }
+
+    /// Whether any task instantiation in the bundle is bound into a
+    /// `LocalSet`'s list — a `Cell<T, Arc<task::local::Shared>>`.
+    ///
+    /// This is the gate on the chain sweep, and so on what local-set
+    /// discovery costs at attach. It keys on the *task table* rather
+    /// than on the layout rows above, because the rows are the linker's
+    /// call: an ELF build sweeps the local layout types into the bundle
+    /// of a program that never constructs a set, and gating on them
+    /// would walk every chain of every such target for nothing. A
+    /// program with no local task instantiation has nothing route 1
+    /// could find, whatever its layouts say.
+    fn local_task_entries_exist(&self) -> bool {
+        self.view
+            .bundle()
+            .tasks
+            .entries
+            .iter()
+            .any(|entry| matches!(self.scheduler_kind(entry), SchedulerKind::LocalSet))
+    }
+
+    /// Deterministic `LocalSet` discovery, and enumeration of every
+    /// discovered set's tasks into `list`.
+    ///
+    /// Route 3 reads each LWP's `task::local::CURRENT` anchor —
+    /// populated only while a thread is mid-poll of a set. Route 1
+    /// walks the enumerated tasks' await chains and follows every
+    /// task-shaped pointer that lands outside the list — a
+    /// `JoinHandle`'s target, an armed task waker in a walked waiter
+    /// queue — through its cell's recorded scheduler: an
+    /// `Arc<task::local::Shared>` is the way home, and the set must
+    /// claim the task that led there (its `owned.id` equal to the
+    /// task's own `owner_id`) before it is admitted. Every route
+    /// converges on `Shared` addresses and dedups there.
+    ///
+    /// Each admitted set's list is then walked like one more shard, its
+    /// tasks stamped `first_group + set index` and merged — including
+    /// into further rounds of the sweep, since a local task's own chain
+    /// can reach another set.
+    ///
+    /// Failures degrade per candidate into `list.errors`; the returned
+    /// sets are in admission order, which is the group order their
+    /// tasks are stamped with.
+    pub fn discover_local_tasks(
+        &self,
+        lwps: &[LwpInfo],
+        workers: &[Worker],
+        list: &mut TaskList,
+        first_group: usize,
+    ) -> Vec<LocalSetRef<'b>> {
+        if !self.local_sets_possible() {
+            return Vec::new();
+        }
+        let mut sets: Vec<LocalSetRef<'b>> = Vec::new();
+
+        // The owner → LWP join table: each worker's own thread id, as
+        // tokio's counter numbers it.
+        let mut thread_ids: Vec<(u64, u32)> = Vec::new();
+        for worker in workers {
+            match self.worker_thread_id(worker) {
+                Ok(Some(id)) => thread_ids.push((id, worker.tid)),
+                Ok(None) => {}
+                Err(e) => list.errors.push(e.context(format!(
+                    "failed to read the thread id of LWP {}",
+                    worker.tid
+                ))),
+            }
+        }
+
+        // Route 3 first: nearly free, and a TLS find carries the one
+        // fact route 1 cannot recover — which LWP the set is entered on.
+        match self.local_tls_probe(lwps) {
+            Ok(found) => {
+                for (tid, shared) in found {
+                    self.admit_local_set(
+                        shared,
+                        None,
+                        Some(tid),
+                        LocalSetRoute::Tls,
+                        &thread_ids,
+                        &mut sets,
+                        &mut list.errors,
+                    );
+                }
+            }
+            Err(e) => list
+                .errors
+                .push(e.context("the local-set TLS probe failed")),
+        }
+
+        // Route 1, to a fixed point: enumerate what was admitted, sweep
+        // the chains of what was enumerated, admit what the sweep
+        // found. Both sides are monotone and bounded — sets dedup by
+        // address, tasks by the lists' own cycle guards — so the loop
+        // ends; the round cap is a backstop against nothing real.
+        //
+        // The sweep is what costs anything here, so it runs only where
+        // it could find something: a target with no local task
+        // instantiation still gets its TLS-found sets enumerated above,
+        // and pays no chain walk.
+        let sweep = self.local_task_entries_exist();
+        let mut walked = 0;
+        let mut enumerated = 0;
+        for _round in 0..64 {
+            while enumerated < sets.len() {
+                let set = &sets[enumerated];
+                let group = first_group + enumerated;
+                match self.enumerate_local_tasks(set) {
+                    Ok(mut local) => {
+                        for task in &mut local.tasks {
+                            task.group = group;
+                        }
+                        list.tasks.append(&mut local.tasks);
+                        list.errors.append(&mut local.errors);
+                    }
+                    Err(e) => list.errors.push(e.context(format!(
+                        "failed to enumerate the local set at {:#x}",
+                        set.shared.addr
+                    ))),
+                }
+                enumerated += 1;
+            }
+            if !sweep || walked == list.tasks.len() {
+                break;
+            }
+            let range = walked..list.tasks.len();
+            walked = list.tasks.len();
+            for (addr, route) in self.unlisted_task_pointers(list, range) {
+                self.bootstrap_local_set(addr, route, &thread_ids, &mut sets, &mut list.errors);
+            }
+            if enumerated == sets.len() {
+                break;
+            }
+        }
+        if !sets.is_empty() {
+            list.tasks
+                .sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
+        }
+        sets
+    }
+
+    /// The tokio thread id a worker's `Context` records — what a
+    /// `LocalSet`'s recorded owner joins against. `None` when the row
+    /// did not bind on this bundle or the thread has none assigned.
+    fn worker_thread_id(&self, worker: &Worker) -> Result<Option<u64>> {
+        let info = self.context_info(worker.context_addr)?;
+        Ok(self
+            .walk(WalkRole::ContextThreadId)
+            .try_read::<Option<u64>>(info)?
+            .flatten())
+    }
+
+    /// Route 3: each LWP's `task::local::CURRENT` anchor, resolved the
+    /// way the runtime `CONTEXT` is — the bundle names the static, the
+    /// target's symtab locates it, TLS resolution finds each thread's
+    /// copy. The anchor holds a `Context` only while the thread is
+    /// mid-poll of a set (or inside a user-held `enter` guard), so
+    /// empty everywhere is the ordinary parked shape.
+    fn local_tls_probe(&self, lwps: &[LwpInfo]) -> Result<Vec<(u32, Value<'b>)>> {
+        // A bundle without the static, or whose rows did not bind,
+        // probes nothing; those are recorded outcomes, not failures.
+        let Some(def) = self
+            .view
+            .bundle()
+            .statics
+            .entries
+            .get(&StaticRole::TlsLocalSetKey)
+        else {
+            return Ok(Vec::new());
+        };
+        let Some(local_data_ty) = self.walk_root_ty(WalkRole::LocalTlsCtx) else {
+            return Ok(Vec::new());
+        };
+        let Some(sym) = self.object_symbol(&def.symbol)? else {
+            return Ok(Vec::new());
+        };
+        let mut found = Vec::new();
+        for lwp in lwps {
+            // LWPs the TLS model cannot walk are skipped the way worker
+            // discovery skips them.
+            let Ok(Some(addr)) = self.proc.tls_var_addr(&lwp.regs, &sym) else {
+                continue;
+            };
+            if !self.mappings.contains_addr(addr) {
+                continue;
+            }
+            let step = (|| -> Result<Option<Value<'b>>> {
+                let data = Value::read(self.proc, local_data_ty, addr)?;
+                let Some(ptr) = self
+                    .walk(WalkRole::LocalTlsCtx)
+                    .try_walk(data)?
+                    .and_then(Walked::optional)
+                else {
+                    return Ok(None);
+                };
+                let inner = ptr.deref_ptr(self.proc)?;
+                Ok(Some(self.walk(WalkRole::LocalCtxShared).walk_at(inner)?))
+            })();
+            match step {
+                Ok(Some(shared)) => found.push((lwp.tid, shared)),
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(e.context(format!(
+                        "failed to read the local-set anchor of LWP {}",
+                        lwp.tid
+                    )));
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// The first recorded root type of a bound role — how a probe that
+    /// constructs its own root value (a TLS payload) knows the layout
+    /// to read it with.
+    fn walk_root_ty(&self, role: WalkRole) -> Option<BundleType<'b>> {
+        let binding = self.view.bundle().walks.entries.get(&role)?;
+        if !matches!(binding.outcome, WalkOutcome::Bound { .. }) {
+            return None;
+        }
+        self.view.ty(*binding.roots.first()?)
+    }
+
+    /// The task-Header pointers reachable from the chains of
+    /// `list.tasks[range]` that no enumerated task claims: `JoinHandle`
+    /// targets, and armed task wakers in walked waiter queues. Chain
+    /// and stage failures are not reported here — the sweep is a
+    /// discovery pass, and the analyses that own those chains report
+    /// them.
+    fn unlisted_task_pointers(
+        &self,
+        list: &TaskList,
+        range: std::ops::Range<usize>,
+    ) -> Vec<(u64, LocalSetRoute)> {
+        let mut found = Vec::new();
+        for task in &list.tasks[range] {
+            let Ok(TaskStage::Running(future)) = self.task_stage(task) else {
+                continue;
+            };
+            let chain = self.await_chain(future);
+            match self.wait_target(&chain, list) {
+                Some(Ok(WaitTarget::Task {
+                    addr,
+                    listed: false,
+                    ..
+                })) => found.push((addr, LocalSetRoute::JoinHandle)),
+                Some(Ok(WaitTarget::Semaphore { waiters, .. })) => {
+                    for waiter in waiters {
+                        if let QueuedWaker::Task { addr, .. } = waiter.waker
+                            && !list.contains(addr)
+                        {
+                            found.push((addr, LocalSetRoute::QueuedWaker));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        found
+    }
+
+    /// Route 1's tail: follow one unlisted Header home through its
+    /// cell's scheduler. Not being a local task is the common, silent
+    /// case; only a genuine read failure reports.
+    fn bootstrap_local_set(
+        &self,
+        addr: u64,
+        route: LocalSetRoute,
+        thread_ids: &[(u64, u32)],
+        sets: &mut Vec<LocalSetRef<'b>>,
+        errors: &mut Vec<anyhow::Error>,
+    ) {
+        let step = (|| -> Result<Option<(Value<'b>, u64)>> {
+            ensure!(
+                self.mappings.contains_addr(addr),
+                "task Header pointer {addr:#x} is unmapped"
+            );
+            let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
+            let header = Value::read(self.proc, header_ty, addr)?;
+            let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
+            let vtable = self.task_vtable(vtable_addr)?;
+            let FutureInfo::Known(known) = self.resolve_future(&vtable) else {
+                return Ok(None);
+            };
+            let entry = self.task_entry(known.entry);
+            if !matches!(self.scheduler_kind(entry), SchedulerKind::LocalSet) {
+                return Ok(None);
+            }
+            let cell_ty =
+                self.infra_ty(entry.cell, &format!("the Cell of {}", known.display_name))?;
+            let cell = Value::read(self.proc, cell_ty, addr)?;
+            let scheduler = self.walk(WalkRole::CellScheduler).walk_at(cell)?;
+            let shared = self
+                .arc_data(scheduler)
+                .context("failed to follow the cell's scheduler Arc")?;
+            let owner_id: Option<u64> = self.walk(WalkRole::HeaderOwnerId).read(header)?;
+            let claim = owner_id
+                .ok_or_else(|| anyhow!("the task at {addr:#x} records no owner_id to check"))?;
+            Ok(Some((shared, claim)))
+        })();
+        match step {
+            Ok(Some((shared, claim))) => {
+                self.admit_local_set(shared, Some(claim), None, route, thread_ids, sets, errors);
+            }
+            Ok(None) => {}
+            Err(e) => errors.push(e.context(format!(
+                "failed to follow the unlisted task at {addr:#x} home"
+            ))),
+        }
+    }
+
+    /// Admit a `Shared` some route reached: dedup by address, read the
+    /// set's identity, and hold route 1's finds to the decisive check —
+    /// the set must claim the very task that led there.
+    #[allow(clippy::too_many_arguments)]
+    fn admit_local_set(
+        &self,
+        shared: Value<'b>,
+        claim: Option<u64>,
+        tls_tid: Option<u32>,
+        route: LocalSetRoute,
+        thread_ids: &[(u64, u32)],
+        sets: &mut Vec<LocalSetRef<'b>>,
+        errors: &mut Vec<anyhow::Error>,
+    ) {
+        if sets.iter().any(|set| set.shared.addr == shared.addr) {
+            return;
+        }
+        let step = (|| -> Result<LocalSetRef<'b>> {
+            let owned_id: u64 = self.walk(WalkRole::LocalOwnedId).read(shared)?;
+            if let Some(claim) = claim {
+                ensure!(
+                    claim == owned_id,
+                    "the set's owned-list id {owned_id} does not claim the task \
+                     (owner_id {claim}) that led there"
+                );
+            }
+            let owner: Option<u64> = self.walk(WalkRole::LocalSetOwner).try_read(shared)?;
+            let owner_tid = tls_tid.or_else(|| {
+                owner.and_then(|owner| {
+                    thread_ids
+                        .iter()
+                        .find(|&&(id, _)| id == owner)
+                        .map(|&(_, tid)| tid)
+                })
+            });
+            Ok(LocalSetRef {
+                shared,
+                owned_id,
+                owner,
+                owner_tid,
+                route,
+            })
+        })();
+        match step {
+            Ok(set) => sets.push(set),
+            Err(e) => errors.push(e.context(format!(
+                "found a local set at {:#x} (via {route}) but could not read it",
+                shared.addr
+            ))),
+        }
+    }
+
+    /// Walk a discovered set's `LocalOwnedTasks` list — one more shard
+    /// with a different root: the nodes are ordinary task Headers,
+    /// linked through the same `Trailer.owned` pointers the scheduler's
+    /// shards use. Every node must carry the set's `owned.id` as its
+    /// `Header.owner_id`; a mismatch is reported and the task kept,
+    /// since the list itself is the ground truth for membership.
+    pub fn enumerate_local_tasks(&self, set: &LocalSetRef<'b>) -> Result<TaskList> {
+        let mut tasks = Vec::new();
+        let mut errors = Vec::new();
+        let mut visited = HashSet::default();
+        let what = format!("the local set at {:#x}", set.shared.addr);
+        match self.walk(WalkRole::LocalOwnedHead).walk(set.shared)? {
+            Walked::At(head) => {
+                let head_addr = head
+                    .parse::<u64>(self.proc)
+                    .with_context(|| format!("failed to read the list head of {what}"))?;
+                self.walk_owned_list(head_addr, &mut visited, &mut tasks, &mut errors, &what);
+            }
+            // An empty set.
+            Walked::Inactive(_) | Walked::Null => {}
+        }
+        for task in &tasks {
+            if task.owner_id != Some(set.owned_id) {
+                errors.push(anyhow!(
+                    "the task at {:#x} in {what} carries owner_id {}, not the set's {}",
+                    task.addr.0,
+                    task.owner_id
+                        .map_or("<none>".to_owned(), |id| id.to_string()),
+                    set.owned_id
+                ));
+            }
+        }
+        tasks.sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
+        Ok(TaskList { tasks, errors })
+    }
+
+    /// Cross an `Arc<T>` value to the `T` inside its `ArcInner`: the
+    /// `ptr` member, the deref, the `data` member — the std layout the
+    /// recorded discovery paths (`Context.handle`,
+    /// `local::Context.shared`) spell the same way.
+    ///
+    /// Unlike those, this walks by value rather than by recorded steps,
+    /// because the `Arc` it crosses is a *different type per task cell*
+    /// — the `S` of `Cell<T, S>` — which one recorded binding cannot
+    /// serve. Both hops therefore go through reify's peeling accessors,
+    /// which see through the `NonNull` wrapper whether or not this
+    /// build emitted it as its own type.
+    fn arc_data(&self, arc: Value<'b>) -> Result<Value<'b>> {
+        let inner = arc.member("ptr")?.deref_ptr(self.proc)?;
+        Ok(inner.member("data")?)
     }
 
     // -----------------------------------------------------------------------
