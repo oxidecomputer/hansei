@@ -91,3 +91,8 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker

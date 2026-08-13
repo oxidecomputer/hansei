@@ -90,6 +90,8 @@ enum Terminal {
     /// A boxed slice: a `data_ptr` pointer and a `length`, walkable
     /// element by element.
     Slice,
+    /// A fixed-size array, walkable element by element.
+    Array,
     /// No shape requirement; the consumer's parsing decides.
     Any,
 }
@@ -144,7 +146,10 @@ enum WalkRoot {
     End(WalkRole),
     /// The pointee of the pointer another role's binding landed on.
     Pointee(WalkRole),
-    /// The element of the boxed slice another role's binding landed on.
+    /// The element of the sequence another role's binding landed on — a
+    /// boxed slice's `data_ptr` target, or a fixed-size array's element.
+    /// The read side iterates either with the same `elements()` call, so
+    /// both root a child row here.
     Elem(WalkRole),
 }
 
@@ -208,6 +213,20 @@ static SLEEP_DEADLINE_SPELLINGS: [(Family, Spellings); 3] = [
     (Family::V1_53, tokio_v1_53::sleep_deadline_walk),
 ];
 
+/// The other versioned row: `time::Inner` became an enum over the driver
+/// flavor in 1.49, so the chain from a scheduler handle to the timer
+/// wheel's levels crosses one step more from that release on. Two entries
+/// rather than three because 1.53 left the driver chain alone and a
+/// versioned row takes the highest floor at or below the target — a
+/// `v1_53` entry here would only restate `v1_49`'s spelling, and a future
+/// release that does move the chain is the one that earns a third.
+/// Everything below this row — `Level`, its slots, and the `TimerShared`
+/// nodes they link — has held identically across the supported range.
+static WHEEL_LEVELS_SPELLINGS: [(Family, Spellings); 2] = [
+    (Family::V1_47, tokio_v1_47::wheel_levels_walk),
+    (Family::V1_49, tokio_v1_49::wheel_levels_walk),
+];
+
 /// Every walk declaration, in [`WalkRole::ALL`] order — the report's
 /// order, which a test pins.
 ///
@@ -216,7 +235,7 @@ static SLEEP_DEADLINE_SPELLINGS: [(Family, Spellings); 3] = [
 /// `ptr.pointer`), with [`PeelTo`]/[`FindParam`] where the wrappers vary
 /// by build (atomic shims, the loom mutex flavors).
 fn decls() -> Vec<WalkDecl> {
-    use Terminal::{Aggregate, Any, Enum, Pointer, Slice, Word};
+    use Terminal::{Aggregate, Any, Array, Enum, Pointer, Slice, Word};
     use WalkRoot::{Elem, End, Infra, Leaf, Pointee, TaskCells};
 
     vec![
@@ -966,6 +985,80 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
+        // The timer wheel, as a registry of parked tasks: whatever list
+        // owns a task, a `Sleep` it awaits registers a `TimerShared` in
+        // the runtime's wheel and arms it with the task's own waker. Both
+        // flavor handles spell the driver chain identically, so the union
+        // root serves; the six levels and each level's 64 slots are read
+        // as arrays, element by element, rather than fanned out here.
+        WalkDecl {
+            role: WalkRole::WheelLevels,
+            root: WalkRoot::AnyHandle,
+            terminal: Array,
+            spellings: Row::Versioned(&WHEEL_LEVELS_SPELLINGS),
+            needs: None,
+        },
+        decl(
+            WalkRole::LevelSlots,
+            Elem(WalkRole::WheelLevels),
+            Array,
+            || vec![reach![Named("slot")]],
+        ),
+        // A slot is the intrusive list itself — no lock above it, so
+        // unlike `ShardHead` there is no parameter to search for.
+        decl(
+            WalkRole::SlotHead,
+            Elem(WalkRole::LevelSlots),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("head"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        // The nodes are `TimerShared`s linked through their own
+        // `linked_list::Pointers`, not through `Trailer.owned`: the same
+        // spelling the semaphore's waiters use.
+        decl(
+            WalkRole::TimerSharedNext,
+            Pointee(WalkRole::SlotHead),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("pointers"),
+                    Named("inner"),
+                    Named("value"),
+                    Named("next"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        // The entry's registered waker, landing on the same `RawWaker`
+        // the wait-queue readers (`WakerData`/`WakerVtable`) take over
+        // from — one `AtomicWaker` level above the `UnsafeCell<Option>`
+        // pair `WaiterWaker` starts at.
+        decl(
+            WalkRole::TimerSharedWaker,
+            Pointee(WalkRole::SlotHead),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("state"),
+                    Named("waker"),
+                    Named("waker"),
+                    Named("__0"),
+                    Named("value"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("waker"),
+                ]]
+            },
+        ),
     ]
 }
 
@@ -1387,19 +1480,26 @@ fn resolve_root(
             Roots::Types { types, note } => {
                 let mut out = Vec::new();
                 for (label, ty) in types {
-                    let target = aggregate_members(reader, ty)
-                        .and_then(|members| {
-                            members
-                                .iter()
-                                .find(|m| m.name.map(|n| reader.strings.get(n)) == Some("data_ptr"))
-                        })
-                        .and_then(|m| match reader.canonical_type(m.type_id) {
-                            Some(RawType::Pointer(pointer)) => Some(pointer.target_type_id),
-                            _ => None,
-                        });
+                    // An inline array declares its element type; a boxed
+                    // slice keeps it behind the `data_ptr` half of the fat
+                    // pointer.
+                    let target = match reader.canonical_type(ty) {
+                        Some(RawType::Array(array)) => Some(array.elem_type_id),
+                        _ => aggregate_members(reader, ty)
+                            .and_then(|members| {
+                                members.iter().find(|m| {
+                                    m.name.map(|n| reader.strings.get(n)) == Some("data_ptr")
+                                })
+                            })
+                            .and_then(|m| match reader.canonical_type(m.type_id) {
+                                Some(RawType::Pointer(pointer)) => Some(pointer.target_type_id),
+                                _ => None,
+                            }),
+                    };
                     let Some(target) = target else {
                         return Roots::Broken(vec![format!(
-                            "{label}: {} has no data_ptr pointer to walk elements of",
+                            "{label}: {} is neither an array nor a data_ptr fat pointer \
+                             to walk elements of",
                             type_label(reader, ty)
                         )]);
                     };
@@ -1456,6 +1556,7 @@ fn terminal_ok(reader: &DwReader<'_>, id: TypeId, terminal: Terminal) -> Result<
             Some(RawType::Struct(_) | RawType::Union(_))
         ),
         Terminal::Slice => slice_shaped(reader, id),
+        Terminal::Array => matches!(reader.canonical_type(id), Some(RawType::Array(_))),
         Terminal::Any => true,
     };
     if ok {

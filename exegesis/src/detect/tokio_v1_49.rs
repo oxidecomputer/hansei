@@ -26,6 +26,14 @@ pub(super) fn sleep_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     sleep_record(emitter, id, &entry, true)
 }
 
+/// The walk contract's `Wheel.levels` spelling from this family on: the
+/// shared chain, crossing the `time::Inner` flavor enum the alternative
+/// timer added. 1.53 left the driver chain alone, so this spelling serves
+/// it too — the dispatch row declares no entry of its own for it.
+pub(super) fn wheel_levels_walk() -> Vec<Reach<'static>> {
+    super::tokio::wheel_levels_walk(true)
+}
+
 /// The walk contract's `Sleep.deadline` spelling for this family: the
 /// `Timer` enum over the two timer implementations arrived in 1.49, and
 /// the walk takes whichever variant is live — both carry the cached

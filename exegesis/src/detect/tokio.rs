@@ -850,6 +850,37 @@ pub(super) fn wheel_elapsed(
     emitter.walk(root, &path).map(|(sel, _)| sel)
 }
 
+/// The walk contract's route to the timer wheel's level array, from a
+/// scheduler `Handle` rather than from a timer entry's own — so the
+/// scheduler-enum hop [`wheel_elapsed`] opens with is absent and the rest
+/// of the chain is identical, down to the same `time::Inner` flavoring
+/// the calling family declares (`flavored_inner`, an enum over the driver
+/// flavor from 1.49 on). The wheel keeps its levels in a
+/// `Box<[Level; 6]>`, so the path peels to the pointer and dereferences:
+/// the binding lands on the array itself, whose six elements — and each
+/// level's 64 slots below them — the read side iterates.
+pub(super) fn wheel_levels_walk(flavored_inner: bool) -> Vec<Reach<'static>> {
+    let mut path = reach![
+        Named("driver"),
+        Named("time"),
+        Variant("Some"),
+        Named("__0"),
+        Named("inner"),
+    ];
+    if flavored_inner {
+        path.push(Variant("Traditional"));
+    }
+    path.extend(reach![
+        Named("state"),
+        FindParam,
+        Named("wheel"),
+        Named("levels"),
+        PeelTo(Shape::Pointer),
+        Deref,
+    ]);
+    vec![path]
+}
+
 impl Emitter<'_> {
     /// tokio `Notify` state word: low two bits the notification state, the rest
     /// the `notify_waiters()` generation counter.
