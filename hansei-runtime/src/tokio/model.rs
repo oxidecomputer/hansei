@@ -68,6 +68,70 @@ pub struct RuntimeRef<'b> {
     pub worker_tids: Vec<u32>,
 }
 
+/// One `tokio::task::LocalSet` discovered in the target: the
+/// `task::local::Shared` its task list hangs off — the address every
+/// discovery route converges on — and how it was found. See
+/// [`Context::discover_local_tasks`].
+#[derive(Clone, Debug)]
+pub struct LocalSetRef<'b> {
+    /// The set's `Shared`, read in place; its address is the set's
+    /// identity.
+    pub shared: Value<'b>,
+    /// `LocalOwnedTasks.id`: drawn from the same global counter as the
+    /// scheduler lists' ids, and carried by every task of the set as
+    /// its `Header.owner_id` — the claim enumeration cross-checks.
+    pub owned_id: u64,
+    /// The tokio `ThreadId` counter of the thread the set is pinned to,
+    /// when its row bound.
+    pub owner: Option<u64>,
+    /// The LWP pinned to: the TLS route's thread, or the worker whose
+    /// `Context.thread_id` equals `owner`. `None` when neither answers
+    /// — the owning thread may hold no runtime context at all.
+    pub owner_tid: Option<u32>,
+    /// The route that found the set first.
+    pub route: LocalSetRoute,
+}
+
+/// Which discovery route found a [`LocalSetRef`].
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum LocalSetRoute {
+    /// A `JoinHandle` on an enumerated task's await chain pointed at
+    /// one of the set's tasks.
+    JoinHandle,
+    /// A task waker in a walked waiter queue pointed at one of them.
+    QueuedWaker,
+    /// The thread's `task::local::CURRENT` anchor, populated only while
+    /// a set is being polled (or held entered).
+    Tls,
+}
+
+impl fmt::Display for LocalSetRoute {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::JoinHandle => f.write_str("a JoinHandle held by an enumerated task"),
+            Self::QueuedWaker => f.write_str("a task waker in a walked waiter queue"),
+            Self::Tls => f.write_str("the polling thread's TLS anchor"),
+        }
+    }
+}
+
+/// The class of task an unlisted `Header` belongs to, keyed by the
+/// *type* of its cell's recorded scheduler `S` — a definite statement
+/// from recorded data, never a guess. `None` travels where the future
+/// (and so its `S`) could not be resolved.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum UnlistedTaskKind {
+    /// Bound into a `LocalSet`'s own list — one discovery could not
+    /// enumerate, or the task would be listed.
+    LocalSet,
+    /// A `spawn_blocking` task; no list carries those at all.
+    Blocking,
+    /// Bound into the sharded owned list of a runtime this session did
+    /// not list — an undiscovered runtime, or one excluded by
+    /// `--runtime`.
+    OtherRuntime(RuntimeFlavor),
+}
+
 /// What every worker's parker says, and whether the io driver is held
 /// at all; see [`Context::park_states`].
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -236,10 +300,13 @@ pub struct Task {
     /// (`tokio_unstable` task instrumentation).
     pub spawn_location: Option<Location>,
     pub future: FutureInfo,
-    /// Which runtime owns it: an index into the [`RuntimeRef`] list the
-    /// enumeration merged, stamped by [`Context::enumerate_all_tasks`].
-    /// 0 on the single-runtime targets that are nearly all of them.
-    pub runtime: usize,
+    /// Which group owns it: an index into the merged population's group
+    /// space — the session's [`RuntimeRef`]s first, discovered
+    /// [`LocalSetRef`]s after — stamped by
+    /// [`Context::enumerate_all_tasks`] and
+    /// [`Context::discover_local_tasks`]. 0 on the single-runtime,
+    /// no-local-set targets that are nearly all of them.
+    pub group: usize,
 }
 
 /// The task's concrete future type, resolved via the symbol join — or not.
@@ -399,9 +466,13 @@ pub enum WaitTarget {
         state: TaskState,
         /// Whether the enumerated task list contains the target. False
         /// with an incomplete state means the task is alive somewhere
-        /// this session cannot list: the blocking pool, or another
-        /// runtime.
+        /// this session cannot list: the blocking pool, another
+        /// runtime, or a local set discovery could not enumerate.
         listed: bool,
+        /// Which of those, when the vtable join could resolve the
+        /// task's future and read its recorded scheduler type.
+        /// Meaningful only when `listed` is false.
+        kind: Option<UnlistedTaskKind>,
     },
     /// `batch_semaphore::Acquire`: queued on the semaphore that backs
     /// tokio's Mutex, RwLock, and Semaphore.
@@ -547,6 +618,7 @@ impl fmt::Display for WaitTarget {
                 addr,
                 state,
                 listed,
+                kind,
             } => {
                 match task_id {
                     Some(id) => write!(f, "task {id} (JoinHandle)")?,
@@ -555,16 +627,26 @@ impl fmt::Display for WaitTarget {
                 // Either way the listings cannot show it: complete
                 // means off the owned list, alive only through this
                 // handle; alive-but-unlisted means it runs somewhere
-                // this session does not enumerate.
+                // this session does not enumerate — named definitely
+                // when its cell's recorded scheduler type says which.
                 if state.lifecycle() == Lifecycle::Complete {
                     write!(f, " — already complete, awaiting consumption")?;
                 } else if !listed {
-                    write!(
-                        f,
-                        " — {}, but not in the scheduler's owned tasks \
-                         (a spawn_blocking task, or another runtime's)",
-                        state.lifecycle()
-                    )?;
+                    let where_ = match kind {
+                        Some(UnlistedTaskKind::Blocking) => {
+                            "a spawn_blocking task (no task list carries those)".to_owned()
+                        }
+                        Some(UnlistedTaskKind::OtherRuntime(flavor)) => {
+                            format!("a task of a {flavor} runtime this session did not list")
+                        }
+                        Some(UnlistedTaskKind::LocalSet) => {
+                            "a task of a local set this session could not enumerate".to_owned()
+                        }
+                        None => "not in the scheduler's owned tasks \
+                             (a spawn_blocking task, or another runtime's)"
+                            .to_owned(),
+                    };
+                    write!(f, " — {}, {where_}", state.lifecycle())?;
                 }
                 Ok(())
             }

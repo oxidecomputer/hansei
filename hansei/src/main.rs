@@ -530,6 +530,10 @@ pub struct Session<'b> {
     /// flavor. One on nearly every real target; current_thread makes
     /// more ordinary, and the task list below merges them all.
     runtimes: Vec<bundle::RuntimeRef<'b>>,
+    /// Every `LocalSet` discovery reached, in the group order their
+    /// tasks are stamped with (after the runtimes). Empty on targets
+    /// whose bundle shows no local-set machinery linked.
+    local_sets: Vec<bundle::LocalSetRef<'b>>,
     tasks: bundle::TaskList,
     /// Task extents, the sub-executor census and the wait analysis,
     /// built on first use: a core does not change, so the address→task
@@ -590,7 +594,11 @@ impl<'b> Session<'b> {
             }
             runtimes = vec![runtimes.swap_remove(index)];
         }
-        let tasks = ctx.enumerate_all_tasks(&runtimes)?;
+        let mut tasks = ctx.enumerate_all_tasks(&runtimes)?;
+        // Local sets merge into the same population, tagged as groups
+        // after the runtimes. On targets whose bundle shows no
+        // local-set machinery this is free — no chain is walked.
+        let local_sets = ctx.discover_local_tasks(&lwps, &workers, &mut tasks, runtimes.len());
         print_warnings(&tasks.errors)?;
 
         Ok(Session {
@@ -603,6 +611,7 @@ impl<'b> Session<'b> {
             workers,
             lwps: lwps.len(),
             runtimes,
+            local_sets,
             tasks,
             extents: OnceCell::new(),
             census: OnceCell::new(),
@@ -634,18 +643,25 @@ impl<'b> Session<'b> {
             .find(|(_, r)| r.worker_tids.contains(&tid))
     }
 
-    /// The per-runtime tags the listings mark tasks with: one label per
-    /// discovered runtime when there is more than one, empty — no tags —
-    /// for the single-runtime targets that are nearly all of them.
-    fn runtime_tags(&self) -> Vec<String> {
-        if self.runtimes.len() <= 1 {
+    /// The per-group tags the listings mark tasks with: one label per
+    /// discovered runtime, then one per discovered local set, in the
+    /// group order tasks are stamped with — empty (no tags) when the
+    /// whole population is one runtime's, which is nearly every target.
+    fn group_tags(&self) -> Vec<String> {
+        if self.runtimes.len() + self.local_sets.len() <= 1 {
             return Vec::new();
         }
-        self.runtimes
+        let mut tags: Vec<String> = self
+            .runtimes
             .iter()
             .enumerate()
             .map(|(i, r)| format!("{i} ({})", r.flavor))
-            .collect()
+            .collect();
+        tags.extend(self.local_sets.iter().map(|set| match set.owner_tid {
+            Some(tid) => format!("local set at {:#x} (lwp {tid})", set.shared.addr),
+            None => format!("local set at {:#x}", set.shared.addr),
+        }));
+        tags
     }
 }
 
@@ -784,6 +800,24 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
             "runtime {i}: {}, on lwp {}",
             rt.flavor,
             tids.join(", ")
+        )?;
+    }
+    for (i, set) in session.local_sets.iter().enumerate() {
+        let owned = session
+            .tasks
+            .tasks
+            .iter()
+            .filter(|t| t.group == session.runtimes.len() + i)
+            .count();
+        let plural = if owned == 1 { "" } else { "s" };
+        let lwp = match set.owner_tid {
+            Some(tid) => format!(" on lwp {tid},"),
+            None => String::new(),
+        };
+        writeln!(
+            out,
+            "local set {i}: at {:#x},{lwp} {owned} task{plural}, found via {}",
+            set.shared.addr, set.route
         )?;
     }
     Ok(())

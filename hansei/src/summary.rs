@@ -802,7 +802,7 @@ mod tests {
                 decl: None,
                 symbol: "_ZN1x".to_string(),
             }),
-            runtime: 0,
+            group: 0,
         }
     }
 

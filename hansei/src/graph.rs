@@ -374,7 +374,7 @@ mod graph_tests {
             task_id: Some(id),
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
-            runtime: 0,
+            group: 0,
         }
     }
 
@@ -406,6 +406,7 @@ mod graph_tests {
             task_id: Some(id),
             state: TaskState(REF_ONE),
             listed: true,
+            kind: None,
         }
     }
 

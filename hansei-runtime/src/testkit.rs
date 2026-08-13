@@ -38,6 +38,9 @@ pub fn tasks<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> TaskList {
     let lwps = snapshot.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
     let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
-    ctx.enumerate_all_tasks(&runtimes)
-        .expect("the owned-task walk")
+    let mut list = ctx
+        .enumerate_all_tasks(&runtimes)
+        .expect("the owned-task walk");
+    ctx.discover_local_tasks(&lwps, &workers, &mut list, runtimes.len());
+    list
 }

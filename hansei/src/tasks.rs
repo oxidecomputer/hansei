@@ -429,7 +429,7 @@ pub(crate) fn exec_tasks(
 
     print_tasks(
         list,
-        &session.runtime_tags(),
+        &session.group_tags(),
         &polling,
         &census.held,
         &census.sets,
@@ -449,8 +449,9 @@ pub(crate) fn exec_tasks(
 /// under.
 /// `tasks` narrows the listing to the named tasks, and is empty for the
 /// whole list.
-/// `runtime_tags` labels each task's runtime on the targets holding
-/// more than one, and is empty — no row — for the rest.
+/// `group_tags` labels each task's group — its runtime, or the local
+/// set that owns it — on the targets holding more than one, and is
+/// empty — no row — for the rest.
 ///
 /// It takes what it prints rather than a session so the offline tests
 /// can drive it, the census as its flat lists so a test can lay out a
@@ -458,7 +459,7 @@ pub(crate) fn exec_tasks(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn print_tasks(
     list: &bundle::TaskList,
-    runtime_tags: &[String],
+    group_tags: &[String],
     polling: &HashMap<u64, u32>,
     census_held: &[census::HeldFuture],
     census_sets: &[census::FutureSet],
@@ -498,7 +499,7 @@ pub(crate) fn print_tasks(
         let id = task_id(list, index);
         writeln!(out, "Task {id}: {}", future_name(&task.future))?;
         writeln!(out, "    State: {}", task_state(task, polling))?;
-        if let Some(tag) = runtime_tags.get(task.runtime) {
+        if let Some(tag) = group_tags.get(task.group) {
             writeln!(out, "    Runtime: {tag}")?;
         }
         // Every block carries every row, so the two source locations sit

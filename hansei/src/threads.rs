@@ -40,13 +40,15 @@ pub(crate) fn exec_threads(
             writeln!(out)?;
         }
         // Which runtime the thread runs is only worth a tag when the
-        // target holds more than one.
-        let tag = match session.runtimes.len() {
-            0 | 1 => String::new(),
-            _ => match session.runtime_of(worker.tid) {
+        // listings tag their groups at all — more than one runtime, or
+        // a local set sharing the population.
+        let tag = if session.group_tags().is_empty() {
+            String::new()
+        } else {
+            match session.runtime_of(worker.tid) {
                 Some((index, rt)) => format!("  runtime {index} ({})", rt.flavor),
                 None => String::new(),
-            },
+            }
         };
         writeln!(out, "LWP {}  {}{tag}", worker.tid, polling(session, worker))?;
 
