@@ -1523,6 +1523,30 @@ fn test_census_counts_the_target() {
     });
 }
 
+/// A census narrowed to sections prints those sections and no others,
+/// and the ones it does print are the same rows the whole page carries.
+#[test]
+fn test_census_prints_only_the_sections_named() {
+    let bundle = fixtures().bundle("sleep-join");
+    with_core("sleep-join", |core| {
+        let threads = hansei_ok(&bundle, core, "census --threads");
+        assert!(threads.starts_with("Threads: "), "{threads}");
+        assert!(!threads.contains("Tasks: "), "{threads}");
+        assert!(!threads.contains("Futures: "), "{threads}");
+
+        // Two sections at once, by their short flags: one page with one
+        // blank line in it, and neither section short of what the whole
+        // census prints for it.
+        let both = hansei_ok(&bundle, core, "census -tf");
+        assert!(
+            both.starts_with("Tasks: 2 owned by the runtime\n"),
+            "{both}"
+        );
+        assert!(!both.contains("Threads: "), "{both}");
+        assert!(both.contains("\n\nFutures: 2 in flight, "), "{both}");
+    });
+}
+
 /// What a set holds is counted apart from what a frame holds, with the
 /// same split `tasks --futures` lists: three children in flight, and
 /// two futures held off the driver's chain beside them.

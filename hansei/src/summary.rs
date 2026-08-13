@@ -65,16 +65,61 @@ pub struct Facts<'a> {
     pub sets: &'a [FutureSet],
 }
 
+/// Which of the three sections to print.
+#[derive(Clone, Copy)]
+pub struct Sections {
+    pub threads: bool,
+    pub tasks: bool,
+    pub futures: bool,
+}
+
+impl Sections {
+    /// The sections the flags name. Naming none is not asking for an
+    /// empty census: it is asking for the whole one, which is what the
+    /// command printed before there were flags to narrow it.
+    pub fn select(threads: bool, tasks: bool, futures: bool) -> Self {
+        let all = !(threads || tasks || futures);
+        Self {
+            threads: threads || all,
+            tasks: tasks || all,
+            futures: futures || all,
+        }
+    }
+}
+
 /// Print the census.
 ///
 /// `top` bounds every "most of them are this" listing; the rows past it
 /// are counted rather than dropped silently.
-pub fn print(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
-    threads(facts, out)?;
-    writeln!(out)?;
-    tasks(facts, top, out)?;
-    writeln!(out)?;
-    futures(facts, top, out)
+pub fn print(
+    facts: &Facts<'_>,
+    sections: Sections,
+    top: usize,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    // The blank line goes *between* sections rather than after each, so
+    // that a census narrowed to one section is a page in its own right
+    // and not the whole page with the other two cut out of it.
+    let mut printed = false;
+    let mut separate = |out: &mut dyn io::Write| -> Result<()> {
+        if std::mem::replace(&mut printed, true) {
+            writeln!(out)?;
+        }
+        Ok(())
+    };
+    if sections.threads {
+        separate(out)?;
+        threads(facts, out)?;
+    }
+    if sections.tasks {
+        separate(out)?;
+        tasks(facts, top, out)?;
+    }
+    if sections.futures {
+        separate(out)?;
+        futures(facts, top, out)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------
@@ -794,11 +839,16 @@ mod tests {
         }
     }
 
-    /// Print a census over facts a test laid out, and hand back the
-    /// page.
+    /// Print a whole census over facts a test laid out, and hand back
+    /// the page.
     fn census(facts: &Facts<'_>, top: usize) -> String {
+        sections(facts, Sections::select(false, false, false), top)
+    }
+
+    /// The same, narrowed to the sections named.
+    fn sections(facts: &Facts<'_>, sections: Sections, top: usize) -> String {
         let mut out = Vec::new();
-        print(facts, top, &mut out).unwrap();
+        print(facts, sections, top, &mut out).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -1207,5 +1257,52 @@ mod tests {
             ),
             "{page}"
         );
+    }
+
+    /// A census names the sections it was asked for and nothing else,
+    /// with the blank line between them rather than around them — so a
+    /// narrowed page starts and ends on a section of its own.
+    #[test]
+    fn test_named_sections_print_alone() {
+        let list = TaskList {
+            tasks: vec![task(1, 0, "one::fut", "src/a.rs")],
+            errors: Vec::new(),
+        };
+        let waits = vec![wait(1, Some(timer(9, 1)), 2)];
+        let mut facts = facts(&list, &waits);
+        facts.lwps = 1;
+        facts.runtime = vec![Thread {
+            tid: 11,
+            worker: Some(0),
+            polling: None,
+        }];
+
+        let only_tasks = sections(&facts, Sections::select(false, true, false), 5);
+        assert!(
+            only_tasks.starts_with("Tasks: 1 owned by the runtime\n"),
+            "{only_tasks}"
+        );
+        assert!(!only_tasks.contains("Threads:"), "{only_tasks}");
+        assert!(!only_tasks.contains("Futures:"), "{only_tasks}");
+        assert!(!only_tasks.contains("\n\n"), "{only_tasks}");
+
+        // Two of them: one blank line, between the two headings and
+        // nowhere else.
+        let two = sections(&facts, Sections::select(true, false, true), 5);
+        let headings: Vec<&str> = two
+            .split("\n\n")
+            .map(|s| s.lines().next().unwrap())
+            .collect();
+        assert_eq!(headings.len(), 2, "{two}");
+        assert!(headings[0].starts_with("Threads: "), "{two}");
+        assert!(headings[1].starts_with("Futures: "), "{two}");
+    }
+
+    /// Naming no section is naming all three, which is the whole census
+    /// the command printed before it had flags.
+    #[test]
+    fn test_no_section_named_prints_all_three() {
+        let all = Sections::select(false, false, false);
+        assert!(all.threads && all.tasks && all.futures);
     }
 }

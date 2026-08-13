@@ -548,26 +548,65 @@ pub(crate) fn print_tasks(
 
 /// Gather what a census counts and print it.
 ///
-/// The two analyses it rests on — what every task waits on, and the
-/// futures off those tasks' chains — are the session's cached ones, so
-/// a census pays for both walks and every later command that wants
-/// either pays for neither.
+/// Only what `sections` asks for is gathered, since what a census costs
+/// is the gathering: the wait analysis the task section counts, the
+/// future census the future section counts, and the target reads the
+/// thread section makes. Both walks are the session's cached ones, so a
+/// census pays for the ones it prints and every later command that
+/// wants either pays for neither.
 pub(crate) fn exec_census(
     session: &Session<'_>,
+    sections: summary::Sections,
     top: usize,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let analysis = session.analysis();
-    let census = session.census();
-    print_warnings(analysis.errors.iter().chain(&census.errors))?;
+    // The future section counts the depth of every chain the task
+    // section walks, so it wants the analysis too.
+    let analysis = (sections.tasks || sections.futures).then(|| session.analysis());
+    let census = sections.futures.then(|| session.census());
+    print_warnings(
+        analysis
+            .iter()
+            .flat_map(|analysis| &analysis.errors)
+            .chain(census.iter().flat_map(|census| &census.errors)),
+    )?;
     // As `tasks --futures`: a walk that hit a depth limit looks like
     // completeness in a count, so it says so.
-    warn_census_capped(census.capped, "counted")?;
+    if let Some(census) = census {
+        warn_census_capped(census.capped, "counted")?;
+    }
 
-    // The two reads a census makes of its own: which worker each thread
-    // is running, and what every worker's parker says. Neither is worth
-    // failing the command over — a census without them still counts
-    // everything else — so a failure costs its own line and warns.
+    let (runtime, parks, pool) = if sections.threads {
+        (
+            runtime_threads(session)?,
+            optional(session.ctx.park_states(session.handle), "park state")?,
+            optional(session.ctx.blocking_pool(session.handle), "blocking pool")?,
+        )
+    } else {
+        (Vec::new(), None, None)
+    };
+
+    let facts = summary::Facts {
+        lwps: session.lwps,
+        runtime,
+        parks,
+        pool,
+        tasks: &session.tasks,
+        waits: analysis.map(|analysis| &analysis.waits[..]).unwrap_or(&[]),
+        held: census.map(|census| &census.held[..]).unwrap_or(&[]),
+        sets: census.map(|census| &census.sets[..]).unwrap_or(&[]),
+    };
+    summary::print(&facts, sections, top, out)
+}
+
+/// The threads holding a tokio `Context`, each with the worker it runs
+/// and the task it is polling.
+///
+/// This is the read a census makes of its own: which worker each thread
+/// is running. It is not worth failing the command over — a census
+/// without it still counts everything else — so a failure costs the
+/// thread its worker and warns.
+fn runtime_threads(session: &Session<'_>) -> Result<Vec<summary::Thread>> {
     let mut runtime = Vec::new();
     for worker in &session.workers {
         let index = match session.ctx.worker_context(worker) {
@@ -604,20 +643,7 @@ pub(crate) fn exec_census(
             }),
         });
     }
-    let parks = optional(session.ctx.park_states(session.handle), "park state")?;
-    let pool = optional(session.ctx.blocking_pool(session.handle), "blocking pool")?;
-
-    let facts = summary::Facts {
-        lwps: session.lwps,
-        runtime,
-        parks,
-        pool,
-        tasks: &session.tasks,
-        waits: &analysis.waits,
-        held: &census.held,
-        sets: &census.sets,
-    };
-    summary::print(&facts, top, out)
+    Ok(runtime)
 }
 
 /// A census section that is worth having and not worth failing over:

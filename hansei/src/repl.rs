@@ -297,3 +297,36 @@ fn history_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".hansei_history"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The grammar is built only once a session has attached, so a
+    /// command that declares the same short flag twice would panic
+    /// against a real core and nowhere else. clap's own check says so
+    /// here instead.
+    #[test]
+    fn test_the_command_grammar_is_well_formed() {
+        Line::command().debug_assert();
+    }
+
+    /// The census sections are flags rather than a value, so several of
+    /// them can be asked for at once — including bundled behind one `-`.
+    #[test]
+    fn test_census_takes_several_sections_at_once() {
+        let Command::Census {
+            threads,
+            tasks,
+            futures,
+            top,
+        } = Line::try_parse_from(["census", "-Tf", "--top", "9"])
+            .expect("census takes its section flags")
+            .command
+        else {
+            panic!("census parsed as another command");
+        };
+        assert!(threads && futures && !tasks);
+        assert_eq!(top, 9);
+    }
+}
