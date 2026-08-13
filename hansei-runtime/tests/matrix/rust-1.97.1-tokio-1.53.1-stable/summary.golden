@@ -97,6 +97,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: simple-await
 
@@ -181,6 +186,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: nested-await
 
@@ -265,6 +275,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: dyn-future
 
@@ -361,6 +376,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: select-combinator
 
@@ -459,6 +479,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: many-tasks
 
@@ -541,6 +566,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: sleep-join
 
@@ -635,6 +665,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: channels
 
@@ -729,6 +764,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: unordered
 
@@ -814,6 +854,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: joinset
 
@@ -910,6 +955,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: ct-runtime
 
@@ -1004,6 +1054,11 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 
 program: local-set
 
@@ -1112,4 +1167,9 @@ ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
 ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
 

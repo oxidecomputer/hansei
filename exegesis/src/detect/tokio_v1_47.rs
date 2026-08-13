@@ -156,6 +156,13 @@ pub(super) fn sleep_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
     sleep_record(emitter, id, &reach![Named("entry")], false)
 }
 
+/// The walk contract's `Wheel.levels` spelling for this family: the
+/// shared chain over the unflavored `time::Inner` this family's releases
+/// still spell as a plain struct.
+pub(super) fn wheel_levels_walk() -> Vec<Reach<'static>> {
+    super::tokio::wheel_levels_walk(false)
+}
+
 /// The walk contract's `Sleep.deadline` spelling for this family: `Sleep`'s
 /// `entry` is the `TimerEntry` bare, and the deadline `Instant` it caches
 /// peels through std's newtype chain to the `Timespec` inside. (tokio 1.49

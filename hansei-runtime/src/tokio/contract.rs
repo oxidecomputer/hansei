@@ -155,6 +155,11 @@ pub fn classify(role: WalkRole) -> Class {
         // degrades without.
         ContextThreadId | CellScheduler | LocalOwnedId | LocalOwnedHead | LocalSetOwner
         | LocalTlsCtx | LocalCtxShared => Class::Optional,
+        // The timer-wheel harvest: a registry of parked tasks whatever
+        // list owns them, and so another way home to a `LocalSet`. A
+        // runtime built without the time driver has no wheel at all, so
+        // these degrade like the leaf readers.
+        WheelLevels | LevelSlots | SlotHead | TimerSharedNext | TimerSharedWaker => Class::Optional,
     }
 }
 

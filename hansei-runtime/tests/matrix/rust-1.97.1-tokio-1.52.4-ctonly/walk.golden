@@ -1,5 +1,5 @@
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 23 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 23 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -77,4 +77,9 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49; no multi_thread Handle)
+  ok      wheel::Level.slot (no multi_thread Handle)
+  ok      wheel::Slot.head (no multi_thread Handle)
+  ok      TimerShared.next (no multi_thread Handle)
+  ok      TimerShared.waker (no multi_thread Handle)
 

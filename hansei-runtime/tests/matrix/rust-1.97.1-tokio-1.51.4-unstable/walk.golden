@@ -1,5 +1,5 @@
 program: futurelock
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 15 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 15 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -77,9 +77,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: simple-await
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 30 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 30 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -157,9 +162,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: nested-await
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 30 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 30 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -237,9 +247,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: dyn-future
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 24 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 24 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -317,9 +332,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: select-combinator
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 30 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 30 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -397,9 +417,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: many-tasks
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 31 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 31 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -477,9 +502,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: sleep-join
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 27 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 27 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -557,9 +587,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: channels
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 18 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 18 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -637,9 +672,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: unordered
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 27 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 27 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -717,9 +757,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: joinset
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 12 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 12 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -797,9 +842,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: ct-runtime
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 15 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 15 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -877,9 +927,14 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   absent  local::Shared.owner — no tokio::task::local::Shared… type in the bundle (the target does not reach one)
   absent  LocalData.ctx — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
   absent  local::Context.shared — no tokio::task::local::LocalData… type in the bundle (the target does not reach one)
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 
 program: local-set
-walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0 broken, 9 absent
+walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 82 entries, 0 broken, 9 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -957,4 +1012,9 @@ walk contract (tokio 1.51.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 77 entries, 0
   ok      local::Shared.owner
   ok      LocalData.ctx
   ok      local::Context.shared
+  ok      time::Wheel.levels (family v1_49)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
 

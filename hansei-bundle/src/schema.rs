@@ -1303,6 +1303,11 @@ walk_roles! {
     LocalSetOwner = "local::Shared.owner",
     LocalTlsCtx = "LocalData.ctx",
     LocalCtxShared = "local::Context.shared",
+    WheelLevels = "time::Wheel.levels",
+    LevelSlots = "wheel::Level.slot",
+    SlotHead = "wheel::Slot.head",
+    TimerSharedNext = "TimerShared.next",
+    TimerSharedWaker = "TimerShared.waker",
 }
 
 /// What binding one walk role against the target's DWARF concluded.
