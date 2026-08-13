@@ -1,0 +1,72 @@
+program: ct-runtime
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 69 entries, 0 broken, 17 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  ok      Context.current_task_id
+  absent  Context.handle — the target has no multi_thread scheduler compiled in
+  ok      Context.handle.current_thread
+  absent  Context.scheduler — the target has no multi_thread scheduler compiled in
+  ok      Context.scheduler.current_thread
+  absent  worker::Context.index — the target has no multi_thread scheduler compiled in
+  ok      current_thread::Context.core
+  ok      current_thread::Core.driver
+  ok      Handle.shared (no multi_thread Handle)
+  absent  Shared.remotes — the target has no multi_thread scheduler compiled in
+  absent  Remote.unpark — the target has no multi_thread scheduler compiled in
+  absent  parker::Inner.state — the target has no multi_thread scheduler compiled in
+  absent  parker::Inner.driver_lock — the target has no multi_thread scheduler compiled in
+  ok      current_thread::Shared.woken
+  ok      Handle.blocking_metrics (no multi_thread Handle)
+  ok      SpawnerMetrics.num_threads (no multi_thread Handle)
+  ok      SpawnerMetrics.num_idle_threads (no multi_thread Handle)
+  ok      SpawnerMetrics.queue_depth (no multi_thread Handle)
+  ok      Shared.owned_lists (no multi_thread Handle)
+  ok      Shard.head (no multi_thread Handle)
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Location.file (spelling 1 of 3)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (2 cells)
+  ok      Cell.stage_running (2 cells)
+  ok      Cell.stage_finished (2 cells)
+  ok      Cell.stage_consumed (2 cells)
+  ok      Cell.trailer (2 cells)
+  ok      Cell.task_id (2 cells)
+  ok      Sleep.deadline (family v1_49)
+  ok      Sleep.deadline.tv_sec
+  ok      Sleep.deadline.tv_nsec
+  ok      JoinHandle.raw
+  ok      Acquire.semaphore
+  ok      Acquire.num_permits
+  ok      Acquire.node
+  ok      Acquire.node.state
+  ok      Acquire.queued
+  ok      Semaphore.permits
+  ok      Semaphore.queue_head
+  ok      Waiter.state
+  ok      Waiter.next
+  ok      Waiter.waker
+  ok      RawWaker.data
+  ok      RawWaker.vtable
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
+

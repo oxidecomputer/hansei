@@ -64,6 +64,7 @@ load_manifest() {
                 else if (sect == "toolchain" && $0 ~ /^versions/) v = "TC_VERS"
                 else if (sect == "cells" && $0 ~ /^no_unstable_tokio/) v = "NU_ROLES"
                 else if (sect == "cells" && $0 ~ /^secondary_toolchain_tokio/) v = "ST_ROLES"
+                else if (sect == "cells" && $0 ~ /^ct_only_tokio/) v = "CT_ROLES"
                 else next
                 printf "%s=\"", v
                 for (i = 2; i <= n; i += 2) printf "%s%s", (i > 2 ? " " : ""), q[i]
@@ -77,6 +78,7 @@ load_manifest() {
     read -ra TOOLCHAINS <<<"$TC_VERS"
     read -ra NU_LIST <<<"${NU_ROLES:-}"
     read -ra ST_LIST <<<"${ST_ROLES:-}"
+    read -ra CT_LIST <<<"${CT_ROLES:-}"
 }
 
 resolve_role() {
@@ -90,7 +92,8 @@ resolve_role() {
 
 # One cell name per line, mirroring matrix.rs's enumeration exactly:
 # the whole tokio axis on the primary toolchain with the cfg on, then
-# the role-trimmed secondary axes, deduplicated per role list.
+# the role-trimmed secondary axes, deduplicated per role list, then the
+# features-limited ct-only cells.
 enumerate_cells() {
     local v r tc seen
     for v in "${TOKIO_VERSIONS[@]}"; do
@@ -112,6 +115,13 @@ enumerate_cells() {
             seen="$seen$v "
             echo "rust-$tc-tokio-$v-unstable"
         done
+    done
+    seen=" "
+    for r in "${CT_LIST[@]}"; do
+        v=$(resolve_role "$r")
+        case $seen in *" $v "*) continue ;; esac
+        seen="$seen$v "
+        echo "rust-$P_TC-tokio-$v-ctonly"
     done
 }
 
