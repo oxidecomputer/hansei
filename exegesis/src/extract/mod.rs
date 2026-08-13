@@ -754,6 +754,28 @@ fn extract_from_view(
         em.emit(id);
     }
 
+    // The local-set types the walk binder's leaf rows root at.
+    // `local::Shared` is normally swept in through the local task cells'
+    // scheduler parameter; emitting it — and the `CURRENT` thread-local's
+    // `LocalData`, which nothing else references — by name also covers a
+    // target holding a `LocalSet` nothing was spawned onto. The emission
+    // is keyed on the `CURRENT` static having been found in the symtab,
+    // not on the types existing in DWARF: type DIEs for tokio's local
+    // module survive in most binaries whether or not any LocalSet code is
+    // linked, and rows bound against a type no code uses would turn the
+    // static's expected absence into reported breakage. The symbol is
+    // linked exactly when the machinery is.
+    if statics.contains_key(&crate::bundle::StaticRole::TlsLocalSetKey) {
+        for name in [
+            "tokio::task::local::Shared",
+            "tokio::task::local::LocalData",
+        ] {
+            for id in view.find_all_ids(name) {
+                em.emit(reader.canonicalize(id));
+            }
+        }
+    }
+
     // Bind the walk contract against this target's DWARF. Runs after every
     // root above is emitted — the binder's leaf scan reads the emitted-type
     // map, and its recorded roots are bundle ids — and before `em.finish()`,

@@ -49,6 +49,13 @@ const ACQUIRE: &str = "tokio::sync::batch_semaphore::Acquire";
 const FUTURES_UNORDERED: &str = "futures_util::stream::futures_unordered::FuturesUnordered<";
 /// The by-value type every join set is recognized as.
 const JOIN_SET: &str = "tokio::task::join_set::JoinSet<";
+/// A `LocalSet`'s shared state — the root of its own task list. Reached
+/// transitively from local task cells (whose scheduler `S` is
+/// `Arc<Shared>`) and emitted by name for a set nothing was spawned onto.
+const LOCAL_SHARED: &str = "tokio::task::local::Shared";
+/// The `task::local::CURRENT` thread-local's payload, emitted by name —
+/// nothing else references it.
+const LOCAL_DATA: &str = "tokio::task::local::LocalData";
 
 /// Whether `name` is a type a leaf key names. A key ending in `<` is a
 /// generic: the prefix of every monomorphization's name. Any other key
@@ -226,6 +233,16 @@ fn decls() -> Vec<WalkDecl> {
                     Named("value"),
                 ]]
             },
+        ),
+        // Which thread the runtime takes this one for — tokio's own
+        // NonZeroU64 counter, the same `Cell<Option<…>>` shape as the
+        // task id above. It is what joins a `LocalSet`'s recorded owner
+        // to an LWP.
+        decl(
+            WalkRole::ContextThreadId,
+            Infra(InfraRoot::Context),
+            Any,
+            || vec![reach![Named("thread_id"), Named("value"), Named("value")]],
         ),
         flavor_decl(
             WalkRole::WorkerHandle,
@@ -661,6 +678,14 @@ fn decls() -> Vec<WalkDecl> {
         decl(WalkRole::CellTaskId, TaskCells, Any, || {
             vec![reach![Named("core"), Named("task_id"), PeelTo(WORD)]]
         }),
+        // The scheduler `S` stored in every cell — the way home from a
+        // task found outside every enumerated list: a local task's `S`
+        // is the `Arc<local::Shared>` that owns its whole set. One
+        // recorded path serves every cell because only the *type* of
+        // the member differs per entry, never its spelling.
+        decl(WalkRole::CellScheduler, TaskCells, Aggregate, || {
+            vec![reach![Named("core"), Named("scheduler")]]
+        }),
         // Leaf readers: what a recognized wait primitive is waiting on.
         WalkDecl {
             role: WalkRole::SleepDeadline,
@@ -865,6 +890,79 @@ fn decls() -> Vec<WalkDecl> {
                     Variant("Some"),
                     Named("__0"),
                     Named("pointer"),
+                ]]
+            },
+        ),
+        // A `LocalSet`'s own task list, rooted at its shared state: the
+        // id the global owned-list counter gave it (what `Header.owner_id`
+        // joins), the intrusive list head — the nodes are ordinary task
+        // Headers, so `TrailerNext` walks below it unchanged — and the
+        // thread the set is pinned to. `owned.inner` is a loom
+        // `UnsafeCell`, spelled `__0.value` like `Header.owner_id`'s.
+        decl(WalkRole::LocalOwnedId, Leaf(LOCAL_SHARED), Word, || {
+            vec![reach![
+                Named("local_state"),
+                Named("owned"),
+                Named("id"),
+                PeelTo(WORD),
+            ]]
+        }),
+        decl(
+            WalkRole::LocalOwnedHead,
+            Leaf(LOCAL_SHARED),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("local_state"),
+                    Named("owned"),
+                    Named("inner"),
+                    Named("__0"),
+                    Named("value"),
+                    Named("list"),
+                    Named("head"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        decl(WalkRole::LocalSetOwner, Leaf(LOCAL_SHARED), Word, || {
+            vec![reach![Named("local_state"), Named("owner"), PeelTo(WORD)]]
+        }),
+        // The `task::local::CURRENT` thread-local: its `ctx` slot holds
+        // an `Rc<local::Context>` only while the set is being polled (or
+        // under a user-held `enter` guard) — the scoped anchor the TLS
+        // probe reads per LWP. `ctx.inner` is a loom `UnsafeCell` over
+        // the niche `Option<Rc>`; the path lands on the `Rc`'s raw
+        // pointer to its `RcInner`.
+        decl(WalkRole::LocalTlsCtx, Leaf(LOCAL_DATA), Pointer, || {
+            vec![reach![
+                Named("ctx"),
+                Named("inner"),
+                Named("__0"),
+                Named("value"),
+                Variant("Some"),
+                Named("__0"),
+                Named("ptr"),
+                Named("pointer"),
+            ]]
+        }),
+        // From the `RcInner<local::Context>` behind that pointer to the
+        // `Shared` every discovery route converges on: across the Rc
+        // header's `value`, then the `Arc<Shared>` deref to the
+        // `ArcInner`'s `data`.
+        decl(
+            WalkRole::LocalCtxShared,
+            Pointee(WalkRole::LocalTlsCtx),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("value"),
+                    Named("shared"),
+                    Named("ptr"),
+                    Named("pointer"),
+                    Deref,
+                    Named("data"),
                 ]]
             },
         ),

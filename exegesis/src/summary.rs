@@ -188,6 +188,15 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
         writeln!(out, "{what}: {ok}").unwrap();
     }
 
+    // Only the statics every tokio target has. `TlsLocalSetKey` is
+    // deliberately absent: whether a program that constructs no
+    // `LocalSet` still carries `task::local::CURRENT` in its symbol
+    // table is the linker's call — illumos keeps it where macOS and
+    // Linux drop it — so a row for it could not be one golden. It is
+    // the same judgment that skips the leaf-rooted walk rows below and
+    // the `futures_util` adapters above; that the matcher finds the
+    // symbol where a program really does use a set is asserted against
+    // the local-set fixture instead.
     writeln!(out, "\n[statics]").unwrap();
     for (role, label) in [
         (StaticRole::TlsContextKey, "tls-context-key"),

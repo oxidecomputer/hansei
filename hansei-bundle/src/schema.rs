@@ -1173,6 +1173,12 @@ pub enum StaticRole {
     /// Tokio's task `WAKER_VTABLE` static, identifying task wakers found in
     /// resource waiter lists.
     TaskWakerVtable,
+    /// The TLS key holding each thread's `tokio::task::local::LocalData`
+    /// (std's `__RUST_STD_INTERNAL_VAL` static for `task::local::CURRENT`) —
+    /// the scoped anchor of a `LocalSet` being polled. Present only in
+    /// binaries that link `tokio::task::local`, so absence is the expected
+    /// shape of most targets, not a breakage.
+    TlsLocalSetKey,
 }
 
 /// A static's symbol names: the mangled name is the join key, the demangled
@@ -1224,6 +1230,7 @@ macro_rules! walk_roles {
 // break the version number must own.
 walk_roles! {
     CurrentTaskId = "Context.current_task_id",
+    ContextThreadId = "Context.thread_id",
     WorkerHandle = "Context.handle",
     CtWorkerHandle = "Context.handle.current_thread",
     WorkerContext = "Context.scheduler",
@@ -1265,6 +1272,7 @@ walk_roles! {
     CellStageConsumed = "Cell.stage_consumed",
     CellTrailer = "Cell.trailer",
     CellTaskId = "Cell.task_id",
+    CellScheduler = "Cell.scheduler",
     SleepDeadline = "Sleep.deadline",
     DeadlineTvSec = "Sleep.deadline.tv_sec",
     DeadlineTvNsec = "Sleep.deadline.tv_nsec",
@@ -1290,6 +1298,11 @@ walk_roles! {
     JoinSetIdleHead = "JoinSet.idle_head",
     JoinSetEntryValue = "ListEntry.value",
     JoinSetEntryNext = "ListEntry.next",
+    LocalOwnedId = "local::Shared.owned_id",
+    LocalOwnedHead = "local::Shared.owned_head",
+    LocalSetOwner = "local::Shared.owner",
+    LocalTlsCtx = "LocalData.ctx",
+    LocalCtxShared = "local::Context.shared",
 }
 
 /// What binding one walk role against the target's DWARF concluded.

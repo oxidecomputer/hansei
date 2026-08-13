@@ -54,6 +54,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -95,6 +96,7 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 
 program: simple-await
 
@@ -136,6 +138,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -177,6 +180,7 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 
 program: nested-await
 
@@ -218,6 +222,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -259,6 +264,7 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 
 program: dyn-future
 
@@ -312,6 +318,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -353,6 +360,7 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 
 program: select-combinator
 
@@ -408,6 +416,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -449,6 +458,7 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 
 program: many-tasks
 
@@ -488,6 +498,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -529,6 +540,7 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 
 program: sleep-join
 
@@ -580,6 +592,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -621,6 +634,7 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 
 program: channels
 
@@ -672,6 +686,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -713,6 +728,7 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 
 program: unordered
 
@@ -755,6 +771,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -796,6 +813,7 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 
 program: joinset
 
@@ -849,6 +867,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -890,6 +909,7 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 
 program: ct-runtime
 
@@ -941,6 +961,7 @@ task-waker-vtable: ok
 
 [walks]
 ok      Context.current_task_id
+ok      Context.thread_id
 ok      Context.handle
 ok      Context.handle.current_thread
 ok      Context.scheduler
@@ -982,4 +1003,5 @@ ok      Cell.stage_finished
 ok      Cell.stage_consumed
 ok      Cell.trailer
 ok      Cell.task_id
+ok      Cell.scheduler
 

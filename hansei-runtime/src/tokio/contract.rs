@@ -150,6 +150,11 @@ pub fn classify(role: WalkRole) -> Class {
         | JoinSetNotifiedHead | JoinSetIdleHead | JoinSetEntryValue | JoinSetEntryNext => {
             Class::Optional
         }
+        // Local-set discovery: the cell's way home, the set's own list,
+        // and the owner-to-LWP join — supporting output the walk
+        // degrades without.
+        ContextThreadId | CellScheduler | LocalOwnedId | LocalOwnedHead | LocalSetOwner
+        | LocalTlsCtx | LocalCtxShared => Class::Optional,
     }
 }
 
@@ -505,12 +510,35 @@ pub fn verify_walk_contract(view: &BundleView<'_>) -> ContractReport {
             StaticRole::TaskWakerVtable,
             Optional,
         ),
+        (
+            "statics.tls_local_set_key",
+            StaticRole::TlsLocalSetKey,
+            Optional,
+        ),
     ] {
         let outcome = if view.bundle().statics.entries.contains_key(&role) {
             WalkOutcome::Bound {
                 spelling: 0,
                 spellings: 1,
                 note: None,
+            }
+        } else if role == StaticRole::TlsLocalSetKey {
+            // The `task::local::CURRENT` thread-local is linked only by
+            // a program that uses a `LocalSet`, so its absence is an
+            // ordinary shape rather than drift — and it is a discovery
+            // aid for an optional feature, so no attach should ever
+            // refuse over it. That the matcher still finds it where it
+            // does exist is pinned by the local-set fixture's golden.
+            //
+            // Deliberately not cross-checked against the local walk
+            // rows: whether the layout types reach the bundle is the
+            // linker's call, and an ELF build sweeps them in for
+            // programs that never construct a set, so the two signals
+            // disagree on exactly the targets this would misreport.
+            WalkOutcome::Absent {
+                reason: "the target links no tokio::task::local::CURRENT \
+                         (it uses no LocalSet)"
+                    .to_owned(),
             }
         } else {
             WalkOutcome::Broken {
