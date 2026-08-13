@@ -132,9 +132,9 @@ pub fn classify(role: WalkRole) -> Class {
         CellStage | CellStageRunning | CellStageFinished | CellStageConsumed | CellTrailer
         | CellTaskId => Class::Required,
         // Scheduler introspection beyond the listing.
-        WorkerContext | CtWorkerContext | WorkerIndex | SharedRemotes | RemoteUnpark
-        | ParkerState | ParkerDriverLock | BlockingMetrics | BlockingThreads | BlockingIdle
-        | BlockingQueueDepth => Class::Optional,
+        WorkerContext | CtWorkerContext | WorkerIndex | CtWorkerCore | CtCoreDriver
+        | SharedRemotes | RemoteUnpark | ParkerState | ParkerDriverLock | CtSharedWoken
+        | BlockingMetrics | BlockingThreads | BlockingIdle | BlockingQueueDepth => Class::Optional,
         // The sibling vtable fns the future join falls through.
         VtableDealloc
         | VtableTryReadOutput

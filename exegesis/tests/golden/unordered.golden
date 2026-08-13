@@ -44,11 +44,14 @@ ok      Context.handle.current_thread
 ok      Context.scheduler
 ok      Context.scheduler.current_thread
 ok      worker::Context.index
+ok      current_thread::Context.core
+ok      current_thread::Core.driver
 ok      Handle.shared
 ok      Shared.remotes
 ok      Remote.unpark
 ok      parker::Inner.state
 ok      parker::Inner.driver_lock
+ok      current_thread::Shared.woken
 ok      Handle.blocking_metrics
 ok      SpawnerMetrics.num_threads
 ok      SpawnerMetrics.num_idle_threads

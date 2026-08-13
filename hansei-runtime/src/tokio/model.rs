@@ -137,6 +137,45 @@ impl fmt::Display for ParkState {
     }
 }
 
+/// What a current_thread runtime's one "worker" — the `block_on`
+/// thread — is doing, and whether its root future has a wakeup pending;
+/// the CT sibling of [`ParkStates`]. See [`Context::ct_park_state`].
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct CtParkState {
+    /// `Shared.woken`: a wakeup for the `block_on` future was delivered
+    /// and not yet consumed by a poll.
+    pub woken: bool,
+    pub activity: CtActivity,
+}
+
+/// Where a CT `block_on` thread is in its run loop, read from where the
+/// scheduler core is: the loop checks the core *into* the context's
+/// `RefCell` while it parks or polls the root future — taking the
+/// driver out of it for exactly as long as it parks — and holds it on
+/// the stack, unreadable from here, while it runs tasks.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum CtActivity {
+    /// Core checked in, driver taken: blocked in the system's readiness
+    /// call (or a zero-duration yield to it) on the runtime's behalf.
+    Parked,
+    /// Core checked in, driver present: polling the `block_on` future
+    /// itself.
+    PollingBlockOn,
+    /// Core checked out to the thread's stack: running spawned tasks or
+    /// the scheduler's own bookkeeping.
+    RunningTasks,
+}
+
+impl fmt::Display for CtActivity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parked => f.write_str("parked in the driver"),
+            Self::PollingBlockOn => f.write_str("polling the block_on future"),
+            Self::RunningTasks => f.write_str("running tasks"),
+        }
+    }
+}
+
 /// The blocking pool's own counters; see [`Context::blocking_pool`].
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct BlockingPool {
