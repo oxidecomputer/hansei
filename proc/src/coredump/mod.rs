@@ -9,6 +9,7 @@
 //! reference the illumos reader here is compared against in tests —
 //! stays beside this module, gated to the host that has libproc.
 
+mod common;
 pub mod illumos;
 pub mod linux;
 

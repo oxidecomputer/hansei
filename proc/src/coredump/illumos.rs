@@ -21,12 +21,12 @@
 //! are the ones `libproc-sys`' generated bindings assert, and the tests
 //! hold them to a core illumos actually wrote.
 
+use super::common::{Segment, Symbols, elf_ctx};
 use crate::{
     Error, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs, Result, Status,
     SymbolBuf, Target, Timespec,
 };
 
-use goblin::container::{Container, Ctx};
 use goblin::elf::Elf;
 use goblin::elf::dynamic::dyn64::{Dyn, SIZEOF_DYN};
 use goblin::elf::dynamic::{DT_DEBUG, DT_NULL};
@@ -46,7 +46,6 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 /// Note types from `<sys/procfs.h>`.
 const NT_AUXV: u32 = 6;
@@ -180,32 +179,6 @@ impl Regs {
     }
 }
 
-/// One `PT_LOAD` of the core.
-#[derive(Clone, Debug)]
-struct Segment {
-    vaddr: u64,
-    memsz: u64,
-    filesz: u64,
-    offset: u64,
-    flags: u32,
-}
-
-impl Segment {
-    fn dumped(&self) -> Range<u64> {
-        self.vaddr..self.vaddr + self.filesz
-    }
-
-    fn range(&self) -> Range<u64> {
-        self.vaddr..self.vaddr + self.memsz
-    }
-}
-
-/// An illumos core is ELF64 and little-endian, which is what the ELF
-/// structures read out of its memory have to be decoded as.
-fn elf_ctx() -> Ctx {
-    Ctx::new(Container::Big, scroll::Endian::Little)
-}
-
 /// The path the link map records, resolved where that means anything.
 ///
 /// The runtime linker keeps the path it opened the object by, which on
@@ -246,46 +219,6 @@ fn span_of(phdrs: &[ProgramHeader], bias: u64) -> Option<Range<u64>> {
         end = end.max(hi);
     }
     (start < end).then_some(start..end)
-}
-
-/// The symbols of one mapped object, taken from the core's own section
-/// headers and brought to runtime addresses.
-#[derive(Default)]
-struct Symbols {
-    functions: Vec<SymbolBuf>,
-    objects: Vec<SymbolBuf>,
-    /// Positions into functions-then-objects, sorted by name, built on
-    /// the first by-name lookup. Attach-time fingerprint validation asks
-    /// for thousands of names, and a linear scan per name over a
-    /// debug-build symtab was a quarter of the time to the first prompt.
-    by_name: OnceLock<Vec<u32>>,
-}
-
-impl Symbols {
-    /// The symbol at a position in the functions-then-objects chain.
-    fn at(&self, position: u32) -> &SymbolBuf {
-        let position = position as usize;
-        self.functions
-            .get(position)
-            .unwrap_or_else(|| &self.objects[position - self.functions.len()])
-    }
-
-    /// The first symbol of this name in chain order — the one a linear
-    /// scan found, by binary search. The sort is stable, so symbols
-    /// sharing a name keep their chain order.
-    fn find_by_name(&self, name: &str) -> Option<&SymbolBuf> {
-        let index = self.by_name.get_or_init(|| {
-            let mut index: Vec<u32> =
-                (0..(self.functions.len() + self.objects.len()) as u32).collect();
-            index.sort_by_key(|&p| self.at(p).name.as_str());
-            index
-        });
-        let lo = index.partition_point(|&p| self.at(p).name.as_str() < name);
-        index
-            .get(lo)
-            .map(|&p| self.at(p))
-            .filter(|sym| sym.name == name)
-    }
 }
 
 pub struct Core {

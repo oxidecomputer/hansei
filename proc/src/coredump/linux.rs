@@ -18,6 +18,7 @@
 //! Reading a Linux core away from the machine that wrote it therefore
 //! wants those files to hand; what was dumped still reads without them.
 
+use super::common::{Segment, Symbols};
 use crate::{
     Error, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs, Result, Status,
     SymbolBuf, Target, Timespec,
@@ -138,28 +139,6 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// One `PT_LOAD` of the core: a region of the target's address space,
-/// of which the first `filesz` bytes were actually written out.
-#[derive(Clone, Debug)]
-struct Segment {
-    vaddr: u64,
-    memsz: u64,
-    filesz: u64,
-    offset: u64,
-    flags: u32,
-}
-
-impl Segment {
-    /// The part of this region whose bytes are in the core file.
-    fn dumped(&self) -> Range<u64> {
-        self.vaddr..self.vaddr + self.filesz
-    }
-
-    fn range(&self) -> Range<u64> {
-        self.vaddr..self.vaddr + self.memsz
-    }
-}
-
 /// One `NT_FILE` entry: a range of the address space backed by a file,
 /// and where in that file it came from.
 #[derive(Clone, Debug)]
@@ -187,48 +166,6 @@ impl BackingFile {
             map,
             symbols: OnceLock::new(),
         })
-    }
-}
-
-/// The symbols of one object, at their runtime addresses.
-#[derive(Default)]
-struct Symbols {
-    /// Function symbols, sorted by address, for containment lookup.
-    functions: Vec<SymbolBuf>,
-    /// Data symbols, including the `STT_TLS` ones, whose `st_value` is
-    /// an offset into a TLS block rather than an address.
-    objects: Vec<SymbolBuf>,
-    /// Positions into functions-then-objects, sorted by name, built on
-    /// the first by-name lookup. Attach-time fingerprint validation asks
-    /// for thousands of names, and a linear scan per name over a
-    /// debug-build symtab was a quarter of the time to the first prompt.
-    by_name: OnceLock<Vec<u32>>,
-}
-
-impl Symbols {
-    /// The symbol at a position in the functions-then-objects chain.
-    fn at(&self, position: u32) -> &SymbolBuf {
-        let position = position as usize;
-        self.functions
-            .get(position)
-            .unwrap_or_else(|| &self.objects[position - self.functions.len()])
-    }
-
-    /// The first symbol of this name in chain order — the one a linear
-    /// scan found, by binary search. The sort is stable, so symbols
-    /// sharing a name keep their chain order.
-    fn find_by_name(&self, name: &str) -> Option<&SymbolBuf> {
-        let index = self.by_name.get_or_init(|| {
-            let mut index: Vec<u32> =
-                (0..(self.functions.len() + self.objects.len()) as u32).collect();
-            index.sort_by_key(|&p| self.at(p).name.as_str());
-            index
-        });
-        let lo = index.partition_point(|&p| self.at(p).name.as_str() < name);
-        index
-            .get(lo)
-            .map(|&p| self.at(p))
-            .filter(|sym| sym.name == name)
     }
 }
 
