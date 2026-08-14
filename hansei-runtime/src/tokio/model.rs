@@ -64,14 +64,17 @@ pub struct RuntimeRef<'b> {
     pub flavor: RuntimeFlavor,
     pub handle: Value<'b>,
     /// The tids of the workers whose `Context` reaches this handle, in
-    /// discovery order.
+    /// discovery order. Empty on a runtime no thread is currently in —
+    /// see [`DiscoveryRoute::WorkerContext`].
     pub worker_tids: Vec<u32>,
+    /// How the runtime was found.
+    pub route: DiscoveryRoute,
 }
 
 /// One `tokio::task::LocalSet` discovered in the target: the
 /// `task::local::Shared` its task list hangs off — the address every
 /// discovery route converges on — and how it was found. See
-/// [`Context::discover_local_tasks`].
+/// [`Context::discover_hidden_tasks`].
 #[derive(Clone, Debug)]
 pub struct LocalSetRef<'b> {
     /// The set's `Shared`, read in place; its address is the set's
@@ -89,38 +92,45 @@ pub struct LocalSetRef<'b> {
     /// — the owning thread may hold no runtime context at all.
     pub owner_tid: Option<u32>,
     /// The route that found the set first.
-    pub route: LocalSetRoute,
+    pub route: DiscoveryRoute,
 }
 
-/// Which discovery route found a [`LocalSetRef`].
+/// Which route found a task list's owner — a [`LocalSetRef`], or a
+/// [`RuntimeRef`] no thread's `Context` points at.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum LocalSetRoute {
+pub enum DiscoveryRoute {
+    /// A thread's `Context` points at it: the ordinary way a runtime is
+    /// found, and the only one that also says which threads run it. No
+    /// local set is ever found this way.
+    WorkerContext,
     /// A `JoinHandle` on an enumerated task's await chain pointed at
-    /// one of the set's tasks.
+    /// one of its tasks.
     JoinHandle,
     /// A task waker in a walked waiter queue pointed at one of them.
     QueuedWaker,
-    /// A timer entry parked in the runtime's own wheel was armed with
-    /// one of their wakers — the route that reaches a set no enumerated
-    /// task points at.
+    /// A timer entry parked in a discovered runtime's own wheel was
+    /// armed with one of their wakers — a registry of parked tasks
+    /// whatever list owns them, and so a route to a list nothing
+    /// enumerated points at.
     Wheel,
-    /// An io resource registered with the runtime's driver held one of
-    /// their wakers — the same registry argument as the wheel, for a
-    /// set whose members are waiting on a socket rather than on time.
+    /// An io resource registered with a discovered runtime's driver
+    /// held one of their wakers — the same registry argument as the
+    /// wheel, for tasks waiting on a socket rather than on time.
     Io,
     /// The thread's `task::local::CURRENT` anchor, populated only while
     /// a set is being polled (or held entered).
     Tls,
 }
 
-impl fmt::Display for LocalSetRoute {
+impl fmt::Display for DiscoveryRoute {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::WorkerContext => f.write_str("a thread's runtime context"),
             Self::JoinHandle => f.write_str("a JoinHandle held by an enumerated task"),
             Self::QueuedWaker => f.write_str("a task waker in a walked waiter queue"),
-            Self::Wheel => f.write_str("a task waker on a timer parked in the runtime's wheel"),
+            Self::Wheel => f.write_str("a task waker on a timer parked in a runtime's wheel"),
             Self::Io => {
-                f.write_str("a task waker on an io resource registered with the runtime's driver")
+                f.write_str("a task waker on an io resource registered with a runtime's driver")
             }
             Self::Tls => f.write_str("the polling thread's TLS anchor"),
         }
@@ -138,9 +148,10 @@ pub enum UnlistedTaskKind {
     LocalSet,
     /// A `spawn_blocking` task; no list carries those at all.
     Blocking,
-    /// Bound into the sharded owned list of a runtime this session did
-    /// not list — an undiscovered runtime, or one excluded by
-    /// `--runtime`.
+    /// Bound into the sharded owned list of a runtime the session's
+    /// population does not cover — one a `--runtime` selection left
+    /// out, or one discovery reached and refused, since a runtime a
+    /// task points at is otherwise enumerated along with it.
     OtherRuntime(RuntimeFlavor),
 }
 
@@ -313,10 +324,10 @@ pub struct Task {
     pub spawn_location: Option<Location>,
     pub future: FutureInfo,
     /// Which group owns it: an index into the merged population's group
-    /// space — the session's [`RuntimeRef`]s first, discovered
-    /// [`LocalSetRef`]s after — stamped by
-    /// [`Context::enumerate_all_tasks`] and
-    /// [`Context::discover_local_tasks`]. 0 on the single-runtime,
+    /// space — every [`RuntimeRef`], those a thread's context reaches
+    /// first and those discovery found after, then the
+    /// [`LocalSetRef`]s — stamped by [`Context::enumerate_all_tasks`]
+    /// and [`Context::discover_hidden_tasks`]. 0 on the single-runtime,
     /// no-local-set targets that are nearly all of them.
     pub group: usize,
 }
@@ -649,7 +660,7 @@ impl fmt::Display for WaitTarget {
                             "a spawn_blocking task (no task list carries those)".to_owned()
                         }
                         Some(UnlistedTaskKind::OtherRuntime(flavor)) => {
-                            format!("a task of a {flavor} runtime this session did not list")
+                            format!("a task of a {flavor} runtime this session does not list")
                         }
                         Some(UnlistedTaskKind::LocalSet) => {
                             "a task of a local set this session could not enumerate".to_owned()

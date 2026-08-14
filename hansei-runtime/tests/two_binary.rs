@@ -26,7 +26,7 @@ use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::testkit::{fixture, load};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
-    AwaitChain, ChainEnd, Context, FutureInfo, LocalSetRoute, RuntimeFlavor, Task, TaskStage,
+    AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
     UnlistedTaskKind,
 };
 use hansei_runtime::tokio::{census, graph};
@@ -751,7 +751,7 @@ fn test_local_set_offline() {
 
     let lwps = snapshot.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
     let mut list = ctx
         .enumerate_all_tasks(&runtimes)
         .expect("the owned-task walk");
@@ -776,12 +776,12 @@ fn test_local_set_offline() {
     // Discovery finds the set through that one handle, and both its
     // tasks — the joined one and its invisible sibling — join the
     // population, stamped with the set's own group.
-    let sets = ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut list);
+    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
     assert!(list.errors.is_empty(), "{:?}", list.errors);
     let [set] = sets.as_slice() else {
         panic!("expected one local set, got {}", sets.len());
     };
-    assert_eq!(set.route, LocalSetRoute::JoinHandle);
+    assert_eq!(set.route, DiscoveryRoute::JoinHandle);
     assert_ne!(set.owned_id, 0);
 
     assert_eq!(list.tasks.len(), 3, "{:#?}", list.tasks);
@@ -864,7 +864,7 @@ fn test_local_set_timer_offline() {
 
     let lwps = snapshot.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
     let mut list = ctx
         .enumerate_all_tasks(&runtimes)
         .expect("the owned-task walk");
@@ -879,12 +879,12 @@ fn test_local_set_timer_offline() {
         other => panic!("the spawned task does not await a timer: {other:?}"),
     }
 
-    let sets = ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut list);
+    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
     assert!(list.errors.is_empty(), "{:?}", list.errors);
     let [set] = sets.as_slice() else {
         panic!("expected one local set, got {}", sets.len());
     };
-    assert_eq!(set.route, LocalSetRoute::Wheel);
+    assert_eq!(set.route, DiscoveryRoute::Wheel);
     assert_ne!(set.owned_id, 0);
 
     // Both members join the population under the set's group, the
@@ -954,7 +954,7 @@ fn test_local_set_io_offline() {
 
     let lwps = snapshot.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
     let mut list = ctx
         .enumerate_all_tasks(&runtimes)
         .expect("the owned-task walk");
@@ -976,12 +976,12 @@ fn test_local_set_io_offline() {
         "the listed task's own registration is not a candidate: {candidates:#x?}"
     );
 
-    let sets = ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut list);
+    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
     assert!(list.errors.is_empty(), "{:?}", list.errors);
     let [set] = sets.as_slice() else {
         panic!("expected one local set, got {}", sets.len());
     };
-    assert_eq!(set.route, LocalSetRoute::Io);
+    assert_eq!(set.route, DiscoveryRoute::Io);
     assert_ne!(set.owned_id, 0);
 
     // All three members join the population under the set's group, and
