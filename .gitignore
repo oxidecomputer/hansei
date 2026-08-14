@@ -1,4 +1,4 @@
 /target
 
-# Side-by-side actuals a diverged matrix golden writes for review.
-*.golden.actual
+# Rejected goldens a diverged snapshot writes for review.
+*.snap.new
