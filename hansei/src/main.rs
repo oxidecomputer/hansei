@@ -71,8 +71,8 @@ struct SessionArgs {
     best_effort: bool,
 
     /// Read only one of the target's runtimes, by its index in the
-    /// discovered list (`info` names them). By default every runtime is
-    /// read, merged with a tag where there is more than one.
+    /// discovered list (`runtimes` names them). By default every
+    /// runtime is read, merged with a tag where there is more than one.
     #[arg(long, value_name = "INDEX")]
     runtime: Option<usize>,
 }
@@ -227,6 +227,29 @@ pub enum Command {
         #[command(flatten)]
         render: RenderOpts,
     },
+
+    /// List every executor the target holds: each discovered runtime,
+    /// then each discovered `LocalSet`, with the tasks and futures the
+    /// merged population attributes to it.
+    ///
+    /// The index each row carries is the one the task listing tags its
+    /// blocks with, the one `--runtime` selects by, and the one the
+    /// `runtime` command takes; the handle address beside it names the
+    /// same thing and can be given anywhere the index can.
+    ///
+    /// A row says where its group runs — the lwps inside it — or, when
+    /// nothing is inside it, the route discovery reached it by. That
+    /// distinction is worth reading, because the list is a lower bound
+    /// by construction: a runtime no thread is inside is only found
+    /// when something already discovered points at it, so one whose
+    /// `block_on` has returned and whose tasks nothing outside it
+    /// names cannot be found at all.
+    ///
+    /// The future counts are the census's, so the first `runtimes`
+    /// walks every task's await chain — the slowest thing a session
+    /// does on a large target. The walk is kept, so a later `census`,
+    /// `tasks --futures`, `graph` or `whatis` costs nothing.
+    Runtimes,
 
     /// Capture a replayable snapshot of everything the bundle-backed
     /// analysis reads from the target: task enumeration and every task's
@@ -533,6 +556,10 @@ pub struct Session<'b> {
     /// every real target; current_thread makes more ordinary, and the
     /// task list below merges them all.
     runtimes: Vec<bundle::RuntimeRef<'b>>,
+    /// The handles of the runtimes `--runtime` left out, so a filtered
+    /// session can say it is one rather than reading as a target with
+    /// fewer runtimes than it has.
+    excluded: Vec<u64>,
     /// Every `LocalSet` discovery reached, in the group order their
     /// tasks are stamped with (after the runtimes). Empty on targets
     /// whose bundle shows no local-set machinery linked.
@@ -620,6 +647,7 @@ impl<'b> Session<'b> {
             workers,
             lwps: lwps.len(),
             runtimes,
+            excluded,
             local_sets,
             tasks,
             extents: OnceCell::new(),
@@ -669,10 +697,18 @@ impl<'b> Session<'b> {
                 false => format!("{i} ({})", r.flavor),
             })
             .collect();
-        tags.extend(self.local_sets.iter().map(|set| match set.owner_tid {
-            Some(tid) => format!("local set at {:#x} (lwp {tid})", set.shared.addr),
-            None => format!("local set at {:#x}", set.shared.addr),
-        }));
+        // A set's tag leads with the index `runtimes` lists it under,
+        // the way a runtime's does: a tag a reader cannot look up says
+        // only that the task is somebody else's.
+        tags.extend(
+            self.local_sets
+                .iter()
+                .enumerate()
+                .map(|(i, set)| match set.owner_tid {
+                    Some(tid) => format!("local set {i} at {:#x} (lwp {tid})", set.shared.addr),
+                    None => format!("local set {i} at {:#x}", set.shared.addr),
+                }),
+        );
         tags
     }
 }
@@ -695,6 +731,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         Command::Runtime { field, render } => {
             runtimes::exec_runtime_field(session, field, render, out)?
         }
+        Command::Runtimes => runtimes::exec_runtimes(session, out)?,
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
         Command::Tasks { futures, task } => tasks::exec_tasks(session, futures, &task, out)?,
@@ -805,35 +842,21 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         session.workers.len(),
         session.tasks.tasks.len()
     )?;
-    for (i, rt) in session.runtimes.iter().enumerate() {
-        // A runtime no thread's context reaches has no lwp to name, and
-        // how it was found is the interesting part instead.
-        let where_ = if rt.worker_tids.is_empty() {
-            format!("no thread inside it, found via {}", rt.route)
-        } else {
-            let tids: Vec<String> = rt.worker_tids.iter().map(|t| t.to_string()).collect();
-            format!("on lwp {}", tids.join(", "))
-        };
-        writeln!(out, "runtime {i}: {}, {where_}", rt.flavor)?;
-    }
-    for (i, set) in session.local_sets.iter().enumerate() {
-        let owned = session
-            .tasks
-            .tasks
-            .iter()
-            .filter(|t| t.group == session.runtimes.len() + i)
-            .count();
-        let plural = if owned == 1 { "" } else { "s" };
-        let lwp = match set.owner_tid {
-            Some(tid) => format!(" on lwp {tid},"),
-            None => String::new(),
-        };
-        writeln!(
-            out,
-            "local set {i}: at {:#x},{lwp} {owned} task{plural}, found via {}",
-            set.shared.addr, set.route
-        )?;
-    }
+    // What the target's executors are is `runtimes`' question: an
+    // attach summary says how many there are to go and look at, and
+    // leaves naming them to the listing that can afford the room.
+    let sets = match session.local_sets.is_empty() {
+        true => String::new(),
+        false => format!(
+            ", {}",
+            summary::counted(session.local_sets.len(), "local set")
+        ),
+    };
+    writeln!(
+        out,
+        "{}{sets} (see `runtimes`)",
+        summary::counted(session.runtimes.len(), "runtime")
+    )?;
     Ok(())
 }
 
