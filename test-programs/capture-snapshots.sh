@@ -21,6 +21,11 @@
 # complete, so both reject a mismatched pair, but a capture taken on
 # illumos checks a pair against more names.
 #
+# So recapture on illumos. The checked-in pairs came from there and the
+# offline goldens quote those counts, which is why a recapture anywhere
+# else turns them red with nothing else about the analysis moved: what
+# re-blessing them would record is a weaker fingerprint, not a fix.
+#
 # Usage: capture-snapshots.sh [OUT_DIR [PROGRAM...]]
 #
 # With no PROGRAMs, every fixture pair is recaptured. Naming some
