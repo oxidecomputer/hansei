@@ -1308,6 +1308,14 @@ walk_roles! {
     SlotHead = "wheel::Slot.head",
     TimerSharedNext = "TimerShared.next",
     TimerSharedWaker = "TimerShared.waker",
+    IoRegistrations = "io::Synced.registrations",
+    ScheduledIoNext = "ScheduledIo.next",
+    ScheduledIoWaiters = "ScheduledIo.waiters",
+    IoWaiterHead = "io::Waiters.list",
+    IoReaderWaker = "io::Waiters.reader",
+    IoWriterWaker = "io::Waiters.writer",
+    IoWaiterNext = "io::Waiter.next",
+    IoWaiterWaker = "io::Waiter.waker",
 }
 
 /// What binding one walk role against the target's DWARF concluded.

@@ -102,6 +102,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: simple-await
 
@@ -191,6 +199,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: nested-await
 
@@ -280,6 +296,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: dyn-future
 
@@ -381,6 +405,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: select-combinator
 
@@ -484,6 +516,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: many-tasks
 
@@ -571,6 +611,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: sleep-join
 
@@ -670,6 +718,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: channels
 
@@ -769,6 +825,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: unordered
 
@@ -859,6 +923,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: joinset
 
@@ -960,6 +1032,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: ct-runtime
 
@@ -1059,6 +1139,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: local-set
 
@@ -1171,6 +1259,14 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
 program: local-set-timer
 
@@ -1283,4 +1379,12 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 
