@@ -92,9 +92,18 @@ for p in "${PROGRAMS[@]}"; do
     cat "$fifo" >/dev/null &
 
     gcore -o "$coredir/core" "$pid"
+    # A Linux core carries no symbol table, so the executable that ran
+    # has to be named alongside it — build A, not the debug build behind
+    # --bundle, which shares none of its addresses. An illumos core
+    # carries its own and warns if one is passed. The core is taken
+    # right here, so which kind it is is this host's.
+    program=()
+    if [[ "$(uname -s)" == Linux ]]; then
+        program=(--program "$FIXTURES/bin-a/$p")
+    fi
     # hansei takes its commands on stdin, not as arguments.
     echo "snapshot $OUT/$p.snapshot" |
-        "$HANSEI" --core "$coredir/core.$pid" --bundle "$OUT/$p.bundle"
+        "$HANSEI" --core "$coredir/core.$pid" --bundle "$OUT/$p.bundle" "${program[@]}"
 
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
