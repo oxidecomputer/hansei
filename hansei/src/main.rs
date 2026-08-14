@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 mod graph;
 pub mod repl;
+mod runtimes;
 #[cfg(feature = "snapshot")]
 mod snapshot_cmd;
 pub mod summary;
@@ -692,7 +693,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         Command::Graph => graph::exec_graph(session, out)?,
         Command::Info => exec_info(session, out)?,
         Command::Runtime { field, render } => {
-            threads::exec_runtime_field(session, field, render, out)?
+            runtimes::exec_runtime_field(session, field, render, out)?
         }
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,

@@ -1,8 +1,8 @@
-//! The `threads`, `drivers` and `shared-state` commands: the runtime
-//! state read straight through the bundle’s layouts.
+//! The `threads` command: every thread the runtime is running on, as
+//! the runtime sees it and as the stack sees it.
 
 use crate::trace::print_variable;
-use crate::{Proc, RenderOpts, RuntimeField, Session};
+use crate::{Proc, RenderOpts, Session};
 
 use anyhow::Result;
 use hansei_runtime::tokio::{Lifecycle, bundle};
@@ -237,54 +237,11 @@ fn print_checked_in_core(
     Ok(())
 }
 
-/// Render one of the runtime handle's fields out of the target: the
-/// scheduler state the workers share, or the drivers they park on.
-///
-/// Both are read straight through the bundle's layouts rather than into
-/// a hand-written mirror of tokio's structs, so a field tokio adds shows
-/// up without hansei being taught about it.
-pub(crate) fn exec_runtime_field(
-    session: &Session<'_>,
-    field: RuntimeField,
-    opts: RenderOpts,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    let member = match field {
-        RuntimeField::Drivers => "driver",
-        RuntimeField::Shared => "shared",
-    };
-    // The bundle's `Elided` formats hide the runtime graph from *user*
-    // values; these commands exist to show the runtime's own insides, so
-    // they must never apply here — a new elided row must not be able to
-    // blank part of this output.
-    let no_elide = reify::ElideOverride {
-        no_elide: true,
-        types: Vec::new(),
-    };
-    // Both scheduler flavors' handles carry these members: one section
-    // per discovered runtime, headed only when there is more than one.
-    for (i, rt) in session.runtimes.iter().enumerate() {
-        if session.runtimes.len() > 1 {
-            if i > 0 {
-                writeln!(out)?;
-            }
-            writeln!(out, "runtime {i} ({}):", rt.flavor)?;
-        }
-        let value = rt.handle.member(member)?;
-        writeln!(
-            out,
-            "{:#}",
-            render(session, &value, opts).elide_override(&no_elide)
-        )?;
-    }
-    Ok(())
-}
-
 /// Display a value read from the target, honouring the custom formatters
 /// unless asked for the raw structural view. Nothing is rendered until the
 /// caller formats the result (with `{:#}` for the usual pretty layout), so
 /// the text can stream to its destination instead of through a `String`.
-fn render<'r, 'b>(
+pub(crate) fn render<'r, 'b>(
     session: &'r Session<'b>,
     value: &'r Value<'b>,
     opts: RenderOpts,
