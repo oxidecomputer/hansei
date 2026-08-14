@@ -178,8 +178,11 @@ impl Normalized<'_> {
 mod tests {
     use super::{
         GLOBAL_ELISION, concrete_type_from_vtable_symbol, normalized_rust_type_name,
-        normalized_v0_key, normalized_value_index, rust_type_names_equal,
+        normalized_v0_key, normalized_value_index, rust_type_name_hash, rust_type_names_equal,
     };
+
+    use proptest::prelude::*;
+
     use std::borrow::Cow;
     use std::collections::BTreeMap;
 
@@ -315,5 +318,161 @@ mod tests {
             normalized_rust_type_name("app::Thing<u32, alloc::alloc::Global>"),
             Cow::Owned(_)
         ));
+    }
+
+    /// The pieces a generated name is assembled from. Enough punctuation to
+    /// build plausible generic spellings, the whitespace a demangler adds,
+    /// a multi-byte character to keep the byte arithmetic honest, and both
+    /// halves of the allocator elision separately — so that the near misses
+    /// (an allocator argument that is not the last, a pattern cut short by
+    /// the end of the name, two of them in a row) turn up as often as whole
+    /// matches do.
+    const PIECES: &[&str] = &[
+        "a",
+        "b",
+        "::",
+        "<",
+        ">",
+        ",",
+        " ",
+        "\t",
+        "\u{a0}",
+        "Ü",
+        "alloc::alloc::Global",
+        "alloc::alloc::Glob",
+        GLOBAL_ELISION,
+        // The elision with the spacing a demangler puts *inside* it, which
+        // an assembly out of the pieces above would reach far too rarely to
+        // cover the matcher's tolerance of it.
+        ", alloc::alloc::Global >",
+    ];
+
+    /// A name built from [`PIECES`].
+    fn name() -> impl Strategy<Value = String> {
+        prop::collection::vec(prop::sample::select(PIECES), 0..14)
+            .prop_map(|pieces| pieces.concat())
+    }
+
+    /// One token of a name that is to be spelled two ways.
+    #[derive(Clone, Debug)]
+    enum Token {
+        Piece(&'static str),
+        /// A generic argument list closed with the default allocator, which
+        /// one demangling path spells out and the other elides.
+        CloseAlloc,
+    }
+
+    /// The pieces a two-way spelling is built from: punctuation only, with
+    /// the whitespace coming from [`GAPS`] and the allocator from a
+    /// [`Token::CloseAlloc`]. Nothing else may spell the allocator out — a
+    /// name that writes `,alloc::alloc::Global` on its own account would let
+    /// the elision beside it bind to the wrong comma, and the two spellings
+    /// would then be different names for good reason.
+    const PLAIN_PIECES: &[&str] = &["a", "b", "::", "<", ">", ",", "Ü"];
+
+    /// The whitespace runs woven between tokens; two demanglers differ in
+    /// exactly this, and it is never to mean anything.
+    const GAPS: &[&str] = &["", " ", "  ", "\t", "\u{a0}"];
+
+    /// Write `tokens` out, taking each whitespace run from `gaps` and each
+    /// allocator's spelling from `spelled`, both cycled so a generated choice
+    /// list need not match the token count.
+    fn spell(tokens: &[Token], gaps: &[&str], spelled: &[bool]) -> String {
+        // The allocator argument alone, so the comma that introduces it and
+        // the bracket that closes it can be written with a gap either side.
+        let allocator = &GLOBAL_ELISION[1..GLOBAL_ELISION.len() - 1];
+        let mut cycle = gaps.iter().cycle();
+        let mut gap = move || {
+            *cycle
+                .next()
+                .expect("a cycle over a non-empty list never ends")
+        };
+        let mut out = String::new();
+        for (i, token) in tokens.iter().enumerate() {
+            out.push_str(gap());
+            match token {
+                Token::Piece(piece) => out.push_str(piece),
+                // Spelled out the way a demangler writes it, whitespace
+                // included — which puts the whitespace *inside* the pattern,
+                // where it has to be tolerated rather than merely skipped
+                // before and after.
+                Token::CloseAlloc if spelled[i % spelled.len()] => {
+                    out.push(',');
+                    out.push_str(gap());
+                    out.push_str(allocator);
+                    out.push_str(gap());
+                    out.push('>');
+                }
+                Token::CloseAlloc => out.push('>'),
+            }
+        }
+        out
+    }
+
+    /// One name spelled two ways: same tokens, but every whitespace run and
+    /// every default allocator written the way either demangling path might
+    /// write it. Whatever they look like, they are one name.
+    fn respelled_pair() -> impl Strategy<Value = (String, String)> {
+        let tokens = prop::collection::vec(
+            prop_oneof![
+                4 => prop::sample::select(PLAIN_PIECES).prop_map(Token::Piece),
+                1 => Just(Token::CloseAlloc),
+            ],
+            0..14,
+        );
+        let gaps = || prop::collection::vec(prop::sample::select(GAPS), 1..6);
+        let spelled = || prop::collection::vec(any::<bool>(), 1..6);
+        (tokens, gaps(), spelled(), gaps(), spelled()).prop_map(
+            |(tokens, left_gaps, left_spelled, right_gaps, right_spelled)| {
+                (
+                    spell(&tokens, &left_gaps, &left_spelled),
+                    spell(&tokens, &right_gaps, &right_spelled),
+                )
+            },
+        )
+    }
+
+    /// Two names to compare: usually unrelated ones, which part company at
+    /// their first character, and sometimes one name spelled twice, which is
+    /// what walks a comparison to the end.
+    fn name_pair() -> impl Strategy<Value = (String, String)> {
+        prop_oneof![(name(), name()), respelled_pair()]
+    }
+
+    proptest! {
+        /// The streaming normalizer against the obvious one, over generated
+        /// names rather than the chosen few above.
+        #[test]
+        fn test_any_name_normalizes_to_its_built_key(name in name()) {
+            prop_assert_eq!(normalized_rust_type_name(&name), built_key(&name));
+        }
+
+        /// The pairwise comparator walks two normalizations in step and stops
+        /// at the first difference, so it is a second implementation of the
+        /// rule above and answers to the same oracle.
+        #[test]
+        fn test_name_comparison_agrees_with_the_built_keys((left, right) in name_pair()) {
+            prop_assert_eq!(
+                rust_type_names_equal(&left, &right),
+                built_key(&left) == built_key(&right)
+            );
+        }
+
+        /// The property the whole module exists for: a type named by two
+        /// paths that disagree about spacing and about whether the default
+        /// allocator is written down is *one* type to every caller — the
+        /// comparison, the key, and the hash a name lookup indexes by.
+        #[test]
+        fn test_a_respelled_name_is_the_same_name((left, right) in respelled_pair()) {
+            prop_assert!(
+                rust_type_names_equal(&left, &right),
+                "{left:?} and {right:?} compare unequal"
+            );
+            prop_assert_eq!(
+                normalized_rust_type_name(&left),
+                normalized_rust_type_name(&right)
+            );
+            prop_assert_eq!(rust_type_name_hash(&left), rust_type_name_hash(&right));
+        }
     }
 }

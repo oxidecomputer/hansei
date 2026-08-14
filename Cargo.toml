@@ -35,6 +35,9 @@ memmap2 = "0.9.9"
 mimalloc = { version = "*", features = ["v3"] }
 object = "0.38"
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
+# Property tests only; the default features pull in a persistence file and a
+# fork/timeout harness neither of which any test here wants.
+proptest = { version = "1", default-features = false, features = ["std"] }
 rayon = "1.12"
 proc = { path = "proc", version = "0.1.0" }
 reedline = "0.38"
