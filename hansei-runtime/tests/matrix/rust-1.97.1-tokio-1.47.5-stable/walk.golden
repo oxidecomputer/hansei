@@ -1,5 +1,5 @@
 program: futurelock
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 16 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 16 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -23,6 +23,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -92,7 +93,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: simple-await
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 29 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -116,6 +117,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -185,7 +187,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: nested-await
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 29 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -209,6 +211,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -278,7 +281,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: dyn-future
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 23 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 23 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -302,6 +305,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -371,7 +375,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: select-combinator
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 29 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -395,6 +399,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -464,7 +469,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: many-tasks
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 30 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 30 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -488,6 +493,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -557,7 +563,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: sleep-join
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 26 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 26 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -581,6 +587,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -650,7 +657,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: channels
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 19 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 19 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -674,6 +681,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -743,7 +751,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: unordered
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 26 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 26 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -767,6 +775,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -836,7 +845,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: joinset
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 13 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 13 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -860,6 +869,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -929,7 +939,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: ct-runtime
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 16 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 16 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -953,6 +963,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -1022,7 +1033,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: local-set
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 10 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 10 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1046,6 +1057,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -1115,7 +1127,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: local-set-timer
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 10 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 10 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1139,6 +1151,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id
@@ -1208,7 +1221,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: local-set-io
-walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 23 absent
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 23 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1232,6 +1245,7 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      SpawnerMetrics.num_idle_threads
   ok      SpawnerMetrics.queue_depth
   ok      Shared.owned_lists
+  ok      Shared.owned_id
   ok      Shard.head
   ok      Header.state
   ok      Header.owner_id

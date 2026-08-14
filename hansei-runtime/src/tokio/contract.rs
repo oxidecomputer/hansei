@@ -155,6 +155,11 @@ pub fn classify(role: WalkRole) -> Class {
         // degrades without.
         ContextThreadId | CellScheduler | LocalOwnedId | LocalOwnedHead | LocalSetOwner
         | LocalTlsCtx | LocalCtxShared => Class::Optional,
+        // The scheduler list's own id: read only to hold a runtime
+        // reached from a task's cell to claiming that task, so a build
+        // whose spelling moved costs that cross-check and nothing the
+        // listing depends on.
+        SchedulerOwnedId => Class::Optional,
         // The timer-wheel harvest: a registry of parked tasks whatever
         // list owns them, and so another way home to a `LocalSet`. A
         // runtime built without the time driver has no wheel at all, so

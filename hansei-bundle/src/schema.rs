@@ -1249,6 +1249,7 @@ walk_roles! {
     BlockingIdle = "SpawnerMetrics.num_idle_threads",
     BlockingQueueDepth = "SpawnerMetrics.queue_depth",
     OwnedLists = "Shared.owned_lists",
+    SchedulerOwnedId = "Shared.owned_id",
     ShardHead = "Shard.head",
     HeaderState = "Header.state",
     HeaderOwnerId = "Header.owner_id",
