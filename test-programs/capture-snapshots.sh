@@ -112,9 +112,9 @@ done
 # back here when it no longer matches.
 DEFAULT_OUT="$(cd ../hansei-runtime/tests/fixtures 2>/dev/null && pwd || true)"
 if [[ "$OUT" == "$DEFAULT_OUT" ]]; then
-    (cd .. && FIXTURE_SOURCES_BLESS=1 \
+    (cd .. && INSTA_UPDATE=always \
         cargo test -q -p hansei-runtime --test two_binary fixtures_record >/dev/null)
-    echo "capture-snapshots.sh: recorded the fixture sources in $OUT/SOURCES"
+    echo "capture-snapshots.sh: recorded the fixture sources in $OUT/SOURCES.snap"
 else
     echo "capture-snapshots.sh: $OUT is not the checked-in fixture dir;" \
          "SOURCES not written" >&2
