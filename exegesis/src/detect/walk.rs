@@ -1059,6 +1059,142 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
+        // The io driver's registrations, the wheel's argument applied to
+        // sockets: whatever list owns a task, awaiting readiness on an
+        // io resource leaves the task's own waker on that resource's
+        // `ScheduledIo`. Every registered resource is in one intrusive
+        // list behind the io handle's mutex — there has never been a
+        // slab — and both flavor handles spell `driver` alike, so the
+        // union root serves here too. `driver.io` is the driver's own
+        // flavor enum rather than an `Option`: a runtime built without
+        // io holds `Disabled`, which the walk reports as an inactive
+        // variant, the same "nothing here" the wheel's `None` gives.
+        decl(
+            WalkRole::IoRegistrations,
+            WalkRoot::AnyHandle,
+            Pointer,
+            || {
+                vec![reach![
+                    Named("driver"),
+                    Named("io"),
+                    Variant("Enabled"),
+                    Named("__0"),
+                    Named("synced"),
+                    FindParam,
+                    Named("registrations"),
+                    Named("head"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        // A `ScheduledIo`'s link to the next registration. Its
+        // `linked_list::Pointers` sits inside an `UnsafeCell` of its
+        // own, which the other intrusive lists' nodes do not have, so
+        // the spelling opens with one cell level `WaiterNext`'s does
+        // not — everything after it is that same chain.
+        decl(
+            WalkRole::ScheduledIoNext,
+            Pointee(WalkRole::IoRegistrations),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("linked_list_pointers"),
+                    Named("value"),
+                    Named("inner"),
+                    Named("value"),
+                    Named("next"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        // Everything parked on one resource, behind that resource's own
+        // mutex — the second lock of this chain, crossed the same way.
+        decl(
+            WalkRole::ScheduledIoWaiters,
+            Pointee(WalkRole::IoRegistrations),
+            Aggregate,
+            || vec![reach![Named("waiters"), FindParam]],
+        ),
+        // Three waker sites per resource, not one. `list` holds the
+        // `Waiter` nodes an `Interest`-based readiness await pushes,
+        // while `reader`/`writer` are the bare `Option<Waker>`s the
+        // `AsyncRead`/`AsyncWrite` paths park in — appearing in no list
+        // at all, and the commoner shape of the two.
+        decl(
+            WalkRole::IoWaiterHead,
+            End(WalkRole::ScheduledIoWaiters),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("list"),
+                    Named("head"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::IoReaderWaker,
+            End(WalkRole::ScheduledIoWaiters),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("reader"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("waker"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::IoWriterWaker,
+            End(WalkRole::ScheduledIoWaiters),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("writer"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("waker"),
+                ]]
+            },
+        ),
+        // The list nodes: `WaiterNext`'s spelling exactly, and a waker
+        // that is a bare `Option<Waker>` rather than a cell over one.
+        decl(
+            WalkRole::IoWaiterNext,
+            Pointee(WalkRole::IoWaiterHead),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("pointers"),
+                    Named("inner"),
+                    Named("value"),
+                    Named("next"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::IoWaiterWaker,
+            Pointee(WalkRole::IoWaiterHead),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("waker"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("waker"),
+                ]]
+            },
+        ),
     ]
 }
 

@@ -1,5 +1,5 @@
 program: futurelock
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 15 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 15 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -82,9 +82,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: simple-await
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 30 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 30 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -167,9 +175,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: nested-await
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 30 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 30 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -252,9 +268,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: dyn-future
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 24 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 24 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -337,9 +361,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: select-combinator
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 30 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 30 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -422,9 +454,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: many-tasks
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 31 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 31 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -507,9 +547,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: sleep-join
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 27 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 27 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -592,9 +640,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: channels
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 18 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 18 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -677,9 +733,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: unordered
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 27 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 27 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -762,9 +826,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: joinset
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 12 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 12 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -847,9 +919,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 15 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 15 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -932,9 +1012,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: local-set
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 9 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 9 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1017,9 +1105,17 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 
 program: local-set-timer
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0 broken, 9 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 90 entries, 0 broken, 9 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1102,4 +1198,12 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 82 entries, 0
   ok      wheel::Slot.head
   ok      TimerShared.next
   ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
 

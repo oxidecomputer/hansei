@@ -96,4 +96,12 @@ ok      wheel::Level.slot
 ok      wheel::Slot.head
 ok      TimerShared.next
 ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
 

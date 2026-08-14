@@ -160,6 +160,12 @@ pub fn classify(role: WalkRole) -> Class {
         // runtime built without the time driver has no wheel at all, so
         // these degrade like the leaf readers.
         WheelLevels | LevelSlots | SlotHead | TimerSharedNext | TimerSharedWaker => Class::Optional,
+        // The io-registration harvest: the same registry argument as the
+        // wheel, for tasks parked on a socket rather than on a timer. A
+        // runtime built without the io driver holds `Disabled` and has no
+        // registration list, so these degrade the same way.
+        IoRegistrations | ScheduledIoNext | ScheduledIoWaiters | IoWaiterHead | IoReaderWaker
+        | IoWriterWaker | IoWaiterNext | IoWaiterWaker => Class::Optional,
     }
 }
 
