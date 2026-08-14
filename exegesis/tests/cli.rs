@@ -39,8 +39,13 @@ fn stderr(out: &Output) -> String {
 }
 
 /// The checked-in offline fixture bundles, shared with `hansei-runtime`.
+///
+/// The illumos set by name rather than whichever this build would read:
+/// what these want is bundles to run the CLI over, and that set has one
+/// per program on every platform, macOS included.
 fn fixture_bundles() -> Vec<PathBuf> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../hansei-runtime/tests/fixtures");
+    let dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../hansei-runtime/tests/fixtures/illumos");
     let mut bundles: Vec<PathBuf> = std::fs::read_dir(&dir)
         .expect("the fixture dir exists")
         .map(|e| e.unwrap().path())

@@ -21,10 +21,11 @@
 # complete, so both reject a mismatched pair, but a capture taken on
 # illumos checks a pair against more names.
 #
-# So recapture on illumos. The checked-in pairs came from there and the
-# offline goldens quote those counts, which is why a recapture anywhere
-# else turns them red with nothing else about the analysis moved: what
-# re-blessing them would record is a weaker fingerprint, not a fix.
+# So neither system stands for the other: each keeps a set of its own
+# under tests/fixtures/<set>, this script writes the set belonging to
+# the system it runs on, and the build reads the set matching it
+# (testkit::FIXTURE_SET). Recapturing on one leaves the other's pairs,
+# and its goldens, alone.
 #
 # Usage: capture-snapshots.sh [OUT_DIR [PROGRAM...]]
 #
@@ -35,12 +36,17 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-OUT="$(cd "${1:-../hansei-runtime/tests/fixtures}" 2>/dev/null && pwd || true)"
-if [[ -z "$OUT" ]]; then
-    OUT="${1:-../hansei-runtime/tests/fixtures}"
-    mkdir -p "$OUT"
-    OUT="$(cd "$OUT" && pwd)"
-fi
+# Each system that can core a process keeps a set of its own, named for
+# itself, and `testkit::FIXTURE_SET` reads the one matching the build.
+case "$(uname -s)" in
+    SunOS) SET=illumos ;;
+    Linux) SET=linux ;;
+    *) echo "capture-snapshots.sh: $(uname -s) takes no ELF core to capture from" >&2
+       exit 1 ;;
+esac
+OUT="${1:-../hansei-runtime/tests/fixtures/$SET}"
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
 FIXTURES="$PWD/fixtures"
 
 # Program -> the stdout line marking its parked steady state. Reads
@@ -124,12 +130,12 @@ done
 # goldens quote line numbers out of sources they are never rebuilt
 # against — so the offline suite checks this manifest and says to come
 # back here when it no longer matches.
-DEFAULT_OUT="$(cd ../hansei-runtime/tests/fixtures 2>/dev/null && pwd || true)"
+DEFAULT_OUT="$(cd "../hansei-runtime/tests/fixtures/$SET" 2>/dev/null && pwd || true)"
 if [[ "$OUT" == "$DEFAULT_OUT" ]]; then
     (cd .. && INSTA_UPDATE=always \
         cargo test -q -p hansei-runtime --test two_binary fixtures_record >/dev/null)
     echo "capture-snapshots.sh: recorded the fixture sources in $OUT/SOURCES.snap"
 else
-    echo "capture-snapshots.sh: $OUT is not the checked-in fixture dir;" \
+    echo "capture-snapshots.sh: $OUT is not the checked-in $SET fixture dir;" \
          "SOURCES not written" >&2
 fi

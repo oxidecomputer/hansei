@@ -15,15 +15,27 @@
 //! The expected summaries are goldens: they change only when the
 //! fixtures are regenerated (new sources, toolchain, or tokio), and a
 //! diff here is reviewable line by line. `fingerprint N/N` counts the
-//! symbols the *capturing* platform's linker kept, so it is a property
-//! of where the pair was made rather than of where the test runs.
+//! symbols the *capturing* system's linker kept, so it is a property of
+//! where the pair was made rather than of where the test runs — which
+//! is why each system that can core a process keeps a set of its own
+//! (`testkit::FIXTURE_SET`) and a golden per set, suffixed with it.
 //!
-//! What the pairs were captured from is recorded in `fixtures/SOURCES`
-//! and checked by [`test_fixtures_record_the_current_programs`], since
-//! nothing else here would notice the programs moving on without them.
+//! Two things differ between the sets, and both are the capture's:
+//! that fingerprint count, and how a timer deadline reads — illumos
+//! lwps stamp a stop time so it is reported relative to it, a Linux
+//! core records none so the absolute point on the monotonic clock is
+//! printed instead. Holding a set per system is what got the second
+//! spelling under an offline golden at all. Everything else — the
+//! tasks found, the chains walked, the locals live at each await —
+//! agrees across the sets, which is the point of holding both.
+//!
+//! What the pairs were captured from is recorded in
+//! `fixtures/<set>/SOURCES.snap` and checked by
+//! [`test_fixtures_record_the_current_programs`], since nothing else
+//! here would notice the programs moving on without them.
 
 use hansei_bundle::{Bundle, BundleView};
-use hansei_runtime::testkit::load;
+use hansei_runtime::testkit::{FIXTURE_SET, load};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
@@ -97,7 +109,9 @@ fn test_fixtures_record_the_current_programs() {
         .collect();
 
     let mut settings = insta::Settings::clone_current();
-    settings.set_snapshot_path("fixtures");
+    // Beside the pairs it describes: each set is captured on its own
+    // system, at its own time, from whatever the sources were then.
+    settings.set_snapshot_path(Path::new("fixtures").join(FIXTURE_SET));
     settings.set_prepend_module_to_snapshot(false);
     settings.set_omit_expression(true);
     settings.set_description(
@@ -270,15 +284,24 @@ fn render_chain(out: &mut String, chain: &AwaitChain<'_>) {
     }
 }
 
+/// Diff a program's analysis against the golden for the set this build
+/// reads.
+///
+/// One golden per set, not one for both: the summary opens with the
+/// fingerprint the pair joined on, and how many `poll` symbols a
+/// capture had to fingerprint against is the capturing system's — as
+/// is the deadline spelling a timer leaf reports. See this file's
+/// header for both.
 #[track_caller]
-fn assert_summary(program: &str, expected: &str) {
+fn assert_summary(program: &str) {
     let (bundle, snapshot) = load(program);
     let actual = interpret(&bundle, &snapshot);
-    assert_eq!(
-        actual.trim(),
-        expected.trim(),
-        "\n== summary for {program} ==\n{actual}"
-    );
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path("two_binary");
+    settings.set_prepend_module_to_snapshot(false);
+    settings.set_snapshot_suffix(FIXTURE_SET);
+    settings.set_omit_expression(true);
+    settings.bind(|| insta::assert_snapshot!(program, actual.trim()));
 }
 
 /// One spawned async fn parked on a leaked oneshot: the baseline
@@ -286,40 +309,14 @@ fn assert_summary(program: &str, expected: &str) {
 /// the second await point.
 #[test]
 fn test_simple_await_offline() {
-    assert_summary(
-        "simple-await",
-        r#"
-fingerprint 15/15
-workers 3
-task 3 idle simple_await::work::{async_fn_env#0}
-  spawned src/bin/simple-await.rs:67:21
-  defined src/bin/simple-await.rs:16
-  await simple_await::work::{async_fn_env#0} Suspend1 @ src/bin/simple-await.rs:34 locals [count, labels, values, boxed, slice, ipv4, ipv6, borrowed, owned, first]
-  await tokio::sync::oneshot::Receiver<u32>
-  end leaf
-"#,
-    );
+    assert_summary("simple-await");
 }
 
 /// async fn awaiting async fn awaiting a leaf: the exact three-deep
 /// chain, every await point mapped to its source line.
 #[test]
 fn test_nested_await_offline() {
-    assert_summary(
-        "nested-await",
-        r#"
-fingerprint 15/15
-workers 3
-task 3 idle nested_await::outer::{async_fn_env#0}
-  spawned src/bin/nested-await.rs:32:21
-  defined src/bin/nested-await.rs:16
-  await nested_await::outer::{async_fn_env#0} Suspend0 @ src/bin/nested-await.rs:18
-  await nested_await::middle::{async_fn_env#0} Suspend0 @ src/bin/nested-await.rs:12
-  await nested_await::leaf::{async_fn_env#0} Suspend0 @ src/bin/nested-await.rs:8
-  await tokio::sync::oneshot::Receiver<u32>
-  end leaf
-"#,
-    );
+    assert_summary("nested-await");
 }
 
 /// A `Pin<Box<dyn Future>>` awaitee: the concrete type is reachable
@@ -328,26 +325,7 @@ task 3 idle nested_await::outer::{async_fn_env#0}
 /// its own task.
 #[test]
 fn test_dyn_future_offline() {
-    assert_summary(
-        "dyn-future",
-        r#"
-fingerprint 17/17
-workers 3
-task 3 idle dyn_future::driver::{async_fn_env#0}
-  spawned src/bin/dyn-future.rs:46:21
-  defined src/bin/dyn-future.rs:22
-  await dyn_future::driver::{async_fn_env#0} Suspend0 @ src/bin/dyn-future.rs:29 locals [set]
-  await dyn_future::boxed_leaf::{async_fn_env#0} [dyn] Suspend0 @ src/bin/dyn-future.rs:11
-  await tokio::sync::oneshot::Receiver<u32>
-  end leaf
-task 4 idle dyn_future::set_member::{async_fn_env#0}
-  spawned src/bin/dyn-future.rs:26:9
-  defined src/bin/dyn-future.rs:14
-  await dyn_future::set_member::{async_fn_env#0} Suspend0 @ src/bin/dyn-future.rs:15
-  await tokio::sync::oneshot::Receiver<u32>
-  end leaf
-"#,
-    );
+    assert_summary("dyn-future");
 }
 
 /// The RFD 609 futurelock, fully automatically: do_stuff suspended in
@@ -356,28 +334,7 @@ task 4 idle dyn_future::set_member::{async_fn_env#0}
 /// semaphore leaf.
 #[test]
 fn test_futurelock_offline() {
-    assert_summary(
-        "futurelock",
-        r#"
-fingerprint 17/17
-workers 5
-task 5 idle futurelock::main::{async_block#0}::{async_block_env#0}
-  spawned src/bin/futurelock.rs:15:17
-  defined src/bin/futurelock.rs:15
-  await futurelock::main::{async_block#0}::{async_block_env#0} Suspend1 @ src/bin/futurelock.rs:25 locals [lock]
-  await futurelock::do_stuff::{async_fn_env#0} Suspend1 @ src/bin/futurelock.rs:64 locals [lock, future1, disabled]
-  await futurelock::do_async_thing::{async_fn_env#0} Suspend0 @ src/bin/futurelock.rs:72 locals [label, lock]
-  await tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()> Suspend0 @ tokio-1.52.4/src/sync/mutex.rs:455
-  await tokio::sync::mutex::{impl#10}::lock::{async_fn#0}::{async_block_env#0}<()> Suspend0 @ tokio-1.52.4/src/sync/mutex.rs:436
-  await tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()> Suspend1 @ tokio-1.52.4/src/sync/mutex.rs:658
-  await tokio::sync::batch_semaphore::Acquire
-  end leaf
-  waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
-futurelock: task 5 holds `future1` (futurelock::do_async_thing::{async_fn_env#0}), granted 1 permit(s) of the tokio::sync::Mutex semaphore 0xADDR
-  held across futurelock::do_stuff::{async_fn_env#0} Suspend1 @ src/bin/futurelock.rs:64
-  blocked: [task 5]
-"#,
-    );
+    assert_summary("futurelock");
 }
 
 /// The leaf-future wait targets and dependency edges, offline: the
@@ -386,27 +343,7 @@ futurelock: task 5 holds `future1` (futurelock::do_async_thing::{async_fn_env#0}
 /// no futurelock diagnosis.
 #[test]
 fn test_sleep_join_offline() {
-    assert_summary(
-        "sleep-join",
-        r#"
-fingerprint 17/17
-workers 3
-task 3 idle sleep_join::sleeper::{async_fn_env#0}
-  spawned src/bin/sleep-join.rs:28:22
-  defined src/bin/sleep-join.rs:9
-  await sleep_join::sleeper::{async_fn_env#0} Suspend0 @ src/bin/sleep-join.rs:11
-  await tokio::time::sleep::Sleep
-  end leaf
-  waiting on the timer: deadline TS
-task 4 idle sleep_join::joiner::{async_fn_env#0}
-  spawned src/bin/sleep-join.rs:29:23
-  defined src/bin/sleep-join.rs:15
-  await sleep_join::joiner::{async_fn_env#0} Suspend0 @ src/bin/sleep-join.rs:17
-  await tokio::runtime::task::join::JoinHandle<u32>
-  end leaf
-  waiting on task 3 (JoinHandle)
-"#,
-    );
+    assert_summary("sleep-join");
 }
 
 /// The future census, offline: the futurelock fixture's `future1` — a
@@ -461,19 +398,7 @@ fn test_futurelock_census_offline() {
 /// are the census's business (below).
 #[test]
 fn test_unordered_offline() {
-    assert_summary(
-        "unordered",
-        r#"
-fingerprint 15/15
-workers 3
-task 3 idle unordered::driver::{async_fn_env#0}
-  spawned src/bin/unordered.rs:51:21
-  defined src/bin/unordered.rs:24
-  await unordered::driver::{async_fn_env#0} Suspend0 @ src/bin/unordered.rs:34 locals [notify, set, held, boxed, sum]
-  await futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}>
-  end leaf
-"#,
-    );
+    assert_summary("unordered");
 }
 
 /// A `JoinSet`'s members are real tasks: each is its own listing entry
@@ -481,38 +406,7 @@ task 3 idle unordered::driver::{async_fn_env#0}
 /// `join_next` over the `IdleNotifiedSet`.
 #[test]
 fn test_joinset_offline() {
-    assert_summary(
-        "joinset",
-        r#"
-fingerprint 17/17
-workers 3
-task 3 idle joinset::driver::{async_fn_env#0}
-  spawned src/bin/joinset.rs:58:21
-  defined src/bin/joinset.rs:22
-  await joinset::driver::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:41 locals [notify, started_tx, started_rx, set, sum]
-  await tokio::task::join_set::{impl#1}::join_next::{async_fn_env#0}<u32> Suspend0 @ tokio-1.52.4/src/task/join_set.rs:297
-  await tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
-  end leaf
-task 4 idle joinset::member::{async_fn_env#0}
-  spawned src/bin/joinset.rs:28:13
-  defined src/bin/joinset.rs:16
-  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:18 locals [started, notify]
-  await tokio::sync::notify::Notified
-  end leaf
-task 5 idle joinset::member::{async_fn_env#0}
-  spawned src/bin/joinset.rs:28:13
-  defined src/bin/joinset.rs:16
-  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:18 locals [started, notify]
-  await tokio::sync::notify::Notified
-  end leaf
-task 6 idle joinset::member::{async_fn_env#0}
-  spawned src/bin/joinset.rs:28:13
-  defined src/bin/joinset.rs:16
-  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:18 locals [started, notify]
-  await tokio::sync::notify::Notified
-  end leaf
-"#,
-    );
+    assert_summary("joinset");
 }
 
 /// The resolved future name of a task the fixtures guarantee decodes.

@@ -11,8 +11,6 @@
 use hansei_bundle::{Bundle, BundleView, WalkOutcome, WalkRole};
 use hansei_runtime::tokio::contract::{Class, verify_walk_contract};
 
-use std::path::{Path, PathBuf};
-
 /// Every program `capture-snapshots.sh` captures a fixture pair for
 /// (kept in sync with `two_binary.rs`, which checks the pairs against
 /// the sources).
@@ -26,9 +24,7 @@ const PROGRAMS: &[&str] = &[
 ];
 
 fn fixture_bundle(program: &str) -> Bundle {
-    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(format!("{program}.bundle"));
+    let path = hansei_runtime::testkit::fixture(&format!("{program}.bundle"));
     Bundle::load(&path).expect("fixture bundle loads; regenerate with capture-snapshots.sh")
 }
 

@@ -1,7 +1,8 @@
 //! Test-only helpers over the checked-in fixture pairs in
-//! `tests/fixtures/`: the load-and-attach chain that this crate's
+//! `tests/fixtures/<set>/`: the load-and-attach chain that this crate's
 //! offline suites and hansei's unit tests otherwise each re-spell.
-//! Nothing on a session's path calls this.
+//! Nothing on a session's path calls this. See [`FIXTURE_SET`] for why
+//! there is more than one set.
 
 use crate::tokio::bundle::{Context, LocalSetRef, RuntimeRef, TaskList};
 
@@ -11,11 +12,35 @@ use proc::snapshot::Snapshot;
 
 use std::path::PathBuf;
 
-/// The path of one checked-in fixture file.
+/// Which set of checked-in pairs this build reads.
+///
+/// A pair is only as good as the symbol table its capture had to work
+/// with: the fingerprint joining bundle to snapshot is built from the
+/// tokio `poll` instantiations that survive into the cored binary, and
+/// illumos keeps far more of them than Linux does. So each system that
+/// can core a process contributes its own set, and neither is asked to
+/// stand for the other.
+///
+/// macOS captures nothing — it has no ELF core to take — so it reads
+/// the illumos set, the one fingerprinted against more names. That is
+/// also why this names the *set* rather than the host: what a golden
+/// has to agree with is the pair that was loaded, and on macOS that is
+/// not the host's own.
+pub const FIXTURE_SET: &str = match cfg!(target_os = "linux") {
+    true => "linux",
+    false => "illumos",
+};
+
+/// The path of one checked-in fixture file, in the set this build reads.
 pub fn fixture(name: &str) -> PathBuf {
+    fixture_dir().join(name)
+}
+
+/// The directory holding the set this build reads.
+pub fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
-        .join(name)
+        .join(FIXTURE_SET)
 }
 
 /// Load a program's fixture pair.

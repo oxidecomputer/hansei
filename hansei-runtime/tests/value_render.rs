@@ -119,6 +119,7 @@ fn assert_golden(program: &str) {
     let actual = interpret(&bundle, &snapshot);
     let mut settings = insta::Settings::clone_current();
     settings.set_snapshot_path("value_render");
+    settings.set_snapshot_suffix(hansei_runtime::testkit::FIXTURE_SET);
     settings.set_prepend_module_to_snapshot(false);
     settings.set_omit_expression(true);
     settings.bind(|| insta::assert_snapshot!(program, actual.trim()));
