@@ -1761,14 +1761,16 @@ fn test_census_counts_the_target() {
 
         assert!(out.contains(" in the scheduler's run loop"), "{out}");
         assert!(out.contains("1 parked in the io driver"), "{out}");
+        // The section names the one runtime the target holds, the way
+        // `runtimes` lists it.
+        let inside =
+            regex::Regex::new(r"Threads: \d+ lwps, \d+ in runtime 0 @0x[0-9a-f]+\n").unwrap();
+        assert!(inside.is_match(&out), "{out}");
         // The `block_on` thread is in the runtime without running the
         // worker loop, as `threads` says of it too — and it is counted
         // apart from the pool's own threads, which the runtime's two
         // workers are otherwise counted among.
-        assert!(
-            out.contains("in the runtime, outside the run loop\n"),
-            "{out}"
-        );
+        assert!(out.contains(", outside the run loop\n"), "{out}");
         assert!(out.contains(" in the blocking pool ("), "{out}");
         assert!(
             out.contains("1 that entered the runtime another way (a block_on caller)"),
@@ -1780,10 +1782,12 @@ fn test_census_counts_the_target() {
         // joiner on the sleeper — each hanging off the future type
         // whose task waits that way rather than tallied on its own.
         let rows = list_tasks(&bundle, core);
-        assert!(
-            out.contains(&format!("Tasks: {} owned by the runtime\n", rows.len())),
-            "{out}"
-        );
+        let owned = regex::Regex::new(&format!(
+            r"Tasks: {} owned by runtime 0 @0x[0-9a-f]+\n",
+            rows.len()
+        ))
+        .unwrap();
+        assert!(owned.is_match(&out), "{out}");
         assert!(out.contains("    Lifecycle: 2 idle\n"), "{out}");
         assert!(
             out.contains(
@@ -1809,7 +1813,7 @@ fn test_census_counts_the_target() {
             out.contains(
                 "Futures: 2 in flight, on 4 await-chain frames (up to 2 deep)\n    \
                  Location:\n        \
-                 2  polled as tasks by the runtime\n        \
+                 2  polled as tasks\n        \
                  0  held in frames, off any await chain\n        \
                  0  in 0 FuturesUnordered\n"
             ),
@@ -1833,10 +1837,7 @@ fn test_census_prints_only_the_sections_named() {
         // blank line in it, and neither section short of what the whole
         // census prints for it.
         let both = hansei_ok(&bundle, core, "census -tf");
-        assert!(
-            both.starts_with("Tasks: 2 owned by the runtime\n"),
-            "{both}"
-        );
+        assert!(both.starts_with("Tasks: 2 owned by runtime 0 @"), "{both}");
         assert!(!both.contains("Threads: "), "{both}");
         assert!(both.contains("\n\nFutures: 2 in flight, "), "{both}");
     });
@@ -2054,7 +2055,10 @@ fn test_exec_asks_from_the_command_line() {
         let out = hansei_exec(&bundle, core, &["trace 99999"]);
         assert!(!out.status.success(), "{stdout}");
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("owns no task with id 99999"), "{stderr}");
+        assert!(
+            stderr.contains("no task with id 99999 is listed"),
+            "{stderr}"
+        );
     });
 }
 
