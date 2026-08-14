@@ -632,7 +632,8 @@ impl Symbols {
     /// a golden claim an agreement between them the run never had.
     fn apply(&self, out: &str) -> String {
         let mut seen = Vec::new();
-        let out = self.addresses(out);
+        let out = drop_spawn_line(out);
+        let out = self.addresses(&out);
         let out = mask(&out);
         let out = self.table(&mut seen, &out);
         self.references(&mut seen, &out)
@@ -768,19 +769,53 @@ impl Symbols {
         )
     }
 
-    /// Every other mention of a task, which prose spells `task <id>`.
+    /// Every other mention of a task: the header a trace opens with,
+    /// and the `task <id>` prose names one by anywhere else.
     ///
-    /// Matched in that position rather than by the digits alone: a task
-    /// id is only a number, and a run whose blocked task is task 64
-    /// must not rewrite `futurelock.rs:64` along with it.
+    /// Matched in those positions rather than by the digits alone: a
+    /// task id is only a number, and a run whose blocked task is task
+    /// 64 must not rewrite `futurelock.rs:64` along with it.
     fn references(&self, seen: &mut Vec<(String, String)>, out: &str) -> String {
-        let reference = regex::Regex::new(r"\btask (?<id>\d+)\b").unwrap();
+        let reference = regex::Regex::new(r"\b(?<word>[Tt]ask) (?<id>\d+)\b").unwrap();
         reference
             .replace_all(out, |caps: &regex::Captures<'_>| {
-                format!("task {}", self.task_symbol(seen, &caps["id"]))
+                let symbol = self.task_symbol(seen, &caps["id"]);
+                format!("{} {symbol}", &caps["word"])
             })
             .into_owned()
     }
+}
+
+/// Drop the `Spawned at` line, wherever a command prints one. See
+/// [`spawn_line`] for why a golden does not hold it.
+fn drop_spawn_line(out: &str) -> String {
+    out.lines()
+        .filter(|line| !line.starts_with("Spawned at: "))
+        .fold(String::new(), |mut text, line| {
+            text.push_str(line);
+            text.push('\n');
+            text
+        })
+}
+
+/// The trace header's `Spawned at` line, which a target carries only
+/// under `tokio_unstable` instrumentation.
+///
+/// Held out of a golden rather than in it: whether the line is there at
+/// all is the cell's, not hansei's, and one golden serves every cell.
+/// What it says where it is there is [`assert_spawned_at`]'s to check.
+fn spawn_line(loc: &str) -> Option<String> {
+    cell().unstable.then(|| format!("Spawned at: {loc}"))
+}
+
+/// Assert a trace header records `loc` as the spawn site — or records
+/// no site at all, on a cell whose target could not.
+fn assert_spawned_at(trace: &str, loc: &str) {
+    let line = trace
+        .lines()
+        .find(|line| line.starts_with("Spawned at: "))
+        .map(str::to_owned);
+    assert_eq!(line, spawn_line(loc), "in:\n{trace}");
 }
 
 /// Compare `actual` against the checked-in golden of that name, under
@@ -835,21 +870,12 @@ fn test_simple_await_acceptance() {
         assert_eq!(task.spawned, spawned("src/bin/simple-await.rs:67:21"));
         assert_eq!(task.defined, "src/bin/simple-await.rs:16");
 
-        let expected = format!(
-            "\
-Task {id}: simple_await::work::{{async_fn_env#0}} (idle)
-{spawned}Defined at: src/bin/simple-await.rs:16
-
-  0  async fn      simple_await::work::{{async_fn_env#0}}
-     suspends:
-       Suspend0  src/bin/simple-await.rs:32  11 locals  simple_await::ready_value::{{async_fn_env#0}}
-     ▸ Suspend1  src/bin/simple-await.rs:34  10 locals
-       └─* 1  future        tokio::sync::oneshot::Receiver<u32>
-",
-            id = task.id,
-            spawned = spawned_at("src/bin/simple-await.rs:67:21")
+        let out = trace(&bundle, core, &task.id, false);
+        assert_spawned_at(&out, "src/bin/simple-await.rs:67:21");
+        golden(
+            "simple-await-trace",
+            &Symbols::new().task(&task.id, "work").apply(&out),
         );
-        assert_eq!(trace(&bundle, core, &task.id, false), expected);
 
         // Exactly these, against a bundle extracted a moment ago: the
         // extractor drops what rustc lists in a state that is not that
@@ -997,26 +1023,12 @@ fn test_nested_await_acceptance() {
         assert_eq!(task.spawned, spawned("src/bin/nested-await.rs:32:21"));
         assert_eq!(task.defined, "src/bin/nested-await.rs:16");
 
-        let expected = format!(
-            "\
-Task {id}: nested_await::outer::{{async_fn_env#0}} (idle)
-{spawned}Defined at: src/bin/nested-await.rs:16
-
-  0  async fn      nested_await::outer::{{async_fn_env#0}}
-     suspends:
-     ▸ Suspend0  src/bin/nested-await.rs:18
-       └─  1  async fn      nested_await::middle::{{async_fn_env#0}}
-          suspends:
-          ▸ Suspend0  src/bin/nested-await.rs:12
-            └─  2  async fn      nested_await::leaf::{{async_fn_env#0}}
-               suspends:
-               ▸ Suspend0  src/bin/nested-await.rs:8
-                 └─* 3  future        tokio::sync::oneshot::Receiver<u32>
-",
-            id = task.id,
-            spawned = spawned_at("src/bin/nested-await.rs:32:21")
+        let out = trace(&bundle, core, &task.id, false);
+        assert_spawned_at(&out, "src/bin/nested-await.rs:32:21");
+        golden(
+            "nested-await-trace",
+            &Symbols::new().task(&task.id, "outer").apply(&out),
         );
-        assert_eq!(trace(&bundle, core, &task.id, false), expected);
     });
 }
 
