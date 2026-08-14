@@ -56,6 +56,9 @@ const LOCAL_SHARED: &str = "tokio::task::local::Shared";
 /// The `task::local::CURRENT` thread-local's payload, emitted by name —
 /// nothing else references it.
 const LOCAL_DATA: &str = "tokio::task::local::LocalData";
+/// The two-word waker pair every registered waker in the walk lands on,
+/// wherever it was registered.
+const RAW_WAKER: &str = "core::task::wake::RawWaker";
 
 /// Whether `name` is a type a leaf key names. A key ending in `<` is a
 /// generic: the prefix of every monomorphization's name. Any other key
@@ -802,18 +805,18 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
-        decl(
-            WalkRole::WakerData,
-            End(WalkRole::WaiterWaker),
-            Pointer,
-            || vec![reach![Named("data")]],
-        ),
-        decl(
-            WalkRole::WakerVtable,
-            End(WalkRole::WaiterWaker),
-            Pointer,
-            || vec![reach![Named("vtable")]],
-        ),
+        // The waker pair itself, rooted at the type rather than at any
+        // one place a waker is registered: a semaphore's wait queue was
+        // the first, but the timer wheel and the io driver register the
+        // same `RawWaker`, and rooting on the queue made these two rows
+        // absent — and so every registry harvest blind — on a target
+        // that happens not to instantiate `Acquire`.
+        decl(WalkRole::WakerData, Leaf(RAW_WAKER), Pointer, || {
+            vec![reach![Named("data")]]
+        }),
+        decl(WalkRole::WakerVtable, Leaf(RAW_WAKER), Pointer, || {
+            vec![reach![Named("vtable")]]
+        }),
         // The census's set walks: a `FuturesUnordered`'s intrusive child
         // list, and a `JoinSet`'s two entry lists.
         decl(
