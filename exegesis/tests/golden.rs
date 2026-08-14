@@ -244,6 +244,16 @@ fn assert_walk(program: &str, bundle: &Bundle, role: WalkRole, expected: &str) {
 /// drops" checks plus metadata sanity.
 fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert_addresses_by_name(program, bundle);
+    // Every tokio target has a scheduler owned list, so its id binds
+    // everywhere. The summary says only that it did; this says it
+    // landed beside `owned.list` rather than on some other counter.
+    // The tail is the `NonZeroU64` the peel to a word crosses.
+    assert_walk(
+        program,
+        bundle,
+        WalkRole::SchedulerOwnedId,
+        "owned.id.__0.__0",
+    );
     assert_eq!(stats.cells_missing, 0, "{program}: cells missing");
     assert_eq!(stats.stages_missing, 0, "{program}: stages missing");
     assert_eq!(

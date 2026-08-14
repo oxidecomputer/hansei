@@ -513,6 +513,17 @@ fn decls() -> Vec<WalkDecl> {
             Slice,
             || vec![reach![Named("owned"), Named("list"), Named("lists")]],
         ),
+        // The id the global owned-list counter gave this scheduler's
+        // list — what `Header.owner_id` joins, exactly as
+        // `LocalOwnedId` is for a `LocalSet`'s list. It sits beside
+        // `owned.list`, so a runtime reached from a task's own cell can
+        // be held to claiming that task.
+        decl(
+            WalkRole::SchedulerOwnedId,
+            End(WalkRole::HandleShared),
+            Word,
+            || vec![reach![Named("owned"), Named("id"), PeelTo(WORD)]],
+        ),
         decl(
             WalkRole::ShardHead,
             Elem(WalkRole::OwnedLists),
