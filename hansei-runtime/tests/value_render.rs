@@ -17,7 +17,7 @@
 //! `cargo test` on any platform.
 //!
 //! The expected render is a golden in `tests/value_render/`; regenerate
-//! after an intended change with `VALUE_RENDER_BLESS=1 cargo test -p
+//! after an intended change with `INSTA_UPDATE=always cargo test -p
 //! hansei-runtime --test value_render` and review the diff.
 
 use hansei_bundle::Bundle;
@@ -27,7 +27,6 @@ use proc::snapshot::Snapshot;
 use reify::Value;
 
 use std::fmt::Write as _;
-use std::path::Path;
 
 /// Mask the run-varying heap/text addresses so the golden compares
 /// exactly; the decoded semantics (permit counts, queued values, waiter
@@ -115,30 +114,14 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
 }
 
 #[track_caller]
-fn assert_golden(program: &str, golden: &str) {
+fn assert_golden(program: &str) {
     let (bundle, snapshot) = load(program);
     let actual = interpret(&bundle, &snapshot);
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/value_render")
-        .join(golden);
-
-    if std::env::var_os("VALUE_RENDER_BLESS").is_some() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, &actual).unwrap();
-        return;
-    }
-
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
-        panic!(
-            "missing golden {}; regenerate with VALUE_RENDER_BLESS=1",
-            path.display()
-        )
-    });
-    assert_eq!(
-        actual.trim(),
-        expected.trim(),
-        "\n== value render for {program} (bless with VALUE_RENDER_BLESS=1) ==\n{actual}"
-    );
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path("value_render");
+    settings.set_prepend_module_to_snapshot(false);
+    settings.set_omit_expression(true);
+    settings.bind(|| insta::assert_snapshot!(program, actual.trim()));
 }
 
 /// The four tokio-sync formatters, rendered from real target memory:
@@ -147,5 +130,5 @@ fn assert_golden(program: &str, golden: &str) {
 /// `Notify` with its one parked waiter, and the watch's published value.
 #[test]
 fn test_channels_value_render() {
-    assert_golden("channels", "channels.golden");
+    assert_golden("channels");
 }
