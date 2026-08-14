@@ -92,7 +92,7 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: simple-await
-walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 30 absent
+walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 28 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -154,8 +154,8 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  ok      RawWaker.data
+  ok      RawWaker.vtable
   absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
@@ -185,7 +185,7 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: nested-await
-walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 30 absent
+walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 28 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -247,8 +247,8 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  ok      RawWaker.data
+  ok      RawWaker.vtable
   absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
@@ -278,7 +278,7 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: dyn-future
-walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 24 absent
+walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 22 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -340,8 +340,8 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  ok      RawWaker.data
+  ok      RawWaker.vtable
   absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
@@ -371,7 +371,7 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: select-combinator
-walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 30 absent
+walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 28 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -433,8 +433,8 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  ok      RawWaker.data
+  ok      RawWaker.vtable
   absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
@@ -464,7 +464,7 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: many-tasks
-walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 31 absent
+walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -526,8 +526,8 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  ok      RawWaker.data
+  ok      RawWaker.vtable
   absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
@@ -557,7 +557,7 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: sleep-join
-walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 27 absent
+walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 25 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -619,8 +619,8 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  ok      RawWaker.data
+  ok      RawWaker.vtable
   absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
   absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the bundle (the target does not reach one)
@@ -743,7 +743,7 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   ok      io::Waiter.waker
 
 program: unordered
-walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 27 absent
+walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0 broken, 25 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -805,8 +805,8 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 90 entries, 0
   absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.data — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
-  absent  RawWaker.vtable — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
+  ok      RawWaker.data
+  ok      RawWaker.vtable
   ok      FuturesUnordered.head_all
   ok      SetNode.future
   ok      SetNode.next_all
