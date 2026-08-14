@@ -44,3 +44,22 @@ pub fn tasks<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> TaskList {
     ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut list);
     list
 }
+
+/// The io registry's discovery candidates, before the identification
+/// chain takes them.
+///
+/// A `ScheduledIo` holds wakers in three places, and every candidate a
+/// fixture's set produces dedups to that one set — so discovery's own
+/// output cannot tell the three apart, and only counting what the
+/// harvest yielded says whether all three were read.
+pub fn io_candidates<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> Vec<u64> {
+    let lwps = snapshot.lwps().unwrap();
+    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let list = ctx
+        .enumerate_all_tasks(&runtimes)
+        .expect("the owned-task walk");
+    let (found, errors) = ctx.io_task_pointers(&runtimes, &list);
+    assert!(errors.is_empty(), "{errors:?}");
+    found.into_iter().map(|(addr, _)| addr).collect()
+}

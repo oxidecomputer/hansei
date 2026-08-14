@@ -77,6 +77,7 @@ const PROGRAMS: &[&str] = &[
     "ct-runtime",
     "local-set",
     "local-set-timer",
+    "local-set-io",
 ];
 
 fn workspace_root() -> &'static Path {
@@ -1157,6 +1158,50 @@ fn test_local_set_timer_acceptance() {
         let out = normalize(&hansei_ok(&bundle, core, "info"));
         let set_line = regex::Regex::new(
             r"local set 0: at 0xADDR, on lwp \d+, 2 tasks, found via a task waker on a timer parked in the runtime's wheel",
+        )
+        .unwrap();
+        assert!(set_line.is_match(&out), "{out}");
+    });
+}
+
+/// The io harvest against a real core: a `LocalSet` in the same
+/// position as the wheel fixture's, except that nothing here parks on
+/// time, so the wheel comes back empty too. Each member is parked on a
+/// socket of its own — one per waker site a registration has — and the
+/// driver's registration list names them, so all three are listed under
+/// the set's tag with `info` naming the route.
+#[test]
+fn test_local_set_io_acceptance() {
+    let bundle = fixtures().bundle("local-set-io");
+    with_core("local-set-io", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 4, "{rows:#?}");
+        let spawned = task_with_future(&rows, "local_set_io::reader::{async_fn_env#0}");
+        let members = ["local_reader", "local_watcher", "local_writer"].map(|name| {
+            task_with_future(&rows, &format!("local_set_io::{name}::{{async_fn_env#0}}"))
+        });
+
+        // The spawned task keeps its runtime's tag — its own waker is on
+        // a registration the harvest walks, and being listed is what
+        // keeps it out of the candidates.
+        assert_eq!(spawned.runtime, "0 (current_thread)", "{rows:#?}");
+        let set_tag = regex::Regex::new(r"^local set at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        for member in &members {
+            assert!(set_tag.is_match(&member.runtime), "{rows:#?}");
+            assert_eq!(member.runtime, members[0].runtime, "{rows:#?}");
+        }
+
+        // Every member reads like any listed task: the awaited chain
+        // resolves down to the io leaf each of them parked at.
+        for member in &members {
+            let out = normalize(&trace(&bundle, core, &member.id, false));
+            assert!(out.contains("tokio::net::unix"), "{out}");
+        }
+
+        // info names the route, which is the whole point of the fixture.
+        let out = normalize(&hansei_ok(&bundle, core, "info"));
+        let set_line = regex::Regex::new(
+            r"local set 0: at 0xADDR, on lwp \d+, 3 tasks, found via a task waker on an io resource registered with the runtime's driver",
         )
         .unwrap();
         assert!(set_line.is_match(&out), "{out}");

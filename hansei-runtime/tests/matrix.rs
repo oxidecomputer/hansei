@@ -79,6 +79,7 @@ const PROGRAMS: &[&str] = &[
     "ct-runtime",
     "local-set",
     "local-set-timer",
+    "local-set-io",
 ];
 
 fn test_programs_dir() -> PathBuf {
