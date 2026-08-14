@@ -23,7 +23,7 @@
 //! nothing else here would notice the programs moving on without them.
 
 use hansei_bundle::{Bundle, BundleView};
-use hansei_runtime::testkit::{fixture, load};
+use hansei_runtime::testkit::load;
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
@@ -91,25 +91,22 @@ fn source_digest(program: &str) -> String {
 /// what reading these goldens assumes.
 #[test]
 fn test_fixtures_record_the_current_programs() {
-    let manifest = fixture("SOURCES");
     let digests: String = PROGRAMS
         .iter()
         .map(|p| format!("{p} {}\n", source_digest(p)))
         .collect();
 
-    if std::env::var_os("FIXTURE_SOURCES_BLESS").is_some() {
-        std::fs::write(&manifest, &digests).expect("failed to write the source manifest");
-        return;
-    }
-
-    let recorded = std::fs::read_to_string(&manifest).unwrap_or_default();
-    assert_eq!(
-        digests, recorded,
-        "\nthe fixture programs have changed since these snapshots were captured, so \
-         the goldens in this file describe a program that is no longer in the tree. \
-         Recapture with test-programs/capture-snapshots.sh, then re-bless the \
-         goldens here and in value_render.rs.\n"
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path("fixtures");
+    settings.set_prepend_module_to_snapshot(false);
+    settings.set_omit_expression(true);
+    settings.set_description(
+        "the fixture programs these snapshots were captured from. A digest that \
+         moved means the goldens in this file describe a program no longer in the \
+         tree: recapture with test-programs/capture-snapshots.sh, then re-bless the \
+         goldens here and in value_render.rs.",
     );
+    settings.bind(|| insta::assert_snapshot!("SOURCES", digests));
 }
 
 /// Mask the run-varying values the analysis output carries — heap

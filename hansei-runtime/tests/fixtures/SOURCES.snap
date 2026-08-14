@@ -1,3 +1,7 @@
+---
+source: hansei-runtime/tests/two_binary.rs
+description: "the fixture programs these snapshots were captured from. A digest that moved means the goldens in this file describe a program no longer in the tree: recapture with test-programs/capture-snapshots.sh, then re-bless the goldens here and in value_render.rs."
+---
 simple-await 23320c9a2618ec19a100886ee2cb0ba5
 nested-await c2d033b245fecd82a6c75dfba47904c4
 dyn-future 12cc50afff64617b105b84d282bf0b5c
