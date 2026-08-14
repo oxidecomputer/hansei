@@ -500,7 +500,7 @@ pub(crate) fn print_tasks(
         writeln!(out, "Task {id}: {}", future_name(&task.future))?;
         writeln!(out, "    State: {}", task_state(task, polling))?;
         if let Some(tag) = group_tags.get(task.group) {
-            writeln!(out, "    Runtime: {tag}")?;
+            writeln!(out, "    Owner: {tag}")?;
         }
         // Every block carries every row, so the two source locations sit
         // at the same place in each and a missing one reads as a gap in

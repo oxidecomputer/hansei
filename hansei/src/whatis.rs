@@ -56,12 +56,13 @@ fn report_whatis(
             continue;
         };
         separate(&mut blocks, out)?;
-        writeln!(out, "Runtime {index}: {}", rt.flavor)?;
         writeln!(
             out,
-            "    At: offset {offset:#x} in the runtime's handle (handle {:#x})",
-            rt.handle.addr
+            "{}: {}",
+            capitalized(&crate::runtimes::runtime_label(index, rt)),
+            rt.flavor
         )?;
+        writeln!(out, "    At: offset {offset:#x} in the runtime's handle")?;
         let threads = match rt.worker_tids.is_empty() {
             true => "none inside it".to_string(),
             false => {
@@ -79,12 +80,12 @@ fn report_whatis(
             continue;
         };
         separate(&mut blocks, out)?;
-        writeln!(out, "Local set {index}: at {:#x}", set.shared.addr)?;
         writeln!(
             out,
-            "    At: offset {offset:#x} in the set's shared state (shared {:#x})",
-            set.shared.addr
+            "{}:",
+            capitalized(&crate::runtimes::local_set_label(index, set))
         )?;
+        writeln!(out, "    At: offset {offset:#x} in the set's shared state")?;
         let pinned = match set.owner_tid {
             Some(tid) => format!("lwp {tid}"),
             None => "no thread hansei can name".to_string(),
@@ -215,6 +216,16 @@ fn report_whatis(
         )?;
     }
     Ok(())
+}
+
+/// A group's label as a block heading: the listings spell it in
+/// running prose, and every other heading here leads with a capital.
+fn capitalized(label: &str) -> String {
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// Where `addr` falls in an object of `size` bytes at `start`, or
@@ -412,13 +423,11 @@ mod whatis_tests {
 
             let shown = report(t, handle);
             assert!(
-                shown.contains(&format!("Runtime {hidden}: current_thread")),
+                shown.contains(&format!("Runtime {hidden} @{handle:#x}: current_thread")),
                 "{shown}"
             );
             assert!(
-                shown.contains(&format!(
-                    "    At: offset 0x0 in the runtime's handle (handle {handle:#x})"
-                )),
+                shown.contains("    At: offset 0x0 in the runtime's handle"),
                 "{shown}"
             );
             assert!(shown.contains("    Threads: none inside it"), "{shown}");
@@ -428,7 +437,10 @@ mod whatis_tests {
             );
 
             let inside = report(t, handle + 0x8);
-            assert!(inside.contains(&format!("Runtime {hidden}: ")), "{inside}");
+            assert!(
+                inside.contains(&format!("Runtime {hidden} @{handle:#x}: ")),
+                "{inside}"
+            );
             assert!(
                 inside.contains("    At: offset 0x8 in the runtime's handle"),
                 "{inside}"
@@ -438,7 +450,7 @@ mod whatis_tests {
             let shared = set.shared.addr;
             let shown = report(t, shared);
             assert!(
-                shown.contains(&format!("Local set 0: at {shared:#x}")),
+                shown.contains(&format!("Local set 0 @{shared:#x}:")),
                 "{shown}"
             );
             assert!(shown.contains("    Tasks: 1"), "{shown}");

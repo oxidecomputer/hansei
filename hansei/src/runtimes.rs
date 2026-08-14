@@ -42,6 +42,24 @@ pub(crate) struct Group {
     where_: String,
 }
 
+/// How a runtime is named wherever one is meant: the index the
+/// `runtimes` listing lists it under, and the handle address printed
+/// beside it there.
+///
+/// Both halves identify it on their own — `--runtime` and the `runtime`
+/// command take either — so a name printed anywhere in a session pastes
+/// straight back in, and an index that shifts under `--runtime` is
+/// still pinned by the address next to it.
+pub(crate) fn runtime_label(index: usize, rt: &bundle::RuntimeRef<'_>) -> String {
+    format!("runtime {index} @{:#x}", rt.handle.addr)
+}
+
+/// The same for a local set, which is named by the `Shared` its tasks
+/// hang off — the address every discovery route converges on.
+pub(crate) fn local_set_label(index: usize, set: &bundle::LocalSetRef<'_>) -> String {
+    format!("local set {index} @{:#x}", set.shared.addr)
+}
+
 /// Every group in the target, in the order tasks are stamped with.
 ///
 /// It takes the discovery results rather than a session so the offline
@@ -267,11 +285,7 @@ pub(crate) fn exec_runtime(
             if printed {
                 writeln!(out)?;
             }
-            writeln!(
-                out,
-                "runtime {index} ({} @{:#x}):",
-                rt.flavor, rt.handle.addr
-            )?;
+            writeln!(out, "{} ({}):", runtime_label(index, rt), rt.flavor)?;
             printed = true;
         }
         for (i, (heading, member)) in members.iter().enumerate() {
@@ -328,7 +342,7 @@ fn no_such_runtime(session: &Session<'_>, scope: RuntimeScope) -> anyhow::Error 
         .runtimes
         .iter()
         .enumerate()
-        .map(|(index, rt)| format!("{index} ({} @{:#x})", rt.flavor, rt.handle.addr))
+        .map(|(index, rt)| format!("{} ({})", runtime_label(index, rt), rt.flavor))
         .collect();
     anyhow!(
         "no runtime {named} in this target; it has {}: {}",
