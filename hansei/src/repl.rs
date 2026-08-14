@@ -329,4 +329,28 @@ mod tests {
         assert!(threads && futures && !tasks);
         assert_eq!(top, 9);
     }
+
+    /// `runtime` and `runtimes` are two commands whose names are a
+    /// prefix apart, so an exact name has to beat inference — and every
+    /// shorter prefix now fits both, which is the price of the listing
+    /// being named after what it lists.
+    #[test]
+    fn test_runtime_and_runtimes_are_told_apart_by_their_exact_names() {
+        let parsed = |line: &[&str]| Line::try_parse_from(line).map(|l| l.command);
+        assert!(matches!(parsed(&["runtimes"]), Ok(Command::Runtimes)));
+        assert!(matches!(
+            parsed(&["runtime", "drivers"]),
+            Ok(Command::Runtime { .. })
+        ));
+        let ambiguous = parsed(&["runtim"])
+            .err()
+            .expect("a shared prefix is refused");
+        let message = ambiguous.to_string();
+        for candidate in ["runtime", "runtimes"] {
+            assert!(
+                message.contains(candidate),
+                "{candidate} missing: {message}"
+            );
+        }
+    }
 }

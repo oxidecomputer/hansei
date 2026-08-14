@@ -1086,7 +1086,7 @@ fn test_local_set_acceptance() {
         // Groups: the scheduler task carries the runtime's tag, the two
         // local tasks the set's, with the owner LWP joined on.
         assert_eq!(joiner.runtime, "0 (current_thread)", "{rows:#?}");
-        let set_tag = regex::Regex::new(r"^local set at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        let set_tag = regex::Regex::new(r"^local set 0 at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
         assert!(set_tag.is_match(&sleeper.runtime), "{rows:#?}");
         assert_eq!(sleeper.runtime, acquirer.runtime, "{rows:#?}");
 
@@ -1110,12 +1110,13 @@ fn test_local_set_acceptance() {
             "{out}"
         );
 
-        // info names the set, its owner thread, its population, and the
-        // route that found it.
-        let out = normalize(&hansei_ok(&bundle, core, "info"));
-        let set_line =
-            regex::Regex::new(r"local set 0: at 0xADDR, on lwp \d+, 2 tasks, found via a JoinHandle held by an enumerated task")
-                .unwrap();
+        // `runtimes` names the set, its owner thread, its population,
+        // and the route that found it.
+        let out = normalize(&hansei_ok(&bundle, core, "runtimes"));
+        let set_line = regex::Regex::new(
+            r"local set +0 +@0xADDR +2 tasks, \d+ futures? +on lwp \d+, found via a JoinHandle held by an enumerated task",
+        )
+        .unwrap();
         assert!(set_line.is_match(&out), "{out}");
     });
 }
@@ -1141,7 +1142,7 @@ fn test_local_set_timer_acceptance() {
         // the same wheel, and being listed is what keeps it out of the
         // harvest's candidates.
         assert_eq!(spawned.runtime, "0 (current_thread)", "{rows:#?}");
-        let set_tag = regex::Regex::new(r"^local set at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        let set_tag = regex::Regex::new(r"^local set 0 at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
         assert!(set_tag.is_match(&sleeper.runtime), "{rows:#?}");
         assert_eq!(sleeper.runtime, acquirer.runtime, "{rows:#?}");
 
@@ -1155,10 +1156,11 @@ fn test_local_set_timer_acceptance() {
             "{out}"
         );
 
-        // info names the route, which is the whole point of the fixture.
-        let out = normalize(&hansei_ok(&bundle, core, "info"));
+        // `runtimes` names the route, which is the whole point of the
+        // fixture.
+        let out = normalize(&hansei_ok(&bundle, core, "runtimes"));
         let set_line = regex::Regex::new(
-            r"local set 0: at 0xADDR, on lwp \d+, 2 tasks, found via a task waker on a timer parked in a runtime's wheel",
+            r"local set +0 +@0xADDR +2 tasks, \d+ futures? +on lwp \d+, found via a task waker on a timer parked in a runtime's wheel",
         )
         .unwrap();
         assert!(set_line.is_match(&out), "{out}");
@@ -1186,7 +1188,7 @@ fn test_local_set_io_acceptance() {
         // a registration the harvest walks, and being listed is what
         // keeps it out of the candidates.
         assert_eq!(spawned.runtime, "0 (current_thread)", "{rows:#?}");
-        let set_tag = regex::Regex::new(r"^local set at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        let set_tag = regex::Regex::new(r"^local set 0 at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
         for member in &members {
             assert!(set_tag.is_match(&member.runtime), "{rows:#?}");
             assert_eq!(member.runtime, members[0].runtime, "{rows:#?}");
@@ -1199,10 +1201,11 @@ fn test_local_set_io_acceptance() {
             assert!(out.contains("tokio::net::unix"), "{out}");
         }
 
-        // info names the route, which is the whole point of the fixture.
-        let out = normalize(&hansei_ok(&bundle, core, "info"));
+        // `runtimes` names the route, which is the whole point of the
+        // fixture.
+        let out = normalize(&hansei_ok(&bundle, core, "runtimes"));
         let set_line = regex::Regex::new(
-            r"local set 0: at 0xADDR, on lwp \d+, 3 tasks, found via a task waker on an io resource registered with a runtime's driver",
+            r"local set +0 +@0xADDR +3 tasks, \d+ futures? +on lwp \d+, found via a task waker on an io resource registered with a runtime's driver",
         )
         .unwrap();
         assert!(set_line.is_match(&out), "{out}");
@@ -1237,7 +1240,7 @@ fn test_foreign_runtime_acceptance() {
                 "{rows:#?}"
             );
         }
-        let set_tag = regex::Regex::new(r"^local set at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        let set_tag = regex::Regex::new(r"^local set 0 at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
         assert!(set_tag.is_match(&sleeper.runtime), "{rows:#?}");
 
         // The join edge reads like any other now that its target is
@@ -1249,21 +1252,26 @@ fn test_foreign_runtime_acceptance() {
         );
         assert!(!out.contains("does not list"), "{out}");
 
-        // info names the runtime and the route to it, and the set that
-        // harvesting *its* wheel found.
-        let out = normalize(&hansei_ok(&bundle, core, "info"));
-        assert!(
-            out.contains(
-                "runtime 1: current_thread, no thread inside it, \
-                 found via a JoinHandle held by an enumerated task"
-            ),
-            "{out}"
-        );
+        // `runtimes` names the runtime and the route to it, and the set
+        // that harvesting *its* wheel found. `info` counts them and
+        // leaves the naming to the listing.
+        let out = normalize(&hansei_ok(&bundle, core, "runtimes"));
+        let hidden = regex::Regex::new(
+            r"runtime +1 +current_thread +@0xADDR +2 tasks, \d+ futures? +no thread inside it, found via a JoinHandle held by an enumerated task",
+        )
+        .unwrap();
+        assert!(hidden.is_match(&out), "{out}");
         let set_line = regex::Regex::new(
-            r"local set 0: at 0xADDR, on lwp \d+, 1 task, found via a task waker on a timer parked in a runtime's wheel",
+            r"local set +0 +@0xADDR +1 task, \d+ futures? +on lwp \d+, found via a task waker on a timer parked in a runtime's wheel",
         )
         .unwrap();
         assert!(set_line.is_match(&out), "{out}");
+
+        let info = hansei_ok(&bundle, core, "info");
+        assert!(
+            info.contains("2 runtimes, 1 local set (see `runtimes`)"),
+            "{info}"
+        );
     });
 }
 
