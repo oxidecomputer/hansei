@@ -1,35 +1,42 @@
-program: ct-runtime
+---
+source: exegesis/tests/golden.rs
+---
+program: select-combinator
 
 [tasks]
-task: ct_runtime::sleeper::{async_fn_env#0}
+task: select_combinator::joiner::{async_fn_env#0}
   kind: AsyncFn
-  decl: ct-runtime.rs:10
+  decl: select-combinator.rs:27
   entries: 2
   symbols-per-entry: 6,6
-  stage: Stage<ct_runtime::sleeper::{async_fn_env#0}>
+  stage: Stage<select_combinator::joiner::{async_fn_env#0}>
   variants:
-    Unresumed @ ct-runtime.rs:10
-    Returned @ ct-runtime.rs:14
-    Panicked @ ct-runtime.rs:14
-    Suspend0 @ ct-runtime.rs:12
-task: ct_runtime::acquirer::{async_fn_env#0}
+    Unresumed @ select-combinator.rs:27
+    Returned @ select-combinator.rs:31
+    Panicked @ select-combinator.rs:31
+    Suspend0 @ join.rs:203 (awaited at select-combinator.rs:29)
+task: select_combinator::selector::{async_fn_env#0}
   kind: AsyncFn
-  decl: ct-runtime.rs:16
+  decl: select-combinator.rs:15
   entries: 2
   symbols-per-entry: 6,6
-  stage: Stage<ct_runtime::acquirer::{async_fn_env#0}>
+  stage: Stage<select_combinator::selector::{async_fn_env#0}>
   variants:
-    Unresumed @ ct-runtime.rs:16
-    Returned @ ct-runtime.rs:20
-    Panicked @ ct-runtime.rs:20
-    Suspend0 @ ct-runtime.rs:18
+    Unresumed @ select-combinator.rs:15
+    Returned @ select-combinator.rs:21
+    Panicked @ select-combinator.rs:21
+    Suspend0 @ select.rs:741 (awaited at select-combinator.rs:17)
 
 [dyn-futures]
-dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<ct_runtime::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut ct_runtime::main::{async_block_env#0}> (poll)
-dyn: ct_runtime::acquirer::{async_fn_env#0} (poll, drop_glue)
-dyn: ct_runtime::main::{async_block_env#0} (poll, drop_glue)
-dyn: ct_runtime::sleeper::{async_fn_env#0} (poll, drop_glue)
+dyn: core::future::poll_fn::PollFn<select_combinator::joiner::{async_fn#0}::{closure_env#0}> (poll)
+dyn: core::future::poll_fn::PollFn<select_combinator::selector::{async_fn#0}::{closure_env#0}> (poll)
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<select_combinator::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut select_combinator::main::{async_block_env#0}> (poll)
+dyn: select_combinator::joiner::{async_fn_env#0} (poll, drop_glue)
+dyn: select_combinator::main::{async_block_env#0} (poll, drop_glue)
+dyn: select_combinator::selector::{async_fn_env#0} (poll, drop_glue)
+dyn: select_combinator::wait::{async_fn_env#0} (poll, drop_glue)
+dyn: tokio::future::maybe_done::MaybeDone<select_combinator::wait::{async_fn_env#0}> (poll, drop_glue)
 
 [infra]
 header: ok
