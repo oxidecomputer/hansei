@@ -498,6 +498,7 @@ impl<'b, T: Target> Context<'b, T> {
                     flavor,
                     handle,
                     worker_tids: vec![worker.tid],
+                    route: DiscoveryRoute::WorkerContext,
                 }),
             }
         }
@@ -1772,78 +1773,45 @@ impl<'b, T: Target> Context<'b, T> {
         }
     }
 
-    /// Whether a set's list could be walked at all: the layout rows
-    /// bound against this target's DWARF. False on a binary that never
-    /// links tokio's local module, where every route is moot.
-    pub fn local_sets_possible(&self) -> bool {
-        matches!(
-            self.view
-                .bundle()
-                .walks
-                .entries
-                .get(&WalkRole::LocalOwnedHead)
-                .map(|binding| &binding.outcome),
-            Some(WalkOutcome::Bound { .. })
-        )
-    }
-
-    /// Whether any task instantiation in the bundle is bound into a
-    /// `LocalSet`'s list — a `Cell<T, Arc<task::local::Shared>>`.
-    ///
-    /// This is the gate on the chain sweep, and so on what local-set
-    /// discovery costs at attach. It keys on the *task table* rather
-    /// than on the layout rows above, because the rows are the linker's
-    /// call: an ELF build sweeps the local layout types into the bundle
-    /// of a program that never constructs a set, and gating on them
-    /// would walk every chain of every such target for nothing. A
-    /// program with no local task instantiation has nothing route 1
-    /// could find, whatever its layouts say.
-    fn local_task_entries_exist(&self) -> bool {
-        self.view
-            .bundle()
-            .tasks
-            .entries
-            .iter()
-            .any(|entry| matches!(self.scheduler_kind(entry), SchedulerKind::LocalSet))
-    }
-
-    /// Deterministic `LocalSet` discovery, and enumeration of every
-    /// discovered set's tasks into `list`.
+    /// Deterministic discovery of the task lists no thread's `Context`
+    /// reaches — `LocalSet`s, and runtimes nothing is currently inside
+    /// — and enumeration of everything they own into `list`.
     ///
     /// Route 3 reads each LWP's `task::local::CURRENT` anchor —
     /// populated only while a thread is mid-poll of a set. Route 1
     /// walks the enumerated tasks' await chains and follows every
     /// task-shaped pointer that lands outside the list — a
     /// `JoinHandle`'s target, an armed task waker in a walked waiter
-    /// queue — through its cell's recorded scheduler: an
-    /// `Arc<task::local::Shared>` is the way home, and the set must
-    /// claim the task that led there (its `owned.id` equal to the
-    /// task's own `owner_id`) before it is admitted. Route 2 harvests
-    /// the runtimes' own registries of parked tasks — the timer wheel,
-    /// then the io driver's registrations — which hold a task's waker
-    /// whatever list owns it, and so are the only route that reaches a
-    /// set no enumerated task points at. Every route converges on
-    /// `Shared` addresses and dedups there.
+    /// queue — through its cell's recorded scheduler, which says what
+    /// owns it: an `Arc<task::local::Shared>` is a set's, an `Arc` of
+    /// either flavor `Handle` a runtime's, and either way the list must
+    /// claim the task that led there (its own id equal to the task's
+    /// `Header.owner_id`) before it is admitted. Route 2 harvests the
+    /// discovered runtimes' registries of parked tasks — the timer
+    /// wheel, then the io driver's registrations — which hold a task's
+    /// waker whatever list owns it, and so are the only route that
+    /// reaches a set no enumerated task points at. Every route
+    /// converges on the owner's address and dedups there.
     ///
-    /// Each admitted set's list is then walked like one more shard, its
-    /// tasks stamped `runtimes.len() + set index` and merged —
-    /// including into further rounds of the sweep, since a local task's
-    /// own chain can reach another set.
+    /// Each admitted list is then walked like one more shard and merged
+    /// — including into further rounds of the sweep, since what it owns
+    /// can point at the next hidden list, and a runtime it admits
+    /// brings its own drivers to harvest.
     ///
-    /// Failures degrade per candidate into `list.errors`; the returned
-    /// sets are in admission order, which is the group order their
-    /// tasks are stamped with.
-    pub fn discover_local_tasks(
+    /// `runtimes` grows with what discovery finds; `excluded` names the
+    /// handles it must leave alone, which is how a `--runtime`
+    /// selection keeps meaning what it says. Failures degrade per
+    /// candidate into `list.errors`; the returned sets are in admission
+    /// order, and the group each task is stamped with is its owner's
+    /// position in `runtimes`, or `runtimes.len()` plus its set's.
+    pub fn discover_hidden_tasks(
         &self,
         lwps: &[LwpInfo],
         workers: &[Worker],
-        runtimes: &[RuntimeRef<'b>],
+        runtimes: &mut Vec<RuntimeRef<'b>>,
+        excluded: &[u64],
         list: &mut TaskList,
     ) -> Vec<LocalSetRef<'b>> {
-        let first_group = runtimes.len();
-        if !self.local_sets_possible() {
-            return Vec::new();
-        }
         let mut sets: Vec<LocalSetRef<'b>> = Vec::new();
 
         // The owner → LWP join table: each worker's own thread id, as
@@ -1869,7 +1837,7 @@ impl<'b, T: Target> Context<'b, T> {
                         shared,
                         None,
                         Some(tid),
-                        LocalSetRoute::Tls,
+                        DiscoveryRoute::Tls,
                         &thread_ids,
                         &mut sets,
                         &mut list.errors,
@@ -1883,69 +1851,101 @@ impl<'b, T: Target> Context<'b, T> {
 
         // Routes 1 and 2, to a fixed point: enumerate what was admitted,
         // produce more candidates from what was enumerated, admit what
-        // they found. Both sides are monotone and bounded — sets dedup
+        // they found. Both sides are monotone and bounded — owners dedup
         // by address, tasks by the lists' own cycle guards — so the loop
         // ends; the round cap is a backstop against nothing real.
         //
-        // The chain sweep is what costs anything here, so it runs only
-        // where it could find something: a target with no local task
-        // instantiation has nothing route 1 could reach, and pays no
-        // chain walk. It also goes first, so a set an enumerated task
+        // The chain sweep goes first, so a list an enumerated task
         // points at is credited to that edge rather than to whichever
-        // of its members happens to hold a timer.
+        // of its members happens to hold a timer. The registry harvests
+        // follow, each over the runtimes no earlier round harvested: a
+        // registry's contents do not change as lists are enumerated,
+        // but a runtime admitted from one brings drivers of its own.
         //
-        // Neither registry harvest needs such a gate — the wheel's cost
-        // is bounded by the wheel and the driver's by how many io
-        // resources the process holds open, not by the task population —
-        // and each runs once the producers before it have nothing new,
-        // since a registry's contents do not change as sets are
-        // enumerated. What either admits feeds the sweep in turn.
-        let sweep = self.local_task_entries_exist();
+        // A set's tasks cannot be stamped as they are enumerated, since
+        // their group sits above every runtime and discovery is still
+        // free to find more; the blocks each set contributed are
+        // recorded and stamped once the count is final.
+        let listed = list.tasks.len();
         let mut walked = 0;
-        let mut enumerated = 0;
-        let mut wheel = false;
-        let mut io = false;
+        let mut enumerated_runtimes = runtimes.len();
+        let mut enumerated_sets = 0;
+        let mut wheeled = 0;
+        let mut ioed = 0;
+        let mut local_blocks: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
         for _round in 0..64 {
-            while enumerated < sets.len() {
-                let set = &sets[enumerated];
-                let group = first_group + enumerated;
+            while enumerated_runtimes < runtimes.len() {
+                let runtime = &runtimes[enumerated_runtimes];
+                match self
+                    .find_shared(runtime)
+                    .and_then(|shared| self.enumerate_tasks(shared))
+                {
+                    Ok(mut found) => {
+                        for task in &mut found.tasks {
+                            task.group = enumerated_runtimes;
+                        }
+                        list.tasks.append(&mut found.tasks);
+                        list.errors.append(&mut found.errors);
+                    }
+                    Err(e) => list.errors.push(e.context(format!(
+                        "failed to enumerate the runtime at {:#x}",
+                        runtime.handle.addr
+                    ))),
+                }
+                enumerated_runtimes += 1;
+            }
+            while enumerated_sets < sets.len() {
+                let set = &sets[enumerated_sets];
                 match self.enumerate_local_tasks(set) {
                     Ok(mut local) => {
-                        for task in &mut local.tasks {
-                            task.group = group;
-                        }
+                        let start = list.tasks.len();
                         list.tasks.append(&mut local.tasks);
                         list.errors.append(&mut local.errors);
+                        local_blocks.push((enumerated_sets, start..list.tasks.len()));
                     }
                     Err(e) => list.errors.push(e.context(format!(
                         "failed to enumerate the local set at {:#x}",
                         set.shared.addr
                     ))),
                 }
-                enumerated += 1;
+                enumerated_sets += 1;
             }
-            let found = if sweep && walked < list.tasks.len() {
+            let found = if walked < list.tasks.len() {
                 let range = walked..list.tasks.len();
                 walked = list.tasks.len();
                 self.unlisted_task_pointers(list, range)
-            } else if !wheel {
-                wheel = true;
-                let (found, errors) = self.wheel_task_pointers(runtimes, list);
+            } else if wheeled < runtimes.len() {
+                let (found, errors) = self.wheel_task_pointers(&runtimes[wheeled..], list);
+                wheeled = runtimes.len();
                 list.errors.extend(errors);
                 found
-            } else if !io {
-                io = true;
-                let (found, errors) = self.io_task_pointers(runtimes, list);
+            } else if ioed < runtimes.len() {
+                let (found, errors) = self.io_task_pointers(&runtimes[ioed..], list);
+                ioed = runtimes.len();
                 list.errors.extend(errors);
                 found
             } else {
                 break;
             };
             for (addr, route) in found {
-                self.bootstrap_local_set(addr, route, &thread_ids, &mut sets, &mut list.errors);
+                self.bootstrap_unlisted(
+                    addr,
+                    route,
+                    excluded,
+                    &thread_ids,
+                    runtimes,
+                    &mut sets,
+                    &mut list.errors,
+                );
             }
         }
-        if !sets.is_empty() {
+        for (index, range) in local_blocks {
+            let group = runtimes.len() + index;
+            for task in &mut list.tasks[range] {
+                task.group = group;
+            }
+        }
+        if list.tasks.len() != listed {
             list.tasks
                 .sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
         }
@@ -2044,7 +2044,7 @@ impl<'b, T: Target> Context<'b, T> {
         &self,
         list: &TaskList,
         range: std::ops::Range<usize>,
-    ) -> Vec<(u64, LocalSetRoute)> {
+    ) -> Vec<(u64, DiscoveryRoute)> {
         let mut found = Vec::new();
         for task in &list.tasks[range] {
             let Ok(TaskStage::Running(future)) = self.task_stage(task) else {
@@ -2056,13 +2056,13 @@ impl<'b, T: Target> Context<'b, T> {
                     addr,
                     listed: false,
                     ..
-                })) => found.push((addr, LocalSetRoute::JoinHandle)),
+                })) => found.push((addr, DiscoveryRoute::JoinHandle)),
                 Some(Ok(WaitTarget::Semaphore { waiters, .. })) => {
                     for waiter in waiters {
                         if let QueuedWaker::Task { addr, .. } = waiter.waker
                             && !list.contains(addr)
                         {
-                            found.push((addr, LocalSetRoute::QueuedWaker));
+                            found.push((addr, DiscoveryRoute::QueuedWaker));
                         }
                     }
                 }
@@ -2093,16 +2093,19 @@ impl<'b, T: Target> Context<'b, T> {
         &self,
         runtimes: &[RuntimeRef<'b>],
         list: &TaskList,
-    ) -> (Vec<(u64, LocalSetRoute)>, Vec<anyhow::Error>) {
+    ) -> (Vec<(u64, DiscoveryRoute)>, Vec<anyhow::Error>) {
         let mut found = Vec::new();
         let mut errors = Vec::new();
         // Across the whole harvest: the same entry is in exactly one
         // slot, so a repeat is corrupt memory, not a second sighting.
         let mut visited = HashSet::default();
-        for (index, runtime) in runtimes.iter().enumerate() {
+        for runtime in runtimes {
             if let Err(e) = self.harvest_wheel(runtime, list, &mut visited, &mut found, &mut errors)
             {
-                errors.push(e.context(format!("failed to walk runtime {index}'s timer wheel")));
+                errors.push(e.context(format!(
+                    "failed to walk the timer wheel of the runtime at {:#x}",
+                    runtime.handle.addr
+                )));
             }
         }
         (found, errors)
@@ -2116,7 +2119,7 @@ impl<'b, T: Target> Context<'b, T> {
         runtime: &RuntimeRef<'b>,
         list: &TaskList,
         visited: &mut HashSet<u64>,
-        found: &mut Vec<(u64, LocalSetRoute)>,
+        found: &mut Vec<(u64, DiscoveryRoute)>,
         errors: &mut Vec<anyhow::Error>,
     ) -> Result<()> {
         // `driver.time` is an `Option`: a runtime built without the time
@@ -2155,7 +2158,7 @@ impl<'b, T: Target> Context<'b, T> {
         entry_ty: BundleType<'b>,
         list: &TaskList,
         visited: &mut HashSet<u64>,
-        found: &mut Vec<(u64, LocalSetRoute)>,
+        found: &mut Vec<(u64, DiscoveryRoute)>,
     ) -> Result<()> {
         let mut cur = Some(head);
         while let Some(addr) = cur {
@@ -2173,7 +2176,7 @@ impl<'b, T: Target> Context<'b, T> {
                 .walk(entry)?
                 .optional()
             {
-                self.registry_candidate(raw, LocalSetRoute::Wheel, list, found)?;
+                self.registry_candidate(raw, DiscoveryRoute::Wheel, list, found)?;
             }
             cur = self
                 .walk(WalkRole::TimerSharedNext)
@@ -2205,17 +2208,19 @@ impl<'b, T: Target> Context<'b, T> {
         &self,
         runtimes: &[RuntimeRef<'b>],
         list: &TaskList,
-    ) -> (Vec<(u64, LocalSetRoute)>, Vec<anyhow::Error>) {
+    ) -> (Vec<(u64, DiscoveryRoute)>, Vec<anyhow::Error>) {
         let mut found = Vec::new();
         let mut errors = Vec::new();
         // Across the whole harvest, for both node kinds: a registration
         // is in one driver's list and a waiter node in one resource's,
         // so a repeat is corrupt memory, not a second sighting.
         let mut visited = HashSet::default();
-        for (index, runtime) in runtimes.iter().enumerate() {
+        for runtime in runtimes {
             if let Err(e) = self.harvest_io(runtime, list, &mut visited, &mut found, &mut errors) {
-                errors
-                    .push(e.context(format!("failed to walk runtime {index}'s io registrations")));
+                errors.push(e.context(format!(
+                    "failed to walk the io registrations of the runtime at {:#x}",
+                    runtime.handle.addr
+                )));
             }
         }
         (found, errors)
@@ -2228,7 +2233,7 @@ impl<'b, T: Target> Context<'b, T> {
         runtime: &RuntimeRef<'b>,
         list: &TaskList,
         visited: &mut HashSet<u64>,
-        found: &mut Vec<(u64, LocalSetRoute)>,
+        found: &mut Vec<(u64, DiscoveryRoute)>,
         errors: &mut Vec<anyhow::Error>,
     ) -> Result<()> {
         // `driver.io` is the driver's flavor enum: a runtime built
@@ -2283,7 +2288,7 @@ impl<'b, T: Target> Context<'b, T> {
         registration: Value<'b>,
         list: &TaskList,
         visited: &mut HashSet<u64>,
-        found: &mut Vec<(u64, LocalSetRoute)>,
+        found: &mut Vec<(u64, DiscoveryRoute)>,
     ) -> Result<()> {
         let waiters = self
             .walk(WalkRole::ScheduledIoWaiters)
@@ -2291,7 +2296,7 @@ impl<'b, T: Target> Context<'b, T> {
         for role in [WalkRole::IoReaderWaker, WalkRole::IoWriterWaker] {
             // A direction nobody is awaiting holds no waker.
             if let Some(raw) = self.walk(role).walk(waiters)?.optional() {
-                self.registry_candidate(raw, LocalSetRoute::Io, list, found)?;
+                self.registry_candidate(raw, DiscoveryRoute::Io, list, found)?;
             }
         }
         let Some(head) = self.walk(WalkRole::IoWaiterHead).walk(waiters)?.optional() else {
@@ -2313,7 +2318,7 @@ impl<'b, T: Target> Context<'b, T> {
             // A node whose future has not been polled since it was
             // linked carries no waker yet.
             if let Some(raw) = self.walk(WalkRole::IoWaiterWaker).walk(node)?.optional() {
-                self.registry_candidate(raw, LocalSetRoute::Io, list, found)?;
+                self.registry_candidate(raw, DiscoveryRoute::Io, list, found)?;
             }
             cur = self
                 .walk(WalkRole::IoWaiterNext)
@@ -2332,9 +2337,9 @@ impl<'b, T: Target> Context<'b, T> {
     fn registry_candidate(
         &self,
         raw: Value<'b>,
-        route: LocalSetRoute,
+        route: DiscoveryRoute,
         list: &TaskList,
-        found: &mut Vec<(u64, LocalSetRoute)>,
+        found: &mut Vec<(u64, DiscoveryRoute)>,
     ) -> Result<()> {
         if let QueuedWaker::Task { addr, .. } = self.raw_waker(raw)?
             && !list.contains(addr)
@@ -2345,17 +2350,22 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// Route 1's tail: follow one unlisted Header home through its
-    /// cell's scheduler. Not being a local task is the common, silent
-    /// case; only a genuine read failure reports.
-    fn bootstrap_local_set(
+    /// cell's scheduler, whatever that scheduler turns out to be. A
+    /// task the bundle cannot classify — a `spawn_blocking` task, an
+    /// unresolvable future — is the common, silent case; only a genuine
+    /// read failure reports.
+    #[allow(clippy::too_many_arguments)]
+    fn bootstrap_unlisted(
         &self,
         addr: u64,
-        route: LocalSetRoute,
+        route: DiscoveryRoute,
+        excluded: &[u64],
         thread_ids: &[(u64, u32)],
+        runtimes: &mut Vec<RuntimeRef<'b>>,
         sets: &mut Vec<LocalSetRef<'b>>,
         errors: &mut Vec<anyhow::Error>,
     ) {
-        let step = (|| -> Result<Option<(Value<'b>, u64)>> {
+        let step = (|| -> Result<Option<(SchedulerKind, Value<'b>, u64)>> {
             ensure!(
                 self.mappings.contains_addr(addr),
                 "task Header pointer {addr:#x} is unmapped"
@@ -2368,28 +2378,101 @@ impl<'b, T: Target> Context<'b, T> {
                 return Ok(None);
             };
             let entry = self.task_entry(known.entry);
-            if !matches!(self.scheduler_kind(entry), SchedulerKind::LocalSet) {
+            let kind = self.scheduler_kind(entry);
+            if !matches!(
+                kind,
+                SchedulerKind::LocalSet | SchedulerKind::MultiThread | SchedulerKind::CurrentThread
+            ) {
                 return Ok(None);
             }
             let cell_ty =
                 self.infra_ty(entry.cell, &format!("the Cell of {}", known.display_name))?;
             let cell = Value::read(self.proc, cell_ty, addr)?;
             let scheduler = self.walk(WalkRole::CellScheduler).walk_at(cell)?;
-            let shared = self
+            let owner = self
                 .arc_data(scheduler)
                 .context("failed to follow the cell's scheduler Arc")?;
             let owner_id: Option<u64> = self.walk(WalkRole::HeaderOwnerId).read(header)?;
             let claim = owner_id
                 .ok_or_else(|| anyhow!("the task at {addr:#x} records no owner_id to check"))?;
-            Ok(Some((shared, claim)))
+            Ok(Some((kind, owner, claim)))
         })();
         match step {
-            Ok(Some((shared, claim))) => {
+            Ok(Some((SchedulerKind::LocalSet, shared, claim))) => {
                 self.admit_local_set(shared, Some(claim), None, route, thread_ids, sets, errors);
             }
-            Ok(None) => {}
+            Ok(Some((SchedulerKind::MultiThread, handle, claim))) => self.admit_hidden_runtime(
+                handle,
+                RuntimeFlavor::MultiThread,
+                claim,
+                route,
+                excluded,
+                runtimes,
+                errors,
+            ),
+            Ok(Some((SchedulerKind::CurrentThread, handle, claim))) => self.admit_hidden_runtime(
+                handle,
+                RuntimeFlavor::CurrentThread,
+                claim,
+                route,
+                excluded,
+                runtimes,
+                errors,
+            ),
+            Ok(Some(_)) | Ok(None) => {}
             Err(e) => errors.push(e.context(format!(
                 "failed to follow the unlisted task at {addr:#x} home"
+            ))),
+        }
+    }
+
+    /// Admit a runtime handle route 1 reached from a task's own cell:
+    /// dedup by handle address, then the decisive check — the
+    /// scheduler's owned list must claim the very task that led there,
+    /// exactly as a set's does.
+    ///
+    /// A handle already in `runtimes` is a runtime some thread's
+    /// `Context` reached (or an earlier candidate of this loop), and one
+    /// in `excluded` is a runtime the operator asked not to see; neither
+    /// is news.
+    #[allow(clippy::too_many_arguments)]
+    fn admit_hidden_runtime(
+        &self,
+        handle: Value<'b>,
+        flavor: RuntimeFlavor,
+        claim: u64,
+        route: DiscoveryRoute,
+        excluded: &[u64],
+        runtimes: &mut Vec<RuntimeRef<'b>>,
+        errors: &mut Vec<anyhow::Error>,
+    ) {
+        if runtimes.iter().any(|r| r.handle.addr == handle.addr) || excluded.contains(&handle.addr)
+        {
+            return;
+        }
+        let step = (|| -> Result<RuntimeRef<'b>> {
+            let shared = self.walk(WalkRole::HandleShared).walk_at(handle)?;
+            let owned_id: Option<u64> = self.walk(WalkRole::SchedulerOwnedId).try_read(shared)?;
+            let owned_id = owned_id.ok_or_else(|| {
+                anyhow!("the scheduler owned list's id did not bind against this target")
+            })?;
+            ensure!(
+                claim == owned_id,
+                "the runtime's owned-list id {owned_id} does not claim the task \
+                 (owner_id {claim}) that led there"
+            );
+            Ok(RuntimeRef {
+                flavor,
+                handle,
+                worker_tids: Vec::new(),
+                route,
+            })
+        })();
+        match step {
+            Ok(runtime) => runtimes.push(runtime),
+            Err(e) => errors.push(e.context(format!(
+                "found a {flavor} runtime at {:#x} (via {route}) but could not read it",
+                handle.addr
             ))),
         }
     }
@@ -2403,7 +2486,7 @@ impl<'b, T: Target> Context<'b, T> {
         shared: Value<'b>,
         claim: Option<u64>,
         tls_tid: Option<u32>,
-        route: LocalSetRoute,
+        route: DiscoveryRoute,
         thread_ids: &[(u64, u32)],
         sets: &mut Vec<LocalSetRef<'b>>,
         errors: &mut Vec<anyhow::Error>,

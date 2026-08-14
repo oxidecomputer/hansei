@@ -527,8 +527,10 @@ pub struct Session<'b> {
     /// difference is what the runtime is *not* running.
     lwps: usize,
     /// Every runtime discovered in the target, of either scheduler
-    /// flavor. One on nearly every real target; current_thread makes
-    /// more ordinary, and the task list below merges them all.
+    /// flavor: those a thread's context reaches first, then those
+    /// discovery found because a task pointed at them. One on nearly
+    /// every real target; current_thread makes more ordinary, and the
+    /// task list below merges them all.
     runtimes: Vec<bundle::RuntimeRef<'b>>,
     /// Every `LocalSet` discovery reached, in the group order their
     /// tasks are stamped with (after the runtimes). Empty on targets
@@ -579,6 +581,9 @@ impl<'b> Session<'b> {
         let lwps = proc.lwps().context("failed to read lwps")?;
         let workers = discover_workers(&lwps, &ctx)?;
         let mut runtimes = ctx.find_runtimes(&workers)?;
+        // The runtimes a selection leaves out: discovery must not hand
+        // them back, or `--runtime` would stop being a filter.
+        let mut excluded = Vec::new();
         if let Some(index) = args.runtime {
             if index >= runtimes.len() {
                 let listed: Vec<String> = runtimes
@@ -592,13 +597,16 @@ impl<'b> Session<'b> {
                     listed.join(", ")
                 );
             }
-            runtimes = vec![runtimes.swap_remove(index)];
+            let selected = runtimes.swap_remove(index);
+            excluded = runtimes.iter().map(|r| r.handle.addr).collect();
+            runtimes = vec![selected];
         }
         let mut tasks = ctx.enumerate_all_tasks(&runtimes)?;
-        // Local sets merge into the same population, tagged as groups
-        // after the runtimes. On targets whose bundle shows no
-        // local-set machinery this is free — no chain is walked.
-        let local_sets = ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut tasks);
+        // Runtimes nothing is currently inside, and local sets, merge
+        // into the same population: the runtimes join the list above,
+        // the sets are tagged as groups after every runtime.
+        let local_sets =
+            ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &excluded, &mut tasks);
         print_warnings(&tasks.errors)?;
 
         Ok(Session {
@@ -655,7 +663,10 @@ impl<'b> Session<'b> {
             .runtimes
             .iter()
             .enumerate()
-            .map(|(i, r)| format!("{i} ({})", r.flavor))
+            .map(|(i, r)| match r.worker_tids.is_empty() {
+                true => format!("{i} ({}, no thread inside it)", r.flavor),
+                false => format!("{i} ({})", r.flavor),
+            })
             .collect();
         tags.extend(self.local_sets.iter().map(|set| match set.owner_tid {
             Some(tid) => format!("local set at {:#x} (lwp {tid})", set.shared.addr),
@@ -794,13 +805,15 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         session.tasks.tasks.len()
     )?;
     for (i, rt) in session.runtimes.iter().enumerate() {
-        let tids: Vec<String> = rt.worker_tids.iter().map(|t| t.to_string()).collect();
-        writeln!(
-            out,
-            "runtime {i}: {}, on lwp {}",
-            rt.flavor,
-            tids.join(", ")
-        )?;
+        // A runtime no thread's context reaches has no lwp to name, and
+        // how it was found is the interesting part instead.
+        let where_ = if rt.worker_tids.is_empty() {
+            format!("no thread inside it, found via {}", rt.route)
+        } else {
+            let tids: Vec<String> = rt.worker_tids.iter().map(|t| t.to_string()).collect();
+            format!("on lwp {}", tids.join(", "))
+        };
+        writeln!(out, "runtime {i}: {}, {where_}", rt.flavor)?;
     }
     for (i, set) in session.local_sets.iter().enumerate() {
         let owned = session

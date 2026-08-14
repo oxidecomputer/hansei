@@ -1157,7 +1157,7 @@ fn test_local_set_timer_acceptance() {
         // info names the route, which is the whole point of the fixture.
         let out = normalize(&hansei_ok(&bundle, core, "info"));
         let set_line = regex::Regex::new(
-            r"local set 0: at 0xADDR, on lwp \d+, 2 tasks, found via a task waker on a timer parked in the runtime's wheel",
+            r"local set 0: at 0xADDR, on lwp \d+, 2 tasks, found via a task waker on a timer parked in a runtime's wheel",
         )
         .unwrap();
         assert!(set_line.is_match(&out), "{out}");
@@ -1201,7 +1201,7 @@ fn test_local_set_io_acceptance() {
         // info names the route, which is the whole point of the fixture.
         let out = normalize(&hansei_ok(&bundle, core, "info"));
         let set_line = regex::Regex::new(
-            r"local set 0: at 0xADDR, on lwp \d+, 3 tasks, found via a task waker on an io resource registered with the runtime's driver",
+            r"local set 0: at 0xADDR, on lwp \d+, 3 tasks, found via a task waker on an io resource registered with a runtime's driver",
         )
         .unwrap();
         assert!(set_line.is_match(&out), "{out}");
