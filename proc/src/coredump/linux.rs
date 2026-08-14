@@ -20,18 +20,19 @@
 
 use super::common::{Segment, Symbols};
 use crate::{
-    Error, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs, Result, Status,
-    SymbolBuf, Target, Timespec,
+    BuildIds, Error, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs, Result,
+    Status, SymbolBuf, Target, Timespec,
 };
 
 use goblin::elf::Elf;
 use goblin::elf::note::{NT_FILE, NT_PRSTATUS};
-use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_LOAD, PT_TLS};
+use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_LOAD, PT_NOTE, PT_TLS};
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT, STT_TLS};
 use memmap2::Mmap;
 
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -157,7 +158,7 @@ struct BackingFile {
 }
 
 impl BackingFile {
-    fn open(path: &str) -> Option<Self> {
+    fn open(path: impl AsRef<Path>) -> Option<Self> {
         let file = File::open(path).ok()?;
         // SAFETY: as everywhere else in this workspace, we assume the
         // file is not modified while mapped.
@@ -212,6 +213,20 @@ impl Core {
     /// demand, so a core whose libraries have moved still yields
     /// everything that was actually dumped.
     pub fn open(core_path: &Path) -> Result<Self> {
+        Self::open_with_program(core_path, None)
+    }
+
+    /// Open a core dump, reading the executable from `program` instead
+    /// of from the path the core recorded for it.
+    ///
+    /// A Linux core carries no symbol table of its own — `.symtab` is
+    /// not `SHF_ALLOC`, so it is never in the address space there is to
+    /// dump — and the path it names is rarely still right on the
+    /// machine reading it. Substituting the executable is therefore how
+    /// a core read anywhere but where it was written resolves symbols
+    /// at all, and [`Core::build_ids`] is what holds the substitution
+    /// to the right file.
+    pub fn open_with_program(core_path: &Path, program: Option<&Path>) -> Result<Self> {
         let file = File::open(core_path).map_err(Error::read)?;
         // SAFETY: as everywhere else in this workspace, we assume the
         // file is not modified while mapped.
@@ -263,13 +278,50 @@ impl Core {
         }
         files.sort_by_key(|f| f.range.start);
 
+        // Which mapped file is the executable has to be settled before
+        // any of them is opened, so that `program` can stand in for it:
+        // the substitution is keyed by the path the core recorded, and
+        // everything downstream — the load bias, the symtab, reads that
+        // fall through to the file — goes through that one entry.
+        // `find_exec` below needs it opened to parse, so substituting
+        // afterwards would be too late.
+        let exec_path = auxv
+            .get(&AT_PHDR)
+            .copied()
+            .and_then(|phdr| file_at(&files, phdr))
+            .map(|f| f.path.clone());
+        let mut substitute = match program {
+            Some(path) => {
+                if exec_path.is_none() {
+                    return Err(Error::bad_core(
+                        "no AT_PHDR auxv entry, so the core does not say \
+                         which of its mapped files is the executable",
+                    ));
+                }
+                Some(BackingFile::open(path).ok_or_else(|| {
+                    Error::read(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("failed to open {}", path.display()),
+                    ))
+                })?)
+            }
+            None => None,
+        };
+
         // Map every backing file up front: it is a handful of mmaps,
         // and it lets reads and symbol lookups take &self. Parsing
         // their symtabs stays lazy, which is where the real cost is.
-        let backing = files
-            .iter()
-            .map(|f| (f.path.clone(), BackingFile::open(&f.path)))
-            .collect();
+        let mut backing: BTreeMap<String, Option<BackingFile>> = BTreeMap::new();
+        for f in &files {
+            if backing.contains_key(&f.path) {
+                continue;
+            }
+            let opened = match exec_path.as_deref() == Some(f.path.as_str()) {
+                true if substitute.is_some() => substitute.take(),
+                _ => BackingFile::open(&f.path),
+            };
+            backing.insert(f.path.clone(), opened);
+        }
 
         let mut core_file = Core {
             core,
@@ -383,9 +435,7 @@ impl Core {
     }
 
     fn file_at(&self, addr: u64) -> Option<&FileMap> {
-        let idx = self.files.partition_point(|f| f.range.start <= addr);
-        let file = &self.files[idx.checked_sub(1)?];
-        (addr < file.range.end).then_some(file)
+        file_at(&self.files, addr)
     }
 
     fn segment_at(&self, addr: u64) -> Option<&Segment> {
@@ -449,6 +499,87 @@ impl Core {
         self.backing(&file.path)?
             .map
             .get(start..start + len as usize)
+    }
+
+    /// The bytes at `addr` as the *core* recorded them, never falling
+    /// through to a file on disk.
+    ///
+    /// [`Core::pslice`] prefers the core and falls back to the backing
+    /// file, which is what a read wants. It is exactly wrong for the
+    /// one question that asks whether the backing file is the binary
+    /// that ran: with the fallback in play that comparison could reach
+    /// the substituted file and compare it against itself.
+    fn dumped_slice(&self, addr: u64, len: u64) -> Option<&[u8]> {
+        let seg = self
+            .segment_at(addr)
+            .filter(|s| s.dumped().contains(&addr))?;
+        let skip = addr - seg.vaddr;
+        if seg.filesz - skip < len {
+            return None;
+        }
+        let start = (seg.offset + skip) as usize;
+        self.core.get(start..start + len as usize)
+    }
+
+    /// The executable's build id as the core recorded it, and as the
+    /// file now backing it spells it.
+    ///
+    /// The dump filter's bit 4 — set in the default `0x33` — writes the
+    /// first page of every file mapping, so a core carries the
+    /// executable's ELF header and notes even when it carries none of
+    /// its text. That makes the build id the only exact check there is
+    /// between a core and a companion binary: the symbol fingerprint
+    /// compares *names*, which a differently hashed build of the same
+    /// source satisfies in full while every address in it is wrong.
+    pub fn build_ids(&self) -> BuildIds {
+        BuildIds {
+            core: self.core_build_id(),
+            program: self.program_build_id(),
+        }
+    }
+
+    /// Walk the executable's ELF image as the core dumped it. The
+    /// header is parsed by hand rather than through goblin, which wants
+    /// a whole file: what is mapped here is the first page or two, and
+    /// the section headers a parser would look for are off the end.
+    fn core_build_id(&self) -> Option<Vec<u8>> {
+        let exec = self.exec.as_ref()?;
+        // The image starts where the mapping at file offset 0 landed.
+        let base = self
+            .files
+            .iter()
+            .filter(|f| f.path == exec.path && f.offset == 0)
+            .map(|f| f.range.start)
+            .min()?;
+
+        let header = self.dumped_slice(base, 64)?;
+        let phoff = u64::from_le_bytes(header[0x20..0x28].try_into().ok()?);
+        let phentsize = u16::from_le_bytes(header[0x36..0x38].try_into().ok()?) as u64;
+        let phnum = u16::from_le_bytes(header[0x38..0x3a].try_into().ok()?) as u64;
+
+        (0..phnum).find_map(|i| {
+            let ph = self.dumped_slice(base + phoff + i * phentsize, 56)?;
+            if u32::from_le_bytes(ph[0..4].try_into().ok()?) != PT_NOTE {
+                return None;
+            }
+            let vaddr = u64::from_le_bytes(ph[16..24].try_into().ok()?);
+            let filesz = u64::from_le_bytes(ph[32..40].try_into().ok()?);
+            build_id_in_notes(self.dumped_slice(vaddr.wrapping_add(exec.bias), filesz)?)
+        })
+    }
+
+    fn program_build_id(&self) -> Option<Vec<u8>> {
+        let exec = self.exec.as_ref()?;
+        let backing = self.backing(&exec.path)?;
+        let elf = Elf::parse(&backing.map).ok()?;
+        elf.program_headers
+            .iter()
+            .filter(|ph| ph.p_type == PT_NOTE)
+            .find_map(|ph| {
+                let start = ph.p_offset as usize;
+                let notes = backing.map.get(start..start + ph.p_filesz as usize)?;
+                build_id_in_notes(notes)
+            })
     }
 
     pub fn exec_name(&self) -> Result<PathBuf> {
@@ -789,6 +920,42 @@ impl Target for Core {
     }
 }
 
+/// The `NT_FILE` entry covering `addr`, in a table sorted by address.
+///
+/// Free rather than a method so that the executable can be identified
+/// before the `Core` exists — which is what lets a substituted program
+/// be opened in place of it.
+fn file_at(files: &[FileMap], addr: u64) -> Option<&FileMap> {
+    let idx = files.partition_point(|f| f.range.start <= addr);
+    let file = &files[idx.checked_sub(1)?];
+    (addr < file.range.end).then_some(file)
+}
+
+/// The `NT_GNU_BUILD_ID` payload in a `PT_NOTE` segment, if it has one.
+///
+/// Notes are a packed sequence of three-word headers, each followed by
+/// a name and a description padded to four bytes.
+fn build_id_in_notes(notes: &[u8]) -> Option<Vec<u8>> {
+    const NT_GNU_BUILD_ID: u32 = 3;
+
+    let mut pos = 0usize;
+    while pos + 12 <= notes.len() {
+        let word = |at: usize| -> Option<u32> {
+            Some(u32::from_le_bytes(notes.get(at..at + 4)?.try_into().ok()?))
+        };
+        let namesz = word(pos)? as usize;
+        let descsz = word(pos + 4)? as usize;
+        let kind = word(pos + 8)?;
+        let name = notes.get(pos + 12..pos + 12 + namesz)?;
+        let desc = pos + 12 + namesz.next_multiple_of(4);
+        if kind == NT_GNU_BUILD_ID && name.starts_with(b"GNU\0") {
+            return notes.get(desc..desc + descsz).map(<[u8]>::to_vec);
+        }
+        pos = desc + descsz.next_multiple_of(4);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,7 +964,7 @@ mod tests {
     use crate::coredump::testkit::{Load, PAGE, note, phdr, regs_at};
 
     use goblin::elf::header::header64::SIZEOF_EHDR;
-    use goblin::elf::header::{EM_X86_64, ET_CORE, Header};
+    use goblin::elf::header::{EM_X86_64, ET_CORE, ET_DYN, Header};
     use goblin::elf::program_header::PT_NOTE;
     use goblin::elf::program_header::program_header64::SIZEOF_PHDR;
     use scroll::Pwrite;
@@ -858,9 +1025,6 @@ mod tests {
             self
         }
 
-        /// Only [`with_test_binary`] names an auxv tag, so this goes
-        /// unused where that is gated out.
-        #[cfg(any(target_os = "linux", target_os = "illumos"))]
         fn auxv(mut self, tag: u64, val: u64) -> Self {
             self.auxv.push((tag, val));
             self
@@ -939,6 +1103,15 @@ mod tests {
         fn proc(&self) -> (tempfile::TempDir, Core) {
             let (dir, proc) = self.open();
             (dir, proc.expect("failed to open the core"))
+        }
+
+        /// Write the core into a directory the caller owns and hand
+        /// back its path, for the tests that open one more than one way
+        /// — or alongside files of their own.
+        fn write_into(&self, dir: &Path) -> PathBuf {
+            let path = dir.join("core");
+            std::fs::write(&path, self.build()).expect("failed to write the core");
+            path
         }
     }
 
@@ -1264,6 +1437,125 @@ mod tests {
         assert_eq!(
             m.get(0x40_0000).unwrap().path.as_deref(),
             Some("/nonexistent/libfoo.so")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The executable, and holding a substituted one to the core
+    // -----------------------------------------------------------------------
+
+    const BUILD_ID_BASE: u64 = 0x5555_0000_0000;
+
+    /// Write a minimal PIE-shaped ELF carrying a build id: a header,
+    /// one `PT_LOAD` mapping the file from offset zero, and a `PT_NOTE`
+    /// holding `NT_GNU_BUILD_ID`. Returns the image, which is also what
+    /// the core dumps.
+    ///
+    /// Both sides of the check read this — the core through its own
+    /// dumped bytes, goblin through the file — so unlike the symtab
+    /// fixtures below it needs no ELF host and runs anywhere.
+    fn program_with_build_id(path: &Path, id: &[u8]) -> Vec<u8> {
+        const NT_GNU_BUILD_ID: u32 = 3;
+
+        let notes = note(NT_GNU_BUILD_ID, "GNU", id);
+        let notes_off = (SIZEOF_EHDR + 2 * SIZEOF_PHDR) as u64;
+        let total = notes_off + notes.len() as u64;
+
+        let mut header = Header::new(elf_ctx());
+        header.e_type = ET_DYN;
+        header.e_machine = EM_X86_64;
+        header.e_phoff = SIZEOF_EHDR as u64;
+        header.e_phentsize = SIZEOF_PHDR as u16;
+        header.e_phnum = 2;
+
+        let mut out = vec![0u8; SIZEOF_EHDR];
+        out.pwrite_with(header, 0, scroll::Endian::Little)
+            .expect("failed to write the ELF header");
+        out.extend(phdr(PT_LOAD, PF_R, 0, 0, total, total, PAGE));
+        let len = notes.len() as u64;
+        out.extend(phdr(PT_NOTE, 0, notes_off, notes_off, len, len, 4));
+        out.extend(notes);
+
+        std::fs::write(path, &out).expect("failed to write the program");
+        out
+    }
+
+    /// A core of a process running `path`, its whole image dumped where
+    /// it was mapped and `AT_PHDR` pointing into it.
+    fn core_of_program(dir: &Path, image: &[u8], path: &Path) -> PathBuf {
+        let mut mapped = image.to_vec();
+        mapped.resize(PAGE as usize, 0);
+        CoreBuilder::default()
+            .thread(1, regs_at(BUILD_ID_BASE, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0x11; PAGE as usize])
+            .dumped(BUILD_ID_BASE, PF_R, mapped)
+            .file(
+                BUILD_ID_BASE..BUILD_ID_BASE + PAGE,
+                0,
+                path.to_str().expect("a utf-8 tempdir"),
+            )
+            .auxv(AT_PHDR, BUILD_ID_BASE + SIZEOF_EHDR as u64)
+            .write_into(dir)
+    }
+
+    /// The two ids agree when the file is the binary that ran, which is
+    /// the whole of the check passing.
+    #[test]
+    fn test_build_ids_agree_for_the_binary_that_ran() {
+        let dir = tempfile::tempdir().expect("failed to create a tempdir");
+        let exe = dir.path().join("program");
+        let image = program_with_build_id(&exe, &[0xab; 20]);
+        let core = core_of_program(dir.path(), &image, &exe);
+
+        let p = Core::open(&core).expect("failed to open the core");
+        let ids = p.build_ids();
+        assert_eq!(ids.core.as_deref(), Some(&[0xab; 20][..]));
+        assert_eq!(ids.program, ids.core);
+        assert!(!ids.disagree());
+    }
+
+    /// A substituted program is what the reader opens in place of the
+    /// executable — and the core still says what actually ran, so a
+    /// different binary is caught even though it parses perfectly well.
+    ///
+    /// This is the case the symbol fingerprint cannot see: names it
+    /// would still resolve, addresses it never compares.
+    #[test]
+    fn test_a_substituted_program_is_checked_against_the_core() {
+        let dir = tempfile::tempdir().expect("failed to create a tempdir");
+        let exe = dir.path().join("program");
+        let image = program_with_build_id(&exe, &[0xab; 20]);
+        let core = core_of_program(dir.path(), &image, &exe);
+
+        let other = dir.path().join("other");
+        program_with_build_id(&other, &[0xcd; 20]);
+
+        let p = Core::open_with_program(&core, Some(&other)).expect("failed to open the core");
+        let ids = p.build_ids();
+        assert_eq!(ids.core.as_deref(), Some(&[0xab; 20][..]));
+        assert_eq!(ids.program.as_deref(), Some(&[0xcd; 20][..]));
+        assert!(ids.disagree());
+        // The recorded path is still what the core named; only the
+        // bytes behind it were substituted.
+        assert_eq!(p.exec_name().unwrap(), exe);
+    }
+
+    /// A named program that is not there is an error rather than a
+    /// silent degradation. Falling back to the recorded path is what
+    /// produced a 0-of-N symbol match reported as a bundle mismatch.
+    #[test]
+    fn test_a_missing_program_is_an_error() {
+        let dir = tempfile::tempdir().expect("failed to create a tempdir");
+        let exe = dir.path().join("program");
+        let image = program_with_build_id(&exe, &[0xab; 20]);
+        let core = core_of_program(dir.path(), &image, &exe);
+
+        let missing = dir.path().join("not-here");
+        let err = Core::open_with_program(&core, Some(&missing))
+            .expect_err("a missing program must not open");
+        assert!(
+            err.to_string().contains("not-here"),
+            "the error does not name the file: {err}"
         );
     }
 

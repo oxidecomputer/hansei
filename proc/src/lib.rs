@@ -513,6 +513,27 @@ pub struct Status {
     pub stack_range: Range<u64>,
 }
 
+/// The executable's GNU build id, from the two places it is recorded:
+/// the core's own dumped image of it, and the file standing in for it.
+///
+/// Either side is `None` where there is no id to read — a binary linked
+/// without one, or a core that dumped none of the executable's header.
+/// Nothing can be concluded from that; only two ids that disagree are
+/// evidence.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BuildIds {
+    pub core: Option<Vec<u8>>,
+    pub program: Option<Vec<u8>>,
+}
+
+impl BuildIds {
+    /// Whether the two are both present and differ — the one case that
+    /// says the file is not the binary the core was taken from.
+    pub fn disagree(&self) -> bool {
+        matches!((&self.core, &self.program), (Some(a), Some(b)) if a != b)
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct LwpInfo {
     /// The LWP's thread id.
