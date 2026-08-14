@@ -338,10 +338,7 @@ mod tests {
     fn test_runtime_and_runtimes_are_told_apart_by_their_exact_names() {
         let parsed = |line: &[&str]| Line::try_parse_from(line).map(|l| l.command);
         assert!(matches!(parsed(&["runtimes"]), Ok(Command::Runtimes)));
-        assert!(matches!(
-            parsed(&["runtime", "drivers"]),
-            Ok(Command::Runtime { .. })
-        ));
+        assert!(matches!(parsed(&["runtime"]), Ok(Command::Runtime { .. })));
         let ambiguous = parsed(&["runtim"])
             .err()
             .expect("a shared prefix is refused");
@@ -352,5 +349,26 @@ mod tests {
                 "{candidate} missing: {message}"
             );
         }
+    }
+
+    /// The runtime's sections are flags rather than a value, the way
+    /// the census's are, so both can be asked for at once and naming
+    /// neither asks for the whole runtime.
+    #[test]
+    fn test_runtime_takes_its_sections_as_flags() {
+        let sections = |line: &[&str]| {
+            let Command::Runtime {
+                drivers, shared, ..
+            } = Line::try_parse_from(line)
+                .expect("runtime takes its section flags")
+                .command
+            else {
+                panic!("runtime parsed as another command");
+            };
+            (drivers, shared)
+        };
+        assert_eq!(sections(&["runtime", "-D"]), (true, false));
+        assert_eq!(sections(&["runtime", "--shared"]), (false, true));
+        assert_eq!(sections(&["runtime", "-Ds"]), (true, true));
     }
 }

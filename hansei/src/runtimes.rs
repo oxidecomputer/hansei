@@ -3,7 +3,7 @@
 
 use crate::summary::counted;
 use crate::threads::render;
-use crate::{RenderOpts, RuntimeField, Session};
+use crate::{RenderOpts, Session};
 
 use anyhow::Result;
 use hansei_runtime::tokio::{bundle, census};
@@ -199,45 +199,94 @@ pub(crate) fn exec_runtimes(session: &Session<'_>, out: &mut dyn io::Write) -> R
     print_groups(&groups, session.excluded.len(), out)
 }
 
-/// Render one of the runtime handle's fields out of the target: the
-/// scheduler state the workers share, or the drivers they park on.
+/// Which of the runtime handle's members `runtime` was asked for.
+#[derive(Copy, Clone)]
+pub(crate) struct Fields {
+    drivers: bool,
+    shared: bool,
+}
+
+impl Fields {
+    /// The sections the flags name. Naming none asks for the whole
+    /// runtime, as [`crate::summary::Sections::select`] reads a census's
+    /// flags.
+    pub(crate) fn select(drivers: bool, shared: bool) -> Self {
+        let all = !(drivers || shared);
+        Self {
+            drivers: drivers || all,
+            shared: shared || all,
+        }
+    }
+
+    /// The handle members to print, each with the heading it goes
+    /// under, in the order a full listing prints them.
+    fn members(self) -> Vec<(&'static str, &'static str)> {
+        let mut members = Vec::new();
+        if self.drivers {
+            members.push(("drivers", "driver"));
+        }
+        if self.shared {
+            members.push(("shared", "shared"));
+        }
+        members
+    }
+}
+
+/// Render a runtime's own state out of the target: the scheduler state
+/// its workers share, and the drivers they park on.
 ///
 /// Both are read straight through the bundle's layouts rather than into
 /// a hand-written mirror of tokio's structs, so a field tokio adds shows
 /// up without hansei being taught about it.
-pub(crate) fn exec_runtime_field(
+pub(crate) fn exec_runtime(
     session: &Session<'_>,
-    field: RuntimeField,
+    fields: Fields,
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let member = match field {
-        RuntimeField::Drivers => "driver",
-        RuntimeField::Shared => "shared",
-    };
+    let members = fields.members();
     // The bundle's `Elided` formats hide the runtime graph from *user*
-    // values; these commands exist to show the runtime's own insides, so
+    // values; this command exists to show the runtime's own insides, so
     // they must never apply here — a new elided row must not be able to
     // blank part of this output.
     let no_elide = reify::ElideOverride {
         no_elide: true,
         types: Vec::new(),
     };
-    // Both scheduler flavors' handles carry these members: one section
-    // per discovered runtime, headed only when there is more than one.
-    for (i, rt) in session.runtimes.iter().enumerate() {
-        if session.runtimes.len() > 1 {
-            if i > 0 {
+
+    // A heading is only earned by an ambiguity it resolves: one runtime
+    // and one section is the value alone, as it was before either could
+    // be more than one.
+    let head_runtimes = session.runtimes.len() > 1;
+    let head_members = members.len() > 1;
+    let mut printed = false;
+    for (index, rt) in session.runtimes.iter().enumerate() {
+        if head_runtimes {
+            if printed {
                 writeln!(out)?;
             }
-            writeln!(out, "runtime {i} ({}):", rt.flavor)?;
+            writeln!(
+                out,
+                "runtime {index} ({} @{:#x}):",
+                rt.flavor, rt.handle.addr
+            )?;
+            printed = true;
         }
-        let value = rt.handle.member(member)?;
-        writeln!(
-            out,
-            "{:#}",
-            render(session, &value, opts).elide_override(&no_elide)
-        )?;
+        for (i, (heading, member)) in members.iter().enumerate() {
+            if printed && !(head_runtimes && i == 0) {
+                writeln!(out)?;
+            }
+            if head_members {
+                writeln!(out, "{heading}:")?;
+            }
+            let value = rt.handle.member(member)?;
+            writeln!(
+                out,
+                "{:#}",
+                render(session, &value, opts).elide_override(&no_elide)
+            )?;
+            printed = true;
+        }
     }
     Ok(())
 }
