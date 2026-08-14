@@ -279,7 +279,7 @@ reconcile_cells() { # before, after (newline-separated), bless substring
     printf 'new cells:\n%s\n' "$(printf '%s\n' "$new" | sed 's/^/  /')"
 
     echo "building and blessing the new cells..."
-    (cd "$REPO" && HANSEI_MATRIX=$3 HANSEI_MATRIX_BLESS=1 \
+    (cd "$REPO" && HANSEI_MATRIX=$3 INSTA_UPDATE=always \
         cargo test -q -p hansei-runtime --test matrix) \
         || die "blessing the new cells failed"
     # A cell whose toolchain is missing skips silently; goldens are the

@@ -15,15 +15,15 @@
 //! happened, and a release that moves anything is a one-line golden
 //! diff:
 //!
-//! - `walk.golden` — the full walk-contract report per fixture program:
+//! - `walk.snap` — the full walk-contract report per fixture program:
 //!   which alternative spelling bound, what is absent and why.
-//! - `formats.golden` — the detection catalog: every type a formatter
+//! - `formats.snap` — the detection catalog: every type a formatter
 //!   attached to, with each selector resolved to its member-name chain.
 //!   Deduplicated across programs (an entry is annotated with programs
 //!   only where two disagree, itself a finding), and stripped of byte
 //!   offsets — offsets legitimately differ across versions and
 //!   platforms; the durable cross-version contract is the name chain.
-//! - `summary.golden` — the portable extraction summary (task shapes,
+//! - `summary.snap` — the portable extraction summary (task shapes,
 //!   await lines, dyn-futures, infra/statics) per program, the same
 //!   renderer the extraction goldens diff for the primary cell. This is
 //!   what covers the await-chain machinery over arbitrary coroutine
@@ -34,11 +34,14 @@
 //! suite is opt-in: set `HANSEI_MATRIX=1` to run every cell, or
 //! `HANSEI_MATRIX=<substring>` to run the cells whose name contains the
 //! substring (e.g. `HANSEI_MATRIX=1.52` while chasing one version).
-//! `HANSEI_MATRIX_BLESS=1` rewrites the goldens instead of diffing;
-//! review the diff like any golden. Cells whose toolchain is not
-//! rustup-installed skip with a message, the same contract the
-//! extraction goldens have. Run it alone (`cargo test -p hansei-runtime
-//! --test matrix`), not under a workspace-wide `cargo test`: the
+//! `INSTA_UPDATE=always` rewrites the goldens in place instead of
+//! diffing; review the diff like any golden. A plain run leaves each
+//! rejected golden beside its file as `<name>.snap.new` instead, and
+//! reports every cell that diverged rather than the first. Cells whose
+//! toolchain is not rustup-installed skip with a message, the same
+//! contract the extraction goldens have. Run it alone (`cargo test -p
+//! hansei-runtime --test matrix`), not under a workspace-wide
+//! `cargo test`: the
 //! primary cell shares its fixture dirs with the extraction goldens,
 //! and two test binaries rebuilding one fixture dir race.
 //!
@@ -85,10 +88,6 @@ const PROGRAMS: &[&str] = &[
 
 fn test_programs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-programs")
-}
-
-fn goldens_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/matrix")
 }
 
 // ---------------------------------------------------------------------------
@@ -432,48 +431,31 @@ fn summary_report(bundles: &[(&str, Bundle)]) -> String {
 // The test
 // ---------------------------------------------------------------------------
 
-/// Diff (or bless) one golden file; a mismatch is recorded, with the
-/// actual output written next to the golden as `<name>.actual` for a
-/// side-by-side diff.
-fn check_golden(cell_dir: &Path, name: &str, actual: &str, failures: &mut Vec<String>) {
-    let golden = cell_dir.join(name);
-    if std::env::var_os("HANSEI_MATRIX_BLESS").is_some() {
-        std::fs::create_dir_all(cell_dir).unwrap();
-        std::fs::write(&golden, actual).unwrap();
-        eprintln!("blessed {}", golden.display());
-        return;
-    }
-    let expected = match std::fs::read_to_string(&golden) {
-        Ok(expected) => expected,
-        Err(_) => {
-            failures.push(format!(
-                "no golden {} — run with HANSEI_MATRIX_BLESS=1 to create it",
-                golden.display()
-            ));
-            return;
-        }
-    };
-    if actual != expected {
-        let actual_path = golden.with_extension("golden.actual");
-        std::fs::write(&actual_path, actual).unwrap();
-        let divergence = actual
-            .lines()
-            .zip(expected.lines())
-            .position(|(a, e)| a != e)
-            .map(|i| {
-                format!(
-                    "first differing line {}:\n  expected: {}\n  actual:   {}",
-                    i + 1,
-                    expected.lines().nth(i).unwrap_or("<end>"),
-                    actual.lines().nth(i).unwrap_or("<end>"),
-                )
-            })
-            .unwrap_or_else(|| "one is a prefix of the other".to_owned());
-        failures.push(format!(
-            "{} diverged (HANSEI_MATRIX_BLESS=1 to re-bless; actual in {}):\n{divergence}",
-            golden.display(),
-            actual_path.display(),
-        ));
+/// Diff (or bless) one cell's golden, recording a mismatch rather than
+/// raising it.
+///
+/// A snapshot assertion raises, which is right for a test that makes
+/// one and wrong here: a cell is three goldens and the matrix is
+/// fourteen cells, and what a new tokio release moves it moves in
+/// several at once. Raising would report the first of them and build
+/// every remaining cell for nothing. So the assertion is caught and
+/// only which golden diverged is collected — the diff itself is
+/// already on stdout by then, printed on the way out, and a rejected
+/// golden is beside its file as `<name>.snap.new`.
+fn check_golden(cell: &str, name: &str, actual: &str, failures: &mut Vec<String>) {
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path(Path::new("matrix").join(cell));
+    settings.set_prepend_module_to_snapshot(false);
+    // These are generated reports; naming the expression that built one
+    // says nothing a reader of the diff wants.
+    settings.set_omit_expression(true);
+    let checked = settings.bind(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            insta::assert_snapshot!(name, actual);
+        }))
+    });
+    if checked.is_err() {
+        failures.push(format!("{cell}/{name}.snap"));
     }
 }
 
@@ -511,33 +493,17 @@ fn test_matrix() {
             })
             .collect();
 
-        let cell_dir = goldens_dir().join(&name);
-        check_golden(
-            &cell_dir,
-            "walk.golden",
-            &walk_report(&bundles),
-            &mut failures,
-        );
-        check_golden(
-            &cell_dir,
-            "formats.golden",
-            &formats_report(&bundles),
-            &mut failures,
-        );
-        check_golden(
-            &cell_dir,
-            "summary.golden",
-            &summary_report(&bundles),
-            &mut failures,
-        );
+        check_golden(&name, "walk", &walk_report(&bundles), &mut failures);
+        check_golden(&name, "formats", &formats_report(&bundles), &mut failures);
+        check_golden(&name, "summary", &summary_report(&bundles), &mut failures);
         eprintln!("matrix: checked cell {name}");
     }
 
     assert!(ran > 0, "no matrix cell matched HANSEI_MATRIX={filter}");
     assert!(
         failures.is_empty(),
-        "{} matrix golden(s) diverged:\n\n{}",
+        "{} matrix golden(s) diverged (diffs above; INSTA_UPDATE=always to re-bless):\n  {}",
         failures.len(),
-        failures.join("\n\n")
+        failures.join("\n  ")
     );
 }

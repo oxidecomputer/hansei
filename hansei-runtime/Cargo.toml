@@ -8,6 +8,7 @@ blake3.workspace = true
 # Only the matrix goldens build a bundle per cell; the crate itself reads
 # bundles and never produces one.
 exegesis.workspace = true
+insta.workspace = true
 regex.workspace = true
 
 [dependencies]
