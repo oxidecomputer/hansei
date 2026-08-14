@@ -2201,7 +2201,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// whose registrations cannot be reached costs its own driver, a
     /// resource whose waiters cannot be read costs that resource, and
     /// everything else is still harvested.
-    fn io_task_pointers(
+    pub(crate) fn io_task_pointers(
         &self,
         runtimes: &[RuntimeRef<'b>],
         list: &TaskList,

@@ -50,6 +50,7 @@ const PROGRAMS: &[&str] = &[
     "ct-runtime",
     "local-set",
     "local-set-timer",
+    "local-set-io",
 ];
 
 /// What a fixture pair was captured from: the program's own source, and
@@ -933,6 +934,90 @@ fn test_local_set_timer_offline() {
     };
     assert!(semaphore.contains("semaphore"), "{leaves:#?}");
     assert!(timer.contains("the timer"), "{leaves:#?}");
+}
+
+/// The io harvest: a `LocalSet` nothing points at, found through the
+/// sockets its members are parked on.
+///
+/// Every cheaper route provably comes up empty here. Both the cell
+/// bootstrap and the TLS probe are in the position the wheel fixture
+/// put them in — handles dropped at spawn, nothing outside the set
+/// waiting on anything its members hold, a parked core reading the
+/// anchor empty — and the wheel joins them, because nothing in this
+/// program parks on time at all. What redeems the set is the io
+/// driver's registration list, and the whole set comes with the first
+/// member it names.
+#[test]
+fn test_local_set_io_offline() {
+    let (bundle, snapshot) = load("local-set-io");
+    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+
+    let lwps = snapshot.lwps().unwrap();
+    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let mut list = ctx
+        .enumerate_all_tasks(&runtimes)
+        .expect("the owned-task walk");
+
+    // Before discovery: the scheduler owns one task, parked on a socket
+    // of its own — so its own waker sits on a registration the harvest
+    // walks, and being listed is what keeps it out of the candidates.
+    assert_eq!(list.tasks.len(), 1, "{:#?}", list.tasks);
+    let scheduler_task = list.tasks[0].addr;
+
+    // A resource holds wakers in three places, and this program has one
+    // member parked in each. All three are candidates: a harvest that
+    // walked only the waiter list, or only one direction slot, would
+    // still find the set — and would yield fewer here.
+    let candidates = hansei_runtime::testkit::io_candidates(&ctx, &snapshot);
+    assert_eq!(candidates.len(), 3, "{candidates:#x?}");
+    assert!(
+        !candidates.contains(&scheduler_task.0),
+        "the listed task's own registration is not a candidate: {candidates:#x?}"
+    );
+
+    let sets = ctx.discover_local_tasks(&lwps, &workers, &runtimes, &mut list);
+    assert!(list.errors.is_empty(), "{:?}", list.errors);
+    let [set] = sets.as_slice() else {
+        panic!("expected one local set, got {}", sets.len());
+    };
+    assert_eq!(set.route, LocalSetRoute::Io);
+    assert_ne!(set.owned_id, 0);
+
+    // All three members join the population under the set's group, and
+    // they are exactly the three the harvest named.
+    assert_eq!(list.tasks.len(), 4, "{:#?}", list.tasks);
+    let group = runtimes.len();
+    let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
+    assert_eq!(local.len(), 3, "{local:#?}");
+    let mut names: Vec<&str> = local.iter().map(|t| known_name(t)).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "local_set_io::local_reader::{async_fn_env#0}",
+            "local_set_io::local_watcher::{async_fn_env#0}",
+            "local_set_io::local_writer::{async_fn_env#0}",
+        ],
+        "{local:#?}"
+    );
+    for task in &local {
+        assert_eq!(task.owner_id, Some(set.owned_id), "{task:#?}");
+    }
+    let members: HashSet<u64> = local.iter().map(|t| t.addr.0).collect();
+    assert_eq!(
+        candidates.iter().copied().collect::<HashSet<u64>>(),
+        members,
+        "every candidate is one of the set's members"
+    );
+    assert_eq!(
+        list.tasks
+            .iter()
+            .filter(|t| t.addr == scheduler_task)
+            .count(),
+        1,
+        "the scheduler's own task is not duplicated"
+    );
 }
 
 /// The wrong-bundle failure mode: a bundle from a

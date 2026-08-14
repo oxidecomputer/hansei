@@ -604,6 +604,61 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "state.waker.waker.__0.value.<Some>.__0.waker",
         );
     }
+    if program == "local-set-io" {
+        // The io rows root at the scheduler handles too, so the same
+        // gap applies: the summary says they bound, not where. Two
+        // mutexes are crossed on the way — the driver's around the
+        // registration list, and each resource's around its waiters —
+        // so those two chains pin their ends and leave the loom
+        // flavor's payload member unspelled.
+        let registrations = walk_path(program, bundle, WalkRole::IoRegistrations);
+        assert!(
+            registrations.starts_with("driver.io.<Enabled>.__0.synced.")
+                && registrations.ends_with(".registrations.head.<Some>.__0.pointer"),
+            "{program}: io registrations bound to an unexpected path: {registrations}"
+        );
+        let waiters = walk_path(program, bundle, WalkRole::ScheduledIoWaiters);
+        assert!(
+            waiters.starts_with("waiters."),
+            "{program}: ScheduledIo.waiters bound to an unexpected path: {waiters}"
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::ScheduledIoNext,
+            "linked_list_pointers.value.inner.value.next.<Some>.__0.pointer",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::IoWaiterHead,
+            "list.head.<Some>.__0.pointer",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::IoReaderWaker,
+            "reader.<Some>.__0.waker",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::IoWriterWaker,
+            "writer.<Some>.__0.waker",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::IoWaiterNext,
+            "pointers.inner.value.next.<Some>.__0.pointer",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::IoWaiterWaker,
+            "waker.<Some>.__0.waker",
+        );
+    }
     if program == "local-set" {
         // The local-set rows root at leaf types, so the portable summary
         // filters them; that they bound on the one fixture that
@@ -913,6 +968,11 @@ fn test_golden_local_set() {
 #[test]
 fn test_golden_local_set_timer() {
     run_golden("local-set-timer");
+}
+
+#[test]
+fn test_golden_local_set_io() {
+    run_golden("local-set-io");
 }
 
 /// Two extractions of one binary agree byte for byte.
