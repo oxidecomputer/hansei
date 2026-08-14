@@ -215,14 +215,24 @@ pub enum Command {
     /// Show the target, the bundle, and how far its symbols resolve.
     Info,
 
-    /// Show the runtime's own state, read straight through the bundle's
-    /// layouts: its drivers, or the scheduler state the workers share.
+    /// Show a runtime's own state, read straight through the bundle's
+    /// layouts: its drivers, and the scheduler state its workers share.
+    /// Naming no section shows both.
+    ///
     /// The bundle's elisions (which hide runtime internals inside user
     /// values) never apply to this view.
+    ///
+    /// Every discovered runtime is shown, each under a heading.
     Runtime {
-        /// Which state to show.
-        #[arg(value_enum)]
-        field: RuntimeField,
+        /// Print the drivers: io, signal, time, and the clock.
+        #[arg(long, short = 'D')]
+        drivers: bool,
+
+        /// Print the scheduler state the workers share: the owned-task
+        /// set, the injection queue, the idle set and the per-worker
+        /// remotes.
+        #[arg(long, short)]
+        shared: bool,
 
         #[command(flatten)]
         render: RenderOpts,
@@ -462,17 +472,6 @@ pub struct RenderOpts {
     /// structural view of values instead.
     #[arg(long, short)]
     ugly: bool,
-}
-
-/// What `runtime` shows: each choice is one member of the runtime
-/// handle, read out of the target.
-#[derive(clap::ValueEnum, Copy, Clone)]
-pub enum RuntimeField {
-    /// The io, signal and time drivers, and the clock.
-    Drivers,
-    /// The scheduler state the workers share: the owned-task set, the
-    /// injection queue, the idle set and the per-worker remotes.
-    Shared,
 }
 
 /// Everything `trace` was told about rendering a chain: the shared
@@ -728,8 +727,13 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
         Command::Graph => graph::exec_graph(session, out)?,
         Command::Info => exec_info(session, out)?,
-        Command::Runtime { field, render } => {
-            runtimes::exec_runtime_field(session, field, render, out)?
+        Command::Runtime {
+            drivers,
+            shared,
+            render,
+        } => {
+            let fields = runtimes::Fields::select(drivers, shared);
+            runtimes::exec_runtime(session, fields, render, out)?
         }
         Command::Runtimes => runtimes::exec_runtimes(session, out)?,
         #[cfg(feature = "snapshot")]
