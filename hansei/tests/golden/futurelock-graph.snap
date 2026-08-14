@@ -1,0 +1,12 @@
+---
+source: hansei/tests/acceptance.rs
+expression: actual
+---
+TASK                 STATE  WAITING ON
+#blocked             idle   a tokio::sync::Mutex (semaphore @1): 1 permit requested, 0 available; wake queue: task #blocked
+└─ #blocked ← cycle  idle   
+
+futurelock: task #blocked holds 1 granted permit of a tokio::sync::Mutex (semaphore @1) in a future it stopped polling:
+  `future1` (futurelock::do_async_thing::{async_fn_env#0})
+  held across futurelock::do_stuff::{async_fn_env#0} state Suspend1 — src/bin/futurelock.rs:64
+  blocked behind it: task #blocked
