@@ -720,6 +720,10 @@ impl<'b> Session<'b> {
     /// discovered runtime, then one per discovered local set, in the
     /// group order tasks are stamped with — empty (no tags) when the
     /// whole population is one runtime's, which is nearly every target.
+    ///
+    /// Each names its group the way `runtimes` lists it, so a tag can be
+    /// looked up there and handed straight back to `--runtime` or the
+    /// `runtime` command.
     fn group_tags(&self) -> Vec<String> {
         if self.runtimes.len() + self.local_sets.len() <= 1 {
             return Vec::new();
@@ -729,20 +733,21 @@ impl<'b> Session<'b> {
             .iter()
             .enumerate()
             .map(|(i, r)| match r.worker_tids.is_empty() {
-                true => format!("{i} ({}, no thread inside it)", r.flavor),
-                false => format!("{i} ({})", r.flavor),
+                true => format!(
+                    "{} ({}, no thread inside it)",
+                    runtimes::runtime_label(i, r),
+                    r.flavor
+                ),
+                false => format!("{} ({})", runtimes::runtime_label(i, r), r.flavor),
             })
             .collect();
-        // A set's tag leads with the index `runtimes` lists it under,
-        // the way a runtime's does: a tag a reader cannot look up says
-        // only that the task is somebody else's.
         tags.extend(
             self.local_sets
                 .iter()
                 .enumerate()
                 .map(|(i, set)| match set.owner_tid {
-                    Some(tid) => format!("local set {i} at {:#x} (lwp {tid})", set.shared.addr),
-                    None => format!("local set {i} at {:#x}", set.shared.addr),
+                    Some(tid) => format!("{} (lwp {tid})", runtimes::local_set_label(i, set)),
+                    None => runtimes::local_set_label(i, set),
                 }),
         );
         tags

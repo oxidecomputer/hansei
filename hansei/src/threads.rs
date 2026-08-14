@@ -46,7 +46,7 @@ pub(crate) fn exec_threads(
             String::new()
         } else {
             match session.runtime_of(worker.tid) {
-                Some((index, rt)) => format!("  runtime {index} ({})", rt.flavor),
+                Some((index, rt)) => format!("  {}", crate::runtimes::runtime_label(index, rt)),
                 None => String::new(),
             }
         };

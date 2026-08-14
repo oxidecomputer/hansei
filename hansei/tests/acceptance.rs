@@ -401,10 +401,10 @@ struct TaskRow {
     id: String,
     state: String,
     future: String,
-    /// The group tag — which runtime or local set owns the task —
-    /// printed only when the population holds more than one group, so
-    /// empty on most fixtures.
-    runtime: String,
+    /// The group tag — which runtime or local set owns the task, as
+    /// `runtimes` names it — printed only when the population holds
+    /// more than one group, so empty on most fixtures.
+    owner: String,
     /// How many futures the task holds in its own frames beside its
     /// await chain, `0` when it holds none.
     futures: String,
@@ -438,7 +438,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             id: id.to_string(),
             state: String::new(),
             future: future.to_string(),
-            runtime: String::new(),
+            owner: String::new(),
             futures: String::new(),
             sets: String::new(),
             spawned: String::new(),
@@ -458,7 +458,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 .unwrap_or_else(|| panic!("unexpected tasks line {line:?}"));
             let field = match label {
                 "State" => &mut row.state,
-                "Runtime" => &mut row.runtime,
+                "Owner" => &mut row.owner,
                 "Held futures" => &mut row.futures,
                 "Join sets" => &mut row.sets,
                 "Spawned at" => &mut row.spawned,
@@ -1085,10 +1085,11 @@ fn test_local_set_acceptance() {
 
         // Groups: the scheduler task carries the runtime's tag, the two
         // local tasks the set's, with the owner LWP joined on.
-        assert_eq!(joiner.runtime, "0 (current_thread)", "{rows:#?}");
-        let set_tag = regex::Regex::new(r"^local set 0 at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
-        assert!(set_tag.is_match(&sleeper.runtime), "{rows:#?}");
-        assert_eq!(sleeper.runtime, acquirer.runtime, "{rows:#?}");
+        let rt_tag = regex::Regex::new(r"^runtime 0 @0x[0-9a-f]+ \(current_thread\)$").unwrap();
+        assert!(rt_tag.is_match(&joiner.owner), "{rows:#?}");
+        let set_tag = regex::Regex::new(r"^local set 0 @0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        assert!(set_tag.is_match(&sleeper.owner), "{rows:#?}");
+        assert_eq!(sleeper.owner, acquirer.owner, "{rows:#?}");
 
         // The join edge names the local task with no "not in the
         // scheduler's owned tasks" caveat: it is simply listed now.
@@ -1141,10 +1142,11 @@ fn test_local_set_timer_acceptance() {
         // The spawned task keeps its runtime's tag — its own entry is in
         // the same wheel, and being listed is what keeps it out of the
         // harvest's candidates.
-        assert_eq!(spawned.runtime, "0 (current_thread)", "{rows:#?}");
-        let set_tag = regex::Regex::new(r"^local set 0 at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
-        assert!(set_tag.is_match(&sleeper.runtime), "{rows:#?}");
-        assert_eq!(sleeper.runtime, acquirer.runtime, "{rows:#?}");
+        let rt_tag = regex::Regex::new(r"^runtime 0 @0x[0-9a-f]+ \(current_thread\)$").unwrap();
+        assert!(rt_tag.is_match(&spawned.owner), "{rows:#?}");
+        let set_tag = regex::Regex::new(r"^local set 0 @0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        assert!(set_tag.is_match(&sleeper.owner), "{rows:#?}");
+        assert_eq!(sleeper.owner, acquirer.owner, "{rows:#?}");
 
         // Both members read like any listed task — including the one no
         // route ever named, which the set brought with it.
@@ -1187,11 +1189,12 @@ fn test_local_set_io_acceptance() {
         // The spawned task keeps its runtime's tag — its own waker is on
         // a registration the harvest walks, and being listed is what
         // keeps it out of the candidates.
-        assert_eq!(spawned.runtime, "0 (current_thread)", "{rows:#?}");
-        let set_tag = regex::Regex::new(r"^local set 0 at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        let rt_tag = regex::Regex::new(r"^runtime 0 @0x[0-9a-f]+ \(current_thread\)$").unwrap();
+        assert!(rt_tag.is_match(&spawned.owner), "{rows:#?}");
+        let set_tag = regex::Regex::new(r"^local set 0 @0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
         for member in &members {
-            assert!(set_tag.is_match(&member.runtime), "{rows:#?}");
-            assert_eq!(member.runtime, members[0].runtime, "{rows:#?}");
+            assert!(set_tag.is_match(&member.owner), "{rows:#?}");
+            assert_eq!(member.owner, members[0].owner, "{rows:#?}");
         }
 
         // Every member reads like any listed task: the awaited chain
@@ -1231,17 +1234,18 @@ fn test_foreign_runtime_acceptance() {
         let detached = task_with_future(&rows, "foreign_runtime::detached::{async_fn_env#0}");
         let sleeper = task_with_future(&rows, "foreign_runtime::local_sleeper::{async_fn_env#0}");
 
-        assert_eq!(joiner.runtime, "0 (current_thread)", "{rows:#?}");
+        let rt_tag = regex::Regex::new(r"^runtime 0 @0x[0-9a-f]+ \(current_thread\)$").unwrap();
+        assert!(rt_tag.is_match(&joiner.owner), "{rows:#?}");
         // Both of the hidden runtime's tasks carry its tag: the one the
         // joiner named, and the one nothing outside its list points at.
+        let hidden_tag =
+            regex::Regex::new(r"^runtime 1 @0x[0-9a-f]+ \(current_thread, no thread inside it\)$")
+                .unwrap();
         for task in [joined, detached] {
-            assert_eq!(
-                task.runtime, "1 (current_thread, no thread inside it)",
-                "{rows:#?}"
-            );
+            assert!(hidden_tag.is_match(&task.owner), "{rows:#?}");
         }
-        let set_tag = regex::Regex::new(r"^local set 0 at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
-        assert!(set_tag.is_match(&sleeper.runtime), "{rows:#?}");
+        let set_tag = regex::Regex::new(r"^local set 0 @0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        assert!(set_tag.is_match(&sleeper.owner), "{rows:#?}");
 
         // The join edge reads like any other now that its target is
         // listed, rather than naming a runtime the session cannot show.
