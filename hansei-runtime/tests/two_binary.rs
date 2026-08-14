@@ -51,6 +51,7 @@ const PROGRAMS: &[&str] = &[
     "local-set",
     "local-set-timer",
     "local-set-io",
+    "foreign-runtime",
 ];
 
 /// What a fixture pair was captured from: the program's own source, and
@@ -1018,6 +1019,148 @@ fn test_local_set_io_offline() {
         1,
         "the scheduler's own task is not duplicated"
     );
+}
+
+/// A runtime no thread's `Context` reaches, and the set inside it.
+///
+/// The hidden runtime's `block_on` has returned, so TLS-anchored
+/// discovery finds only the main one and everything the hidden one owns
+/// is unlisted. One `JoinHandle`, held by the main runtime's own task,
+/// is the entire way in — and what it names is a task, not a runtime,
+/// so the runtime is reached through that task's own cell. Admitting it
+/// is what puts its drivers in reach, and the set's one member is
+/// parked on a timer in *that* runtime's wheel: it is found by no
+/// earlier route, and would be found by none at all had the runtime
+/// stayed hidden.
+#[test]
+fn test_foreign_runtime_offline() {
+    let (bundle, snapshot) = load("foreign-runtime");
+    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+
+    let lwps = snapshot.lwps().unwrap();
+    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let mut list = ctx
+        .enumerate_all_tasks(&runtimes)
+        .expect("the owned-task walk");
+
+    // Before discovery: one runtime, one task — the joiner — and the
+    // task it awaits is in no list, classified from its cell as a task
+    // of a runtime this session has not reached.
+    assert_eq!(runtimes.len(), 1, "{runtimes:#?}");
+    assert_eq!(list.tasks.len(), 1, "{:#?}", list.tasks);
+    let joiner = list.tasks[0].addr;
+    let joined = match graph::analyze(&ctx, &list).waits[0].target.clone() {
+        Some(hansei_runtime::tokio::bundle::WaitTarget::Task {
+            addr, listed, kind, ..
+        }) => {
+            assert!(!listed, "the hidden runtime's task must not be listed yet");
+            assert_eq!(
+                kind,
+                Some(UnlistedTaskKind::OtherRuntime(RuntimeFlavor::CurrentThread))
+            );
+            addr
+        }
+        other => panic!("the joiner does not await a task: {other:?}"),
+    };
+
+    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
+    assert!(list.errors.is_empty(), "{:?}", list.errors);
+
+    // The runtime joins the session's list with no thread inside it,
+    // and the route that found it recorded.
+    let [_main, hidden] = runtimes.as_slice() else {
+        panic!("expected two runtimes, got {}", runtimes.len());
+    };
+    assert_eq!(hidden.route, DiscoveryRoute::JoinHandle);
+    assert!(hidden.worker_tids.is_empty(), "{hidden:#?}");
+
+    // Both of its tasks are enumerated under its group — the one the
+    // joiner named, and the one nothing outside its list points at.
+    assert_eq!(list.tasks.len(), 4, "{:#?}", list.tasks);
+    let mut hidden_tasks: Vec<&Task> = list.tasks.iter().filter(|t| t.group == 1).collect();
+    hidden_tasks.sort_by_key(|t| known_name(t));
+    let names: Vec<&str> = hidden_tasks.iter().map(|t| known_name(t)).collect();
+    assert_eq!(
+        names,
+        [
+            "foreign_runtime::detached::{async_fn_env#0}",
+            "foreign_runtime::joined::{async_fn_env#0}",
+        ],
+        "{hidden_tasks:#?}"
+    );
+    assert!(
+        hidden_tasks.iter().any(|t| t.addr.0 == joined),
+        "{hidden_tasks:#?}"
+    );
+
+    // And the set, which only the hidden runtime's own wheel names.
+    let [set] = sets.as_slice() else {
+        panic!("expected one local set, got {}", sets.len());
+    };
+    assert_eq!(set.route, DiscoveryRoute::Wheel);
+    let group = runtimes.len();
+    let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
+    let [member] = local.as_slice() else {
+        panic!("expected the set's one member, got {local:#?}");
+    };
+    assert_eq!(
+        known_name(member),
+        "foreign_runtime::local_sleeper::{async_fn_env#0}"
+    );
+    assert_eq!(member.owner_id, Some(set.owned_id), "{member:#?}");
+
+    // The join edge resolves now: its target is one of the enumerated
+    // tasks rather than something the session cannot name.
+    assert_eq!(
+        list.tasks.iter().filter(|t| t.addr == joiner).count(),
+        1,
+        "the main runtime's own task is not duplicated"
+    );
+    let analysis = graph::analyze(&ctx, &list);
+    assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
+    let joiner_wait = list
+        .tasks
+        .iter()
+        .zip(&analysis.waits)
+        .find(|(t, _)| t.addr == joiner)
+        .map(|(_, wait)| wait)
+        .expect("the joiner is still in the population");
+    match joiner_wait.target.as_ref() {
+        Some(hansei_runtime::tokio::bundle::WaitTarget::Task { listed, .. }) => {
+            assert!(listed, "the joined task is listed now: {joiner_wait:?}");
+        }
+        other => panic!("the joiner does not await a task: {other:?}"),
+    }
+}
+
+/// A `--runtime` selection is a filter, so what it leaves out must not
+/// come back through the cell bootstrap: the excluded handle is handed
+/// to discovery, which declines to admit it.
+#[test]
+fn test_excluded_runtime_stays_excluded() {
+    let (bundle, snapshot) = load("foreign-runtime");
+    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+
+    let lwps = snapshot.lwps().unwrap();
+    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
+    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
+    let mut list = ctx
+        .enumerate_all_tasks(&runtimes)
+        .expect("the owned-task walk");
+
+    // Discovery once, to learn the hidden runtime's handle.
+    let (probed, _, _) = hansei_runtime::testkit::discover(&ctx, &snapshot);
+    let hidden = probed[1].handle.addr;
+
+    // Again with that handle excluded, as a `--runtime` selection
+    // would: nothing is admitted, and the set inside it stays out of
+    // reach too, since only that runtime's own wheel names it.
+    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[hidden], &mut list);
+    assert_eq!(runtimes.len(), 1, "{runtimes:#?}");
+    assert_eq!(list.tasks.len(), 1, "{:#?}", list.tasks);
+    assert!(sets.is_empty(), "{sets:#?}");
+    assert!(list.errors.is_empty(), "{:?}", list.errors);
 }
 
 /// The wrong-bundle failure mode: a bundle from a

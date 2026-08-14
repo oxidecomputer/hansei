@@ -78,6 +78,7 @@ const PROGRAMS: &[&str] = &[
     "local-set",
     "local-set-timer",
     "local-set-io",
+    "foreign-runtime",
 ];
 
 fn workspace_root() -> &'static Path {
@@ -1202,6 +1203,64 @@ fn test_local_set_io_acceptance() {
         let out = normalize(&hansei_ok(&bundle, core, "info"));
         let set_line = regex::Regex::new(
             r"local set 0: at 0xADDR, on lwp \d+, 3 tasks, found via a task waker on an io resource registered with a runtime's driver",
+        )
+        .unwrap();
+        assert!(set_line.is_match(&out), "{out}");
+    });
+}
+
+/// A runtime no thread is inside, against a real core. Its `block_on`
+/// has returned, so the TLS anchor finds only the main runtime and
+/// everything the second one owns is unlisted; the one `JoinHandle` the
+/// main runtime's task parks on leads to a task of it, and that task's
+/// cell leads to the runtime. Admitting it is also what puts its
+/// drivers in reach, which is the only way the set inside it — one
+/// member, parked on a timer in that runtime's own wheel — is ever
+/// named.
+#[test]
+fn test_foreign_runtime_acceptance() {
+    let bundle = fixtures().bundle("foreign-runtime");
+    with_core("foreign-runtime", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 4, "{rows:#?}");
+        let joiner = task_with_future(&rows, "foreign_runtime::joiner::{async_fn_env#0}");
+        let joined = task_with_future(&rows, "foreign_runtime::joined::{async_fn_env#0}");
+        let detached = task_with_future(&rows, "foreign_runtime::detached::{async_fn_env#0}");
+        let sleeper = task_with_future(&rows, "foreign_runtime::local_sleeper::{async_fn_env#0}");
+
+        assert_eq!(joiner.runtime, "0 (current_thread)", "{rows:#?}");
+        // Both of the hidden runtime's tasks carry its tag: the one the
+        // joiner named, and the one nothing outside its list points at.
+        for task in [joined, detached] {
+            assert_eq!(
+                task.runtime, "1 (current_thread, no thread inside it)",
+                "{rows:#?}"
+            );
+        }
+        let set_tag = regex::Regex::new(r"^local set at 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        assert!(set_tag.is_match(&sleeper.runtime), "{rows:#?}");
+
+        // The join edge reads like any other now that its target is
+        // listed, rather than naming a runtime the session cannot show.
+        let out = normalize(&trace(&bundle, core, &joiner.id, false));
+        assert!(
+            out.contains(&format!("task {} (JoinHandle)", joined.id)),
+            "{out}"
+        );
+        assert!(!out.contains("does not list"), "{out}");
+
+        // info names the runtime and the route to it, and the set that
+        // harvesting *its* wheel found.
+        let out = normalize(&hansei_ok(&bundle, core, "info"));
+        assert!(
+            out.contains(
+                "runtime 1: current_thread, no thread inside it, \
+                 found via a JoinHandle held by an enumerated task"
+            ),
+            "{out}"
+        );
+        let set_line = regex::Regex::new(
+            r"local set 0: at 0xADDR, on lwp \d+, 1 task, found via a task waker on a timer parked in a runtime's wheel",
         )
         .unwrap();
         assert!(set_line.is_match(&out), "{out}");

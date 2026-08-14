@@ -41,7 +41,8 @@ FIXTURES="$PWD/fixtures"
 # Program -> the stdout line marking its parked steady state. Reads
 # block on the child's stdout; there are no timing sleeps anywhere.
 PROGRAMS=(simple-await nested-await dyn-future futurelock sleep-join channels
-          unordered joinset ct-runtime local-set local-set-timer local-set-io)
+          unordered joinset ct-runtime local-set local-set-timer local-set-io
+          foreign-runtime)
 if [[ $# -gt 1 ]]; then
     PROGRAMS=("${@:2}")
 fi
