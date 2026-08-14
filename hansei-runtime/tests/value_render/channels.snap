@@ -1,3 +1,6 @@
+---
+source: hansei-runtime/tests/value_render.rs
+---
 == mpsc::bounded::Receiver (_rx) ==
 tokio::sync::mpsc::bounded::Receiver<u32> {
     capacity: 8,
@@ -161,4 +164,3 @@ tokio::sync::watch::Sender<u32> {
     ref_count_rx: 1,
     ref_count_tx: 1,
 }
-

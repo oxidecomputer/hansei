@@ -935,10 +935,10 @@ fn assert_spawned_at(trace: &str, loc: &str) {
 /// `hansei/tests/golden/`.
 ///
 /// Re-bless with `INSTA_UPDATE=always`, which writes the goldens in
-/// place under a plain `cargo test` — the same shape as `EXEGESIS_BLESS`
-/// and `HANSEI_MATRIX_BLESS`, and the only shape that serves this suite:
-/// it runs nowhere but the hosts that can core a process, so a golden is
-/// always blessed over ssh and reviewed here afterwards. A plain run
+/// place under a plain `cargo test` — as every golden in the tree is
+/// blessed, and the only shape that serves this suite: it runs nowhere
+/// but the hosts that can core a process, so a golden is always blessed
+/// over ssh and reviewed here afterwards. A plain run
 /// leaves a rejected golden beside its file as `.snap.new` instead of
 /// overwriting it.
 ///
