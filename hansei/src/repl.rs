@@ -301,6 +301,7 @@ fn history_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RuntimeScope;
 
     /// The grammar is built only once a session has attached, so a
     /// command that declares the same short flag twice would panic
@@ -370,5 +371,34 @@ mod tests {
         assert_eq!(sections(&["runtime", "-D"]), (true, false));
         assert_eq!(sections(&["runtime", "--shared"]), (false, true));
         assert_eq!(sections(&["runtime", "-Ds"]), (true, true));
+    }
+
+    /// The runtime a command is pointed at is named by its index in the
+    /// listing or by the handle address printed beside it, and the two
+    /// spellings cannot be confused for one another.
+    #[test]
+    fn test_runtime_is_pointed_at_one_runtime() {
+        let scope = |line: &[&str]| {
+            let Command::Runtime { scope, .. } = Line::try_parse_from(line)
+                .expect("runtime takes a scope")
+                .command
+            else {
+                panic!("runtime parsed as another command");
+            };
+            scope
+        };
+        assert!(matches!(
+            scope(&["runtime", "0x7f11c0"]),
+            Some(RuntimeScope::Handle(0x7f11c0))
+        ));
+        assert!(matches!(
+            scope(&["runtime", "2"]),
+            Some(RuntimeScope::Index(2))
+        ));
+        assert!(scope(&["runtime"]).is_none());
+
+        // An address without its prefix would be an index; one that is
+        // neither is refused rather than guessed at.
+        assert!(Line::try_parse_from(["runtime", "7f11c0"]).is_err());
     }
 }

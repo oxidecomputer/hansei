@@ -222,8 +222,16 @@ pub enum Command {
     /// The bundle's elisions (which hide runtime internals inside user
     /// values) never apply to this view.
     ///
-    /// Every discovered runtime is shown, each under a heading.
+    /// Every discovered runtime is shown, each under a heading, unless
+    /// one is named — by its index in the `runtimes` listing, or by the
+    /// handle address that listing prints beside it.
     Runtime {
+        /// Which runtime to show: an index from `runtimes`, or a handle
+        /// address in hex with a leading 0x. Every one of them by
+        /// default.
+        #[arg(value_parser = parse_runtime_scope)]
+        scope: Option<RuntimeScope>,
+
         /// Print the drivers: io, signal, time, and the clock.
         #[arg(long, short = 'D')]
         drivers: bool,
@@ -472,6 +480,35 @@ pub struct RenderOpts {
     /// structural view of values instead.
     #[arg(long, short)]
     ugly: bool,
+}
+
+/// Which runtime a command was pointed at.
+#[derive(Clone, Copy)]
+pub enum RuntimeScope {
+    /// Its position in the `runtimes` listing — the index every listing
+    /// tags a task's group with.
+    Index(usize),
+    /// The address of its handle, which that listing prints beside the
+    /// index so either identifier pastes back in.
+    Handle(u64),
+}
+
+/// Parse a runtime scope. The split is the one `parse_trace_target`
+/// makes for the same reason: the listing prints indices in decimal and
+/// addresses in `0x` hex, so neither spelling can be mistaken for the
+/// other.
+fn parse_runtime_scope(s: &str) -> std::result::Result<RuntimeScope, String> {
+    if s.starts_with("0x") || s.starts_with("0X") {
+        parse_hex_addr(s).map(RuntimeScope::Handle)
+    } else {
+        s.parse().map(RuntimeScope::Index).map_err(|_| {
+            format!(
+                "a runtime is named by its index in the `runtimes` listing, or \
+                 by the handle address printed beside it in hex with a leading \
+                 0x, got {s:?}"
+            )
+        })
+    }
 }
 
 /// Everything `trace` was told about rendering a chain: the shared
@@ -728,12 +765,13 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         Command::Graph => graph::exec_graph(session, out)?,
         Command::Info => exec_info(session, out)?,
         Command::Runtime {
+            scope,
             drivers,
             shared,
             render,
         } => {
             let fields = runtimes::Fields::select(drivers, shared);
-            runtimes::exec_runtime(session, fields, render, out)?
+            runtimes::exec_runtime(session, scope, fields, render, out)?
         }
         Command::Runtimes => runtimes::exec_runtimes(session, out)?,
         #[cfg(feature = "snapshot")]
