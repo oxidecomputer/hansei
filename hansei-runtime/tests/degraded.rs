@@ -18,7 +18,7 @@
 //! structures the guards watch, whatever the snapshot's layout.
 
 use hansei_bundle::{Bundle, BundleView};
-use hansei_runtime::testkit::{load, tasks as tasks_of};
+use hansei_runtime::testkit::{load_any, tasks as tasks_of};
 use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
 use hansei_runtime::tokio::{census, graph};
 use proc::snapshot::Snapshot;
@@ -201,7 +201,7 @@ fn healthy<'a>(bundle: &'a Bundle, snapshot: &'a Snapshot) -> (Context<'a, Snaps
 /// and the analysis still runs over what remains.
 #[test]
 fn test_an_unreadable_task_degrades_only_its_shard() {
-    let (bundle, snapshot) = load("joinset");
+    let (bundle, snapshot) = load_any("joinset");
     let (_ctx, list) = healthy(&bundle, &snapshot);
     let victim = list.tasks.last().expect("the fixture has tasks").addr.0;
 
@@ -227,7 +227,7 @@ fn test_an_unreadable_task_degrades_only_its_shard() {
 /// check before anything reads through it, and contained the same way.
 #[test]
 fn test_an_unmapped_task_pointer_is_reported() {
-    let (bundle, snapshot) = load("joinset");
+    let (bundle, snapshot) = load_any("joinset");
     let (_ctx, list) = healthy(&bundle, &snapshot);
     let victim = list.tasks.last().unwrap().addr.0;
 
@@ -248,7 +248,7 @@ fn test_an_unmapped_task_pointer_is_reported() {
 /// rather than listing forever.
 #[test]
 fn test_a_task_list_cycle_is_caught() {
-    let (bundle, snapshot) = load("joinset");
+    let (bundle, snapshot) = load_any("joinset");
     let (_ctx, list) = healthy(&bundle, &snapshot);
     let victim = list.tasks.last().unwrap().addr.0;
     let decoy = list.tasks.first().unwrap().addr.0;
@@ -281,7 +281,7 @@ fn test_a_task_list_cycle_is_caught() {
 /// warning.
 #[test]
 fn test_an_unreadable_cell_fails_the_stage_read() {
-    let (bundle, snapshot) = load("simple-await");
+    let (bundle, snapshot) = load_any("simple-await");
     let (_ctx, list) = healthy(&bundle, &snapshot);
     let task = &list.tasks[0];
 
@@ -295,7 +295,7 @@ fn test_an_unreadable_cell_fails_the_stage_read() {
 /// stand.
 #[test]
 fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
-    let (bundle, snapshot) = load("dyn-future");
+    let (bundle, snapshot) = load_any("dyn-future");
     let (ctx, list) = healthy(&bundle, &snapshot);
     let driver = list
         .tasks
@@ -346,7 +346,7 @@ fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
 /// fabricated one.
 #[test]
 fn test_an_unreadable_semaphore_degrades_the_analysis() {
-    let (bundle, snapshot) = load("futurelock");
+    let (bundle, snapshot) = load_any("futurelock");
     let (ctx, list) = healthy(&bundle, &snapshot);
     let analysis = graph::analyze(&ctx, &list);
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
@@ -368,7 +368,7 @@ fn test_an_unreadable_semaphore_degrades_the_analysis() {
 /// incomplete.
 #[test]
 fn test_an_unreadable_set_node_keeps_the_walked_prefix() {
-    let (bundle, snapshot) = load("unordered");
+    let (bundle, snapshot) = load_any("unordered");
     let (ctx, list) = healthy(&bundle, &snapshot);
     let baseline = census::census(&ctx, &list);
     let node = baseline.sets[0].children[1].node;
@@ -388,7 +388,7 @@ fn test_an_unreadable_set_node_keeps_the_walked_prefix() {
 /// the prefix kept the same way.
 #[test]
 fn test_a_set_node_cycle_is_bounded() {
-    let (bundle, snapshot) = load("unordered");
+    let (bundle, snapshot) = load_any("unordered");
     let (ctx, list) = healthy(&bundle, &snapshot);
     let baseline = census::census(&ctx, &list);
     let children: Vec<u64> = baseline.sets[0].children.iter().map(|c| c.node).collect();

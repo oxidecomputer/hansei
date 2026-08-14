@@ -974,7 +974,7 @@ mod future_trace_tests {
         program: &str,
         check: impl FnOnce(&Context<'_, Snapshot>, &TaskList, &TaskExtents, &FutureCensus),
     ) {
-        let (bundle, snapshot) = testkit::load(program);
+        let (bundle, snapshot) = testkit::load_any(program);
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
         let extents = ctx.task_extents(&list);
@@ -1430,7 +1430,7 @@ mod trace_render_tests {
     /// Render task `task_id`'s await chain from the named fixture pair,
     /// with heap addresses masked so the expectation compares exactly.
     fn trace(program: &str, future: &str, verbose: bool) -> String {
-        let (bundle, snapshot) = testkit::load(program);
+        let (bundle, snapshot) = testkit::load_any(program);
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
 
@@ -1552,7 +1552,7 @@ mod trace_render_tests {
     /// which must name the task a reader would trace next.
     #[test]
     fn test_verbose_labels_pointers_into_other_tasks() {
-        let (bundle, snapshot) = testkit::load("sleep-join");
+        let (bundle, snapshot) = testkit::load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
 

@@ -12,42 +12,52 @@ use proc::snapshot::Snapshot;
 
 use std::path::PathBuf;
 
-/// Which set of checked-in pairs this build reads.
+/// Every checked-in set of pairs, named for the system that captured
+/// it.
 ///
 /// A pair is only as good as the symbol table its capture had to work
 /// with: the fingerprint joining bundle to snapshot is built from the
 /// tokio `poll` instantiations that survive into the cored binary, and
 /// illumos keeps far more of them than Linux does. So each system that
-/// can core a process contributes its own set, and neither is asked to
-/// stand for the other.
+/// can core a process contributes a set, and neither stands for the
+/// other.
 ///
-/// macOS captures nothing — it has no ELF core to take — so it reads
-/// the illumos set, the one fingerprinted against more names. That is
-/// also why this names the *set* rather than the host: what a golden
-/// has to agree with is the pair that was loaded, and on macOS that is
-/// not the host's own.
-pub const FIXTURE_SET: &str = match cfg!(target_os = "linux") {
-    true => "linux",
-    false => "illumos",
-};
+/// Which set a *reader* takes is not a property of where it runs. A
+/// pair is two files, and reading one needs nothing from the system
+/// that wrote it — which is what an offline suite is for. So the
+/// golden suites walk every set wherever they run, macOS included
+/// though it can capture neither, and a test that only wants some pair
+/// to render names the set it means.
+pub const FIXTURE_SETS: &[&str] = &["illumos", "linux"];
 
-/// The path of one checked-in fixture file, in the set this build reads.
-pub fn fixture(name: &str) -> PathBuf {
-    fixture_dir().join(name)
+/// The path of one checked-in fixture file in `set`.
+pub fn fixture(set: &str, name: &str) -> PathBuf {
+    fixture_dir(set).join(name)
 }
 
-/// The directory holding the set this build reads.
-pub fn fixture_dir() -> PathBuf {
+/// The directory holding `set`.
+pub fn fixture_dir(set: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
-        .join(FIXTURE_SET)
+        .join(set)
 }
 
-/// Load a program's fixture pair.
-pub fn load(program: &str) -> (Bundle, Snapshot) {
-    let bundle = Bundle::load(&fixture(&format!("{program}.bundle")))
+/// Load a program's pair from whichever set, for a test that wants
+/// some real capture to work with rather than every capture there is.
+///
+/// The choice is arbitrary and fixed — not the host's, which is the
+/// point: a test reading this is testing what it does with a pair, and
+/// two sets would only run it twice. A test whose subject *is* the
+/// capture walks [`FIXTURE_SETS`] instead.
+pub fn load_any(program: &str) -> (Bundle, Snapshot) {
+    load(FIXTURE_SETS[0], program)
+}
+
+/// Load a program's fixture pair from `set`.
+pub fn load(set: &str, program: &str) -> (Bundle, Snapshot) {
+    let bundle = Bundle::load(&fixture(set, &format!("{program}.bundle")))
         .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
-    let snapshot = Snapshot::load(&fixture(&format!("{program}.snapshot")))
+    let snapshot = Snapshot::load(&fixture(set, &format!("{program}.snapshot")))
         .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
     (bundle, snapshot)
 }

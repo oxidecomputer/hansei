@@ -18,7 +18,8 @@
 //! symbols the *capturing* system's linker kept, so it is a property of
 //! where the pair was made rather than of where the test runs — which
 //! is why each system that can core a process keeps a set of its own
-//! (`testkit::FIXTURE_SET`) and a golden per set, suffixed with it.
+//! (`testkit::FIXTURE_SETS`) and a golden per set, suffixed with it — and
+//! every set is read wherever these run, macOS included.
 //!
 //! Two things differ between the sets, and both are the capture's:
 //! that fingerprint count, and how a timer deadline reads — illumos
@@ -35,7 +36,7 @@
 //! here would notice the programs moving on without them.
 
 use hansei_bundle::{Bundle, BundleView};
-use hansei_runtime::testkit::{FIXTURE_SET, load};
+use hansei_runtime::testkit::{FIXTURE_SETS, load, load_any};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
@@ -108,19 +109,23 @@ fn test_fixtures_record_the_current_programs() {
         .map(|p| format!("{p} {}\n", source_digest(p)))
         .collect();
 
-    let mut settings = insta::Settings::clone_current();
-    // Beside the pairs it describes: each set is captured on its own
-    // system, at its own time, from whatever the sources were then.
-    settings.set_snapshot_path(Path::new("fixtures").join(FIXTURE_SET));
-    settings.set_prepend_module_to_snapshot(false);
-    settings.set_omit_expression(true);
-    settings.set_description(
-        "the fixture programs these snapshots were captured from. A digest that \
-         moved means the goldens in this file describe a program no longer in the \
-         tree: recapture with test-programs/capture-snapshots.sh, then re-bless the \
-         goldens here and in value_render.rs.",
-    );
-    settings.bind(|| insta::assert_snapshot!("SOURCES", digests));
+    // Every set: each was captured on its own system, at its own time,
+    // and a set left behind by an edit to the programs is as stale as
+    // one captured before it, however recently the other was redone.
+    for set in FIXTURE_SETS {
+        let mut settings = insta::Settings::clone_current();
+        // Beside the pairs it describes.
+        settings.set_snapshot_path(Path::new("fixtures").join(set));
+        settings.set_prepend_module_to_snapshot(false);
+        settings.set_omit_expression(true);
+        settings.set_description(
+            "the fixture programs these snapshots were captured from. A digest that \
+             moved means the goldens in this file describe a program no longer in the \
+             tree: recapture with test-programs/capture-snapshots.sh, then re-bless the \
+             goldens here and in value_render.rs.",
+        );
+        settings.bind(|| insta::assert_snapshot!("SOURCES", digests));
+    }
 }
 
 /// Mask the run-varying values the analysis output carries — heap
@@ -294,14 +299,16 @@ fn render_chain(out: &mut String, chain: &AwaitChain<'_>) {
 /// header for both.
 #[track_caller]
 fn assert_summary(program: &str) {
-    let (bundle, snapshot) = load(program);
-    let actual = interpret(&bundle, &snapshot);
-    let mut settings = insta::Settings::clone_current();
-    settings.set_snapshot_path("two_binary");
-    settings.set_prepend_module_to_snapshot(false);
-    settings.set_snapshot_suffix(FIXTURE_SET);
-    settings.set_omit_expression(true);
-    settings.bind(|| insta::assert_snapshot!(program, actual.trim()));
+    for set in FIXTURE_SETS {
+        let (bundle, snapshot) = load(set, program);
+        let actual = interpret(&bundle, &snapshot);
+        let mut settings = insta::Settings::clone_current();
+        settings.set_snapshot_path("two_binary");
+        settings.set_prepend_module_to_snapshot(false);
+        settings.set_snapshot_suffix(*set);
+        settings.set_omit_expression(true);
+        settings.bind(|| insta::assert_snapshot!(program, actual.trim()));
+    }
 }
 
 /// One spawned async fn parked on a leaked oneshot: the baseline
@@ -353,7 +360,7 @@ fn test_sleep_join_offline() {
 /// it waits on.
 #[test]
 fn test_futurelock_census_offline() {
-    let (bundle, snapshot) = load("futurelock");
+    let (bundle, snapshot) = load_any("futurelock");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
     let list = hansei_runtime::testkit::tasks(&ctx, &snapshot);
 
@@ -441,7 +448,7 @@ fn census_of<'a>(
 /// it, never yet polled.
 #[test]
 fn test_unordered_census_offline() {
-    let (bundle, snapshot) = load("unordered");
+    let (bundle, snapshot) = load_any("unordered");
     let (ctx, list, census) = census_of(&bundle, &snapshot);
 
     let set = match census.sets.as_slice() {
@@ -525,7 +532,7 @@ fn test_unordered_census_offline() {
 /// also shows — by id, parked, join-interested.
 #[test]
 fn test_joinset_census_offline() {
-    let (bundle, snapshot) = load("joinset");
+    let (bundle, snapshot) = load_any("joinset");
     let (_ctx, list, census) = census_of(&bundle, &snapshot);
 
     assert!(census.sets.is_empty(), "{:#?}", census.sets);
@@ -575,7 +582,7 @@ fn test_joinset_census_offline() {
 /// re-quoting line numbers.
 #[test]
 fn test_ct_runtime_offline() {
-    let (bundle, snapshot) = load("ct-runtime");
+    let (bundle, snapshot) = load_any("ct-runtime");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
     let lwps = snapshot.lwps().unwrap();
@@ -638,7 +645,7 @@ fn test_ct_runtime_offline() {
 /// across recaptures without re-quoting addresses.
 #[test]
 fn test_local_set_offline() {
-    let (bundle, snapshot) = load("local-set");
+    let (bundle, snapshot) = load_any("local-set");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
     let lwps = snapshot.lwps().unwrap();
@@ -751,7 +758,7 @@ fn test_local_set_offline() {
 /// wheel names, and its externally invisible sibling comes with it.
 #[test]
 fn test_local_set_timer_offline() {
-    let (bundle, snapshot) = load("local-set-timer");
+    let (bundle, snapshot) = load_any("local-set-timer");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
     let lwps = snapshot.lwps().unwrap();
@@ -841,7 +848,7 @@ fn test_local_set_timer_offline() {
 /// member it names.
 #[test]
 fn test_local_set_io_offline() {
-    let (bundle, snapshot) = load("local-set-io");
+    let (bundle, snapshot) = load_any("local-set-io");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
     let lwps = snapshot.lwps().unwrap();
@@ -925,7 +932,7 @@ fn test_local_set_io_offline() {
 /// stayed hidden.
 #[test]
 fn test_foreign_runtime_offline() {
-    let (bundle, snapshot) = load("foreign-runtime");
+    let (bundle, snapshot) = load_any("foreign-runtime");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
     let lwps = snapshot.lwps().unwrap();
@@ -1030,7 +1037,7 @@ fn test_foreign_runtime_offline() {
 /// to discovery, which declines to admit it.
 #[test]
 fn test_excluded_runtime_stays_excluded() {
-    let (bundle, snapshot) = load("foreign-runtime");
+    let (bundle, snapshot) = load_any("foreign-runtime");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
     let lwps = snapshot.lwps().unwrap();
@@ -1061,8 +1068,8 @@ fn test_excluded_runtime_stays_excluded() {
 /// policy refuses it.
 #[test]
 fn test_mismatched_bundle_is_detected() {
-    let (bundle, _) = load("futurelock");
-    let (_, snapshot) = load("simple-await");
+    let (bundle, _) = load_any("futurelock");
+    let (_, snapshot) = load_any("simple-await");
     let view = BundleView::new(&bundle);
     let ctx = Context::new(&snapshot, view).unwrap();
 

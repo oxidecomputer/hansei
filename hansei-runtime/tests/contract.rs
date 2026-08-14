@@ -23,9 +23,16 @@ const PROGRAMS: &[&str] = &[
     "channels",
 ];
 
+/// A bundle from whichever set.
+///
+/// What these pin is how the binder read the primary cell's DWARF, and
+/// every set is that same cell — a set differs in what its *capture*
+/// could see, which is the snapshot's side of a pair, not the bundle's.
+/// The per-version half of this coverage is the matrix suite's, where
+/// binding runs against every cell.
 fn fixture_bundle(program: &str) -> Bundle {
-    let path = hansei_runtime::testkit::fixture(&format!("{program}.bundle"));
-    Bundle::load(&path).expect("fixture bundle loads; regenerate with capture-snapshots.sh")
+    let (bundle, _) = hansei_runtime::testkit::load_any(program);
+    bundle
 }
 
 /// Every fixture bundle records a clean walk contract: nothing broken,
