@@ -366,7 +366,7 @@ mod runtimes_tests {
     /// wheel.
     #[test]
     fn test_every_group_is_listed_with_its_route() {
-        let (bundle, snapshot) = testkit::load("foreign-runtime");
+        let (bundle, snapshot) = testkit::load_any("foreign-runtime");
         let ctx = testkit::context(&bundle, &snapshot);
         let (runtimes, local_sets, list) = testkit::discover(&ctx, &snapshot);
         let census = census::census(&ctx, &list);
@@ -427,7 +427,7 @@ mod runtimes_tests {
     /// fewer runtimes than it has.
     #[test]
     fn test_an_excluded_runtime_is_reported() {
-        let (bundle, snapshot) = testkit::load("foreign-runtime");
+        let (bundle, snapshot) = testkit::load_any("foreign-runtime");
         let ctx = testkit::context(&bundle, &snapshot);
         let (runtimes, local_sets, list) = testkit::discover(&ctx, &snapshot);
         let census = census::census(&ctx, &list);

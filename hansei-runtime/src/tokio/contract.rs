@@ -838,7 +838,7 @@ mod tests {
 
     fn fixture() -> &'static (Bundle, Snapshot) {
         static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
-        PAIR.get_or_init(|| crate::testkit::load("futurelock"))
+        PAIR.get_or_init(|| crate::testkit::load_any("futurelock"))
     }
 
     fn walk_ctx() -> Context<'static, Snapshot> {
