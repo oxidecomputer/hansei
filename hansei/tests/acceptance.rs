@@ -335,6 +335,22 @@ fn with_core(program: &str, check: impl Fn(&Path)) {
     check(&core);
 }
 
+/// The `--program` flags an attach to `core` needs, if any.
+///
+/// A Linux core carries no symbol table, so hansei requires the
+/// executable to be named; an illumos core carries its own and warns if
+/// one is passed. Every core in this suite is of a program still sitting
+/// where it was, so the path the core recorded is the right answer —
+/// which is the whole reason the flag can be filled in here rather than
+/// threaded through every caller.
+fn program_args(core: &Path) -> Vec<PathBuf> {
+    let proc = Proc::open_core(core).expect("failed to open the core");
+    match proc.needs_program() {
+        false => Vec::new(),
+        true => vec![proc.exec_name().expect("the core names no executable")],
+    }
+}
+
 /// Attach a session to `core` through `bundle` and ask it one command.
 /// hansei reads commands from stdin, so the command is written there
 /// rather than passed as an argument.
@@ -344,6 +360,11 @@ fn hansei(bundle: &Path, core: &Path, command: &str) -> Output {
         .arg(bundle)
         .arg("--core")
         .arg(core)
+        .args(
+            program_args(core)
+                .iter()
+                .flat_map(|p| ["--program".as_ref(), p.as_os_str()]),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -365,6 +386,9 @@ fn hansei(bundle: &Path, core: &Path, command: &str) -> Output {
 fn hansei_exec(bundle: &Path, core: &Path, exec: &[&str]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hansei"));
     command.arg("--bundle").arg(bundle).arg("--core").arg(core);
+    for program in program_args(core) {
+        command.arg("--program").arg(program);
+    }
     for commands in exec {
         command.arg("--exec").arg(commands);
     }
@@ -2182,4 +2206,108 @@ fn test_mismatched_bundle_refused() {
     let fp = ctx.validate_fingerprint();
     assert!(fp.matched > 0, "no symbols matched at all");
     assert!(fp.matched < fp.total, "{}/{}", fp.matched, fp.total);
+}
+
+/// Run hansei against `core` with exactly the `--program` given, past
+/// the helper that would otherwise fill one in.
+fn hansei_with_program(bundle: &Path, core: &Path, program: Option<&Path>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hansei"));
+    command.arg("--bundle").arg(bundle).arg("--core").arg(core);
+    if let Some(program) = program {
+        command.arg("--program").arg(program);
+    }
+    command
+        .arg("--exec")
+        .arg("info")
+        .output()
+        .expect("failed to run hansei")
+}
+
+/// A Linux core carries no symbol table, so the executable it was taken
+/// from is a required third input rather than a convenience. An illumos
+/// core carries its own symbols, and says so rather than taking a flag
+/// it would not use.
+#[test]
+fn test_program_required_for_a_linux_core() {
+    with_core("simple-await", |core| {
+        let bundle = fixtures().bundle("simple-await");
+        let out = hansei_with_program(&bundle, core, None);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        if !Proc::open_core(core).expect("core opens").needs_program() {
+            assert!(
+                out.status.success(),
+                "a core carrying its own symbols needs no --program:\n{stderr}"
+            );
+            return;
+        }
+
+        assert!(
+            !out.status.success(),
+            "a Linux core without --program must be refused:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            stderr.contains("--program is required"),
+            "diagnostic does not name the missing input:\n{stderr}"
+        );
+        // The failure this replaces blamed the bundle for a missing
+        // file, which sent the reader after the wrong thing entirely.
+        assert!(
+            !stderr.contains("does not match this binary"),
+            "a missing executable must not read as a bundle mismatch:\n{stderr}"
+        );
+    });
+}
+
+/// The debug build that produced the bundle resolves every symbol name
+/// and shares none of the addresses, so the fingerprint cannot see the
+/// substitution — the build id is what catches it.
+#[test]
+fn test_wrong_program_refused_by_build_id() {
+    with_core("simple-await", |core| {
+        if !Proc::open_core(core).expect("core opens").needs_program() {
+            return;
+        }
+        let bundle = fixtures().bundle("simple-await");
+        // A different fixture: a real binary, so it opens and parses,
+        // and its build id is necessarily another one.
+        let wrong = fixtures().program("futurelock");
+
+        let out = hansei_with_program(&bundle, core, Some(&wrong));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "the wrong executable must be refused:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            stderr.contains("is not the binary this core was taken from"),
+            "diagnostic does not name the mismatch:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("--force"),
+            "diagnostic does not mention the override:\n{stderr}"
+        );
+
+        // `--force` downgrades it, as it does the fingerprint.
+        let mut forced = Command::new(env!("CARGO_BIN_EXE_hansei"));
+        let out = forced
+            .arg("--bundle")
+            .arg(&bundle)
+            .arg("--core")
+            .arg(core)
+            .arg("--program")
+            .arg(&wrong)
+            .arg("--force")
+            .arg("--exec")
+            .arg("info")
+            .output()
+            .expect("failed to run hansei");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("output may be wrong"),
+            "--force must warn rather than refuse:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    });
 }
