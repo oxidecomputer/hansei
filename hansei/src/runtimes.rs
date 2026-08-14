@@ -3,9 +3,9 @@
 
 use crate::summary::counted;
 use crate::threads::render;
-use crate::{RenderOpts, Session};
+use crate::{RenderOpts, RuntimeScope, Session};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use hansei_runtime::tokio::{bundle, census};
 
 use std::io;
@@ -240,10 +240,12 @@ impl Fields {
 /// up without hansei being taught about it.
 pub(crate) fn exec_runtime(
     session: &Session<'_>,
+    scope: Option<RuntimeScope>,
     fields: Fields,
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
+    let selected = select(session, scope)?;
     let members = fields.members();
     // The bundle's `Elided` formats hide the runtime graph from *user*
     // values; this command exists to show the runtime's own insides, so
@@ -257,10 +259,10 @@ pub(crate) fn exec_runtime(
     // A heading is only earned by an ambiguity it resolves: one runtime
     // and one section is the value alone, as it was before either could
     // be more than one.
-    let head_runtimes = session.runtimes.len() > 1;
+    let head_runtimes = selected.len() > 1;
     let head_members = members.len() > 1;
     let mut printed = false;
-    for (index, rt) in session.runtimes.iter().enumerate() {
+    for (index, rt) in selected {
         if head_runtimes {
             if printed {
                 writeln!(out)?;
@@ -289,6 +291,50 @@ pub(crate) fn exec_runtime(
         }
     }
     Ok(())
+}
+
+/// The runtimes a scope names, with the index each is listed under:
+/// one, or every discovered runtime when the command named none.
+fn select<'s, 'b>(
+    session: &'s Session<'b>,
+    scope: Option<RuntimeScope>,
+) -> Result<Vec<(usize, &'s bundle::RuntimeRef<'b>)>> {
+    let Some(scope) = scope else {
+        return Ok(session.runtimes.iter().enumerate().collect());
+    };
+    let found = session
+        .runtimes
+        .iter()
+        .enumerate()
+        .find(|(index, rt)| match scope {
+            RuntimeScope::Index(named) => *index == named,
+            RuntimeScope::Handle(addr) => rt.handle.addr == addr,
+        });
+    match found {
+        Some(hit) => Ok(vec![hit]),
+        None => Err(no_such_runtime(session, scope)),
+    }
+}
+
+/// The error for a scope that names nothing: what was asked for, and
+/// the runtimes there are — the same answer `runtimes` gives, since a
+/// reader who guessed wrong wants the list and not a refusal.
+fn no_such_runtime(session: &Session<'_>, scope: RuntimeScope) -> anyhow::Error {
+    let named = match scope {
+        RuntimeScope::Index(index) => index.to_string(),
+        RuntimeScope::Handle(addr) => format!("{addr:#x}"),
+    };
+    let listed: Vec<String> = session
+        .runtimes
+        .iter()
+        .enumerate()
+        .map(|(index, rt)| format!("{index} ({} @{:#x})", rt.flavor, rt.handle.addr))
+        .collect();
+    anyhow!(
+        "no runtime {named} in this target; it has {}: {}",
+        counted(session.runtimes.len(), "runtime"),
+        listed.join(", ")
+    )
 }
 
 /// Offline listing tests: the groups a real extracted bundle joined
