@@ -1,0 +1,19 @@
+---
+source: hansei-runtime/tests/two_binary.rs
+---
+fingerprint 5/5
+workers 3
+task 3 idle sleep_join::sleeper::{async_fn_env#0}
+  spawned src/bin/sleep-join.rs:28:22
+  defined src/bin/sleep-join.rs:9
+  await sleep_join::sleeper::{async_fn_env#0} Suspend0 @ src/bin/sleep-join.rs:11
+  await tokio::time::sleep::Sleep
+  end leaf
+  waiting on the timer: deadline TS on the target's monotonic clock
+task 4 idle sleep_join::joiner::{async_fn_env#0}
+  spawned src/bin/sleep-join.rs:29:23
+  defined src/bin/sleep-join.rs:15
+  await sleep_join::joiner::{async_fn_env#0} Suspend0 @ src/bin/sleep-join.rs:17
+  await tokio::runtime::task::join::JoinHandle<u32>
+  end leaf
+  waiting on task 3 (JoinHandle)

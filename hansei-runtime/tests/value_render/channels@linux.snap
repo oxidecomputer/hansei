@@ -1,0 +1,166 @@
+---
+source: hansei-runtime/tests/value_render.rs
+---
+== mpsc::bounded::Receiver (_rx) ==
+tokio::sync::mpsc::bounded::Receiver<u32> {
+    capacity: 8,
+    free: closed=false, permits=6,
+    queued: [
+        10,
+        20,
+    ],
+    tx: tokio::sync::mpsc::list::Tx<u32> {
+        block_tail: 0xADDR,
+        tail_position: 2,
+    },
+    rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
+        state: 0,
+        waker: core::option::Option<core::task::wake::Waker>::None,
+    },
+    notify_rx_closed: tokio::sync::notify::Notify {
+        state: state=idle, generation=0,
+        mutex: locked=false, parked=false,
+        queue: [],
+    },
+    semaphore: tokio::sync::mpsc::bounded::Semaphore {
+        mutex: locked=false, parked=false,
+        closed: false,
+        permits: closed=false, permits=6,
+        bound: 8,
+        queue: [],
+    },
+    tx_count: 1,
+    tx_weak_count: 0,
+    rx_fields: tokio::sync::mpsc::chan::RxFields<u32> {
+        list: tokio::sync::mpsc::list::Rx<u32> {
+            head: 0xADDR -> tokio::sync::mpsc::block::Block<u32> {
+                    header: tokio::sync::mpsc::block::BlockHeader<u32> {
+                        start_index: 0,
+                        next: null,
+                        ready_slots: 3,
+                        observed_tail_position: 0,
+                    },
+                    values: [2 slots],
+                },
+            index: 0,
+            free_head: 0xADDR -> tokio::sync::mpsc::block::Block<u32> {
+                    header: tokio::sync::mpsc::block::BlockHeader<u32> {
+                        start_index: 0,
+                        next: null,
+                        ready_slots: 3,
+                        observed_tail_position: 0,
+                    },
+                    values: [2 slots],
+                },
+        },
+        rx_closed: false,
+    },
+}
+
+== Arc<Semaphore> (_sem) ==
+alloc::sync::Arc<tokio::sync::semaphore::Semaphore, alloc::alloc::Global> {
+    ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::semaphore::Semaphore> {
+            strong: 1,
+            weak: 1,
+            data: tokio::sync::semaphore::Semaphore {
+                ll_sem: tokio::sync::batch_semaphore::Semaphore {
+                    waiters: lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::sync::batch_semaphore::Waitlist> {
+                        raw: parking_lot::raw_mutex::RawMutex: locked=false, parked=false,
+                        data: tokio::sync::batch_semaphore::Waitlist {
+                            queue: tokio::util::linked_list::LinkedList<tokio::sync::batch_semaphore::Waiter, tokio::sync::batch_semaphore::Waiter> {
+                                head: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
+                                tail: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
+                            },
+                            closed: false,
+                        },
+                    },
+                    permits: closed=false, permits=4,
+                },
+            },
+        },
+}
+
+== Arc<Notify> (_notify) ==
+alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
+    ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
+            strong: 2,
+            weak: 1,
+            data: tokio::sync::notify::Notify {
+                state: state=waiting, generation=0,
+                mutex: locked=false, parked=false,
+                queue: [
+                    tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR) },
+                ],
+            },
+        },
+}
+
+== watch::Receiver (_watch_rx) ==
+tokio::sync::watch::Receiver<u32> {
+    unseen: Some(11),
+    closed: false,
+}
+
+== mpsc::bounded::Sender (_tx) ==
+tokio::sync::mpsc::bounded::Sender<u32> {
+    capacity: 8,
+    free: closed=false, permits=6,
+    queued: [
+        10,
+        20,
+    ],
+    tx: tokio::sync::mpsc::list::Tx<u32> {
+        block_tail: 0xADDR,
+        tail_position: 2,
+    },
+    rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
+        state: 0,
+        waker: core::option::Option<core::task::wake::Waker>::None,
+    },
+    notify_rx_closed: tokio::sync::notify::Notify {
+        state: state=idle, generation=0,
+        mutex: locked=false, parked=false,
+        queue: [],
+    },
+    semaphore: tokio::sync::mpsc::bounded::Semaphore {
+        mutex: locked=false, parked=false,
+        closed: false,
+        permits: closed=false, permits=6,
+        bound: 8,
+        queue: [],
+    },
+    tx_count: 1,
+    tx_weak_count: 0,
+    rx_fields: tokio::sync::mpsc::chan::RxFields<u32> {
+        list: tokio::sync::mpsc::list::Rx<u32> {
+            head: 0xADDR -> tokio::sync::mpsc::block::Block<u32> {
+                    header: tokio::sync::mpsc::block::BlockHeader<u32> {
+                        start_index: 0,
+                        next: null,
+                        ready_slots: 3,
+                        observed_tail_position: 0,
+                    },
+                    values: [2 slots],
+                },
+            index: 0,
+            free_head: 0xADDR -> tokio::sync::mpsc::block::Block<u32> {
+                    header: tokio::sync::mpsc::block::BlockHeader<u32> {
+                        start_index: 0,
+                        next: null,
+                        ready_slots: 3,
+                        observed_tail_position: 0,
+                    },
+                    values: [2 slots],
+                },
+        },
+        rx_closed: false,
+    },
+}
+
+== watch::Sender (_watch_tx) ==
+tokio::sync::watch::Sender<u32> {
+    value: 11,
+    state: tokio::sync::watch::state::AtomicState: closed=false, version=1,
+    ref_count_rx: 1,
+    ref_count_tx: 1,
+}
