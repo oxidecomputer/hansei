@@ -1192,41 +1192,22 @@ fn test_sleep_join_acceptance() {
         assert_eq!(sleeper.state, "idle");
         assert_eq!(joiner.state, "idle");
 
-        let expected = format!(
-            "\
-Task {id}: sleep_join::sleeper::{{async_fn_env#0}} (idle)
-{spawned}Defined at: src/bin/sleep-join.rs:9
+        // Both traces name both tasks, so both symbols are given to
+        // both: the joiner's leaf names the sleeper, and that the id it
+        // names is the sleeper's own row is the dependency edge.
+        let symbols = || {
+            Symbols::new()
+                .task(&sleeper.id, "sleeper")
+                .task(&joiner.id, "joiner")
+        };
 
-  0  async fn      sleep_join::sleeper::{{async_fn_env#0}}
-     suspends:
-     ▸ Suspend0  src/bin/sleep-join.rs:11
-       └─* 1  future        tokio::time::sleep::Sleep
-          waiting on the timer: deadline TS
-",
-            id = sleeper.id,
-            spawned = spawned_at("src/bin/sleep-join.rs:28:22")
-        );
-        assert_eq!(
-            normalize(&trace(&bundle, core, &sleeper.id, false)),
-            expected
-        );
+        let out = trace(&bundle, core, &sleeper.id, false);
+        assert_spawned_at(&out, "src/bin/sleep-join.rs:28:22");
+        golden("sleep-join-sleeper-trace", &symbols().apply(&out));
 
-        let expected = format!(
-            "\
-Task {id}: sleep_join::joiner::{{async_fn_env#0}} (idle)
-{spawned}Defined at: src/bin/sleep-join.rs:15
-
-  0  async fn      sleep_join::joiner::{{async_fn_env#0}}
-     suspends:
-     ▸ Suspend0  src/bin/sleep-join.rs:17
-       └─* 1  future        tokio::runtime::task::join::JoinHandle<u32>
-          waiting on task {sleeper_id} (JoinHandle)
-",
-            id = joiner.id,
-            sleeper_id = sleeper.id,
-            spawned = spawned_at("src/bin/sleep-join.rs:29:23")
-        );
-        assert_eq!(trace(&bundle, core, &joiner.id, false), expected);
+        let out = trace(&bundle, core, &joiner.id, false);
+        assert_spawned_at(&out, "src/bin/sleep-join.rs:29:23");
+        golden("sleep-join-joiner-trace", &symbols().apply(&out));
     });
 }
 
@@ -1246,23 +1227,11 @@ fn test_ct_runtime_acceptance() {
         assert_eq!(sleeper.state, "idle");
         assert_eq!(acquirer.state, "idle");
 
-        let expected = format!(
-            "\
-Task {id}: ct_runtime::sleeper::{{async_fn_env#0}} (idle)
-{spawned}Defined at: src/bin/ct-runtime.rs:10
-
-  0  async fn      ct_runtime::sleeper::{{async_fn_env#0}}
-     suspends:
-     ▸ Suspend0  src/bin/ct-runtime.rs:12
-       └─* 1  future        tokio::time::sleep::Sleep
-          waiting on the timer: deadline TS
-",
-            id = sleeper.id,
-            spawned = spawned_at("src/bin/ct-runtime.rs:31:24")
-        );
-        assert_eq!(
-            normalize(&trace(&bundle, core, &sleeper.id, false)),
-            expected
+        let out = trace(&bundle, core, &sleeper.id, false);
+        assert_spawned_at(&out, "src/bin/ct-runtime.rs:31:24");
+        golden(
+            "ct-runtime-sleeper-trace",
+            &Symbols::new().task(&sleeper.id, "sleeper").apply(&out),
         );
 
         // The acquirer bottoms out in the semaphore leaf; the frames

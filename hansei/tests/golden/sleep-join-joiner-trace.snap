@@ -1,0 +1,12 @@
+---
+source: hansei/tests/acceptance.rs
+expression: actual
+---
+Task #joiner: sleep_join::joiner::{async_fn_env#0} (idle)
+Defined at: src/bin/sleep-join.rs:15
+
+  0  async fn      sleep_join::joiner::{async_fn_env#0}
+     suspends:
+     ▸ Suspend0  src/bin/sleep-join.rs:17
+       └─* 1  future        tokio::runtime::task::join::JoinHandle<u32>
+          waiting on task #sleeper (JoinHandle)
