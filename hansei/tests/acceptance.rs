@@ -602,6 +602,7 @@ fn mask(out: &str) -> String {
 #[derive(Default)]
 struct Symbols {
     named: Vec<(String, String)>,
+    columns: bool,
 }
 
 impl Symbols {
@@ -615,6 +616,33 @@ impl Symbols {
         self
     }
 
+    /// Re-flow a fixed-width table no header row names — what
+    /// `runtimes` prints — around the symbols replacing its addresses.
+    fn columns(mut self) -> Self {
+        self.columns = true;
+        self
+    }
+
+    /// Number the lwps in first-seen order.
+    ///
+    /// Distinct symbols rather than one masking: whether the thread a
+    /// runtime runs on is the thread its local set is pinned to is
+    /// something the page reports, and `foreign-runtime` is a fixture
+    /// where it is not.
+    fn lwps(&self, out: &str) -> String {
+        let lwp = regex::Regex::new(r"\blwp (?<id>\d+)\b").unwrap();
+        let mut seen: Vec<String> = Vec::new();
+        lwp.replace_all(out, |caps: &regex::Captures<'_>| {
+            let id = caps["id"].to_owned();
+            let at = seen.iter().position(|s| *s == id).unwrap_or_else(|| {
+                seen.push(id);
+                seen.len() - 1
+            });
+            format!("lwp L{}", at + 1)
+        })
+        .into_owned()
+    }
+
     /// Rewrite `out` into the form a golden holds.
     ///
     /// One `seen` serves both passes: the table and the prose under it
@@ -623,10 +651,21 @@ impl Symbols {
     fn apply(&self, out: &str) -> String {
         let mut seen = Vec::new();
         let out = drop_spawn_line(out);
+        // Before any substitution, while the padding is still the one
+        // hansei laid down and so still says where the columns are.
+        let out = match self.columns {
+            true => split_columns(&out),
+            false => out,
+        };
         let out = self.addresses(&out);
+        let out = self.lwps(&out);
         let out = mask(&out);
         let out = self.table(&mut seen, &out);
-        self.references(&mut seen, &out)
+        let out = self.references(&mut seen, &out);
+        match self.columns {
+            true => rejoin_columns(&out),
+            false => out,
+        }
     }
 
     /// The symbol for a task id: the name it was given, or the next
@@ -774,6 +813,90 @@ impl Symbols {
             })
             .into_owned()
     }
+}
+
+/// The character standing in for a column boundary between
+/// [`split_columns`] and [`rejoin_columns`], so the substitutions in
+/// between see ordinary text.
+const COLUMN: char = '\u{1}';
+
+/// Mark the column boundaries of a fixed-width table no header row
+/// names.
+///
+/// A boundary is two or more character positions where *every* row
+/// holds a space — which is what padding a column to its widest cell
+/// leaves behind, and what the single spaces inside a cell never are.
+/// `runtimes` needs this where the graph table does not: its columns
+/// are named by no header whose labels give their offsets away.
+fn split_columns(out: &str) -> String {
+    let rows: Vec<Vec<char>> = out
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.chars().collect())
+        .collect();
+    if rows.len() < 2 {
+        return out.to_owned();
+    }
+    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let at = |row: &Vec<char>, i: usize| row.get(i).copied().unwrap_or(' ');
+    let blank = |i: usize| rows.iter().all(|row| at(row, i) == ' ');
+
+    let mut gutters: Vec<(usize, usize)> = Vec::new();
+    let mut run = 0usize;
+    for i in 0..width {
+        if blank(i) {
+            run += 1;
+            continue;
+        }
+        if run >= 2 {
+            gutters.push((i - run, i));
+        }
+        run = 0;
+    }
+
+    let mut text = String::new();
+    for row in &rows {
+        let mut from = 0;
+        for &(gutter, next) in &gutters {
+            let cell: String = (from..gutter).map(|i| at(row, i)).collect();
+            text.push_str(cell.trim_end());
+            text.push(COLUMN);
+            from = next;
+        }
+        let rest: String = (from..row.len()).map(|i| at(row, i)).collect();
+        text.push_str(rest.trim_end());
+        text.push('\n');
+    }
+    text
+}
+
+/// Pad the marked columns to their widest cell again, now that what
+/// they hold is symbols rather than the run's own addresses.
+fn rejoin_columns(out: &str) -> String {
+    let rows: Vec<Vec<&str>> = out
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.split(COLUMN).collect())
+        .collect();
+    let mut widths = vec![0usize; rows.iter().map(Vec::len).max().unwrap_or(0)];
+    for row in &rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    let mut text = String::new();
+    for row in &rows {
+        let last = row.len() - 1;
+        for (at, cell) in row.iter().enumerate() {
+            text.push_str(cell);
+            if at != last {
+                let pad = widths[at] - cell.chars().count();
+                text.extend(std::iter::repeat_n(' ', pad + 2));
+            }
+        }
+        text.push('\n');
+    }
+    text
 }
 
 /// Drop the `Spawned at` line, wherever a command prints one. See
@@ -1282,13 +1405,11 @@ fn test_local_set_acceptance() {
         );
 
         // `runtimes` names the set, its owner thread, its population,
-        // and the route that found it.
-        let out = normalize(&hansei_ok(&bundle, core, "runtimes"));
-        let set_line = regex::Regex::new(
-            r"local set +0 +@0xADDR +2 tasks, \d+ futures? +on lwp \d+, found via a JoinHandle held by an enumerated task",
-        )
-        .unwrap();
-        assert!(set_line.is_match(&out), "{out}");
+        // and the route that found it — beside the runtime it shares
+        // that thread with, which the golden holds too rather than
+        // leaving the page's other row unread.
+        let out = hansei_ok(&bundle, core, "runtimes");
+        golden("local-set-runtimes", &Symbols::new().columns().apply(&out));
     });
 }
 
@@ -1330,12 +1451,11 @@ fn test_local_set_timer_acceptance() {
 
         // `runtimes` names the route, which is the whole point of the
         // fixture.
-        let out = normalize(&hansei_ok(&bundle, core, "runtimes"));
-        let set_line = regex::Regex::new(
-            r"local set +0 +@0xADDR +2 tasks, \d+ futures? +on lwp \d+, found via a task waker on a timer parked in a runtime's wheel",
-        )
-        .unwrap();
-        assert!(set_line.is_match(&out), "{out}");
+        let out = hansei_ok(&bundle, core, "runtimes");
+        golden(
+            "local-set-timer-runtimes",
+            &Symbols::new().columns().apply(&out),
+        );
     });
 }
 
@@ -1376,12 +1496,11 @@ fn test_local_set_io_acceptance() {
 
         // `runtimes` names the route, which is the whole point of the
         // fixture.
-        let out = normalize(&hansei_ok(&bundle, core, "runtimes"));
-        let set_line = regex::Regex::new(
-            r"local set +0 +@0xADDR +3 tasks, \d+ futures? +on lwp \d+, found via a task waker on an io resource registered with a runtime's driver",
-        )
-        .unwrap();
-        assert!(set_line.is_match(&out), "{out}");
+        let out = hansei_ok(&bundle, core, "runtimes");
+        golden(
+            "local-set-io-runtimes",
+            &Symbols::new().columns().apply(&out),
+        );
     });
 }
 
@@ -1429,17 +1548,15 @@ fn test_foreign_runtime_acceptance() {
         // `runtimes` names the runtime and the route to it, and the set
         // that harvesting *its* wheel found. `info` counts them and
         // leaves the naming to the listing.
-        let out = normalize(&hansei_ok(&bundle, core, "runtimes"));
-        let hidden = regex::Regex::new(
-            r"runtime +1 +current_thread +@0xADDR +2 tasks, \d+ futures? +no thread inside it, found via a JoinHandle held by an enumerated task",
-        )
-        .unwrap();
-        assert!(hidden.is_match(&out), "{out}");
-        let set_line = regex::Regex::new(
-            r"local set +0 +@0xADDR +1 task, \d+ futures? +on lwp \d+, found via a task waker on a timer parked in a runtime's wheel",
-        )
-        .unwrap();
-        assert!(set_line.is_match(&out), "{out}");
+        // Both rows at once, and the lwps told apart: the set found in
+        // the hidden runtime's wheel is pinned to a thread of its own,
+        // not the one the main runtime runs on — which two maskings of
+        // `lwp \d+` could not have said either way.
+        let out = hansei_ok(&bundle, core, "runtimes");
+        golden(
+            "foreign-runtime-runtimes",
+            &Symbols::new().columns().apply(&out),
+        );
 
         let info = hansei_ok(&bundle, core, "info");
         assert!(

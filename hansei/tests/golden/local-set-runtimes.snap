@@ -1,0 +1,6 @@
+---
+source: hansei/tests/acceptance.rs
+expression: actual
+---
+runtime    0  current_thread  @@1  1 task, 1 future    on lwp L1
+local set  0                  @@2  2 tasks, 2 futures  on lwp L1, found via a JoinHandle held by an enumerated task
