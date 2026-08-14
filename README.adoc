@@ -57,13 +57,35 @@ isn't a tokio target.
 === 2. Inspect a target (hansei)
 
 hansei reads a core dump (`--core`) written by either system, interpreting it
-through the bundle from step 1. Those two files are all the command line takes:
-they name a *session*, and what to ask of it is read from stdin.
+through the bundle from step 1. Together they name a *session*, and what to ask
+of it is read from stdin.
 
 [source,sh]
 ----
 hansei --core core.sled-agent --bundle sled-agent.bundle
 ----
+
+A **Linux** core needs a third file, `--program`: the executable it was taken
+from.
+
+[source,sh]
+----
+hansei --core core.oxide --bundle oxide.bundle --program ./oxide
+----
+
+This is not a convenience. A Linux core carries no symbol table — `.symtab` is
+not `SHF_ALLOC`, so it is never in the address space there is to dump, and no
+`coredump_filter` setting can put it there — and the path the core records for
+its executable is rarely still right on the machine reading the core. Without
+that file not one symbol resolves. An illumos core carries each mapped object's
+symbol table in its own section headers, so it needs no companion binary and
+warns if given one.
+
+Pass the binary that **ran**, not the debug build behind `--bundle`. The two
+share no addresses, and the debug build resolves every symbol *name*, so
+nothing downstream would notice; hansei compares the core's `NT_GNU_BUILD_ID`
+against the file's and refuses a mismatch (`--force` downgrades it to a
+warning).
 
 When stdin is a terminal that is a prompt, with history, tab completion, and
 errors that end the command rather than the session:

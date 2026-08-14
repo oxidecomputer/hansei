@@ -60,7 +60,18 @@ struct SessionArgs {
     #[arg(long, short)]
     bundle: PathBuf,
 
-    /// Proceed even if the bundle's symbols don't all resolve in the target.
+    /// The executable the core was taken from.
+    ///
+    /// Required for a Linux core, which carries no symbol table of its
+    /// own and names a path that is rarely still right on the machine
+    /// reading the core. This is the binary that *ran*, not the debug
+    /// build behind `--bundle`: the two share no addresses. An illumos
+    /// core carries its own symbols and ignores this.
+    #[arg(long, short, value_name = "PATH")]
+    program: Option<PathBuf>,
+
+    /// Proceed even if the bundle's symbols don't all resolve in the
+    /// target, or `--program` is not the binary the core was taken from.
     #[arg(long, short)]
     force: bool,
 
@@ -863,11 +874,14 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
             Bundle::load(&args.bundle)
                 .with_context(|| format!("failed to load bundle {}", args.bundle.display()))
         });
-        let proc = Proc::open_core(&args.core)
-            .with_context(|| format!("failed to open {}", args.core.display()));
+        // Named for the attach rather than for the core: either file
+        // can be the one that failed, and the cause says which.
+        let proc = Proc::open_core_with_program(&args.core, args.program.as_deref())
+            .with_context(|| format!("failed to attach to {}", args.core.display()));
         (proc, bundle.join().expect("bundle loader panicked"))
     });
     let (proc, bundle) = (proc?, bundle?);
+    check_program(&proc, args)?;
     let session = Session::attach(&proc, &bundle, args)?;
 
     repl::run(&session, exec)
@@ -908,6 +922,80 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         "{}{sets} (see `runtimes`)",
         summary::counted(session.runtimes.len(), "runtime")
     )?;
+    Ok(())
+}
+
+/// Hold `--program` to what the core says the executable was.
+///
+/// A Linux core carries no symbol table — `.symtab` is not `SHF_ALLOC`,
+/// so it is never in the address space there is to dump — and the path
+/// the core records for the executable is rarely still right on the
+/// machine reading it. That makes the binary a third required input
+/// rather than a convenience: without it not one symbol resolves, and
+/// the attach dies at the thread-local the runtime lives behind.
+///
+/// *Which* binary is just as load-bearing. The debug build that
+/// produced the bundle resolves every symbol *name* and shares none of
+/// the addresses, so the fingerprint passes in full and every task
+/// comes out named after whatever now sits at its address. The build
+/// id is what separates the two, and it is the only exact check there
+/// is between a core and a file.
+fn check_program(proc: &Proc, args: &SessionArgs) -> Result<()> {
+    if !proc.needs_program() {
+        if let Some(path) = &args.program {
+            writeln!(
+                io::stderr(),
+                "warning: ignoring --program {}; this core carries its own \
+                 symbol tables",
+                path.display()
+            )?;
+        }
+        return Ok(());
+    }
+
+    let Some(path) = &args.program else {
+        let named = proc
+            .exec_name()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "the executable".to_owned());
+        anyhow::bail!(
+            "--program is required for a Linux core: the core carries no \
+             symbol table, so {named} has to be read alongside it. Pass the \
+             binary that ran — not the debug build behind --bundle, which \
+             shares none of its addresses."
+        );
+    };
+
+    let Some(ids) = proc.build_ids() else {
+        return Ok(());
+    };
+    if !ids.disagree() {
+        // Nothing to check against is not evidence of a mismatch: a
+        // binary can be linked without a build id, and a core can dump
+        // too little of the executable to carry one.
+        if ids.core.is_none() || ids.program.is_none() {
+            writeln!(
+                io::stderr(),
+                "warning: no build id to check {} against the core with",
+                path.display()
+            )?;
+        }
+        return Ok(());
+    }
+
+    let hex = |id: &Option<Vec<u8>>| match id {
+        Some(id) => id.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        None => "none".to_owned(),
+    };
+    let complaint = format!(
+        "{} is not the binary this core was taken from: the core's \
+         executable has build id {}, this file has {}",
+        path.display(),
+        hex(&ids.core),
+        hex(&ids.program),
+    );
+    anyhow::ensure!(args.force, "{complaint}\nPass --force to proceed anyway.");
+    writeln!(io::stderr(), "warning: {complaint}; output may be wrong")?;
     Ok(())
 }
 
