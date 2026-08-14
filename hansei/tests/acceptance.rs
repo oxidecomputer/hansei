@@ -155,16 +155,6 @@ fn spawned(loc: &str) -> String {
     }
 }
 
-/// The trace header's `Spawned at` line — present, with its trailing
-/// newline, only when the target records spawn locations at all.
-fn spawned_at(loc: &str) -> String {
-    if cell().unstable {
-        format!("Spawned at: {loc}\n")
-    } else {
-        String::new()
-    }
-}
-
 struct Fixtures {
     /// Build A: the binaries that run (and are cored).
     bin_a: PathBuf,
@@ -1087,39 +1077,17 @@ fn test_futurelock_acceptance() {
         assert_eq!(task.spawned, spawned("src/bin/futurelock.rs:15:17"));
         assert_eq!(task.defined, "src/bin/futurelock.rs:15");
 
-        let expected = format!(
-            "\
-Task {id}: futurelock::main::{{async_block#0}}::{{async_block_env#0}} (idle)
-{spawned}Defined at: src/bin/futurelock.rs:15
-
-  0  async block   futurelock::main::{{async_block#0}}::{{async_block_env#0}}
-     suspends:
-       Suspend0  src/bin/futurelock.rs:22  1 local  futurelock::start_background_task::{{async_fn_env#0}}
-     ▸ Suspend1  src/bin/futurelock.rs:25  1 local
-       └─  1  async fn      futurelock::do_stuff::{{async_fn_env#0}}
-          suspends:
-            Suspend0  src/bin/futurelock.rs:59  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{{async_fn#0}}::{{closure_env#0}}>
-          ▸ Suspend1  src/bin/futurelock.rs:64  3 locals
-            └─  2  async fn      futurelock::do_async_thing::{{async_fn_env#0}}
-               suspends:
-               ▸ Suspend0  src/bin/futurelock.rs:72  2 locals
-                 └─  3  async fn      tokio::sync::mutex::{{impl#10}}::lock::{{async_fn_env#0}}<()>
-                    suspends:
-                    ▸ Suspend0  tokio/src/sync/mutex.rs:LINE
-                      └─  4  async block   tokio::sync::mutex::{{impl#10}}::lock::{{async_fn#0}}::{{async_block_env#0}}<()>
-                         suspends:
-                         ▸ Suspend0  tokio/src/sync/mutex.rs:LINE
-                           └─  5  async fn      tokio::sync::mutex::{{impl#10}}::acquire::{{async_fn_env#0}}<()>
-                              suspends:
-                                Suspend0  tokio/src/sync/mutex.rs:LINE  1 local  tokio::trace::async_trace_leaf::TY
-                              ▸ Suspend1  tokio/src/sync/mutex.rs:LINE
-                                └─* 6  future        tokio::sync::batch_semaphore::Acquire
-                                   waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task {id}
-",
-            id = task.id,
-            spawned = spawned_at("src/bin/futurelock.rs:15:17")
+        // The chain the diagnosis is built on, six frames from the
+        // async block down to the semaphore. The wake queue at the
+        // bottom names #blocked, which the header at the top is: the
+        // task is waiting for a lock it holds itself, spelled once
+        // rather than masked into two anonymous ids.
+        let out = trace(&bundle, core, &task.id, false);
+        assert_spawned_at(&out, "src/bin/futurelock.rs:15:17");
+        golden(
+            "futurelock-trace",
+            &Symbols::new().task(&task.id, "blocked").apply(&out),
         );
-        assert_eq!(normalize(&trace(&bundle, core, &task.id, false)), expected);
 
         // The boxed, never-again-polled future1 is still held across
         // do_stuff's suspension — the futurelock signature.
