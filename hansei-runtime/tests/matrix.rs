@@ -80,6 +80,7 @@ const PROGRAMS: &[&str] = &[
     "local-set",
     "local-set-timer",
     "local-set-io",
+    "foreign-runtime",
 ];
 
 fn test_programs_dir() -> PathBuf {

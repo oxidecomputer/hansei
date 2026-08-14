@@ -985,6 +985,11 @@ fn test_golden_local_set_io() {
     run_golden("local-set-io");
 }
 
+#[test]
+fn test_golden_foreign_runtime() {
+    run_golden("foreign-runtime");
+}
+
 /// Two extractions of one binary agree byte for byte.
 ///
 /// The sweep resolves several fields first-wins, so whichever function
