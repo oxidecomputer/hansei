@@ -584,40 +584,59 @@ pub(crate) fn exec_census(
         warn_census_capped(census.capped, "counted")?;
     }
 
-    let (runtime, parks, pool) = if sections.threads {
-        // Park states are the multi_thread scheduler's parker array; a
-        // current_thread runtime has none. The blocking pool's chain is
-        // spelled the same on both flavors' handles.
-        let mt = session
-            .runtimes
-            .iter()
-            .find(|r| r.flavor == bundle::RuntimeFlavor::MultiThread);
-        (
-            runtime_threads(session)?,
-            match mt {
-                Some(rt) => optional(session.ctx.park_states(rt.handle), "park state")?,
-                None => None,
-            },
-            optional(
-                session.ctx.blocking_pool(session.runtimes[0].handle),
-                "blocking pool",
-            )?,
-        )
-    } else {
-        (Vec::new(), None, None)
+    let runtime = match sections.threads {
+        true => runtime_threads(session)?,
+        false => Vec::new(),
     };
+    let runtimes = census_runtimes(session, sections.threads)?;
 
     let facts = summary::Facts {
         lwps: session.lwps,
         runtime,
-        parks,
-        pool,
+        runtimes,
         tasks: &session.tasks,
         waits: analysis.map(|analysis| &analysis.waits[..]).unwrap_or(&[]),
         held: census.map(|census| &census.held[..]).unwrap_or(&[]),
         sets: census.map(|census| &census.sets[..]).unwrap_or(&[]),
     };
     summary::print(&facts, sections, top, out)
+}
+
+/// Every discovered runtime with the readings that are its alone: what
+/// its own workers' parkers say, and what its own blocking pool counts.
+///
+/// Both are read per runtime rather than once for the target. A worker
+/// index addresses the parker array of the scheduler that numbered it
+/// and no other, and a pool belongs to the runtime that launched it —
+/// so one runtime's readings describe one runtime's threads.
+fn census_runtimes(session: &Session<'_>, states: bool) -> Result<Vec<summary::Runtime>> {
+    let mut runtimes = Vec::new();
+    for (index, rt) in session.runtimes.iter().enumerate() {
+        // Naming a runtime reads nothing from the target, so every
+        // section gets the names; only the thread section, which is the
+        // one that reports them, pays for the states behind them.
+        let (parks, pool) = match states {
+            // The parker array is the multi_thread scheduler's; a
+            // current_thread runtime has none. The blocking pool's chain
+            // is spelled the same on both flavors' handles.
+            true => (
+                match rt.flavor {
+                    bundle::RuntimeFlavor::MultiThread => {
+                        optional(session.ctx.park_states(rt.handle), "park state")?
+                    }
+                    bundle::RuntimeFlavor::CurrentThread => None,
+                },
+                optional(session.ctx.blocking_pool(rt.handle), "blocking pool")?,
+            ),
+            false => (None, None),
+        };
+        runtimes.push(summary::Runtime {
+            label: crate::runtimes::runtime_label(index, rt),
+            parks,
+            pool,
+        });
+    }
+    Ok(runtimes)
 }
 
 /// The threads holding a tokio `Context`, each with the place it holds
@@ -632,6 +651,7 @@ fn runtime_threads(session: &Session<'_>) -> Result<Vec<summary::Thread>> {
     for worker in &session.workers {
         runtime.push(summary::Thread {
             tid: worker.tid,
+            runtime: session.runtime_of(worker.tid).map(|(index, _)| index),
             role: thread_role(session, worker)?,
             polling: worker.current_task_id.filter(|id| {
                 session

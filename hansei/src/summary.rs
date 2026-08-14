@@ -33,6 +33,12 @@ use std::io;
 /// One thread of the target that holds a tokio `Context`.
 pub struct Thread {
     pub tid: u32,
+    /// Which runtime it is inside, as an index into [`Facts::runtimes`];
+    /// `None` when the thread's context reaches no discovered runtime.
+    /// A worker's park state is read from *that* runtime's parkers and
+    /// no other, since a worker index means nothing outside the
+    /// scheduler it belongs to.
+    pub runtime: Option<usize>,
     /// The place the thread holds in a scheduler's run loop; `None` for
     /// a thread that has merely entered the runtime (a plain `block_on`
     /// caller on a multi_thread target, a blocking-pool thread).
@@ -52,18 +58,28 @@ pub enum ThreadRole {
     BlockOn(Option<CtParkState>),
 }
 
+/// One discovered runtime, with the readings that are its alone.
+pub struct Runtime {
+    /// How every listing names it: `runtime 0 @0x7f11c0`.
+    pub label: String,
+    /// What its workers' parkers say. `None` for a current_thread
+    /// runtime, which has no parker array, and for one whose parkers
+    /// could not be read — which costs the census the park breakdown of
+    /// that runtime's threads and nothing else.
+    pub parks: Option<ParkStates>,
+    /// Its own blocking pool's counters, likewise optional.
+    pub pool: Option<BlockingPool>,
+}
+
 /// Everything a census counts, as the session read it.
 pub struct Facts<'a> {
     /// Every lwp the target has, whatever it is doing.
     pub lwps: usize,
     /// Those of them holding a tokio `Context`.
     pub runtime: Vec<Thread>,
-    /// What the workers' parkers say; `None` when they could not be
-    /// read, which costs the census the park breakdown and nothing
-    /// else.
-    pub parks: Option<ParkStates>,
-    /// The blocking pool's own counters, likewise optional.
-    pub pool: Option<BlockingPool>,
+    /// The runtimes those threads are inside, in the order `runtimes`
+    /// lists them.
+    pub runtimes: Vec<Runtime>,
     pub tasks: &'a TaskList,
     /// One wait per task, in task-list order.
     pub waits: &'a [TaskWait],
@@ -210,14 +226,17 @@ fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
     // out of its sleep and not yet back in the run loop. Saying so is
     // the difference between "no io thread right now" and "the census
     // could not find it".
-    if let Some(parks) = &facts.parks
-        && parks.driver_held
-        && parks.in_driver().is_none()
-    {
-        writeln!(
-            out,
-            "        the io driver is held, but no worker is parked in it"
-        )?;
+    for runtime in &facts.runtimes {
+        if let Some(parks) = &runtime.parks
+            && parks.driver_held
+            && parks.in_driver().is_none()
+        {
+            writeln!(
+                out,
+                "        the io driver of {} is held, but no worker is parked in it",
+                runtime.label
+            )?;
+        }
     }
 
     // A woken flag on a parked block_on thread is a wakeup that was owed
@@ -237,14 +256,9 @@ fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
 
     if entered > 0 {
         writeln!(out, "    {entered} in the runtime, outside the run loop")?;
-        // Only a multi_thread scheduler's workers are launched through
-        // spawn_blocking and so counted among the pool's threads; a
-        // block_on thread is the caller's own.
-        let launched = in_loop
-            .iter()
-            .filter(|t| matches!(t.role, Some(ThreadRole::Worker(_))))
-            .count();
-        blocking_pool(facts, launched, entered, out)?;
+        for (index, runtime) in facts.runtimes.iter().enumerate() {
+            blocking_pool(facts, index, runtime, out)?;
+        }
     }
     let outside = facts.lwps.saturating_sub(facts.runtime.len());
     if outside > 0 {
@@ -253,8 +267,8 @@ fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
     Ok(())
 }
 
-/// Split the threads that entered the runtime without running the loop
-/// into the pool's and the rest.
+/// Split the threads that entered one runtime without running its loop
+/// into its blocking pool's and the rest.
 ///
 /// The runtime launches each worker with `spawn_blocking`, so the pool
 /// counts the workers among its threads — its `num_threads` is larger
@@ -264,37 +278,49 @@ fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
 /// idle count needs no such correction: a worker's blocking task is its
 /// run loop and never returns, so a worker is never idle *to the pool*.
 ///
+/// Every count here is of one runtime's threads. A pool belongs to the
+/// runtime that launched it, and netting one runtime's workers out of
+/// another's pool would report a number that is nobody's.
+///
 /// Where the two do not reconcile — a worker thread that has left the
 /// pool's tally, a runtime hansei is reading mid-startup — nothing is
 /// invented: the pool's own counters are reported as its own, said to
 /// include the workers.
 fn blocking_pool(
     facts: &Facts<'_>,
-    workers: usize,
-    entered: usize,
+    index: usize,
+    runtime: &Runtime,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let Some(pool) = &facts.pool else {
+    let Some(pool) = &runtime.pool else {
         return Ok(());
     };
+    let mine = || facts.runtime.iter().filter(|t| t.runtime == Some(index));
+    let entered = mine().filter(|t| t.role.is_none()).count();
     // The scheduler's own count of workers where it was read, since
-    // that is what `launch` spawned; the threads seen running the loop
-    // otherwise.
-    let launched = facts
-        .parks
-        .as_ref()
-        .map(|parks| parks.workers.len())
-        .unwrap_or(workers);
+    // that is what `launch` spawned; the threads seen running its loop
+    // otherwise. Only a multi_thread scheduler's workers are launched
+    // through spawn_blocking and so counted among the pool's threads; a
+    // block_on thread is the caller's own.
+    let launched = runtime.parks.as_ref().map_or_else(
+        || {
+            mine()
+                .filter(|t| matches!(t.role, Some(ThreadRole::Worker(_))))
+                .count()
+        },
+        |parks| parks.workers.len(),
+    );
     let threads = pool.threads as usize;
     let queued = counted(pool.queued as usize, "task");
+    let whose = &runtime.label;
     let Some(blocking) = threads
         .checked_sub(launched)
         .filter(|blocking| *blocking <= entered)
     else {
         writeln!(
             out,
-            "        the blocking pool counts {} of its own, the workers above \
-             among them ({} idle, {queued} queued)",
+            "        the blocking pool of {whose} counts {} of its own, the \
+             workers above among them ({} idle, {queued} queued)",
             counted(threads, "thread"),
             pool.idle,
         )?;
@@ -302,17 +328,24 @@ fn blocking_pool(
     };
     writeln!(
         out,
-        "        {blocking} in the blocking pool ({} idle, {queued} queued)",
+        "        {blocking} in the blocking pool of {whose} ({} idle, {queued} queued)",
         pool.idle
     )?;
     let other = entered - blocking;
     if other > 0 {
         writeln!(
             out,
-            "        {other} that entered the runtime another way (a block_on caller)"
+            "        {other} that entered {whose} another way (a block_on caller)"
         )?;
     }
     Ok(())
+}
+
+/// The parker states of the runtime a thread is inside, where that
+/// runtime has them: a current_thread scheduler parks its one thread on
+/// its driver rather than through a parker array.
+fn parks_of<'a>(facts: &'a Facts<'_>, thread: &Thread) -> Option<&'a ParkStates> {
+    facts.runtimes.get(thread.runtime?)?.parks.as_ref()
 }
 
 /// What one run-loop thread is doing. Holding the driver comes ahead of
@@ -335,9 +368,10 @@ fn kind(facts: &Facts<'_>, thread: &Thread) -> ThreadKind {
         Some(ThreadRole::Worker(index)) => Some(index),
         _ => None,
     };
-    let park = facts
-        .parks
-        .as_ref()
+    // A worker index is an index into *its own* scheduler's parker
+    // array and means nothing in another's, so a thread is classified by
+    // the runtime it is inside or not at all.
+    let park = parks_of(facts, thread)
         .zip(worker)
         .and_then(|(parks, index)| parks.workers.get(index as usize).copied());
     match park {
@@ -901,14 +935,23 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
+    /// The one runtime the thread fixtures below are inside, holding
+    /// the readings a test gives it.
+    fn runtime(parks: Option<ParkStates>, pool: Option<BlockingPool>) -> Runtime {
+        Runtime {
+            label: "runtime 0 @0x1000".to_string(),
+            parks,
+            pool,
+        }
+    }
+
     /// The facts of an empty runtime, for a test to fill in the part it
     /// is about.
     fn facts<'a>(tasks: &'a TaskList, waits: &'a [TaskWait]) -> Facts<'a> {
         Facts {
             lwps: 0,
             runtime: Vec::new(),
-            parks: None,
-            pool: None,
+            runtimes: vec![runtime(None, None)],
             tasks,
             waits,
             held: &[],
@@ -933,36 +976,42 @@ mod tests {
         facts.runtime = vec![
             Thread {
                 tid: 11,
+                runtime: Some(0),
                 role: Some(ThreadRole::Worker(0)),
                 polling: None,
             },
             Thread {
                 tid: 12,
+                runtime: Some(0),
                 role: Some(ThreadRole::Worker(1)),
                 polling: Some(42),
             },
             Thread {
                 tid: 13,
+                runtime: Some(0),
                 role: Some(ThreadRole::Worker(2)),
                 polling: None,
             },
             Thread {
                 tid: 14,
+                runtime: Some(0),
                 role: None,
                 polling: None,
             },
         ];
-        facts.parks = Some(ParkStates {
-            workers: vec![ParkState::Driver, ParkState::Awake, ParkState::Condvar],
-            driver_held: true,
-        });
         // The pool counts the three workers among its four threads,
         // since the runtime launched each of them with spawn_blocking.
-        facts.pool = Some(BlockingPool {
-            threads: 4,
-            idle: 1,
-            queued: 1,
-        });
+        facts.runtimes = vec![runtime(
+            Some(ParkStates {
+                workers: vec![ParkState::Driver, ParkState::Awake, ParkState::Condvar],
+                driver_held: true,
+            }),
+            Some(BlockingPool {
+                threads: 4,
+                idle: 1,
+                queued: 1,
+            }),
+        )];
 
         let page = census(&facts, 5);
         let threads = page.split("\n\n").next().unwrap();
@@ -976,7 +1025,7 @@ mod tests {
              worker 1, lwp 12  task 42\n        \
              1 parked\n    \
              1 in the runtime, outside the run loop\n        \
-             1 in the blocking pool (1 idle, 1 task queued)\n    \
+             1 in the blocking pool of runtime 0 @0x1000 (1 idle, 1 task queued)\n    \
              2 holding no runtime context"
         );
     }
@@ -992,30 +1041,35 @@ mod tests {
         facts.runtime = vec![
             Thread {
                 tid: 11,
+                runtime: Some(0),
                 role: Some(ThreadRole::Worker(0)),
                 polling: None,
             },
             Thread {
                 tid: 12,
+                runtime: Some(0),
                 role: None,
                 polling: None,
             },
         ];
-        facts.parks = Some(ParkStates {
-            workers: vec![ParkState::Condvar],
-            driver_held: false,
-        });
-        facts.pool = Some(BlockingPool {
-            threads: 9,
-            idle: 4,
-            queued: 0,
-        });
+        facts.runtimes = vec![runtime(
+            Some(ParkStates {
+                workers: vec![ParkState::Condvar],
+                driver_held: false,
+            }),
+            Some(BlockingPool {
+                threads: 9,
+                idle: 4,
+                queued: 0,
+            }),
+        )];
 
         let page = census(&facts, 5);
         assert!(
             page.contains(
                 "    1 in the runtime, outside the run loop\n        \
-                 the blocking pool counts 9 threads of its own, the workers \
+                 the blocking pool of runtime 0 @0x1000 counts 9 threads of \
+                 its own, the workers \
                  above among them (4 idle, 0 tasks queued)\n"
             ),
             "{page}"
@@ -1036,6 +1090,7 @@ mod tests {
         facts.runtime = vec![
             Thread {
                 tid: 11,
+                runtime: Some(0),
                 role: Some(ThreadRole::BlockOn(Some(CtParkState {
                     woken: true,
                     activity: CtActivity::Parked,
@@ -1044,15 +1099,19 @@ mod tests {
             },
             Thread {
                 tid: 12,
+                runtime: Some(0),
                 role: None,
                 polling: None,
             },
         ];
-        facts.pool = Some(BlockingPool {
-            threads: 1,
-            idle: 1,
-            queued: 0,
-        });
+        facts.runtimes = vec![runtime(
+            None,
+            Some(BlockingPool {
+                threads: 1,
+                idle: 1,
+                queued: 0,
+            }),
+        )];
 
         let page = census(&facts, 5);
         let threads = page.split("\n\n").next().unwrap();
@@ -1064,7 +1123,7 @@ mod tests {
              block_on thread, lwp 11\n        \
              the block_on future of lwp 11 was woken and not yet polled\n    \
              1 in the runtime, outside the run loop\n        \
-             1 in the blocking pool (1 idle, 0 tasks queued)\n    \
+             1 in the blocking pool of runtime 0 @0x1000 (1 idle, 0 tasks queued)\n    \
              1 holding no runtime context"
         );
     }
@@ -1081,6 +1140,7 @@ mod tests {
         facts.runtime = vec![
             Thread {
                 tid: 11,
+                runtime: Some(0),
                 role: Some(ThreadRole::BlockOn(Some(CtParkState {
                     woken: false,
                     activity: CtActivity::PollingBlockOn,
@@ -1089,6 +1149,7 @@ mod tests {
             },
             Thread {
                 tid: 12,
+                runtime: Some(0),
                 role: Some(ThreadRole::BlockOn(Some(CtParkState {
                     woken: false,
                     activity: CtActivity::RunningTasks,
@@ -1110,6 +1171,108 @@ mod tests {
         assert!(!page.contains("was woken"), "{page}");
     }
 
+    /// A pool with nothing in it but the workers still prints its row:
+    /// the threads idle in it and the tasks queued on it are the two
+    /// numbers a reader came for, and `0 in the blocking pool` with a
+    /// task queued on it is a state worth seeing.
+    #[test]
+    fn test_a_pool_of_workers_alone_still_reports_its_counters() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.lwps = 2;
+        facts.runtime = vec![
+            Thread {
+                tid: 11,
+                runtime: Some(0),
+                role: Some(ThreadRole::Worker(0)),
+                polling: None,
+            },
+            Thread {
+                tid: 12,
+                runtime: Some(0),
+                role: None,
+                polling: None,
+            },
+        ];
+        facts.runtimes = vec![runtime(
+            Some(ParkStates {
+                workers: vec![ParkState::Condvar],
+                driver_held: false,
+            }),
+            Some(BlockingPool {
+                threads: 1,
+                idle: 0,
+                queued: 3,
+            }),
+        )];
+
+        let page = census(&facts, 5);
+        assert!(
+            page.contains(
+                "        0 in the blocking pool of runtime 0 @0x1000 (0 idle, 3 tasks queued)\n"
+            ),
+            "{page}"
+        );
+        assert!(
+            page.contains("1 that entered runtime 0 @0x1000 another way (a block_on caller)"),
+            "{page}"
+        );
+    }
+
+    /// A worker index addresses its own scheduler's parker array and no
+    /// other, so a second runtime's worker 0 is classified from that
+    /// runtime's parkers — not from the first runtime's, which is a
+    /// different thread's state that happens to share an index.
+    #[test]
+    fn test_each_thread_is_classified_from_its_own_runtimes_parkers() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.lwps = 2;
+        facts.runtime = vec![
+            Thread {
+                tid: 11,
+                runtime: Some(0),
+                role: Some(ThreadRole::Worker(0)),
+                polling: None,
+            },
+            Thread {
+                tid: 12,
+                runtime: Some(1),
+                role: Some(ThreadRole::Worker(0)),
+                polling: None,
+            },
+        ];
+        facts.runtimes = vec![
+            runtime(
+                Some(ParkStates {
+                    workers: vec![ParkState::Driver],
+                    driver_held: true,
+                }),
+                None,
+            ),
+            Runtime {
+                label: "runtime 1 @0x2000".to_string(),
+                parks: Some(ParkStates {
+                    workers: vec![ParkState::Condvar],
+                    driver_held: false,
+                }),
+                pool: None,
+            },
+        ];
+
+        let page = census(&facts, 5);
+        let threads = page.split("\n\n").next().unwrap();
+        assert_eq!(
+            threads,
+            "Threads: 2 lwps, 2 in the runtime\n    \
+             2 in the scheduler's run loop\n        \
+             1 parked in the io driver\n            \
+             worker 0, lwp 11\n        \
+             1 parked",
+            "{page}"
+        );
+    }
+
     /// A driver held by a worker that is not parked in it is a thread
     /// polling it without sleeping — which the listing says, rather
     /// than leaving a reader to conclude the census missed it.
@@ -1120,17 +1283,23 @@ mod tests {
         facts.lwps = 1;
         facts.runtime = vec![Thread {
             tid: 11,
+            runtime: Some(0),
             role: Some(ThreadRole::Worker(0)),
             polling: None,
         }];
-        facts.parks = Some(ParkStates {
-            workers: vec![ParkState::Awake],
-            driver_held: true,
-        });
+        facts.runtimes = vec![runtime(
+            Some(ParkStates {
+                workers: vec![ParkState::Awake],
+                driver_held: true,
+            }),
+            None,
+        )];
 
         let page = census(&facts, 5);
         assert!(
-            page.contains("the io driver is held, but no worker is parked in it"),
+            page.contains(
+                "the io driver of runtime 0 @0x1000 is held, but no worker is parked in it"
+            ),
             "{page}"
         );
     }
@@ -1410,6 +1579,7 @@ mod tests {
         facts.lwps = 1;
         facts.runtime = vec![Thread {
             tid: 11,
+            runtime: Some(0),
             role: Some(ThreadRole::Worker(0)),
             polling: None,
         }];
