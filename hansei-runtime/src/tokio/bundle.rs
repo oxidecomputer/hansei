@@ -1819,10 +1819,11 @@ impl<'b, T: Target> Context<'b, T> {
     /// `Arc<task::local::Shared>` is the way home, and the set must
     /// claim the task that led there (its `owned.id` equal to the
     /// task's own `owner_id`) before it is admitted. Route 2 harvests
-    /// the runtimes' own timer wheels, which register a task's waker
-    /// whatever list owns it — the only route that reaches a set no
-    /// enumerated task points at. Every route converges on `Shared`
-    /// addresses and dedups there.
+    /// the runtimes' own registries of parked tasks — the timer wheel,
+    /// then the io driver's registrations — which hold a task's waker
+    /// whatever list owns it, and so are the only route that reaches a
+    /// set no enumerated task points at. Every route converges on
+    /// `Shared` addresses and dedups there.
     ///
     /// Each admitted set's list is then walked like one more shard, its
     /// tasks stamped `runtimes.len() + set index` and merged —
@@ -1893,15 +1894,17 @@ impl<'b, T: Target> Context<'b, T> {
         // points at is credited to that edge rather than to whichever
         // of its members happens to hold a timer.
         //
-        // The wheel harvest needs no such gate — its cost is bounded by
-        // the wheel (six levels of 64 slots), not by the task
-        // population — and runs once the sweep has nothing new to walk,
-        // since the wheel's contents do not change as sets are
-        // enumerated. What it admits feeds the sweep in turn.
+        // Neither registry harvest needs such a gate — the wheel's cost
+        // is bounded by the wheel and the driver's by how many io
+        // resources the process holds open, not by the task population —
+        // and each runs once the producers before it have nothing new,
+        // since a registry's contents do not change as sets are
+        // enumerated. What either admits feeds the sweep in turn.
         let sweep = self.local_task_entries_exist();
         let mut walked = 0;
         let mut enumerated = 0;
-        let mut harvested = false;
+        let mut wheel = false;
+        let mut io = false;
         for _round in 0..64 {
             while enumerated < sets.len() {
                 let set = &sets[enumerated];
@@ -1925,9 +1928,14 @@ impl<'b, T: Target> Context<'b, T> {
                 let range = walked..list.tasks.len();
                 walked = list.tasks.len();
                 self.unlisted_task_pointers(list, range)
-            } else if !harvested {
-                harvested = true;
+            } else if !wheel {
+                wheel = true;
                 let (found, errors) = self.wheel_task_pointers(runtimes, list);
+                list.errors.extend(errors);
+                found
+            } else if !io {
+                io = true;
+                let (found, errors) = self.io_task_pointers(runtimes, list);
                 list.errors.extend(errors);
                 found
             } else {
@@ -2164,10 +2172,8 @@ impl<'b, T: Target> Context<'b, T> {
                 .walk(WalkRole::TimerSharedWaker)
                 .walk(entry)?
                 .optional()
-                && let QueuedWaker::Task { addr, .. } = self.raw_waker(raw)?
-                && !list.contains(addr)
             {
-                found.push((addr, LocalSetRoute::Wheel));
+                self.registry_candidate(raw, LocalSetRoute::Wheel, list, found)?;
             }
             cur = self
                 .walk(WalkRole::TimerSharedNext)
@@ -2175,6 +2181,165 @@ impl<'b, T: Target> Context<'b, T> {
                 .optional()
                 .map(|ptr| ptr.parse(self.proc).map_err(anyhow::Error::from))
                 .transpose()?;
+        }
+        Ok(())
+    }
+
+    /// Route 2's other registry: the task-Header pointers held by io
+    /// resources registered with `runtimes`' own drivers that no
+    /// enumerated task claims.
+    ///
+    /// The argument is the wheel's, for tasks waiting on a socket rather
+    /// than on time: every io resource the runtime knows about is in the
+    /// driver's registration list whatever list owns the task awaiting
+    /// it, and awaiting readiness leaves the task's own waker on the
+    /// resource. What identifies a waker as a task's is the same
+    /// address-equality join on tokio's `WAKER_VTABLE` static every
+    /// other reader makes.
+    ///
+    /// Failures degrade at the finest grain the walk allows: a runtime
+    /// whose registrations cannot be reached costs its own driver, a
+    /// resource whose waiters cannot be read costs that resource, and
+    /// everything else is still harvested.
+    fn io_task_pointers(
+        &self,
+        runtimes: &[RuntimeRef<'b>],
+        list: &TaskList,
+    ) -> (Vec<(u64, LocalSetRoute)>, Vec<anyhow::Error>) {
+        let mut found = Vec::new();
+        let mut errors = Vec::new();
+        // Across the whole harvest, for both node kinds: a registration
+        // is in one driver's list and a waiter node in one resource's,
+        // so a repeat is corrupt memory, not a second sighting.
+        let mut visited = HashSet::default();
+        for (index, runtime) in runtimes.iter().enumerate() {
+            if let Err(e) = self.harvest_io(runtime, list, &mut visited, &mut found, &mut errors) {
+                errors
+                    .push(e.context(format!("failed to walk runtime {index}'s io registrations")));
+            }
+        }
+        (found, errors)
+    }
+
+    /// Walk one runtime's registration list, taking each resource's
+    /// waiters as they come.
+    fn harvest_io(
+        &self,
+        runtime: &RuntimeRef<'b>,
+        list: &TaskList,
+        visited: &mut HashSet<u64>,
+        found: &mut Vec<(u64, LocalSetRoute)>,
+        errors: &mut Vec<anyhow::Error>,
+    ) -> Result<()> {
+        // `driver.io` is the driver's flavor enum: a runtime built
+        // without the io driver holds `Disabled` and registers nothing,
+        // which is a runtime state, not a failure.
+        let Some(head) = self
+            .walk(WalkRole::IoRegistrations)
+            .try_walk(runtime.handle)?
+            .and_then(Walked::optional)
+        else {
+            return Ok(());
+        };
+        let io_ty = head
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("the io registration list's head is not pointer-shaped"))?;
+        let mut cur = Some(head.parse::<u64>(self.proc)?);
+        while let Some(addr) = cur {
+            ensure!(
+                self.mappings.contains_addr(addr),
+                "io registration pointer {addr:#x} is unmapped"
+            );
+            ensure!(
+                visited.insert(addr),
+                "io registration list cycle at {addr:#x}"
+            );
+            let registration = Value::read(self.proc, io_ty, addr)
+                .with_context(|| format!("failed to read the ScheduledIo at {addr:#x}"))?;
+            if let Err(e) = self.harvest_io_waiters(registration, list, visited, found) {
+                errors.push(e.context(format!(
+                    "failed to walk the waiters of the io registration at {addr:#x}"
+                )));
+            }
+            cur = self
+                .walk(WalkRole::ScheduledIoNext)
+                .walk(registration)?
+                .optional()
+                .map(|ptr| ptr.parse(self.proc).map_err(anyhow::Error::from))
+                .transpose()?;
+        }
+        Ok(())
+    }
+
+    /// Everything parked on one io resource: the two direction slots,
+    /// and the readiness list.
+    ///
+    /// The slots are where the `AsyncRead`/`AsyncWrite` paths leave a
+    /// waker, and they are in no list at all — a harvest that walked
+    /// only the list would miss the commoner of the two shapes.
+    fn harvest_io_waiters(
+        &self,
+        registration: Value<'b>,
+        list: &TaskList,
+        visited: &mut HashSet<u64>,
+        found: &mut Vec<(u64, LocalSetRoute)>,
+    ) -> Result<()> {
+        let waiters = self
+            .walk(WalkRole::ScheduledIoWaiters)
+            .walk_at(registration)?;
+        for role in [WalkRole::IoReaderWaker, WalkRole::IoWriterWaker] {
+            // A direction nobody is awaiting holds no waker.
+            if let Some(raw) = self.walk(role).walk(waiters)?.optional() {
+                self.registry_candidate(raw, LocalSetRoute::Io, list, found)?;
+            }
+        }
+        let Some(head) = self.walk(WalkRole::IoWaiterHead).walk(waiters)?.optional() else {
+            return Ok(());
+        };
+        let node_ty = head
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("an io waiter list's head is not pointer-shaped"))?;
+        let mut cur = Some(head.parse::<u64>(self.proc)?);
+        while let Some(addr) = cur {
+            ensure!(
+                self.mappings.contains_addr(addr),
+                "io waiter pointer {addr:#x} is unmapped"
+            );
+            ensure!(visited.insert(addr), "io waiter list cycle at {addr:#x}");
+            let node = Value::read(self.proc, node_ty, addr)
+                .with_context(|| format!("failed to read the io Waiter at {addr:#x}"))?;
+            // A node whose future has not been polled since it was
+            // linked carries no waker yet.
+            if let Some(raw) = self.walk(WalkRole::IoWaiterWaker).walk(node)?.optional() {
+                self.registry_candidate(raw, LocalSetRoute::Io, list, found)?;
+            }
+            cur = self
+                .walk(WalkRole::IoWaiterNext)
+                .walk(node)?
+                .optional()
+                .map(|ptr| ptr.parse(self.proc).map_err(anyhow::Error::from))
+                .transpose()?;
+        }
+        Ok(())
+    }
+
+    /// One waker a registry holds, as a discovery candidate: a task's,
+    /// and a task no list already claims. Anything else — a `block_on`
+    /// thread's parker waker, a task the scheduler already owns — is
+    /// simply not one.
+    fn registry_candidate(
+        &self,
+        raw: Value<'b>,
+        route: LocalSetRoute,
+        list: &TaskList,
+        found: &mut Vec<(u64, LocalSetRoute)>,
+    ) -> Result<()> {
+        if let QueuedWaker::Task { addr, .. } = self.raw_waker(raw)?
+            && !list.contains(addr)
+        {
+            found.push((addr, route));
         }
         Ok(())
     }
