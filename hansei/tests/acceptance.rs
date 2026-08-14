@@ -1047,43 +1047,23 @@ fn test_dyn_future_acceptance() {
         assert_eq!(driver.state, "idle");
         assert_eq!(driver.spawned, spawned("src/bin/dyn-future.rs:46:21"));
         assert_eq!(driver.defined, "src/bin/dyn-future.rs:22");
-        let expected = format!(
-            "\
-Task {id}: dyn_future::driver::{{async_fn_env#0}} (idle)
-{spawned}Defined at: src/bin/dyn-future.rs:22
-
-  0  async fn      dyn_future::driver::{{async_fn_env#0}}
-     suspends:
-     ▸ Suspend0  src/bin/dyn-future.rs:29  1 local
-       └─  1  async fn      dyn_future::boxed_leaf::{{async_fn_env#0}} [dyn]
-          suspends:
-          ▸ Suspend0  src/bin/dyn-future.rs:11
-            └─* 2  future        tokio::sync::oneshot::Receiver<u32>
-       Suspend1  src/bin/dyn-future.rs:30  2 locals  tokio::task::join_set::{{impl#1}}::join_next::{{async_fn_env#0}}<u32>
-",
-            id = driver.id,
-            spawned = spawned_at("src/bin/dyn-future.rs:46:21")
+        let out = trace(&bundle, core, &driver.id, false);
+        assert_spawned_at(&out, "src/bin/dyn-future.rs:46:21");
+        golden(
+            "dyn-future-driver-trace",
+            &Symbols::new().task(&driver.id, "driver").apply(&out),
         );
-        assert_eq!(trace(&bundle, core, &driver.id, false), expected);
 
         let member = task_with_future(&rows, "dyn_future::set_member::{async_fn_env#0}");
         assert_eq!(member.state, "idle");
         assert_eq!(member.spawned, spawned("src/bin/dyn-future.rs:26:9"));
         assert_eq!(member.defined, "src/bin/dyn-future.rs:14");
-        let expected = format!(
-            "\
-Task {id}: dyn_future::set_member::{{async_fn_env#0}} (idle)
-{spawned}Defined at: src/bin/dyn-future.rs:14
-
-  0  async fn      dyn_future::set_member::{{async_fn_env#0}}
-     suspends:
-     ▸ Suspend0  src/bin/dyn-future.rs:15
-       └─* 1  future        tokio::sync::oneshot::Receiver<u32>
-",
-            id = member.id,
-            spawned = spawned_at("src/bin/dyn-future.rs:26:9")
+        let out = trace(&bundle, core, &member.id, false);
+        assert_spawned_at(&out, "src/bin/dyn-future.rs:26:9");
+        golden(
+            "dyn-future-member-trace",
+            &Symbols::new().task(&member.id, "member").apply(&out),
         );
-        assert_eq!(trace(&bundle, core, &member.id, false), expected);
     });
 }
 
@@ -1183,21 +1163,17 @@ fn test_many_tasks_acceptance() {
         let ids: HashSet<&str> = rows.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(ids.len(), rows.len(), "task ids are unique");
 
+        // Whichever of the thirty-two is listed first: they are spawned
+        // from one line of one async fn, so the chain a golden holds is
+        // every task's, and the id that would have told them apart is
+        // the one thing symbolized out of it.
         let task = &rows[0];
-        let expected = format!(
-            "\
-Task {id}: many_tasks::park_task::{{async_fn_env#0}} (idle)
-{spawned}Defined at: src/bin/many-tasks.rs:9
-
-  0  async fn      many_tasks::park_task::{{async_fn_env#0}}
-     suspends:
-     ▸ Suspend0  src/bin/many-tasks.rs:11
-       └─* 1  future        tokio::sync::oneshot::Receiver<u32>
-",
-            id = task.id,
-            spawned = spawned_at("src/bin/many-tasks.rs:27:13")
+        let out = trace(&bundle, core, &task.id, false);
+        assert_spawned_at(&out, "src/bin/many-tasks.rs:27:13");
+        golden(
+            "many-tasks-trace",
+            &Symbols::new().task(&task.id, "park").apply(&out),
         );
-        assert_eq!(trace(&bundle, core, &task.id, false), expected);
     });
 }
 
