@@ -165,7 +165,7 @@ fn warn_census_capped(capped: usize, fate: &str) -> io::Result<()> {
 pub(crate) fn no_such_task(list: &bundle::TaskList, id: u64) -> anyhow::Error {
     let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
     anyhow::anyhow!(
-        "the runtime owns no task with id {id}; it owns {} task(s): {ids:?}",
+        "no task with id {id} is listed; the target owns {} task(s): {ids:?}",
         list.tasks.len()
     )
 }
@@ -594,6 +594,7 @@ pub(crate) fn exec_census(
         lwps: session.lwps,
         runtime,
         runtimes,
+        local_sets: session.local_sets.len(),
         tasks: &session.tasks,
         waits: analysis.map(|analysis| &analysis.waits[..]).unwrap_or(&[]),
         held: census.map(|census| &census.held[..]).unwrap_or(&[]),

@@ -93,14 +93,18 @@ pub enum Command {
     /// chains, `graph` for what waits on what.
     ///
     /// The thread section splits the target's lwps three ways: the
-    /// workers running the scheduler's loop, the threads that have
-    /// merely entered the runtime, and everything else. Each split is a
+    /// workers running a scheduler's loop, the threads that have merely
+    /// entered a runtime, and everything else. Each split is a
     /// share of the line above it and never a second count of the same
-    /// threads — which takes one correction, because the runtime
-    /// launches every worker with `spawn_blocking` and its pool
-    /// therefore counts the workers among its own threads. They are
-    /// netted out, so the pool's row is the threads doing blocking work
-    /// and nothing else.
+    /// threads — which takes one correction, because a runtime launches
+    /// every worker with `spawn_blocking` and its pool therefore counts
+    /// the workers among its own threads. They are netted out, so the
+    /// pool's row is the threads doing blocking work and nothing else.
+    ///
+    /// Every number that is one runtime's says which: the section names
+    /// the runtime the way `runtimes` lists it — `runtime 0 @0x7f11c0`
+    /// — where the target holds one, and counts them where it holds
+    /// several, each row that belongs to one of them naming it.
     ///
     /// The workers are broken down by what their parkers say, and the
     /// one parked *in* the driver is named — that is the thread blocked
@@ -109,8 +113,8 @@ pub enum Command {
     /// driver rotates between workers, so what is reported is whichever
     /// held it when the target stopped.
     ///
-    /// The task section counts every task the runtime owns by
-    /// lifecycle, by what it is waiting on, and by the future types and
+    /// The task section counts every task the target's executors own,
+    /// by lifecycle, by what it is waiting on, and by the future types and
     /// spawn sites most of them share. A wait is named by the primitive
     /// it is where hansei decodes one — a timer, a `JoinHandle`, the
     /// semaphore behind a `Mutex` — and by the type its await chain
@@ -282,7 +286,7 @@ pub enum Command {
         output: PathBuf,
     },
 
-    /// List every task owned by the runtime: id, lifecycle state,
+    /// List every task the target's executors own: id, lifecycle state,
     /// concrete future type, spawn location, where the future is
     /// defined, how many futures it holds in its own frames beside its
     /// await chain, and how many sets it drives from them.
@@ -328,7 +332,7 @@ pub enum Command {
     /// block of its own here, runs on whatever worker picks it up, and
     /// keeps running whether or not the task holding the set ever wakes. So the set says *what this task is waiting to join*, not
     /// what it is polling. A member the listing has no block for is one
-    /// the runtime no longer owns: complete and waiting to be joined, or
+    /// no runtime owns any longer: complete and waiting to be joined, or
     /// running where this session cannot enumerate it.
     ///
     /// The scan recurses through what it finds, so a future held inside a
@@ -369,7 +373,7 @@ pub enum Command {
         task: Vec<u64>,
     },
 
-    /// Show every thread running the runtime: the task it is polling,
+    /// Show every thread running a runtime: the task it is polling,
     /// the worker core it holds, and its stack.
     Threads {
         /// Maximum stack frames to print per thread.

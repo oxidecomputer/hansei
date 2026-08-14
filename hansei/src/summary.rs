@@ -80,6 +80,11 @@ pub struct Facts<'a> {
     /// The runtimes those threads are inside, in the order `runtimes`
     /// lists them.
     pub runtimes: Vec<Runtime>,
+    /// How many local sets share the task population with them. They
+    /// run no threads of their own — a set is polled by a task of the
+    /// runtime it was created on — so they are a count here rather than
+    /// a list.
+    pub local_sets: usize,
     pub tasks: &'a TaskList,
     /// One wait per task, in task-list order.
     pub waits: &'a [TaskWait],
@@ -90,6 +95,39 @@ pub struct Facts<'a> {
     /// census of futures has nothing to say about them.
     pub held: &'a [HeldFuture],
     pub sets: &'a [FutureSet],
+}
+
+impl Facts<'_> {
+    /// How the target's executors are named where a whole section's
+    /// numbers are theirs: by name when there is one of them, since a
+    /// name is what the other commands take, and by count when there
+    /// are several and no one name is true of the lot.
+    fn whole(&self) -> String {
+        match (self.runtimes.len(), self.local_sets) {
+            (1, 0) => self.runtimes[0].label.clone(),
+            (runtimes, 0) => counted(runtimes, "runtime"),
+            (runtimes, sets) => format!(
+                "{} and {}",
+                counted(runtimes, "runtime"),
+                counted(sets, "local set")
+            ),
+        }
+    }
+
+    /// How a row belonging to one runtime names it: nothing at all when
+    /// the target has a single runtime, whose name the section heading
+    /// has already given, and ` of <name>` when there are several rows
+    /// like it to tell apart.
+    fn whose(&self, index: usize) -> String {
+        match self.runtimes.len() > 1 {
+            true => self
+                .runtimes
+                .get(index)
+                .map(|rt| format!(" of {}", rt.label))
+                .unwrap_or_default(),
+            false => String::new(),
+        }
+    }
 }
 
 /// Which of the three sections to print.
@@ -190,9 +228,15 @@ impl ThreadKind {
 fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
     let in_loop: Vec<&Thread> = facts.runtime.iter().filter(|t| t.role.is_some()).collect();
     let entered = facts.runtime.len() - in_loop.len();
+    // The threads are in runtimes, never in a local set: a set is
+    // polled by a task of whatever runtime it was created on.
+    let inside = match facts.runtimes.len() {
+        1 => facts.runtimes[0].label.clone(),
+        n => counted(n, "runtime"),
+    };
     writeln!(
         out,
-        "Threads: {}, {} in the runtime",
+        "Threads: {}, {} in {inside}",
         counted(facts.lwps, "lwp"),
         facts.runtime.len()
     )?;
@@ -226,15 +270,15 @@ fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
     // out of its sleep and not yet back in the run loop. Saying so is
     // the difference between "no io thread right now" and "the census
     // could not find it".
-    for runtime in &facts.runtimes {
+    for (index, runtime) in facts.runtimes.iter().enumerate() {
         if let Some(parks) = &runtime.parks
             && parks.driver_held
             && parks.in_driver().is_none()
         {
             writeln!(
                 out,
-                "        the io driver of {} is held, but no worker is parked in it",
-                runtime.label
+                "        the io driver{} is held, but no worker is parked in it",
+                facts.whose(index)
             )?;
         }
     }
@@ -255,7 +299,7 @@ fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
     }
 
     if entered > 0 {
-        writeln!(out, "    {entered} in the runtime, outside the run loop")?;
+        writeln!(out, "    {entered} in {inside}, outside the run loop")?;
         for (index, runtime) in facts.runtimes.iter().enumerate() {
             blocking_pool(facts, index, runtime, out)?;
         }
@@ -312,15 +356,15 @@ fn blocking_pool(
     );
     let threads = pool.threads as usize;
     let queued = counted(pool.queued as usize, "task");
-    let whose = &runtime.label;
+    let whose = facts.whose(index);
     let Some(blocking) = threads
         .checked_sub(launched)
         .filter(|blocking| *blocking <= entered)
     else {
         writeln!(
             out,
-            "        the blocking pool of {whose} counts {} of its own, the \
-             workers above among them ({} idle, {queued} queued)",
+            "        the blocking pool{whose} counts {} of its own, the workers \
+             above among them ({} idle, {queued} queued)",
             counted(threads, "thread"),
             pool.idle,
         )?;
@@ -328,14 +372,14 @@ fn blocking_pool(
     };
     writeln!(
         out,
-        "        {blocking} in the blocking pool of {whose} ({} idle, {queued} queued)",
+        "        {blocking} in the blocking pool{whose} ({} idle, {queued} queued)",
         pool.idle
     )?;
     let other = entered - blocking;
     if other > 0 {
         writeln!(
             out,
-            "        {other} that entered {whose} another way (a block_on caller)"
+            "        {other} that entered the runtime{whose} another way (a block_on caller)"
         )?;
     }
     Ok(())
@@ -390,7 +434,12 @@ fn kind(facts: &Facts<'_>, thread: &Thread) -> ThreadKind {
 
 fn tasks(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
     let list = facts.tasks;
-    writeln!(out, "Tasks: {} owned by the runtime", list.tasks.len())?;
+    writeln!(
+        out,
+        "Tasks: {} owned by {}",
+        list.tasks.len(),
+        facts.whole()
+    )?;
 
     // Lifecycle first: every task is in exactly one of these, so it is
     // the one row that adds up to the total above it.
@@ -619,7 +668,7 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
         n => format!(", and {n} completed and not yet reaped"),
     };
     let places = [
-        Row::new(tasks, "polled as tasks by the runtime"),
+        Row::new(tasks, "polled as tasks"),
         Row::new(held, "held in frames, off any await chain"),
         // `FuturesUnordered` names one set however many there are, so
         // it is spelled as tokio spells it rather than pluralized.
@@ -952,6 +1001,7 @@ mod tests {
             lwps: 0,
             runtime: Vec::new(),
             runtimes: vec![runtime(None, None)],
+            local_sets: 0,
             tasks,
             waits,
             held: &[],
@@ -1017,15 +1067,15 @@ mod tests {
         let threads = page.split("\n\n").next().unwrap();
         assert_eq!(
             threads,
-            "Threads: 6 lwps, 4 in the runtime\n    \
+            "Threads: 6 lwps, 4 in runtime 0 @0x1000\n    \
              3 in the scheduler's run loop\n        \
              1 parked in the io driver\n            \
              worker 0, lwp 11\n        \
              1 polling a task\n            \
              worker 1, lwp 12  task 42\n        \
              1 parked\n    \
-             1 in the runtime, outside the run loop\n        \
-             1 in the blocking pool of runtime 0 @0x1000 (1 idle, 1 task queued)\n    \
+             1 in runtime 0 @0x1000, outside the run loop\n        \
+             1 in the blocking pool (1 idle, 1 task queued)\n    \
              2 holding no runtime context"
         );
     }
@@ -1067,9 +1117,8 @@ mod tests {
         let page = census(&facts, 5);
         assert!(
             page.contains(
-                "    1 in the runtime, outside the run loop\n        \
-                 the blocking pool of runtime 0 @0x1000 counts 9 threads of \
-                 its own, the workers \
+                "    1 in runtime 0 @0x1000, outside the run loop\n        \
+                 the blocking pool counts 9 threads of its own, the workers \
                  above among them (4 idle, 0 tasks queued)\n"
             ),
             "{page}"
@@ -1117,13 +1166,13 @@ mod tests {
         let threads = page.split("\n\n").next().unwrap();
         assert_eq!(
             threads,
-            "Threads: 3 lwps, 2 in the runtime\n    \
+            "Threads: 3 lwps, 2 in runtime 0 @0x1000\n    \
              1 in the scheduler's run loop\n        \
              1 parked in the io driver\n            \
              block_on thread, lwp 11\n        \
              the block_on future of lwp 11 was woken and not yet polled\n    \
-             1 in the runtime, outside the run loop\n        \
-             1 in the blocking pool of runtime 0 @0x1000 (1 idle, 0 tasks queued)\n    \
+             1 in runtime 0 @0x1000, outside the run loop\n        \
+             1 in the blocking pool (1 idle, 0 tasks queued)\n    \
              1 holding no runtime context"
         );
     }
@@ -1208,13 +1257,11 @@ mod tests {
 
         let page = census(&facts, 5);
         assert!(
-            page.contains(
-                "        0 in the blocking pool of runtime 0 @0x1000 (0 idle, 3 tasks queued)\n"
-            ),
+            page.contains("        0 in the blocking pool (0 idle, 3 tasks queued)\n"),
             "{page}"
         );
         assert!(
-            page.contains("1 that entered runtime 0 @0x1000 another way (a block_on caller)"),
+            page.contains("1 that entered the runtime another way (a block_on caller)"),
             "{page}"
         );
     }
@@ -1264,7 +1311,7 @@ mod tests {
         let threads = page.split("\n\n").next().unwrap();
         assert_eq!(
             threads,
-            "Threads: 2 lwps, 2 in the runtime\n    \
+            "Threads: 2 lwps, 2 in 2 runtimes\n    \
              2 in the scheduler's run loop\n        \
              1 parked in the io driver\n            \
              worker 0, lwp 11\n        \
@@ -1297,9 +1344,7 @@ mod tests {
 
         let page = census(&facts, 5);
         assert!(
-            page.contains(
-                "the io driver of runtime 0 @0x1000 is held, but no worker is parked in it"
-            ),
+            page.contains("the io driver is held, but no worker is parked in it"),
             "{page}"
         );
     }
@@ -1336,7 +1381,10 @@ mod tests {
         ];
         let page = census(&facts(&list, &waits), 5);
 
-        assert!(page.contains("Tasks: 7 owned by the runtime\n"), "{page}");
+        assert!(
+            page.contains("Tasks: 7 owned by runtime 0 @0x1000\n"),
+            "{page}"
+        );
         assert!(
             page.contains("    Lifecycle: 1 running, 1 queued, 5 idle\n"),
             "{page}"
@@ -1515,7 +1563,7 @@ mod tests {
             // 3 + 2 + 1 + 1 frames.
             "Futures: 4 in flight, on 7 await-chain frames (up to 3 deep)\n    \
              Location:\n        \
-             2  polled as tasks by the runtime\n        \
+             2  polled as tasks\n        \
              1  held in frames, off any await chain\n        \
              1  in 1 FuturesUnordered, and 1 completed and not yet reaped\n    \
              Future types and what they await:\n        \
@@ -1586,7 +1634,7 @@ mod tests {
 
         let only_tasks = sections(&facts, Sections::select(false, true, false), 5);
         assert!(
-            only_tasks.starts_with("Tasks: 1 owned by the runtime\n"),
+            only_tasks.starts_with("Tasks: 1 owned by runtime 0 @0x1000\n"),
             "{only_tasks}"
         );
         assert!(!only_tasks.contains("Threads:"), "{only_tasks}");
