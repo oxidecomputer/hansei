@@ -12,6 +12,8 @@ use std::io;
 pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Write) -> Result<()> {
     report_whatis(
         &session.ctx.view,
+        &session.runtimes,
+        &session.local_sets,
         &session.tasks,
         session.extents(),
         session.census(),
@@ -30,8 +32,16 @@ pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Wr
 /// containment order — the task's allocation, then a set child's node,
 /// then the held futures from widest to narrowest, then a set — which
 /// makes reading down the report reading inward.
+///
+/// The executors come first, outside that nesting rather than at the
+/// top of it: a runtime handle contains no task's memory and no task's
+/// memory contains it, but it is the coarsest thing an address can be,
+/// and the one a reader is least able to recognize by eye.
+#[allow(clippy::too_many_arguments)]
 fn report_whatis(
     view: &BundleView<'_>,
+    runtimes: &[bundle::RuntimeRef<'_>],
+    local_sets: &[bundle::LocalSetRef<'_>],
     list: &bundle::TaskList,
     extents: &bundle::TaskExtents,
     census: &census::FutureCensus,
@@ -39,6 +49,50 @@ fn report_whatis(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let mut blocks = 0;
+    let owned = |group: usize| list.tasks.iter().filter(|t| t.group == group).count();
+
+    for (index, rt) in runtimes.iter().enumerate() {
+        let Some(offset) = within(rt.handle.addr, rt.handle.ty.size(), addr) else {
+            continue;
+        };
+        separate(&mut blocks, out)?;
+        writeln!(out, "Runtime {index}: {}", rt.flavor)?;
+        writeln!(
+            out,
+            "    At: offset {offset:#x} in the runtime's handle (handle {:#x})",
+            rt.handle.addr
+        )?;
+        let threads = match rt.worker_tids.is_empty() {
+            true => "none inside it".to_string(),
+            false => {
+                let tids: Vec<String> = rt.worker_tids.iter().map(|t| t.to_string()).collect();
+                format!("lwp {}", tids.join(", "))
+            }
+        };
+        writeln!(out, "    Threads: {threads}")?;
+        writeln!(out, "    Found via: {}", rt.route)?;
+        writeln!(out, "    Tasks: {}", owned(index))?;
+    }
+
+    for (index, set) in local_sets.iter().enumerate() {
+        let Some(offset) = within(set.shared.addr, set.shared.ty.size(), addr) else {
+            continue;
+        };
+        separate(&mut blocks, out)?;
+        writeln!(out, "Local set {index}: at {:#x}", set.shared.addr)?;
+        writeln!(
+            out,
+            "    At: offset {offset:#x} in the set's shared state (shared {:#x})",
+            set.shared.addr
+        )?;
+        let pinned = match set.owner_tid {
+            Some(tid) => format!("lwp {tid}"),
+            None => "no thread hansei can name".to_string(),
+        };
+        writeln!(out, "    Pinned to: {pinned}")?;
+        writeln!(out, "    Found via: {}", set.route)?;
+        writeln!(out, "    Tasks: {}", owned(runtimes.len() + index))?;
+    }
 
     if let Some((index, offset)) = extents.locate(addr) {
         let task = &list.tasks[index];
@@ -163,6 +217,15 @@ fn report_whatis(
     Ok(())
 }
 
+/// Where `addr` falls in an object of `size` bytes at `start`, or
+/// `None` when it falls outside it. A zero size claims the start
+/// address alone: a type the bundle carries no size for still has an
+/// address worth recognizing, and it is the one a reader pastes in.
+fn within(start: u64, size: u64, addr: u64) -> Option<u64> {
+    let end = start.saturating_add(size.max(1));
+    (start..end).contains(&addr).then(|| addr - start)
+}
+
 /// Open a block, with a blank line between it and the one before.
 fn separate(blocks: &mut usize, out: &mut dyn io::Write) -> Result<()> {
     if *blocks > 0 {
@@ -188,30 +251,49 @@ mod whatis_tests {
     use crate::parse_hex_addr;
     use hansei_bundle::BundleView;
     use hansei_runtime::testkit;
-    use hansei_runtime::tokio::bundle::{TaskExtents, TaskList};
+    use hansei_runtime::tokio::bundle::{LocalSetRef, RuntimeRef, TaskExtents, TaskList};
     use hansei_runtime::tokio::census::{self, FutureCensus};
 
-    fn with_tasks(
-        program: &str,
-        check: impl FnOnce(&BundleView<'_>, &TaskList, &TaskExtents, &FutureCensus),
-    ) {
-        let (bundle, snapshot) = testkit::load(program);
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
-        let extents = ctx.task_extents(&list);
-        let census = census::census(&ctx, &list);
-        check(&ctx.view, &list, &extents, &census);
+    /// Everything a report is made from: the whole of what an attach
+    /// finds, so a test can point at any of it.
+    struct Target<'a> {
+        view: BundleView<'a>,
+        runtimes: Vec<RuntimeRef<'a>>,
+        local_sets: Vec<LocalSetRef<'a>>,
+        list: TaskList,
+        extents: TaskExtents,
+        census: FutureCensus,
     }
 
-    fn report(
-        view: &BundleView<'_>,
-        list: &TaskList,
-        extents: &TaskExtents,
-        census: &FutureCensus,
-        addr: u64,
-    ) -> String {
+    fn with_tasks(program: &str, check: impl FnOnce(&Target<'_>)) {
+        let (bundle, snapshot) = testkit::load(program);
+        let ctx = testkit::context(&bundle, &snapshot);
+        let (runtimes, local_sets, list) = testkit::discover(&ctx, &snapshot);
+        let extents = ctx.task_extents(&list);
+        let census = census::census(&ctx, &list);
+        check(&Target {
+            view: ctx.view,
+            runtimes,
+            local_sets,
+            list,
+            extents,
+            census,
+        });
+    }
+
+    fn report(target: &Target<'_>, addr: u64) -> String {
         let mut out = Vec::new();
-        report_whatis(view, list, extents, census, addr, &mut out).expect("the report renders");
+        report_whatis(
+            &target.view,
+            &target.runtimes,
+            &target.local_sets,
+            &target.list,
+            &target.extents,
+            &target.census,
+            addr,
+            &mut out,
+        )
+        .expect("the report renders");
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
 
@@ -220,15 +302,16 @@ mod whatis_tests {
     /// outside every allocation reports the miss.
     #[test]
     fn test_addresses_resolve_to_the_containing_task() {
-        with_tasks("sleep-join", |view, list, extents, census| {
-            let sleeper = list
+        with_tasks("sleep-join", |t| {
+            let sleeper = t
+                .list
                 .tasks
                 .iter()
                 .find(|t| t.task_id == Some(3))
                 .expect("the sleeper is task 3");
             let header = sleeper.addr.0;
 
-            let shown = report(view, list, extents, census, header);
+            let shown = report(t, header);
             assert!(
                 shown.contains("Task 3: sleep_join::sleeper::{async_fn_env#0}\n"),
                 "{shown}"
@@ -241,14 +324,14 @@ mod whatis_tests {
             );
             assert!(shown.contains("    State: idle"), "{shown}");
 
-            let inside = report(view, list, extents, census, header + 0x10);
+            let inside = report(t, header + 0x10);
             assert!(inside.contains("Task 3: "), "{inside}");
             assert!(
                 inside.contains("    At: offset 0x10 in the task's allocation"),
                 "{inside}"
             );
 
-            let miss = report(view, list, extents, census, 0x10);
+            let miss = report(t, 0x10);
             assert_eq!(
                 miss,
                 "no task's allocation and no future the census found contains 0x10\n"
@@ -264,16 +347,18 @@ mod whatis_tests {
     /// is the only thing that says whose it is.
     #[test]
     fn test_addresses_resolve_to_the_containing_future() {
-        with_tasks("futurelock", |view, list, extents, census| {
-            let future1 = census
+        with_tasks("futurelock", |t| {
+            let future1 = t
+                .census
                 .held
                 .iter()
                 .find(|h| h.local == "future1")
-                .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
-            let owner = list.tasks[future1.owner]
+                .unwrap_or_else(|| panic!("no held `future1` in {:#?}", t.census.held));
+            let owner = t.list.tasks[future1.owner]
                 .task_id
                 .expect("the holder is an owned task");
-            let size = view
+            let size = t
+                .view
                 .ty(future1.ty)
                 .expect("the bundle carries the held future's type")
                 .size();
@@ -283,7 +368,7 @@ mod whatis_tests {
             );
 
             for offset in [0, 0x10] {
-                let shown = report(view, list, extents, census, future1.addr + offset);
+                let shown = report(t, future1.addr + offset);
                 assert!(
                     shown.contains(&format!("Future {:#x}: {}", future1.addr, future1.future)),
                     "{shown}"
@@ -301,7 +386,7 @@ mod whatis_tests {
 
             // Past its end it is somebody else's memory, and this
             // heap allocation is nobody's as far as hansei can say.
-            let past = report(view, list, extents, census, future1.addr + size);
+            let past = report(t, future1.addr + size);
             assert!(
                 past.starts_with("no task's allocation and no future"),
                 "{past}"
@@ -309,19 +394,70 @@ mod whatis_tests {
         });
     }
 
+    /// The executors answer for their own addresses: the handle a
+    /// `runtimes` row prints resolves to that runtime, an address
+    /// inside the handle resolves to it the way one inside a task's
+    /// allocation does, and a local set's shared state answers for
+    /// itself. The fixture holds a runtime no thread is inside, which
+    /// is the one whose block has a route to report and no threads.
+    #[test]
+    fn test_addresses_resolve_to_the_owning_executor() {
+        with_tasks("foreign-runtime", |t| {
+            let hidden = t
+                .runtimes
+                .iter()
+                .position(|rt| rt.worker_tids.is_empty())
+                .expect("the fixture hides a runtime from every thread's context");
+            let handle = t.runtimes[hidden].handle.addr;
+
+            let shown = report(t, handle);
+            assert!(
+                shown.contains(&format!("Runtime {hidden}: current_thread")),
+                "{shown}"
+            );
+            assert!(
+                shown.contains(&format!(
+                    "    At: offset 0x0 in the runtime's handle (handle {handle:#x})"
+                )),
+                "{shown}"
+            );
+            assert!(shown.contains("    Threads: none inside it"), "{shown}");
+            assert!(
+                shown.contains("    Found via: a JoinHandle held by an enumerated task"),
+                "{shown}"
+            );
+
+            let inside = report(t, handle + 0x8);
+            assert!(inside.contains(&format!("Runtime {hidden}: ")), "{inside}");
+            assert!(
+                inside.contains("    At: offset 0x8 in the runtime's handle"),
+                "{inside}"
+            );
+
+            let set = t.local_sets.first().expect("the fixture holds a local set");
+            let shared = set.shared.addr;
+            let shown = report(t, shared);
+            assert!(
+                shown.contains(&format!("Local set 0: at {shared:#x}")),
+                "{shown}"
+            );
+            assert!(shown.contains("    Tasks: 1"), "{shown}");
+        });
+    }
+
     /// Every task claims its own header and nothing claims the word
     /// before it: the extents tile the tasks without bleeding.
     #[test]
     fn test_extents_cover_each_task_exactly() {
-        with_tasks("dyn-future", |_view, list, extents, _census| {
-            for (index, task) in list.tasks.iter().enumerate() {
+        with_tasks("dyn-future", |t| {
+            for (index, task) in t.list.tasks.iter().enumerate() {
                 assert_eq!(
-                    extents.locate(task.addr.0),
+                    t.extents.locate(task.addr.0),
                     Some((index, 0)),
                     "task {:?} does not claim its own header",
                     task.addr
                 );
-                let before = extents.locate(task.addr.0 - 1);
+                let before = t.extents.locate(task.addr.0 - 1);
                 assert_ne!(
                     before.map(|(i, _)| i),
                     Some(index),
