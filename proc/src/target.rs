@@ -11,7 +11,7 @@
 //! — never through this facade, which holds only readers that lend.
 
 use crate::coredump::{self, Flavour};
-use crate::{LwpInfo, Mappings, Regs, Result, SymbolBuf, Target};
+use crate::{BuildIds, LwpInfo, Mappings, Regs, Result, SymbolBuf, Target};
 
 use std::path::{Path, PathBuf};
 
@@ -26,9 +26,36 @@ pub enum Proc {
 impl Proc {
     /// Open a core dump, whichever system wrote it.
     pub fn open_core(path: &Path) -> Result<Self> {
+        Self::open_core_with_program(path, None)
+    }
+
+    /// Open a core dump, reading the executable from `program` rather
+    /// than from the path the core recorded for it.
+    ///
+    /// Only a Linux core has anything to substitute. An illumos core
+    /// carries each mapped object's symbol table in its own section
+    /// headers, so it needs no companion binary and ignores one.
+    pub fn open_core_with_program(path: &Path, program: Option<&Path>) -> Result<Self> {
         match coredump::flavour(path)? {
-            Flavour::Linux => Ok(Proc::LinuxCore(coredump::linux::Core::open(path)?)),
+            Flavour::Linux => Ok(Proc::LinuxCore(coredump::linux::Core::open_with_program(
+                path, program,
+            )?)),
             Flavour::Illumos => Ok(Proc::IllumosCore(coredump::illumos::Core::open(path)?)),
+        }
+    }
+
+    /// Whether this core needs a companion executable to resolve any
+    /// symbol at all.
+    pub fn needs_program(&self) -> bool {
+        matches!(self, Proc::LinuxCore(_))
+    }
+
+    /// The executable's build id as the core and the file backing it
+    /// each spell it, for the cores where the question arises.
+    pub fn build_ids(&self) -> Option<BuildIds> {
+        match self {
+            Proc::LinuxCore(c) => Some(c.build_ids()),
+            Proc::IllumosCore(_) => None,
         }
     }
 }
