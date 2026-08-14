@@ -592,8 +592,8 @@ fn mask(out: &str) -> String {
 /// futurelock diagnosis. So each distinct value takes a distinct symbol
 /// here instead. A task the test named carries that name (`#joiner`);
 /// anything else is numbered in the order it is first seen (`#t1`,
-/// `@1`), which a fixture parked deterministically hands out the same
-/// way every run.
+/// `ADDR1`), which a fixture parked deterministically hands out the
+/// same way every run.
 ///
 /// What this buys over `format!`-ing the expectation around the run's
 /// own ids is a golden that holds for every cell: a task id is a small
@@ -693,7 +693,7 @@ impl Symbols {
                 seen.push(addr);
                 seen.len() - 1
             });
-            format!("@{}", at + 1)
+            format!("ADDR{}", at + 1)
         })
         .into_owned()
     }
@@ -1932,7 +1932,7 @@ fn graph(bundle: &Path, core: &Path) -> String {
 /// straight back on its own row — `#blocked` in the wake queue, on the
 /// `← cycle` row and in the diagnosis is the self-deadlock shape, drawn
 /// — and the semaphore the row names is the one the diagnosis names,
-/// which is `@1` in both places rather than two maskings that could
+/// which is `ADDR1` in both places rather than two maskings that could
 /// have hidden two different locks.
 #[test]
 fn test_futurelock_graph() {

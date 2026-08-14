@@ -27,4 +27,4 @@ Defined at: src/bin/futurelock.rs:15
                                 Suspend0  tokio/src/sync/mutex.rs:LINE  1 local  tokio::trace::async_trace_leaf::TY
                               ▸ Suspend1  tokio/src/sync/mutex.rs:LINE
                                 └─* 6  future        tokio::sync::batch_semaphore::Acquire
-                                   waiting on a tokio::sync::Mutex (semaphore @1): 1 permit requested, 0 available; wake queue: task #blocked
+                                   waiting on a tokio::sync::Mutex (semaphore ADDR1): 1 permit requested, 0 available; wake queue: task #blocked
