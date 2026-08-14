@@ -16,6 +16,7 @@ snapshot = []
 # Only the acceptance suite builds a bundle from a fixture binary; hansei
 # itself reads bundles and never produces one.
 exegesis = { workspace = true }
+insta = { workspace = true }
 regex = { workspace = true }
 tempfile = { workspace = true }
 

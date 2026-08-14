@@ -573,16 +573,237 @@ fn trace_opts(bundle: &Path, core: &Path, task_id: &str, verbose: bool, ugly: bo
 /// cell's tokio version.
 fn normalize(trace: &str) -> String {
     let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
+    mask(&addrs.replace_all(trace, "0xADDR"))
+}
+
+/// The half of [`normalize`] that stands for no identity, so nothing is
+/// lost by spelling every occurrence alike: a deadline, a source line
+/// inside tokio's own tree, the leaf type an instrumented trace ends on.
+fn mask(out: &str) -> String {
     let deadlines =
         regex::Regex::new(r"deadline -?\d+\.\d{3}s( on the target's monotonic clock)?").unwrap();
     let tokio_sites = regex::Regex::new(r"tokio-\d+\.\d+\.\d+(/[^ :]+):\d+").unwrap();
     let trace_leaf = regex::Regex::new(r"tokio::trace::async_trace_leaf::\S+").unwrap();
-    let masked = addrs.replace_all(trace, "0xADDR");
-    let masked = deadlines.replace_all(&masked, "deadline TS");
+    let masked = deadlines.replace_all(out, "deadline TS");
     let masked = tokio_sites.replace_all(&masked, "tokio$1:LINE");
     trace_leaf
         .replace_all(&masked, "tokio::trace::async_trace_leaf::TY")
         .into_owned()
+}
+
+/// The run-varying values in a command's output, and the stable names
+/// they take in a golden.
+///
+/// [`normalize`] spells every address `0xADDR` and leaves task ids
+/// alone, which is why a test that wants to hold output whole has to
+/// rebuild it around the ids the run handed out. That masking also
+/// costs the agreement between two values, and the agreement is what a
+/// graph is read for: that the wake queue names the blocked task is the
+/// futurelock diagnosis. So each distinct value takes a distinct symbol
+/// here instead. A task the test named carries that name (`#joiner`);
+/// anything else is numbered in the order it is first seen (`#t1`,
+/// `@1`), which a fixture parked deterministically hands out the same
+/// way every run.
+///
+/// What this buys over `format!`-ing the expectation around the run's
+/// own ids is a golden that holds for every cell: a task id is a small
+/// decimal under `tokio_unstable` and the Header address where the
+/// target records none, and neither reaches the golden.
+#[derive(Default)]
+struct Symbols {
+    named: Vec<(String, String)>,
+}
+
+impl Symbols {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Give the task with id `id` the name it carries in the golden.
+    fn task(mut self, id: &str, name: &str) -> Self {
+        self.named.push((id.to_owned(), format!("#{name}")));
+        self
+    }
+
+    /// Rewrite `out` into the form a golden holds.
+    ///
+    /// One `seen` serves both passes: the table and the prose under it
+    /// name the same tasks, and a symbol minted once per pass would let
+    /// a golden claim an agreement between them the run never had.
+    fn apply(&self, out: &str) -> String {
+        let mut seen = Vec::new();
+        let out = self.addresses(out);
+        let out = mask(&out);
+        let out = self.table(&mut seen, &out);
+        self.references(&mut seen, &out)
+    }
+
+    /// The symbol for a task id: the name it was given, or the next
+    /// number, minted on first sight.
+    fn task_symbol(&self, seen: &mut Vec<(String, String)>, id: &str) -> String {
+        if let Some((_, sym)) = self.named.iter().find(|(known, _)| known == id) {
+            return sym.clone();
+        }
+        if let Some((_, sym)) = seen.iter().find(|(known, _)| known == id) {
+            return sym.clone();
+        }
+        let sym = format!("#t{}", seen.len() + 1);
+        seen.push((id.to_owned(), sym.clone()));
+        sym
+    }
+
+    /// Number the addresses in first-seen order, so two mentions of one
+    /// address stay one symbol and two addresses stay two.
+    fn addresses(&self, out: &str) -> String {
+        let hex = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
+        let mut seen: Vec<String> = Vec::new();
+        hex.replace_all(out, |caps: &regex::Captures<'_>| {
+            let addr = caps[0].to_owned();
+            let at = seen.iter().position(|a| *a == addr).unwrap_or_else(|| {
+                seen.push(addr);
+                seen.len() - 1
+            });
+            format!("@{}", at + 1)
+        })
+        .into_owned()
+    }
+
+    /// Rewrite the ids in the graph table's first column, and re-flow
+    /// the columns around them.
+    ///
+    /// hansei pads TASK and STATE to their widest cell, so the table's
+    /// whitespace records how wide a task id happened to be — one digit
+    /// under `tokio_unstable`, a whole address without it — and a
+    /// golden that kept it would need a copy per cell. The columns are
+    /// recomputed here instead. What hansei's own padding does is not
+    /// left uncovered by that: the unit tests in `hansei/src/graph.rs`
+    /// pin it over constructed ids, portably and without a core.
+    fn table(&self, seen: &mut Vec<(String, String)>, out: &str) -> String {
+        let lines: Vec<&str> = out.lines().collect();
+        let Some(head) = lines.iter().position(|l| l.starts_with("TASK")) else {
+            return out.to_owned();
+        };
+        // The header is padded to the same widths as every row and
+        // holds no wide characters, so where its labels start is where
+        // every row's columns start.
+        let column = |needle: &str| {
+            lines[head]
+                .find(needle)
+                .map(|byte| lines[head][..byte].chars().count())
+        };
+        let (Some(state), Some(target)) = (column("STATE"), column("WAITING ON")) else {
+            return out.to_owned();
+        };
+        let end = lines[head..]
+            .iter()
+            .position(|l| l.trim().is_empty())
+            .map_or(lines.len(), |n| head + n);
+
+        // Columns are sliced by character, not byte: a nested row's
+        // branch is drawn with box-drawing characters, as the table
+        // itself counts.
+        let cell = |line: &[char], from: usize, to: usize| -> String {
+            let to = to.min(line.len());
+            match from >= to {
+                true => String::new(),
+                false => line[from..to]
+                    .iter()
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned(),
+            }
+        };
+
+        let mut rows: Vec<[String; 3]> = Vec::new();
+        for line in &lines[head..end] {
+            let chars: Vec<char> = line.chars().collect();
+            let task = cell(&chars, 0, state);
+            rows.push([
+                self.row_task(seen, &task),
+                cell(&chars, state, target),
+                cell(&chars, target, chars.len()),
+            ]);
+        }
+
+        let mut widths = [0usize; 2];
+        for row in &rows {
+            for (w, cell) in widths.iter_mut().zip(row) {
+                *w = (*w).max(cell.chars().count());
+            }
+        }
+        let mut table = String::new();
+        for line in &lines[..head] {
+            table.push_str(line);
+            table.push('\n');
+        }
+        for [task, state, target] in &rows {
+            table.push_str(&format!(
+                "{task:<w0$}  {state:<w1$}  {target}\n",
+                w0 = widths[0],
+                w1 = widths[1]
+            ));
+        }
+        for line in &lines[end..] {
+            table.push_str(line);
+            table.push('\n');
+        }
+        table
+    }
+
+    /// A TASK cell: the id, under whatever branch draws it and beside
+    /// whatever the row says about it.
+    fn row_task(&self, seen: &mut Vec<(String, String)>, cell: &str) -> String {
+        let row = regex::Regex::new(r"^(?<pre>[├└]─ )?(?<id>[^ ]+)(?<post>.*)$").unwrap();
+        let Some(caps) = row.captures(cell) else {
+            return cell.to_owned();
+        };
+        if &caps["id"] == "TASK" {
+            return cell.to_owned();
+        }
+        format!(
+            "{}{}{}",
+            caps.name("pre").map_or("", |m| m.as_str()),
+            self.task_symbol(seen, &caps["id"]),
+            caps.name("post").map_or("", |m| m.as_str()),
+        )
+    }
+
+    /// Every other mention of a task, which prose spells `task <id>`.
+    ///
+    /// Matched in that position rather than by the digits alone: a task
+    /// id is only a number, and a run whose blocked task is task 64
+    /// must not rewrite `futurelock.rs:64` along with it.
+    fn references(&self, seen: &mut Vec<(String, String)>, out: &str) -> String {
+        let reference = regex::Regex::new(r"\btask (?<id>\d+)\b").unwrap();
+        reference
+            .replace_all(out, |caps: &regex::Captures<'_>| {
+                format!("task {}", self.task_symbol(seen, &caps["id"]))
+            })
+            .into_owned()
+    }
+}
+
+/// Compare `actual` against the checked-in golden of that name, under
+/// `hansei/tests/golden/`.
+///
+/// Re-bless with `INSTA_UPDATE=always`, which writes the goldens in
+/// place under a plain `cargo test` — the same shape as `EXEGESIS_BLESS`
+/// and `HANSEI_MATRIX_BLESS`, and the only shape that serves this suite:
+/// it runs nowhere but the hosts that can core a process, so a golden is
+/// always blessed over ssh and reviewed here afterwards. A plain run
+/// leaves a rejected golden beside its file as `.snap.new` instead of
+/// overwriting it.
+///
+/// File snapshots rather than inline ones for the same reason: applying
+/// an inline snapshot rewrites the source, and needs the `cargo-insta`
+/// binary on every host to do it.
+fn golden(name: &str, actual: &str) {
+    insta::with_settings!({
+        snapshot_path => "golden",
+        prepend_module_to_snapshot => false,
+    }, {
+        insta::assert_snapshot!(name, actual);
+    });
 }
 
 fn assert_locals(verbose_trace: &str, names: &[&str]) {
@@ -1659,32 +1880,18 @@ fn graph(bundle: &Path, core: &Path) -> String {
     hansei_ok(bundle, core, "graph")
 }
 
-/// Format rows the way the graph table does: two-space separated
-/// columns, each padded to its widest cell.
-fn graph_table(rows: &[[&str; 3]]) -> String {
-    let mut widths = [0usize; 2];
-    for row in rows {
-        for (w, cell) in widths.iter_mut().zip(row.iter()) {
-            // Characters, not bytes: a nested row's branch is drawn
-            // with box-drawing characters, as the table itself counts.
-            *w = (*w).max(cell.chars().count());
-        }
-    }
-    rows.iter()
-        .map(|[task, state, target]| {
-            format!(
-                "{task:<w0$}  {state:<w1$}  {target}\n",
-                w0 = widths[0],
-                w1 = widths[1]
-            )
-        })
-        .collect()
-}
-
 /// The RFD 609 diagnosis, fully automatic: the contended Mutex's wake
 /// queue resolves to the blocked task itself, and the abandoned
 /// `future1` is found in do_stuff's locals holding the granted permit
 /// it can never release.
+///
+/// The golden is read for the agreements running through it. The lock's
+/// holder is the blocked task itself, so the graph's one edge closes
+/// straight back on its own row — `#blocked` in the wake queue, on the
+/// `← cycle` row and in the diagnosis is the self-deadlock shape, drawn
+/// — and the semaphore the row names is the one the diagnosis names,
+/// which is `@1` in both places rather than two maskings that could
+/// have hidden two different locks.
 #[test]
 fn test_futurelock_graph() {
     let bundle = fixtures().bundle("futurelock");
@@ -1694,36 +1901,19 @@ fn test_futurelock_graph() {
             &rows,
             "futurelock::main::{async_block#0}::{async_block_env#0}",
         );
-        let id = task.id.as_str();
-
-        let wait = format!(
-            "a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, \
-             0 available; wake queue: task {id}"
-        );
-        // The lock's holder is the blocked task itself, so the graph's
-        // one edge closes straight back on its own row: the
-        // self-deadlock shape, drawn.
-        let cycle = format!("└─ {id} ← cycle");
-        let mut expected = graph_table(&[
-            ["TASK", "STATE", "WAITING ON"],
-            [id, "idle", &wait],
-            [&cycle, "idle", ""],
-        ]);
-        expected.push_str(&format!(
-            "\nfuturelock: task {id} holds 1 granted permit of a tokio::sync::Mutex \
-             (semaphore 0xADDR) in a future it stopped polling:\n  \
-             `future1` (futurelock::do_async_thing::{{async_fn_env#0}})\n  \
-             held across futurelock::do_stuff::{{async_fn_env#0}} state Suspend1 \
-             — src/bin/futurelock.rs:64\n  \
-             blocked behind it: task {id}\n"
-        ));
-        assert_eq!(normalize(&graph(&bundle, core)), expected);
+        let symbols = Symbols::new().task(&task.id, "blocked");
+        golden("futurelock-graph", &symbols.apply(&graph(&bundle, core)));
     });
 }
 
 /// Wait edges without a diagnosis: the joiner's JoinHandle edge points
 /// at the sleeper, the sleeper waits on the timer, and a healthy
 /// runtime reports no futurelock.
+///
+/// The joiner is waiting for the sleeper, so the sleeper's row hangs
+/// under it rather than standing beside it, and the sleeper's own wait
+/// — the timer — is what the chain ends on. Nothing follows the table:
+/// a target with no futurelock says nothing about futurelocks.
 #[test]
 fn test_sleep_join_graph() {
     let bundle = fixtures().bundle("sleep-join");
@@ -1732,19 +1922,10 @@ fn test_sleep_join_graph() {
         let sleeper = task_with_future(&rows, "sleep_join::sleeper::{async_fn_env#0}");
         let joiner = task_with_future(&rows, "sleep_join::joiner::{async_fn_env#0}");
 
-        // The joiner is waiting for the sleeper, so the sleeper's row
-        // hangs under it rather than standing beside it, and the
-        // sleeper's own wait — the timer — is what the chain ends on.
-        let join_edge = format!("task {} (JoinHandle)", sleeper.id);
-        let joined = format!("└─ {}", sleeper.id);
-        let expected = graph_table(&[
-            ["TASK", "STATE", "WAITING ON"],
-            [&joiner.id, "idle", &join_edge],
-            [&joined, "idle", "the timer: deadline TS"],
-        ]);
-        // Nothing follows the table: a target with no futurelock says
-        // nothing about futurelocks.
-        assert_eq!(normalize(&graph(&bundle, core)), expected);
+        let symbols = Symbols::new()
+            .task(&joiner.id, "joiner")
+            .task(&sleeper.id, "sleeper");
+        golden("sleep-join-graph", &symbols.apply(&graph(&bundle, core)));
     });
 }
 

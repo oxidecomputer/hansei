@@ -1,0 +1,7 @@
+---
+source: hansei/tests/acceptance.rs
+expression: actual
+---
+TASK         STATE  WAITING ON
+#joiner      idle   task #sleeper (JoinHandle)
+└─ #sleeper  idle   the timer: deadline TS
