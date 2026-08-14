@@ -1,3 +1,6 @@
+---
+source: exegesis/tests/golden.rs
+---
 program: unordered
 
 [tasks]

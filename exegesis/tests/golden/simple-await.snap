@@ -1,35 +1,28 @@
-program: channels
+---
+source: exegesis/tests/golden.rs
+---
+program: simple-await
 
 [tasks]
-task: channels::notify_waiter::{async_fn_env#0}
+task: simple_await::work::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:16
+  decl: simple-await.rs:16
   entries: 2
   symbols-per-entry: 6,6
-  stage: Stage<channels::notify_waiter::{async_fn_env#0}>
+  stage: Stage<simple_await::work::{async_fn_env#0}>
   variants:
-    Unresumed @ channels.rs:16
-    Returned @ channels.rs:22
-    Panicked @ channels.rs:22
-    Suspend0 @ channels.rs:21
-task: channels::hold::{async_fn_env#0}
-  kind: AsyncFn
-  decl: channels.rs:36
-  entries: 2
-  symbols-per-entry: 6,6
-  stage: Stage<channels::hold::{async_fn_env#0}>
-  variants:
-    Unresumed @ channels.rs:36
-    Returned @ channels.rs:39
-    Panicked @ channels.rs:39
-    Suspend0 @ channels.rs:38
+    Unresumed @ simple-await.rs:16
+    Returned @ simple-await.rs:46
+    Panicked @ simple-await.rs:46
+    Suspend0 @ simple-await.rs:32
+    Suspend1 @ simple-await.rs:34
 
 [dyn-futures]
-dyn: channels::hold::{async_fn_env#0} (poll, drop_glue)
-dyn: channels::main::{async_block_env#0} (poll, drop_glue)
-dyn: channels::notify_waiter::{async_fn_env#0} (poll, drop_glue)
-dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<channels::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut channels::main::{async_block_env#0}> (poll)
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<simple_await::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut simple_await::main::{async_block_env#0}> (poll)
+dyn: simple_await::main::{async_block_env#0} (poll, drop_glue)
+dyn: simple_await::ready_value::{async_fn_env#0} (poll)
+dyn: simple_await::work::{async_fn_env#0} (poll, drop_glue)
 
 [infra]
 header: ok

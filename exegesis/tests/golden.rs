@@ -11,8 +11,9 @@
 //! The summaries contain only platform-portable facts — demangled type
 //! names, variant shapes, await-point lines, presence of infra/statics —
 //! and are filtered to the fixture crate's own types, so one golden file
-//! serves macOS and illumos. Regenerate with `EXEGESIS_BLESS=1 cargo test
-//! -p exegesis --test golden`.
+//! serves macOS and illumos. Regenerate with `INSTA_UPDATE=always cargo
+//! test -p exegesis --test golden`; a plain run leaves each rejected
+//! golden beside its file as `<program>.snap.new`.
 
 use exegesis::bundle::{Bundle, DisplayNode, MemberRef, Step, TypeDef, WalkOutcome, WalkRole};
 use exegesis::describe::describe_debug_format;
@@ -901,28 +902,13 @@ fn run_golden(program: &str) {
     let crate_str = program.replace('-', "_");
     let summary = portable_summary(&bundle, program, &crate_str);
 
-    let golden_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden")
-        .join(format!("{program}.golden"));
-    if std::env::var_os("EXEGESIS_BLESS").is_some() {
-        std::fs::write(&golden_path, &summary).unwrap();
-        eprintln!("blessed {}", golden_path.display());
-        return;
-    }
-
-    let expected = std::fs::read_to_string(&golden_path).unwrap_or_else(|_| {
-        panic!(
-            "no golden file {} — run with EXEGESIS_BLESS=1 to create it",
-            golden_path.display()
-        )
-    });
-    assert_eq!(
-        summary,
-        expected,
-        "{program}: extraction summary diverged from {} \
-         (EXEGESIS_BLESS=1 to re-bless)\n--- actual ---\n{summary}",
-        golden_path.display()
-    );
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path("golden");
+    settings.set_prepend_module_to_snapshot(false);
+    // A generated report: naming the expression that built one says
+    // nothing a reader of the diff wants.
+    settings.set_omit_expression(true);
+    settings.bind(|| insta::assert_snapshot!(program, summary));
 }
 
 #[test]

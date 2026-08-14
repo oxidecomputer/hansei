@@ -1,37 +1,28 @@
-program: dyn-future
+---
+source: exegesis/tests/golden.rs
+---
+program: nested-await
 
 [tasks]
-task: dyn_future::set_member::{async_fn_env#0}
+task: nested_await::outer::{async_fn_env#0}
   kind: AsyncFn
-  decl: dyn-future.rs:14
+  decl: nested-await.rs:16
   entries: 2
   symbols-per-entry: 6,6
-  stage: Stage<dyn_future::set_member::{async_fn_env#0}>
+  stage: Stage<nested_await::outer::{async_fn_env#0}>
   variants:
-    Unresumed @ dyn-future.rs:14
-    Returned @ dyn-future.rs:16
-    Panicked @ dyn-future.rs:16
-    Suspend0 @ dyn-future.rs:15
-task: dyn_future::driver::{async_fn_env#0}
-  kind: AsyncFn
-  decl: dyn-future.rs:22
-  entries: 2
-  symbols-per-entry: 6,6
-  stage: Stage<dyn_future::driver::{async_fn_env#0}>
-  variants:
-    Unresumed @ dyn-future.rs:22
-    Returned @ dyn-future.rs:32
-    Panicked @ dyn-future.rs:32
-    Suspend0 @ dyn-future.rs:29
-    Suspend1 @ dyn-future.rs:30
+    Unresumed @ nested-await.rs:16
+    Returned @ nested-await.rs:20
+    Panicked @ nested-await.rs:20
+    Suspend0 @ nested-await.rs:18
 
 [dyn-futures]
-dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<dyn_future::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut dyn_future::main::{async_block_env#0}> (poll)
-dyn: dyn_future::boxed_leaf::{async_fn_env#0} (poll, drop_glue)
-dyn: dyn_future::driver::{async_fn_env#0} (poll, drop_glue)
-dyn: dyn_future::main::{async_block_env#0} (poll, drop_glue)
-dyn: dyn_future::set_member::{async_fn_env#0} (poll, drop_glue)
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<nested_await::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut nested_await::main::{async_block_env#0}> (poll)
+dyn: nested_await::leaf::{async_fn_env#0} (poll, drop_glue)
+dyn: nested_await::main::{async_block_env#0} (poll, drop_glue)
+dyn: nested_await::middle::{async_fn_env#0} (poll, drop_glue)
+dyn: nested_await::outer::{async_fn_env#0} (poll, drop_glue)
 
 [infra]
 header: ok

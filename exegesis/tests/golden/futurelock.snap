@@ -1,25 +1,44 @@
-program: simple-await
+---
+source: exegesis/tests/golden.rs
+---
+program: futurelock
 
 [tasks]
-task: simple_await::work::{async_fn_env#0}
-  kind: AsyncFn
-  decl: simple-await.rs:16
+task: futurelock::start_background_task::{async_fn#0}::{async_block_env#0}
+  kind: AsyncBlock
+  decl: futurelock.rs:41
   entries: 2
   symbols-per-entry: 6,6
-  stage: Stage<simple_await::work::{async_fn_env#0}>
+  stage: Stage<futurelock::start_background_task::{async_fn#0}::{async_block_env#0}>
   variants:
-    Unresumed @ simple-await.rs:16
-    Returned @ simple-await.rs:46
-    Panicked @ simple-await.rs:46
-    Suspend0 @ simple-await.rs:32
-    Suspend1 @ simple-await.rs:34
+    Unresumed @ futurelock.rs:41
+    Returned @ futurelock.rs:47
+    Panicked @ futurelock.rs:47
+    Suspend0 @ futurelock.rs:43
+    Suspend1 @ futurelock.rs:45
+task: futurelock::main::{async_block#0}::{async_block_env#0}
+  kind: AsyncBlock
+  decl: futurelock.rs:15
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<futurelock::main::{async_block#0}::{async_block_env#0}>
+  variants:
+    Unresumed @ futurelock.rs:15
+    Returned @ futurelock.rs:26
+    Panicked @ futurelock.rs:26
+    Suspend0 @ futurelock.rs:22
+    Suspend1 @ futurelock.rs:25
 
 [dyn-futures]
-dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<simple_await::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut simple_await::main::{async_block_env#0}> (poll)
-dyn: simple_await::main::{async_block_env#0} (poll, drop_glue)
-dyn: simple_await::ready_value::{async_fn_env#0} (poll)
-dyn: simple_await::work::{async_fn_env#0} (poll, drop_glue)
+dyn: core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}> (poll)
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<futurelock::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut futurelock::main::{async_block_env#0}> (poll)
+dyn: futurelock::do_async_thing::{async_fn_env#0} (poll, drop_glue)
+dyn: futurelock::do_stuff::{async_fn_env#0} (poll, drop_glue)
+dyn: futurelock::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
+dyn: futurelock::main::{async_block_env#0} (poll, drop_glue)
+dyn: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} (poll, drop_glue)
+dyn: futurelock::start_background_task::{async_fn_env#0} (poll, drop_glue)
 
 [infra]
 header: ok
