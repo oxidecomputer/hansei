@@ -957,6 +957,7 @@ dependencies = [
  "libproc-sys",
  "memmap2",
  "postcard",
+ "proptest",
  "scroll",
  "serde",
  "tempfile",

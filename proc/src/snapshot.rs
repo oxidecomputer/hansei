@@ -380,6 +380,8 @@ mod tests {
     use super::*;
     use crate::{LoadedObjectWithPath, MapFlags, Regs};
 
+    use proptest::prelude::*;
+
     /// An in-memory fake target: one memory run, a few symbols.
     struct FakeTarget {
         base: u64,
@@ -794,5 +796,165 @@ mod tests {
 
         // Truncated header.
         assert!(matches!(Snapshot::read(&buf[..6]), Err(Error::Io(_))));
+    }
+
+    /// A read log's bytes as a plain map: the log replayed one byte at a
+    /// time, the later write winning. Far too slow to keep — a byte per
+    /// entry, and a tree walk to read one — which is exactly what makes it
+    /// worth checking the two-pass sweep against.
+    fn byte_map(reads: &[Segment]) -> BTreeMap<u64, u8> {
+        let mut map = BTreeMap::new();
+        for read in reads {
+            for (i, byte) in read.bytes.iter().enumerate() {
+                map.insert(read.addr + i as u64, *byte);
+            }
+        }
+        map
+    }
+
+    /// The maximal runs of consecutive addresses in `map` — what a merge of
+    /// the log it came from has to produce, disjointness and maximality
+    /// included, since a run here cannot abut the next one by construction.
+    fn runs(map: &BTreeMap<u64, u8>) -> Vec<Segment> {
+        let mut out: Vec<Segment> = Vec::new();
+        for (&addr, &byte) in map {
+            match out.last_mut() {
+                Some(seg) if seg.end() == addr => seg.bytes.push(byte),
+                _ => out.push(Segment {
+                    addr,
+                    bytes: vec![byte],
+                }),
+            }
+        }
+        out
+    }
+
+    /// Where a generated read starts: a small offset from one of a few
+    /// bases, spread far enough apart to stay separate segments. Addresses
+    /// drawn from the whole space would overlap about never, and a log
+    /// whose reads all fall in their own segment is the one arrangement
+    /// merging has nothing to do with.
+    fn read_addr() -> impl Strategy<Value = u64> {
+        (
+            prop::sample::select(&[0x1000u64, 0x2000, 0x8000][..]),
+            0u64..48,
+        )
+            .prop_map(|(base, offset)| base + offset)
+    }
+
+    /// One recorded read, up to 20 bytes — long enough to span a base's
+    /// worth of offsets and overlap its neighbours several ways, and to be
+    /// empty, which is a read that served nothing.
+    fn read() -> impl Strategy<Value = Segment> {
+        (read_addr(), 0usize..20, any::<u8>()).prop_map(|(addr, len, fill)| Segment {
+            addr,
+            // A ramp, not a constant: bytes that are all alike hide a read
+            // replayed at the wrong offset within its segment, since the
+            // wrong bytes are then the same as the right ones.
+            bytes: (0..len).map(|i| fill.wrapping_add(i as u8)).collect(),
+        })
+    }
+
+    fn read_log() -> impl Strategy<Value = Vec<Segment>> {
+        prop::collection::vec(read(), 0..12)
+    }
+
+    /// A snapshot holding merged memory and nothing else; these properties
+    /// ask it about bytes only.
+    fn snapshot_of(reads: &[Segment]) -> Snapshot {
+        Snapshot {
+            memory: merge_reads(reads),
+            functions: vec![],
+            objects: vec![],
+            by_addr: BTreeMap::new(),
+            by_name: BTreeMap::new(),
+            tls: BTreeMap::new(),
+            mappings: Mappings { inner: vec![] },
+            lwps: vec![],
+        }
+    }
+
+    proptest! {
+        /// The sweep against the byte map, which settles at once that the
+        /// merged runs are sorted, disjoint, maximal, and hold the bytes
+        /// the last read to cover them served.
+        #[test]
+        fn test_merging_a_log_yields_its_byte_map(reads in read_log()) {
+            prop_assert_eq!(merge_reads(&reads), runs(&byte_map(&reads)));
+        }
+
+        /// A read is served whole or not at all, and what comes back is
+        /// what was captured there.
+        #[test]
+        fn test_a_snapshot_serves_exactly_what_it_captured(
+            reads in read_log(),
+            addr in read_addr(),
+            len in 1u64..24,
+        ) {
+            let map = byte_map(&reads);
+            let snap = snapshot_of(&reads);
+            let want: Option<Vec<u8>> = (0..len)
+                .map(|i| addr.checked_add(i).and_then(|a| map.get(&a).copied()))
+                .collect();
+            match want {
+                Some(want) => prop_assert_eq!(snap.read_bytes(addr, len).unwrap(), &want[..]),
+                None => prop_assert!(snap.read_bytes(addr, len).is_err()),
+            }
+        }
+
+        /// `readable_len` is how far a read may reach: within the cap it
+        /// asked for, a read succeeds exactly when it fits. (From one byte
+        /// up — a zero-length read is a question about an address rather
+        /// than about bytes, and the two answer it differently.)
+        #[test]
+        fn test_readable_len_bounds_what_a_read_can_serve(
+            reads in read_log(),
+            addr in read_addr(),
+            max in 1u64..24,
+        ) {
+            let snap = snapshot_of(&reads);
+            let reach = snap.readable_len(addr, max);
+            prop_assert!(reach <= max);
+            for len in 1..=max {
+                prop_assert_eq!(
+                    snap.read_bytes(addr, len).is_ok(),
+                    len <= reach,
+                    "{} of {} bytes at {:#x}, reach {}",
+                    len,
+                    max,
+                    addr,
+                    reach
+                );
+            }
+        }
+
+        /// A snapshot survives its own file format.
+        #[test]
+        fn test_a_snapshot_round_trips(reads in read_log()) {
+            let snap = snapshot_of(&reads);
+            let mut buf = Vec::new();
+            snap.write(&mut buf).unwrap();
+            prop_assert_eq!(Snapshot::read(&buf[..]).unwrap(), snap);
+        }
+
+        /// The point of the whole module: whatever the analysis read from
+        /// the target, the replay answers the same.
+        #[test]
+        fn test_replay_answers_as_the_target_did(
+            probes in prop::collection::vec((0x1000u64..0x2000, 1u64..32), 1..12),
+        ) {
+            let target = FakeTarget::new();
+            let rec = Recorder::new(&target);
+            let mut served = Vec::new();
+            for (addr, len) in probes {
+                if let Ok(bytes) = rec.read_bytes(addr, len) {
+                    served.push((addr, len, bytes.to_vec()));
+                }
+            }
+            let snap = rec.snapshot().unwrap();
+            for (addr, len, bytes) in served {
+                prop_assert_eq!(snap.read_bytes(addr, len).unwrap(), &bytes[..]);
+            }
+        }
     }
 }
