@@ -272,13 +272,17 @@ impl<'a, T: Target> Recorder<'a, T> {
 /// Merge a read log into disjoint, maximal segments. Overlapping bytes
 /// take the value of the *latest* read, matching what a re-run of the
 /// same reads would observe.
+///
+/// A read that served no bytes is not a read here: it stakes out no
+/// extent and has nothing to write into one. Both passes below have to
+/// agree about that, or the second addresses an extent the first never
+/// made — which for an empty read past the last of them is an index
+/// beyond that segment's end.
 fn merge_reads(reads: &[Segment]) -> Vec<Segment> {
+    let served = || reads.iter().filter(|r| !r.bytes.is_empty());
+
     // Sweep the union of the read intervals into disjoint extents...
-    let mut intervals: Vec<(u64, u64)> = reads
-        .iter()
-        .filter(|r| !r.bytes.is_empty())
-        .map(|r| (r.addr, r.end()))
-        .collect();
+    let mut intervals: Vec<(u64, u64)> = served().map(|r| (r.addr, r.end())).collect();
     intervals.sort_unstable();
     let mut extents: Vec<(u64, u64)> = Vec::new();
     for (start, end) in intervals {
@@ -297,7 +301,7 @@ fn merge_reads(reads: &[Segment]) -> Vec<Segment> {
             bytes: vec![0; (end - start) as usize],
         })
         .collect();
-    for read in reads {
+    for read in served() {
         let idx = merged.partition_point(|s| s.addr <= read.addr);
         let Some(seg) = idx.checked_sub(1).map(|i| &mut merged[i]) else {
             continue;
@@ -572,6 +576,40 @@ mod tests {
         assert_eq!(
             snap.read_bytes(0x1100, 0x40).unwrap(),
             target.read_bytes(0x1100, 0x40).unwrap()
+        );
+    }
+
+    /// A read that served nothing has no bytes to place, wherever it sits
+    /// relative to the reads that did. The one past every extent is the
+    /// case that used to index off the end of the last segment: a
+    /// zero-sized type read behind a dyn pointer is such a read, and its
+    /// address need not be near anything else the analysis touched.
+    #[test]
+    fn test_an_empty_read_writes_nothing() {
+        let reads = vec![
+            Segment {
+                addr: 0x1000,
+                bytes: vec![1, 2, 3, 4],
+            },
+            Segment {
+                addr: 0x9000,
+                bytes: vec![],
+            },
+            Segment {
+                addr: 0x1002,
+                bytes: vec![],
+            },
+            Segment {
+                addr: 0x0100,
+                bytes: vec![],
+            },
+        ];
+        assert_eq!(
+            merge_reads(&reads),
+            vec![Segment {
+                addr: 0x1000,
+                bytes: vec![1, 2, 3, 4],
+            }]
         );
     }
 
