@@ -891,3 +891,454 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// The locals scan
+// ---------------------------------------------------------------------------
+//
+// `scan_value` decides what the census counts as a future in flight and
+// where it says one lies, and every fixture the offline suites capture
+// holds its futures as bare frame-top locals — so the descent, the
+// active-variant rule, the caps and the plan memo all run against real
+// captures without ever reaching a find. These tests drive the two
+// scan functions directly over real bundle types and hand-laid bytes,
+// the way `contract.rs` drives the step interpreter.
+//
+// A type is made to look like a future in one of two ways: it *is* one
+// (a coroutine, a trait object's wide pointer), or the poll table names
+// it. The table is an argument, so a test that only needs "the scan
+// reached this member" names an ordinary scalar in it and reads the
+// find's address back.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::testkit;
+
+    use hansei_bundle::{Bundle, BundleMember, BundleType, BundleView, DiscrValue, TypeDef};
+
+    use std::sync::OnceLock;
+
+    /// Where every hand-laid value is placed.
+    const AT: u64 = 0x1000;
+
+    /// The `unordered` fixture's bundle: a `FuturesUnordered` of
+    /// coroutines, an `Option<coroutine>`, a `Pin<Box<dyn Future>>`, and
+    /// the std/tokio plumbing the structural finders below pick from.
+    fn unordered() -> &'static Bundle {
+        static BUNDLE: OnceLock<Bundle> = OnceLock::new();
+        BUNDLE.get_or_init(|| testkit::load_any("unordered").0)
+    }
+
+    /// The `joinset` fixture's bundle, for the one screen `unordered`
+    /// has no type to exercise.
+    fn joinset() -> &'static Bundle {
+        static BUNDLE: OnceLock<Bundle> = OnceLock::new();
+        BUNDLE.get_or_init(|| testkit::load_any("joinset").0)
+    }
+
+    /// The first bundle type satisfying `pred`, scanned in id order so
+    /// one frozen fixture always yields the same type.
+    fn find_ty<'b>(
+        bundle: &'b Bundle,
+        mut pred: impl FnMut(BundleType<'b>) -> bool,
+    ) -> BundleType<'b> {
+        let view = BundleView::new(bundle);
+        (0..bundle.types.types.len() as u32)
+            .filter_map(|i| view.ty(BundleTypeId(i)))
+            .find(|ty| pred(*ty))
+            .expect("the fixture bundle has such a type")
+    }
+
+    /// A poll table naming exactly `ids`: the extraction's record of
+    /// which types have a `poll`, which the scan takes as proof of a
+    /// future however the type is spelled.
+    fn poll_table(ids: impl IntoIterator<Item = BundleTypeId>) -> HashSet<BundleTypeId> {
+        ids.into_iter().collect()
+    }
+
+    /// A poll table naming every type there is — so a value screened as
+    /// anything other than a future was screened by the order of the
+    /// tests in [`scan_plan`], not by what the table knows.
+    fn every_type(bundle: &Bundle) -> HashSet<BundleTypeId> {
+        poll_table((0..bundle.types.types.len() as u32).map(BundleTypeId))
+    }
+
+    /// The sized member lying furthest into a type.
+    fn last_member(ty: BundleType<'_>) -> BundleMember<'_> {
+        ty.members()
+            .filter(|m| m.ty().size() > 0)
+            .max_by_key(|m| m.offset())
+            .expect("the type has a sized member")
+    }
+
+    /// What one scan did: what it found, how often a cap stopped it,
+    /// and what it remembered.
+    struct Scanned<'b> {
+        finds: Vec<Find<'b>>,
+        capped: usize,
+        plans: HashMap<BundleTypeId, ScanPlan>,
+    }
+
+    impl Scanned<'_> {
+        /// The finds as `kind at address`, for assertion messages.
+        fn summary(&self) -> Vec<String> {
+            self.finds
+                .iter()
+                .map(|f| format!("{} at {:#x}", f.kind(), f.value().addr))
+                .collect()
+        }
+    }
+
+    impl<'b> Find<'b> {
+        fn kind(&self) -> &'static str {
+            match self {
+                Find::Set(_) => "set",
+                Find::JoinSet(_) => "join set",
+                Find::Future(_) => "future",
+            }
+        }
+
+        fn value(&self) -> Value<'b> {
+            match *self {
+                Find::Set(v) | Find::JoinSet(v) | Find::Future(v) => v,
+            }
+        }
+    }
+
+    fn scan<'b>(value: Value<'b>, futures: &HashSet<BundleTypeId>) -> Scanned<'b> {
+        scan_from(value, futures, 0, HashMap::default())
+    }
+
+    /// A scan started part-way down, and over a memo a previous scan
+    /// left behind.
+    fn scan_from<'b>(
+        value: Value<'b>,
+        futures: &HashSet<BundleTypeId>,
+        depth: usize,
+        mut plans: HashMap<BundleTypeId, ScanPlan>,
+    ) -> Scanned<'b> {
+        let mut finds = Vec::new();
+        let mut capped = 0;
+        scan_value(value, futures, depth, &mut finds, &mut capped, &mut plans);
+        Scanned {
+            finds,
+            capped,
+            plans,
+        }
+    }
+
+    /// An `Option`-shaped enum over a coroutine: two variants, each
+    /// naming its own tag value, one of them carrying a future.
+    struct OptionOfFuture<'b> {
+        ty: BundleType<'b>,
+        discr_offset: u64,
+        discr_size: u64,
+        some: u128,
+        none: u128,
+    }
+
+    impl OptionOfFuture<'_> {
+        /// The enum's bytes with its tag set to `value`.
+        fn bytes(&self, value: u128) -> Vec<u8> {
+            let mut out = vec![0u8; self.ty.size() as usize];
+            let at = self.discr_offset as usize;
+            let size = self.discr_size as usize;
+            out[at..at + size].copy_from_slice(&value.to_le_bytes()[..size]);
+            out
+        }
+    }
+
+    fn option_of_future(bundle: &Bundle) -> OptionOfFuture<'_> {
+        let mut found = None;
+        find_ty(bundle, |ty| {
+            let Some(shape) = ty.variant_shape() else {
+                return false;
+            };
+            let Some(discr) = &shape.discr else {
+                return false;
+            };
+            let discr_size = ty.related_type(discr.ty).size();
+            if discr_size == 0 || discr_size > 8 || shape.variants.len() != 2 {
+                return false;
+            }
+            // Both variants must name their own tag value, so bytes
+            // selecting either can be laid down deliberately.
+            let mut values = Vec::new();
+            for v in &shape.variants {
+                let Some(vals) = &v.discr_values else {
+                    return false;
+                };
+                let [DiscrValue::Value(x)] = vals.0.as_slice() else {
+                    return false;
+                };
+                values.push(*x);
+            }
+            // …and one of them must carry a coroutine outright, so the
+            // find needs nothing from the poll table to be recognized.
+            let carries = |i: usize| {
+                let payload = ty.related_type(shape.variants[i].payload.ty);
+                let mut sized = payload.members().filter(|m| m.ty().size() > 0);
+                matches!((sized.next(), sized.next()), (Some(m), None) if m.ty().is_coroutine())
+            };
+            let Some(some) = (0..2).find(|&i| carries(i)) else {
+                return false;
+            };
+            found = Some(OptionOfFuture {
+                ty,
+                discr_offset: discr.offset,
+                discr_size,
+                some: values[some],
+                none: values[1 - some],
+            });
+            true
+        });
+        found.expect("the fixture bundle has an Option over a coroutine")
+    }
+
+    /// A struct of plain scalars: two or more sized members, all base
+    /// types, no two of the same type, and one of them past the start.
+    /// Naming a single member's type in the poll table then pins both
+    /// that the descent reached it and where it put it.
+    fn scalar_struct(bundle: &Bundle) -> BundleType<'_> {
+        find_ty(bundle, |ty| {
+            if !matches!(ty.def(), TypeDef::Struct { .. }) {
+                return false;
+            }
+            let members: Vec<_> = ty.members().filter(|m| m.ty().size() > 0).collect();
+            let ids: HashSet<_> = members.iter().map(|m| m.ty().id()).collect();
+            members.len() >= 2
+                && ids.len() == members.len()
+                && members
+                    .iter()
+                    .all(|m| matches!(m.ty().def(), TypeDef::Base { .. }))
+                && members.iter().any(|m| m.offset() > 0)
+        })
+    }
+
+    /// A struct that peels to a future trait object's wide pointer
+    /// without being one itself — the shape whose plan depends on the
+    /// bytes in hand, since `peel` stops short of a member the buffer
+    /// does not cover.
+    fn dyn_wrapper(bundle: &Bundle) -> BundleType<'_> {
+        find_ty(bundle, |ty| {
+            if ty.size() <= 8 || ty.dyn_pointer().is_some() {
+                return false;
+            }
+            let bytes = vec![0u8; ty.size() as usize];
+            Value::new(ty, AT, &bytes)
+                .peel()
+                .ty
+                .dyn_pointer()
+                .is_some_and(|dp| is_dyn_future_pointee(dp.pointee.name()))
+        })
+    }
+
+    /// A pointer to a set: something the scan would certainly have
+    /// recorded had it been reached by value.
+    fn pointer_to_set(bundle: &Bundle) -> BundleType<'_> {
+        find_ty(bundle, |ty| {
+            matches!(ty.def(), TypeDef::Pointer { .. })
+                && ty
+                    .pointer_target()
+                    .is_some_and(|t| t.name().starts_with(FUTURES_UNORDERED))
+        })
+    }
+
+    /// Only the active variant's payload is live storage; the other
+    /// variant is those same bytes read as something they are not, and
+    /// a future decoded from them would be reported as one in flight.
+    #[test]
+    fn test_an_enum_scans_only_its_active_variant() {
+        let e = option_of_future(unordered());
+        let empty = poll_table([]);
+
+        let bytes = e.bytes(e.some);
+        let value = Value::new(e.ty, AT, &bytes);
+        let (name, payload) = value
+            .active_variant()
+            .expect("the laid-down variant decodes");
+        // The payload lies past the tag, so an address taken from the
+        // enum rather than from the variant would be visibly wrong.
+        assert!(payload.addr > value.addr, "{:#x}", payload.addr);
+
+        let scanned = scan(value, &empty);
+        let [Find::Future(found)] = scanned.finds.as_slice() else {
+            panic!(
+                "the {name} payload's future is found: {:?}",
+                scanned.summary()
+            );
+        };
+        assert!(found.ty.is_coroutine(), "{}", found.ty.name());
+        assert_eq!(found.addr, payload.addr);
+        assert_eq!(found.ty.id(), payload.ty.id());
+
+        // The same storage with the other variant selected holds the
+        // same bytes and yields nothing.
+        let bytes = e.bytes(e.none);
+        let scanned = scan(Value::new(e.ty, AT, &bytes), &empty);
+        assert!(
+            scanned.finds.is_empty(),
+            "an inactive variant was scanned: {:?}",
+            scanned.summary()
+        );
+    }
+
+    /// A future nested in an aggregate is found, at the address the
+    /// descent computed for it rather than at its holder's.
+    #[test]
+    fn test_a_nested_future_is_found_where_it_lies() {
+        let bundle = unordered();
+        let ty = scalar_struct(bundle);
+        let member = last_member(ty);
+        let bytes = vec![0u8; ty.size() as usize];
+        let value = Value::new(ty, AT, &bytes);
+
+        // Nothing in it is a future until the poll table says one is.
+        let quiet = scan(value, &poll_table([]));
+        assert!(quiet.finds.is_empty(), "{:?}", quiet.summary());
+
+        let scanned = scan(value, &poll_table([member.ty().id()]));
+        let [Find::Future(found)] = scanned.finds.as_slice() else {
+            panic!("the nested future is found: {:?}", scanned.summary());
+        };
+        assert_eq!(found.addr, AT + member.offset());
+        assert_eq!(found.ty.id(), member.ty().id());
+        assert_eq!(found.bytes.len() as u64, member.ty().size());
+    }
+
+    /// The depth cap stops the descent, and says it did: a listing
+    /// short by a cap is incomplete in a way no error reports.
+    #[test]
+    fn test_the_scan_depth_cap_stops_the_descent() {
+        let bundle = unordered();
+        let ty = scalar_struct(bundle);
+        let member = last_member(ty);
+        let futures = poll_table([member.ty().id()]);
+        let bytes = vec![0u8; ty.size() as usize];
+        let value = Value::new(ty, AT, &bytes);
+        let members = ty.members().filter(|m| m.ty().size() > 0).count();
+
+        // One level shy of the cap, the descent still runs.
+        let scanned = scan_from(value, &futures, MAX_SCAN_DEPTH - 1, HashMap::default());
+        assert_eq!(scanned.finds.len(), 1, "{:?}", scanned.summary());
+        assert_eq!(scanned.capped, 0);
+
+        // At it, the value is planned but its members are out of reach,
+        // and each one they stopped at is counted.
+        let scanned = scan_from(value, &futures, MAX_SCAN_DEPTH, HashMap::default());
+        assert!(scanned.finds.is_empty(), "{:?}", scanned.summary());
+        assert_eq!(scanned.capped, members);
+
+        // Past it, the value itself is never even planned.
+        let scanned = scan_from(value, &futures, MAX_SCAN_DEPTH + 1, HashMap::default());
+        assert!(scanned.finds.is_empty(), "{:?}", scanned.summary());
+        assert_eq!(scanned.capped, 1);
+        assert!(scanned.plans.is_empty());
+    }
+
+    /// A plan is a fact of the type only for a buffer that covers the
+    /// type: `peel` stops early on a short one, so the plan a truncated
+    /// value computes is its own and must not be the one every later
+    /// value of that type inherits.
+    #[test]
+    fn test_a_truncated_value_does_not_poison_the_memo() {
+        let bundle = unordered();
+        let ty = dyn_wrapper(bundle);
+        let empty = poll_table([]);
+        let full = vec![0u8; ty.size() as usize];
+        let whole = Value::new(ty, AT, &full);
+        let short = Value::new(ty, AT, &full[..8]);
+
+        // Whole, the wrapper peels to the trait object's wide pointer.
+        let scanned = scan(whole, &empty);
+        assert!(
+            matches!(scanned.finds.as_slice(), [Find::Future(_)]),
+            "{:?}",
+            scanned.summary()
+        );
+        assert!(scanned.plans.contains_key(&ty.id()));
+
+        // Truncated, the peel stops short of that pointer and there is
+        // nothing to find — and nothing is remembered either.
+        let scanned = scan(short, &empty);
+        assert!(scanned.finds.is_empty(), "{:?}", scanned.summary());
+        assert!(scanned.plans.is_empty(), "a short buffer wrote a plan");
+
+        // So a whole value read after a truncated one is still planned
+        // for what it is.
+        let first = scan_from(short, &empty, 0, HashMap::default());
+        let second = scan_from(whole, &empty, 0, first.plans);
+        assert!(
+            matches!(second.finds.as_slice(), [Find::Future(_)]),
+            "{:?}",
+            second.summary()
+        );
+    }
+
+    /// Discovery follows a dyn wide pointer and a set's node list, and
+    /// no other pointer: a future reachable only through one is not
+    /// found, however plainly its type says what it points at.
+    #[test]
+    fn test_ordinary_pointers_are_not_followed() {
+        let bundle = unordered();
+        let ty = pointer_to_set(bundle);
+        let target = ty.pointer_target().expect("a pointer has a target");
+        let bytes = vec![0u8; ty.size() as usize];
+        // The target named in the poll table as well, so nothing about
+        // it could make following the pointer look justified.
+        let scanned = scan(Value::new(ty, AT, &bytes), &poll_table([target.id()]));
+        assert!(scanned.finds.is_empty(), "{:?}", scanned.summary());
+        // A pointer is stopped at outright, rather than counted as the
+        // future it points at: the word is not the future, and reading
+        // what it addresses is what discovery declines to do.
+        assert!(matches!(scanned.plans.get(&ty.id()), Some(ScanPlan::Stop)));
+        assert_eq!(scanned.capped, 0);
+    }
+
+    /// A set is recognized as one before the struct fallback would
+    /// descend into it: its children belong to it, not to the frame.
+    #[test]
+    fn test_a_set_screens_before_the_descent() {
+        let bundle = unordered();
+        let ty = find_ty(bundle, |t| t.name().starts_with(FUTURES_UNORDERED));
+        let bytes = vec![0u8; ty.size() as usize];
+        let scanned = scan(Value::new(ty, AT, &bytes), &every_type(bundle));
+        let [Find::Set(found)] = scanned.finds.as_slice() else {
+            panic!("the set is screened as one: {:?}", scanned.summary());
+        };
+        assert_eq!(found.addr, AT);
+        assert_eq!(found.ty.id(), ty.id());
+    }
+
+    /// And a join set as a join set, which is walked and reported
+    /// apart: it holds tasks the listing already carries.
+    #[test]
+    fn test_a_join_set_screens_before_the_descent() {
+        let bundle = joinset();
+        let ty = find_ty(bundle, |t| t.name().starts_with(JOIN_SET));
+        let bytes = vec![0u8; ty.size() as usize];
+        let scanned = scan(Value::new(ty, AT, &bytes), &every_type(bundle));
+        let [Find::JoinSet(found)] = scanned.finds.as_slice() else {
+            panic!("the join set is screened as one: {:?}", scanned.summary());
+        };
+        assert_eq!(found.addr, AT);
+        assert_eq!(found.ty.id(), ty.id());
+    }
+
+    /// A coroutine is a future outright, screened before the enum it is
+    /// spelled as would have been descended into — its locals belong to
+    /// it, and are scanned as its own frame rather than its holder's.
+    #[test]
+    fn test_a_coroutine_screens_before_its_variants() {
+        let bundle = unordered();
+        let ty = find_ty(bundle, |t| t.is_coroutine());
+        let bytes = vec![0u8; ty.size() as usize];
+        let scanned = scan(Value::new(ty, AT, &bytes), &poll_table([]));
+        let [Find::Future(found)] = scanned.finds.as_slice() else {
+            panic!("the coroutine is a future: {:?}", scanned.summary());
+        };
+        assert_eq!(found.addr, AT);
+        assert_eq!(found.ty.id(), ty.id());
+    }
+}
