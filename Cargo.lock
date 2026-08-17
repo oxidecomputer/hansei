@@ -403,6 +403,7 @@ dependencies = [
  "semver",
  "serde",
  "tempfile",
+ "testrun",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
@@ -532,6 +533,7 @@ dependencies = [
  "rustc-demangle",
  "subprocess",
  "tempfile",
+ "testrun",
  "unwind",
 ]
 
@@ -1408,6 +1410,10 @@ dependencies = [
  "rustix 1.1.4",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "testrun"
+version = "0.1.0"
 
 [[package]]
 name = "thiserror"
