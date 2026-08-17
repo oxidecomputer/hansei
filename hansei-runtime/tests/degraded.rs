@@ -385,6 +385,98 @@ fn test_an_unreadable_set_node_keeps_the_walked_prefix() {
     assert!(err.contains("lists only 1 of its children"), "{err}");
 }
 
+/// The futurelock fixture's held `future1`, located healthy: the
+/// address of the `Pin<Box<dyn Future>>` slot in `do_stuff`'s frame —
+/// which is not what the census records, that being the boxed future
+/// behind it — and the boxed future itself.
+fn held_dyn_pointer(bundle: &Bundle, snapshot: &Snapshot) -> (u64, u64) {
+    let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
+    let list = tasks_of(&ctx, snapshot);
+    let census = census::census(&ctx, &list);
+    let held = census
+        .held
+        .iter()
+        .find(|h| h.local == "future1")
+        .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
+    assert!(held.depth > 0, "the healthy chain resolves: {held:#?}");
+
+    let task = &list.tasks[held.owner];
+    let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
+        panic!("the holder is parked");
+    };
+    let chain = ctx.await_chain(root);
+    let frame = &chain.frames[held.frame];
+    let payload = match &frame.state {
+        Some(state) => &state.payload,
+        None => &frame.future,
+    };
+    let local = payload
+        .ty
+        .members()
+        .find(|m| m.name() == "future1")
+        .expect("the frame the census found it in holds it");
+    (payload.addr + local.offset(), held.addr)
+}
+
+/// The census's own view of one held future, by the local holding it.
+fn held_row(census: &census::FutureCensus, local: &str) -> (String, usize) {
+    let held = census
+        .held
+        .iter()
+        .find(|h| h.local == local)
+        .unwrap_or_else(|| panic!("no held `{local}` in {:#?}", census.held));
+    assert!(held.state.is_none(), "{held:#?}");
+    assert!(held.waiting_on.is_none(), "{held:#?}");
+    (held.future.clone(), held.depth)
+}
+
+/// A held future whose box points nowhere is still *found* — a wide
+/// pointer is one by its type — and still listed. What the census
+/// cannot say is what it is: the row degrades to `<undecoded>` and
+/// stands on no frames, rather than the find being dropped.
+#[test]
+fn test_a_held_future_with_an_unmapped_box_is_listed_undecoded() {
+    let (bundle, snapshot) = load_any("futurelock");
+    let (wide, _) = held_dyn_pointer(&bundle, &snapshot);
+
+    let corrupt = Corrupt::new(&snapshot).patch(wide, NOWHERE);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &snapshot);
+    let degraded = census::census(&ctx, &list);
+
+    assert_eq!(
+        held_row(&degraded, "future1"),
+        ("<undecoded>".to_string(), 0)
+    );
+}
+
+/// A held future whose vtable no longer names a future it knows is
+/// listed as the trait object it is: the pointee's own type, which is
+/// all a failed join leaves to say.
+#[test]
+fn test_a_held_future_with_an_unjoinable_vtable_is_listed_unresolved() {
+    let (bundle, snapshot) = load_any("futurelock");
+    let (wide, boxed) = held_dyn_pointer(&bundle, &snapshot);
+
+    // The vtable word now names the boxed future's own allocation, and
+    // the two slots the join reads there — drop at +0, poll at +24 —
+    // are zeroed, so neither resolves to a symbol any future was
+    // extracted under. Both pointers stay mapped, which is what keeps
+    // this an unresolved join rather than a read failure.
+    let corrupt = Corrupt::new(&snapshot)
+        .patch(wide + 8, boxed)
+        .patch(boxed, 0)
+        .patch(boxed + 24, 0);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &snapshot);
+    let degraded = census::census(&ctx, &list);
+
+    let (future, depth) = held_row(&degraded, "future1");
+    assert_eq!(depth, 0, "{future}");
+    assert!(future.starts_with("<unresolved: "), "{future}");
+    assert!(future.contains("dyn "), "{future}");
+}
+
 /// The join set's entry list, walked healthy, so a corruption can be
 /// aimed at one of its entries: the entry addresses in walk order and
 /// the length the set keeps for itself.
