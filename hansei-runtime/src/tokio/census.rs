@@ -544,7 +544,7 @@ enum ScanPlan {
     /// into, so its insides are attributed to it rather than to the
     /// frame holding it.
     Future,
-    /// A struct or union: recurse into each sized member, as
+    /// A struct: recurse into each sized member, as
     /// `(member type, offset, size)`.
     Descend(Rc<Vec<(BundleTypeId, u64, u64)>>),
     /// A Rust enum: recurse into the active variant's payload. Only the
@@ -578,7 +578,7 @@ fn scan_plan(value: Value<'_>, futures: &HashSet<BundleTypeId>) -> ScanPlan {
         return ScanPlan::Future;
     }
     match value.ty.classify() {
-        TypeClass::Struct | TypeClass::Union => ScanPlan::Descend(Rc::new(
+        TypeClass::Struct => ScanPlan::Descend(Rc::new(
             value
                 .ty
                 .members()
@@ -587,14 +587,29 @@ fn scan_plan(value: Value<'_>, futures: &HashSet<BundleTypeId>) -> ScanPlan {
                 .collect(),
         )),
         TypeClass::RustEnum => ScanPlan::Enum,
+        // A union is stopped at rather than descended into, for the
+        // reason an enum's inactive variants are: its members are the
+        // same storage read as different types, and at most one of them
+        // is live. An enum says which one; a union does not, so a scan
+        // that descended would take dead — often uninitialized — bytes
+        // for a value. `MaybeUninit<F>` is spelled as a union, and a
+        // future decoded from uninitialized memory would be chained,
+        // summarized, and listed like any other.
+        //
+        // Which member of a union is initialized is the containing
+        // container's own business — an inline-capacity `SmallVec`
+        // knows its length, the type does not — so recovering the live
+        // ones would take container-specific knowledge the scan has no
+        // way to ask for.
+        TypeClass::Union => ScanPlan::Stop,
         _ => ScanPlan::Stop,
     }
 }
 
 /// Find every by-value future inside `value`: the value itself, or one
-/// nested in its structs, unions, and active enum variants. Ordinary
-/// pointers are never followed, so the scan stays inside the frame's
-/// own bytes and terminates.
+/// nested in its structs and active enum variants. Ordinary pointers
+/// are never followed, so the scan stays inside the frame's own bytes
+/// and terminates.
 fn scan_value<'b>(
     value: Value<'b>,
     futures: &HashSet<BundleTypeId>,
@@ -1145,6 +1160,12 @@ mod tests {
         })
     }
 
+    fn union_with_members(bundle: &Bundle) -> BundleType<'_> {
+        find_ty(bundle, |ty| {
+            matches!(ty.classify(), TypeClass::Union) && ty.members().any(|m| m.ty().size() > 0)
+        })
+    }
+
     /// Only the active variant's payload is live storage; the other
     /// variant is those same bytes read as something they are not, and
     /// a future decoded from them would be reported as one in flight.
@@ -1340,5 +1361,30 @@ mod tests {
         };
         assert_eq!(found.addr, AT);
         assert_eq!(found.ty.id(), ty.id());
+    }
+
+    /// A union is stopped at: its members are one storage read several
+    /// ways, with nothing saying which reading is live, so descending
+    /// would report a future built from bytes that hold none.
+    #[test]
+    fn test_a_union_is_not_descended_into() {
+        let bundle = unordered();
+        let ty = union_with_members(bundle);
+        let members = ty
+            .members()
+            .filter(|m| m.ty().size() > 0)
+            .map(|m| m.ty().id());
+        let bytes = vec![0u8; ty.size() as usize];
+        let scanned = scan(Value::new(ty, AT, &bytes), &poll_table(members));
+        assert!(
+            scanned.finds.is_empty(),
+            "a union was descended into: {:?}",
+            scanned.summary()
+        );
+        // Stopped, not cut short: there is nothing here the scan could
+        // have read, so the caps that say a listing is incomplete are
+        // untouched.
+        assert!(matches!(scanned.plans.get(&ty.id()), Some(ScanPlan::Stop)));
+        assert_eq!(scanned.capped, 0);
     }
 }
