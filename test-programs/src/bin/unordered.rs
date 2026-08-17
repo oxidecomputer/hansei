@@ -4,6 +4,14 @@
 //! rather than any task Header — plus two futures the driver merely
 //! *holds* across its await, one a bare coroutine and one behind a
 //! `dyn Future` box, covering both of the census's other detections.
+//!
+//! It is also where the census's *recursive* scan is exercised: a
+//! future reached only by descending into an aggregate (the `pair`
+//! tuple) or into an enum's active variant (`maybe`, and each child's
+//! `inner`), and a find two hops from the driver's own frames — one
+//! child holds a set of its own, and every child holds a future — so
+//! that what the census attributes to whom is pinned by something
+//! other than a comment.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -16,25 +24,58 @@ use tokio::sync::{Notify, oneshot};
 /// asserts this count, so the two must agree.
 const CHILDREN: usize = 3;
 
-async fn set_member(notify: Arc<Notify>) -> u32 {
+/// How many futures the nesting child's own set holds.
+const NESTED: usize = 2;
+
+/// The bottom of every chain here, and the one future type that holds
+/// nothing itself: a child of a nested set, or a future held inside a
+/// tuple, an enum, or another future.
+async fn leaf(notify: Arc<Notify>) -> u32 {
     notify.notified().await;
     7
 }
 
+/// A child of the driver's set, holding futures of its own across the
+/// park: a set when `nest`, and a bare future either way. Both are
+/// reached only by scanning this child's frames, which the census does
+/// only because the child is a set member — one hop further out than
+/// the driver's own locals.
+async fn set_member(notify: Arc<Notify>, nest: bool) -> u32 {
+    let inner: Option<FuturesUnordered<_>> =
+        nest.then(|| (0..NESTED).map(|_| leaf(notify.clone())).collect());
+    let held = leaf(notify.clone());
+
+    notify.notified().await;
+
+    let nested = match inner {
+        Some(set) => set.count().await as u32,
+        None => 0,
+    };
+    nested + held.await
+}
+
 async fn driver(ready: oneshot::Sender<()>, notify: Arc<Notify>) -> u32 {
-    let mut set: FuturesUnordered<_> = (0..CHILDREN).map(|_| set_member(notify.clone())).collect();
+    let mut set: FuturesUnordered<_> = (0..CHILDREN)
+        .map(|i| set_member(notify.clone(), i == 0))
+        .collect();
 
     // Held, never polled while the set is awaited: live across the
     // await below because both are consumed after it.
-    let held = set_member(notify.clone());
-    let boxed: Pin<Box<dyn Future<Output = u32> + Send>> = Box::pin(set_member(notify.clone()));
+    let held = set_member(notify.clone(), false);
+    let boxed: Pin<Box<dyn Future<Output = u32> + Send>> =
+        Box::pin(set_member(notify.clone(), false));
+    // The same, one level in: a future the scan reaches only by
+    // descending into a tuple, and one it reaches only through an
+    // enum's active variant.
+    let pair = (leaf(notify.clone()), 11);
+    let maybe = Some(leaf(notify.clone()));
 
     ready.send(()).expect("main waits for readiness");
     let mut sum = 0;
     while let Some(value) = set.next().await {
         sum += value;
     }
-    sum + held.await + boxed.await
+    sum + held.await + boxed.await + pair.0.await + pair.1 + maybe.unwrap().await
 }
 
 fn main() {

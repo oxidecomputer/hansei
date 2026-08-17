@@ -819,9 +819,9 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the bundle (the target does not reach one)
   ok      RawWaker.data
   ok      RawWaker.vtable
-  ok      FuturesUnordered.head_all
-  ok      SetNode.future
-  ok      SetNode.next_all
+  ok      FuturesUnordered.head_all (2 types)
+  ok      SetNode.future (2 types)
+  ok      SetNode.next_all (2 types)
   absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
   absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the bundle (the target does not reach one)
@@ -890,13 +890,13 @@ walk contract (tokio 1.50.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
-  ok      Cell.stage (5 cells)
-  ok      Cell.stage_running (5 cells)
-  ok      Cell.stage_finished (5 cells)
-  ok      Cell.stage_consumed (5 cells)
-  ok      Cell.trailer (5 cells)
-  ok      Cell.task_id (5 cells)
-  ok      Cell.scheduler (5 cells)
+  ok      Cell.stage (7 cells)
+  ok      Cell.stage_running (7 cells)
+  ok      Cell.stage_finished (7 cells)
+  ok      Cell.stage_consumed (7 cells)
+  ok      Cell.trailer (7 cells)
+  ok      Cell.task_id (7 cells)
+  ok      Cell.scheduler (7 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the bundle (the target does not reach one)

@@ -1646,11 +1646,13 @@ fn test_futures_acceptance() {
         let rows = list_tasks(&bundle, core);
         let driver = task_with_future(&rows, "unordered::driver::{async_fn_env#0}");
 
-        // Two held futures, and one set holding three children. The
-        // plain listing carries both counts, and says `0` for a task the
-        // census found nothing for rather than staying silent;
-        // `--futures` lists what each counted, under its own row.
-        assert_eq!(driver.futures, "2", "{rows:?}");
+        // Four held futures, and one set holding three children — the
+        // driver's own finds, counted apart from what the census went
+        // on to find inside them. The plain listing carries both
+        // counts, and says `0` for a task the census found nothing for
+        // rather than staying silent; `--futures` lists what each
+        // counted, under its own row.
+        assert_eq!(driver.futures, "4", "{rows:?}");
         assert_eq!(driver.sets, "1 (3 futures)", "{rows:?}");
         for row in rows.iter().filter(|row| row.id != driver.id) {
             assert_eq!(row.futures, "0", "{row:?}");
@@ -1662,7 +1664,7 @@ fn test_futures_acceptance() {
             "{futures}"
         );
         assert!(
-            futures.contains("    Held futures: 2\n        "),
+            futures.contains("    Held futures: 4\n        "),
             "{futures}"
         );
         assert!(
@@ -1693,16 +1695,45 @@ fn test_futures_acceptance() {
 
         // The held futures — a bare coroutine and a dyn-boxed one, the
         // census's other two detections — are listed off the driver's
-        // spine, never yet polled.
-        assert!(futures.contains("\n        (frame 0, `held`)"), "{futures}");
-        assert!(
-            futures.contains("\n        (frame 0, `boxed`)"),
-            "{futures}"
-        );
+        // spine, never yet polled, and so are the two the scan reached
+        // only by descending into a tuple and into an enum.
+        for local in ["held", "boxed", "pair", "maybe"] {
+            assert!(
+                futures.contains(&format!("\n        (frame 0, `{local}`)")),
+                "{futures}"
+            );
+        }
         assert!(
             futures.contains("unordered::set_member::{async_fn_env#0}  Unresumed"),
             "{futures}"
         );
+
+        // What the census found inside what it found is listed under
+        // it, not beside it: each set child holds a future of its own,
+        // one indent step deeper than the child, and one of them holds
+        // a whole set of its own, whose children are deeper again. The
+        // tree is the census's attribution, drawn.
+        let held_row =
+            r"held \(frame 0, `held`\): 0x[0-9a-f]+  unordered::leaf::\{async_fn_env#0\}";
+        let under_child =
+            regex::Regex::new(&format!(r"\n                {held_row}  Unresumed")).unwrap();
+        assert_eq!(under_child.find_iter(&futures).count(), 3, "{futures}");
+        assert!(
+            futures.contains(
+                "\n                - futures_util::stream::futures_unordered::FuturesUnordered\
+                 <unordered::leaf::{async_fn_env#0}> at 0x"
+            ),
+            "{futures}"
+        );
+        assert!(
+            futures.contains("(frame 0, `inner`): 2 children in flight"),
+            "{futures}"
+        );
+        let under_set = regex::Regex::new(
+            r"\n                    0x[0-9a-f]+  unordered::leaf::\{async_fn_env#0\}  Unresumed",
+        )
+        .unwrap();
+        assert_eq!(under_set.find_iter(&futures).count(), 2, "{futures}");
 
         // Narrowing to the driver shows its block alone, with the same
         // finds under it: every one of them is the driver's.
@@ -1853,6 +1884,10 @@ fn test_futures_acceptance() {
 /// them under the task that drives the set, by the ids each has a block
 /// of its own under — and no futures count moves, because a spawned task
 /// is on its own await chain rather than off anybody's.
+///
+/// One of them has no block to name, being a member of the second set
+/// that ran to completion and was never joined: a task off the
+/// runtime's owned list, which only the set still holds.
 #[test]
 fn test_join_set_acceptance() {
     let bundle = fixtures().bundle("joinset");
@@ -1860,10 +1895,10 @@ fn test_join_set_acceptance() {
         let rows = list_tasks(&bundle, core);
         let driver = task_with_future(&rows, "joinset::driver::{async_fn_env#0}");
 
-        // One set holding the three members it spawned — tasks, counted
-        // apart from the futures a set of futures would hold — and
-        // nothing held in the driver's own frames.
-        assert_eq!(driver.sets, "1 (3 tasks)", "{rows:?}");
+        // Two sets of three members each — tasks, counted apart from
+        // the futures a set of futures would hold — and nothing held in
+        // the driver's own frames.
+        assert_eq!(driver.sets, "2 (6 tasks)", "{rows:?}");
         assert_eq!(driver.futures, "0", "{rows:?}");
         for row in rows.iter().filter(|row| row.id != driver.id) {
             assert_eq!(row.sets, "0", "{row:?}");
@@ -1871,7 +1906,7 @@ fn test_join_set_acceptance() {
 
         let futures = hansei_ok(&bundle, core, "tasks --futures");
         assert!(
-            futures.contains("    Join sets: 1 (3 tasks)\n        - "),
+            futures.contains("    Join sets: 2 (6 tasks)\n        - "),
             "{futures}"
         );
         assert!(
@@ -1890,7 +1925,7 @@ fn test_join_set_acceptance() {
             .captures_iter(&futures)
             .map(|c| c[1].to_string())
             .collect();
-        assert_eq!(ids.len(), 3, "{futures}");
+        assert_eq!(ids.len(), 5, "{futures}");
         for id in &ids {
             assert!(rows.iter().any(|row| &row.id == id), "{rows:?}");
             let traced = hansei_ok(&bundle, core, &format!("trace {id}"));
@@ -1899,6 +1934,19 @@ fn test_join_set_acceptance() {
                 "{traced}"
             );
         }
+
+        // Except the member of the unjoined set that has run to
+        // completion. It has left the runtime's owned list, so the
+        // listing has no block for it and nothing but this set's entry
+        // names it — which the row says outright rather than naming a
+        // future it cannot reach.
+        let done = regex::Regex::new(r"\n            task (\d+)  <complete, awaiting join>")
+            .unwrap()
+            .captures(&futures)
+            .unwrap_or_else(|| panic!("no completed member: {futures}"))[1]
+            .to_string();
+        assert!(!ids.contains(&done), "{futures}");
+        assert!(!rows.iter().any(|row| row.id == done), "{rows:?}");
 
         // The same edge is what the wait graph nests on. Nothing about
         // the driver's own wait names these tasks — it is parked in
@@ -2097,8 +2145,12 @@ fn test_census_prints_only_the_sections_named() {
 }
 
 /// What a set holds is counted apart from what a frame holds, with the
-/// same split `tasks --futures` lists: three children in flight, and
-/// two futures held off the driver's chain beside them.
+/// same split `tasks --futures` lists: five children in flight across
+/// the two sets, and seven futures held in frames beside them.
+///
+/// The census counts a find wherever the scan reached it, so nesting
+/// moves nothing between the two populations — a future held inside a
+/// set child is held in a frame like any other.
 #[test]
 fn test_census_counts_a_set_and_what_is_held_beside_it() {
     let bundle = fixtures().bundle("unordered");
@@ -2106,9 +2158,16 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         let out = hansei_ok(&bundle, core, "census");
         assert!(
             out.contains(
-                "        2  held in frames, off any await chain\n        \
-                 3  in 1 FuturesUnordered\n"
+                "        7  held in frames, off any await chain\n        \
+                 5  in 2 FuturesUnordered\n"
             ),
+            "{out}"
+        );
+        // The leaves are what the nesting added: one per set child, two
+        // the driver holds inside a tuple and an enum, and the nested
+        // set's own two children.
+        assert!(
+            out.contains("        7  unordered::leaf::{async_fn_env#0}\n"),
             "{out}"
         );
         // What all five of them are — the set's children and the two

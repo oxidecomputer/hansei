@@ -446,14 +446,20 @@ fn census_of<'a>(
 /// their suspend states and `Notified` leaves, and the two futures the
 /// driver merely holds — one bare, one dyn-boxed — are found beside
 /// it, never yet polled.
+///
+/// And the scan's recursion, which no other pair exercises: a future
+/// reached only by descending into a tuple, one reached only through
+/// an enum's active variant, and — a hop out from the driver's own
+/// frames — the future and the set that each child of the set holds,
+/// each attributed to the child it was found under.
 #[test]
 fn test_unordered_census_offline() {
     let (bundle, snapshot) = load_any("unordered");
     let (ctx, list, census) = census_of(&bundle, &snapshot);
 
-    let set = match census.sets.as_slice() {
-        [set] => set,
-        other => panic!("expected one set, got {other:#?}"),
+    let (set, inner) = match census.sets.as_slice() {
+        [set, inner] => (set, inner),
+        other => panic!("expected two sets, got {other:#?}"),
     };
     assert_eq!(set.local, "set");
     assert!(
@@ -509,13 +515,29 @@ fn test_unordered_census_offline() {
         "unordered::set_member::{async_fn_env#0}"
     );
 
-    // The held futures: a bare coroutine in the driver's frame and a
-    // dyn-boxed one on the heap, both `Unresumed`.
-    let mut locals: Vec<&str> = census.held.iter().map(|h| h.local.as_str()).collect();
-    locals.sort_unstable();
-    assert_eq!(locals, ["boxed", "held"], "{:#?}", census.held);
+    // What the driver holds in its own frame: a bare coroutine and a
+    // dyn-boxed one, plus the two the scan sees only by descending —
+    // one inside a tuple, one inside an enum's active variant. All four
+    // are `Unresumed`, and all four are the driver's own.
+    let mut own: Vec<(&str, &str)> = census
+        .held
+        .iter()
+        .filter(|held| held.via.is_none())
+        .map(|held| (held.local.as_str(), held.future.as_str()))
+        .collect();
+    own.sort_unstable();
+    assert_eq!(
+        own,
+        [
+            ("boxed", "unordered::set_member::{async_fn_env#0}"),
+            ("held", "unordered::set_member::{async_fn_env#0}"),
+            ("maybe", "unordered::leaf::{async_fn_env#0}"),
+            ("pair", "unordered::leaf::{async_fn_env#0}"),
+        ],
+        "{:#?}",
+        census.held
+    );
     for held in &census.held {
-        assert_eq!(held.future, "unordered::set_member::{async_fn_env#0}");
         assert!(
             held.state
                 .as_deref()
@@ -525,11 +547,78 @@ fn test_unordered_census_offline() {
         );
         assert_eq!(list.tasks[held.owner].task_id, Some(3), "{held:#?}");
     }
+
+    // A hop further out: each child holds a future of its own, found
+    // only because the census scans the frames of what it finds, and
+    // attributed to the child it was found under rather than to the
+    // task. One per child, no two under the same one.
+    let mut under: Vec<String> = census
+        .held
+        .iter()
+        .filter_map(|held| {
+            let via = held.via?;
+            assert_eq!(held.local, "held", "{held:#?}");
+            assert_eq!(
+                held.future, "unordered::leaf::{async_fn_env#0}",
+                "{held:#?}"
+            );
+            Some(census.describe(via))
+        })
+        .collect();
+    under.sort();
+    let mut nodes: Vec<String> = set
+        .children
+        .iter()
+        .map(|child| format!("set child at {:#x}", child.node))
+        .collect();
+    nodes.sort();
+    assert_eq!(under, nodes, "{:#?}", census.held);
+
+    // One child holds a whole set of its own, so a find of a find is a
+    // set too: its children are futures nobody has polled, and it is
+    // attributed to the child whose frames it was found in. The outer
+    // set keeps the index it reserved before descending into its
+    // children — had it not, this `via` would name the nested set
+    // itself rather than the one holding it.
+    assert_eq!(inner.local, "inner");
+    let via = inner
+        .via
+        .expect("the nested set was reached through a child");
+    let census::Via::SetChild { set: parent, child } = via else {
+        panic!("expected a set child, got {via:?}");
+    };
+    assert_eq!(parent, 0, "{inner:#?}");
+    assert_eq!(
+        census.describe(via),
+        format!("set child at {:#x}", set.children[child].node)
+    );
+    assert_eq!(inner.children.len(), 2, "{:#?}", inner.children);
+    for child in &inner.children {
+        assert_eq!(
+            child.future.as_deref(),
+            Some("unordered::leaf::{async_fn_env#0}"),
+            "{child:#?}"
+        );
+        assert!(
+            child
+                .state
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Unresumed"),
+            "{child:#?}"
+        );
+    }
 }
 
 /// The `JoinSet` census, offline: the `IdleNotifiedSet`'s two lists
 /// walked entry by entry, every member resolved to a task the listing
 /// also shows — by id, parked, join-interested.
+///
+/// Except one. The second set is never joined, so the member that ran
+/// to completion is still in it: a task the runtime no longer owns and
+/// no listing carries, which only this entry names. That is what
+/// `listed` is for, and the only state a set can hold that nothing
+/// else in a listing corroborates.
 #[test]
 fn test_joinset_census_offline() {
     let (bundle, snapshot) = load_any("joinset");
@@ -538,21 +627,23 @@ fn test_joinset_census_offline() {
     assert!(census.sets.is_empty(), "{:#?}", census.sets);
     assert!(census.held.is_empty(), "{:#?}", census.held);
 
-    let set = match census.join_sets.as_slice() {
-        [set] => set,
-        other => panic!("expected one join set, got {other:#?}"),
+    let (set, kept) = match census.join_sets.as_slice() {
+        [set, kept] => (set, kept),
+        other => panic!("expected two join sets, got {other:#?}"),
     };
     assert_eq!(set.local, "set");
-    assert_eq!(set.ty, "tokio::task::join_set::JoinSet<u32>");
-    assert!(
-        known_name(&list.tasks[set.owner]).contains("joinset::driver"),
-        "{:?}",
-        list.tasks[set.owner].future
-    );
-
-    // The set's own length word and what the walk actually found agree.
-    assert_eq!(set.length, 3);
-    assert_eq!(set.children.len(), 3, "{:#?}", set.children);
+    assert_eq!(kept.local, "kept");
+    for join_set in [set, kept] {
+        assert_eq!(join_set.ty, "tokio::task::join_set::JoinSet<u32>");
+        assert!(
+            known_name(&list.tasks[join_set.owner]).contains("joinset::driver"),
+            "{:?}",
+            list.tasks[join_set.owner].future
+        );
+        // The set's own length word and what the walk found agree.
+        assert_eq!(join_set.length, 3, "{join_set:#?}");
+        assert_eq!(join_set.children.len(), 3, "{:#?}", join_set.children);
+    }
 
     let mut ids: Vec<u64> = set
         .children
@@ -565,6 +656,27 @@ fn test_joinset_census_offline() {
         assert_eq!(child.state.lifecycle(), Lifecycle::Idle, "{child:#?}");
         // `listed`: the member is a task the plain listing also shows.
         assert!(child.listed, "{child:#?}");
+        assert!(
+            list.tasks.iter().any(|t| t.addr.0 == child.task),
+            "{child:#?}"
+        );
+    }
+
+    // The set nobody joined: two members parked like the others, and
+    // one complete — off the runtime's owned list, so the listing has
+    // no row for it, and the walk reaches it only through the entry.
+    let (complete, parked): (Vec<_>, Vec<_>) =
+        kept.children.iter().partition(|child| !child.listed);
+    let [done] = complete.as_slice() else {
+        panic!("expected one unlisted member, got {complete:#?}");
+    };
+    assert_eq!(done.state.lifecycle(), Lifecycle::Complete, "{done:#?}");
+    assert!(
+        !list.tasks.iter().any(|t| t.addr.0 == done.task),
+        "{done:#?}"
+    );
+    for child in parked {
+        assert_eq!(child.state.lifecycle(), Lifecycle::Idle, "{child:#?}");
         assert!(
             list.tasks.iter().any(|t| t.addr.0 == child.task),
             "{child:#?}"
