@@ -97,16 +97,26 @@ fn build_fixture(program: &str) -> bool {
         return false;
     }
 
-    let status = Command::new(test_programs_dir().join("regen.sh"))
-        .arg(program)
-        .status()
-        .expect("failed to run regen.sh");
-    assert!(status.success(), "regen.sh failed for {program}");
+    // Once per run rather than once per process: under nextest each test
+    // is its own process, and a rebuild landing in the middle of another
+    // test's parse is exactly what the `Mutex` above was for.
+    testrun::once_per_run(&built_stamp(program), || {
+        let status = Command::new(test_programs_dir().join("regen.sh"))
+            .arg(program)
+            .status()
+            .expect("failed to run regen.sh");
+        assert!(status.success(), "regen.sh failed for {program}");
+    });
     assert!(
         dwarf_path(program).exists(),
         "regen.sh succeeded but {program} fixture is still missing"
     );
     true
+}
+
+/// Where a run records that it has built `program` already.
+fn built_stamp(program: &str) -> PathBuf {
+    test_programs_dir().join("fixtures/.built").join(program)
 }
 
 fn toolchain_installed() -> bool {

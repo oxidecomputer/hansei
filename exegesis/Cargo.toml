@@ -49,3 +49,4 @@ zstd-sys = { workspace = true, features = ["pkg-config"] }
 insta.workspace = true
 object.workspace = true
 tempfile.workspace = true
+testrun.workspace = true
