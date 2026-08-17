@@ -477,6 +477,23 @@ fn test_a_held_future_with_an_unjoinable_vtable_is_listed_unresolved() {
     assert!(future.contains("dyn "), "{future}");
 }
 
+/// The join set every corruption below is aimed at: the one the
+/// driver joins, told apart by its local from the second set it holds
+/// and never joins, whose own walk is undamaged and stands as the
+/// control.
+fn joined_set(census: &census::FutureCensus) -> &census::JoinSet {
+    census
+        .join_sets
+        .iter()
+        .find(|set| set.local == "set")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the driver's joined set, got {:#?}",
+                census.join_sets
+            )
+        })
+}
+
 /// The join set's entry list, walked healthy, so a corruption can be
 /// aimed at one of its entries: the entry addresses in walk order and
 /// the length the set keeps for itself.
@@ -484,9 +501,7 @@ fn join_set_entries(bundle: &Bundle, snapshot: &Snapshot) -> (Vec<u64>, u64) {
     let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, snapshot);
     let census = census::census(&ctx, &list);
-    let [set] = census.join_sets.as_slice() else {
-        panic!("expected one join set, got {:#?}", census.join_sets);
-    };
+    let set = joined_set(&census);
     (set.children.iter().map(|c| c.entry).collect(), set.length)
 }
 
@@ -508,9 +523,7 @@ fn test_an_unreadable_join_set_entry_keeps_the_walked_prefix() {
     let list = tasks_of(&ctx, &snapshot);
     let degraded = census::census(&ctx, &list);
 
-    let [set] = degraded.join_sets.as_slice() else {
-        panic!("expected one join set, got {:#?}", degraded.join_sets);
-    };
+    let set = joined_set(&degraded);
     assert_eq!(set.children.len(), 1, "{:#?}", set.children);
     assert_eq!(set.children[0].entry, *first);
     assert_eq!(set.length, length, "the length is read before the walk");
@@ -540,9 +553,7 @@ fn test_a_join_set_entry_cycle_is_bounded() {
     let list = tasks_of(&ctx, &snapshot);
     let degraded = census::census(&ctx, &list);
 
-    let [set] = degraded.join_sets.as_slice() else {
-        panic!("expected one join set, got {:#?}", degraded.join_sets);
-    };
+    let set = joined_set(&degraded);
     assert_eq!(set.children.len(), 2, "{:#?}", set.children);
     assert_eq!(set.length, length);
     let err = format!("{:#}", degraded.errors[0]);
@@ -567,9 +578,7 @@ fn test_an_unmapped_join_set_entry_is_reported() {
     let list = tasks_of(&ctx, &snapshot);
     let degraded = census::census(&ctx, &list);
 
-    let [set] = degraded.join_sets.as_slice() else {
-        panic!("expected one join set, got {:#?}", degraded.join_sets);
-    };
+    let set = joined_set(&degraded);
     assert!(set.children.is_empty(), "{:#?}", set.children);
     assert_eq!(set.length, length);
     let err = format!("{:#}", degraded.errors[0]);
