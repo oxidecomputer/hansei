@@ -14,8 +14,9 @@
 //! never crash and never loop.
 //!
 //! The corruptions are aimed with addresses the healthy run reports
-//! (task headers, set nodes, the semaphore), so they land on the exact
-//! structures the guards watch, whatever the snapshot's layout.
+//! (task headers, set nodes, join set entries, the semaphore), so they
+//! land on the exact structures the guards watch, whatever the
+//! snapshot's layout.
 
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::testkit::{load_any, tasks as tasks_of};
@@ -382,6 +383,109 @@ fn test_an_unreadable_set_node_keeps_the_walked_prefix() {
     assert_eq!(degraded.errors.len(), 1, "{:?}", degraded.errors);
     let err = format!("{:#}", degraded.errors[0]);
     assert!(err.contains("lists only 1 of its children"), "{err}");
+}
+
+/// The join set's entry list, walked healthy, so a corruption can be
+/// aimed at one of its entries: the entry addresses in walk order and
+/// the length the set keeps for itself.
+fn join_set_entries(bundle: &Bundle, snapshot: &Snapshot) -> (Vec<u64>, u64) {
+    let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
+    let list = tasks_of(&ctx, snapshot);
+    let census = census::census(&ctx, &list);
+    let [set] = census.join_sets.as_slice() else {
+        panic!("expected one join set, got {:#?}", census.join_sets);
+    };
+    (set.children.iter().map(|c| c.entry).collect(), set.length)
+}
+
+/// An unreadable join set entry stops the walk where it stands. The
+/// members before it are kept, the error says the list is short, and
+/// the set's own length — read before the walk — stands beside the
+/// short list, so the disagreement is visible in the listing and not
+/// only in the error.
+#[test]
+fn test_an_unreadable_join_set_entry_keeps_the_walked_prefix() {
+    let (bundle, snapshot) = load_any("joinset");
+    let (entries, length) = join_set_entries(&bundle, &snapshot);
+    let [first, second, _] = entries.as_slice() else {
+        panic!("the fixture set holds three tasks");
+    };
+
+    let corrupt = Corrupt::new(&snapshot).deny(*second..*second + 0x10);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &snapshot);
+    let degraded = census::census(&ctx, &list);
+
+    let [set] = degraded.join_sets.as_slice() else {
+        panic!("expected one join set, got {:#?}", degraded.join_sets);
+    };
+    assert_eq!(set.children.len(), 1, "{:#?}", set.children);
+    assert_eq!(set.children[0].entry, *first);
+    assert_eq!(set.length, length, "the length is read before the walk");
+
+    assert_eq!(degraded.errors.len(), 1, "{:?}", degraded.errors);
+    let err = format!("{:#}", degraded.errors[0]);
+    assert!(err.contains("lists only 1 of its tasks"), "{err}");
+    assert!(err.contains(&format!("{second:#x}")), "{err}");
+}
+
+/// An entry list bent back onto an entry already walked trips the
+/// cycle guard, with the prefix kept the same way. Whichever of the
+/// two lists the bent link is in, the walk stops there: a failure ends
+/// the whole walk, not just the list it happened in.
+#[test]
+fn test_a_join_set_entry_cycle_is_bounded() {
+    let (bundle, snapshot) = load_any("joinset");
+    let (entries, length) = join_set_entries(&bundle, &snapshot);
+    let [first, _, third] = entries.as_slice() else {
+        panic!("the fixture set holds three tasks");
+    };
+
+    // Every pointer to the third entry now names the first, which the
+    // walk has already seen by the time it reaches it.
+    let corrupt = Corrupt::new(&snapshot).patch_words_equal(*third, *first);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &snapshot);
+    let degraded = census::census(&ctx, &list);
+
+    let [set] = degraded.join_sets.as_slice() else {
+        panic!("expected one join set, got {:#?}", degraded.join_sets);
+    };
+    assert_eq!(set.children.len(), 2, "{:#?}", set.children);
+    assert_eq!(set.length, length);
+    let err = format!("{:#}", degraded.errors[0]);
+    assert!(
+        err.contains(&format!("join set entry cycle at {first:#x}")),
+        "{err}"
+    );
+}
+
+/// An entry pointer into unmapped memory is refused by the address
+/// check before anything reads through it. Corrupting the first entry
+/// leaves the set listing no members at all, against a length that
+/// still says three.
+#[test]
+fn test_an_unmapped_join_set_entry_is_reported() {
+    let (bundle, snapshot) = load_any("joinset");
+    let (entries, length) = join_set_entries(&bundle, &snapshot);
+    let first = entries[0];
+
+    let corrupt = Corrupt::new(&snapshot).patch_words_equal(first, NOWHERE);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &snapshot);
+    let degraded = census::census(&ctx, &list);
+
+    let [set] = degraded.join_sets.as_slice() else {
+        panic!("expected one join set, got {:#?}", degraded.join_sets);
+    };
+    assert!(set.children.is_empty(), "{:#?}", set.children);
+    assert_eq!(set.length, length);
+    let err = format!("{:#}", degraded.errors[0]);
+    assert!(
+        err.contains(&format!("join set entry pointer {NOWHERE:#x} is unmapped")),
+        "{err}"
+    );
+    assert!(err.contains("lists only 0 of its tasks"), "{err}");
 }
 
 /// A set node chain bent into a loop trips the node cycle guard, with
