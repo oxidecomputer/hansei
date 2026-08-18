@@ -100,13 +100,17 @@ fn build_fixture(program: &str) -> bool {
     // Once per run rather than once per process: under nextest each test
     // is its own process, and a rebuild landing in the middle of another
     // test's parse is exactly what the `Mutex` above was for.
-    testrun::once_per_run(&built_stamp(program), || {
-        let status = Command::new(test_programs_dir().join("regen.sh"))
-            .arg(program)
-            .status()
-            .expect("failed to run regen.sh");
-        assert!(status.success(), "regen.sh failed for {program}");
-    });
+    testrun::once_per_run(
+        &built_stamp(program),
+        || built_from(program),
+        || {
+            let status = Command::new(test_programs_dir().join("regen.sh"))
+                .arg(program)
+                .status()
+                .expect("failed to run regen.sh");
+            assert!(status.success(), "regen.sh failed for {program}");
+        },
+    );
     assert!(
         dwarf_path(program).exists(),
         "regen.sh succeeded but {program} fixture is still missing"
@@ -117,6 +121,24 @@ fn build_fixture(program: &str) -> bool {
 /// Where a run records that it has built `program` already.
 fn built_stamp(program: &str) -> PathBuf {
     test_programs_dir().join("fixtures/.built").join(program)
+}
+
+/// What one fixture binary is built from, for a run reusing what an
+/// earlier one left behind (`testrun::REUSE`): the program's own source
+/// and the crate it calls into, the manifest and lock that pin what it
+/// links, the script that drives the build, and the toolchain that
+/// script pins.
+fn built_from(program: &str) -> String {
+    let dir = test_programs_dir();
+    let mut inputs = testrun::Inputs::new();
+    inputs
+        .text(TOOLCHAIN)
+        .file(&dir.join("src/lib.rs"))
+        .file(&dir.join("src/bin").join(format!("{program}.rs")))
+        .file(&dir.join("Cargo.toml"))
+        .file(&dir.join("Cargo.lock"))
+        .file(&dir.join("regen.sh"));
+    inputs.finish()
 }
 
 fn toolchain_installed() -> bool {

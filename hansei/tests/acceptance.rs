@@ -85,6 +85,39 @@ fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
 }
 
+/// What this cell's fixture binaries are compiled from, for a run
+/// reusing what an earlier one left behind (`testrun::REUSE`): the
+/// programs and the crate they call into, the manifests and lockfiles
+/// pinning what they link, the script that builds them and the manifest
+/// naming the cells, and the cell's own flags.
+fn compiled_from(cell: &Cell) -> String {
+    let dir = workspace_root().join("test-programs");
+    let mut inputs = testrun::Inputs::new();
+    inputs
+        .text(&cell.flags.join(" "))
+        .text(&PROGRAMS.join(" "))
+        .tree(&dir.join("src"), ".rs")
+        .tree(&dir.join("locks"), ".lock")
+        .file(&dir.join("Cargo.toml"))
+        .file(&dir.join("Cargo.lock"))
+        .file(&dir.join("matrix.toml"))
+        .file(&dir.join("regen.sh"));
+    inputs.finish()
+}
+
+/// What this cell's bundles are extracted from: the binaries above, and
+/// the code that reads and writes them.
+fn extracted_from(cell: &Cell) -> String {
+    let root = workspace_root();
+    let mut inputs = testrun::Inputs::new();
+    inputs
+        .text(&compiled_from(cell))
+        .tree(&root.join("exegesis/src"), ".rs")
+        .tree(&root.join("hansei-bundle/src"), ".rs")
+        .file(&root.join("Cargo.lock"));
+    inputs.finish()
+}
+
 /// The matrix cell the suite is running against.
 struct Cell {
     /// The fixture-dir name, `None` for the primary cell.
@@ -204,46 +237,65 @@ fn fixtures() -> &'static Fixtures {
         // test is its own process, so without this each of them would
         // run both compilations and re-extract every bundle — while the
         // others read the bundles being written.
-        testrun::once_per_run(&base.join(".fixtures"), || {
-            // Build A runs and is cored, so it is built the way a
-            // production binary is — no debug info, as a compilation of its
-            // own rather than a stripped copy of B.
-            let status = Command::new(test_programs.join("regen.sh"))
-                .arg("--no-debug-info")
-                .args(&cell.flags)
-                .args(PROGRAMS)
-                .env("REGEN_BIN_DIR", base.join("bin-a"))
-                .env("REGEN_TARGET_DIR", &target_a)
-                .status()
-                .expect("failed to run regen.sh");
-            assert!(
-                status.success(),
-                "regen.sh failed; is the cell's toolchain installed?"
-            );
-            // Build B is the standard fixture build in regen.sh's own dirs
-            // — an incremental no-op on a host whose extraction goldens
-            // already built this cell.
-            let status = Command::new(test_programs.join("regen.sh"))
-                .args(&cell.flags)
-                .args(PROGRAMS)
-                .status()
-                .expect("failed to run regen.sh");
-            assert!(
-                status.success(),
-                "regen.sh failed; is the cell's toolchain installed?"
-            );
-            for program in PROGRAMS {
-                let opts = ExtractOptions {
-                    extract_args: format!("acceptance-suite extraction of {program}"),
-                    ..Default::default()
-                };
-                let (bundle, _stats) = extract_file(&bin_b.join(program), &opts)
-                    .unwrap_or_else(|e| panic!("extraction of {program} failed: {e}"));
-                bundle
-                    .save(&bundles.join(format!("{program}.bundle")))
-                    .expect("failed to write the bundle");
-            }
-        });
+        //
+        // The two halves stamp separately because they are built from
+        // different things, which only matters to a run reusing what an
+        // earlier one left behind (`testrun::REUSE`): a change to the
+        // extraction side must re-extract without recompiling the
+        // fixtures, and — the case that makes it necessary rather than
+        // tidy — a `cargo mutants` sweep of hansei-bundle mutates what
+        // the bundles are written by, so those must be rebuilt per
+        // mutant while these compilations need not be.
+        testrun::once_per_run(
+            &base.join(".fixtures"),
+            || compiled_from(cell),
+            || {
+                // Build A runs and is cored, so it is built the way a
+                // production binary is — no debug info, as a compilation of its
+                // own rather than a stripped copy of B.
+                let status = Command::new(test_programs.join("regen.sh"))
+                    .arg("--no-debug-info")
+                    .args(&cell.flags)
+                    .args(PROGRAMS)
+                    .env("REGEN_BIN_DIR", base.join("bin-a"))
+                    .env("REGEN_TARGET_DIR", &target_a)
+                    .status()
+                    .expect("failed to run regen.sh");
+                assert!(
+                    status.success(),
+                    "regen.sh failed; is the cell's toolchain installed?"
+                );
+                // Build B is the standard fixture build in regen.sh's own dirs
+                // — an incremental no-op on a host whose extraction goldens
+                // already built this cell.
+                let status = Command::new(test_programs.join("regen.sh"))
+                    .args(&cell.flags)
+                    .args(PROGRAMS)
+                    .status()
+                    .expect("failed to run regen.sh");
+                assert!(
+                    status.success(),
+                    "regen.sh failed; is the cell's toolchain installed?"
+                );
+            },
+        );
+        testrun::once_per_run(
+            &bundles.join(".bundles"),
+            || extracted_from(cell),
+            || {
+                for program in PROGRAMS {
+                    let opts = ExtractOptions {
+                        extract_args: format!("acceptance-suite extraction of {program}"),
+                        ..Default::default()
+                    };
+                    let (bundle, _stats) = extract_file(&bin_b.join(program), &opts)
+                        .unwrap_or_else(|e| panic!("extraction of {program} failed: {e}"));
+                    bundle
+                        .save(&bundles.join(format!("{program}.bundle")))
+                        .expect("failed to write the bundle");
+                }
+            },
+        );
 
         Fixtures {
             bin_a: base.join("bin-a"),
