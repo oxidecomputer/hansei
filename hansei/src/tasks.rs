@@ -147,17 +147,44 @@ impl Entry<'_> {
     }
 }
 
-/// A capped census walk looks like completeness, so say it is not:
-/// `fate` is what the listing or count would otherwise claim to cover.
-fn warn_census_capped(capped: usize, fate: &str) -> io::Result<()> {
-    if capped > 0 {
-        writeln!(
-            io::stderr(),
-            "warning: the scan stopped at a depth limit in {capped} place(s); \
-             anything held deeper is not {fate}"
-        )?;
+/// A capped census walk looks like completeness, so say it is not.
+fn warn_census_capped(capped: census::Capped, fate: &str) -> io::Result<()> {
+    if let Some(warning) = census_capped_warning(capped, fate) {
+        writeln!(io::stderr(), "warning: {warning}")?;
     }
     Ok(())
+}
+
+/// What a capped walk has to say for itself, or `None` when nothing
+/// was capped.
+///
+/// The census stops for two different reasons and a reader can act on
+/// neither without being told which: a value abandoned partway down is
+/// something the target holds deeply nested, while a chain left
+/// unfollowed is a fan-out of futures holding futures. `fate` is what
+/// the listing or count would otherwise claim to cover.
+fn census_capped_warning(capped: census::Capped, fate: &str) -> Option<String> {
+    let (limits, beyond) = match (capped.deep, capped.distant) {
+        (0, 0) => return None,
+        (deep, 0) => (
+            format!("its depth limit in {deep} place(s)"),
+            "nested deeper",
+        ),
+        (0, distant) => (
+            format!("its nesting limit in {distant} place(s)"),
+            "held further out",
+        ),
+        (deep, distant) => (
+            format!(
+                "its depth limit in {deep} place(s) and its nesting \
+                 limit in {distant} place(s)"
+            ),
+            "beyond either",
+        ),
+    };
+    Some(format!(
+        "the scan stopped at {limits}; anything {beyond} is not {fate}"
+    ))
 }
 
 /// The error for a task id the runtime does not own, naming the ids it
@@ -424,7 +451,7 @@ pub(crate) fn exec_tasks(
         // here, because it looks like completeness otherwise. The listing
         // is a lower bound either way (`help tasks`), but this is the part
         // of it that varies by target rather than being inherent.
-        warn_census_capped(census.capped.total(), "listed")?;
+        warn_census_capped(census.capped, "listed")?;
     }
 
     print_tasks(
@@ -581,7 +608,7 @@ pub(crate) fn exec_census(
     // As `tasks --futures`: a walk that hit a depth limit looks like
     // completeness in a count, so it says so.
     if let Some(census) = census {
-        warn_census_capped(census.capped.total(), "counted")?;
+        warn_census_capped(census.capped, "counted")?;
     }
 
     let runtime = match sections.threads {
@@ -736,5 +763,74 @@ fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
             writeln!(io::stderr(), "warning: cannot read the {what}: {e:#}")?;
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod census_warning_tests {
+    use super::census_capped_warning;
+
+    use hansei_runtime::tokio::census::Capped;
+
+    /// A walk that reached everything says nothing: the warning exists
+    /// to contradict the completeness a listing otherwise implies, so
+    /// it must not be the noise every run prints.
+    #[test]
+    fn test_an_uncapped_walk_warns_of_nothing() {
+        assert_eq!(census_capped_warning(Capped::default(), "listed"), None);
+    }
+
+    /// Each limit names itself and its own count, so a reader who has
+    /// to decide what to do about it knows which one to chase — and the
+    /// sentence ends in what the command it interrupted was claiming to
+    /// cover.
+    #[test]
+    fn test_each_limit_names_itself_and_the_listing_it_shortened() {
+        let deep = census_capped_warning(
+            Capped {
+                deep: 2,
+                distant: 0,
+            },
+            "listed",
+        )
+        .expect("a capped walk warns");
+        assert_eq!(
+            deep,
+            "the scan stopped at its depth limit in 2 place(s); \
+             anything nested deeper is not listed"
+        );
+
+        let distant = census_capped_warning(
+            Capped {
+                deep: 0,
+                distant: 5,
+            },
+            "counted",
+        )
+        .expect("a capped walk warns");
+        assert_eq!(
+            distant,
+            "the scan stopped at its nesting limit in 5 place(s); \
+             anything held further out is not counted"
+        );
+    }
+
+    /// Both at once is one sentence carrying both counts, rather than
+    /// one limit standing for the other or two warnings for one walk.
+    #[test]
+    fn test_both_limits_are_reported_together() {
+        let both = census_capped_warning(
+            Capped {
+                deep: 2,
+                distant: 5,
+            },
+            "listed",
+        )
+        .expect("a capped walk warns");
+        assert_eq!(
+            both,
+            "the scan stopped at its depth limit in 2 place(s) and its \
+             nesting limit in 5 place(s); anything beyond either is not listed"
+        );
     }
 }
