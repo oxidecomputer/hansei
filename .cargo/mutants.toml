@@ -1,0 +1,41 @@
+# cargo-mutants: what a test suite is asked to prove.
+#
+# The suites here assert over frozen captures, so nearly every test
+# executes the same lines; what varies is which *behaviour* is pinned.
+# Mutation testing is the tool that tells those apart — it reports the
+# code that can be changed without any test noticing.
+#
+# The loop for a change is the diff:
+#
+#     git diff origin/main > /tmp/change.diff
+#     cargo mutants --in-diff /tmp/change.diff
+#
+# and a sweep of one crate is `cargo mutants -p hansei-runtime` (~25
+# minutes). See https://mutants.rs/.
+
+test_tool = "nextest"
+
+# Which crates' tests judge a mutant. The default — the mutated crate's
+# own tests — is wrong here: hansei-runtime is a library its consumers
+# assert, so `FutureCensus::locate`, the render helpers and the listing
+# rows are exercised from hansei and read as untested on their own.
+#
+# exegesis is deliberately absent. Its goldens build the fixture
+# programs once per test *run* (`testrun::once_per_run`, stamped with
+# NEXTEST_RUN_ID), and a mutation sweep is one run per mutant — so
+# every mutant would pay a full fixture build.
+test_package = ["hansei-bundle", "reify", "proc", "hansei-runtime", "hansei"]
+
+exclude_globs = [
+    # Mutated by nothing that runs: see test_package above.
+    "exegesis/**",
+    # Fixture programs and the dashboard's TypeScript build.
+    "test-programs/**",
+]
+
+exclude_re = [
+    # Equivalent mutants: the arm deleted falls through to a `_` arm
+    # returning the same thing, so nothing can tell the difference. The
+    # arm is there to say *why* a union is stopped at.
+    "delete match arm TypeClass::Union in scan_plan",
+]
