@@ -386,6 +386,7 @@ pub fn census_bounded<T: Target>(
     }
 
     walker.spans.sort_unstable();
+    walker.errors.extend(span_overlap_errors(&walker.spans));
     FutureCensus {
         sets: walker.sets,
         join_sets: walker.join_sets,
@@ -394,6 +395,30 @@ pub fn census_bounded<T: Target>(
         errors: walker.errors,
         capped: walker.capped,
     }
+}
+
+/// The reports for any two sorted spans claiming one byte. No healthy
+/// walk produces one — each node is one allocation — but a bent list
+/// can graft one set's node into another set's chain, and each walk,
+/// correct in isolation, then claims that allocation for its own
+/// child. Which claim is real is unknowable here, so both stand in the
+/// listing and these say they conflict. Touching spans are adjacent
+/// allocations, not a conflict.
+fn span_overlap_errors(spans: &[(u64, u64, usize, usize)]) -> Vec<anyhow::Error> {
+    spans
+        .windows(2)
+        .filter_map(|pair| {
+            let &[(a_start, a_end, ..), (b_start, ..)] = pair else {
+                return None;
+            };
+            (a_end > b_start).then(|| {
+                anyhow!(
+                    "the set nodes at {a_start:#x} and {b_start:#x} overlap: \
+                     two sets claim one allocation"
+                )
+            })
+        })
+        .collect()
 }
 
 impl<'b, T: Target> Walker<'_, 'b, T> {
@@ -586,6 +611,18 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 value.addr,
                 children.len()
             )));
+        } else if children.len() as u64 != length {
+            // Both lists ran to their ends and still disagree with the
+            // count the set keeps for itself: the length word or a
+            // list link lies — a bent link can graft entries in as
+            // well as cut them off — and nothing can say which. The
+            // listing carries both numbers; this says they conflict.
+            self.errors.push(anyhow!(
+                "the JoinSet at {:#x} lists {} tasks against its own count of {}",
+                value.addr,
+                children.len(),
+                length
+            ));
         }
         self.join_sets.push(JoinSet {
             owner,
@@ -1641,5 +1678,23 @@ mod tests {
         // a caller asks before deciding whether to say so.
         assert!(census.capped.any(), "{:?}", census.capped);
         assert_eq!(census.capped.total(), census.capped.deep);
+    }
+
+    /// The walk's own overlap report: any two sorted spans sharing a
+    /// byte produce one, touching spans produce none.
+    #[test]
+    fn test_span_overlaps_are_reported_and_adjacency_is_not() {
+        let overlapping = [(0x5000, 0x5020, 0, 0), (0x5010, 0x5030, 1, 0)];
+        let errors = span_overlap_errors(&overlapping);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let report = format!("{:#}", errors[0]);
+        assert!(
+            report.contains("0x5000") && report.contains("0x5010"),
+            "{report}"
+        );
+
+        let touching = [(0x5000, 0x5010, 0, 0), (0x5010, 0x5020, 1, 0)];
+        assert!(span_overlap_errors(&touching).is_empty());
+        assert!(span_overlap_errors(&[]).is_empty());
     }
 }
