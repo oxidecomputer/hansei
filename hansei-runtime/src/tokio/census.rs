@@ -286,6 +286,327 @@ impl FutureCensus {
         let &(start, end, set, child) = self.spans.get(at.checked_sub(1)?)?;
         (addr < end).then(|| (set, child, addr - start))
     }
+
+    /// Check the census against its own construction rules: the
+    /// invariants that hold over *any* input, corrupt memory included,
+    /// because the walk builds these properties itself rather than
+    /// reading them from the target. A violation is therefore a census
+    /// bug, never a fact about the target — which is what lets a fault
+    /// campaign assert this over output produced from damaged memory,
+    /// where nothing about the *content* of the listing can be
+    /// asserted at all.
+    ///
+    /// `list` must be the [`TaskList`] the census was built from. One
+    /// line per violation; empty is clean. [`FutureCensus::audit`]
+    /// adds the invariants only a healthy capture guarantees.
+    pub fn audit_total(&self, list: &TaskList) -> Vec<String> {
+        let mut v = Vec::new();
+
+        // Every find belongs to an enumerated task, and every find
+        // reached through another names one that exists — recorded
+        // *earlier* where the two live in the same table, which is the
+        // index-reservation rule made checkable.
+        for (i, held) in self.held.iter().enumerate() {
+            self.check_owner("held find", i, held.owner, list, &mut v);
+            self.check_via("held find", i, held.via, i, self.sets.len(), &mut v);
+            check_summary(
+                &format!("held find {i}"),
+                held.depth,
+                held.state.is_some(),
+                held.waiting_on.is_some(),
+                held.wait.is_some(),
+                held.leaf.is_some(),
+                &mut v,
+            );
+        }
+        for (i, set) in self.sets.iter().enumerate() {
+            self.check_owner("set", i, set.owner, list, &mut v);
+            self.check_via("set", i, set.via, self.held.len(), i, &mut v);
+            for (c, child) in set.children.iter().enumerate() {
+                let what = format!("set {i} child {c}");
+                // An empty slot holds no future, so it roots nowhere
+                // and stands on no frames; a resident child roots
+                // exactly where its future is.
+                if child.future.is_none() != child.root.is_none() {
+                    v.push(format!(
+                        "{what} has a future without a root, or a root without a future"
+                    ));
+                }
+                if child.future.is_none() && child.depth != 0 {
+                    v.push(format!(
+                        "{what} is an empty slot standing on {} frames",
+                        child.depth
+                    ));
+                }
+                check_summary(
+                    &what,
+                    child.depth,
+                    child.state.is_some(),
+                    child.waiting_on.is_some(),
+                    child.wait.is_some(),
+                    child.leaf.is_some(),
+                    &mut v,
+                );
+            }
+        }
+        for (i, set) in self.join_sets.iter().enumerate() {
+            self.check_owner("join set", i, set.owner, list, &mut v);
+            self.check_via(
+                "join set",
+                i,
+                set.via,
+                self.held.len(),
+                self.sets.len(),
+                &mut v,
+            );
+            let mut entries = HashSet::default();
+            for child in &set.children {
+                if !entries.insert(child.entry) {
+                    v.push(format!(
+                        "the join set at {:#x} lists the entry at {:#x} twice",
+                        set.addr, child.entry
+                    ));
+                }
+                if child.listed != list.contains(child.task) {
+                    v.push(format!(
+                        "the join set member at {:#x} is marked listed={} against the task list",
+                        child.task, child.listed
+                    ));
+                }
+            }
+            // A walk may disagree with the set's own length — a failed
+            // walk runs short, a bent link grafts entries in — but
+            // never silently: the escape hatch is part of the
+            // invariant, which is what keeps it total over corrupt
+            // input.
+            if set.children.len() as u64 != set.length && !self.some_error_names(set.addr) {
+                v.push(format!(
+                    "the join set at {:#x} lists {} tasks against a length of {}, and no error says so",
+                    set.addr,
+                    set.children.len(),
+                    set.length
+                ));
+            }
+        }
+
+        // No two rows of one population claim one future: what
+        // `Walker::visited` promises regardless of input.
+        let mut seen = HashSet::default();
+        for held in &self.held {
+            if !seen.insert((held.addr, held.ty)) {
+                v.push(format!("two held finds at {:#x} share a type", held.addr));
+            }
+        }
+        let mut seen = HashSet::default();
+        for set in &self.sets {
+            if !seen.insert((set.addr, set.ty.as_str())) {
+                v.push(format!("the set at {:#x} is recorded twice", set.addr));
+            }
+        }
+        let mut seen = HashSet::default();
+        for set in &self.join_sets {
+            if !seen.insert((set.addr, set.ty.as_str())) {
+                v.push(format!("the join set at {:#x} is recorded twice", set.addr));
+            }
+        }
+
+        // The spans are the walk's record of where every child node
+        // lies: sorted, disjoint, one per child, each naming the child
+        // whose node it covers. `locate` resolves raw pointers through
+        // them by binary search, so any breach here is a `whatis` that
+        // names the wrong child.
+        let mut claimed = HashSet::default();
+        for (i, &(start, end, set, child)) in self.spans.iter().enumerate() {
+            if let Some(&(prev_start, prev_end, ..)) = i.checked_sub(1).map(|p| &self.spans[p]) {
+                if prev_start > start {
+                    v.push(format!(
+                        "the span at {start:#x} sorts before its predecessor"
+                    ));
+                } else if prev_end > start && !self.some_error_names(start) {
+                    // The same escape hatch as a join set's length: a
+                    // bent list can make two correct walks claim one
+                    // allocation, so what is total is that an overlap
+                    // is never silent.
+                    v.push(format!(
+                        "the span {start:#x}..{end:#x} overlaps its predecessor ending at {prev_end:#x}, and no error says so"
+                    ));
+                }
+            }
+            match self.sets.get(set).and_then(|s| s.children.get(child)) {
+                None => v.push(format!(
+                    "the span {start:#x}..{end:#x} names set {set} child {child}, which does not exist"
+                )),
+                Some(c) if c.node != start => v.push(format!(
+                    "the span at {start:#x} claims the child whose node is at {:#x}",
+                    c.node
+                )),
+                Some(_) => {}
+            }
+            if !claimed.insert((set, child)) {
+                v.push(format!("set {set} child {child} has two spans"));
+            }
+        }
+        let children: usize = self.sets.iter().map(|s| s.children.len()).sum();
+        if self.spans.len() != children {
+            v.push(format!(
+                "{} spans for {} set children",
+                self.spans.len(),
+                children
+            ));
+        }
+
+        // An error is a report, and a report that names no address
+        // gives a reader nothing to look at.
+        for (i, e) in self.errors.iter().enumerate() {
+            if !format!("{e:#}").contains("0x") {
+                v.push(format!("error {i} names no address: {e:#}"));
+            }
+        }
+
+        v
+    }
+
+    /// [`FutureCensus::audit_total`] plus the invariants a healthy
+    /// capture guarantees but corruption may legitimately break, for
+    /// input known to be good.
+    ///
+    /// The one cross-population overlap deliberately *not* asserted:
+    /// a future can appear as both a set child and a held find, since
+    /// set children are recorded by the set walk and never keyed into
+    /// the dedup — an accepted risk, reachable only through unsafe
+    /// code.
+    pub fn audit(&self, list: &TaskList) -> Vec<String> {
+        let mut v = self.audit_total(list);
+
+        // A live future is one set's child, once.
+        let mut roots = HashSet::default();
+        for set in &self.sets {
+            for child in &set.children {
+                if let Some(root) = child.root
+                    && !roots.insert((root.addr, root.ty))
+                {
+                    v.push(format!(
+                        "the future at {:#x} is more than one set's child",
+                        root.addr
+                    ));
+                }
+            }
+        }
+
+        // A task joins one set through one entry. Within one set the
+        // entry check is total (the walk's own cycle guard); across
+        // sets, and for the task behind the entry, only healthy memory
+        // promises it.
+        let mut entries: HashMap<u64, usize> = HashMap::default();
+        let mut members = HashSet::default();
+        for (i, set) in self.join_sets.iter().enumerate() {
+            for child in &set.children {
+                if let Some(prev) = entries.insert(child.entry, i)
+                    && prev != i
+                {
+                    v.push(format!(
+                        "the entry at {:#x} is in two join sets",
+                        child.entry
+                    ));
+                }
+                if !members.insert(child.task) {
+                    v.push(format!(
+                        "the task at {:#x} is joined more than once",
+                        child.task
+                    ));
+                }
+            }
+        }
+
+        v
+    }
+
+    /// Whether some recorded error's report names `addr`.
+    fn some_error_names(&self, addr: u64) -> bool {
+        let spelled = format!("{addr:#x}");
+        self.errors
+            .iter()
+            .any(|e| format!("{e:#}").contains(&spelled))
+    }
+
+    fn check_owner(
+        &self,
+        kind: &str,
+        index: usize,
+        owner: usize,
+        list: &TaskList,
+        v: &mut Vec<String>,
+    ) {
+        if owner >= list.tasks.len() {
+            v.push(format!(
+                "{kind} {index} names owner {owner} of {} tasks",
+                list.tasks.len()
+            ));
+        }
+    }
+
+    /// One `via`'s validity: it names a find that exists — recorded
+    /// earlier, where both live in the same table — and a set child it
+    /// arrives through actually holds a future, since the walk only
+    /// descends into resident children.
+    fn check_via(
+        &self,
+        kind: &str,
+        index: usize,
+        via: Option<Via>,
+        held_limit: usize,
+        set_limit: usize,
+        v: &mut Vec<String>,
+    ) {
+        match via {
+            None => {}
+            Some(Via::Held(h)) => {
+                if h >= held_limit {
+                    v.push(format!(
+                        "{kind} {index} was reached via held find {h}, which is not earlier-recorded"
+                    ));
+                }
+            }
+            Some(Via::SetChild { set, child }) => {
+                if set >= set_limit {
+                    v.push(format!(
+                        "{kind} {index} was reached via set {set}, which is not earlier-recorded"
+                    ));
+                } else if self.sets[set].children.get(child).is_none() {
+                    v.push(format!(
+                        "{kind} {index} was reached via set {set} child {child}, which does not exist"
+                    ));
+                } else if self.sets[set].children[child].future.is_none() {
+                    v.push(format!(
+                        "{kind} {index} was reached via set {set} child {child}, an empty slot"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// The conventions every reduced chain summary obeys, held future and
+/// set child alike: a find standing on no frames has nothing to
+/// summarize, and a wait is counted exactly when it is named — both
+/// halves come from one recognized target.
+fn check_summary(
+    what: &str,
+    depth: usize,
+    state: bool,
+    waiting_on: bool,
+    wait: bool,
+    leaf: bool,
+    v: &mut Vec<String>,
+) {
+    if depth == 0 && (state || waiting_on || wait || leaf) {
+        v.push(format!("{what} stands on no frames but carries a summary"));
+    }
+    if wait != waiting_on {
+        v.push(format!(
+            "{what} counts a wait it does not name, or names one it does not count"
+        ));
+    }
 }
 
 /// What one scan hit is; [`Walker::record`] decides what to do with it.
@@ -1556,6 +1877,9 @@ mod tests {
         let list = testkit::tasks(&ctx, &snapshot);
         let census = census_bounded(&ctx, &list, bounds);
         assert!(census.errors.is_empty(), "{:?}", census.errors);
+        // A healthy capture passes both audit classes, bounded or not.
+        let violations = census.audit(&list);
+        assert!(violations.is_empty(), "{violations:#?}");
         census
     }
 
@@ -1680,6 +2004,296 @@ mod tests {
         assert_eq!(census.capped.total(), census.capped.deep);
     }
 
+    // -----------------------------------------------------------------
+    // The audit
+    // -----------------------------------------------------------------
+    //
+    // Each invariant is broken one at a time in a census built by hand,
+    // because no walk over any memory is supposed to be able to break
+    // one: the real captures (healthy and corrupted both) only ever
+    // show the audit passing, so the flagging side is pinned here or
+    // nowhere.
+
+    use super::super::TaskAddr;
+    use super::super::bundle::{FutureInfo, Task};
+
+    use anyhow::anyhow;
+
+    /// A list of `n` tasks at distinct addresses, for owners to name.
+    fn task_list(n: usize) -> TaskList {
+        TaskList {
+            tasks: (0..n)
+                .map(|i| Task {
+                    addr: TaskAddr(0x100 + i as u64 * 0x40),
+                    state: TaskState(0),
+                    owner_id: None,
+                    task_id: None,
+                    spawn_location: None,
+                    future: FutureInfo::Unknown { poll_symbol: None },
+                    group: 0,
+                })
+                .collect(),
+            errors: Vec::new(),
+        }
+    }
+
+    fn blank() -> FutureCensus {
+        FutureCensus {
+            sets: Vec::new(),
+            join_sets: Vec::new(),
+            held: Vec::new(),
+            spans: Vec::new(),
+            errors: Vec::new(),
+            capped: Capped::default(),
+        }
+    }
+
+    fn a_held(owner: usize, addr: u64) -> HeldFuture {
+        HeldFuture {
+            owner,
+            frame: 0,
+            local: "held".to_string(),
+            via: None,
+            addr,
+            ty: BundleTypeId(0),
+            depth: 1,
+            future: "f".to_string(),
+            state: None,
+            waiting_on: None,
+            wait: None,
+            leaf: None,
+        }
+    }
+
+    fn a_child(node: u64, root: u64) -> SetChild {
+        SetChild {
+            node,
+            depth: 1,
+            future: Some("f".to_string()),
+            root: Some(FutureRoot {
+                addr: root,
+                ty: BundleTypeId(0),
+            }),
+            state: None,
+            waiting_on: None,
+            wait: None,
+            leaf: None,
+        }
+    }
+
+    fn a_set(addr: u64, ty: &str, children: Vec<SetChild>) -> FutureSet {
+        FutureSet {
+            owner: 0,
+            frame: 0,
+            local: "set".to_string(),
+            via: None,
+            addr,
+            ty: ty.to_string(),
+            children,
+        }
+    }
+
+    fn a_join_set(addr: u64, length: u64, children: Vec<JoinedTask>) -> JoinSet {
+        JoinSet {
+            owner: 0,
+            frame: 0,
+            local: "set".to_string(),
+            via: None,
+            addr,
+            ty: "J".to_string(),
+            length,
+            children,
+        }
+    }
+
+    fn a_member(entry: u64, task: u64, listed: bool) -> JoinedTask {
+        JoinedTask {
+            entry,
+            task,
+            id: None,
+            state: TaskState(0),
+            listed,
+        }
+    }
+
+    /// Spans as the walk records them: one per child, sorted, `size`
+    /// bytes each.
+    fn spans_of(sets: &[FutureSet], size: u64) -> Vec<(u64, u64, usize, usize)> {
+        let mut spans: Vec<_> = sets
+            .iter()
+            .enumerate()
+            .flat_map(|(s, set)| {
+                set.children
+                    .iter()
+                    .enumerate()
+                    .map(move |(c, child)| (child.node, child.node + size, s, c))
+            })
+            .collect();
+        spans.sort_unstable();
+        spans
+    }
+
+    #[track_caller]
+    fn assert_flags(violations: &[String], needle: &str) {
+        assert!(
+            violations.iter().any(|v| v.contains(needle)),
+            "no violation containing {needle:?}: {violations:#?}"
+        );
+    }
+
+    /// The audit passes a census whose every rule holds — the baseline
+    /// each breakage below stands against, over the same constructors.
+    #[test]
+    fn test_the_audit_passes_a_sound_census() {
+        let list = task_list(2);
+        let mut census = blank();
+        census.held.push(a_held(0, 0x2000));
+        census.held.push({
+            let mut nested = a_held(1, 0x3000);
+            nested.via = Some(Via::Held(0));
+            nested
+        });
+        // Two children whose nodes touch: adjacent allocations, which
+        // no invariant may mistake for an overlap.
+        census.sets.push(a_set(
+            0x4000,
+            "S",
+            vec![a_child(0x5000, 0x5008), a_child(0x5020, 0x5028)],
+        ));
+        census.spans = spans_of(&census.sets, 0x20);
+        census
+            .join_sets
+            .push(a_join_set(0x6000, 1, vec![a_member(0x7000, 0x140, true)]));
+        assert_eq!(census.audit(&list), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_the_audit_flags_an_owner_off_the_list() {
+        let mut census = blank();
+        census.held.push(a_held(0, 0x2000));
+        assert_flags(
+            &census.audit_total(&task_list(0)),
+            "names owner 0 of 0 tasks",
+        );
+    }
+
+    /// A `Via` may only point at an earlier-recorded find, which is the
+    /// index-reservation rule: a self- or forward-reference means an
+    /// index was taken by something other than what reserved it.
+    #[test]
+    fn test_the_audit_flags_a_via_that_is_not_earlier_recorded() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.held.push({
+            let mut held = a_held(0, 0x2000);
+            held.via = Some(Via::Held(0));
+            held
+        });
+        assert_flags(&census.audit_total(&list), "not earlier-recorded");
+
+        let mut census = blank();
+        census.sets.push({
+            let mut set = a_set(0x4000, "S", Vec::new());
+            set.via = Some(Via::SetChild { set: 0, child: 0 });
+            set
+        });
+        assert_flags(&census.audit_total(&list), "not earlier-recorded");
+    }
+
+    /// Nothing is reachable through an empty slot: the walk descends
+    /// only into resident children.
+    #[test]
+    fn test_the_audit_flags_a_via_through_an_empty_slot() {
+        let list = task_list(1);
+        let mut census = blank();
+        let mut reaped = a_child(0x5000, 0);
+        reaped.future = None;
+        reaped.root = None;
+        reaped.depth = 0;
+        census.sets.push(a_set(0x4000, "S", vec![reaped]));
+        census.spans = spans_of(&census.sets, 0x20);
+        census.held.push({
+            let mut held = a_held(0, 0x2000);
+            held.via = Some(Via::SetChild { set: 0, child: 0 });
+            held
+        });
+        assert_flags(&census.audit_total(&list), "an empty slot");
+
+        census.held[0].via = Some(Via::SetChild { set: 0, child: 9 });
+        assert_flags(&census.audit_total(&list), "does not exist");
+    }
+
+    /// Overlapping spans are two children claiming one allocation —
+    /// which a bent list can genuinely produce, so the total invariant
+    /// is that the overlap is never *silent*: an error naming it is
+    /// the escape hatch.
+    #[test]
+    fn test_the_audit_flags_a_silent_span_overlap() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.sets.push(a_set(
+            0x4000,
+            "S",
+            vec![a_child(0x5000, 0x5010), a_child(0x5010, 0x5020)],
+        ));
+        census.spans = spans_of(&census.sets, 0x20);
+        assert_flags(&census.audit_total(&list), "overlaps its predecessor");
+
+        census
+            .errors
+            .push(anyhow!("the set nodes at 0x5000 and 0x5010 overlap"));
+        let violations = census.audit_total(&list);
+        assert!(
+            !violations.iter().any(|v| v.contains("overlaps")),
+            "{violations:#?}"
+        );
+    }
+
+    /// The spans are searched by binary search, so their order is load-
+    /// bearing on its own, sorted being what the walk promises.
+    #[test]
+    fn test_the_audit_flags_spans_out_of_order() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.sets.push(a_set(
+            0x4000,
+            "S",
+            vec![a_child(0x5100, 0x5110), a_child(0x5000, 0x5010)],
+        ));
+        census.spans = vec![(0x5100, 0x5120, 0, 0), (0x5000, 0x5020, 0, 1)];
+        assert_flags(&census.audit_total(&list), "sorts before its predecessor");
+    }
+
+    /// Two claims on one node sort as equals, which is a (reported)
+    /// overlap and not a sort violation.
+    #[test]
+    fn test_two_claims_on_one_node_sort_as_equals() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.sets.push(a_set(
+            0x4000,
+            "S",
+            vec![a_child(0x5000, 0x5010), a_child(0x5000, 0x5030)],
+        ));
+        census.spans = spans_of(&census.sets, 0x20);
+        census
+            .errors
+            .push(anyhow!("the set nodes at 0x5000 and 0x5000 overlap"));
+        assert_eq!(census.audit_total(&list), Vec::<String>::new());
+    }
+
+    /// A span must cover the node of the very child it names.
+    #[test]
+    fn test_the_audit_flags_a_span_claiming_the_wrong_child() {
+        let list = task_list(1);
+        let mut census = blank();
+        census
+            .sets
+            .push(a_set(0x4000, "S", vec![a_child(0x5000, 0x5010)]));
+        census.spans = vec![(0x5008, 0x5028, 0, 0)];
+        assert_flags(&census.audit_total(&list), "claims the child");
+    }
+
     /// The walk's own overlap report: any two sorted spans sharing a
     /// byte produce one, touching spans produce none.
     #[test]
@@ -1696,5 +2310,183 @@ mod tests {
         let touching = [(0x5000, 0x5010, 0, 0), (0x5010, 0x5020, 1, 0)];
         assert!(span_overlap_errors(&touching).is_empty());
         assert!(span_overlap_errors(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_the_audit_flags_a_span_count_mismatch() {
+        let list = task_list(1);
+        let mut census = blank();
+        census
+            .sets
+            .push(a_set(0x4000, "S", vec![a_child(0x5000, 0x5010)]));
+        assert_flags(&census.audit_total(&list), "0 spans for 1 set children");
+    }
+
+    /// A find standing on no frames has nothing to summarize, and a
+    /// wait is counted exactly when it is named.
+    #[test]
+    fn test_the_audit_flags_a_summary_that_disagrees_with_its_depth() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.held.push({
+            let mut held = a_held(0, 0x2000);
+            held.depth = 0;
+            held.state = Some("Suspend0".to_string());
+            held
+        });
+        assert_flags(
+            &census.audit_total(&list),
+            "no frames but carries a summary",
+        );
+
+        // Each summary field alone betrays the missing frames.
+        for leftovers in [
+            (|held: &mut HeldFuture| held.waiting_on = Some("a Notify".to_string()))
+                as fn(&mut HeldFuture),
+            |held| held.leaf = Some("tokio::sync::notify::Notified".to_string()),
+        ] {
+            let mut census = blank();
+            census.held.push({
+                let mut held = a_held(0, 0x2000);
+                held.depth = 0;
+                leftovers(&mut held);
+                held
+            });
+            assert_flags(
+                &census.audit_total(&list),
+                "no frames but carries a summary",
+            );
+        }
+
+        let mut census = blank();
+        census.held.push({
+            let mut held = a_held(0, 0x2000);
+            held.waiting_on = Some("a Notify".to_string());
+            held
+        });
+        assert_flags(&census.audit_total(&list), "counts a wait");
+    }
+
+    /// An empty slot roots nowhere and stands on no frames.
+    #[test]
+    fn test_the_audit_flags_an_empty_slot_with_leftovers() {
+        let list = task_list(1);
+        let mut census = blank();
+        let mut child = a_child(0x5000, 0x5010);
+        child.future = None;
+        census.sets.push(a_set(0x4000, "S", vec![child]));
+        census.spans = spans_of(&census.sets, 0x20);
+        let violations = census.audit_total(&list);
+        assert_flags(&violations, "root without a future");
+
+        let mut census = blank();
+        let mut child = a_child(0x5000, 0x5010);
+        child.future = None;
+        child.root = None;
+        census.sets.push(a_set(0x4000, "S", vec![child]));
+        census.spans = spans_of(&census.sets, 0x20);
+        assert_flags(
+            &census.audit_total(&list),
+            "empty slot standing on 1 frames",
+        );
+    }
+
+    #[test]
+    fn test_the_audit_flags_a_duplicate_row() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.held.push(a_held(0, 0x2000));
+        census.held.push(a_held(0, 0x2000));
+        assert_flags(&census.audit_total(&list), "share a type");
+
+        let mut census = blank();
+        census.sets.push(a_set(0x4000, "S", Vec::new()));
+        census.sets.push(a_set(0x4000, "S", Vec::new()));
+        assert_flags(&census.audit_total(&list), "recorded twice");
+    }
+
+    /// A join set listing other than its own length is silent
+    /// fabrication (a grafted entry) or silent omission (a cut list) —
+    /// unless an error already says the walk went wrong, which is the
+    /// escape hatch that keeps the invariant total.
+    #[test]
+    fn test_the_audit_flags_a_long_join_set_without_an_error() {
+        let list = task_list(1);
+        let mut census = blank();
+        census
+            .join_sets
+            .push(a_join_set(0x6000, 0, vec![a_member(0x7000, 0x9000, false)]));
+        assert_flags(&census.audit_total(&list), "no error says so");
+
+        census.join_sets[0].length = 2;
+        assert_flags(&census.audit_total(&list), "no error says so");
+
+        census
+            .errors
+            .push(anyhow!("the JoinSet at 0x6000 lists only 1 of its tasks"));
+        let violations = census.audit_total(&list);
+        assert!(
+            !violations.iter().any(|v| v.contains("no error says so")),
+            "{violations:#?}"
+        );
+    }
+
+    #[test]
+    fn test_the_audit_flags_a_duplicate_entry_and_a_wrong_listed_flag() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.join_sets.push(a_join_set(
+            0x6000,
+            2,
+            vec![
+                a_member(0x7000, 0x9000, false),
+                a_member(0x7000, 0x9100, false),
+            ],
+        ));
+        assert_flags(
+            &census.audit_total(&list),
+            "lists the entry at 0x7000 twice",
+        );
+
+        let mut census = blank();
+        census
+            .join_sets
+            .push(a_join_set(0x6000, 1, vec![a_member(0x7000, 0x9000, true)]));
+        assert_flags(&census.audit_total(&list), "marked listed=true");
+    }
+
+    #[test]
+    fn test_the_audit_flags_an_addressless_error() {
+        let mut census = blank();
+        census.errors.push(anyhow!("something went wrong"));
+        assert_flags(&census.audit_total(&task_list(0)), "names no address");
+    }
+
+    /// The healthy-only class: shapes corruption may legitimately
+    /// produce — so the total audit accepts them — that a sound
+    /// capture cannot.
+    #[test]
+    fn test_the_healthy_audit_flags_cross_population_duplicates() {
+        let list = task_list(1);
+        let mut census = blank();
+        census
+            .sets
+            .push(a_set(0x4000, "S", vec![a_child(0x5000, 0x8000)]));
+        census
+            .sets
+            .push(a_set(0x4100, "T", vec![a_child(0x5100, 0x8000)]));
+        census.spans = spans_of(&census.sets, 0x20);
+        census
+            .join_sets
+            .push(a_join_set(0x6000, 1, vec![a_member(0x7000, 0x9000, false)]));
+        census
+            .join_sets
+            .push(a_join_set(0x6100, 1, vec![a_member(0x7000, 0x9000, false)]));
+        assert_eq!(census.audit_total(&list), Vec::<String>::new());
+
+        let violations = census.audit(&list);
+        assert_flags(&violations, "more than one set's child");
+        assert_flags(&violations, "in two join sets");
+        assert_flags(&violations, "joined more than once");
     }
 }

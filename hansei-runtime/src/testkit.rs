@@ -90,6 +90,21 @@ pub fn tasks<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> TaskList {
     discover(ctx, snapshot).2
 }
 
+/// The future census over an enumerated list, held to its construction
+/// rules: the total audit invariants hold over any input whatsoever, so
+/// every test census — healthy pair and fault campaign alike — runs
+/// through here. Errors and caps come back intact; a test over a
+/// healthy pair asserts on those (and the healthy-only audit) itself.
+pub fn census<T: Target>(
+    ctx: &Context<'_, T>,
+    list: &TaskList,
+) -> crate::tokio::census::FutureCensus {
+    let census = crate::tokio::census::census(ctx, list);
+    let violations = census.audit_total(list);
+    assert!(violations.is_empty(), "census audit: {violations:#?}");
+    census
+}
+
 /// The io registry's discovery candidates, before the identification
 /// chain takes them.
 ///

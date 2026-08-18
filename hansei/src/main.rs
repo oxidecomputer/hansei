@@ -98,6 +98,15 @@ struct SessionArgs {
     /// descent is finding.
     #[arg(long, value_name = "LEVELS", default_value_t = census::Bounds::default().scan_depth)]
     search_depth: usize,
+
+    /// Check the census against its own construction rules whenever
+    /// one is taken, reporting any violation on stderr. The total
+    /// class holds over any core whatsoever; the healthy-only class is
+    /// the operator's judgment that this core is sound. Hidden: a
+    /// violation is a hansei bug to report, not a fact about the
+    /// target.
+    #[arg(long, hide = true)]
+    audit: bool,
 }
 
 /// Everything a session can be asked. These are read from stdin, never
@@ -641,6 +650,8 @@ pub struct Session<'b> {
     /// Where the census walk stops, `--search-depth` having moved the
     /// one bound a session can set.
     bounds: census::Bounds,
+    /// Whether `--audit` asked for the census's self-check.
+    audit: bool,
     analysis: OnceCell<Analysis>,
 }
 
@@ -726,6 +737,7 @@ impl<'b> Session<'b> {
                 scan_depth: args.search_depth,
                 ..census::Bounds::default()
             },
+            audit: args.audit,
             analysis: OnceCell::new(),
         })
     }
@@ -736,8 +748,19 @@ impl<'b> Session<'b> {
     }
 
     fn census(&self) -> &census::FutureCensus {
-        self.census
-            .get_or_init(|| census::census_bounded(&self.ctx, &self.tasks, self.bounds))
+        self.census.get_or_init(|| {
+            let census = census::census_bounded(&self.ctx, &self.tasks, self.bounds);
+            if self.audit {
+                let violations = census.audit(&self.tasks);
+                if violations.is_empty() {
+                    let _ = writeln!(io::stderr(), "census audit: clean");
+                }
+                for violation in violations {
+                    let _ = writeln!(io::stderr(), "warning: census audit: {violation}");
+                }
+            }
+            census
+        })
     }
 
     fn analysis(&self) -> &Analysis {
