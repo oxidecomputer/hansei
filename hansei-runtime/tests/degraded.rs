@@ -22,7 +22,7 @@ use hansei_bundle::{Bundle, BundleTypeId, BundleView, DiscrValue};
 use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
 use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
 use hansei_runtime::tokio::{census, graph};
-use proc::snapshot::Snapshot;
+use proc::snapshot::{Recorder, Snapshot};
 use proc::{LwpInfo, Mappings, Regs, SymbolBuf, Target};
 
 use std::ops::Range;
@@ -797,4 +797,217 @@ fn test_a_set_node_cycle_is_bounded() {
     assert_eq!(degraded.sets[0].children.len(), 2, "{:#?}", degraded.sets);
     let err = format!("{:#}", degraded.errors[0]);
     assert!(err.contains("set node cycle"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// The seeded fault campaign
+// ---------------------------------------------------------------------------
+//
+// The tests above aim each corruption at one guard by hand; the
+// campaign aims them by chance, everywhere the walk actually reads.
+// The healthy pipeline is replayed once under a [`Recorder`] to learn
+// its read set, then each seed lays a handful of faults on those bytes
+// — denied ranges, lying words, aliased pointers, zeroed words — and
+// re-runs the whole pipeline over the damage.
+//
+// Nothing about the *content* of a run's output can be asserted: the
+// oracle is that every stage degrades rather than crashes or loops,
+// that the census still obeys its construction rules (the total audit,
+// run inside `testkit::census`), and that whatever errors it reports
+// name an address. Exactness is the healthy suites' business; this
+// asserts that damage cannot make the walks lie about their own
+// structure.
+//
+// A failure prints its seed; replay one with
+// `HANSEI_CAMPAIGN_SEED=<n>`, and raise the per-pair count from the
+// default with `HANSEI_CAMPAIGN_N=<n>`.
+
+/// xorshift64*: tiny, seedable, and plenty for aiming faults.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        // A zero state would stay zero; fold the seed away from it.
+        Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1)
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// Names the failing seed while the assertion that killed the test
+/// unwinds, so a failure is replayable without rerunning the sweep.
+struct SeedGuard {
+    program: &'static str,
+    seed: u64,
+}
+
+impl Drop for SeedGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "campaign seed {} failed on {}; replay it alone with HANSEI_CAMPAIGN_SEED={}",
+                self.seed, self.program, self.seed
+            );
+        }
+    }
+}
+
+/// Every extent the healthy pipeline reads, learned by replaying it
+/// through the production [`Recorder`] — the same wrapper snapshot
+/// capture uses. Faults aimed anywhere else would never be seen.
+fn healthy_read_set(bundle: &Bundle, snapshot: &Snapshot) -> Vec<Range<u64>> {
+    let recorder = Recorder::new(snapshot);
+    let ctx = Context::new(&recorder, BundleView::new(bundle)).expect("snapshot has mappings");
+    let list = tasks_of(&ctx, snapshot);
+    let _ = graph::analyze(&ctx, &list);
+    let _ = testkit::census(&ctx, &list);
+    recorder
+        .snapshot()
+        .expect("the recorder assembles a snapshot")
+        .segments()
+        .collect()
+}
+
+/// A random aligned word inside the read set, with room for all eight
+/// bytes.
+fn pick_word(rng: &mut Rng, reads: &[Range<u64>]) -> Option<u64> {
+    for _ in 0..16 {
+        let range = &reads[rng.below(reads.len() as u64) as usize];
+        let start = range.start.next_multiple_of(8);
+        let Some(end) = range.end.checked_sub(8).filter(|end| *end >= start) else {
+            continue;
+        };
+        return Some(start + 8 * rng.below((end - start) / 8 + 1));
+    }
+    None
+}
+
+/// One seed's run: damage, then the whole pipeline — discovery,
+/// enumeration, analysis, census. Every stage may fail; none may
+/// panic, loop, or hand back a census that breaks its own rules.
+/// Says whether the run got as far as a census, so the sweep can tell
+/// it is still reaching the code it exists to hammer.
+fn campaign_run(
+    program: &'static str,
+    bundle: &Bundle,
+    snapshot: &Snapshot,
+    reads: &[Range<u64>],
+    seed: u64,
+) -> bool {
+    let _guard = SeedGuard { program, seed };
+    let mut rng = Rng::new(seed);
+    let mut corrupt = Corrupt::new(snapshot);
+    for _ in 0..1 + rng.below(4) {
+        match rng.below(4) {
+            // A hole where pages were never dumped.
+            0 => {
+                let range = &reads[rng.below(reads.len() as u64) as usize];
+                let offset = rng.below(range.end - range.start);
+                let len = 1 + rng.below(256);
+                corrupt = corrupt.deny(range.start + offset..range.start + offset + len);
+            }
+            // A word that lies: garbage, an aliased pointer to some
+            // other read byte (cycle bait), or zero. A miss — the word
+            // already denied above — mutates nothing, which is a valid
+            // (smaller) fault set for this seed.
+            kind => {
+                let Some(addr) = pick_word(&mut rng, reads) else {
+                    continue;
+                };
+                let value = match kind {
+                    1 => rng.next(),
+                    2 => match pick_word(&mut rng, reads) {
+                        Some(target) => target,
+                        None => continue,
+                    },
+                    _ => 0,
+                };
+                let _ = corrupt.write(addr, value);
+            }
+        }
+    }
+
+    let Ok(ctx) = Context::new(&corrupt, BundleView::new(bundle)) else {
+        return false;
+    };
+    let Ok(lwps) = corrupt.lwps() else {
+        return false;
+    };
+    let Ok(workers) = ctx.find_workers(&lwps) else {
+        return false;
+    };
+    let Ok(mut runtimes) = ctx.find_runtimes(&workers) else {
+        return false;
+    };
+    let Ok(mut list) = ctx.enumerate_all_tasks(&runtimes) else {
+        return false;
+    };
+    let _ = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
+    let _ = graph::analyze(&ctx, &list);
+    let _ = testkit::census(&ctx, &list);
+    true
+}
+
+fn campaign(program: &'static str) {
+    let (bundle, snapshot) = load_any(program);
+    let reads = healthy_read_set(&bundle, &snapshot);
+    assert!(!reads.is_empty(), "the healthy pipeline read something");
+
+    let seeds: Vec<u64> = match std::env::var("HANSEI_CAMPAIGN_SEED") {
+        Ok(seed) => vec![seed.parse().expect("HANSEI_CAMPAIGN_SEED is a number")],
+        Err(_) => {
+            let n = std::env::var("HANSEI_CAMPAIGN_N")
+                .map(|n| n.parse().expect("HANSEI_CAMPAIGN_N is a number"))
+                .unwrap_or(256);
+            (0..n).collect()
+        }
+    };
+    let reached = seeds
+        .iter()
+        .filter(|&&seed| campaign_run(program, &bundle, &snapshot, &reads, seed))
+        .count();
+    // Faults that fail discovery itself are contained earlier and prove
+    // nothing about the census; a sweep whose every seed died there has
+    // quietly stopped testing what it is for.
+    eprintln!(
+        "{program}: {reached} of {} seeds reached the census",
+        seeds.len()
+    );
+    assert!(reached > 0, "no seed of {} reached the census", seeds.len());
+}
+
+#[test]
+fn test_the_census_survives_seeded_faults_on_unordered() {
+    campaign("unordered");
+}
+
+#[test]
+fn test_the_census_survives_seeded_faults_on_joinset() {
+    campaign("joinset");
+}
+
+#[test]
+fn test_the_census_survives_seeded_faults_on_futurelock() {
+    campaign("futurelock");
+}
+
+#[test]
+fn test_the_census_survives_seeded_faults_on_dyn_future() {
+    campaign("dyn-future");
+}
+
+#[test]
+fn test_the_census_survives_seeded_faults_on_sleep_join() {
+    campaign("sleep-join");
 }
