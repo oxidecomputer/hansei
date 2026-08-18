@@ -842,3 +842,59 @@ mod census_warning_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod task_state_tests {
+    use super::task_state;
+
+    use hansei_runtime::tokio::bundle::{FutureInfo, Task};
+    use hansei_runtime::tokio::{TaskAddr, TaskState};
+
+    use std::collections::HashMap;
+
+    /// A task in one state, with an id or without.
+    fn task(state: u64, task_id: Option<u64>) -> Task {
+        Task {
+            addr: TaskAddr(0x1000),
+            state: TaskState(state),
+            owner_id: None,
+            task_id,
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            group: 0,
+        }
+    }
+
+    /// Which worker is mid-poll on a task is the one thing `running`
+    /// alone leaves a reader asking, so it is named where the runtime
+    /// says one — and where it does not, the row says only what it
+    /// knows rather than the worker it last saw.
+    ///
+    /// No fixture cores a target with a task actually running on a
+    /// worker, so this is stated here or nowhere: on a parked capture
+    /// the map is empty and every arm reads the same.
+    #[test]
+    fn test_a_running_task_names_its_worker_where_there_is_one() {
+        const RUNNING: u64 = 0b0001;
+        const IDLE: u64 = 0;
+        let polling = HashMap::from([(7, 42)]);
+
+        assert_eq!(
+            task_state(&task(RUNNING, Some(7)), &polling),
+            "running (lwp 42)"
+        );
+
+        // Running, but the runtime does not say a worker holds it: some
+        // other task's id, or none of its own.
+        assert_eq!(task_state(&task(RUNNING, Some(9)), &polling), "running");
+        assert_eq!(task_state(&task(RUNNING, None), &polling), "running");
+
+        // A worker polling *something* says nothing about a task that
+        // is not running, whatever id it carries.
+        assert_eq!(task_state(&task(IDLE, Some(7)), &polling), "idle");
+        assert_eq!(
+            task_state(&task(RUNNING, Some(7)), &HashMap::new()),
+            "running"
+        );
+    }
+}
