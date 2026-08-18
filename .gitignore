@@ -2,3 +2,7 @@
 
 # Rejected goldens a diverged snapshot writes for review.
 *.snap.new
+
+# cargo-mutants scratch output.
+/mutants.out
+/mutants.out.old
