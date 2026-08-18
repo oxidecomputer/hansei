@@ -361,10 +361,7 @@ fn test_sleep_join_offline() {
 #[test]
 fn test_futurelock_census_offline() {
     let (bundle, snapshot) = load_any("futurelock");
-    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
-    let list = hansei_runtime::testkit::tasks(&ctx, &snapshot);
-
-    let census = census::census(&ctx, &list);
+    let (ctx, list, census) = census_of(&bundle, &snapshot);
     let future1 = census
         .held
         .iter()
@@ -435,13 +432,17 @@ fn census_of<'a>(
 ) {
     let ctx = hansei_runtime::testkit::context(bundle, snapshot);
     let list = hansei_runtime::testkit::tasks(&ctx, snapshot);
-    let census = census::census(&ctx, &list);
+    let census = hansei_runtime::testkit::census(&ctx, &list);
     assert!(census.errors.is_empty(), "{:?}", census.errors);
     assert!(
         !census.capped.any(),
         "the walk hit a hard limit: {:?}",
         census.capped
     );
+    // A healthy capture holds the healthy-only audit invariants too;
+    // the total class already ran inside `testkit::census`.
+    let violations = census.audit(&list);
+    assert!(violations.is_empty(), "{violations:#?}");
     (ctx, list, census)
 }
 

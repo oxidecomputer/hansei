@@ -19,7 +19,7 @@
 //! snapshot's layout.
 
 use hansei_bundle::{Bundle, BundleTypeId, BundleView, DiscrValue};
-use hansei_runtime::testkit::{load_any, tasks as tasks_of};
+use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
 use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
 use hansei_runtime::tokio::{census, graph};
 use proc::snapshot::Snapshot;
@@ -371,12 +371,12 @@ fn test_an_unreadable_semaphore_degrades_the_analysis() {
 fn test_an_unreadable_set_node_keeps_the_walked_prefix() {
     let (bundle, snapshot) = load_any("unordered");
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let baseline = census::census(&ctx, &list);
+    let baseline = testkit::census(&ctx, &list);
     let node = baseline.sets[0].children[1].node;
 
     let corrupt = Corrupt::new(&snapshot).deny(node..node + 0x10);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let degraded = census::census(&ctx, &list);
+    let degraded = testkit::census(&ctx, &list);
 
     assert_eq!(degraded.sets.len(), 1);
     assert_eq!(degraded.sets[0].children.len(), 1, "{:#?}", degraded.sets);
@@ -392,7 +392,7 @@ fn test_an_unreadable_set_node_keeps_the_walked_prefix() {
 fn held_slot(bundle: &Bundle, snapshot: &Snapshot, local: &str) -> (u64, u64) {
     let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, snapshot);
-    let census = census::census(&ctx, &list);
+    let census = testkit::census(&ctx, &list);
     let held = census
         // The task's own find, since the frame is looked up through its
         // chain below: a find the census reached through another lives
@@ -445,7 +445,7 @@ fn test_a_held_future_with_an_unmapped_box_is_listed_undecoded() {
     let corrupt = Corrupt::new(&snapshot).patch(wide, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &snapshot);
-    let degraded = census::census(&ctx, &list);
+    let degraded = testkit::census(&ctx, &list);
 
     assert_eq!(
         held_row(&degraded, "future1"),
@@ -472,7 +472,7 @@ fn test_a_held_future_with_an_unjoinable_vtable_is_listed_unresolved() {
         .patch(boxed + 24, 0);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &snapshot);
-    let degraded = census::census(&ctx, &list);
+    let degraded = testkit::census(&ctx, &list);
 
     let (future, depth) = held_row(&degraded, "future1");
     assert_eq!(depth, 0, "{future}");
@@ -504,12 +504,12 @@ fn test_a_second_reference_to_one_future_is_not_a_second_row() {
     assert_eq!(by_value, root);
 
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let healthy_census = census::census(&ctx, &list);
+    let healthy_census = testkit::census(&ctx, &list);
 
     let corrupt = Corrupt::new(&snapshot).patch(wide, root);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &snapshot);
-    let aliased = census::census(&ctx, &list);
+    let aliased = testkit::census(&ctx, &list);
 
     let rows: Vec<&census::HeldFuture> = aliased.held.iter().filter(|h| h.addr == root).collect();
     assert_eq!(rows.len(), 1, "{:#?}", aliased.held);
@@ -544,7 +544,7 @@ fn joined_set(census: &census::FutureCensus) -> &census::JoinSet {
 fn join_set_entries(bundle: &Bundle, snapshot: &Snapshot) -> (Vec<u64>, u64) {
     let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, snapshot);
-    let census = census::census(&ctx, &list);
+    let census = testkit::census(&ctx, &list);
     let set = joined_set(&census);
     (set.children.iter().map(|c| c.entry).collect(), set.length)
 }
@@ -565,7 +565,7 @@ fn test_an_unreadable_join_set_entry_keeps_the_walked_prefix() {
     let corrupt = Corrupt::new(&snapshot).deny(*second..*second + 0x10);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &snapshot);
-    let degraded = census::census(&ctx, &list);
+    let degraded = testkit::census(&ctx, &list);
 
     let set = joined_set(&degraded);
     assert_eq!(set.children.len(), 1, "{:#?}", set.children);
@@ -595,7 +595,7 @@ fn test_a_join_set_entry_cycle_is_bounded() {
     let corrupt = Corrupt::new(&snapshot).patch_words_equal(*third, *first);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &snapshot);
-    let degraded = census::census(&ctx, &list);
+    let degraded = testkit::census(&ctx, &list);
 
     let set = joined_set(&degraded);
     assert_eq!(set.children.len(), 2, "{:#?}", set.children);
@@ -620,7 +620,7 @@ fn test_an_unmapped_join_set_entry_is_reported() {
     let corrupt = Corrupt::new(&snapshot).patch_words_equal(first, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &snapshot);
-    let degraded = census::census(&ctx, &list);
+    let degraded = testkit::census(&ctx, &list);
 
     let set = joined_set(&degraded);
     assert!(set.children.is_empty(), "{:#?}", set.children);
@@ -643,7 +643,7 @@ fn test_an_unmapped_join_set_entry_is_reported() {
 fn test_a_join_set_listing_against_its_own_count_is_reported() {
     let (bundle, snapshot) = load_any("joinset");
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let baseline = census::census(&ctx, &list);
+    let baseline = testkit::census(&ctx, &list);
     let kept = baseline
         .join_sets
         .iter()
@@ -658,7 +658,7 @@ fn test_a_join_set_listing_against_its_own_count_is_reported() {
     let corrupt = Corrupt::new(&snapshot).patch_words_equal(victim, graft);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &snapshot);
-    let degraded = census::census(&ctx, &list);
+    let degraded = testkit::census(&ctx, &list);
 
     let kept = degraded
         .join_sets
@@ -700,7 +700,7 @@ fn test_a_join_set_listing_against_its_own_count_is_reported() {
 fn test_a_reaped_set_slot_lists_without_a_future() {
     let (bundle, snapshot) = load_any("unordered");
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let baseline = census::census(&ctx, &list);
+    let baseline = testkit::census(&ctx, &list);
 
     // The child holding a set of its own, so that what the reaping
     // costs the census — a whole find, not just this row — is visible.
@@ -749,7 +749,7 @@ fn test_a_reaped_set_slot_lists_without_a_future() {
     let base = root.addr - some.offset - held;
     let corrupt = Corrupt::new(&snapshot).patch(base + discr.offset, none);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let degraded = census::census(&ctx, &list);
+    let degraded = testkit::census(&ctx, &list);
 
     // The reaped child is still a node the set lists, and says nothing
     // about a future rather than guessing at one.
@@ -782,7 +782,7 @@ fn test_a_reaped_set_slot_lists_without_a_future() {
 fn test_a_set_node_cycle_is_bounded() {
     let (bundle, snapshot) = load_any("unordered");
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let baseline = census::census(&ctx, &list);
+    let baseline = testkit::census(&ctx, &list);
     let children: Vec<u64> = baseline.sets[0].children.iter().map(|c| c.node).collect();
     let [first, _, third] = children.as_slice() else {
         panic!("the fixture set holds three children");
@@ -792,7 +792,7 @@ fn test_a_set_node_cycle_is_bounded() {
     // walk sees a node it has already visited.
     let corrupt = Corrupt::new(&snapshot).patch_words_equal(*third, *first);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let degraded = census::census(&ctx, &list);
+    let degraded = testkit::census(&ctx, &list);
 
     assert_eq!(degraded.sets[0].children.len(), 2, "{:#?}", degraded.sets);
     let err = format!("{:#}", degraded.errors[0]);
