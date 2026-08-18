@@ -204,6 +204,26 @@ mod tests {
         );
     }
 
+    /// The spellings of one v0 symbol a target can carry: bare, with
+    /// the leading underscore an object format adds, and with both.
+    /// They are one symbol, so they are one key — a mangled name
+    /// reaching this from a Mach-O symbol table is the `__R` case, and
+    /// it is not the platform the goldens happen to run on that
+    /// decides which of these the join has to accept.
+    #[test]
+    fn test_every_v0_spelling_is_one_key() {
+        let bare = DEBUG
+            .strip_prefix('_')
+            .expect("the fixture symbol is _R-prefixed");
+        let underscored = format!("_{DEBUG}");
+        let key = normalized_v0_key(DEBUG).expect("a v0 symbol demangles");
+        assert_eq!(normalized_v0_key(bare).as_deref(), Some(key.as_str()));
+        assert_eq!(
+            normalized_v0_key(&underscored).as_deref(),
+            Some(key.as_str())
+        );
+    }
+
     #[test]
     fn non_v0_symbols_are_rejected() {
         assert_eq!(normalized_v0_key("malloc"), None);
