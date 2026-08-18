@@ -12,8 +12,25 @@
 #
 # and a sweep of one crate is `cargo mutants -p hansei-runtime` (~25
 # minutes). See https://mutants.rs/.
+#
+# Set HANSEI_REUSE_FIXTURES for any sweep. A sweep is one nextest run
+# per mutant over one scratch copy of the tree per job, so without it
+# every mutant rebuilds the fixture programs and re-extracts every
+# bundle that the last one left sitting there. It is what makes a sweep
+# on a host where the acceptance suite runs affordable (5 s a run
+# against 20 s); see testrun/src/lib.rs for what the digest covers.
 
 test_tool = "nextest"
+
+# Copy only what git tracks. cargo-mutants copies the tree into a
+# scratch dir per job, and does *not* filter by gitignore unless told
+# to: on a host that has built the version matrix, that means 12 GB of
+# fixture binaries and target dirs per job, which exhausts a /tmp quota
+# several jobs in. Skipping them costs nothing — a job builds the
+# fixtures it needs once, and reuses them across its mutants when
+# HANSEI_REUSE_FIXTURES is set. Large *untracked* files in the checkout
+# are still copied; keep debug binaries and cores outside the tree.
+gitignore = true
 
 # Which crates' tests judge a mutant. The default — the mutated crate's
 # own tests — is wrong here: hansei-runtime is a library its consumers
