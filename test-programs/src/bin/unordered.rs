@@ -11,7 +11,9 @@
 //! `inner`), and a find two hops from the driver's own frames — one
 //! child holds a set of its own, and every child holds a future — so
 //! that what the census attributes to whom is pinned by something
-//! other than a comment.
+//! other than a comment. Both ways out of a task's own frames are
+//! covered: through a set's child, and through a future the driver
+//! holds (`nested_hold`), which carries a future of its own.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -33,6 +35,16 @@ const NESTED: usize = 2;
 async fn leaf(notify: Arc<Notify>) -> u32 {
     notify.notified().await;
     7
+}
+
+/// A future holding another future as an *argument* rather than as a
+/// body local. An unpolled coroutine's frame carries its arguments and
+/// nothing else, so this is the one shape whose chain still has a
+/// future to find while it sits unpolled in the frame holding it — and
+/// so the only way a future held by a *held* future arises here.
+async fn holder<F: Future<Output = u32>>(inner: F, notify: Arc<Notify>) -> u32 {
+    notify.notified().await;
+    inner.await
 }
 
 /// A child of the driver's set, holding futures of its own across the
@@ -69,13 +81,22 @@ async fn driver(ready: oneshot::Sender<()>, notify: Arc<Notify>) -> u32 {
     // enum's active variant.
     let pair = (leaf(notify.clone()), 11);
     let maybe = Some(leaf(notify.clone()));
+    // One hop further out than the rest: unpolled like them, but its
+    // frame carries the future passed to it, so what the census finds
+    // here holds a future of its own.
+    let nested_hold = holder(leaf(notify.clone()), notify.clone());
 
     ready.send(()).expect("main waits for readiness");
     let mut sum = 0;
     while let Some(value) = set.next().await {
         sum += value;
     }
-    sum + held.await + boxed.await + pair.0.await + pair.1 + maybe.unwrap().await
+    sum + held.await
+        + boxed.await
+        + pair.0.await
+        + pair.1
+        + maybe.unwrap().await
+        + nested_hold.await
 }
 
 fn main() {

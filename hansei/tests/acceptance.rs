@@ -1653,13 +1653,13 @@ fn test_futures_acceptance() {
         let rows = list_tasks(&bundle, core);
         let driver = task_with_future(&rows, "unordered::driver::{async_fn_env#0}");
 
-        // Four held futures, and one set holding three children — the
+        // Five held futures, and one set holding three children — the
         // driver's own finds, counted apart from what the census went
         // on to find inside them. The plain listing carries both
         // counts, and says `0` for a task the census found nothing for
         // rather than staying silent; `--futures` lists what each
         // counted, under its own row.
-        assert_eq!(driver.futures, "4", "{rows:?}");
+        assert_eq!(driver.futures, "5", "{rows:?}");
         assert_eq!(driver.sets, "1 (3 futures)", "{rows:?}");
         for row in rows.iter().filter(|row| row.id != driver.id) {
             assert_eq!(row.futures, "0", "{row:?}");
@@ -1671,7 +1671,7 @@ fn test_futures_acceptance() {
             "{futures}"
         );
         assert!(
-            futures.contains("    Held futures: 4\n        "),
+            futures.contains("    Held futures: 5\n        "),
             "{futures}"
         );
         assert!(
@@ -1703,8 +1703,9 @@ fn test_futures_acceptance() {
         // The held futures — a bare coroutine and a dyn-boxed one, the
         // census's other two detections — are listed off the driver's
         // spine, never yet polled, and so are the two the scan reached
-        // only by descending into a tuple and into an enum.
-        for local in ["held", "boxed", "pair", "maybe"] {
+        // only by descending into a tuple and into an enum, and the one
+        // carrying a future of its own.
+        for local in ["held", "boxed", "pair", "maybe", "nested_hold"] {
             assert!(
                 futures.contains(&format!("\n        (frame 0, `{local}`)")),
                 "{futures}"
@@ -1741,6 +1742,15 @@ fn test_futures_acceptance() {
         )
         .unwrap();
         assert_eq!(under_set.find_iter(&futures).count(), 2, "{futures}");
+
+        // The same nesting without a set in it: a future the driver
+        // holds carries one, so its row sits one step under the row
+        // that holds it, inside the `Held futures` block. No `held`
+        // mark there — the heading is already the word.
+        let carried_row = r"\(frame 0, `inner`\): 0x[0-9a-f]+  unordered::leaf::\{async_fn_env#0\}";
+        let under_held =
+            regex::Regex::new(&format!(r"\n            {carried_row}  Unresumed")).unwrap();
+        assert_eq!(under_held.find_iter(&futures).count(), 1, "{futures}");
 
         // Narrowing to the driver shows its block alone, with the same
         // finds under it: every one of them is the driver's.
@@ -1915,8 +1925,8 @@ fn test_search_depth_acceptance() {
 
         // What the driver holds outright is still found and still
         // counted; what it holds nested is neither.
-        assert!(listed.contains("    Held futures: 2\n"), "{listed}");
-        for local in ["held", "boxed"] {
+        assert!(listed.contains("    Held futures: 3\n"), "{listed}");
+        for local in ["held", "boxed", "nested_hold"] {
             assert!(
                 listed.contains(&format!("\n        (frame 0, `{local}`)")),
                 "{listed}"
@@ -2209,7 +2219,7 @@ fn test_census_prints_only_the_sections_named() {
 
 /// What a set holds is counted apart from what a frame holds, with the
 /// same split `tasks --futures` lists: five children in flight across
-/// the two sets, and seven futures held in frames beside them.
+/// the two sets, and nine futures held in frames beside them.
 ///
 /// The census counts a find wherever the scan reached it, so nesting
 /// moves nothing between the two populations — a future held inside a
@@ -2221,16 +2231,17 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         let out = hansei_ok(&bundle, core, "census");
         assert!(
             out.contains(
-                "        7  held in frames, off any await chain\n        \
+                "        9  held in frames, off any await chain\n        \
                  5  in 2 FuturesUnordered\n"
             ),
             "{out}"
         );
         // The leaves are what the nesting added: one per set child, two
-        // the driver holds inside a tuple and an enum, and the nested
-        // set's own two children.
+        // the driver holds inside a tuple and an enum, the nested set's
+        // own two children, and the one carried by the future the
+        // driver holds for it.
         assert!(
-            out.contains("        7  unordered::leaf::{async_fn_env#0}\n"),
+            out.contains("        8  unordered::leaf::{async_fn_env#0}\n"),
             "{out}"
         );
         // What all five of them are — the set's children and the two

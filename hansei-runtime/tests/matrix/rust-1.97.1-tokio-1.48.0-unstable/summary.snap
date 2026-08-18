@@ -850,24 +850,26 @@ program: unordered
 [tasks]
 task: unordered::driver::{async_fn_env#0}
   kind: AsyncFn
-  decl: unordered.rs:57
+  decl: unordered.rs:69
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<unordered::driver::{async_fn_env#0}>
   variants:
-    Unresumed @ unordered.rs:57
-    Returned @ unordered.rs:79
-    Panicked @ unordered.rs:79
-    Suspend0 @ unordered.rs:75
-    Suspend1 @ unordered.rs:78
-    Suspend2 @ unordered.rs:78
-    Suspend3 @ unordered.rs:78
-    Suspend4 @ unordered.rs:78
+    Unresumed @ unordered.rs:69
+    Returned @ unordered.rs:100
+    Panicked @ unordered.rs:100
+    Suspend0 @ unordered.rs:91
+    Suspend1 @ unordered.rs:94
+    Suspend2 @ unordered.rs:95
+    Suspend3 @ unordered.rs:96
+    Suspend4 @ unordered.rs:98
+    Suspend5 @ unordered.rs:99
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<unordered::main::{async_block_env#0}>> (poll)
 dyn: core::pin::Pin<&mut unordered::main::{async_block_env#0}> (poll)
 dyn: unordered::driver::{async_fn_env#0} (poll, drop_glue)
+dyn: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> (poll, drop_glue)
 dyn: unordered::leaf::{async_fn_env#0} (poll, drop_glue)
 dyn: unordered::main::{async_block_env#0} (poll, drop_glue)
 dyn: unordered::set_member::{async_fn_env#0} (poll, drop_glue)
