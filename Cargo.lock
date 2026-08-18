@@ -1414,6 +1414,10 @@ dependencies = [
 [[package]]
 name = "testrun"
 version = "0.1.0"
+dependencies = [
+ "blake3",
+ "tempfile",
+]
 
 [[package]]
 name = "thiserror"

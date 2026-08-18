@@ -5,3 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
