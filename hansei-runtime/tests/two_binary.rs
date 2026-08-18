@@ -614,6 +614,80 @@ fn test_unordered_census_offline() {
     }
 }
 
+/// The size of one `FuturesUnordered`'s heap node, named from the set's
+/// own type: `FuturesUnordered<F>` holds its children in `Task<F>`, and
+/// that allocation is what a child's span covers.
+fn node_size(bundle: &Bundle, set_ty: &str) -> u64 {
+    const SET: &str = "futures_util::stream::futures_unordered::FuturesUnordered<";
+    const NODE: &str = "futures_util::stream::futures_unordered::task::Task<";
+    let future = set_ty
+        .strip_prefix(SET)
+        .and_then(|rest| rest.strip_suffix('>'))
+        .unwrap_or_else(|| panic!("{set_ty} does not name the future it holds"));
+    let want = format!("{NODE}{future}>");
+    let view = BundleView::new(bundle);
+    (0..bundle.types.types.len() as u32)
+        .filter_map(|i| view.ty(hansei_bundle::BundleTypeId(i)))
+        .find(|ty| ty.name() == want)
+        .unwrap_or_else(|| panic!("the bundle carries no {want}"))
+        .size()
+}
+
+/// An address inside a set child's node resolves to that child, which
+/// is how a raw pointer — a queued waker's data word, an address typed
+/// at `whatis` — is turned into the future it belongs to.
+///
+/// The spans are the walk's own record of where each node lies, so
+/// this is the one thing the census reports that nothing else in a
+/// listing corroborates: a wrong span is a `whatis` that names the
+/// wrong child, or none.
+#[test]
+fn test_a_node_address_locates_the_set_child_that_owns_it() {
+    let (bundle, snapshot) = load_any("unordered");
+    let (_ctx, _list, census) = census_of(&bundle, &snapshot);
+
+    let mut nodes = Vec::new();
+    for (set_index, set) in census.sets.iter().enumerate() {
+        // What the span is meant to cover: the node allocation, whose
+        // size is the set's own node type's — read from the bundle
+        // rather than written down, since it moves with the future the
+        // set holds.
+        let size = node_size(&bundle, &set.ty);
+        for (child_index, child) in set.children.iter().enumerate() {
+            let here = Some((set_index, child_index, 0));
+            // The node's own address, a little way into it, and its
+            // last byte: all name the child, and the offset says where
+            // the address fell.
+            assert_eq!(census.locate(child.node), here);
+            assert_eq!(
+                census.locate(child.node + 0x18),
+                Some((set_index, child_index, 0x18))
+            );
+            assert_eq!(
+                census.locate(child.node + size - 1),
+                Some((set_index, child_index, size - 1))
+            );
+            // One past its end is not this child's, whoever else's it
+            // is: an allocation ends where the next one may begin.
+            let past = census.locate(child.node + size);
+            assert!(
+                !matches!(past, Some((s, c, _)) if (s, c) == (set_index, child_index)),
+                "{past:?} is still child {child_index} of set {set_index}"
+            );
+            nodes.push(child.node);
+        }
+    }
+    assert_eq!(nodes.len(), 5, "{:#?}", census.sets);
+
+    // Memory no node covers is nobody's: below every span, far past
+    // the last of them, and the unmapped word a corrupt pointer reads
+    // as.
+    let last = nodes.iter().copied().max().expect("the sets have nodes");
+    assert_eq!(census.locate(0), None);
+    assert_eq!(census.locate(last + 0x1_0000), None);
+    assert_eq!(census.locate(u64::MAX), None);
+}
+
 /// The `JoinSet` census, offline: the `IdleNotifiedSet`'s two lists
 /// walked entry by entry, every member resolved to a task the listing
 /// also shows — by id, parked, join-interested.
