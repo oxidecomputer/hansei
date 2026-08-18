@@ -923,6 +923,19 @@ fn test_validate_constrains_walk_binding_shape() {
     let err = b.validate().expect_err("an absent entry with steps");
     assert!(format!("{err}").contains("carries navigation"), "{err}");
 
+    // And an unbound entry carrying roots. Navigation is steps *and*
+    // where they start, so an entry that found nothing must state
+    // neither: roots alone still claim a type the walk resolved
+    // against, which is what an absent outcome says never happened.
+    let mut b = walk_bundle(false);
+    let binding = b.walks.entries.get_mut(&WalkRole::SleepDeadline).unwrap();
+    binding.steps = Vec::new();
+    binding.outcome = WalkOutcome::Absent {
+        reason: "no Sleep in the bundle".to_owned(),
+    };
+    let err = b.validate().expect_err("an absent entry with roots");
+    assert!(format!("{err}").contains("carries navigation"), "{err}");
+
     // A bound entry with no roots.
     let mut b = walk_bundle(false);
     b.walks
@@ -976,8 +989,25 @@ fn test_validate_rejects_provenance_length_mismatch() {
     assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
 }
 
+/// The corruption `validate` names, rather than only that it named
+/// one. A guard that reports the wrong thing — or a *different* guard
+/// firing first — reads as a pass when the assertion is the error kind
+/// alone, and several of these bundles are broken in a way more than
+/// one guard could notice.
+fn corruption(b: &Bundle) -> String {
+    match b.validate() {
+        Err(Error::Corrupt(why)) => why,
+        other => panic!("expected a corruption, got {other:?}"),
+    }
+}
+
+/// The name index is binary-searched, so its order is load-bearing, and
+/// only a strict `>` between neighbours says so: a check that fired on
+/// equal names would reject a bundle naming one type twice, which is
+/// legal, and one that accepted a descending pair would leave the
+/// search reading past its answer.
 #[test]
-fn test_validate_rejects_unsorted_name_index() {
+fn test_validate_rejects_a_name_index_out_of_order() {
     let mut b = tiny_bundle();
     let mut strings = StringInterner::new();
     let z = strings.intern("zzz");
@@ -996,7 +1026,252 @@ fn test_validate_rejects_unsorted_name_index() {
         },
     ];
     b.types.name_index = vec![(z, BundleTypeId(0)), (a, BundleTypeId(1))];
-    assert!(matches!(b.validate(), Err(Error::Corrupt(_))));
+    b.types.build_normalized_index(&b.strings);
+    assert!(
+        corruption(&b).contains("name index not sorted"),
+        "{}",
+        corruption(&b)
+    );
+
+    // Sorted, and two rows naming the same type is not disorder.
+    b.types.name_index = vec![(a, BundleTypeId(1)), (z, BundleTypeId(0))];
+    b.types.build_normalized_index(&b.strings);
+    b.validate().expect("a sorted index is not corruption");
+}
+
+/// A bundle naming two types, its indexes built from those names.
+fn two_name_bundle() -> Bundle {
+    let mut b = tiny_bundle();
+    let mut strings = StringInterner::new();
+    let a = strings.intern("aaa");
+    let z = strings.intern("zzz");
+    b.strings = strings.finish();
+    b.types.types = vec![
+        TypeDef::Base {
+            name: a,
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
+        TypeDef::Base {
+            name: z,
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
+    ];
+    b.types.name_index = vec![(a, BundleTypeId(0)), (z, BundleTypeId(1))];
+    b.types.build_normalized_index(&b.strings);
+    b
+}
+
+/// A bundle carrying every shape a dyn-pointer check has an opinion
+/// about: a `Box<dyn>` wide pointer with a valid `DynPointer` format on
+/// the `ArcInner` at id 12, a wide pointer to a *sized* type at id 8,
+/// one with no vtable member at id 9, and the `[usize; 4]` vtable both
+/// of the real ones share.
+fn dyn_bundle() -> Bundle {
+    let mut b = tiny_bundle();
+    let mut strings = StringInterner::new();
+    let usizen = strings.intern("usize");
+    let dynn =
+        strings.intern("(dyn core::future::future::Future<Output=u32> + core::marker::Send)");
+    let boxn = strings.intern("alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global>");
+    let arc_innern = strings.intern("alloc::sync::ArcInner<(dyn core::future::future::Future<Output=u32> + core::marker::Send)>");
+    let plainn = strings.intern("app::NotDyn");
+    let datan = strings.intern("data");
+    let pointer = strings.intern("pointer");
+    let vtable = strings.intern("vtable");
+
+    b.types = TypeTable {
+        types: vec![
+            // 0: usize
+            TypeDef::Base {
+                name: usizen,
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
+            // 1: the unsized dyn type
+            TypeDef::Struct {
+                name: dynn,
+                size: 0,
+                members: vec![],
+            },
+            // 2: *dyn
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(1),
+            },
+            // 3: [usize; 4]
+            TypeDef::Array {
+                elem: BundleTypeId(0),
+                count: 4,
+            },
+            // 4: &[usize; 4]
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(3),
+            },
+            // 5: Box<dyn Future>
+            TypeDef::Struct {
+                name: boxn,
+                size: 16,
+                members: vec![
+                    MemberDef {
+                        name: pointer,
+                        ty: BundleTypeId(2),
+                        offset: 0,
+                    },
+                    MemberDef {
+                        name: vtable,
+                        ty: BundleTypeId(4),
+                        offset: 8,
+                    },
+                ],
+            },
+            // 6: a sized struct (not a trait object)
+            TypeDef::Struct {
+                name: plainn,
+                size: 8,
+                members: vec![],
+            },
+            // 7: *NotDyn
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(6),
+            },
+            // 8: { pointer: *NotDyn, vtable: &[usize; 4] }
+            TypeDef::Struct {
+                name: plainn,
+                size: 16,
+                members: vec![
+                    MemberDef {
+                        name: pointer,
+                        ty: BundleTypeId(7),
+                        offset: 0,
+                    },
+                    MemberDef {
+                        name: vtable,
+                        ty: BundleTypeId(4),
+                        offset: 8,
+                    },
+                ],
+            },
+            // 9: { pointer: *dyn } without a vtable member
+            TypeDef::Struct {
+                name: plainn,
+                size: 8,
+                members: vec![MemberDef {
+                    name: pointer,
+                    ty: BundleTypeId(2),
+                    offset: 0,
+                }],
+            },
+            // 10: an unsized wrapper whose final field is dyn
+            TypeDef::Struct {
+                name: arc_innern,
+                size: 16,
+                members: vec![MemberDef {
+                    name: datan,
+                    ty: BundleTypeId(1),
+                    offset: 16,
+                }],
+            },
+            // 11: *ArcInner<dyn Future>
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(10),
+            },
+            // 12: a wide pointer to the unsized wrapper
+            TypeDef::Struct {
+                name: arc_innern,
+                size: 16,
+                members: vec![
+                    MemberDef {
+                        name: pointer,
+                        ty: BundleTypeId(11),
+                        offset: 0,
+                    },
+                    MemberDef {
+                        name: vtable,
+                        ty: BundleTypeId(4),
+                        offset: 8,
+                    },
+                ],
+            },
+        ],
+        debug_formats: std::collections::BTreeMap::from([(
+            BundleTypeId(12),
+            DisplayNode::DynPointer {
+                pointer: Selector::member(0),
+                vtable: Selector::member(1),
+                drop_in_place: 0,
+                size: 1,
+                align: 2,
+                tail_offset: 0,
+            },
+        )]),
+        name_index: vec![],
+        ..Default::default()
+    };
+    b.strings = strings.finish();
+    b.validate().expect("test bundle must validate");
+    b
+}
+
+/// The normalized index is the same rows keyed by hash, so it carries
+/// the same order requirement and two more of its own: every position
+/// covered, and each of them once. A derived table that disagrees with
+/// what it was derived from resolves a name to another name's type.
+#[test]
+fn test_validate_rejects_a_normalized_index_that_lies() {
+    let mut b = two_name_bundle();
+    let sound = b.types.by_normalized_name.clone();
+    assert_eq!(sound.len(), 2, "{sound:?}");
+    b.validate().expect("the index it was built with is sound");
+
+    // Out of order by hash, and nothing else: the same rows, the same
+    // count, each position once.
+    b.types.by_normalized_name = sound.iter().copied().rev().collect();
+    assert!(
+        corruption(&b).contains("normalized name index not sorted"),
+        "{}",
+        corruption(&b)
+    );
+
+    // One position twice, which leaves the other unreachable — sorted,
+    // and covering the right *number* of names, so only the seen-set
+    // notices.
+    b.types.by_normalized_name = vec![(sound[0].0, sound[0].1), (sound[1].0, sound[0].1)];
+    assert!(
+        corruption(&b).contains("repeats position"),
+        "{}",
+        corruption(&b)
+    );
+
+    // A position no row of `name_index` has.
+    b.types.by_normalized_name = vec![(sound[0].0, sound[0].1), (sound[1].0, 2)];
+    assert!(
+        corruption(&b).contains("position 2 out of range"),
+        "{}",
+        corruption(&b)
+    );
+}
+
+/// A type id is in range when it is *less* than the table's length, and
+/// the id that says so is the one that is exactly its length: an
+/// off-by-one here reads a type that is not there.
+#[test]
+fn test_validate_rejects_the_type_id_one_past_the_end() {
+    let mut b = tiny_bundle();
+    let past = BundleTypeId(b.types.types.len() as u32);
+    b.infra.header = past;
+    assert!(
+        corruption(&b).contains(&format!("type id {} out of range", past.0)),
+        "{}",
+        corruption(&b)
+    );
+
+    b.infra.header = BundleTypeId(past.0 - 1);
+    b.validate().expect("the last id in the table is in range");
 }
 
 #[test]
@@ -1154,6 +1429,7 @@ fn test_discr_values_matches() {
 // ---------------------------------------------------------------------------
 
 mod view_tests {
+    use super::dyn_bundle;
     use crate::Encoding;
     use crate::schema::*;
     use crate::strings::StringInterner;
@@ -1590,154 +1866,6 @@ mod view_tests {
 
     /// A `Box<dyn Future>`-shaped wide pointer: a `pointer` member
     /// targeting the unsized `(dyn …)` struct plus a `vtable` pointer.
-    fn dyn_bundle() -> Bundle {
-        let mut b = super::tiny_bundle();
-        let mut strings = StringInterner::new();
-        let usizen = strings.intern("usize");
-        let dynn =
-            strings.intern("(dyn core::future::future::Future<Output=u32> + core::marker::Send)");
-        let boxn = strings.intern("alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global>");
-        let arc_innern = strings.intern("alloc::sync::ArcInner<(dyn core::future::future::Future<Output=u32> + core::marker::Send)>");
-        let plainn = strings.intern("app::NotDyn");
-        let datan = strings.intern("data");
-        let pointer = strings.intern("pointer");
-        let vtable = strings.intern("vtable");
-
-        b.types = TypeTable {
-            types: vec![
-                // 0: usize
-                TypeDef::Base {
-                    name: usizen,
-                    size: 8,
-                    encoding: Encoding::Unsigned,
-                },
-                // 1: the unsized dyn type
-                TypeDef::Struct {
-                    name: dynn,
-                    size: 0,
-                    members: vec![],
-                },
-                // 2: *dyn
-                TypeDef::Pointer {
-                    name: None,
-                    target: BundleTypeId(1),
-                },
-                // 3: [usize; 4]
-                TypeDef::Array {
-                    elem: BundleTypeId(0),
-                    count: 4,
-                },
-                // 4: &[usize; 4]
-                TypeDef::Pointer {
-                    name: None,
-                    target: BundleTypeId(3),
-                },
-                // 5: Box<dyn Future>
-                TypeDef::Struct {
-                    name: boxn,
-                    size: 16,
-                    members: vec![
-                        MemberDef {
-                            name: pointer,
-                            ty: BundleTypeId(2),
-                            offset: 0,
-                        },
-                        MemberDef {
-                            name: vtable,
-                            ty: BundleTypeId(4),
-                            offset: 8,
-                        },
-                    ],
-                },
-                // 6: a sized struct (not a trait object)
-                TypeDef::Struct {
-                    name: plainn,
-                    size: 8,
-                    members: vec![],
-                },
-                // 7: *NotDyn
-                TypeDef::Pointer {
-                    name: None,
-                    target: BundleTypeId(6),
-                },
-                // 8: { pointer: *NotDyn, vtable: &[usize; 4] }
-                TypeDef::Struct {
-                    name: plainn,
-                    size: 16,
-                    members: vec![
-                        MemberDef {
-                            name: pointer,
-                            ty: BundleTypeId(7),
-                            offset: 0,
-                        },
-                        MemberDef {
-                            name: vtable,
-                            ty: BundleTypeId(4),
-                            offset: 8,
-                        },
-                    ],
-                },
-                // 9: { pointer: *dyn } without a vtable member
-                TypeDef::Struct {
-                    name: plainn,
-                    size: 8,
-                    members: vec![MemberDef {
-                        name: pointer,
-                        ty: BundleTypeId(2),
-                        offset: 0,
-                    }],
-                },
-                // 10: an unsized wrapper whose final field is dyn
-                TypeDef::Struct {
-                    name: arc_innern,
-                    size: 16,
-                    members: vec![MemberDef {
-                        name: datan,
-                        ty: BundleTypeId(1),
-                        offset: 16,
-                    }],
-                },
-                // 11: *ArcInner<dyn Future>
-                TypeDef::Pointer {
-                    name: None,
-                    target: BundleTypeId(10),
-                },
-                // 12: a wide pointer to the unsized wrapper
-                TypeDef::Struct {
-                    name: arc_innern,
-                    size: 16,
-                    members: vec![
-                        MemberDef {
-                            name: pointer,
-                            ty: BundleTypeId(11),
-                            offset: 0,
-                        },
-                        MemberDef {
-                            name: vtable,
-                            ty: BundleTypeId(4),
-                            offset: 8,
-                        },
-                    ],
-                },
-            ],
-            debug_formats: std::collections::BTreeMap::from([(
-                BundleTypeId(12),
-                DisplayNode::DynPointer {
-                    pointer: Selector::member(0),
-                    vtable: Selector::member(1),
-                    drop_in_place: 0,
-                    size: 1,
-                    align: 2,
-                    tail_offset: 0,
-                },
-            )]),
-            name_index: vec![],
-            ..Default::default()
-        };
-        b.strings = strings.finish();
-        b.validate().expect("test bundle must validate");
-        b
-    }
 
     #[test]
     fn test_dyn_pointer_detection() {
@@ -2307,6 +2435,167 @@ mod node_validation {
     }
 
     // -------------------------------------------------------------------
+    // DynPointer
+    // -------------------------------------------------------------------
+
+    /// [`dyn_bundle`] with a `DynPointer` format on `scope`, built from
+    /// the valid one it already carries and then bent.
+    fn dyn_format(scope: BundleTypeId, f: impl FnOnce(&mut DisplayNode)) -> Bundle {
+        let mut b = dyn_bundle();
+        let mut node = b.types.debug_formats[&BundleTypeId(12)].clone();
+        f(&mut node);
+        b.types.debug_formats.clear();
+        b.types.debug_formats.insert(scope, node);
+        b
+    }
+
+    /// The data side of a wide pointer must target an unsized thing —
+    /// the pointee is read at a `tail_offset` past a header, which is
+    /// nonsense for a sized type, and the vtable would be read as one
+    /// anyway.
+    #[test]
+    fn test_validate_rejects_a_dyn_pointer_at_a_sized_target() {
+        let b = dyn_format(BundleTypeId(8), |_| {});
+        rejects(&b, "does not target dyn");
+    }
+
+    /// A vtable is an array of machine words. A signed element is not
+    /// one — nor is one of the wrong width — and the check has to say
+    /// both, since a slot index is scaled by that width.
+    #[test]
+    fn test_validate_rejects_a_vtable_that_is_not_words() {
+        let signed = |b: &mut Bundle| {
+            b.types.types[0] = TypeDef::Base {
+                name: match b.types.types[0] {
+                    TypeDef::Base { name, .. } => name,
+                    _ => unreachable!(),
+                },
+                size: 8,
+                encoding: Encoding::Signed,
+            };
+        };
+        let mut b = dyn_format(BundleTypeId(12), |_| {});
+        signed(&mut b);
+        rejects(&b, "not usize-sized");
+
+        let mut b = dyn_format(BundleTypeId(12), |_| {});
+        b.types.types[0] = TypeDef::Base {
+            name: match b.types.types[0] {
+                TypeDef::Base { name, .. } => name,
+                _ => unreachable!(),
+            },
+            size: 4,
+            encoding: Encoding::Unsigned,
+        };
+        rejects(&b, "not usize-sized");
+    }
+
+    /// The three header slots name three different vtable entries. Two
+    /// of them being one entry is a detector that filled a field in
+    /// twice, and the values it would read are another slot's.
+    #[test]
+    fn test_validate_rejects_a_dyn_pointer_reusing_a_header_slot() {
+        for (drop_at, size_at, align_at) in [(0, 0, 2), (0, 1, 0), (0, 1, 1)] {
+            let b = dyn_format(BundleTypeId(12), |node| {
+                let DisplayNode::DynPointer {
+                    drop_in_place,
+                    size,
+                    align,
+                    ..
+                } = node
+                else {
+                    unreachable!("the fixture format is a dyn pointer")
+                };
+                *drop_in_place = drop_at;
+                *size = size_at;
+                *align = align_at;
+            });
+            rejects(&b, "reuses a header slot");
+        }
+    }
+
+    /// A slot index is an entry of the vtable it indexes, and the
+    /// bound is the array's own count.
+    #[test]
+    fn test_validate_rejects_a_header_slot_past_the_vtable() {
+        let b = dyn_format(BundleTypeId(12), |node| {
+            let DisplayNode::DynPointer { align, .. } = node else {
+                unreachable!("the fixture format is a dyn pointer")
+            };
+            *align = 4;
+        });
+        rejects(&b, "outside its 4-entry vtable");
+    }
+
+    /// A wide pointer at a wrapper `depth` levels above the dyn type it
+    /// really points at: `ArcInner<Wrapper<…<dyn>>>`, each level's last
+    /// member the next one down.
+    fn nested_dyn_bundle(depth: usize) -> Bundle {
+        let mut b = dyn_bundle();
+        let name = match b.types.types[0] {
+            TypeDef::Base { name, .. } => name,
+            _ => unreachable!("id 0 is usize"),
+        };
+        let base = b.types.types.len() as u32;
+        for level in 0..depth {
+            // The last wrapper's tail is the dyn type itself (id 1).
+            let tail = match level + 1 == depth {
+                true => BundleTypeId(1),
+                false => BundleTypeId(base + level as u32 + 1),
+            };
+            b.types.types.push(TypeDef::Struct {
+                name,
+                size: 8,
+                members: vec![MemberDef {
+                    name,
+                    ty: tail,
+                    offset: 0,
+                }],
+            });
+        }
+        let pointer = BundleTypeId(base + depth as u32);
+        b.types.types.push(TypeDef::Pointer {
+            name: None,
+            target: BundleTypeId(base),
+        });
+        let wide = BundleTypeId(pointer.0 + 1);
+        b.types.types.push(TypeDef::Struct {
+            name,
+            size: 16,
+            members: vec![
+                MemberDef {
+                    name,
+                    ty: pointer,
+                    offset: 0,
+                },
+                MemberDef {
+                    name,
+                    ty: BundleTypeId(4),
+                    offset: 8,
+                },
+            ],
+        });
+        let node = b.types.debug_formats[&BundleTypeId(12)].clone();
+        b.types.debug_formats.clear();
+        b.types.debug_formats.insert(wide, node);
+        b
+    }
+
+    /// The search for a dyn tail is bounded, because the type graph it
+    /// walks may be cyclic and a bundle is not to be trusted. So the
+    /// bound is part of what a valid dyn pointer is: seven wrappers
+    /// deep the tail is found, eight deep the pointer is rejected —
+    /// not because the type is wrong, but because the validator will
+    /// not look that far to find out.
+    #[test]
+    fn test_validate_finds_a_dyn_tail_only_within_the_bound() {
+        nested_dyn_bundle(7)
+            .validate()
+            .expect("a tail seven wrappers down is still found");
+        rejects(&nested_dyn_bundle(8), "does not target dyn");
+    }
+
+    // -------------------------------------------------------------------
     // The B-tree MapEntries
     // -------------------------------------------------------------------
 
@@ -2347,6 +2636,10 @@ mod node_validation {
             "root",
             "pad",
             "Mystery",
+            "keys3",
+            "bytes2",
+            "keys0",
+            "tail",
         ]
         .iter()
         .map(|n| (*n, strings.intern(n)))
@@ -2370,14 +2663,20 @@ mod node_validation {
                 elem: BundleTypeId(0),
                 count: 2,
             },
-            // 2: Leaf { len, keys: [u64;2], vals: [u64;2] }
+            // 2: Leaf { len, keys: [u64;2], vals: [u64;2], and three
+            // arrays that are *not* its key or value storage: a wider
+            // one, a narrower-element one, and an empty one, for
+            // aiming a slot selector somewhere incompatible.
             TypeDef::Struct {
                 name: n("Leaf"),
-                size: 40,
+                size: 72,
                 members: vec![
                     member("len", 0, 0),
                     member("keys", 1, 8),
                     member("vals", 1, 24),
+                    member("keys3", 13, 40),
+                    member("bytes2", 14, 64),
+                    member("keys0", 12, 66),
                 ],
             },
             // 3: *Leaf
@@ -2429,11 +2728,18 @@ mod node_validation {
                 elem: BundleTypeId(3),
                 count: 3,
             },
-            // 8: Internal { data: Leaf @0, edges: [*Leaf;3] }
+            // 8: Internal { data: Leaf @0, edges: [*Leaf;3], and a
+            // second leaf that is not the prefix — the same type at a
+            // different place, which is what tells "is the leaf" from
+            // "is the leaf *at offset zero*".
             TypeDef::Struct {
                 name: n("Internal"),
-                size: 64,
-                members: vec![member("data", 2, 0), member("edges", 7, 40)],
+                size: 168,
+                members: vec![
+                    member("data", 2, 0),
+                    member("edges", 7, 72),
+                    member("tail", 2, 96),
+                ],
             },
             // 9: MapHolder { len, root: Root, pad }
             TypeDef::Struct {
@@ -2455,6 +2761,21 @@ mod node_validation {
             TypeDef::Pointer {
                 name: None,
                 target: BundleTypeId(4),
+            },
+            // 12: [u64; 0] — storage for no slots at all
+            TypeDef::Array {
+                elem: BundleTypeId(0),
+                count: 0,
+            },
+            // 13: [u64; 3] — one slot more than the leaf really has
+            TypeDef::Array {
+                elem: BundleTypeId(0),
+                count: 3,
+            },
+            // 14: [u8; 2] — the right count, the wrong element
+            TypeDef::Array {
+                elem: BundleTypeId(10),
+                count: 2,
             },
         ];
 
@@ -2510,6 +2831,51 @@ mod node_validation {
     #[test]
     fn test_validate_accepts_a_btree_map() {
         assert!(map_bundle().validate().is_ok());
+    }
+
+    /// Keys and values are read slot for slot, so their storage has to
+    /// agree: as many slots on each side, and at least one. Storage for
+    /// nothing is not a B-tree leaf — a walk of it reads no entries and
+    /// reports a map that is empty however full it is.
+    #[test]
+    fn test_validate_rejects_leaf_storage_for_no_slots() {
+        let b = broken_map(|e| {
+            let MapEntries::BTree {
+                leaf_keys,
+                leaf_values,
+                ..
+            } = e;
+            // Both sides at the empty array: the counts still agree, so
+            // only their being zero is wrong.
+            *leaf_keys = Selector::member(5);
+            *leaf_values = Selector::member(5);
+        });
+        rejects(&b, "incompatible key/value slots");
+    }
+
+    /// And where they disagree, the pairing is nonsense whichever count
+    /// a walk believes.
+    #[test]
+    fn test_validate_rejects_leaf_storage_of_unequal_slots() {
+        let b = broken_map(|e| {
+            let MapEntries::BTree { leaf_values, .. } = e;
+            *leaf_values = Selector::member(3);
+        });
+        rejects(&b, "incompatible key/value slots");
+    }
+
+    /// An internal node is a leaf *plus* edges, which is what lets one
+    /// walk read both: the leaf part has to be its prefix, not merely
+    /// some member of the same type. A selector naming a second leaf
+    /// further in resolves to the right type at the wrong place, and
+    /// every key read through it is another node's.
+    #[test]
+    fn test_validate_rejects_internal_data_at_a_nonzero_offset() {
+        let b = broken_map(|e| {
+            let MapEntries::BTree { internal_data, .. } = e;
+            *internal_data = Selector::member(2);
+        });
+        rejects(&b, "internal data is not its leaf prefix");
     }
 
     #[test]
