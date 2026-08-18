@@ -311,6 +311,13 @@ struct Walker<'a, 'b, T> {
     bounds: Bounds,
     /// Every find, by (address, type), so an aliased or re-reached
     /// future is recorded once.
+    ///
+    /// A find is keyed both by the slot it was found in and — once its
+    /// chain has decoded — by the future that chain roots at, which
+    /// are the same place for a future held by value and different
+    /// ones behind a wide pointer. Keying only the slot would let two
+    /// references to one future be two rows in a listing whose
+    /// populations are meant not to overlap.
     visited: HashSet<(u64, BundleTypeId)>,
     /// [`ScanPlan`] per type: the scan visits millions of values but
     /// only thousands of distinct types, and everything it asks short
@@ -462,7 +469,6 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             Find::Future(value) => {
                 let place = (value.addr, value.ty.id());
                 let chain = self.ctx.await_chain(value);
-                let summary = self.summarize(&chain);
                 // The future itself when the chain decoded (behind a
                 // box, that is the heap allocation rather than the
                 // local's pointer slot); the slot when it did not.
@@ -471,6 +477,16 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     .first()
                     .map(|f| (f.future.addr, f.future.ty.id()))
                     .unwrap_or(place);
+                // What was recorded is that future, so that is what a
+                // later reference to it has to be deduped against —
+                // the slot key above is the pointer's, and two
+                // pointers to one future have two of those. A find
+                // held by value keys the same place twice, which is
+                // why only a differing root is looked up.
+                if (addr, ty) != place && !self.visited.insert((addr, ty)) {
+                    return;
+                }
+                let summary = self.summarize(&chain);
                 let index = self.held.len();
                 self.held.push(HeldFuture {
                     owner,
