@@ -18,7 +18,7 @@
 //! land on the exact structures the guards watch, whatever the
 //! snapshot's layout.
 
-use hansei_bundle::{Bundle, BundleView};
+use hansei_bundle::{Bundle, BundleTypeId, BundleView, DiscrValue};
 use hansei_runtime::testkit::{load_any, tasks as tasks_of};
 use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
 use hansei_runtime::tokio::{census, graph};
@@ -587,6 +587,99 @@ fn test_an_unmapped_join_set_entry_is_reported() {
         "{err}"
     );
     assert!(err.contains("lists only 0 of its tasks"), "{err}");
+}
+
+/// A set child the set has finished with — its `Option<Fut>` slot
+/// reaped to `None` — is a row the walk keeps rather than a failure it
+/// reports: the node is still in the list and still counted, with
+/// nothing to say about a future that is no longer there. Nothing
+/// descends into it either, so the set that child was holding goes
+/// with it.
+///
+/// No real capture holds one: reaping needs a child that completed and
+/// a set that has not yet dropped its node, which nothing here can
+/// arrange to be true at the instant of the core. So the slot is
+/// reaped here instead — the tag written to the value the bundle says
+/// means `None`, which is as much of a completed child as the walk
+/// ever sees.
+#[test]
+fn test_a_reaped_set_slot_lists_without_a_future() {
+    let (bundle, snapshot) = load_any("unordered");
+    let (ctx, list) = healthy(&bundle, &snapshot);
+    let baseline = census::census(&ctx, &list);
+
+    // The child holding a set of its own, so that what the reaping
+    // costs the census — a whole find, not just this row — is visible.
+    let [set, inner] = baseline.sets.as_slice() else {
+        panic!("expected two sets, got {:#?}", baseline.sets);
+    };
+    let Some(census::Via::SetChild { child, .. }) = inner.via else {
+        panic!("the nested set was not reached through a child: {inner:#?}");
+    };
+    let root = set.children[child].root.expect("a decoded child");
+
+    // `Task.future` is an `UnsafeCell<Option<Fut>>` and the census
+    // reports the payload's address, so the tag the walk decodes sits a
+    // payload offset back from it — and what to write there is the
+    // value the bundle records for `None`.
+    let view = BundleView::new(&bundle);
+    let slot = (0..bundle.types.types.len() as u32)
+        .filter_map(|i| view.ty(BundleTypeId(i)))
+        .find(|ty| ty.name() == "core::option::Option<unordered::set_member::{async_fn_env#0}>")
+        .expect("the set holds one slot per child");
+    let shape = slot.variant_shape().expect("the slot is an enum");
+    let discr = shape.discr.as_ref().expect("the slot carries a tag");
+    let some = slot
+        .variants()
+        .find(|variant| variant.name == "Some")
+        .expect("the slot has a Some");
+    let none = shape
+        .variants
+        .iter()
+        .zip(slot.variants())
+        .find(|(_, variant)| variant.name == "None")
+        .and_then(|(def, _)| match def.discr_values.as_ref()?.0.as_slice() {
+            [DiscrValue::Value(v)] => Some(*v as u64),
+            other => panic!("None is selected by {other:?}"),
+        })
+        .expect("the slot has a None with a tag of its own");
+    // The future the census reports is a member of the `Some` payload,
+    // which is itself at an offset in the enum, so the tag is both of
+    // those back from it.
+    let held = some
+        .ty
+        .members()
+        .next()
+        .expect("Some carries the future")
+        .offset();
+    let base = root.addr - some.offset - held;
+    let corrupt = Corrupt::new(&snapshot).patch(base + discr.offset, none);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let degraded = census::census(&ctx, &list);
+
+    // The reaped child is still a node the set lists, and says nothing
+    // about a future rather than guessing at one.
+    assert!(degraded.errors.is_empty(), "{:?}", degraded.errors);
+    let [degraded_set] = degraded.sets.as_slice() else {
+        panic!("the nested set outlived its holder: {:#?}", degraded.sets);
+    };
+    assert_eq!(degraded_set.children.len(), set.children.len());
+    let reaped = &degraded_set.children[child];
+    assert_eq!(reaped.node, set.children[child].node);
+    assert_eq!(reaped.future, None, "{reaped:#?}");
+    assert_eq!(reaped.root.map(|r| r.addr), None, "{reaped:#?}");
+    assert_eq!(reaped.depth, 0, "{reaped:#?}");
+    assert_eq!(reaped.state, None, "{reaped:#?}");
+    assert_eq!(reaped.leaf, None, "{reaped:#?}");
+
+    // Its neighbours are untouched, and only what the reaped child was
+    // holding is gone: the future it held along with the set.
+    for (i, other) in degraded_set.children.iter().enumerate() {
+        if i != child {
+            assert_eq!(other.future, set.children[i].future, "{other:#?}");
+        }
+    }
+    assert_eq!(degraded.held.len(), baseline.held.len() - 1);
 }
 
 /// A set node chain bent into a loop trips the node cycle guard, with
