@@ -32,6 +32,15 @@ test_tool = "nextest"
 # are still copied; keep debug binaries and cores outside the tree.
 gitignore = true
 
+# The first test run in a fresh scratch dir builds the fixture programs
+# (nothing was copied, per the setting above), and that build happens
+# inside the *test* phase — so the auto-set timeout, derived from a
+# baseline that found them already built, cuts it off and reports a
+# timeout where there is no hang. Floor it above a cold fixture build:
+# a real hang is a mutated loop, which trips this in seconds either
+# way.
+minimum_test_timeout = 300
+
 # Which crates' tests judge a mutant. The default — the mutated crate's
 # own tests — is wrong here: hansei-runtime is a library its consumers
 # assert, so `FutureCensus::locate`, the render helpers and the listing
