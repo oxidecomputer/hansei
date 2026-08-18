@@ -37,14 +37,28 @@ gitignore = true
 # assert, so `FutureCensus::locate`, the render helpers and the listing
 # rows are exercised from hansei and read as untested on their own.
 #
-# exegesis is deliberately absent. Its goldens build the fixture
-# programs once per test *run* (`testrun::once_per_run`, stamped with
-# NEXTEST_RUN_ID), and a mutation sweep is one run per mutant — so
-# every mutant would pay a full fixture build.
-test_package = ["hansei-bundle", "reify", "proc", "hansei-runtime", "hansei"]
+# exegesis is in the list because it is the only thing that *writes* a
+# bundle. Judged without it, half of hansei-bundle reads as untested:
+# the interner can return a name nobody asked for, a selector builder
+# can return `Default::default()`, and every read-side test still
+# passes because none of them build anything. It was left out while a
+# sweep meant a fixture build per mutant; HANSEI_REUSE_FIXTURES ended
+# that, and a measured sweep with it in scope costs about what one
+# without it did.
+test_package = [
+    "hansei-bundle",
+    "reify",
+    "proc",
+    "hansei-runtime",
+    "hansei",
+    "exegesis",
+]
 
 exclude_globs = [
-    # Mutated by nothing that runs: see test_package above.
+    # Not mutated, only asked to judge: its goldens rebuild every
+    # fixture program, and with them in scope that is one build per
+    # job — but mutating exegesis itself is now a sweep worth running,
+    # rather than the impossibility this said before.
     "exegesis/**",
     # Fixture programs and the dashboard's TypeScript build.
     "test-programs/**",
@@ -55,4 +69,13 @@ exclude_re = [
     # returning the same thing, so nothing can tell the difference. The
     # arm is there to say *why* a union is stopped at.
     "delete match arm TypeClass::Union in scan_plan",
+    # A constant type-name hash is a performance bug, not a behaviour
+    # one, and no test can see it: the index groups candidates by this
+    # hash and `rust_type_names_equal` still decides each one, so every
+    # name colliding costs a comparison rather than a wrong answer.
+    # Both sides of a lookup use the same function, so a sweep cannot
+    # reach the thing that would really break — a hash that changes
+    # between the bundle and the reader, which is what the
+    # FORMAT_VERSION bump on foldhash is for.
+    "replace rust_type_name_hash",
 ]
