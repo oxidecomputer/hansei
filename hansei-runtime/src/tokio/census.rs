@@ -1509,8 +1509,10 @@ mod tests {
     ///
     /// That fixture is the one with nesting to stop: its driver holds a
     /// `FuturesUnordered` whose three children each hold a future of
-    /// their own, one of them a whole set of its own, beside the four
-    /// futures the driver holds itself.
+    /// their own, one of them a whole set of its own, beside the five
+    /// futures the driver holds itself — the last of which carries a
+    /// future of its own, the fixture's only nesting that arrives
+    /// through a held future rather than through a set.
     fn unordered_census(bounds: Bounds) -> FutureCensus {
         let (bundle, snapshot) = testkit::load_any("unordered");
         let ctx = testkit::context(&bundle, &snapshot);
@@ -1537,7 +1539,7 @@ mod tests {
     #[test]
     fn test_the_nesting_bound_keeps_the_find_it_stops_at() {
         // With no hops allowed, a task's own frames are all that is
-        // scanned: the four futures the driver holds and the set it
+        // scanned: the five futures the driver holds and the set it
         // drives, whose children are walked (a set's own child list is
         // not a hop) but never scanned.
         let census = unordered_census(nesting(0));
@@ -1546,7 +1548,7 @@ mod tests {
         let own: Vec<&str> = census.held.iter().map(|h| h.local.as_str()).collect();
         assert_eq!(
             own,
-            ["held", "boxed", "pair", "maybe"],
+            ["held", "boxed", "pair", "maybe", "nested_hold"],
             "{:#?}",
             census.held
         );
@@ -1556,24 +1558,30 @@ mod tests {
             census.held
         );
 
-        // Four held futures and three resident set children: seven
+        // Five held futures and three resident set children: eight
         // chains the census reached and declined to scan.
         assert_eq!(
             census.capped,
             Capped {
                 deep: 0,
-                distant: 7
+                distant: 8
             }
         );
         assert!(census.capped.any());
-        assert_eq!(census.capped.total(), 7);
+        assert_eq!(census.capped.total(), 8);
     }
 
     /// The bound counts where the walk stopped, not what it found: one
     /// hop out reaches every find the fixture has, and still reports
-    /// the five chains it would have gone on to scan. The unbounded
+    /// the six chains it would have gone on to scan. The unbounded
     /// walk finds the same and reports nothing, which is what makes a
     /// nonzero count mean something.
+    ///
+    /// This is also where the hop out of a *held* future is pinned. A
+    /// find reached that way is recorded at one hop, not none, so its
+    /// own chain is the sixth chain declined here; were the hop not
+    /// counted it would be scanned instead, and the count would stop
+    /// at the five a set's children account for.
     #[test]
     fn test_the_nesting_bound_counts_the_chains_it_declined() {
         let bounded = unordered_census(nesting(1));
@@ -1584,13 +1592,25 @@ mod tests {
         assert_eq!(full.capped, Capped::default());
         assert!(!full.capped.any());
 
-        // The three futures the set's children hold, plus the two
-        // children of the set one of them holds.
+        // The one find a held future led to, which is what the hop out
+        // of a held future buys: the future the driver's `nested_hold`
+        // carries.
+        let nested: Vec<&HeldFuture> = bounded
+            .held
+            .iter()
+            .filter(|h| matches!(h.via, Some(Via::Held(_))))
+            .collect();
+        assert_eq!(nested.len(), 1, "{nested:#?}");
+        assert_eq!(nested[0].local, "inner", "{nested:#?}");
+
+        // The three futures the set's children hold, the two children
+        // of the set one of them holds, and the chain of the future
+        // found inside a held one.
         assert_eq!(
             bounded.capped,
             Capped {
                 deep: 0,
-                distant: 5
+                distant: 6
             }
         );
     }
@@ -1614,7 +1634,7 @@ mod tests {
             .filter(|h| h.via.is_none())
             .map(|h| h.local.as_str())
             .collect();
-        assert_eq!(own, ["held", "boxed"], "{:#?}", census.held);
+        assert_eq!(own, ["held", "boxed", "nested_hold"], "{:#?}", census.held);
         assert!(census.capped.deep > 0, "{:?}", census.capped);
         assert_eq!(census.capped.distant, 0, "{:?}", census.capped);
         // A depth cap on its own is still a short listing, which is all

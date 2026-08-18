@@ -520,9 +520,10 @@ fn test_unordered_census_offline() {
     );
 
     // What the driver holds in its own frame: a bare coroutine and a
-    // dyn-boxed one, plus the two the scan sees only by descending —
-    // one inside a tuple, one inside an enum's active variant. All four
-    // are `Unresumed`, and all four are the driver's own.
+    // dyn-boxed one, the two the scan sees only by descending — one
+    // inside a tuple, one inside an enum's active variant — and one
+    // carrying a future of its own. All five are `Unresumed`, and all
+    // five are the driver's own.
     let mut own: Vec<(&str, &str)> = census
         .held
         .iter()
@@ -536,6 +537,10 @@ fn test_unordered_census_offline() {
             ("boxed", "unordered::set_member::{async_fn_env#0}"),
             ("held", "unordered::set_member::{async_fn_env#0}"),
             ("maybe", "unordered::leaf::{async_fn_env#0}"),
+            (
+                "nested_hold",
+                "unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}>"
+            ),
             ("pair", "unordered::leaf::{async_fn_env#0}"),
         ],
         "{:#?}",
@@ -559,14 +564,14 @@ fn test_unordered_census_offline() {
     let mut under: Vec<String> = census
         .held
         .iter()
-        .filter_map(|held| {
-            let via = held.via?;
+        .filter(|held| matches!(held.via, Some(census::Via::SetChild { .. })))
+        .map(|held| {
             assert_eq!(held.local, "held", "{held:#?}");
             assert_eq!(
                 held.future, "unordered::leaf::{async_fn_env#0}",
                 "{held:#?}"
             );
-            Some(census.describe(via))
+            census.describe(held.via.expect("filtered to set children"))
         })
         .collect();
     under.sort();
@@ -577,6 +582,38 @@ fn test_unordered_census_offline() {
         .collect();
     nodes.sort();
     assert_eq!(under, nodes, "{:#?}", census.held);
+
+    // The other way out of a task's own frames, and the only one here
+    // that a set is not involved in: the driver holds a future that
+    // carries a future, so scanning what was found reaches a hop out
+    // through the held find rather than through a child node.
+    let held_by_held: Vec<&census::HeldFuture> = census
+        .held
+        .iter()
+        .filter(|held| matches!(held.via, Some(census::Via::Held(_))))
+        .collect();
+    let [carried] = held_by_held.as_slice() else {
+        panic!("expected one future found inside a held one, got {held_by_held:#?}");
+    };
+    assert_eq!(carried.local, "inner", "{carried:#?}");
+    assert_eq!(
+        carried.future, "unordered::leaf::{async_fn_env#0}",
+        "{carried:#?}"
+    );
+    let carrier = census
+        .held
+        .iter()
+        .position(|held| held.local == "nested_hold" && held.via.is_none())
+        .expect("the driver holds the future that carries it");
+    assert_eq!(
+        carried.via,
+        Some(census::Via::Held(carrier)),
+        "{carried:#?}"
+    );
+    assert_eq!(
+        census.describe(census::Via::Held(carrier)),
+        format!("held future at {:#x}", census.held[carrier].addr)
+    );
 
     // One child holds a whole set of its own, so a find of a find is a
     // set too: its children are futures nobody has polled, and it is
