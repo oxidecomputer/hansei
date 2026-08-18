@@ -73,14 +73,39 @@ pub struct FutureCensus {
     /// Per-find walk failures; the finds that produced entries are
     /// unaffected by these.
     pub errors: Vec<anyhow::Error>,
-    /// How many times a hard limit — [`MAX_NESTING`] hops away from a
-    /// task's own frames, or [`MAX_SCAN_DEPTH`] levels into one value —
-    /// stopped the scan short of where it would otherwise have gone.
-    ///
-    /// Nonzero means the listing is incomplete in a way no error
-    /// reports, which is the only kind of incompleteness a reader cannot
-    /// otherwise see.
-    pub capped: usize,
+    /// Where a hard limit stopped the walk short of where it would
+    /// otherwise have gone.
+    pub capped: Capped,
+}
+
+/// How often each of the census's two hard limits stopped it, kept
+/// apart because they say different things about the target: a value
+/// nested past [`MAX_SCAN_DEPTH`] is a deep structure (or garbage bytes
+/// read as one), while a chain [`MAX_NESTING`] hops out is a real
+/// fan-out the census refused to follow any further.
+///
+/// Either being nonzero means the listing is incomplete in a way no
+/// error reports, which is the only kind of incompleteness a reader
+/// cannot otherwise see.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Capped {
+    /// Values abandoned [`MAX_SCAN_DEPTH`] aggregates into one local.
+    pub deep: usize,
+    /// Chains not scanned because they lay [`MAX_NESTING`] hops away
+    /// from the task's own frames.
+    pub distant: usize,
+}
+
+impl Capped {
+    /// Whether anything was capped at all.
+    pub fn any(&self) -> bool {
+        self.deep > 0 || self.distant > 0
+    }
+
+    /// Every place a limit stopped the walk, of either kind.
+    pub fn total(&self) -> usize {
+        self.deep + self.distant
+    }
 }
 
 /// How the census reached a chain that is not an enumerated task's own:
@@ -280,7 +305,10 @@ struct Walker<'a, 'b, T> {
     held: Vec<HeldFuture>,
     spans: Vec<(u64, u64, usize, usize)>,
     errors: Vec<anyhow::Error>,
-    capped: usize,
+    capped: Capped,
+    /// Where this walk's hard limits sit; [`Bounds::default`] outside
+    /// the tests.
+    bounds: Bounds,
     /// Every find, by (address, type), so an aliased or re-reached
     /// future is recorded once.
     visited: HashSet<(u64, BundleTypeId)>,
@@ -296,6 +324,42 @@ struct Walker<'a, 'b, T> {
 /// those failures already surface wherever the task itself is asked
 /// about — while a *found* set or future whose walk fails is reported.
 pub fn census<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> FutureCensus {
+    census_bounded(ctx, list, Bounds::default())
+}
+
+/// Where the walk's two hard limits sit, as arguments rather than as
+/// the constants themselves.
+///
+/// Every fixture holds its futures a hop or two out and nests its
+/// locals a few deep, so a bound is reachable in a test only by moving
+/// it — the alternative being a fixture nine hops out and thirteen
+/// aggregates deep, built in every matrix cell, to exercise two
+/// comparisons.
+#[derive(Debug, Clone, Copy)]
+struct Bounds {
+    /// How many hops away from a task's own frames the scan recurses.
+    nesting: usize,
+    /// The depth a local's scan starts at. The cap is a fact of
+    /// [`MAX_SCAN_DEPTH`], so starting part-way down is how a test
+    /// reaches it — the same handle `scan_value`'s own tests take.
+    scan_from: usize,
+}
+
+impl Default for Bounds {
+    fn default() -> Self {
+        Bounds {
+            nesting: MAX_NESTING,
+            scan_from: 0,
+        }
+    }
+}
+
+/// [`census`], with the bounds as an argument.
+fn census_bounded<T: Target>(
+    ctx: &Context<'_, T>,
+    list: &TaskList,
+    bounds: Bounds,
+) -> FutureCensus {
     let mut walker = Walker {
         ctx,
         list,
@@ -304,7 +368,8 @@ pub fn census<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> FutureCensus 
         held: Vec::new(),
         spans: Vec::new(),
         errors: Vec::new(),
-        capped: 0,
+        capped: Capped::default(),
+        bounds,
         visited: HashSet::default(),
         plans: HashMap::default(),
     };
@@ -366,9 +431,9 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 scan_value(
                     local,
                     self.ctx.known_futures(),
-                    0,
+                    self.bounds.scan_from,
                     &mut found,
-                    &mut self.capped,
+                    &mut self.capped.deep,
                     &mut self.plans,
                 );
                 for find in found {
@@ -424,10 +489,10 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     wait: summary.wait,
                     leaf: summary.leaf,
                 });
-                if nesting < MAX_NESTING {
+                if nesting < self.bounds.nesting {
                     self.scan_chain(owner, Some(Via::Held(index)), &chain, nesting + 1);
                 } else {
-                    self.capped += 1;
+                    self.capped.distant += 1;
                 }
             }
         }
@@ -469,11 +534,11 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         for (child_index, (child, chain, extent)) in children.into_iter().enumerate() {
             self.spans.push((extent.0, extent.1, index, child_index));
             set.children.push(child);
-            if chain.is_some() && nesting >= MAX_NESTING {
-                self.capped += 1;
+            if chain.is_some() && nesting >= self.bounds.nesting {
+                self.capped.distant += 1;
             }
             if let Some(chain) = chain
-                && nesting < MAX_NESTING
+                && nesting < self.bounds.nesting
             {
                 scan.push((child_index, chain));
             }
@@ -615,11 +680,11 @@ fn scan_value<'b>(
     futures: &HashSet<BundleTypeId>,
     depth: usize,
     found: &mut Vec<Find<'b>>,
-    capped: &mut usize,
+    deep: &mut usize,
     plans: &mut HashMap<BundleTypeId, ScanPlan>,
 ) {
     if depth > MAX_SCAN_DEPTH {
-        *capped += 1;
+        *deep += 1;
         return;
     }
     // A remembered plan is only valid for a buffer that covers the type
@@ -649,12 +714,12 @@ fn scan_value<'b>(
                     continue;
                 };
                 let child = Value::new(value.ty.related_type(ty), value.addr + offset, bytes);
-                scan_value(child, futures, depth + 1, found, capped, plans);
+                scan_value(child, futures, depth + 1, found, deep, plans);
             }
         }
         ScanPlan::Enum => {
             if let Ok((_, payload)) = value.active_variant() {
-                scan_value(payload, futures, depth + 1, found, capped, plans);
+                scan_value(payload, futures, depth + 1, found, deep, plans);
             }
         }
         ScanPlan::Stop => {}
@@ -1386,5 +1451,112 @@ mod tests {
         // untouched.
         assert!(matches!(scanned.plans.get(&ty.id()), Some(ScanPlan::Stop)));
         assert_eq!(scanned.capped, 0);
+    }
+
+    /// The whole census of the `unordered` pair, walked with the given
+    /// bounds.
+    ///
+    /// That fixture is the one with nesting to stop: its driver holds a
+    /// `FuturesUnordered` whose three children each hold a future of
+    /// their own, one of them a whole set of its own, beside the four
+    /// futures the driver holds itself.
+    fn unordered_census(bounds: Bounds) -> FutureCensus {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let census = census_bounded(&ctx, &list, bounds);
+        assert!(census.errors.is_empty(), "{:?}", census.errors);
+        census
+    }
+
+    /// The nesting bound at `hops`, the depth bound where it lies.
+    fn nesting(hops: usize) -> Bounds {
+        Bounds {
+            nesting: hops,
+            ..Bounds::default()
+        }
+    }
+
+    /// A find at the bound is still recorded — it was found in frames
+    /// the census was allowed to scan — but its own frames are not
+    /// scanned, and every chain left unscanned that way is counted.
+    /// The count is the whole of what says so: no error is raised, and
+    /// a listing shortened by a bound reads exactly like a complete
+    /// one.
+    #[test]
+    fn test_the_nesting_bound_keeps_the_find_it_stops_at() {
+        // With no hops allowed, a task's own frames are all that is
+        // scanned: the four futures the driver holds and the set it
+        // drives, whose children are walked (a set's own child list is
+        // not a hop) but never scanned.
+        let census = unordered_census(nesting(0));
+        assert_eq!(census.sets.len(), 1, "{:#?}", census.sets);
+        assert_eq!(census.sets[0].children.len(), 3, "{:#?}", census.sets[0]);
+        let own: Vec<&str> = census.held.iter().map(|h| h.local.as_str()).collect();
+        assert_eq!(
+            own,
+            ["held", "boxed", "pair", "maybe"],
+            "{:#?}",
+            census.held
+        );
+        assert!(
+            census.held.iter().all(|h| h.via.is_none()),
+            "{:#?}",
+            census.held
+        );
+
+        // Four held futures and three resident set children: seven
+        // chains the census reached and declined to scan.
+        assert_eq!(
+            census.capped,
+            Capped {
+                deep: 0,
+                distant: 7
+            }
+        );
+        assert!(census.capped.any());
+        assert_eq!(census.capped.total(), 7);
+    }
+
+    /// The bound counts where the walk stopped, not what it found: one
+    /// hop out reaches every find the fixture has, and still reports
+    /// the five chains it would have gone on to scan. The unbounded
+    /// walk finds the same and reports nothing, which is what makes a
+    /// nonzero count mean something.
+    #[test]
+    fn test_the_nesting_bound_counts_the_chains_it_declined() {
+        let bounded = unordered_census(nesting(1));
+        let full = unordered_census(Bounds::default());
+
+        assert_eq!(bounded.sets.len(), full.sets.len(), "{:#?}", bounded.sets);
+        assert_eq!(bounded.held.len(), full.held.len(), "{:#?}", bounded.held);
+        assert_eq!(full.capped, Capped::default());
+        assert!(!full.capped.any());
+
+        // The three futures the set's children hold, plus the two
+        // children of the set one of them holds.
+        assert_eq!(
+            bounded.capped,
+            Capped {
+                deep: 0,
+                distant: 5
+            }
+        );
+    }
+
+    /// The two bounds are counted apart, because they say different
+    /// things: a scan that starts past the depth cap plans nothing, so
+    /// every local is abandoned where it lies and no chain is ever
+    /// reached to decline.
+    #[test]
+    fn test_a_capped_descent_is_not_counted_as_a_capped_hop() {
+        let census = unordered_census(Bounds {
+            scan_from: MAX_SCAN_DEPTH + 1,
+            ..Bounds::default()
+        });
+        assert!(census.sets.is_empty(), "{:#?}", census.sets);
+        assert!(census.held.is_empty(), "{:#?}", census.held);
+        assert!(census.capped.deep > 0, "{:?}", census.capped);
+        assert_eq!(census.capped.distant, 0, "{:?}", census.capped);
     }
 }

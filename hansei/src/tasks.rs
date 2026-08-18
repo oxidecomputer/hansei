@@ -424,7 +424,7 @@ pub(crate) fn exec_tasks(
         // here, because it looks like completeness otherwise. The listing
         // is a lower bound either way (`help tasks`), but this is the part
         // of it that varies by target rather than being inherent.
-        warn_census_capped(census.capped, "listed")?;
+        warn_census_capped(census.capped.total(), "listed")?;
     }
 
     print_tasks(
@@ -581,7 +581,7 @@ pub(crate) fn exec_census(
     // As `tasks --futures`: a walk that hit a depth limit looks like
     // completeness in a count, so it says so.
     if let Some(census) = census {
-        warn_census_capped(census.capped, "counted")?;
+        warn_census_capped(census.capped.total(), "counted")?;
     }
 
     let runtime = match sections.threads {

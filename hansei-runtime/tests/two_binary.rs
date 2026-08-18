@@ -437,7 +437,11 @@ fn census_of<'a>(
     let list = hansei_runtime::testkit::tasks(&ctx, snapshot);
     let census = census::census(&ctx, &list);
     assert!(census.errors.is_empty(), "{:?}", census.errors);
-    assert_eq!(census.capped, 0, "the walk hit a hard limit");
+    assert!(
+        !census.capped.any(),
+        "the walk hit a hard limit: {:?}",
+        census.capped
+    );
     (ctx, list, census)
 }
 
