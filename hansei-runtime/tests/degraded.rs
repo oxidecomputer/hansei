@@ -385,19 +385,22 @@ fn test_an_unreadable_set_node_keeps_the_walked_prefix() {
     assert!(err.contains("lists only 1 of its children"), "{err}");
 }
 
-/// The futurelock fixture's held `future1`, located healthy: the
-/// address of the `Pin<Box<dyn Future>>` slot in `do_stuff`'s frame —
-/// which is not what the census records, that being the boxed future
-/// behind it — and the boxed future itself.
-fn held_dyn_pointer(bundle: &Bundle, snapshot: &Snapshot) -> (u64, u64) {
+/// One held future, located healthy: the address of the `local` slot
+/// in the frame the census found it in, and the address the census
+/// recorded for it — the same place for a future held by value, the
+/// slot and the boxed future behind it for a `Pin<Box<dyn Future>>`.
+fn held_slot(bundle: &Bundle, snapshot: &Snapshot, local: &str) -> (u64, u64) {
     let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, snapshot);
     let census = census::census(&ctx, &list);
     let held = census
+        // The task's own find, since the frame is looked up through its
+        // chain below: a find the census reached through another lives
+        // in that one's frames rather than in any of the task's.
         .held
         .iter()
-        .find(|h| h.local == "future1")
-        .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
+        .find(|h| h.local == local && h.via.is_none())
+        .unwrap_or_else(|| panic!("no held `{local}` in {:#?}", census.held));
     assert!(held.depth > 0, "the healthy chain resolves: {held:#?}");
 
     let task = &list.tasks[held.owner];
@@ -410,12 +413,12 @@ fn held_dyn_pointer(bundle: &Bundle, snapshot: &Snapshot) -> (u64, u64) {
         Some(state) => &state.payload,
         None => &frame.future,
     };
-    let local = payload
+    let member = payload
         .ty
         .members()
-        .find(|m| m.name() == "future1")
+        .find(|m| m.name() == local)
         .expect("the frame the census found it in holds it");
-    (payload.addr + local.offset(), held.addr)
+    (payload.addr + member.offset(), held.addr)
 }
 
 /// The census's own view of one held future, by the local holding it.
@@ -437,7 +440,7 @@ fn held_row(census: &census::FutureCensus, local: &str) -> (String, usize) {
 #[test]
 fn test_a_held_future_with_an_unmapped_box_is_listed_undecoded() {
     let (bundle, snapshot) = load_any("futurelock");
-    let (wide, _) = held_dyn_pointer(&bundle, &snapshot);
+    let (wide, _) = held_slot(&bundle, &snapshot, "future1");
 
     let corrupt = Corrupt::new(&snapshot).patch(wide, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
@@ -456,7 +459,7 @@ fn test_a_held_future_with_an_unmapped_box_is_listed_undecoded() {
 #[test]
 fn test_a_held_future_with_an_unjoinable_vtable_is_listed_unresolved() {
     let (bundle, snapshot) = load_any("futurelock");
-    let (wide, boxed) = held_dyn_pointer(&bundle, &snapshot);
+    let (wide, boxed) = held_slot(&bundle, &snapshot, "future1");
 
     // The vtable word now names the boxed future's own allocation, and
     // the two slots the join reads there — drop at +0, poll at +24 —
@@ -475,6 +478,47 @@ fn test_a_held_future_with_an_unjoinable_vtable_is_listed_unresolved() {
     assert_eq!(depth, 0, "{future}");
     assert!(future.starts_with("<unresolved: "), "{future}");
     assert!(future.contains("dyn "), "{future}");
+}
+
+/// Two slots naming one future are one row: a find is deduped by the
+/// future it stands for, not by the slot standing for it.
+///
+/// A wide pointer's row *is* the future behind it, so two references
+/// to one future — a `Pin<&mut dyn Future>` reborrowed from a local an
+/// outer frame still holds — would be two rows for one future in a
+/// listing whose three populations are meant not to overlap, and its
+/// frames would be scanned twice over. No fixture holds that shape, so
+/// it is made here: `unordered`'s driver holds a `set_member`
+/// coroutine by value in `held` and a boxed one in `boxed`, and the
+/// box's data word is pointed at the by-value one. The vtable is left
+/// alone, so the join still resolves to the same `set_member` the
+/// by-value local is declared as, which is what makes the two finds
+/// name one future rather than one address twice.
+#[test]
+fn test_a_second_reference_to_one_future_is_not_a_second_row() {
+    let (bundle, snapshot) = load_any("unordered");
+    let (wide, _) = held_slot(&bundle, &snapshot, "boxed");
+    let (by_value, root) = held_slot(&bundle, &snapshot, "held");
+    // Held by value: the slot the census found it in is the future it
+    // recorded, which is what the alias below points at.
+    assert_eq!(by_value, root);
+
+    let (ctx, list) = healthy(&bundle, &snapshot);
+    let healthy_census = census::census(&ctx, &list);
+
+    let corrupt = Corrupt::new(&snapshot).patch(wide, root);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &snapshot);
+    let aliased = census::census(&ctx, &list);
+
+    let rows: Vec<&census::HeldFuture> = aliased.held.iter().filter(|h| h.addr == root).collect();
+    assert_eq!(rows.len(), 1, "{:#?}", aliased.held);
+    assert!(rows[0].depth > 0, "{:#?}", rows[0]);
+    // One row fewer than healthy, and only that one: the census lost
+    // the duplicate, not the find.
+    assert_eq!(aliased.held.len(), healthy_census.held.len() - 1);
+    assert!(aliased.errors.is_empty(), "{:?}", aliased.errors);
+    assert!(!aliased.capped.any(), "{:?}", aliased.capped);
 }
 
 /// The join set every corruption below is aimed at: the one the
