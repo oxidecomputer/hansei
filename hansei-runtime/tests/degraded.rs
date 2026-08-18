@@ -633,6 +633,56 @@ fn test_an_unmapped_join_set_entry_is_reported() {
     assert!(err.contains("lists only 0 of its tasks"), "{err}");
 }
 
+/// A join set's entry list bent into another set's — every entry still
+/// reads cleanly, so the walk itself succeeds — lists more tasks than
+/// the set's own length word. The disagreement is a lie somewhere (the
+/// word or a link, and nothing can say which), so the census reports
+/// it beside the listing rather than presenting the grafted membership
+/// silently.
+#[test]
+fn test_a_join_set_listing_against_its_own_count_is_reported() {
+    let (bundle, snapshot) = load_any("joinset");
+    let (ctx, list) = healthy(&bundle, &snapshot);
+    let baseline = census::census(&ctx, &list);
+    let kept = baseline
+        .join_sets
+        .iter()
+        .find(|set| set.local == "kept")
+        .expect("the driver keeps a second set");
+    let graft = joined_set(&baseline).children[0].entry;
+    let victim = kept.children.last().expect("the kept set has tasks").entry;
+
+    // Every link to the kept set's last entry now names the joined
+    // set's first, so the kept walk runs on through that set's chain:
+    // more entries than its length, each of them valid.
+    let corrupt = Corrupt::new(&snapshot).patch_words_equal(victim, graft);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &snapshot);
+    let degraded = census::census(&ctx, &list);
+
+    let kept = degraded
+        .join_sets
+        .iter()
+        .find(|set| set.local == "kept")
+        .expect("the kept set still lists");
+    assert!(
+        kept.children.len() as u64 > kept.length,
+        "{} of {}",
+        kept.children.len(),
+        kept.length
+    );
+    let errs: Vec<String> = degraded.errors.iter().map(|e| format!("{e:#}")).collect();
+    assert!(
+        errs.iter().any(|e| e.contains(&format!(
+            "the JoinSet at {:#x} lists {} tasks against its own count of {}",
+            kept.addr,
+            kept.children.len(),
+            kept.length
+        ))),
+        "{errs:?}"
+    );
+}
+
 /// A set child the set has finished with — its `Option<Fut>` slot
 /// reaped to `None` — is a row the walk keeps rather than a failure it
 /// reports: the node is still in the list and still counted, with
