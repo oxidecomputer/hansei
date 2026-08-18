@@ -1588,5 +1588,9 @@ mod tests {
         assert_eq!(own, ["held", "boxed"], "{:#?}", census.held);
         assert!(census.capped.deep > 0, "{:?}", census.capped);
         assert_eq!(census.capped.distant, 0, "{:?}", census.capped);
+        // A depth cap on its own is still a short listing, which is all
+        // a caller asks before deciding whether to say so.
+        assert!(census.capped.any(), "{:?}", census.capped);
+        assert_eq!(census.capped.total(), census.capped.deep);
     }
 }
