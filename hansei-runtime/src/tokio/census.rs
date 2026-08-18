@@ -412,16 +412,8 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 Some(state) => &state.payload,
                 None => &frame.future,
             };
-            // A frame's own locals only: the `__…` slots are the
-            // compiler's (the `__awaitee` is the next frame, scanned as
-            // itself), and zero-sized members hold nothing. A wrapper's
-            // inner future is the next frame for the same reason, and is
-            // skipped for the same reason — counting it here would put
-            // it in two of the three populations the census calls
-            // disjoint.
             for m in payload.ty.members() {
-                if m.name().starts_with("__") || m.ty().size() == 0 || frame.inner == Some(m.name())
-                {
+                if !is_own_local(m.name(), m.ty().size(), frame.inner) {
                     continue;
                 }
                 let start = m.offset() as usize;
@@ -682,6 +674,20 @@ fn scan_plan(value: Value<'_>, futures: &HashSet<BundleTypeId>) -> ScanPlan {
         TypeClass::Union => ScanPlan::Stop,
         _ => ScanPlan::Stop,
     }
+}
+
+/// Whether a frame member is one of the frame's own locals, which are
+/// all the scan looks at.
+///
+/// The rest is the machinery around them, and each piece of it is
+/// somewhere else in the listing already: the `__…` slots are the
+/// compiler's, and its `__awaitee` is the next frame, scanned as
+/// itself; a zero-sized member holds nothing; and a wrapper future's
+/// sole inner future (`inner`) is that wrapper's next frame, for the
+/// same reason. Counting any of them here would put one future in two
+/// of the three populations the census calls disjoint.
+fn is_own_local(name: &str, size: u64, inner: Option<&str>) -> bool {
+    !name.starts_with("__") && size > 0 && inner != Some(name)
 }
 
 /// Find every by-value future inside `value`: the value itself, or one
@@ -1473,6 +1479,29 @@ mod tests {
         // untouched.
         assert!(matches!(scanned.plans.get(&ty.id()), Some(ScanPlan::Stop)));
         assert_eq!(scanned.capped, 0);
+    }
+
+    /// Which frame members the scan looks at. Every fixture's chains
+    /// are coroutines, whose next frame is an `__awaitee` — none has a
+    /// wrapper future, whose sole inner future is its next frame under
+    /// a name of its own, so that arm of the rule is stated here or
+    /// nowhere.
+    #[test]
+    fn test_only_a_frame_s_own_locals_are_scanned() {
+        // A local of the frame, and nothing about it to skip.
+        assert!(is_own_local("held", 8, None));
+        assert!(is_own_local("held", 8, Some("value")));
+
+        // The compiler's slots, whatever else is true of them.
+        assert!(!is_own_local("__awaitee", 8, None));
+        assert!(!is_own_local("__0", 8, Some("__0")));
+
+        // Nothing to find in nothing.
+        assert!(!is_own_local("marker", 0, None));
+
+        // The wrapper's inner future is the wrapper's next frame, and
+        // is listed there.
+        assert!(!is_own_local("value", 8, Some("value")));
     }
 
     /// The whole census of the `unordered` pair, walked with the given
