@@ -2266,6 +2266,25 @@ fn test_census_prints_only_the_sections_named() {
         assert!(both.starts_with("Tasks: 2 owned by runtime 0 @"), "{both}");
         assert!(!both.contains("Threads: "), "{both}");
         assert!(both.contains("\n\nFutures: 2 in flight, "), "{both}");
+
+        // The tasks section alone still says what each task waits on,
+        // which is the dependency analysis rather than the listing: a
+        // section can want work another section also wants, and asking
+        // for one of them is asking for the work.
+        let tasks = hansei_ok(&bundle, core, "census -t");
+        assert!(
+            tasks.starts_with("Tasks: 2 owned by runtime 0 @"),
+            "{tasks}"
+        );
+        assert!(!tasks.contains("Threads: "), "{tasks}");
+        assert!(!tasks.contains("Futures: "), "{tasks}");
+        assert!(
+            tasks.contains(
+                "        1  sleep_join::sleeper::{async_fn_env#0}\n           \
+                 └─ 1  a timer\n"
+            ),
+            "{tasks}"
+        );
     });
 }
 
