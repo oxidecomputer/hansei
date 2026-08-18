@@ -86,6 +86,18 @@ struct SessionArgs {
     /// runtime is read, merged with a tag where there is more than one.
     #[arg(long, value_name = "INDEX")]
     runtime: Option<usize>,
+
+    /// How deep the future census descends into one frame local
+    /// looking for futures held inside it: a future in a tuple in a
+    /// struct in an `Option` is four levels down.
+    ///
+    /// The census says when it stopped at this limit, which is when
+    /// raising it is worth it — a target that nests futures deeply
+    /// enough to be cut off holds more than the listing showed.
+    /// Lowering it below what a target needs is how to see what the
+    /// descent is finding.
+    #[arg(long, value_name = "LEVELS", default_value_t = census::Bounds::default().scan_depth)]
+    search_depth: usize,
 }
 
 /// Everything a session can be asked. These are read from stdin, never
@@ -372,6 +384,10 @@ pub enum Command {
     /// hand-written combinator implements Future, so one is not listed
     /// itself — though the scan descends through it and any coroutine
     /// inside it is. Treat the listing as a lower bound.
+    ///
+    /// The descent into one local stops at `--search-depth` levels,
+    /// and says so where it stopped; raise it on the command line for
+    /// a target that nests futures deeper than that.
     Tasks {
         /// List each task's futures and task sets under their counts,
         /// rather than only counting them.
@@ -622,6 +638,9 @@ pub struct Session<'b> {
     /// worth paying once.
     extents: OnceCell<bundle::TaskExtents>,
     census: OnceCell<census::FutureCensus>,
+    /// Where the census walk stops, `--search-depth` having moved the
+    /// one bound a session can set.
+    bounds: census::Bounds,
     analysis: OnceCell<Analysis>,
 }
 
@@ -703,6 +722,10 @@ impl<'b> Session<'b> {
             tasks,
             extents: OnceCell::new(),
             census: OnceCell::new(),
+            bounds: census::Bounds {
+                scan_depth: args.search_depth,
+                ..census::Bounds::default()
+            },
             analysis: OnceCell::new(),
         })
     }
@@ -714,7 +737,7 @@ impl<'b> Session<'b> {
 
     fn census(&self) -> &census::FutureCensus {
         self.census
-            .get_or_init(|| census::census(&self.ctx, &self.tasks))
+            .get_or_init(|| census::census_bounded(&self.ctx, &self.tasks, self.bounds))
     }
 
     fn analysis(&self) -> &Analysis {

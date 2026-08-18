@@ -327,35 +327,31 @@ pub fn census<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> FutureCensus 
     census_bounded(ctx, list, Bounds::default())
 }
 
-/// Where the walk's two hard limits sit, as arguments rather than as
-/// the constants themselves.
-///
-/// Every fixture holds its futures a hop or two out and nests its
-/// locals a few deep, so a bound is reachable in a test only by moving
-/// it — the alternative being a fixture nine hops out and thirteen
-/// aggregates deep, built in every matrix cell, to exercise two
-/// comparisons.
+/// Where the walk's two hard limits sit, as values rather than as the
+/// constants themselves: a caller who was told the walk stopped can
+/// move the limit that stopped it and ask again.
 #[derive(Debug, Clone, Copy)]
-struct Bounds {
-    /// How many hops away from a task's own frames the scan recurses.
-    nesting: usize,
-    /// The depth a local's scan starts at. The cap is a fact of
-    /// [`MAX_SCAN_DEPTH`], so starting part-way down is how a test
-    /// reaches it — the same handle `scan_value`'s own tests take.
-    scan_from: usize,
+pub struct Bounds {
+    /// How deep the scan descends through one local's nested
+    /// aggregates and active variants.
+    pub scan_depth: usize,
+    /// How many hops away from a task's own frames the scan recurses:
+    /// a future held by a future held by a set child. Not reachable
+    /// from the command line, since no target has yet come near it.
+    pub nesting: usize,
 }
 
 impl Default for Bounds {
     fn default() -> Self {
         Bounds {
+            scan_depth: MAX_SCAN_DEPTH,
             nesting: MAX_NESTING,
-            scan_from: 0,
         }
     }
 }
 
 /// [`census`], with the bounds as an argument.
-fn census_bounded<T: Target>(
+pub fn census_bounded<T: Target>(
     ctx: &Context<'_, T>,
     list: &TaskList,
     bounds: Bounds,
@@ -431,7 +427,8 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 scan_value(
                     local,
                     self.ctx.known_futures(),
-                    self.bounds.scan_from,
+                    0,
+                    self.bounds.scan_depth,
                     &mut found,
                     &mut self.capped.deep,
                     &mut self.plans,
@@ -679,11 +676,12 @@ fn scan_value<'b>(
     value: Value<'b>,
     futures: &HashSet<BundleTypeId>,
     depth: usize,
+    max_depth: usize,
     found: &mut Vec<Find<'b>>,
     deep: &mut usize,
     plans: &mut HashMap<BundleTypeId, ScanPlan>,
 ) {
-    if depth > MAX_SCAN_DEPTH {
+    if depth > max_depth {
         *deep += 1;
         return;
     }
@@ -714,12 +712,12 @@ fn scan_value<'b>(
                     continue;
                 };
                 let child = Value::new(value.ty.related_type(ty), value.addr + offset, bytes);
-                scan_value(child, futures, depth + 1, found, deep, plans);
+                scan_value(child, futures, depth + 1, max_depth, found, deep, plans);
             }
         }
         ScanPlan::Enum => {
             if let Ok((_, payload)) = value.active_variant() {
-                scan_value(payload, futures, depth + 1, found, deep, plans);
+                scan_value(payload, futures, depth + 1, max_depth, found, deep, plans);
             }
         }
         ScanPlan::Stop => {}
@@ -1100,7 +1098,15 @@ mod tests {
     ) -> Scanned<'b> {
         let mut finds = Vec::new();
         let mut capped = 0;
-        scan_value(value, futures, depth, &mut finds, &mut capped, &mut plans);
+        scan_value(
+            value,
+            futures,
+            depth,
+            MAX_SCAN_DEPTH,
+            &mut finds,
+            &mut capped,
+            &mut plans,
+        );
         Scanned {
             finds,
             capped,
@@ -1544,18 +1550,26 @@ mod tests {
         );
     }
 
-    /// The two bounds are counted apart, because they say different
-    /// things: a scan that starts past the depth cap plans nothing, so
-    /// every local is abandoned where it lies and no chain is ever
-    /// reached to decline.
+    /// The depth bound stops the descent through one local, and is
+    /// counted apart from the nesting bound because it is a different
+    /// thing to be told: with no descent at all a local that *is* a
+    /// future is still found (a boxed one too — peeling a transparent
+    /// wrapper to a pointer is not a descent), while the two the
+    /// fixture hides inside a tuple and an enum are not, and every
+    /// chain the census does reach is still followed.
     #[test]
-    fn test_a_capped_descent_is_not_counted_as_a_capped_hop() {
+    fn test_the_depth_bound_stops_inside_a_local() {
         let census = unordered_census(Bounds {
-            scan_from: MAX_SCAN_DEPTH + 1,
+            scan_depth: 0,
             ..Bounds::default()
         });
-        assert!(census.sets.is_empty(), "{:#?}", census.sets);
-        assert!(census.held.is_empty(), "{:#?}", census.held);
+        let own: Vec<&str> = census
+            .held
+            .iter()
+            .filter(|h| h.via.is_none())
+            .map(|h| h.local.as_str())
+            .collect();
+        assert_eq!(own, ["held", "boxed"], "{:#?}", census.held);
         assert!(census.capped.deep > 0, "{:?}", census.capped);
         assert_eq!(census.capped.distant, 0, "{:?}", census.capped);
     }

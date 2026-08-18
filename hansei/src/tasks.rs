@@ -182,8 +182,14 @@ fn census_capped_warning(capped: census::Capped, fate: &str) -> Option<String> {
             "beyond either",
         ),
     };
+    // Only the depth limit is one a session can move, so only it is
+    // worth telling a reader how.
+    let hint = match capped.deep {
+        0 => "",
+        _ => " (--search-depth moves the depth limit)",
+    };
     Some(format!(
-        "the scan stopped at {limits}; anything {beyond} is not {fate}"
+        "the scan stopped at {limits}; anything {beyond} is not {fate}{hint}"
     ))
 }
 
@@ -797,7 +803,8 @@ mod census_warning_tests {
         assert_eq!(
             deep,
             "the scan stopped at its depth limit in 2 place(s); \
-             anything nested deeper is not listed"
+             anything nested deeper is not listed \
+             (--search-depth moves the depth limit)"
         );
 
         let distant = census_capped_warning(
@@ -830,7 +837,8 @@ mod census_warning_tests {
         assert_eq!(
             both,
             "the scan stopped at its depth limit in 2 place(s) and its \
-             nesting limit in 5 place(s); anything beyond either is not listed"
+             nesting limit in 5 place(s); anything beyond either is not listed \
+             (--search-depth moves the depth limit)"
         );
     }
 }

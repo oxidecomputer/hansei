@@ -131,8 +131,22 @@ pub(crate) fn exec_snapshot(
     let analysis = rt_graph::analyze(&ctx, &list);
 
     // And the sub-executor census, so the set node chains and child
-    // futures it reads replay offline as well.
-    let _ = census::census(&ctx, &list);
+    // futures it reads replay offline as well. A session that raised
+    // `--search-depth` reads deeper than the default walk would, and
+    // its snapshot has to carry those pages; one that lowered it still
+    // captures everything the offline tests replay, which is what the
+    // warming is for.
+    let _ = census::census_bounded(
+        &ctx,
+        &list,
+        census::Bounds {
+            scan_depth: session
+                .bounds
+                .scan_depth
+                .max(census::Bounds::default().scan_depth),
+            ..session.bounds
+        },
+    );
 
     let snapshot = recorder.snapshot().context("failed to assemble snapshot")?;
     snapshot

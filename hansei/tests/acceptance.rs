@@ -351,11 +351,18 @@ fn program_args(core: &Path) -> Vec<PathBuf> {
 /// hansei reads commands from stdin, so the command is written there
 /// rather than passed as an argument.
 fn hansei(bundle: &Path, core: &Path, command: &str) -> Output {
+    hansei_with(bundle, core, &[], command)
+}
+
+/// [`hansei`], with session flags — what shapes the attach itself, and
+/// so cannot be asked for once a session is up.
+fn hansei_with(bundle: &Path, core: &Path, flags: &[&str], command: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_hansei"))
         .arg("--bundle")
         .arg(bundle)
         .arg("--core")
         .arg(core)
+        .args(flags)
         .args(
             program_args(core)
                 .iter()
@@ -1877,6 +1884,62 @@ fn test_futures_acceptance() {
             )),
             "{out}"
         );
+    });
+}
+
+/// `--search-depth` is how deep the census descends into one frame
+/// local, and the only bound of the walk a session can move.
+///
+/// Told not to descend at all, the scan still finds what a frame holds
+/// outright — a coroutine local, a boxed one — and misses the two the
+/// fixture nests inside a tuple and an `Option`. That listing is
+/// shorter than the target, which is exactly the incompleteness no
+/// error reports, so the run says on stderr where it stopped and which
+/// flag moves it. Raised past what the fixture needs, the same session
+/// is the default's answer to the byte.
+#[test]
+fn test_search_depth_acceptance() {
+    let bundle = fixtures().bundle("unordered");
+    with_core("unordered", |core| {
+        let full = hansei_ok(&bundle, core, "tasks --futures");
+
+        let shallow = hansei_with(&bundle, core, &["--search-depth", "0"], "tasks --futures");
+        let warned = String::from_utf8_lossy(&shallow.stderr);
+        let listed = String::from_utf8_lossy(&shallow.stdout);
+        assert!(shallow.status.success(), "{warned}");
+        assert!(
+            warned.contains("the scan stopped at its depth limit in "),
+            "{warned}"
+        );
+        assert!(warned.contains("--search-depth"), "{warned}");
+
+        // What the driver holds outright is still found and still
+        // counted; what it holds nested is neither.
+        assert!(listed.contains("    Held futures: 2\n"), "{listed}");
+        for local in ["held", "boxed"] {
+            assert!(
+                listed.contains(&format!("\n        (frame 0, `{local}`)")),
+                "{listed}"
+            );
+        }
+        for local in ["pair", "maybe"] {
+            assert!(
+                !listed.contains(&format!("(frame 0, `{local}`)")),
+                "{listed}"
+            );
+            assert!(full.contains(&format!("(frame 0, `{local}`)")), "{full}");
+        }
+        // A set is a local in its own right, so its children are
+        // walked as ever: the depth limit is a bound on one value's
+        // insides, not on how far the census goes.
+        assert!(listed.contains("3 children in flight"), "{listed}");
+
+        // And it moves the other way: past what this target needs, the
+        // walk is the unbounded one, warning and all.
+        let deep = hansei_with(&bundle, core, &["--search-depth", "64"], "tasks --futures");
+        let quiet = String::from_utf8_lossy(&deep.stderr);
+        assert!(quiet.is_empty(), "{quiet}");
+        assert_eq!(String::from_utf8_lossy(&deep.stdout), full);
     });
 }
 
