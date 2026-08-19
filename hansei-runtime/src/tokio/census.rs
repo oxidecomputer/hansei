@@ -2688,6 +2688,113 @@ mod tests {
         );
     }
 
+    /// The omission escapes, kind by kind: a registered set or join
+    /// set with no row is excused exactly when an error names its
+    /// address, and a carried future whose carrier is missing is
+    /// excused the same way — never silently, never on someone
+    /// else's error.
+    #[test]
+    fn test_the_registry_diff_excuses_only_the_omissions_an_error_names() {
+        let list = task_list(1);
+        let mut census = blank();
+        let expected = [
+            Expectation::Set {
+                addr: 0x4000,
+                children: 1,
+            },
+            Expectation::JoinSet {
+                addr: 0x6000,
+                members: 1,
+            },
+            Expectation::HeldIn {
+                parent: 0x1000,
+                name: "f".to_string(),
+            },
+        ];
+        let flagged = diff(&expected, &census, &list);
+        assert_eq!(flagged.len(), 3, "{flagged:#?}");
+        assert!(
+            flagged[0].contains("registered set at 0x4000"),
+            "{flagged:#?}"
+        );
+        assert!(
+            flagged[1].contains("registered join set at 0x6000"),
+            "{flagged:#?}"
+        );
+        assert!(
+            flagged[2].contains("no held find at its carrier's slot 0x1000"),
+            "{flagged:#?}"
+        );
+
+        // An error naming some other address excuses nothing...
+        census.errors.push(anyhow!("something failed at 0x9999"));
+        assert_eq!(diff(&expected, &census, &list).len(), 3);
+
+        // ...and one error per named address excuses each in turn.
+        census.errors.push(anyhow!("the set at 0x4000 broke"));
+        census.errors.push(anyhow!("the join set at 0x6000 broke"));
+        census.errors.push(anyhow!("the frame at 0x1000 broke"));
+        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+    }
+
+    /// A join set's member count is part of the registration, with the
+    /// same error escape as a set's.
+    #[test]
+    fn test_the_registry_diff_flags_a_join_set_count_mismatch() {
+        let list = task_list(1);
+        let mut census = blank();
+        census
+            .join_sets
+            .push(a_join_set(0x6000, 1, vec![a_member(0x7000, 0x9000, true)]));
+        let expected = [Expectation::JoinSet {
+            addr: 0x6000,
+            members: 3,
+        }];
+        let flagged = diff(&expected, &census, &list);
+        assert_eq!(flagged.len(), 1, "{flagged:#?}");
+        assert!(
+            flagged[0].contains("1 members against the registered 3"),
+            "{flagged:#?}"
+        );
+
+        // An error naming the set stands in for the missing members.
+        census.errors.push(anyhow!("the walk stopped at 0x6000"));
+        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+    }
+
+    /// A registration claims a row by address, never by position: a
+    /// set (or join set) at some other address satisfies nothing, and
+    /// both directions report.
+    #[test]
+    fn test_the_registry_diff_matches_by_address_not_position() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.sets.push(a_set(0x5000, "S", Vec::new()));
+        census.join_sets.push(a_join_set(0x7000, 0, Vec::new()));
+        let expected = [
+            Expectation::Set {
+                addr: 0x4000,
+                children: 0,
+            },
+            Expectation::JoinSet {
+                addr: 0x6000,
+                members: 0,
+            },
+        ];
+        let flagged = diff(&expected, &census, &list);
+        assert_eq!(flagged.len(), 4, "{flagged:#?}");
+        assert!(
+            flagged[0].contains("registered set at 0x4000"),
+            "{flagged:#?}"
+        );
+        assert!(
+            flagged[1].contains("registered join set at 0x6000"),
+            "{flagged:#?}"
+        );
+        assert!(flagged[2].contains("unregistered set"), "{flagged:#?}");
+        assert!(flagged[3].contains("unregistered join set"), "{flagged:#?}");
+    }
+
     /// Task expectations are one-directional: every registered name
     /// must be listed (as many times as it was registered), and tasks
     /// nothing registered are no one's business.
