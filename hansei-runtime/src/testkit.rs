@@ -105,6 +105,291 @@ pub fn census<T: Target>(
     census
 }
 
+/// The fixture programs' ground-truth registry: reading back what a
+/// fixture registered about the state it built (`test-programs`'
+/// `census_expect` module — the write side, whose plain-old-data layout
+/// this module re-spells by hand; the two must move together), and
+/// diffing a census against it in both directions.
+///
+/// The registry is one `#[no_mangle]` static found by symbol name, so
+/// no DWARF is involved; the snapshot command reads it through its
+/// recording target at capture time, which is what makes the same
+/// bytes replayable from the offline pairs.
+pub mod expect {
+    use crate::tokio::bundle::{FutureInfo, TaskList};
+    use crate::tokio::census::{FutureCensus, Via};
+
+    use anyhow::{Context as _, Result, bail, ensure};
+    use proc::Target;
+
+    use std::collections::BTreeMap;
+
+    /// The write side's `HANSEI_CENSUS_EXPECT` static.
+    pub const SYMBOL: &str = "HANSEI_CENSUS_EXPECT";
+
+    /// `committed: u64` then `reserved: u64`, then the entries.
+    const HEADER: u64 = 16;
+    /// `kind: u32, flags: u32, addr: u64, count: u64, name: [u8; 64]`.
+    const ENTRY: u64 = 88;
+    const NAME_AT: usize = 24;
+
+    /// One registered expectation, as the write side's API spells them.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Expectation {
+        /// A held find at exactly this slot, named `name`.
+        Held { slot: u64, name: String },
+        /// A find reached via the held find at `parent` — a future
+        /// carried inside another, which has no slot of its own the
+        /// fixture could name.
+        HeldIn { parent: u64, name: String },
+        /// A `FuturesUnordered` at `addr` with this many children.
+        Set { addr: u64, children: u64 },
+        /// A `JoinSet` at `addr` with this many members.
+        JoinSet { addr: u64, members: u64 },
+        /// A listed task whose future name contains `name`.
+        Task { name: String },
+    }
+
+    /// Read the registry through any target: `None` where the target
+    /// carries no registry symbol at all (any real, non-fixture
+    /// target), the parsed entries otherwise. The snapshot command
+    /// calls this through its `Recorder` purely for the reads it
+    /// makes, which is what puts the bytes into the capture.
+    pub fn read_from<T: Target>(target: &T) -> Option<Result<Vec<Expectation>>> {
+        let sym = target.lookup_symbol_by_name(SYMBOL)?;
+        Some(parse(target, sym.st_value))
+    }
+
+    /// Read `len` bytes at `addr` in as many pieces as the target
+    /// serves them in. The registry sits at the tail of `.data`/`.bss`,
+    /// so its bytes routinely straddle the boundary between the last
+    /// file-backed page and the anonymous pages after it — two segments
+    /// in a core, and a single `read_bytes` spanning two segments is
+    /// refused whole. Chunking at `readable_len` reads what one
+    /// straight read cannot, from a core and a snapshot alike.
+    fn read_run<T: Target>(target: &T, addr: u64, len: u64) -> Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(len as usize);
+        let mut cur = addr;
+        while cur < addr + len {
+            let n = target.readable_len(cur, addr + len - cur);
+            ensure!(
+                n > 0,
+                "the range {cur:#x}..+{} is not mapped",
+                addr + len - cur
+            );
+            bytes.extend_from_slice(target.read_bytes(cur, n)?);
+            cur += n;
+        }
+        Ok(bytes)
+    }
+
+    fn parse<T: Target>(target: &T, base: u64) -> Result<Vec<Expectation>> {
+        let header =
+            read_run(target, base, HEADER).context("failed to read the census registry header")?;
+        let committed = u64::from_le_bytes(header[..8].try_into().unwrap());
+        // The write side caps at 64; anything past that is a misread.
+        ensure!(
+            committed <= 4096,
+            "the census registry claims {committed} entries"
+        );
+        if committed == 0 {
+            return Ok(Vec::new());
+        }
+        let bytes = read_run(target, base + HEADER, committed * ENTRY)
+            .context("failed to read the census registry entries")?;
+        let mut expectations = Vec::new();
+        for entry in bytes.chunks_exact(ENTRY as usize) {
+            let word = |at: usize| u64::from_le_bytes(entry[at..at + 8].try_into().unwrap());
+            let kind = u32::from_le_bytes(entry[..4].try_into().unwrap());
+            let (addr, count) = (word(8), word(16));
+            let raw = &entry[NAME_AT..];
+            let raw = &raw[..raw.iter().position(|&b| b == 0).unwrap_or(raw.len())];
+            let name = std::str::from_utf8(raw)
+                .context("a census registry entry's name is not UTF-8")?
+                .to_string();
+            expectations.push(match kind {
+                1 => Expectation::Held { slot: addr, name },
+                2 => Expectation::HeldIn { parent: addr, name },
+                3 => Expectation::Set {
+                    addr,
+                    children: count,
+                },
+                4 => Expectation::JoinSet {
+                    addr,
+                    members: count,
+                },
+                5 => Expectation::Task { name },
+                other => bail!("unknown census registry entry kind {other}"),
+            });
+        }
+        Ok(expectations)
+    }
+
+    /// Diff a census (and the task listing it was built from) against
+    /// what the fixture registered, both directions: a registered item
+    /// with no matching row is an omission unless an error names its
+    /// address, and a held/set/join-set row nothing registered is a
+    /// fabrication — the fixtures register exhaustively, so the
+    /// per-kind populations must match one for one. Task expectations
+    /// are one-directional: each registered name must be a listed
+    /// task, but unregistered tasks (the runtime's own machinery) are
+    /// nobody's business. One line per problem; empty is clean.
+    pub fn diff(expected: &[Expectation], census: &FutureCensus, list: &TaskList) -> Vec<String> {
+        let mut v = Vec::new();
+        let errors: Vec<String> = census.errors.iter().map(|e| format!("{e:#}")).collect();
+        let excused = |addr: u64| {
+            errors
+                .iter()
+                .any(|text| text.contains(&format!("{addr:#x}")))
+        };
+
+        let mut held_claimed = vec![false; census.held.len()];
+        let mut set_claimed = vec![false; census.sets.len()];
+        let mut join_claimed = vec![false; census.join_sets.len()];
+        let mut tasks_wanted: BTreeMap<&str, usize> = BTreeMap::new();
+
+        for expectation in expected {
+            match expectation {
+                Expectation::Held { slot, name } => {
+                    let row = census
+                        .held
+                        .iter()
+                        .enumerate()
+                        .find(|(i, h)| !held_claimed[*i] && h.slot == *slot);
+                    match row {
+                        Some((i, h)) => {
+                            held_claimed[i] = true;
+                            if !h.future.contains(name) {
+                                v.push(format!(
+                                    "the held find at {slot:#x} is `{}`, \
+                                     not the registered `{name}`",
+                                    h.future
+                                ));
+                            }
+                        }
+                        None if excused(*slot) => {}
+                        None => v.push(format!(
+                            "registered held future `{name}` at {slot:#x} \
+                             has no census row and no error names it"
+                        )),
+                    }
+                }
+                Expectation::HeldIn { parent, name } => {
+                    let Some(p) = census.held.iter().position(|h| h.slot == *parent) else {
+                        if !excused(*parent) {
+                            v.push(format!(
+                                "registered carried future `{name}`: no held \
+                                 find at its carrier's slot {parent:#x}"
+                            ));
+                        }
+                        continue;
+                    };
+                    let row = census.held.iter().enumerate().find(|(i, h)| {
+                        !held_claimed[*i] && h.via == Some(Via::Held(p)) && h.future.contains(name)
+                    });
+                    match row {
+                        Some((i, _)) => held_claimed[i] = true,
+                        None => v.push(format!(
+                            "registered carried future `{name}` was not found \
+                             via the held find at {parent:#x}"
+                        )),
+                    }
+                }
+                Expectation::Set { addr, children } => {
+                    let row = census
+                        .sets
+                        .iter()
+                        .enumerate()
+                        .find(|(i, s)| !set_claimed[*i] && s.addr == *addr);
+                    match row {
+                        Some((i, s)) => {
+                            set_claimed[i] = true;
+                            if s.children.len() as u64 != *children && !excused(*addr) {
+                                v.push(format!(
+                                    "the set at {addr:#x} lists {} children \
+                                     against the registered {children}",
+                                    s.children.len()
+                                ));
+                            }
+                        }
+                        None if excused(*addr) => {}
+                        None => v.push(format!(
+                            "registered set at {addr:#x} has no census row \
+                             and no error names it"
+                        )),
+                    }
+                }
+                Expectation::JoinSet { addr, members } => {
+                    let row = census
+                        .join_sets
+                        .iter()
+                        .enumerate()
+                        .find(|(i, s)| !join_claimed[*i] && s.addr == *addr);
+                    match row {
+                        Some((i, s)) => {
+                            join_claimed[i] = true;
+                            if s.children.len() as u64 != *members && !excused(*addr) {
+                                v.push(format!(
+                                    "the join set at {addr:#x} lists {} members \
+                                     against the registered {members}",
+                                    s.children.len()
+                                ));
+                            }
+                        }
+                        None if excused(*addr) => {}
+                        None => v.push(format!(
+                            "registered join set at {addr:#x} has no census \
+                             row and no error names it"
+                        )),
+                    }
+                }
+                Expectation::Task { name } => *tasks_wanted.entry(name).or_default() += 1,
+            }
+        }
+
+        for (name, wanted) in tasks_wanted {
+            let listed = list
+                .tasks
+                .iter()
+                .filter(
+                    |t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)),
+                )
+                .count();
+            if listed < wanted {
+                v.push(format!(
+                    "{wanted} task(s) registered as `{name}`, but the listing shows {listed}"
+                ));
+            }
+        }
+
+        for (i, h) in census.held.iter().enumerate() {
+            if !held_claimed[i] {
+                v.push(format!(
+                    "unregistered held find `{}` (local `{}`) at slot {:#x}",
+                    h.future, h.local, h.slot
+                ));
+            }
+        }
+        for (i, s) in census.sets.iter().enumerate() {
+            if !set_claimed[i] {
+                v.push(format!(
+                    "unregistered set `{}` (local `{}`) at {:#x}",
+                    s.ty, s.local, s.addr
+                ));
+            }
+        }
+        for (i, s) in census.join_sets.iter().enumerate() {
+            if !join_claimed[i] {
+                v.push(format!(
+                    "unregistered join set `{}` (local `{}`) at {:#x}",
+                    s.ty, s.local, s.addr
+                ));
+            }
+        }
+        v
+    }
+}
+
 /// The io registry's discovery candidates, before the identification
 /// chain takes them.
 ///
@@ -122,4 +407,169 @@ pub fn io_candidates<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> Ve
     let (found, errors) = ctx.io_task_pointers(&runtimes, &list);
     assert!(errors.is_empty(), "{errors:?}");
     found.into_iter().map(|(addr, _)| addr).collect()
+}
+
+// The registry *parser* is pinned here, over hand-laid bytes spelling
+// the write side's layout; the diff itself is pinned in the census's
+// own tests, which can build a `FutureCensus` by hand. The offline
+// registry test only ever shows both passing.
+#[cfg(test)]
+mod tests {
+    use super::expect::{Expectation, SYMBOL, read_from};
+
+    use proc::{Regs, SymbolBuf, Target};
+
+    /// A target serving one run of bytes at `base`, with the registry
+    /// symbol pointing at it (or absent).
+    struct FakeTarget {
+        base: u64,
+        bytes: Vec<u8>,
+        has_symbol: bool,
+    }
+
+    impl Target for FakeTarget {
+        fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
+            let start = addr
+                .checked_sub(self.base)
+                .filter(|&s| s + len <= self.bytes.len() as u64)
+                .ok_or_else(|| proc::Error::unmapped(addr, len))?;
+            Ok(&self.bytes[start as usize..(start + len) as usize])
+        }
+
+        fn lookup_symbol_by_addr(&self, _: u64) -> Option<SymbolBuf> {
+            None
+        }
+
+        fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
+            (self.has_symbol && name == SYMBOL).then(|| SymbolBuf {
+                name: name.to_string(),
+                st_name: 0,
+                st_info: 0,
+                st_other: 0,
+                st_shndx: 0,
+                st_value: self.base,
+                st_size: self.bytes.len() as u64,
+            })
+        }
+
+        fn symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
+            Ok(Vec::new())
+        }
+
+        fn mappings(&self) -> proc::Result<proc::Mappings> {
+            unimplemented!("the registry reader never asks")
+        }
+
+        fn lwps(&self) -> proc::Result<Vec<proc::LwpInfo>> {
+            unimplemented!("the registry reader never asks")
+        }
+
+        fn tls_var_addr(&self, _: &Regs, _: &SymbolBuf) -> proc::Result<Option<u64>> {
+            unimplemented!("the registry reader never asks")
+        }
+    }
+
+    /// The write side's layout, laid by hand: `committed`/`reserved`
+    /// words, then 88-byte entries of `kind, flags, addr, count,
+    /// name[64]`.
+    fn registry(entries: &[(u32, u64, u64, &str)]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend((entries.len() as u64).to_le_bytes());
+        bytes.extend((entries.len() as u64).to_le_bytes());
+        for &(kind, addr, count, name) in entries {
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend(0u32.to_le_bytes());
+            bytes.extend(addr.to_le_bytes());
+            bytes.extend(count.to_le_bytes());
+            let mut padded = [0u8; 64];
+            padded[..name.len()].copy_from_slice(name.as_bytes());
+            bytes.extend(padded);
+        }
+        bytes
+    }
+
+    #[test]
+    fn test_a_target_without_the_symbol_has_no_registry() {
+        let target = FakeTarget {
+            base: 0x1000,
+            bytes: registry(&[]),
+            has_symbol: false,
+        };
+        assert!(read_from(&target).is_none());
+    }
+
+    #[test]
+    fn test_an_empty_registry_parses_to_nothing() {
+        let target = FakeTarget {
+            base: 0x1000,
+            bytes: registry(&[]),
+            has_symbol: true,
+        };
+        let parsed = read_from(&target).expect("the symbol resolves").unwrap();
+        assert_eq!(parsed, Vec::new());
+    }
+
+    #[test]
+    fn test_every_entry_kind_parses() {
+        let target = FakeTarget {
+            base: 0x1000,
+            bytes: registry(&[
+                (1, 0x100, 0, "held_name"),
+                (2, 0x200, 0, "carried"),
+                (3, 0x300, 4, ""),
+                (4, 0x400, 2, ""),
+                (5, 0, 0, "task_name"),
+            ]),
+            has_symbol: true,
+        };
+        let parsed = read_from(&target).expect("the symbol resolves").unwrap();
+        assert_eq!(
+            parsed,
+            [
+                Expectation::Held {
+                    slot: 0x100,
+                    name: "held_name".to_string(),
+                },
+                Expectation::HeldIn {
+                    parent: 0x200,
+                    name: "carried".to_string(),
+                },
+                Expectation::Set {
+                    addr: 0x300,
+                    children: 4,
+                },
+                Expectation::JoinSet {
+                    addr: 0x400,
+                    members: 2,
+                },
+                Expectation::Task {
+                    name: "task_name".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_a_corrupt_registry_is_an_error_not_a_guess() {
+        let unknown_kind = FakeTarget {
+            base: 0x1000,
+            bytes: registry(&[(9, 0, 0, "")]),
+            has_symbol: true,
+        };
+        let err = read_from(&unknown_kind)
+            .expect("the symbol resolves")
+            .unwrap_err();
+        assert!(err.to_string().contains("kind 9"), "{err:#}");
+
+        // A committed count pointing past the readable bytes fails the
+        // read rather than serving garbage.
+        let mut bytes = registry(&[]);
+        bytes[..8].copy_from_slice(&3u64.to_le_bytes());
+        let truncated = FakeTarget {
+            base: 0x1000,
+            bytes,
+            has_symbol: true,
+        };
+        assert!(read_from(&truncated).expect("the symbol resolves").is_err());
+    }
 }
