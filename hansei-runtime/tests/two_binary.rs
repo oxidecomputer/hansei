@@ -40,7 +40,7 @@ use hansei_runtime::testkit::{FIXTURE_SETS, expect, load, load_any};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
-    UnlistedTaskKind,
+    UnlistedTaskKind, WaitKind,
 };
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
@@ -424,6 +424,109 @@ fn test_the_census_matches_what_the_fixtures_registered() {
             assert!(problems.is_empty(), "{program} [{set}]:\n{problems:#?}");
         }
     }
+}
+
+/// Every outcome the census can produce *from a healthy capture*, as
+/// one pair's walk did or did not produce it. The names are what the
+/// coverage test below prints, so each says what a reader would go
+/// looking for.
+///
+/// Deliberately absent, so their loss is not mistaken for an
+/// oversight: a reaped set slot and the `<undecoded>` /
+/// `<unresolved: …>` summaries are producible only by damage, and
+/// `degraded.rs` pins each by patching a healthy snapshot; and no find
+/// here carries a Timer or Task wait — every held fixture future is
+/// unresumed (an unpolled future waits on nothing), and the one polled
+/// find the corpus has is futurelock's abandoned lock future, whose
+/// wait is the mutex's semaphore. A held future that was polled to a
+/// timer or handle would grow this list.
+fn census_outcomes(census: &census::FutureCensus) -> Vec<(&'static str, bool)> {
+    let vias: Vec<census::Via> = census
+        .held
+        .iter()
+        .map(|h| h.via)
+        .chain(census.sets.iter().map(|s| s.via))
+        .chain(census.join_sets.iter().map(|s| s.via))
+        .flatten()
+        .collect();
+    let waits: Vec<&WaitKind> = census
+        .held
+        .iter()
+        .filter_map(|h| h.wait.as_ref())
+        .chain(
+            census
+                .sets
+                .iter()
+                .flat_map(|s| s.children.iter().filter_map(|c| c.wait.as_ref())),
+        )
+        .collect();
+    vec![
+        (
+            "a find reached through a struct descent",
+            census.stats.descend_finds > 0,
+        ),
+        (
+            "a find reached through an active enum variant",
+            census.stats.enum_finds > 0,
+        ),
+        (
+            "a find attributed to a held future's chain",
+            vias.iter().any(|v| matches!(v, census::Via::Held(_))),
+        ),
+        (
+            "a find attributed to a set child's chain",
+            vias.iter()
+                .any(|v| matches!(v, census::Via::SetChild { .. })),
+        ),
+        (
+            "a dyn find re-rooted at its heap referent",
+            census.held.iter().any(|h| h.slot != h.addr),
+        ),
+        (
+            "an unlisted join-set member",
+            census
+                .join_sets
+                .iter()
+                .any(|s| s.children.iter().any(|c| !c.listed)),
+        ),
+        (
+            "a semaphore wait",
+            waits
+                .iter()
+                .any(|w| matches!(w, WaitKind::Semaphore { .. })),
+        ),
+    ]
+}
+
+/// The corpus still exercises every outcome the census can produce —
+/// somewhere, not everywhere. Each test above asserts what one pair
+/// shows; none of them notices when a fixture edit quietly stops a
+/// path from ever *finding* anything, because a walk that finds
+/// nothing passes every exact assertion over the nothing it found.
+/// This is the "sometimes" list: an outcome no pair in
+/// `PROGRAMS × FIXTURE_SETS` produces any more fails here, naming the
+/// coverage that decayed. Grow it when the fixtures grow a shape.
+#[test]
+fn test_the_corpus_still_exercises_every_census_outcome() {
+    let mut hit_by: std::collections::BTreeMap<&'static str, bool> = Default::default();
+    for program in PROGRAMS {
+        for set in FIXTURE_SETS {
+            let (bundle, snapshot) = load(set, program);
+            let (_ctx, _list, census) = census_of(&bundle, &snapshot);
+            for (name, hit) in census_outcomes(&census) {
+                *hit_by.entry(name).or_default() |= hit;
+            }
+        }
+    }
+    let missing: Vec<&str> = hit_by
+        .iter()
+        .filter(|&(_, &hit)| !hit)
+        .map(|(name, _)| *name)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "outcomes no fixture pair produces any more: {missing:#?}"
+    );
 }
 
 /// A `FuturesUnordered` is a sub-executor the task listing never
