@@ -1,6 +1,6 @@
 ---
 source: hansei-runtime/tests/two_binary.rs
-description: "the fixture programs these snapshots were captured from. A digest that moved means the goldens in this file describe a program no longer in the tree: recapture with test-programs/capture-snapshots.sh, then re-bless the goldens here and in value_render.rs."
+description: "the fixture programs (and lockfile) these snapshots were captured from. A digest that moved means the goldens in this file describe a program no longer in the tree: recapture with test-programs/capture-snapshots.sh, then re-bless the goldens here and in value_render.rs."
 ---
 lock Cargo.lock b50b0dd397651d06208402a6ab2272c7
 simple-await bb88f2efe376cc9d264a385830de32c2
