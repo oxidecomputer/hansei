@@ -76,6 +76,8 @@ pub struct FutureCensus {
     /// Where a hard limit stopped the walk short of where it would
     /// otherwise have gone.
     pub capped: Capped,
+    /// Which of the scan's paths produced the finds; see [`Stats`].
+    pub stats: Stats,
 }
 
 /// How often each of the census's two hard limits stopped it, kept
@@ -106,6 +108,25 @@ impl Capped {
     pub fn total(&self) -> usize {
         self.deep + self.distant
     }
+}
+
+/// Which of the scan's paths the walk's finds came through. Nothing in
+/// the listing says how a find was reached — a future found through a
+/// struct descent reads exactly like one lying at the frame top — so
+/// these counters are what lets a test assert a path is still
+/// exercised at all, against the quiet decay where a fixture edit
+/// leaves a path running but never finding. Counted unconditionally:
+/// an integration test links the library built without `cfg(test)`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Stats {
+    /// Finds the scan reached through at least one struct descent.
+    pub descend_finds: usize,
+    /// Finds the scan reached through at least one active enum
+    /// variant.
+    pub enum_finds: usize,
+    /// Finds dropped because their (address, type) was already
+    /// recorded.
+    pub dedup_hits: usize,
 }
 
 /// How the census reached a chain that is not an enumerated task's own:
@@ -634,6 +655,7 @@ struct Walker<'a, 'b, T> {
     spans: Vec<(u64, u64, usize, usize)>,
     errors: Vec<anyhow::Error>,
     capped: Capped,
+    stats: Stats,
     /// Where this walk's hard limits sit; [`Bounds::default`] outside
     /// the tests.
     bounds: Bounds,
@@ -700,6 +722,7 @@ pub fn census_bounded<T: Target>(
         spans: Vec::new(),
         errors: Vec::new(),
         capped: Capped::default(),
+        stats: Stats::default(),
         bounds,
         visited: HashSet::default(),
         plans: HashMap::default(),
@@ -722,6 +745,7 @@ pub fn census_bounded<T: Target>(
         spans: walker.spans,
         errors: walker.errors,
         capped: walker.capped,
+        stats: walker.stats,
     }
 }
 
@@ -781,9 +805,11 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     self.ctx.known_futures(),
                     0,
                     self.bounds.scan_depth,
+                    Path::default(),
                     &mut found,
                     &mut self.capped.deep,
                     &mut self.plans,
+                    &mut self.stats,
                 );
                 for find in found {
                     self.record(owner, frame_index, m.name(), via, find, nesting);
@@ -806,6 +832,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             Find::Set(value) | Find::JoinSet(value) | Find::Future(value) => value,
         };
         if !self.visited.insert((value.addr, value.ty.id())) {
+            self.stats.dedup_hits += 1;
             return;
         }
         match find {
@@ -829,6 +856,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 // held by value keys the same place twice, which is
                 // why only a differing root is looked up.
                 if (addr, ty) != place && !self.visited.insert((addr, ty)) {
+                    self.stats.dedup_hits += 1;
                     return;
                 }
                 let summary = self.summarize(&chain);
@@ -1056,18 +1084,30 @@ fn is_own_local(name: &str, size: u64, inner: Option<&str>) -> bool {
     !name.starts_with("__") && size > 0 && inner != Some(name)
 }
 
+/// The steps between the scanned local and the value in hand: whether
+/// a struct descent or an active-variant step lies on the way, which
+/// is what the per-path find counters in [`Stats`] record.
+#[derive(Debug, Default, Clone, Copy)]
+struct Path {
+    descended: bool,
+    variant: bool,
+}
+
 /// Find every by-value future inside `value`: the value itself, or one
 /// nested in its structs and active enum variants. Ordinary pointers
 /// are never followed, so the scan stays inside the frame's own bytes
 /// and terminates.
+#[expect(clippy::too_many_arguments, reason = "internal recursion")]
 fn scan_value<'b>(
     value: Value<'b>,
     futures: &HashSet<BundleTypeId>,
     depth: usize,
     max_depth: usize,
+    path: Path,
     found: &mut Vec<Find<'b>>,
     deep: &mut usize,
     plans: &mut HashMap<BundleTypeId, ScanPlan>,
+    stats: &mut Stats,
 ) {
     if depth > max_depth {
         *deep += 1;
@@ -1089,23 +1129,59 @@ fn scan_value<'b>(
     } else {
         scan_plan(value, futures)
     };
+    if matches!(plan, ScanPlan::Set | ScanPlan::JoinSet | ScanPlan::Future) {
+        if path.descended {
+            stats.descend_finds += 1;
+        }
+        if path.variant {
+            stats.enum_finds += 1;
+        }
+    }
     match plan {
         ScanPlan::Set => found.push(Find::Set(value)),
         ScanPlan::JoinSet => found.push(Find::JoinSet(value)),
         ScanPlan::Future => found.push(Find::Future(value)),
         ScanPlan::Descend(members) => {
+            let path = Path {
+                descended: true,
+                ..path
+            };
             for &(ty, offset, size) in members.iter() {
                 let start = offset as usize;
                 let Some(bytes) = value.bytes.get(start..start + size as usize) else {
                     continue;
                 };
                 let child = Value::new(value.ty.related_type(ty), value.addr + offset, bytes);
-                scan_value(child, futures, depth + 1, max_depth, found, deep, plans);
+                scan_value(
+                    child,
+                    futures,
+                    depth + 1,
+                    max_depth,
+                    path,
+                    found,
+                    deep,
+                    plans,
+                    stats,
+                );
             }
         }
         ScanPlan::Enum => {
             if let Ok((_, payload)) = value.active_variant() {
-                scan_value(payload, futures, depth + 1, max_depth, found, deep, plans);
+                let path = Path {
+                    variant: true,
+                    ..path
+                };
+                scan_value(
+                    payload,
+                    futures,
+                    depth + 1,
+                    max_depth,
+                    path,
+                    found,
+                    deep,
+                    plans,
+                    stats,
+                );
             }
         }
         ScanPlan::Stop => {}
@@ -1444,6 +1520,7 @@ mod tests {
         finds: Vec<Find<'b>>,
         capped: usize,
         plans: HashMap<BundleTypeId, ScanPlan>,
+        stats: Stats,
     }
 
     impl Scanned<'_> {
@@ -1486,19 +1563,23 @@ mod tests {
     ) -> Scanned<'b> {
         let mut finds = Vec::new();
         let mut capped = 0;
+        let mut stats = Stats::default();
         scan_value(
             value,
             futures,
             depth,
             MAX_SCAN_DEPTH,
+            Path::default(),
             &mut finds,
             &mut capped,
             &mut plans,
+            &mut stats,
         );
         Scanned {
             finds,
             capped,
             plans,
+            stats,
         }
     }
 
@@ -1652,6 +1733,10 @@ mod tests {
         assert!(found.ty.is_coroutine(), "{}", found.ty.name());
         assert_eq!(found.addr, payload.addr);
         assert_eq!(found.ty.id(), payload.ty.id());
+        // The find came through the variant step and nothing else: the
+        // payload is the coroutine itself, not a struct around one.
+        assert_eq!(scanned.stats.enum_finds, 1, "{:?}", scanned.stats);
+        assert_eq!(scanned.stats.descend_finds, 0, "{:?}", scanned.stats);
 
         // The same storage with the other variant selected holds the
         // same bytes and yields nothing.
@@ -1662,6 +1747,7 @@ mod tests {
             "an inactive variant was scanned: {:?}",
             scanned.summary()
         );
+        assert_eq!(scanned.stats, Stats::default());
     }
 
     /// A future nested in an aggregate is found, at the address the
@@ -1677,6 +1763,7 @@ mod tests {
         // Nothing in it is a future until the poll table says one is.
         let quiet = scan(value, &poll_table([]));
         assert!(quiet.finds.is_empty(), "{:?}", quiet.summary());
+        assert_eq!(quiet.stats, Stats::default());
 
         let scanned = scan(value, &poll_table([member.ty().id()]));
         let [Find::Future(found)] = scanned.finds.as_slice() else {
@@ -1685,6 +1772,9 @@ mod tests {
         assert_eq!(found.addr, AT + member.offset());
         assert_eq!(found.ty.id(), member.ty().id());
         assert_eq!(found.bytes.len() as u64, member.ty().size());
+        // Reached through the descent and through nothing else.
+        assert_eq!(scanned.stats.descend_finds, 1, "{:?}", scanned.stats);
+        assert_eq!(scanned.stats.enum_finds, 0, "{:?}", scanned.stats);
     }
 
     /// The depth cap stops the descent, and says it did: a listing
@@ -1820,6 +1910,8 @@ mod tests {
         };
         assert_eq!(found.addr, AT);
         assert_eq!(found.ty.id(), ty.id());
+        // A frame-top find came through no step the counters record.
+        assert_eq!(scanned.stats, Stats::default());
     }
 
     /// A union is stopped at: its members are one storage read several
@@ -2012,6 +2104,109 @@ mod tests {
         assert_eq!(census.capped.total(), census.capped.deep);
     }
 
+    /// A walker over `ctx` and `list` that has recorded nothing yet,
+    /// with nesting 0 so recording stops at the row itself: whatever
+    /// the dedup tests below count is their own call's, not something
+    /// a recursive scan of the find's chain happened to meet.
+    fn shallow_walker<'a, 'b>(
+        ctx: &'a Context<'b, proc::snapshot::Snapshot>,
+        list: &'a TaskList,
+    ) -> Walker<'a, 'b, proc::snapshot::Snapshot> {
+        Walker {
+            ctx,
+            list,
+            sets: Vec::new(),
+            join_sets: Vec::new(),
+            held: Vec::new(),
+            spans: Vec::new(),
+            errors: Vec::new(),
+            capped: Capped::default(),
+            stats: Stats::default(),
+            bounds: nesting(0),
+            visited: HashSet::default(),
+            plans: HashMap::default(),
+        }
+    }
+
+    /// A re-reached find is dropped, and the drop is counted. The drop
+    /// itself the audit already forces (a duplicate row is a
+    /// violation); the counter is the only trace a *successful* dedup
+    /// leaves, so it is pinned here where a hit can be provoked — no
+    /// healthy fixture reaches one future through two slots.
+    #[test]
+    fn test_a_re_reached_find_is_dropped_and_counted() {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let census = census(&ctx, &list);
+        let held = census.held.first().expect("the fixture holds a future");
+        let ty = ctx
+            .view
+            .ty(held.ty)
+            .expect("the held type is in the bundle");
+        let value = Value::read(ctx.proc, ty, held.addr).expect("the held future reads back");
+
+        let mut walker = shallow_walker(&ctx, &list);
+        walker.record(0, 0, "held", None, Find::Future(value), 0);
+        assert_eq!(walker.held.len(), 1, "{:#?}", walker.held);
+        assert_eq!(walker.stats.dedup_hits, 0);
+
+        walker.record(0, 0, "held_again", None, Find::Future(value), 0);
+        assert_eq!(walker.held.len(), 1, "{:#?}", walker.held);
+        assert_eq!(walker.stats.dedup_hits, 1);
+    }
+
+    /// Two slots holding one future are one row. The second slot's own
+    /// key is fresh, so the dedup that drops it is the *chain root's* —
+    /// the re-keying `record` does for a find whose root differs from
+    /// its slot — and that drop is counted like the other.
+    #[test]
+    fn test_a_second_slot_to_one_future_is_deduped_by_its_root() {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let census = census(&ctx, &list);
+        let held = census
+            .held
+            .iter()
+            .find(|h| h.slot != h.addr)
+            .expect("the fixture holds a boxed dyn future");
+
+        // The slot value as the scan built it: the owner's frame
+        // payload, entered through the holding local's member.
+        let task = &list.tasks[held.owner];
+        let Ok(TaskStage::Running(root)) = ctx.task_stage(task) else {
+            panic!("the owner task is running");
+        };
+        let chain = ctx.await_chain(root);
+        let frame = &chain.frames[held.frame];
+        let payload = match &frame.state {
+            Some(state) => &state.payload,
+            None => &frame.future,
+        };
+        let m = payload
+            .ty
+            .members()
+            .find(|m| m.name() == held.local)
+            .expect("the frame still names the slot");
+        let start = m.offset() as usize;
+        let bytes = &payload.bytes[start..start + m.ty().size() as usize];
+        let slot = Value::new(m.ty(), payload.addr + m.offset(), bytes);
+        assert_eq!(slot.addr, held.slot);
+
+        let mut walker = shallow_walker(&ctx, &list);
+        walker.record(0, 0, "boxed", None, Find::Future(slot), 0);
+        assert_eq!(walker.held.len(), 1, "{:#?}", walker.held);
+        assert_eq!(walker.stats.dedup_hits, 0);
+
+        // The same wide pointer read out of a different slot: a fresh
+        // slot key over the same future behind it.
+        let alias = Value::new(m.ty(), AT, bytes);
+        walker.record(0, 0, "alias", None, Find::Future(alias), 0);
+        assert_eq!(walker.held.len(), 1, "{:#?}", walker.held);
+        assert_eq!(walker.stats.dedup_hits, 1);
+    }
+
     // -----------------------------------------------------------------
     // The audit
     // -----------------------------------------------------------------
@@ -2053,6 +2248,7 @@ mod tests {
             spans: Vec::new(),
             errors: Vec::new(),
             capped: Capped::default(),
+            stats: Stats::default(),
         }
     }
 
