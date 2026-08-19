@@ -21,14 +21,18 @@
 //! (`testkit::FIXTURE_SETS`) and a golden per set, suffixed with it — and
 //! every set is read wherever these run, macOS included.
 //!
-//! Two things differ between the sets, and both are the capture's:
-//! that fingerprint count, and how a timer deadline reads — illumos
-//! lwps stamp a stop time so it is reported relative to it, a Linux
-//! core records none so the absolute point on the monotonic clock is
-//! printed instead. Holding a set per system is what got the second
-//! spelling under an offline golden at all. Everything else — the
-//! tasks found, the chains walked, the locals live at each await —
-//! agrees across the sets, which is the point of holding both.
+//! Two things differ between the per-system sets, and both are the
+//! capture's: that fingerprint count, and how a timer deadline reads —
+//! illumos lwps stamp a stop time so it is reported relative to it, a
+//! Linux core records none so the absolute point on the monotonic
+//! clock is printed instead. Holding a set per system is what got the
+//! second spelling under an offline golden at all. Everything else —
+//! the tasks found, the chains walked, the locals live at each await —
+//! agrees across the sets, which is the point of holding both. The
+//! `linux-floor` set differs on the other axis instead: the same
+//! fixtures built against `matrix.toml`'s tokio floor, so the walks
+//! *execute* against the oldest supported release's memory rather than
+//! only binding to its layouts in the matrix.
 //!
 //! What the pairs were captured from is recorded in
 //! `fixtures/<set>/SOURCES.snap` and checked by
@@ -74,10 +78,7 @@ const PROGRAMS: &[&str] = &[
 /// What a fixture pair was captured from: the program's own source, and
 /// the crate every program calls into before it parks.
 fn source_digest(program: &str) -> String {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the crate is in a workspace")
-        .join("test-programs/src");
+    let src = test_programs_dir().join("src");
     let mut hasher = blake3::Hasher::new();
     for path in [
         src.join("lib.rs"),
@@ -88,6 +89,46 @@ fn source_digest(program: &str) -> String {
         hasher.update(&bytes);
     }
     hasher.finalize().to_hex()[..32].to_string()
+}
+
+fn test_programs_dir() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate is in a workspace")
+        .join("test-programs")
+}
+
+/// Which lockfile a set's pairs are built from — the other half of what
+/// a pair was captured from, since two builds of identical sources
+/// against different lockfiles are different programs. The version
+/// endpoint set (`<os>-floor`) pins tokio at `matrix.toml`'s floor;
+/// every other set is the primary `Cargo.lock`.
+fn lockfile_of(set: &str) -> String {
+    if set.ends_with("-floor") {
+        format!("locks/tokio-{}.lock", tokio_floor())
+    } else {
+        "Cargo.lock".to_owned()
+    }
+}
+
+/// `matrix.toml`'s `[tokio]` floor, the version the endpoint set pins.
+fn tokio_floor() -> String {
+    let path = test_programs_dir().join("matrix.toml");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let mut in_tokio = false;
+    for line in text.lines() {
+        if line.starts_with('[') {
+            in_tokio = line.trim() == "[tokio]";
+        } else if in_tokio && line.starts_with("floor") {
+            return line
+                .split('"')
+                .nth(1)
+                .expect("matrix.toml floor is a quoted version")
+                .to_owned();
+        }
+    }
+    panic!("matrix.toml declares no [tokio] floor");
 }
 
 /// The fixtures record programs that go on being edited underneath
@@ -108,7 +149,7 @@ fn source_digest(program: &str) -> String {
 /// what reading these goldens assumes.
 #[test]
 fn test_fixtures_record_the_current_programs() {
-    let digests: String = PROGRAMS
+    let sources: String = PROGRAMS
         .iter()
         .map(|p| format!("{p} {}\n", source_digest(p)))
         .collect();
@@ -117,6 +158,17 @@ fn test_fixtures_record_the_current_programs() {
     // and a set left behind by an edit to the programs is as stale as
     // one captured before it, however recently the other was redone.
     for set in FIXTURE_SETS {
+        // The lockfile is per set — the floor set exists to build the
+        // same sources against a different tokio — so its record is
+        // too, a header line above the per-program digests.
+        let lock = lockfile_of(set);
+        let lock_path = test_programs_dir().join(&lock);
+        let lock_bytes = std::fs::read(&lock_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", lock_path.display()));
+        let digests = format!(
+            "lock {lock} {}\n{sources}",
+            &blake3::hash(&lock_bytes).to_hex()[..32]
+        );
         let mut settings = insta::Settings::clone_current();
         // Beside the pairs it describes.
         settings.set_snapshot_path(Path::new("fixtures").join(set));
