@@ -94,6 +94,13 @@ exclude_re = [
     # suites the moment the pair is regenerated — but that loop runs a
     # human and a capture host, not a mutant.
     "replace exec_snapshot",
+    # Two lines of stderr glue on a Session, which only a live attach
+    # constructs — no automated test drives one, the same gap as
+    # exec_snapshot above. Everything the method does is pinned one
+    # call in: the once-per-session guard and the warning line in
+    # version_ceiling_line's tests, the drift predicate and wording in
+    # hansei-runtime's version_ceiling_notice tests.
+    "replace Session<'b>::note_version_ceiling",
     # A 32-bit guard, unobservable anywhere this suite runs. On 64-bit
     # every recorded frame size converts, so the guard is always true;
     # forcing it false only routes the decode through the reallocating

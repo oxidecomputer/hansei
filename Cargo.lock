@@ -535,6 +535,7 @@ dependencies = [
  "regex",
  "reify",
  "rustc-demangle",
+ "semver",
  "subprocess",
  "tempfile",
  "testrun",
@@ -571,6 +572,7 @@ dependencies = [
  "proc",
  "regex",
  "reify",
+ "semver",
 ]
 
 [[package]]

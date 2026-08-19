@@ -249,8 +249,10 @@ impl Family {
     pub const ALL: &'static [Family] = &[Family::V1_47, Family::V1_49, Family::V1_53];
 
     /// The lowest tokio `(major, minor)` the family covers; its range runs
-    /// to the next family's floor.
-    fn floor(self) -> (u64, u64) {
+    /// to the next family's floor. Public because the newest floor is
+    /// recorded in the bundle (`Meta::newest_family`) as the ceiling the
+    /// read side's drift notice compares the recovered version against.
+    pub fn floor(self) -> (u64, u64) {
         match self {
             Family::V1_47 => (1, 47),
             Family::V1_49 => (1, 49),

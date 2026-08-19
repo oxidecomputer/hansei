@@ -35,7 +35,7 @@ use super::bundle::Context;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use hansei_bundle::{
-    BundleMember, BundleType, BundleView, MemberRef, StaticRole, Step, WalkOutcome, WalkRole,
+    BundleMember, BundleType, BundleView, MemberRef, Meta, StaticRole, Step, WalkOutcome, WalkRole,
 };
 use proc::Target;
 use reify::{ParseWithDbgInfo, Value};
@@ -671,6 +671,29 @@ impl fmt::Display for ContractReport {
     }
 }
 
+/// The drift notice for a target past the extractor's version ceiling:
+/// `Some` when the recovered tokio version's `(major, minor)` is above
+/// the newest family floor the extracting exegesis knew, so every
+/// versioned layout it bound was the newest supported rather than one
+/// written for that release. One line, for the walk commands to print
+/// at the point of use — the walks still run (the detectors decline
+/// structurally wherever the guess is wrong), so this is a notice, not
+/// a refusal. `None` when the version was not recovered (extraction
+/// already warned) or the bundle predates the ceiling record.
+pub fn version_ceiling_notice(meta: &Meta) -> Option<String> {
+    let version = meta.tokio_version.as_ref()?;
+    let ceiling = meta.newest_family.as_ref()?;
+    if (version.major, version.minor) <= (ceiling.major, ceiling.minor) {
+        return None;
+    }
+    Some(format!(
+        "this target's tokio {version} is newer than the newest family its \
+         bundle's extractor knew ({}, tokio {}.{}); walks use that family's \
+         layouts, untested against {version}",
+        ceiling.name, ceiling.major, ceiling.minor
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1118,5 +1141,55 @@ mod tests {
         let root = Value::new(base, 0x1000, &[0u8; 8]);
         let err = walk_err(&ctx, root, &[Step::ActiveVariant]);
         assert!(err.contains("is not an enum"), "{err}");
+    }
+
+    fn ceiling_meta(version: Option<(u64, u64, u64)>, floor: Option<(u64, u64)>) -> Meta {
+        Meta {
+            tokio_version: version.map(|(ma, mi, pa)| semver::Version::new(ma, mi, pa)),
+            newest_family: floor.map(|(major, minor)| hansei_bundle::FamilyCeiling {
+                name: "v1_53".into(),
+                major,
+                minor,
+            }),
+            ..Meta::default()
+        }
+    }
+
+    #[test]
+    fn test_versions_at_or_below_the_ceiling_raise_no_notice() {
+        // Below the newest floor, at it, and — the case the floor
+        // comparison exists for — a patch above it: v1_53 covers 1.53
+        // onward, so 1.53.9 is in range, not drift.
+        for version in [(1, 52, 4), (1, 53, 0), (1, 53, 9)] {
+            let meta = ceiling_meta(Some(version), Some((1, 53)));
+            assert_eq!(version_ceiling_notice(&meta), None, "{version:?}");
+        }
+    }
+
+    #[test]
+    fn test_versions_past_the_ceiling_raise_the_notice() {
+        for version in [(1, 54, 0), (2, 0, 0)] {
+            let meta = ceiling_meta(Some(version), Some((1, 53)));
+            let notice = version_ceiling_notice(&meta)
+                .unwrap_or_else(|| panic!("{version:?} is past the 1.53 ceiling"));
+            let (major, minor, patch) = version;
+            assert!(
+                notice.contains(&format!("tokio {major}.{minor}.{patch}")),
+                "{notice}"
+            );
+            assert!(notice.contains("v1_53"), "{notice}");
+            assert!(notice.contains("1.53"), "{notice}");
+        }
+    }
+
+    #[test]
+    fn test_the_notice_needs_both_a_version_and_a_ceiling() {
+        // Unrecovered version: extraction already warned it guessed the
+        // newest family; there is no drift fact to state here.
+        let meta = ceiling_meta(None, Some((1, 53)));
+        assert_eq!(version_ceiling_notice(&meta), None);
+        // Hand-built bundle with no ceiling record.
+        let meta = ceiling_meta(Some((9, 9, 9)), None);
+        assert_eq!(version_ceiling_notice(&meta), None);
     }
 }

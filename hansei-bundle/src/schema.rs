@@ -78,6 +78,22 @@ pub struct Meta {
     /// Mangled task poll symbols sampled (or all) for target match-rate
     /// validation at attach time.
     pub symbol_fingerprint: Vec<String>,
+    /// The newest tokio family the extracting exegesis carried detectors
+    /// for. A recovered `tokio_version` above this family's floor took
+    /// its layouts as a guess — the newest supported, not ones written
+    /// for that release — so the read side surfaces the drift at the
+    /// point of use instead of only in `--explain-format`. `None` only
+    /// in hand-built bundles.
+    pub newest_family: Option<FamilyCeiling>,
+}
+
+/// The extractor's newest known tokio family: the tag `--explain-format`
+/// names it by and the `(major, minor)` floor of its version range.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct FamilyCeiling {
+    pub name: String,
+    pub major: u64,
+    pub minor: u64,
 }
 
 /// Identity of the ELF the bundle was produced from.

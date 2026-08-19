@@ -10,6 +10,9 @@ blake3.workspace = true
 exegesis.workspace = true
 insta.workspace = true
 regex.workspace = true
+# The version-ceiling notice tests build `Meta.tokio_version` values;
+# the non-test code only reads the ones bundles carry.
+semver.workspace = true
 
 [dependencies]
 anyhow.workspace = true
