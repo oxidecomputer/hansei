@@ -12,15 +12,22 @@ use proc::snapshot::Snapshot;
 
 use std::path::PathBuf;
 
-/// Every checked-in set of pairs, named for the system that captured
-/// it.
+/// Every checked-in set of pairs, named for its capture's coordinates.
 ///
-/// A pair is only as good as the symbol table its capture had to work
-/// with: the fingerprint joining bundle to snapshot is built from the
-/// tokio `poll` instantiations that survive into the cored binary, and
-/// illumos keeps far more of them than Linux does. So each system that
-/// can core a process contributes a set, and neither stands for the
-/// other.
+/// The first axis is the capturing system. A pair is only as good as
+/// the symbol table its capture had to work with: the fingerprint
+/// joining bundle to snapshot is built from the tokio `poll`
+/// instantiations that survive into the cored binary, and illumos
+/// keeps far more of them than Linux does. So each system that can
+/// core a process contributes a set, and neither stands for the other.
+///
+/// The second axis is the tokio endpoint. The version matrix pins that
+/// the walks *bind* per supported tokio version; `linux-floor` — the
+/// same fixtures built against `matrix.toml`'s floor lockfile
+/// (`capture-snapshots.sh --tokio <floor>`, Linux host only) — is what
+/// *executes* them against memory from the oldest supported release.
+/// The newest is what the per-system sets already are, or near it; one
+/// endpoint set, deliberately not a per-cell cross product.
 ///
 /// Which set a *reader* takes is not a property of where it runs. A
 /// pair is two files, and reading one needs nothing from the system
@@ -28,7 +35,7 @@ use std::path::PathBuf;
 /// golden suites walk every set wherever they run, macOS included
 /// though it can capture neither, and a test that only wants some pair
 /// to render names the set it means.
-pub const FIXTURE_SETS: &[&str] = &["illumos", "linux"];
+pub const FIXTURE_SETS: &[&str] = &["illumos", "linux", "linux-floor"];
 
 /// The path of one checked-in fixture file in `set`.
 pub fn fixture(set: &str, name: &str) -> PathBuf {

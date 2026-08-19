@@ -27,15 +27,28 @@
 # (testkit::FIXTURE_SET). Recapturing on one leaves the other's pairs,
 # and its goldens, alone.
 #
-# Usage: capture-snapshots.sh [OUT_DIR [PROGRAM...]]
+# Usage: capture-snapshots.sh [--tokio VER] [OUT_DIR [PROGRAM...]]
 #
 # With no PROGRAMs, every fixture pair is recaptured. Naming some
 # captures only those, leaving the other checked-in pairs — and the
 # goldens quoting them — exactly as they are.
+#
+# --tokio VER builds both compilations against locks/tokio-VER.lock and
+# writes the version-endpoint set <os>-floor. Only matrix.toml's floor
+# is accepted: the matrix pins that the walks *bind* per version, and
+# this set is what *executes* them against memory from the range's far
+# end — one endpoint set, not a per-cell cross product.
 
 set -euo pipefail
 
 cd "$(dirname "$0")"
+
+TOKIO=""
+if [[ "${1:-}" == --tokio ]]; then
+    TOKIO="$2"
+    shift 2
+fi
+
 # Each system that can core a process keeps a set of its own, named for
 # itself, and `testkit::FIXTURE_SET` reads the one matching the build.
 case "$(uname -s)" in
@@ -44,6 +57,15 @@ case "$(uname -s)" in
     *) echo "capture-snapshots.sh: $(uname -s) takes no ELF core to capture from" >&2
        exit 1 ;;
 esac
+if [[ -n "$TOKIO" ]]; then
+    FLOOR="$(awk -F'"' '/^\[/{s=$0} s=="[tokio]" && /^floor/{print $2; exit}' matrix.toml)"
+    if [[ "$TOKIO" != "$FLOOR" ]]; then
+        echo "capture-snapshots.sh: --tokio $TOKIO is not the floor ($FLOOR);" \
+             "only the endpoint set is captured per version" >&2
+        exit 2
+    fi
+    SET="$SET-floor"
+fi
 OUT="${1:-../hansei-runtime/tests/fixtures/$SET}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
@@ -73,10 +95,22 @@ marker() {
 # description is its symbol table, with all DWARF coming from B. Build
 # B is the standard fixture build in regen.sh's own dirs, shared with
 # the extraction goldens and the acceptance suite; only A, the cored
-# side, needs a compilation of its own.
+# side, needs a compilation of its own. A --tokio build B cannot share
+# those dirs (they hold the primary pin), so it gets a dir of its own;
+# its target dir is regen.sh's cell default, shared with the matrix.
+TOKIO_ARGS=()
+if [[ -n "$TOKIO" ]]; then
+    TOKIO_ARGS=(--tokio "$TOKIO")
+fi
 REGEN_BIN_DIR="$FIXTURES/bin-a" REGEN_TARGET_DIR="$FIXTURES/target-a" \
-    ./regen.sh --no-debug-info "${PROGRAMS[@]}"
-./regen.sh "${PROGRAMS[@]}"
+    ./regen.sh --no-debug-info "${TOKIO_ARGS[@]}" "${PROGRAMS[@]}"
+if [[ -n "$TOKIO" ]]; then
+    BIN_B="$FIXTURES/bin-b"
+    REGEN_BIN_DIR="$BIN_B" ./regen.sh "${TOKIO_ARGS[@]}" "${PROGRAMS[@]}"
+else
+    BIN_B="$FIXTURES/bin"
+    ./regen.sh "${PROGRAMS[@]}"
+fi
 
 # The capture tools themselves come from the workspace as-is, except
 # that `snapshot` is not in a default hansei: it makes test data rather
@@ -86,7 +120,7 @@ EXEGESIS=../target/debug/exegesis
 HANSEI=../target/debug/hansei
 
 for p in "${PROGRAMS[@]}"; do
-    "$EXEGESIS" extract "$FIXTURES/bin/$p" -o "$OUT/$p.bundle"
+    "$EXEGESIS" extract "$BIN_B/$p" -o "$OUT/$p.bundle"
 
     fifo="$(mktemp -u)"
     mkfifo "$fifo"

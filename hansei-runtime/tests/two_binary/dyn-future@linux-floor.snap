@@ -1,0 +1,18 @@
+---
+source: hansei-runtime/tests/two_binary.rs
+---
+fingerprint 5/5
+workers 3
+task 3 idle dyn_future::driver::{async_fn_env#0}
+  spawned src/bin/dyn-future.rs:53:21
+  defined src/bin/dyn-future.rs:24
+  await dyn_future::driver::{async_fn_env#0} Suspend0 @ src/bin/dyn-future.rs:36 locals [set]
+  await dyn_future::boxed_leaf::{async_fn_env#0} [dyn] Suspend0 @ src/bin/dyn-future.rs:12
+  await tokio::sync::oneshot::Receiver<u32>
+  end leaf
+task 4 idle dyn_future::set_member::{async_fn_env#0}
+  spawned src/bin/dyn-future.rs:28:9
+  defined src/bin/dyn-future.rs:15
+  await dyn_future::set_member::{async_fn_env#0} Suspend0 @ src/bin/dyn-future.rs:17
+  await tokio::sync::oneshot::Receiver<u32>
+  end leaf

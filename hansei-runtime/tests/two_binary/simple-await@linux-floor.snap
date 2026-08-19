@@ -1,0 +1,11 @@
+---
+source: hansei-runtime/tests/two_binary.rs
+---
+fingerprint 3/3
+workers 3
+task 3 idle simple_await::work::{async_fn_env#0}
+  spawned src/bin/simple-await.rs:68:21
+  defined src/bin/simple-await.rs:16
+  await simple_await::work::{async_fn_env#0} Suspend1 @ src/bin/simple-await.rs:35 locals [count, labels, values, boxed, slice, ipv4, ipv6, borrowed, owned, first]
+  await tokio::sync::oneshot::Receiver<u32>
+  end leaf
