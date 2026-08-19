@@ -11,18 +11,21 @@ use tokio::sync::{Semaphore, oneshot};
 use tokio::task::LocalSet;
 
 async fn local_sleeper(ready: oneshot::Sender<()>) -> u32 {
+    test_programs::census_expect::task("local_set::local_sleeper");
     ready.send(()).expect("main waits for readiness");
     tokio::time::sleep(Duration::from_secs(1_000_000)).await;
     31
 }
 
 async fn local_acquirer(ready: oneshot::Sender<()>, semaphore: &'static Semaphore) -> u32 {
+    test_programs::census_expect::task("local_set::local_acquirer");
     ready.send(()).expect("main waits for readiness");
     let _permit = semaphore.acquire().await.expect("the semaphore stays open");
     37
 }
 
 async fn joiner(ready: oneshot::Sender<()>, handle: tokio::task::JoinHandle<u32>) -> u32 {
+    test_programs::census_expect::task("local_set::joiner");
     ready.send(()).expect("main waits for readiness");
     handle.await.expect("the sleeper never finishes")
 }

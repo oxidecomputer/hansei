@@ -8,15 +8,24 @@
 //! readiness is signalled over oneshots.
 
 use std::sync::Arc;
+use test_programs::census_expect;
 use tokio::sync::{Notify, Semaphore, mpsc, oneshot, watch};
 
 /// Enqueue a waiter in `notify`'s intrusive waiter list, then park on it.
 /// `Notified::enable()` registers the waiter synchronously, so once we signal
 /// readiness the waiter is deterministically parked in the queue — no sleep.
 async fn notify_waiter(notify: Arc<Notify>, ready: oneshot::Sender<()>) {
+    census_expect::task("channels::notify_waiter");
     let notified = notify.notified();
     tokio::pin!(notified);
     notified.as_mut().enable();
+    // Ground truth for the census diff: the pinned leaf is a held find
+    // — what this frame awaits below is the `Pin` reference, not the
+    // `Notified` itself.
+    census_expect::held(
+        notified.as_ref().get_ref() as *const _ as u64,
+        "tokio::sync::notify::Notified",
+    );
     ready.send(()).expect("main waits for readiness");
     notified.await;
 }
@@ -34,6 +43,7 @@ async fn hold(
     ready: oneshot::Sender<()>,
     park: oneshot::Receiver<u32>,
 ) -> u32 {
+    census_expect::task("channels::hold");
     ready.send(()).expect("main waits for readiness");
     park.await.unwrap_or(0)
 }

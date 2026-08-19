@@ -7,6 +7,6 @@ Defined at: src/bin/sleep-join.rs:9
 
   0  async fn      sleep_join::sleeper::{async_fn_env#0}
      suspends:
-     ▸ Suspend0  src/bin/sleep-join.rs:11
+     ▸ Suspend0  src/bin/sleep-join.rs:12
        └─* 1  future        tokio::time::sleep::Sleep
           waiting on the timer: deadline TS

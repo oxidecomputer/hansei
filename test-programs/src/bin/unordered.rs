@@ -20,6 +20,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
+use test_programs::census_expect;
 use tokio::sync::{Notify, oneshot};
 
 /// How many children the driver's set holds. The acceptance suite
@@ -57,6 +58,14 @@ async fn set_member(notify: Arc<Notify>, nest: bool) -> u32 {
         nest.then(|| (0..NESTED).map(|_| leaf(notify.clone())).collect());
     let held = leaf(notify.clone());
 
+    // Ground truth for the census diff: what this child holds, at the
+    // addresses it holds them. Only a body that runs can register, so
+    // the copies of this future the driver merely holds say nothing.
+    if let Some(set) = inner.as_ref() {
+        census_expect::set(set as *const _ as u64, NESTED);
+    }
+    census_expect::held(&held as *const _ as u64, "unordered::leaf");
+
     notify.notified().await;
 
     let nested = match inner {
@@ -85,6 +94,21 @@ async fn driver(ready: oneshot::Sender<()>, notify: Arc<Notify>) -> u32 {
     // frame carries the future passed to it, so what the census finds
     // here holds a future of its own.
     let nested_hold = holder(leaf(notify.clone()), notify.clone());
+
+    // Ground truth for the census diff: everything built above, at the
+    // slot it sits in — and the future `holder` carries, which has no
+    // address this frame can name, keyed by the slot of its carrier.
+    census_expect::task("unordered::driver");
+    census_expect::set(&set as *const _ as u64, CHILDREN);
+    census_expect::held(&held as *const _ as u64, "unordered::set_member");
+    census_expect::held(&boxed as *const _ as u64, "unordered::set_member");
+    census_expect::held(&pair.0 as *const _ as u64, "unordered::leaf");
+    census_expect::held(
+        maybe.as_ref().map_or(0, |f| f as *const _ as u64),
+        "unordered::leaf",
+    );
+    census_expect::held(&nested_hold as *const _ as u64, "unordered::holder");
+    census_expect::held_in(&nested_hold as *const _ as u64, "unordered::leaf");
 
     ready.send(()).expect("main waits for readiness");
     let mut sum = 0;

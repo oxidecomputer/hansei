@@ -14,6 +14,7 @@ async fn ready_value() -> u32 {
 }
 
 async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
+    test_programs::census_expect::task("simple_await::work");
     let count: u32 = 3;
     let labels = BTreeMap::from([(1u64, 10u32), (2, 20), (3, 30)]);
     // A real `Vec` (not an array) so the fixture exercises the Vec formatter;

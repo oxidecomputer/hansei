@@ -12,20 +12,20 @@ task: ct_runtime::sleeper::{async_fn_env#0}
   stage: Stage<ct_runtime::sleeper::{async_fn_env#0}>
   variants:
     Unresumed @ ct-runtime.rs:10
-    Returned @ ct-runtime.rs:14
-    Panicked @ ct-runtime.rs:14
-    Suspend0 @ ct-runtime.rs:12
+    Returned @ ct-runtime.rs:15
+    Panicked @ ct-runtime.rs:15
+    Suspend0 @ ct-runtime.rs:13
 task: ct_runtime::acquirer::{async_fn_env#0}
   kind: AsyncFn
-  decl: ct-runtime.rs:16
+  decl: ct-runtime.rs:17
   entries: 1
   symbols-per-entry: 6
   stage: Stage<ct_runtime::acquirer::{async_fn_env#0}>
   variants:
-    Unresumed @ ct-runtime.rs:16
-    Returned @ ct-runtime.rs:20
-    Panicked @ ct-runtime.rs:20
-    Suspend0 @ ct-runtime.rs:18
+    Unresumed @ ct-runtime.rs:17
+    Returned @ ct-runtime.rs:22
+    Panicked @ ct-runtime.rs:22
+    Suspend0 @ ct-runtime.rs:20
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<ct_runtime::main::{async_block_env#0}>> (poll)

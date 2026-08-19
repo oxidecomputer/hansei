@@ -6,26 +6,26 @@ program: foreign-runtime
 [tasks]
 task: foreign_runtime::local_sleeper::{async_fn_env#0}
   kind: AsyncFn
-  decl: foreign-runtime.rs:55
+  decl: foreign-runtime.rs:58
   entries: 1
   symbols-per-entry: 6
   stage: Stage<foreign_runtime::local_sleeper::{async_fn_env#0}>
   variants:
-    Unresumed @ foreign-runtime.rs:55
-    Returned @ foreign-runtime.rs:61
-    Panicked @ foreign-runtime.rs:61
-    Suspend0 @ foreign-runtime.rs:59
+    Unresumed @ foreign-runtime.rs:58
+    Returned @ foreign-runtime.rs:65
+    Panicked @ foreign-runtime.rs:65
+    Suspend0 @ foreign-runtime.rs:63
 task: foreign_runtime::joined::{async_fn_env#0}
   kind: AsyncFn
-  decl: foreign-runtime.rs:30
+  decl: foreign-runtime.rs:31
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<foreign_runtime::joined::{async_fn_env#0}>
   variants:
-    Unresumed @ foreign-runtime.rs:30
-    Returned @ foreign-runtime.rs:36
-    Panicked @ foreign-runtime.rs:36
-    Suspend0 @ foreign-runtime.rs:34
+    Unresumed @ foreign-runtime.rs:31
+    Returned @ foreign-runtime.rs:38
+    Panicked @ foreign-runtime.rs:38
+    Suspend0 @ foreign-runtime.rs:36
 task: foreign_runtime::joiner::{async_fn_env#0}
   kind: AsyncFn
   decl: foreign-runtime.rs:23
@@ -34,20 +34,20 @@ task: foreign_runtime::joiner::{async_fn_env#0}
   stage: Stage<foreign_runtime::joiner::{async_fn_env#0}>
   variants:
     Unresumed @ foreign-runtime.rs:23
-    Returned @ foreign-runtime.rs:26
-    Panicked @ foreign-runtime.rs:26
-    Suspend0 @ foreign-runtime.rs:25
+    Returned @ foreign-runtime.rs:27
+    Panicked @ foreign-runtime.rs:27
+    Suspend0 @ foreign-runtime.rs:26
 task: foreign_runtime::detached::{async_fn_env#0}
   kind: AsyncFn
-  decl: foreign-runtime.rs:44
+  decl: foreign-runtime.rs:46
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<foreign_runtime::detached::{async_fn_env#0}>
   variants:
-    Unresumed @ foreign-runtime.rs:44
-    Returned @ foreign-runtime.rs:50
-    Panicked @ foreign-runtime.rs:50
-    Suspend0 @ foreign-runtime.rs:48
+    Unresumed @ foreign-runtime.rs:46
+    Returned @ foreign-runtime.rs:53
+    Panicked @ foreign-runtime.rs:53
+    Suspend0 @ foreign-runtime.rs:51
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<foreign_runtime::hidden_runtime::{async_block_env#0}>> (poll)

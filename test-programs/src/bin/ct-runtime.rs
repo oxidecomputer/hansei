@@ -8,12 +8,14 @@ use std::time::Duration;
 use tokio::sync::{Semaphore, oneshot};
 
 async fn sleeper(ready: oneshot::Sender<()>) -> u32 {
+    test_programs::census_expect::task("ct_runtime::sleeper");
     ready.send(()).expect("main waits for readiness");
     tokio::time::sleep(Duration::from_secs(1_000_000)).await;
     17
 }
 
 async fn acquirer(ready: oneshot::Sender<()>, semaphore: &'static Semaphore) -> u32 {
+    test_programs::census_expect::task("ct_runtime::acquirer");
     ready.send(()).expect("main waits for readiness");
     let _permit = semaphore.acquire().await.expect("the semaphore stays open");
     23

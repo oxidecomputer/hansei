@@ -6,27 +6,27 @@ program: dyn-future
 [tasks]
 task: dyn_future::set_member::{async_fn_env#0}
   kind: AsyncFn
-  decl: dyn-future.rs:14
+  decl: dyn-future.rs:15
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<dyn_future::set_member::{async_fn_env#0}>
   variants:
-    Unresumed @ dyn-future.rs:14
-    Returned @ dyn-future.rs:16
-    Panicked @ dyn-future.rs:16
-    Suspend0 @ dyn-future.rs:15
+    Unresumed @ dyn-future.rs:15
+    Returned @ dyn-future.rs:18
+    Panicked @ dyn-future.rs:18
+    Suspend0 @ dyn-future.rs:17
 task: dyn_future::driver::{async_fn_env#0}
   kind: AsyncFn
-  decl: dyn-future.rs:22
+  decl: dyn-future.rs:24
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<dyn_future::driver::{async_fn_env#0}>
   variants:
-    Unresumed @ dyn-future.rs:22
-    Returned @ dyn-future.rs:32
-    Panicked @ dyn-future.rs:32
-    Suspend0 @ dyn-future.rs:29
-    Suspend1 @ dyn-future.rs:30
+    Unresumed @ dyn-future.rs:24
+    Returned @ dyn-future.rs:39
+    Panicked @ dyn-future.rs:39
+    Suspend0 @ dyn-future.rs:36
+    Suspend1 @ dyn-future.rs:37
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<dyn_future::main::{async_block_env#0}>> (poll)

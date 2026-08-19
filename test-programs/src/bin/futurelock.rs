@@ -1,6 +1,7 @@
 use futures::FutureExt;
 use std::sync::Arc;
 use std::time::Duration;
+use test_programs::census_expect;
 use tokio::spawn;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -13,6 +14,8 @@ fn main() {
     builder.worker_threads(4);
     test_programs::run_builder(&mut builder, async {
         let h = spawn(async move {
+            census_expect::task("futurelock::main");
+
             // Create a lock that will be shared by multiple tasks.
             let lock = Arc::new(Mutex::new(()));
 
@@ -52,6 +55,9 @@ async fn start_background_task(lock: Arc<Mutex<()>>) {
 // The guts of the example
 async fn do_stuff(lock: Arc<Mutex<()>>) {
     let mut future1 = do_async_thing("op1", lock.clone()).boxed();
+    // Ground truth for the census diff: the future the futurelock is
+    // about, registered by the slot its box sits in.
+    census_expect::held(&future1 as *const _ as u64, "futurelock::do_async_thing");
 
     // Try to execute `future1`.  If it takes more than 500ms, do
     // a related thing instead.

@@ -7,6 +7,6 @@ Defined at: src/bin/simple-await.rs:16
 
   0  async fn      simple_await::work::{async_fn_env#0}
      suspends:
-       Suspend0  src/bin/simple-await.rs:32  11 locals  simple_await::ready_value::{async_fn_env#0}
-     ▸ Suspend1  src/bin/simple-await.rs:34  10 locals
+       Suspend0  src/bin/simple-await.rs:33  11 locals  simple_await::ready_value::{async_fn_env#0}
+     ▸ Suspend1  src/bin/simple-await.rs:35  10 locals
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>

@@ -6,28 +6,28 @@ program: futurelock
 [tasks]
 task: futurelock::start_background_task::{async_fn#0}::{async_block_env#0}
   kind: AsyncBlock
-  decl: futurelock.rs:41
+  decl: futurelock.rs:44
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<futurelock::start_background_task::{async_fn#0}::{async_block_env#0}>
   variants:
-    Unresumed @ futurelock.rs:41
-    Returned @ futurelock.rs:47
-    Panicked @ futurelock.rs:47
-    Suspend0 @ futurelock.rs:43
-    Suspend1 @ futurelock.rs:45
+    Unresumed @ futurelock.rs:44
+    Returned @ futurelock.rs:50
+    Panicked @ futurelock.rs:50
+    Suspend0 @ futurelock.rs:46
+    Suspend1 @ futurelock.rs:48
 task: futurelock::main::{async_block#0}::{async_block_env#0}
   kind: AsyncBlock
-  decl: futurelock.rs:15
+  decl: futurelock.rs:16
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<futurelock::main::{async_block#0}::{async_block_env#0}>
   variants:
-    Unresumed @ futurelock.rs:15
-    Returned @ futurelock.rs:26
-    Panicked @ futurelock.rs:26
-    Suspend0 @ futurelock.rs:22
-    Suspend1 @ futurelock.rs:25
+    Unresumed @ futurelock.rs:16
+    Returned @ futurelock.rs:29
+    Panicked @ futurelock.rs:29
+    Suspend0 @ futurelock.rs:25
+    Suspend1 @ futurelock.rs:28
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}> (poll)
@@ -126,10 +126,10 @@ task: simple_await::work::{async_fn_env#0}
   stage: Stage<simple_await::work::{async_fn_env#0}>
   variants:
     Unresumed @ simple-await.rs:16
-    Returned @ simple-await.rs:46
-    Panicked @ simple-await.rs:46
-    Suspend0 @ simple-await.rs:32
-    Suspend1 @ simple-await.rs:34
+    Returned @ simple-await.rs:47
+    Panicked @ simple-await.rs:47
+    Suspend0 @ simple-await.rs:33
+    Suspend1 @ simple-await.rs:35
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<simple_await::main::{async_block_env#0}>> (poll)
@@ -224,9 +224,9 @@ task: nested_await::outer::{async_fn_env#0}
   stage: Stage<nested_await::outer::{async_fn_env#0}>
   variants:
     Unresumed @ nested-await.rs:16
-    Returned @ nested-await.rs:20
-    Panicked @ nested-await.rs:20
-    Suspend0 @ nested-await.rs:18
+    Returned @ nested-await.rs:21
+    Panicked @ nested-await.rs:21
+    Suspend0 @ nested-await.rs:19
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<nested_await::main::{async_block_env#0}>> (poll)
@@ -316,27 +316,27 @@ program: dyn-future
 [tasks]
 task: dyn_future::set_member::{async_fn_env#0}
   kind: AsyncFn
-  decl: dyn-future.rs:14
+  decl: dyn-future.rs:15
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<dyn_future::set_member::{async_fn_env#0}>
   variants:
-    Unresumed @ dyn-future.rs:14
-    Returned @ dyn-future.rs:16
-    Panicked @ dyn-future.rs:16
-    Suspend0 @ dyn-future.rs:15
+    Unresumed @ dyn-future.rs:15
+    Returned @ dyn-future.rs:18
+    Panicked @ dyn-future.rs:18
+    Suspend0 @ dyn-future.rs:17
 task: dyn_future::driver::{async_fn_env#0}
   kind: AsyncFn
-  decl: dyn-future.rs:22
+  decl: dyn-future.rs:24
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<dyn_future::driver::{async_fn_env#0}>
   variants:
-    Unresumed @ dyn-future.rs:22
-    Returned @ dyn-future.rs:32
-    Panicked @ dyn-future.rs:32
-    Suspend0 @ dyn-future.rs:29
-    Suspend1 @ dyn-future.rs:30
+    Unresumed @ dyn-future.rs:24
+    Returned @ dyn-future.rs:39
+    Panicked @ dyn-future.rs:39
+    Suspend0 @ dyn-future.rs:36
+    Suspend1 @ dyn-future.rs:37
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<dyn_future::main::{async_block_env#0}>> (poll)
@@ -634,15 +634,15 @@ program: sleep-join
 [tasks]
 task: sleep_join::joiner::{async_fn_env#0}
   kind: AsyncFn
-  decl: sleep-join.rs:15
+  decl: sleep-join.rs:16
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<sleep_join::joiner::{async_fn_env#0}>
   variants:
-    Unresumed @ sleep-join.rs:15
-    Returned @ sleep-join.rs:18
-    Panicked @ sleep-join.rs:18
-    Suspend0 @ sleep-join.rs:17
+    Unresumed @ sleep-join.rs:16
+    Returned @ sleep-join.rs:20
+    Panicked @ sleep-join.rs:20
+    Suspend0 @ sleep-join.rs:19
 task: sleep_join::sleeper::{async_fn_env#0}
   kind: AsyncFn
   decl: sleep-join.rs:9
@@ -651,9 +651,9 @@ task: sleep_join::sleeper::{async_fn_env#0}
   stage: Stage<sleep_join::sleeper::{async_fn_env#0}>
   variants:
     Unresumed @ sleep-join.rs:9
-    Returned @ sleep-join.rs:13
-    Panicked @ sleep-join.rs:13
-    Suspend0 @ sleep-join.rs:11
+    Returned @ sleep-join.rs:14
+    Panicked @ sleep-join.rs:14
+    Suspend0 @ sleep-join.rs:12
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<sleep_join::main::{async_block_env#0}>> (poll)
@@ -742,26 +742,26 @@ program: channels
 [tasks]
 task: channels::notify_waiter::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:16
+  decl: channels.rs:17
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<channels::notify_waiter::{async_fn_env#0}>
   variants:
-    Unresumed @ channels.rs:16
-    Returned @ channels.rs:22
-    Panicked @ channels.rs:22
-    Suspend0 @ channels.rs:21
+    Unresumed @ channels.rs:17
+    Returned @ channels.rs:31
+    Panicked @ channels.rs:31
+    Suspend0 @ channels.rs:30
 task: channels::hold::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:36
+  decl: channels.rs:45
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<channels::hold::{async_fn_env#0}>
   variants:
-    Unresumed @ channels.rs:36
-    Returned @ channels.rs:39
-    Panicked @ channels.rs:39
-    Suspend0 @ channels.rs:38
+    Unresumed @ channels.rs:45
+    Returned @ channels.rs:49
+    Panicked @ channels.rs:49
+    Suspend0 @ channels.rs:48
 
 [dyn-futures]
 dyn: channels::hold::{async_fn_env#0} (poll, drop_glue)
@@ -850,20 +850,20 @@ program: unordered
 [tasks]
 task: unordered::driver::{async_fn_env#0}
   kind: AsyncFn
-  decl: unordered.rs:69
+  decl: unordered.rs:78
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<unordered::driver::{async_fn_env#0}>
   variants:
-    Unresumed @ unordered.rs:69
-    Returned @ unordered.rs:100
-    Panicked @ unordered.rs:100
-    Suspend0 @ unordered.rs:91
-    Suspend1 @ unordered.rs:94
-    Suspend2 @ unordered.rs:95
-    Suspend3 @ unordered.rs:96
-    Suspend4 @ unordered.rs:98
-    Suspend5 @ unordered.rs:99
+    Unresumed @ unordered.rs:78
+    Returned @ unordered.rs:124
+    Panicked @ unordered.rs:124
+    Suspend0 @ unordered.rs:115
+    Suspend1 @ unordered.rs:118
+    Suspend2 @ unordered.rs:119
+    Suspend3 @ unordered.rs:120
+    Suspend4 @ unordered.rs:122
+    Suspend5 @ unordered.rs:123
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<unordered::main::{async_block_env#0}>> (poll)
@@ -954,39 +954,39 @@ program: joinset
 [tasks]
 task: joinset::driver::{async_fn_env#0}
   kind: AsyncFn
-  decl: joinset.rs:40
+  decl: joinset.rs:44
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<joinset::driver::{async_fn_env#0}>
   variants:
-    Unresumed @ joinset.rs:40
-    Returned @ joinset.rs:72
-    Panicked @ joinset.rs:72
-    Suspend0 @ joinset.rs:63
-    Suspend1 @ joinset.rs:68
+    Unresumed @ joinset.rs:44
+    Returned @ joinset.rs:83
+    Panicked @ joinset.rs:83
+    Suspend0 @ joinset.rs:74
+    Suspend1 @ joinset.rs:79
 task: joinset::member::{async_fn_env#0}
   kind: AsyncFn
-  decl: joinset.rs:26
+  decl: joinset.rs:27
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<joinset::member::{async_fn_env#0}>
   variants:
-    Unresumed @ joinset.rs:26
-    Returned @ joinset.rs:30
-    Panicked @ joinset.rs:30
-    Suspend0 @ joinset.rs:27
-    Suspend1 @ joinset.rs:28
+    Unresumed @ joinset.rs:27
+    Returned @ joinset.rs:32
+    Panicked @ joinset.rs:32
+    Suspend0 @ joinset.rs:29
+    Suspend1 @ joinset.rs:30
 task: joinset::finisher::{async_fn_env#0}
   kind: AsyncFn
-  decl: joinset.rs:35
+  decl: joinset.rs:39
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<joinset::finisher::{async_fn_env#0}>
   variants:
-    Unresumed @ joinset.rs:35
-    Returned @ joinset.rs:38
-    Panicked @ joinset.rs:38
-    Suspend0 @ joinset.rs:36
+    Unresumed @ joinset.rs:39
+    Returned @ joinset.rs:42
+    Panicked @ joinset.rs:42
+    Suspend0 @ joinset.rs:40
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<joinset::main::{async_block_env#0}>> (poll)
@@ -1082,20 +1082,20 @@ task: ct_runtime::sleeper::{async_fn_env#0}
   stage: Stage<ct_runtime::sleeper::{async_fn_env#0}>
   variants:
     Unresumed @ ct-runtime.rs:10
-    Returned @ ct-runtime.rs:14
-    Panicked @ ct-runtime.rs:14
-    Suspend0 @ ct-runtime.rs:12
+    Returned @ ct-runtime.rs:15
+    Panicked @ ct-runtime.rs:15
+    Suspend0 @ ct-runtime.rs:13
 task: ct_runtime::acquirer::{async_fn_env#0}
   kind: AsyncFn
-  decl: ct-runtime.rs:16
+  decl: ct-runtime.rs:17
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<ct_runtime::acquirer::{async_fn_env#0}>
   variants:
-    Unresumed @ ct-runtime.rs:16
-    Returned @ ct-runtime.rs:20
-    Panicked @ ct-runtime.rs:20
-    Suspend0 @ ct-runtime.rs:18
+    Unresumed @ ct-runtime.rs:17
+    Returned @ ct-runtime.rs:22
+    Panicked @ ct-runtime.rs:22
+    Suspend0 @ ct-runtime.rs:20
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<ct_runtime::main::{async_block_env#0}>> (poll)
@@ -1190,31 +1190,31 @@ task: local_set::local_sleeper::{async_fn_env#0}
   stage: Stage<local_set::local_sleeper::{async_fn_env#0}>
   variants:
     Unresumed @ local-set.rs:13
-    Returned @ local-set.rs:17
-    Panicked @ local-set.rs:17
-    Suspend0 @ local-set.rs:15
+    Returned @ local-set.rs:18
+    Panicked @ local-set.rs:18
+    Suspend0 @ local-set.rs:16
 task: local_set::local_acquirer::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set.rs:19
+  decl: local-set.rs:20
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set::local_acquirer::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set.rs:19
-    Returned @ local-set.rs:23
-    Panicked @ local-set.rs:23
-    Suspend0 @ local-set.rs:21
+    Unresumed @ local-set.rs:20
+    Returned @ local-set.rs:25
+    Panicked @ local-set.rs:25
+    Suspend0 @ local-set.rs:23
 task: local_set::joiner::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set.rs:25
+  decl: local-set.rs:27
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<local_set::joiner::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set.rs:25
-    Returned @ local-set.rs:28
-    Panicked @ local-set.rs:28
-    Suspend0 @ local-set.rs:27
+    Unresumed @ local-set.rs:27
+    Returned @ local-set.rs:31
+    Panicked @ local-set.rs:31
+    Suspend0 @ local-set.rs:30
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set::main::{async_block_env#0}>> (poll)
@@ -1311,31 +1311,31 @@ task: local_set_timer::local_sleeper::{async_fn_env#0}
   stage: Stage<local_set_timer::local_sleeper::{async_fn_env#0}>
   variants:
     Unresumed @ local-set-timer.rs:15
-    Returned @ local-set-timer.rs:19
-    Panicked @ local-set-timer.rs:19
-    Suspend0 @ local-set-timer.rs:17
+    Returned @ local-set-timer.rs:20
+    Panicked @ local-set-timer.rs:20
+    Suspend0 @ local-set-timer.rs:18
 task: local_set_timer::local_acquirer::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-timer.rs:21
+  decl: local-set-timer.rs:22
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set_timer::local_acquirer::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-timer.rs:21
-    Returned @ local-set-timer.rs:25
-    Panicked @ local-set-timer.rs:25
-    Suspend0 @ local-set-timer.rs:23
+    Unresumed @ local-set-timer.rs:22
+    Returned @ local-set-timer.rs:27
+    Panicked @ local-set-timer.rs:27
+    Suspend0 @ local-set-timer.rs:25
 task: local_set_timer::sleeper::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-timer.rs:33
+  decl: local-set-timer.rs:35
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<local_set_timer::sleeper::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-timer.rs:33
-    Returned @ local-set-timer.rs:37
-    Panicked @ local-set-timer.rs:37
-    Suspend0 @ local-set-timer.rs:35
+    Unresumed @ local-set-timer.rs:35
+    Returned @ local-set-timer.rs:40
+    Panicked @ local-set-timer.rs:40
+    Suspend0 @ local-set-timer.rs:38
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set_timer::main::{async_block_env#0}>> (poll)
@@ -1432,43 +1432,43 @@ task: local_set_io::local_reader::{async_fn_env#0}
   stage: Stage<local_set_io::local_reader::{async_fn_env#0}>
   variants:
     Unresumed @ local-set-io.rs:24
-    Returned @ local-set-io.rs:28
-    Panicked @ local-set-io.rs:28
-    Suspend0 @ local-set-io.rs:27
+    Returned @ local-set-io.rs:29
+    Panicked @ local-set-io.rs:29
+    Suspend0 @ local-set-io.rs:28
 task: local_set_io::local_writer::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:43
+  decl: local-set-io.rs:45
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set_io::local_writer::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:43
-    Returned @ local-set-io.rs:55
-    Panicked @ local-set-io.rs:55
-    Suspend0 @ local-set-io.rs:44
-    Suspend1 @ local-set-io.rs:53
+    Unresumed @ local-set-io.rs:45
+    Returned @ local-set-io.rs:58
+    Panicked @ local-set-io.rs:58
+    Suspend0 @ local-set-io.rs:47
+    Suspend1 @ local-set-io.rs:56
 task: local_set_io::local_watcher::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:32
+  decl: local-set-io.rs:33
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set_io::local_watcher::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:32
-    Returned @ local-set-io.rs:36
-    Panicked @ local-set-io.rs:36
-    Suspend0 @ local-set-io.rs:34
+    Unresumed @ local-set-io.rs:33
+    Returned @ local-set-io.rs:38
+    Panicked @ local-set-io.rs:38
+    Suspend0 @ local-set-io.rs:36
 task: local_set_io::reader::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:64
+  decl: local-set-io.rs:67
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<local_set_io::reader::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:64
-    Returned @ local-set-io.rs:68
-    Panicked @ local-set-io.rs:68
-    Suspend0 @ local-set-io.rs:67
+    Unresumed @ local-set-io.rs:67
+    Returned @ local-set-io.rs:72
+    Panicked @ local-set-io.rs:72
+    Suspend0 @ local-set-io.rs:71
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set_io::main::{async_block_env#0}>> (poll)
@@ -1560,26 +1560,26 @@ program: foreign-runtime
 [tasks]
 task: foreign_runtime::local_sleeper::{async_fn_env#0}
   kind: AsyncFn
-  decl: foreign-runtime.rs:55
+  decl: foreign-runtime.rs:58
   entries: 1
   symbols-per-entry: 6
   stage: Stage<foreign_runtime::local_sleeper::{async_fn_env#0}>
   variants:
-    Unresumed @ foreign-runtime.rs:55
-    Returned @ foreign-runtime.rs:61
-    Panicked @ foreign-runtime.rs:61
-    Suspend0 @ foreign-runtime.rs:59
+    Unresumed @ foreign-runtime.rs:58
+    Returned @ foreign-runtime.rs:65
+    Panicked @ foreign-runtime.rs:65
+    Suspend0 @ foreign-runtime.rs:63
 task: foreign_runtime::joined::{async_fn_env#0}
   kind: AsyncFn
-  decl: foreign-runtime.rs:30
+  decl: foreign-runtime.rs:31
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<foreign_runtime::joined::{async_fn_env#0}>
   variants:
-    Unresumed @ foreign-runtime.rs:30
-    Returned @ foreign-runtime.rs:36
-    Panicked @ foreign-runtime.rs:36
-    Suspend0 @ foreign-runtime.rs:34
+    Unresumed @ foreign-runtime.rs:31
+    Returned @ foreign-runtime.rs:38
+    Panicked @ foreign-runtime.rs:38
+    Suspend0 @ foreign-runtime.rs:36
 task: foreign_runtime::joiner::{async_fn_env#0}
   kind: AsyncFn
   decl: foreign-runtime.rs:23
@@ -1588,20 +1588,20 @@ task: foreign_runtime::joiner::{async_fn_env#0}
   stage: Stage<foreign_runtime::joiner::{async_fn_env#0}>
   variants:
     Unresumed @ foreign-runtime.rs:23
-    Returned @ foreign-runtime.rs:26
-    Panicked @ foreign-runtime.rs:26
-    Suspend0 @ foreign-runtime.rs:25
+    Returned @ foreign-runtime.rs:27
+    Panicked @ foreign-runtime.rs:27
+    Suspend0 @ foreign-runtime.rs:26
 task: foreign_runtime::detached::{async_fn_env#0}
   kind: AsyncFn
-  decl: foreign-runtime.rs:44
+  decl: foreign-runtime.rs:46
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<foreign_runtime::detached::{async_fn_env#0}>
   variants:
-    Unresumed @ foreign-runtime.rs:44
-    Returned @ foreign-runtime.rs:50
-    Panicked @ foreign-runtime.rs:50
-    Suspend0 @ foreign-runtime.rs:48
+    Unresumed @ foreign-runtime.rs:46
+    Returned @ foreign-runtime.rs:53
+    Panicked @ foreign-runtime.rs:53
+    Suspend0 @ foreign-runtime.rs:51
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<foreign_runtime::hidden_runtime::{async_block_env#0}>> (poll)
