@@ -174,12 +174,23 @@ fn test_fixtures_record_the_current_programs() {
         settings.set_snapshot_path(Path::new("fixtures").join(set));
         settings.set_prepend_module_to_snapshot(false);
         settings.set_omit_expression(true);
-        settings.set_description(
-            "the fixture programs these snapshots were captured from. A digest that \
-             moved means the goldens in this file describe a program no longer in the \
-             tree: recapture with test-programs/capture-snapshots.sh, then re-bless the \
-             goldens here and in value_render.rs.",
-        );
+        // Name the exact recapture command, because it is per set: the
+        // floor set needs the --tokio pin, and the mismatch this test
+        // reports is how a floor advance learns the set went stale.
+        let recapture = if set.ends_with("-floor") {
+            format!(
+                "test-programs/capture-snapshots.sh --tokio {}",
+                tokio_floor()
+            )
+        } else {
+            "test-programs/capture-snapshots.sh".to_owned()
+        };
+        settings.set_description(format!(
+            "the fixture programs (and lockfile) these snapshots were captured from. \
+             A digest that moved means the goldens in this file describe a program no \
+             longer in the tree: recapture with {recapture}, then re-bless the goldens \
+             here and in value_render.rs."
+        ));
         settings.bind(|| insta::assert_snapshot!("SOURCES", digests));
     }
 }

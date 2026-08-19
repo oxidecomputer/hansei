@@ -26,7 +26,11 @@
 # cell's goldens showing zero diff — then run the per-cell acceptance
 # suite on a host that can take cores (HANSEI_CELL=<cell> cargo test -p
 # hansei --test acceptance) and commit. The floor and primary pins
-# advance deliberately, by hand; add refuses to touch them.
+# advance deliberately, by hand; add refuses to touch them. Advancing
+# the floor also stales the linux-floor fixture set (its SOURCES check
+# fails against the new floor's lockfile): recapture it on the Linux
+# capture host with capture-snapshots.sh --tokio <new floor> and
+# re-bless its @linux-floor goldens.
 
 set -uo pipefail
 
@@ -324,7 +328,7 @@ cmd_add_tokio() {
         || die "tokio $ver is below the floor ($T_FLOOR)"
     if [ "$(minor_of "$ver")" = "$(minor_of "$T_FLOOR")" ] \
         || [ "$(minor_of "$ver")" = "$(minor_of "$P_TOKIO")" ]; then
-        die "the floor/primary pins ($T_FLOOR/$P_TOKIO) advance deliberately — edit matrix.toml by hand"
+        die "the floor/primary pins ($T_FLOOR/$P_TOKIO) advance deliberately — edit matrix.toml by hand (a floor advance also means recapturing the linux-floor fixture set; see the header)"
     fi
     for lv in "${TOKIO_VERSIONS[@]}"; do
         [ "$(minor_of "$lv")" = "$(minor_of "$ver")" ] && old=$lv
