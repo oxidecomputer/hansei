@@ -157,14 +157,26 @@ impl<'a> Value<'a> {
         Elements::of(self, proc)
     }
 
-    pub fn active_variant(&self) -> Result<(&'a str, Value<'a>)> {
+    /// The active variant and its payload as declared — no peel. A
+    /// caller that classifies values by their own type must see
+    /// `Some(JoinSet<_>)` as the `Some` struct carrying a `JoinSet`:
+    /// [`Self::active_variant`]'s peel descends single-sized-member
+    /// wrappers, which walks straight *through* a `JoinSet` or
+    /// `Receiver` payload into its interior before any name test can
+    /// run.
+    pub fn active_variant_raw(&self) -> Result<(&'a str, Value<'a>)> {
         let active = self
             .ty
             .active_variant(self.bytes)
             .ok_or_else(|| Error::not_an_enum(self.ty.name().to_string()))?
             .map_err(|e| bundle_variant_error(&self.ty, e))?;
 
-        Ok((active.name, self.view_at(active.offset, active.ty)?.peel()))
+        Ok((active.name, self.view_at(active.offset, active.ty)?))
+    }
+
+    pub fn active_variant(&self) -> Result<(&'a str, Value<'a>)> {
+        let (name, payload) = self.active_variant_raw()?;
+        Ok((name, payload.peel()))
     }
 
     /// Check if the type is a wrapper struct, and return its inner type if it
