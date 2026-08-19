@@ -248,6 +248,13 @@ pub struct HeldFuture {
     /// owning task's own: through a held future's chain, or a set
     /// child's.
     pub via: Option<Via>,
+    /// Where the scan found it: the found value's own address inside
+    /// the frame — the future itself when held by value, the wide
+    /// pointer's slot when boxed. Equal to `addr` except for a boxed
+    /// find, whose `addr` is re-pointed at the heap referent below.
+    /// This is the address a fixture can name for the thing it built,
+    /// which is what the ground-truth registry keys held finds by.
+    pub slot: u64,
     pub addr: u64,
     /// The bundle type `addr` decodes with — the chain root's when the
     /// chain decoded, the holding local's otherwise — so the future can
@@ -831,6 +838,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     frame,
                     local: local.to_string(),
                     via,
+                    slot: place.0,
                     addr,
                     ty,
                     depth: summary.depth,
@@ -2054,6 +2062,7 @@ mod tests {
             frame: 0,
             local: "held".to_string(),
             via: None,
+            slot: addr,
             addr,
             ty: BundleTypeId(0),
             depth: 1,

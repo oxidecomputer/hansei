@@ -1258,6 +1258,7 @@ mod future_trace_tests {
                 frame: 1,
                 local: "lock".to_string(),
                 via: Some(census::Via::SetChild { set: 0, child: 0 }),
+                slot: 0x3000,
                 addr: 0x3000,
                 ty,
                 future: "Mutex::lock::{async_fn_env#0}".to_string(),
