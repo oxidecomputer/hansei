@@ -518,6 +518,7 @@ mod graph_tests {
             frame: 0,
             local: "cancel_task".to_string(),
             via: None,
+            slot: 0xd000,
             addr: 0xd000,
             ty: BundleTypeId(0),
             future: "tokio::runtime::task::join::JoinHandle<()>".to_string(),

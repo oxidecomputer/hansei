@@ -944,6 +944,7 @@ mod tests {
             frame: 0,
             local: "arm".to_string(),
             via: None,
+            slot: 0x4000,
             addr: 0x4000,
             ty: BundleTypeId(0),
             future: future.to_string(),
