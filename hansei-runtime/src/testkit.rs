@@ -420,20 +420,37 @@ mod tests {
     use proc::{Regs, SymbolBuf, Target};
 
     /// A target serving one run of bytes at `base`, with the registry
-    /// symbol pointing at it (or absent).
+    /// symbol pointing at it (or absent). A `seam` splits the run in
+    /// two the way a core's segment boundary does: a read crossing it
+    /// is refused whole, and `readable_len` stops at it — which is
+    /// what forces the reader through its chunking path.
     struct FakeTarget {
         base: u64,
         bytes: Vec<u8>,
         has_symbol: bool,
+        seam: Option<u64>,
     }
 
     impl Target for FakeTarget {
         fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
+            if let Some(seam) = self.seam
+                && addr < seam
+                && addr + len > seam
+            {
+                return Err(proc::Error::unmapped(addr, len));
+            }
             let start = addr
                 .checked_sub(self.base)
                 .filter(|&s| s + len <= self.bytes.len() as u64)
                 .ok_or_else(|| proc::Error::unmapped(addr, len))?;
             Ok(&self.bytes[start as usize..(start + len) as usize])
+        }
+
+        fn readable_len(&self, addr: u64, max: u64) -> u64 {
+            match self.seam {
+                Some(seam) if addr < seam => (seam - addr).min(max),
+                _ => max,
+            }
         }
 
         fn lookup_symbol_by_addr(&self, _: u64) -> Option<SymbolBuf> {
@@ -494,6 +511,7 @@ mod tests {
             base: 0x1000,
             bytes: registry(&[]),
             has_symbol: false,
+            seam: None,
         };
         assert!(read_from(&target).is_none());
     }
@@ -504,6 +522,7 @@ mod tests {
             base: 0x1000,
             bytes: registry(&[]),
             has_symbol: true,
+            seam: None,
         };
         let parsed = read_from(&target).expect("the symbol resolves").unwrap();
         assert_eq!(parsed, Vec::new());
@@ -521,6 +540,7 @@ mod tests {
                 (5, 0, 0, "task_name"),
             ]),
             has_symbol: true,
+            seam: None,
         };
         let parsed = read_from(&target).expect("the symbol resolves").unwrap();
         assert_eq!(
@@ -549,12 +569,46 @@ mod tests {
         );
     }
 
+    /// The registry read straddling a segment boundary — the `.bss`
+    /// tail of a real core, where the entries run past the last
+    /// file-backed page into anonymous memory. A whole-run read is
+    /// refused there, so the reader has to chunk at `readable_len`
+    /// and reassemble the pieces in order.
+    #[test]
+    fn test_a_registry_straddling_a_segment_seam_reads_whole() {
+        let bytes = registry(&[(1, 0x100, 0, "held_name"), (5, 0, 0, "task_name")]);
+        // Down the middle of the first entry, nowhere near a chunk
+        // edge of the reader's own making.
+        let seam: u64 = 0x1000 + 16 + 40;
+        assert!(seam - 0x1000 < bytes.len() as u64);
+        let target = FakeTarget {
+            base: 0x1000,
+            bytes,
+            has_symbol: true,
+            seam: Some(seam),
+        };
+        let parsed = read_from(&target).expect("the symbol resolves").unwrap();
+        assert_eq!(
+            parsed,
+            [
+                Expectation::Held {
+                    slot: 0x100,
+                    name: "held_name".to_string(),
+                },
+                Expectation::Task {
+                    name: "task_name".to_string(),
+                },
+            ]
+        );
+    }
+
     #[test]
     fn test_a_corrupt_registry_is_an_error_not_a_guess() {
         let unknown_kind = FakeTarget {
             base: 0x1000,
             bytes: registry(&[(9, 0, 0, "")]),
             has_symbol: true,
+            seam: None,
         };
         let err = read_from(&unknown_kind)
             .expect("the symbol resolves")
@@ -569,6 +623,7 @@ mod tests {
             base: 0x1000,
             bytes,
             has_symbol: true,
+            seam: None,
         };
         assert!(read_from(&truncated).expect("the symbol resolves").is_err());
     }

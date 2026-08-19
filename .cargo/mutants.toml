@@ -87,6 +87,13 @@ exclude_re = [
     # between the bundle and the reader, which is what the
     # FORMAT_VERSION bump on foldhash is for.
     "replace rust_type_name_hash",
+    # The snapshot command is a test-data producer behind the
+    # `snapshot` feature: no automated test drives a capture, so no
+    # sweep can see it stubbed out. Its output *is* judged, one step
+    # removed — a capture that recorded nothing fails the offline
+    # suites the moment the pair is regenerated — but that loop runs a
+    # human and a capture host, not a mutant.
+    "replace exec_snapshot",
     # A 32-bit guard, unobservable anywhere this suite runs. On 64-bit
     # every recorded frame size converts, so the guard is always true;
     # forcing it false only routes the decode through the reallocating
