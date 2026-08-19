@@ -34,8 +34,8 @@ use self::statics::find_statics;
 use self::sweep::{Sweep, cell_from_dealloc_param, find_stage, sweep_functions};
 use self::vtables::{VtableTypeHint, discover_vtable_types, resolve_vtable_type_hints};
 use crate::bundle::{
-    BinaryIdent, Bundle, BundleTypeId, DynFutureTable, FutureKind, InfraTypes, Meta, Provenance,
-    ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId, TaskFutureEntry, TaskTable,
+    BinaryIdent, Bundle, BundleTypeId, DynFutureTable, FamilyCeiling, FutureKind, InfraTypes, Meta,
+    Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId, TaskFutureEntry, TaskTable,
 };
 use crate::detect::{Family, FormatExplanation, struct_of};
 use crate::raw_types::{NsId, RawType};
@@ -804,6 +804,8 @@ fn extract_from_view(
     let rustc_version = rustc_version_of(producer);
     stats.rustc_below_floor = rustc_below_floor(&rustc_version);
 
+    let newest = *Family::ALL.last().expect("at least one family");
+    let (newest_major, newest_minor) = newest.floor();
     let meta = Meta {
         format_version: crate::bundle::FORMAT_VERSION,
         rustc_version,
@@ -812,6 +814,11 @@ fn extract_from_view(
         debug_binary: ident,
         extract_args: opts.extract_args.clone(),
         symbol_fingerprint: fingerprint.into_iter().collect(),
+        newest_family: Some(FamilyCeiling {
+            name: newest.name().to_owned(),
+            major: newest_major,
+            minor: newest_minor,
+        }),
     };
 
     stats.unresolved_refs = em.unresolved_refs;

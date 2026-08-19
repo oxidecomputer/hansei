@@ -18,6 +18,9 @@ snapshot = []
 exegesis = { workspace = true }
 insta = { workspace = true }
 regex = { workspace = true }
+# The ceiling-notice tests build `Meta.tokio_version` values; the
+# non-test code only reads the ones bundles carry.
+semver = { workspace = true }
 tempfile = { workspace = true }
 testrun = { workspace = true }
 

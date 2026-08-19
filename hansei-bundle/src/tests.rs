@@ -290,6 +290,11 @@ fn random_bundle(seed: u64) -> Bundle {
             },
             extract_args: "exegesis extract futurelock -o fl.bundle".into(),
             symbol_fingerprint: (0..rng.below(20)).map(|i| format!("_RINv_fp{i}")).collect(),
+            newest_family: Some(FamilyCeiling {
+                name: "v1_53".into(),
+                major: 1,
+                minor: 53,
+            }),
         },
         strings: table,
         types: type_table,

@@ -5,7 +5,7 @@ use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
 use hansei_runtime::tokio::{bundle, census, contract};
 use proc::{Proc, Target};
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -614,7 +614,6 @@ pub struct Session<'b> {
     ctx: bundle::Context<'b, Proc>,
     proc: &'b Proc,
     /// Read again under a recording target when a snapshot is captured.
-    #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
     bundle: &'b Bundle,
     /// How the session attached, so the capture attaches the same way.
     #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
@@ -652,6 +651,9 @@ pub struct Session<'b> {
     bounds: census::Bounds,
     /// Whether `--audit` asked for the census's self-check.
     audit: bool,
+    /// Whether the version-ceiling drift notice has printed, so the
+    /// walk commands raise it once per session, not once per line.
+    ceiling_noticed: Cell<bool>,
     analysis: OnceCell<Analysis>,
 }
 
@@ -738,8 +740,19 @@ impl<'b> Session<'b> {
                 ..census::Bounds::default()
             },
             audit: args.audit,
+            ceiling_noticed: Cell::new(false),
             analysis: OnceCell::new(),
         })
+    }
+
+    /// Print the drift notice for a target newer than the bundle's
+    /// version ceiling — once, before the first walk command's output.
+    /// The walk commands (census/tasks/trace) call this rather than the
+    /// attach, so drift surfaces where its layouts are actually read.
+    fn note_version_ceiling(&self) {
+        if let Some(line) = version_ceiling_line(&self.bundle.meta, &self.ceiling_noticed) {
+            let _ = writeln!(io::stderr(), "{line}");
+        }
     }
 
     fn extents(&self) -> &bundle::TaskExtents {
@@ -824,6 +837,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             futures,
             top,
         } => {
+            session.note_version_ceiling();
             let sections = summary::Sections::select(threads, tasks, futures);
             tasks::exec_census(session, sections, top, out)?
         }
@@ -842,7 +856,10 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
         Command::Runtimes => runtimes::exec_runtimes(session, out)?,
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
-        Command::Tasks { futures, task } => tasks::exec_tasks(session, futures, &task, out)?,
+        Command::Tasks { futures, task } => {
+            session.note_version_ceiling();
+            tasks::exec_tasks(session, futures, &task, out)?
+        }
         Command::Threads { frames, render } => threads::exec_threads(session, frames, render, out)?,
         Command::Trace {
             target,
@@ -851,6 +868,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             no_elide,
             elide,
         } => {
+            session.note_version_ceiling();
             let elide = reify::ElideOverride {
                 no_elide,
                 types: elide,
@@ -1103,4 +1121,57 @@ fn print_warnings<'a>(errors: impl IntoIterator<Item = &'a anyhow::Error>) -> io
         writeln!(io::stderr(), "warning: {err:#}")?;
     }
     Ok(())
+}
+
+/// The version-ceiling warning a walk command should print now: the
+/// notice, stated once — the first walk command of a session takes it,
+/// later ones (and every command on an undrifted target) get `None`.
+fn version_ceiling_line(meta: &hansei_bundle::Meta, noticed: &Cell<bool>) -> Option<String> {
+    if noticed.replace(true) {
+        return None;
+    }
+    contract::version_ceiling_notice(meta).map(|notice| format!("warning: {notice}"))
+}
+
+#[cfg(test)]
+mod ceiling_notice_tests {
+    use super::version_ceiling_line;
+
+    use hansei_bundle::{FamilyCeiling, Meta};
+
+    use std::cell::Cell;
+
+    fn drifted() -> Meta {
+        Meta {
+            tokio_version: Some(semver::Version::new(1, 60, 0)),
+            newest_family: Some(FamilyCeiling {
+                name: "v1_53".into(),
+                major: 1,
+                minor: 53,
+            }),
+            ..Meta::default()
+        }
+    }
+
+    /// A session states the drift once: the first walk command prints
+    /// the warning, the rest stay quiet — a REPL over one target is
+    /// not told the same fact per line.
+    #[test]
+    fn test_a_drifted_target_is_noticed_once() {
+        let noticed = Cell::new(false);
+        let line = version_ceiling_line(&drifted(), &noticed)
+            .expect("the first walk command states the drift");
+        assert!(line.starts_with("warning: "), "{line}");
+        assert!(line.contains("tokio 1.60.0"), "{line}");
+        assert_eq!(version_ceiling_line(&drifted(), &noticed), None);
+    }
+
+    /// An undrifted target prints nothing, and still consumes the
+    /// session's one statement — there is nothing left unsaid.
+    #[test]
+    fn test_an_undrifted_target_stays_quiet() {
+        let noticed = Cell::new(false);
+        assert_eq!(version_ceiling_line(&Meta::default(), &noticed), None);
+        assert!(noticed.get());
+    }
 }
