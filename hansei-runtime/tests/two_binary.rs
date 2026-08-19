@@ -51,6 +51,9 @@ use std::fmt::Write;
 use std::path::Path;
 
 /// Every program `capture-snapshots.sh` captures a fixture pair for.
+/// `gen-0007` is quarantined generated output (see its header): it is
+/// in this suite and the capture loop only, not the golden, matrix, or
+/// acceptance lists.
 const PROGRAMS: &[&str] = &[
     "simple-await",
     "nested-await",
@@ -65,6 +68,7 @@ const PROGRAMS: &[&str] = &[
     "local-set-timer",
     "local-set-io",
     "foreign-runtime",
+    "gen-0007",
 ];
 
 /// What a fixture pair was captured from: the program's own source, and
