@@ -4,6 +4,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use test_programs::census_expect;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
@@ -12,6 +13,7 @@ async fn boxed_leaf(park: oneshot::Receiver<u32>) -> u32 {
 }
 
 async fn set_member(park: oneshot::Receiver<u32>) -> u32 {
+    census_expect::task("dyn_future::set_member");
     park.await.unwrap_or(13)
 }
 
@@ -24,6 +26,11 @@ async fn driver(
 
     let mut set = JoinSet::new();
     set.spawn(set_member(park_set));
+
+    // Ground truth for the census diff. `boxed` is not registered: it
+    // is this frame's active awaitee below, not a held future.
+    census_expect::task("dyn_future::driver");
+    census_expect::join_set(&set as *const _ as u64, 1);
 
     ready.send(()).expect("main waits for readiness");
     let a = boxed.await;

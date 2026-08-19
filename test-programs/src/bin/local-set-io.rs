@@ -22,6 +22,7 @@ use tokio::task::LocalSet;
 /// The `AsyncRead` park: the waker lands in the resource's `reader`
 /// slot. The peer never writes, so the read never completes.
 async fn local_reader(ready: oneshot::Sender<()>, mut stream: UnixStream) -> usize {
+    test_programs::census_expect::task("local_set_io::local_reader");
     let mut buf = [0u8; 8];
     ready.send(()).expect("main waits for readiness");
     stream.read(&mut buf).await.expect("the peer stays open")
@@ -30,6 +31,7 @@ async fn local_reader(ready: oneshot::Sender<()>, mut stream: UnixStream) -> usi
 /// The `Interest` park: the waker lands on a `Waiter` node in the
 /// resource's own list, the site the other two never touch.
 async fn local_watcher(ready: oneshot::Sender<()>, stream: UnixStream, tag: &'static str) -> usize {
+    test_programs::census_expect::task("local_set_io::local_watcher");
     ready.send(()).expect("main waits for readiness");
     stream.readable().await.expect("the peer stays open");
     tag.len()
@@ -41,6 +43,7 @@ async fn local_watcher(ready: oneshot::Sender<()>, stream: UnixStream, tag: &'st
 /// until the write refuses — and only the write after that can park.
 /// The peer never reads, so nothing ever drains it.
 async fn local_writer(ready: oneshot::Sender<()>, mut stream: UnixStream, fill: Vec<u8>) -> usize {
+    test_programs::census_expect::task("local_set_io::local_writer");
     stream.writable().await.expect("the peer stays open");
     loop {
         match stream.try_write(&fill) {
@@ -62,6 +65,7 @@ async fn local_writer(ready: oneshot::Sender<()>, mut stream: UnixStream, fill: 
 /// is foldable, and a build that folds it leaves only one of them named
 /// in the extraction summary.
 async fn reader(ready: oneshot::Sender<()>, mut stream: UnixStream, seed: u64) -> u64 {
+    test_programs::census_expect::task("local_set_io::reader");
     let mut buf = [0u8; 16];
     ready.send(()).expect("main waits for readiness");
     seed + stream.read(&mut buf).await.expect("the peer stays open") as u64

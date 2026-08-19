@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use test_programs::census_expect;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::JoinSet;
 
@@ -24,6 +25,7 @@ const MEMBERS: usize = 3;
 const KEPT: usize = 3;
 
 async fn member(started: mpsc::Sender<()>, notify: Arc<Notify>) -> u32 {
+    census_expect::task("joinset::member");
     started.send(()).await.expect("the driver waits for us");
     notify.notified().await;
     7
@@ -31,7 +33,9 @@ async fn member(started: mpsc::Sender<()>, notify: Arc<Notify>) -> u32 {
 
 /// A member that reports in and returns, so that by the time the target
 /// is declared ready its task is complete and no longer owned by the
-/// runtime — held alive only by the set's entry for it.
+/// runtime — held alive only by the set's entry for it. It registers
+/// nothing: a registered task must still be listed at the capture, and
+/// leaving the listing is this one's whole job.
 async fn finisher(started: mpsc::Sender<()>) -> u32 {
     started.send(()).await.expect("the driver waits for us");
     13
@@ -55,6 +59,13 @@ async fn driver(ready: oneshot::Sender<()>, notify: Arc<Notify>) -> u32 {
     }
     kept.spawn(finisher(started_tx.clone()));
     drop(started_tx);
+
+    // Ground truth for the census diff: both sets, with everything they
+    // hold counted — the completed finisher included, since its entry
+    // stays in `kept` until joined.
+    census_expect::task("joinset::driver");
+    census_expect::join_set(&set as *const _ as u64, MEMBERS);
+    census_expect::join_set(&kept as *const _ as u64, KEPT);
 
     // Every member has run before the target is declared ready, so the
     // set holds tasks the listing can show rather than ones the

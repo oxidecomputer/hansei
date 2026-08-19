@@ -7,12 +7,14 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 async fn sleeper(ready: oneshot::Sender<()>) -> u32 {
+    test_programs::census_expect::task("sleep_join::sleeper");
     ready.send(()).expect("main waits for readiness");
     tokio::time::sleep(Duration::from_secs(1_000_000)).await;
     17
 }
 
 async fn joiner(ready: oneshot::Sender<()>, handle: JoinHandle<u32>) -> u32 {
+    test_programs::census_expect::task("sleep_join::joiner");
     ready.send(()).expect("main waits for readiness");
     handle.await.unwrap_or(0)
 }

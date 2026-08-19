@@ -12,10 +12,10 @@ task: simple_await::work::{async_fn_env#0}
   stage: Stage<simple_await::work::{async_fn_env#0}>
   variants:
     Unresumed @ simple-await.rs:16
-    Returned @ simple-await.rs:46
-    Panicked @ simple-await.rs:46
-    Suspend0 @ simple-await.rs:32
-    Suspend1 @ simple-await.rs:34
+    Returned @ simple-await.rs:47
+    Panicked @ simple-await.rs:47
+    Suspend0 @ simple-await.rs:33
+    Suspend1 @ simple-await.rs:35
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<simple_await::main::{async_block_env#0}>> (poll)

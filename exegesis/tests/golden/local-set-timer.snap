@@ -12,31 +12,31 @@ task: local_set_timer::local_sleeper::{async_fn_env#0}
   stage: Stage<local_set_timer::local_sleeper::{async_fn_env#0}>
   variants:
     Unresumed @ local-set-timer.rs:15
-    Returned @ local-set-timer.rs:19
-    Panicked @ local-set-timer.rs:19
-    Suspend0 @ local-set-timer.rs:17
+    Returned @ local-set-timer.rs:20
+    Panicked @ local-set-timer.rs:20
+    Suspend0 @ local-set-timer.rs:18
 task: local_set_timer::local_acquirer::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-timer.rs:21
+  decl: local-set-timer.rs:22
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set_timer::local_acquirer::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-timer.rs:21
-    Returned @ local-set-timer.rs:25
-    Panicked @ local-set-timer.rs:25
-    Suspend0 @ local-set-timer.rs:23
+    Unresumed @ local-set-timer.rs:22
+    Returned @ local-set-timer.rs:27
+    Panicked @ local-set-timer.rs:27
+    Suspend0 @ local-set-timer.rs:25
 task: local_set_timer::sleeper::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-timer.rs:33
+  decl: local-set-timer.rs:35
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<local_set_timer::sleeper::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-timer.rs:33
-    Returned @ local-set-timer.rs:37
-    Panicked @ local-set-timer.rs:37
-    Suspend0 @ local-set-timer.rs:35
+    Unresumed @ local-set-timer.rs:35
+    Returned @ local-set-timer.rs:40
+    Panicked @ local-set-timer.rs:40
+    Suspend0 @ local-set-timer.rs:38
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set_timer::main::{async_block_env#0}>> (poll)

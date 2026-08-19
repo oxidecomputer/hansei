@@ -12,43 +12,43 @@ task: local_set_io::local_reader::{async_fn_env#0}
   stage: Stage<local_set_io::local_reader::{async_fn_env#0}>
   variants:
     Unresumed @ local-set-io.rs:24
-    Returned @ local-set-io.rs:28
-    Panicked @ local-set-io.rs:28
-    Suspend0 @ local-set-io.rs:27
+    Returned @ local-set-io.rs:29
+    Panicked @ local-set-io.rs:29
+    Suspend0 @ local-set-io.rs:28
 task: local_set_io::local_writer::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:43
+  decl: local-set-io.rs:45
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set_io::local_writer::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:43
-    Returned @ local-set-io.rs:55
-    Panicked @ local-set-io.rs:55
-    Suspend0 @ local-set-io.rs:44
-    Suspend1 @ local-set-io.rs:53
+    Unresumed @ local-set-io.rs:45
+    Returned @ local-set-io.rs:58
+    Panicked @ local-set-io.rs:58
+    Suspend0 @ local-set-io.rs:47
+    Suspend1 @ local-set-io.rs:56
 task: local_set_io::local_watcher::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:32
+  decl: local-set-io.rs:33
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set_io::local_watcher::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:32
-    Returned @ local-set-io.rs:36
-    Panicked @ local-set-io.rs:36
-    Suspend0 @ local-set-io.rs:34
+    Unresumed @ local-set-io.rs:33
+    Returned @ local-set-io.rs:38
+    Panicked @ local-set-io.rs:38
+    Suspend0 @ local-set-io.rs:36
 task: local_set_io::reader::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:64
+  decl: local-set-io.rs:67
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<local_set_io::reader::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:64
-    Returned @ local-set-io.rs:68
-    Panicked @ local-set-io.rs:68
-    Suspend0 @ local-set-io.rs:67
+    Unresumed @ local-set-io.rs:67
+    Returned @ local-set-io.rs:72
+    Panicked @ local-set-io.rs:72
+    Suspend0 @ local-set-io.rs:71
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set_io::main::{async_block_env#0}>> (poll)

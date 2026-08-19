@@ -4,39 +4,39 @@ source: hansei-runtime/tests/two_binary.rs
 fingerprint 19/19
 workers 3
 task 3 idle joinset::driver::{async_fn_env#0}
-  spawned src/bin/joinset.rs:85:21
-  defined src/bin/joinset.rs:40
-  await joinset::driver::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:68 locals [notify, started_tx, started_rx, set, kept, sum]
+  spawned src/bin/joinset.rs:96:21
+  defined src/bin/joinset.rs:44
+  await joinset::driver::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:79 locals [notify, started_tx, started_rx, set, kept, sum]
   await tokio::task::join_set::{impl#1}::join_next::{async_fn_env#0}<u32> Suspend0 @ tokio-1.52.4/src/task/join_set.rs:297
   await tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
   end leaf
 task 4 idle joinset::member::{async_fn_env#0}
-  spawned src/bin/joinset.rs:46:13
-  defined src/bin/joinset.rs:26
-  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:28 locals [started, notify]
+  spawned src/bin/joinset.rs:50:13
+  defined src/bin/joinset.rs:27
+  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:30 locals [started, notify]
   await tokio::sync::notify::Notified
   end leaf
 task 5 idle joinset::member::{async_fn_env#0}
-  spawned src/bin/joinset.rs:46:13
-  defined src/bin/joinset.rs:26
-  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:28 locals [started, notify]
+  spawned src/bin/joinset.rs:50:13
+  defined src/bin/joinset.rs:27
+  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:30 locals [started, notify]
   await tokio::sync::notify::Notified
   end leaf
 task 6 idle joinset::member::{async_fn_env#0}
-  spawned src/bin/joinset.rs:46:13
-  defined src/bin/joinset.rs:26
-  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:28 locals [started, notify]
+  spawned src/bin/joinset.rs:50:13
+  defined src/bin/joinset.rs:27
+  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:30 locals [started, notify]
   await tokio::sync::notify::Notified
   end leaf
 task 7 idle joinset::member::{async_fn_env#0}
-  spawned src/bin/joinset.rs:54:14
-  defined src/bin/joinset.rs:26
-  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:28 locals [started, notify]
+  spawned src/bin/joinset.rs:58:14
+  defined src/bin/joinset.rs:27
+  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:30 locals [started, notify]
   await tokio::sync::notify::Notified
   end leaf
 task 8 idle joinset::member::{async_fn_env#0}
-  spawned src/bin/joinset.rs:54:14
-  defined src/bin/joinset.rs:26
-  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:28 locals [started, notify]
+  spawned src/bin/joinset.rs:58:14
+  defined src/bin/joinset.rs:27
+  await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:30 locals [started, notify]
   await tokio::sync::notify::Notified
   end leaf

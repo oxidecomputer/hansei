@@ -21,6 +21,7 @@ use tokio::task::{JoinHandle, LocalSet};
 /// The main runtime's own task: it holds the hidden runtime's
 /// `JoinHandle` and parks on it, which is the edge discovery follows.
 async fn joiner(handle: JoinHandle<u32>, ready: oneshot::Sender<()>) -> u32 {
+    test_programs::census_expect::task("foreign_runtime::joiner");
     ready.send(()).expect("main waits for readiness");
     handle.await.expect("the joined task never completes")
 }
@@ -28,6 +29,7 @@ async fn joiner(handle: JoinHandle<u32>, ready: oneshot::Sender<()>) -> u32 {
 /// The hidden runtime's joined task. It parks on a semaphore nobody
 /// releases, so the join never completes.
 async fn joined(ready: oneshot::Sender<()>, semaphore: &'static Semaphore) -> u32 {
+    test_programs::census_expect::task("foreign_runtime::joined");
     ready
         .send(())
         .expect("the runtime thread waits for readiness");
@@ -42,6 +44,7 @@ async fn joined(ready: oneshot::Sender<()>, semaphore: &'static Semaphore) -> u3
 /// a linker free to fold them leaves only one named in the extraction
 /// summary.
 async fn detached(ready: oneshot::Sender<()>, tag: &'static str) -> usize {
+    test_programs::census_expect::task("foreign_runtime::detached");
     ready
         .send(())
         .expect("the runtime thread waits for readiness");
@@ -53,6 +56,7 @@ async fn detached(ready: oneshot::Sender<()>, tag: &'static str) -> usize {
 /// timer entry sits in that runtime's wheel — the only trace it leaves
 /// anywhere.
 async fn local_sleeper(ready: oneshot::Sender<()>) -> u64 {
+    test_programs::census_expect::task("foreign_runtime::local_sleeper");
     ready
         .send(())
         .expect("the runtime thread waits for readiness");

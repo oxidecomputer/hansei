@@ -13,12 +13,14 @@ use tokio::sync::{Semaphore, oneshot};
 use tokio::task::LocalSet;
 
 async fn local_sleeper(ready: oneshot::Sender<()>) -> u32 {
+    test_programs::census_expect::task("local_set_timer::local_sleeper");
     ready.send(()).expect("main waits for readiness");
     tokio::time::sleep(Duration::from_secs(1_000_000)).await;
     41
 }
 
 async fn local_acquirer(ready: oneshot::Sender<()>, semaphore: &'static Semaphore) -> u32 {
+    test_programs::census_expect::task("local_set_timer::local_acquirer");
     ready.send(()).expect("main waits for readiness");
     let _permit = semaphore.acquire().await.expect("the semaphore stays open");
     43
@@ -31,6 +33,7 @@ async fn local_acquirer(ready: oneshot::Sender<()>, semaphore: &'static Semaphor
 /// drop glue leaves only one of them named in the extraction summary,
 /// which is not a fact a portable golden may rest on.
 async fn sleeper(ready: oneshot::Sender<()>, tag: &'static str) -> usize {
+    test_programs::census_expect::task("local_set_timer::sleeper");
     ready.send(()).expect("main waits for readiness");
     tokio::time::sleep(Duration::from_secs(1_000_000)).await;
     tag.len()

@@ -7,7 +7,7 @@ Defined at: src/bin/nested-await.rs:16
 
   0  async fn      nested_await::outer::{async_fn_env#0}
      suspends:
-     ▸ Suspend0  src/bin/nested-await.rs:18
+     ▸ Suspend0  src/bin/nested-await.rs:19
        └─  1  async fn      nested_await::middle::{async_fn_env#0}
           suspends:
           ▸ Suspend0  src/bin/nested-await.rs:12

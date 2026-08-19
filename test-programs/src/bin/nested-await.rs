@@ -14,6 +14,7 @@ async fn middle(park: oneshot::Receiver<u32>) -> u32 {
 }
 
 async fn outer(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
+    test_programs::census_expect::task("nested_await::outer");
     ready.send(()).expect("main waits for readiness");
     let nested = middle(park).await;
     nested + 1
