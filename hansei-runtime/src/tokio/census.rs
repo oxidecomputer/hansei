@@ -1166,21 +1166,23 @@ fn scan_value<'b>(
             }
         }
         ScanPlan::Enum => {
-            if let Ok((_, payload)) = value.active_variant() {
+            // The *raw* payload, not the peeled one: peel descends
+            // single-sized-member wrappers, and `Some(JoinSet<_>)`
+            // peels straight through the JoinSet into its interior —
+            // the scan then never sees the name it screens on, and
+            // the find silently vanishes. The raw variant struct
+            // descends to its members like any other aggregate.
+            if let Ok((_, payload)) = value.active_variant_raw() {
                 let path = Path {
                     variant: true,
                     ..path
                 };
+                // The variant struct is the enum's own storage, not
+                // another aggregate layer: descending into its members
+                // is what costs a level, the way it always did when
+                // the payload arrived pre-peeled.
                 scan_value(
-                    payload,
-                    futures,
-                    depth + 1,
-                    max_depth,
-                    path,
-                    found,
-                    deep,
-                    plans,
-                    stats,
+                    payload, futures, depth, max_depth, path, found, deep, plans, stats,
                 );
             }
         }
@@ -1733,10 +1735,15 @@ mod tests {
         assert!(found.ty.is_coroutine(), "{}", found.ty.name());
         assert_eq!(found.addr, payload.addr);
         assert_eq!(found.ty.id(), payload.ty.id());
-        // The find came through the variant step and nothing else: the
-        // payload is the coroutine itself, not a struct around one.
+        // The find came through the variant step — and through the
+        // variant struct's member, which the scan descends like any
+        // aggregate. It sees the payload *as declared* rather than
+        // pre-peeled: peel walks single-sized-member wrappers, and on
+        // a `Some(JoinSet<_>)` that descends straight through the
+        // JoinSet before the name screen can run — a silent omission
+        // the generated corpus caught.
         assert_eq!(scanned.stats.enum_finds, 1, "{:?}", scanned.stats);
-        assert_eq!(scanned.stats.descend_finds, 0, "{:?}", scanned.stats);
+        assert_eq!(scanned.stats.descend_finds, 1, "{:?}", scanned.stats);
 
         // The same storage with the other variant selected holds the
         // same bytes and yields nothing.

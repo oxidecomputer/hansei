@@ -1145,6 +1145,30 @@ mod tests {
         assert_eq!(format!("{}", payload.display()), "3735928559");
     }
 
+    /// The raw accessor hands back the variant's payload as declared,
+    /// where `active_variant` peels it: a single-sized-member payload
+    /// struct like `FlavorA { x }` peels to its `x`. A caller
+    /// classifying values by their own type — the census scan screens
+    /// type names before descending — needs the wrapper the peel
+    /// would silently walk through.
+    #[test]
+    fn test_active_variant_raw_does_not_peel() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mut bytes = [0u8; 24];
+        bytes[8..16].copy_from_slice(&42u64.to_le_bytes());
+        let r = Value::new(v.ty(FLAVOR).unwrap(), 0, &bytes);
+
+        let (name, raw) = r.active_variant_raw().expect("decode failed");
+        assert_eq!(name, "A");
+        assert_eq!(raw.ty.name(), "FlavorA");
+        assert_eq!(format!("{}", raw.member("x").unwrap().display()), "42");
+
+        let (_, peeled) = r.active_variant().expect("decode failed");
+        assert_eq!(peeled.ty.name(), "u64");
+        assert_eq!(peeled.addr, raw.addr, "peel moves the type, not the value");
+    }
+
     #[test]
     fn test_invalid_discriminant_is_error() {
         let b = test_bundle();
