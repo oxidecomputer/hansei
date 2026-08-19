@@ -2498,4 +2498,218 @@ mod tests {
         assert_flags(&violations, "in two join sets");
         assert_flags(&violations, "joined more than once");
     }
+    // The registry diff (`testkit::expect::diff`) is pinned here rather
+    // than in `testkit` because only this module can build a
+    // `FutureCensus` by hand; the offline registry test only ever shows
+    // it passing, so the flagging side is pinned here or nowhere.
+
+    use crate::testkit::expect::{Expectation, diff};
+
+    /// A task whose future resolved, for the task-name expectations to
+    /// match against.
+    fn known_task(name: &str) -> Task {
+        Task {
+            addr: TaskAddr(0x2000),
+            state: TaskState(0),
+            owner_id: None,
+            task_id: None,
+            spawn_location: None,
+            future: FutureInfo::Known(super::super::bundle::KnownFuture {
+                entry: hansei_bundle::TaskEntryId(0),
+                display_name: name.to_string(),
+                kind: hansei_bundle::FutureKind::AsyncFn,
+                decl: None,
+                symbol: String::new(),
+            }),
+            group: 0,
+        }
+    }
+
+    #[test]
+    fn test_the_registry_diff_is_clean_on_an_exact_match() {
+        let mut list = task_list(1);
+        list.tasks
+            .push(known_task("demo::driver::{async_fn_env#0}"));
+        let mut census = blank();
+        census.held.push(a_held(0, 0x1000));
+        census
+            .sets
+            .push(a_set(0x4000, "S", vec![a_child(0x5000, 0x8000)]));
+        census.join_sets.push(a_join_set(
+            0x6000,
+            2,
+            vec![
+                a_member(0x7000, 0x9000, true),
+                a_member(0x7040, 0x9040, false),
+            ],
+        ));
+        let expected = [
+            Expectation::Held {
+                slot: 0x1000,
+                name: "f".to_string(),
+            },
+            Expectation::Set {
+                addr: 0x4000,
+                children: 1,
+            },
+            Expectation::JoinSet {
+                addr: 0x6000,
+                members: 2,
+            },
+            Expectation::Task {
+                name: "demo::driver".to_string(),
+            },
+        ];
+        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+    }
+
+    /// A registered item with no row is an omission — unless an error
+    /// names its address, which is the accounted-for escape.
+    #[test]
+    fn test_the_registry_diff_flags_an_omission_unless_an_error_names_it() {
+        let list = task_list(1);
+        let mut census = blank();
+        let expected = [Expectation::Held {
+            slot: 0x1000,
+            name: "f".to_string(),
+        }];
+        let flagged = diff(&expected, &census, &list);
+        assert_eq!(flagged.len(), 1, "{flagged:#?}");
+        assert!(flagged[0].contains("no census row"), "{flagged:#?}");
+
+        census.errors.push(anyhow!("something failed at 0x1000"));
+        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+    }
+
+    /// The reverse direction: a row nothing registered is a
+    /// fabrication, whichever population it is in.
+    #[test]
+    fn test_the_registry_diff_flags_unregistered_rows() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.held.push(a_held(0, 0x1000));
+        census.sets.push(a_set(0x4000, "S", Vec::new()));
+        census.join_sets.push(a_join_set(0x6000, 0, Vec::new()));
+        let flagged = diff(&[], &census, &list);
+        assert_eq!(flagged.len(), 3, "{flagged:#?}");
+        assert!(
+            flagged[0].contains("unregistered held find"),
+            "{flagged:#?}"
+        );
+        assert!(flagged[1].contains("unregistered set"), "{flagged:#?}");
+        assert!(flagged[2].contains("unregistered join set"), "{flagged:#?}");
+    }
+
+    /// A matched row must also agree: the held find's name and a set's
+    /// child count are part of the registration.
+    #[test]
+    fn test_the_registry_diff_flags_a_disagreeing_match() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.held.push(a_held(0, 0x1000));
+        census
+            .sets
+            .push(a_set(0x4000, "S", vec![a_child(0x5000, 0x8000)]));
+        let expected = [
+            Expectation::Held {
+                slot: 0x1000,
+                name: "something_else".to_string(),
+            },
+            Expectation::Set {
+                addr: 0x4000,
+                children: 3,
+            },
+        ];
+        let flagged = diff(&expected, &census, &list);
+        assert_eq!(flagged.len(), 2, "{flagged:#?}");
+        assert!(
+            flagged[0].contains("not the registered `something_else`"),
+            "{flagged:#?}"
+        );
+        assert!(
+            flagged[1].contains("1 children against the registered 3"),
+            "{flagged:#?}"
+        );
+    }
+
+    /// A boxed find is keyed by the slot the walk entered through, not
+    /// by the referent its `addr` was re-pointed at — the slot/referent
+    /// split the registry must not re-blur.
+    #[test]
+    fn test_the_registry_diff_keys_a_boxed_find_by_its_slot() {
+        let list = task_list(1);
+        let mut census = blank();
+        let mut boxed = a_held(0, 0x9000);
+        boxed.slot = 0x1000;
+        census.held.push(boxed);
+        let expected = [Expectation::Held {
+            slot: 0x1000,
+            name: "f".to_string(),
+        }];
+        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+        let by_referent = [Expectation::Held {
+            slot: 0x9000,
+            name: "f".to_string(),
+        }];
+        assert_eq!(diff(&by_referent, &census, &list).len(), 2);
+    }
+
+    /// A future carried inside a registered held future is matched
+    /// through its carrier's slot and the `Via` the census recorded.
+    #[test]
+    fn test_the_registry_diff_matches_a_carried_future_through_its_carrier() {
+        let list = task_list(1);
+        let mut census = blank();
+        census.held.push(a_held(0, 0x1000));
+        let mut carried = a_held(0, 0x1010);
+        carried.via = Some(Via::Held(0));
+        census.held.push(carried);
+        let expected = [
+            Expectation::Held {
+                slot: 0x1000,
+                name: "f".to_string(),
+            },
+            Expectation::HeldIn {
+                parent: 0x1000,
+                name: "f".to_string(),
+            },
+        ];
+        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+
+        // The same registration against a census that attributed the
+        // carried future to the wrong parent — or to no parent — fails.
+        census.held[1].via = None;
+        let flagged = diff(&expected, &census, &list);
+        assert!(
+            flagged
+                .iter()
+                .any(|f| f.contains("was not found via the held find")),
+            "{flagged:#?}"
+        );
+    }
+
+    /// Task expectations are one-directional: every registered name
+    /// must be listed (as many times as it was registered), and tasks
+    /// nothing registered are no one's business.
+    #[test]
+    fn test_the_registry_diff_counts_registered_tasks() {
+        let mut list = task_list(1);
+        list.tasks
+            .push(known_task("demo::worker::{async_fn_env#0}"));
+        let census = blank();
+        let one = Expectation::Task {
+            name: "demo::worker".to_string(),
+        };
+        assert_eq!(
+            diff(std::slice::from_ref(&one), &census, &list),
+            Vec::<String>::new()
+        );
+        let two = [one.clone(), one];
+        let flagged = diff(&two, &census, &list);
+        assert_eq!(flagged.len(), 1, "{flagged:#?}");
+        assert!(
+            flagged[0].contains("2 task(s) registered as `demo::worker`, but the listing shows 1"),
+            "{flagged:#?}"
+        );
+    }
 }

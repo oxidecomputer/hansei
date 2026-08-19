@@ -53,3 +53,141 @@ pub fn run_builder<T>(builder: &mut Builder, main: impl std::future::Future<Outp
         Err(e) => panic!("failed to initialize Tokio runtime: {e:?}"),
     }
 }
+
+/// The ground-truth registry: what a fixture built, stamped into the
+/// target's own memory so a reader of its core can hold the census to
+/// it.
+///
+/// A fixture program calls these as it constructs state, before
+/// signaling READY — from the code that owns each value, at the moment
+/// its address is final (a local live across an await sits in the
+/// pinned coroutine frame from the start, so an address taken while
+/// the body runs is the address a capture sees). Everything lands in
+/// one `#[no_mangle]` static the read side finds by symbol name alone,
+/// no DWARF involved; the layout is plain-old-data, re-spelled by hand
+/// on the read side (`hansei-runtime`'s `testkit::expect`, which names
+/// this module), so the two must move together.
+///
+/// Registration is silent — the acceptance suite asserts the fixtures
+/// write nothing to stderr — and thread-safe: an entry's index is
+/// reserved first, its fields written, and only then counted into
+/// `committed`, so a reader never sees a half-written entry. The
+/// fixtures quiesce before READY, so a capture sees every entry.
+pub mod census_expect {
+    use std::cell::UnsafeCell;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Room for more entries than any fixture registers; running out is
+    /// a fixture bug and panics loudly at fixture runtime.
+    const CAPACITY: usize = 64;
+
+    /// Names are substrings matched against monomorphized type names,
+    /// so they stay short; longer ones are truncated.
+    const NAME_CAP: usize = 64;
+
+    // The `kind` values the read side dispatches on.
+    const HELD: u32 = 1;
+    const HELD_IN: u32 = 2;
+    const SET: u32 = 3;
+    const JOIN_SET: u32 = 4;
+    const TASK: u32 = 5;
+
+    /// One expectation. `flags` is reserved (a later phase marks
+    /// cappable registrations there); `name` is NUL-padded UTF-8.
+    #[repr(C)]
+    struct Entry {
+        kind: u32,
+        flags: u32,
+        addr: u64,
+        count: u64,
+        name: [u8; NAME_CAP],
+    }
+
+    const EMPTY: Entry = Entry {
+        kind: 0,
+        flags: 0,
+        addr: 0,
+        count: 0,
+        name: [0; NAME_CAP],
+    };
+
+    /// The registry itself: `committed` first so the read side can find
+    /// it at offset zero, then the reservation counter, then the
+    /// entries.
+    #[repr(C)]
+    pub struct Registry {
+        committed: AtomicU64,
+        reserved: AtomicU64,
+        entries: UnsafeCell<[Entry; CAPACITY]>,
+    }
+
+    // SAFETY: every write goes to an index `reserved` handed out
+    // exactly once, and readers look only below `committed`, which
+    // counts an entry only after its fields are written (Release).
+    unsafe impl Sync for Registry {}
+
+    #[unsafe(no_mangle)]
+    static HANSEI_CENSUS_EXPECT: Registry = Registry {
+        committed: AtomicU64::new(0),
+        reserved: AtomicU64::new(0),
+        entries: UnsafeCell::new([EMPTY; CAPACITY]),
+    };
+
+    fn register(kind: u32, addr: u64, count: u64, name: &str) {
+        let reg = &HANSEI_CENSUS_EXPECT;
+        let index = reg.reserved.fetch_add(1, Ordering::Relaxed) as usize;
+        assert!(index < CAPACITY, "census_expect registry overflow");
+        let mut padded = [0u8; NAME_CAP];
+        let len = name.len().min(NAME_CAP);
+        padded[..len].copy_from_slice(&name.as_bytes()[..len]);
+        // SAFETY: `index` was reserved above, so this entry is this
+        // call's alone; see the `Sync` justification.
+        unsafe {
+            (*reg.entries.get())[index] = Entry {
+                kind,
+                flags: 0,
+                addr,
+                count,
+                name: padded,
+            };
+        }
+        reg.committed.fetch_add(1, Ordering::Release);
+    }
+
+    /// A future some frame holds off its task's active spine: the
+    /// census must list a held find at exactly this slot — the value's
+    /// own address, `&local as *const _ as u64` — whose future name
+    /// contains `name`.
+    pub fn held(slot: u64, name: &str) {
+        register(HELD, slot, 0, name);
+    }
+
+    /// A future carried *inside* a registered held future — `holder`'s
+    /// argument, which has no address the fixture can name — keyed by
+    /// the carrying future's slot instead: the census must list a find
+    /// reached via the held find at `parent_slot`, named `name`.
+    pub fn held_in(parent_slot: u64, name: &str) {
+        register(HELD_IN, parent_slot, 0, name);
+    }
+
+    /// A `FuturesUnordered` at `addr` holding exactly `children`
+    /// resident futures.
+    pub fn set(addr: u64, children: usize) {
+        register(SET, addr, children as u64, "");
+    }
+
+    /// A `JoinSet` at `addr` holding exactly `members` tasks, reaped or
+    /// parked.
+    pub fn join_set(addr: u64, members: usize) {
+        register(JOIN_SET, addr, members as u64, "");
+    }
+
+    /// A task whose future name contains `name` is in the enumerated
+    /// listing. Registered by the task's own body, so a task that never
+    /// ran registers nothing — the check is one-directional on purpose,
+    /// and a task that completes before the capture (the joinset
+    /// fixture's finisher) must not register at all.
+    pub fn task(name: &str) {
+        register(TASK, 0, 0, name);
+    }
+}

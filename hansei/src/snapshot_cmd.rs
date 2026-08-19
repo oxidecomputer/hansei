@@ -148,6 +148,17 @@ pub(crate) fn exec_snapshot(
         },
     );
 
+    // The fixture's ground-truth registry, when the target carries one:
+    // driving the read through the recorder is what puts its bytes (and
+    // the symbol lookup) into the snapshot, so the offline registry
+    // diff replays it. Real targets have no such symbol and skip.
+    if let Some(Err(e)) = hansei_runtime::testkit::expect::read_from(&recorder) {
+        writeln!(
+            io::stderr(),
+            "warning: failed to read the census registry: {e:#}"
+        )?;
+    }
+
     let snapshot = recorder.snapshot().context("failed to assemble snapshot")?;
     snapshot
         .save(output)
