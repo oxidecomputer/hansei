@@ -9,6 +9,7 @@ members = [
     "proc",
     "reify",
     "testrun",
+    "test-programs/genfix",
     "unwind",
 ]
 # A fixture crate, not product code: it owns its Cargo.lock so the
