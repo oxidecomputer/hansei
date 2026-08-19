@@ -40,7 +40,7 @@ use hansei_runtime::testkit::{FIXTURE_SETS, expect, load, load_any};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
-    UnlistedTaskKind, WaitKind,
+    UnlistedTaskKind,
 };
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
@@ -426,77 +426,21 @@ fn test_the_census_matches_what_the_fixtures_registered() {
     }
 }
 
-/// Every outcome the census can produce *from a healthy capture*, as
-/// one pair's walk did or did not produce it. The names are what the
-/// coverage test below prints, so each says what a reader would go
-/// looking for.
+/// The outcome list itself is `testkit::outcomes`, shared with the
+/// generated-fixture checker (`tests/genfix.rs`) so both corpora
+/// accumulate over the same names.
 ///
-/// Deliberately absent, so their loss is not mistaken for an
-/// oversight: a reaped set slot and the `<undecoded>` /
-/// `<unresolved: …>` summaries are producible only by damage, and
-/// `degraded.rs` pins each by patching a healthy snapshot; and no find
-/// here carries a Timer or Task wait — every held fixture future is
-/// unresumed (an unpolled future waits on nothing), and the one polled
-/// find the corpus has is futurelock's abandoned lock future, whose
-/// wait is the mutex's semaphore. A held future that was polled to a
-/// timer or handle would grow this list.
-fn census_outcomes(census: &census::FutureCensus) -> Vec<(&'static str, bool)> {
-    let vias: Vec<census::Via> = census
-        .held
-        .iter()
-        .map(|h| h.via)
-        .chain(census.sets.iter().map(|s| s.via))
-        .chain(census.join_sets.iter().map(|s| s.via))
-        .flatten()
-        .collect();
-    let waits: Vec<&WaitKind> = census
-        .held
-        .iter()
-        .filter_map(|h| h.wait.as_ref())
-        .chain(
-            census
-                .sets
-                .iter()
-                .flat_map(|s| s.children.iter().filter_map(|c| c.wait.as_ref())),
-        )
-        .collect();
-    vec![
-        (
-            "a find reached through a struct descent",
-            census.stats.descend_finds > 0,
-        ),
-        (
-            "a find reached through an active enum variant",
-            census.stats.enum_finds > 0,
-        ),
-        (
-            "a find attributed to a held future's chain",
-            vias.iter().any(|v| matches!(v, census::Via::Held(_))),
-        ),
-        (
-            "a find attributed to a set child's chain",
-            vias.iter()
-                .any(|v| matches!(v, census::Via::SetChild { .. })),
-        ),
-        (
-            "a dyn find re-rooted at its heap referent",
-            census.held.iter().any(|h| h.slot != h.addr),
-        ),
-        (
-            "an unlisted join-set member",
-            census
-                .join_sets
-                .iter()
-                .any(|s| s.children.iter().any(|c| !c.listed)),
-        ),
-        (
-            "a semaphore wait",
-            waits
-                .iter()
-                .any(|w| matches!(w, WaitKind::Semaphore { .. })),
-        ),
-    ]
-}
+/// Deliberately not asserted here, so its loss is not mistaken for an
+/// oversight: no find in the checked-in corpus carries a Timer or Task
+/// wait — every held fixture future is unresumed (an unpolled future
+/// waits on nothing), and the one polled find the corpus has is
+/// futurelock's abandoned lock future, whose wait is the mutex's
+/// semaphore. The generated corpus parks polled bodies on timers, so
+/// the timer entry is its to satisfy. (A reaped set slot and the
+/// `<undecoded>` / `<unresolved: …>` summaries are absent from the
+/// shared list outright: producible only by damage, pinned in
+/// `degraded.rs`.)
+const OUTCOMES_ELSEWHERE: &[&str] = &["a timer wait"];
 
 /// The corpus still exercises every outcome the census can produce —
 /// somewhere, not everywhere. Each test above asserts what one pair
@@ -513,15 +457,34 @@ fn test_the_corpus_still_exercises_every_census_outcome() {
         for set in FIXTURE_SETS {
             let (bundle, snapshot) = load(set, program);
             let (_ctx, _list, census) = census_of(&bundle, &snapshot);
-            for (name, hit) in census_outcomes(&census) {
+            for (name, hit) in hansei_runtime::testkit::outcomes(&census) {
                 *hit_by.entry(name).or_default() |= hit;
             }
         }
     }
+    // The accumulator's keys are the shared list itself: an
+    // `outcomes` that returns nothing (or something else) would
+    // otherwise make the emptiness below pass vacuously.
+    let names: Vec<&str> = hit_by.keys().copied().collect();
+    assert_eq!(
+        names,
+        [
+            "a dyn find re-rooted at its heap referent",
+            "a find attributed to a held future's chain",
+            "a find attributed to a set child's chain",
+            "a find reached through a struct descent",
+            "a find reached through an active enum variant",
+            "a semaphore wait",
+            "a timer wait",
+            "an unlisted join-set member",
+        ],
+        "testkit::outcomes no longer lists what this test expects"
+    );
     let missing: Vec<&str> = hit_by
         .iter()
         .filter(|&(_, &hit)| !hit)
         .map(|(name, _)| *name)
+        .filter(|name| !OUTCOMES_ELSEWHERE.contains(name))
         .collect();
     assert!(
         missing.is_empty(),

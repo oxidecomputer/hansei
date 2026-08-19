@@ -105,6 +105,84 @@ pub fn census<T: Target>(
     census
 }
 
+/// Every outcome the census can produce *from a healthy capture*, as
+/// one census did or did not produce it. The names are what the
+/// corpus coverage test prints, so each says what a reader would go
+/// looking for.
+///
+/// Deliberately absent, so their loss is not mistaken for an
+/// oversight: a reaped set slot and the `<undecoded>` /
+/// `<unresolved: …>` summaries are producible only by damage, and
+/// `degraded.rs` pins each by patching a healthy snapshot. The
+/// hand-written corpus also shows no Timer or Task wait — every held
+/// fixture future there is unresumed (an unpolled future waits on
+/// nothing) — but a generated fixture that parks a polled body on a
+/// timer can produce the Timer entry, which is why the timer wait is
+/// listed for the generated corpus's accumulator and not asserted by
+/// the checked-in corpus's.
+pub fn outcomes(census: &crate::tokio::census::FutureCensus) -> Vec<(&'static str, bool)> {
+    use crate::tokio::bundle::WaitKind;
+    use crate::tokio::census::Via;
+    let vias: Vec<Via> = census
+        .held
+        .iter()
+        .map(|h| h.via)
+        .chain(census.sets.iter().map(|s| s.via))
+        .chain(census.join_sets.iter().map(|s| s.via))
+        .flatten()
+        .collect();
+    let waits: Vec<&WaitKind> = census
+        .held
+        .iter()
+        .filter_map(|h| h.wait.as_ref())
+        .chain(
+            census
+                .sets
+                .iter()
+                .flat_map(|s| s.children.iter().filter_map(|c| c.wait.as_ref())),
+        )
+        .collect();
+    vec![
+        (
+            "a find reached through a struct descent",
+            census.stats.descend_finds > 0,
+        ),
+        (
+            "a find reached through an active enum variant",
+            census.stats.enum_finds > 0,
+        ),
+        (
+            "a find attributed to a held future's chain",
+            vias.iter().any(|v| matches!(v, Via::Held(_))),
+        ),
+        (
+            "a find attributed to a set child's chain",
+            vias.iter().any(|v| matches!(v, Via::SetChild { .. })),
+        ),
+        (
+            "a dyn find re-rooted at its heap referent",
+            census.held.iter().any(|h| h.slot != h.addr),
+        ),
+        (
+            "an unlisted join-set member",
+            census
+                .join_sets
+                .iter()
+                .any(|s| s.children.iter().any(|c| !c.listed)),
+        ),
+        (
+            "a semaphore wait",
+            waits
+                .iter()
+                .any(|w| matches!(w, WaitKind::Semaphore { .. })),
+        ),
+        (
+            "a timer wait",
+            waits.iter().any(|w| matches!(w, WaitKind::Timer { .. })),
+        ),
+    ]
+}
+
 /// The fixture programs' ground-truth registry: reading back what a
 /// fixture registered about the state it built (`test-programs`'
 /// `census_expect` module — the write side, whose plain-old-data layout
