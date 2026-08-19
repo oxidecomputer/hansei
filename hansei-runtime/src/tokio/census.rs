@@ -1777,6 +1777,41 @@ mod tests {
         assert_eq!(scanned.stats.enum_finds, 0, "{:?}", scanned.stats);
     }
 
+    /// A zero-sized member is not scanned: there is no value there to
+    /// read, and a poll table naming its type must not conjure a find
+    /// out of nothing.
+    #[test]
+    fn test_a_zero_sized_member_is_not_scanned() {
+        let bundle = unordered();
+        let mut zst = None;
+        let ty = find_ty(bundle, |ty| {
+            // A plain struct the scan would descend into, not one any
+            // earlier screen takes for a future or a set.
+            if !matches!(ty.def(), TypeDef::Struct { .. })
+                || ty.is_coroutine()
+                || leaf_kind(ty.name()).is_some()
+                || ty.name().starts_with(FUTURES_UNORDERED)
+                || ty.name().starts_with(JOIN_SET)
+            {
+                return false;
+            }
+            let bytes = vec![0u8; ty.size() as usize];
+            if Value::new(ty, AT, &bytes).peel().ty.dyn_pointer().is_some() {
+                return false;
+            }
+            zst = ty.members().find(|m| m.ty().size() == 0);
+            zst.is_some()
+        });
+        let zst = zst.expect("the found struct has a zero-sized member");
+        let bytes = vec![0u8; ty.size() as usize];
+        let scanned = scan(Value::new(ty, AT, &bytes), &poll_table([zst.ty().id()]));
+        assert!(
+            scanned.finds.is_empty(),
+            "a zero-sized member was scanned: {:?}",
+            scanned.summary()
+        );
+    }
+
     /// The depth cap stops the descent, and says it did: a listing
     /// short by a cap is incomplete in a way no error reports.
     #[test]
@@ -2309,6 +2344,23 @@ mod tests {
             length,
             children,
         }
+    }
+
+    /// How a `via` is spelled for a reader: the parent's kind and the
+    /// address whose listing row prints it — the held future's own
+    /// address, a set child's node.
+    #[test]
+    fn test_describe_names_the_parent_and_its_address() {
+        let mut census = blank();
+        census.held.push(a_held(0, 0x2000));
+        census
+            .sets
+            .push(a_set(0x3000, "S", vec![a_child(0x4000, 0x4010)]));
+        assert_eq!(census.describe(Via::Held(0)), "held future at 0x2000");
+        assert_eq!(
+            census.describe(Via::SetChild { set: 0, child: 0 }),
+            "set child at 0x4000"
+        );
     }
 
     fn a_member(entry: u64, task: u64, listed: bool) -> JoinedTask {
