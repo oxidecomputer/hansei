@@ -870,7 +870,11 @@ fn emit_churn_main(p: &Program, s: &mut String) {
          \n\
          \x20       // The churner: whatever is parked on the notify or the\n\
          \x20       // semaphore right now gets moving again a few\n\
-         \x20       // milliseconds from now, forever.\n\
+         \x20       // milliseconds from now, forever. The semaphore is fed\n\
+         \x20       // only when it is dry: a body's cycle is slower than\n\
+         \x20       // this loop, so any surplus would accumulate until no\n\
+         \x20       // acquire ever suspended again, and a capture could\n\
+         \x20       // never catch a semaphore waiter.\n\
          \x20       {\n\
          \x20           let notify = notify.clone();\n\
          \x20           let sem = sem.clone();\n\
@@ -878,7 +882,9 @@ fn emit_churn_main(p: &Program, s: &mut String) {
          \x20               loop {\n\
          \x20                   tokio::time::sleep(Duration::from_millis(3)).await;\n\
          \x20                   notify.notify_waiters();\n\
-         \x20                   sem.add_permits(4);\n\
+         \x20                   if sem.available_permits() == 0 {\n\
+         \x20                       sem.add_permits(1);\n\
+         \x20                   }\n\
          \x20               }\n\
          \x20           });\n\
          \x20       }\n\
@@ -980,7 +986,7 @@ mod tests {
                 "println!(\"CHURNING\")",
                 "allow_any_tracer",
                 "notify.notify_waiters()",
-                "sem.add_permits(4)",
+                "sem.add_permits(1)",
                 "loop {",
             ] {
                 assert!(
