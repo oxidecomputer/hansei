@@ -29,17 +29,12 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 
+. "$ROOT/test-programs/genfix/lib.sh"
+
 SEEDS=32
 START=0
 OUT="$ROOT/test-programs/genfix/out"
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --seeds) SEEDS="$2"; shift 2 ;;
-        --start) START="$2"; shift 2 ;;
-        --out) OUT="$2"; shift 2 ;;
-        *) echo "soak.sh: unknown argument $1" >&2; exit 2 ;;
-    esac
-done
+parse_args "$@"
 mkdir -p "$OUT/failures"
 PAIRS="$OUT/pairs"
 mkdir -p "$PAIRS"
@@ -63,18 +58,6 @@ run_seed() {
     HANSEI_GENFIX_PAIR="$PAIRS/gen-soak" \
         cargo test -q -p hansei-runtime --test genfix -- --nocapture \
         >>"$log" 2>&1
-}
-
-declare -A HITS=()
-note_outcomes() {
-    local log="$1"
-    while IFS= read -r line; do
-        local name="${line#genfix outcome: }"
-        local hit="${name##* = }"
-        name="${name% = *}"
-        [[ -v HITS[$name] ]] || HITS[$name]=0
-        [[ "$hit" == true ]] && HITS[$name]=$(( HITS[$name] + 1 ))
-    done < <(grep '^genfix outcome: ' "$log" || true)
 }
 
 passed=0
@@ -113,8 +96,8 @@ echo "soak.sh: $passed/$SEEDS passed (seeds $START..$(( START + SEEDS - 1 )))"
 if [[ ${#failed[@]} -gt 0 ]]; then
     echo "soak.sh: failing seeds: ${failed[*]}"
 fi
-echo "soak.sh: outcome coverage across the batch:"
-for name in "${!HITS[@]}"; do
-    printf '  %3d  %s\n' "${HITS[$name]}" "$name"
-done | sort -rn
+print_coverage
+# Every passed seed ran the oracle, so a batch with passes and no
+# parsed outcomes is coverage decay, not an empty batch.
+assert_coverage "$passed" || exit 1
 [[ ${#failed[@]} -eq 0 ]]

@@ -300,8 +300,8 @@ pub fn outcomes(census: &crate::tokio::census::FutureCensus) -> Vec<(&'static st
 
 /// Print the outcome list in the one-line-per-outcome format the
 /// soak scripts' `note_outcomes` parses: `outcome: <name> = <bool>`.
-/// The format is an interface — genfix.sh/churn.sh parse it — so it
-/// changes only with its parser.
+/// The format is an interface — soak.sh and churn.sh parse it through
+/// their shared lib.sh — so it changes only with that parser.
 pub fn print_outcomes(census: &FutureCensus) {
     for (name, hit) in outcomes(census) {
         println!("outcome: {name} = {hit}");
