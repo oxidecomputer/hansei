@@ -568,6 +568,7 @@ dependencies = [
  "exegesis",
  "foldhash 0.2.0",
  "hansei-bundle",
+ "hansei-runtime",
  "insta",
  "proc",
  "regex",
