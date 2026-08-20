@@ -6,5 +6,6 @@
 
 pub mod tokio;
 
+#[cfg(feature = "testkit")]
 #[doc(hidden)]
 pub mod testkit;

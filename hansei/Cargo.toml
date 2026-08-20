@@ -9,13 +9,20 @@ edition = "2024"
 # a tool for producing test data, not part of what a session is for,
 # and its name would otherwise take a share of the command namespace
 # that prefixes resolve against. `test-programs/capture-snapshots.sh`
-# turns it on.
-snapshot = []
+# turns it on. It pulls in hansei-runtime's test-support module
+# because the capture reads the census registry through
+# `testkit::expect` — a capture is test data, so the dependency
+# direction is honest.
+snapshot = ["hansei-runtime/testkit"]
 
 [dev-dependencies]
 # Only the acceptance suite builds a bundle from a fixture binary; hansei
 # itself reads bundles and never produces one.
 exegesis = { workspace = true }
+# The unit tests drive enumeration and rendering over the checked-in
+# fixture pairs through testkit; the non-test code never touches it
+# (outside the `snapshot` feature, which enables this itself).
+hansei-runtime = { workspace = true, features = ["testkit"] }
 insta = { workspace = true }
 regex = { workspace = true }
 # The ceiling-notice tests build `Meta.tokio_version` values; the

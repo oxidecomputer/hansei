@@ -3,11 +3,26 @@ name = "hansei-runtime"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# The test-support module (`src/testkit.rs`). It cannot be
+# `#[cfg(test)]` — integration tests and hansei's unit tests link the
+# library built without that cfg — but nothing on a session's path
+# calls it, so it stays out of production builds behind this feature.
+# On for: this crate's own test targets (the self dev-dependency
+# below), hansei's tests (its dev-dependency), and hansei's `snapshot`
+# feature (the capture command reads the census registry through
+# `testkit::expect`).
+testkit = ["dep:serde", "dep:toml"]
+
 [dev-dependencies]
 blake3.workspace = true
 # Only the matrix goldens build a bundle per cell; the crate itself reads
 # bundles and never produces one.
 exegesis.workspace = true
+# The self dev-dependency exists to turn the testkit feature on
+# whenever this crate's own test targets build, so no test invocation
+# needs a --features flag.
+hansei-runtime = { path = ".", features = ["testkit"] }
 insta.workspace = true
 regex.workspace = true
 # The version-ceiling notice tests build `Meta.tokio_version` values;
@@ -20,7 +35,6 @@ foldhash.workspace = true
 hansei-bundle.workspace = true
 proc.workspace = true
 reify.workspace = true
-# testkit's matrix-manifest reader; testkit is part of the library (see
-# its module docs), so these cannot be dev-dependencies.
-serde.workspace = true
-toml.workspace = true
+# testkit's matrix-manifest reader.
+serde = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
