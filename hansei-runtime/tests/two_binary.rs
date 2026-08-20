@@ -40,7 +40,7 @@
 //! here would notice the programs moving on without them.
 
 use hansei_bundle::{Bundle, BundleView};
-use hansei_runtime::testkit::{FIXTURE_SETS, expect, load, load_any};
+use hansei_runtime::testkit::{FIXTURE_SETS, load, load_any};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
@@ -482,12 +482,10 @@ fn test_the_census_matches_what_the_fixtures_registered() {
     for program in PROGRAMS {
         for set in FIXTURE_SETS {
             let (bundle, snapshot) = load(set, program);
-            let (_ctx, list, census) = census_of(&bundle, &snapshot);
-            let expected = expect::read_from(&snapshot)
-                .expect("every fixture program registers at least its tasks")
-                .expect("the registry parses");
-            assert!(!expected.is_empty(), "{program} [{set}] registered nothing");
-            let problems = expect::diff(&expected, &census, &list);
+            let r = hansei_runtime::testkit::run(&bundle, &snapshot);
+            let healthy = r.healthy_problems();
+            assert!(healthy.is_empty(), "{program} [{set}]:\n{healthy:#?}");
+            let problems = r.registry_problems();
             assert!(problems.is_empty(), "{program} [{set}]:\n{problems:#?}");
         }
     }
@@ -583,7 +581,9 @@ fn known_name(task: &Task) -> &str {
     }
 }
 
-/// The whole pipeline up to the census, shared by the census tests.
+/// The whole pipeline up to the census, shared by the census tests:
+/// `testkit::run` plus everything a healthy capture is entitled to
+/// (the total audit panics inside `run`; the rest reports here).
 fn census_of<'a>(
     bundle: &'a Bundle,
     snapshot: &'a Snapshot,
@@ -592,20 +592,10 @@ fn census_of<'a>(
     hansei_runtime::tokio::bundle::TaskList,
     census::FutureCensus,
 ) {
-    let ctx = hansei_runtime::testkit::context(bundle, snapshot);
-    let list = hansei_runtime::testkit::tasks(&ctx, snapshot);
-    let census = hansei_runtime::testkit::census(&ctx, &list);
-    assert!(census.errors.is_empty(), "{:?}", census.errors);
-    assert!(
-        !census.capped.any(),
-        "the walk hit a hard limit: {:?}",
-        census.capped
-    );
-    // A healthy capture holds the healthy-only audit invariants too;
-    // the total class already ran inside `testkit::census`.
-    let violations = census.audit(&list);
-    assert!(violations.is_empty(), "{violations:#?}");
-    (ctx, list, census)
+    let r = hansei_runtime::testkit::run(bundle, snapshot);
+    let problems = r.healthy_problems();
+    assert!(problems.is_empty(), "{problems:#?}");
+    (r.ctx, r.list, r.census)
 }
 
 /// The `FuturesUnordered` census, offline: what the intrusive node
@@ -756,18 +746,14 @@ fn test_ct_runtime_offline() {
     let (bundle, snapshot) = load_any("ct-runtime");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
-    let [runtime] = runtimes.as_slice() else {
-        panic!("expected one runtime, got {}", runtimes.len());
+    let e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let [runtime] = e.runtimes.as_slice() else {
+        panic!("expected one runtime, got {}", e.runtimes.len());
     };
     assert_eq!(runtime.flavor, RuntimeFlavor::CurrentThread);
     assert!(!runtime.worker_tids.is_empty());
 
-    let list = ctx
-        .enumerate_all_tasks(&runtimes)
-        .expect("the owned-task walk");
+    let list = e.list;
     assert!(list.errors.is_empty(), "{:?}", list.errors);
 
     let analysis = graph::analyze(&ctx, &list);
@@ -819,18 +805,13 @@ fn test_local_set_offline() {
     let (bundle, snapshot) = load_any("local-set");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
-    let mut list = ctx
-        .enumerate_all_tasks(&runtimes)
-        .expect("the owned-task walk");
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
 
     // Before discovery the scheduler owns one task, and the one it
     // joins is not in any list this session can show.
-    assert_eq!(list.tasks.len(), 1, "{:#?}", list.tasks);
-    let joiner = list.tasks[0].addr;
-    let joined = match graph::analyze(&ctx, &list).waits[0].target.clone() {
+    assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
+    let joiner = e.list.tasks[0].addr;
+    let joined = match graph::analyze(&ctx, &e.list).waits[0].target.clone() {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Task {
             addr, listed, kind, ..
         }) => {
@@ -846,7 +827,8 @@ fn test_local_set_offline() {
     // Discovery finds the set through that one handle, and both its
     // tasks — the joined one and its invisible sibling — join the
     // population, stamped with the set's own group.
-    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
+    let sets = e.discover(&ctx, &[]);
+    let list = e.list;
     assert!(list.errors.is_empty(), "{:?}", list.errors);
     let [set] = sets.as_slice() else {
         panic!("expected one local set, got {}", sets.len());
@@ -855,7 +837,7 @@ fn test_local_set_offline() {
     assert_ne!(set.owned_id, 0);
 
     assert_eq!(list.tasks.len(), 3, "{:#?}", list.tasks);
-    let group = runtimes.len();
+    let group = e.runtimes.len();
     let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
     assert_eq!(local.len(), 2, "{local:#?}");
     // Every member carries the set's owned-list id — the cross-check
@@ -932,24 +914,20 @@ fn test_local_set_timer_offline() {
     let (bundle, snapshot) = load_any("local-set-timer");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
-    let mut list = ctx
-        .enumerate_all_tasks(&runtimes)
-        .expect("the owned-task walk");
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
 
     // Before discovery: the scheduler owns one task, and it points at
     // nothing outside its own list — it is parked on a timer of its
     // own, which is what makes the wheel the only way in.
-    assert_eq!(list.tasks.len(), 1, "{:#?}", list.tasks);
-    let scheduler_task = list.tasks[0].addr;
-    match graph::analyze(&ctx, &list).waits[0].target.clone() {
+    assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
+    let scheduler_task = e.list.tasks[0].addr;
+    match graph::analyze(&ctx, &e.list).waits[0].target.clone() {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Timer { .. }) => {}
         other => panic!("the spawned task does not await a timer: {other:?}"),
     }
 
-    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
+    let sets = e.discover(&ctx, &[]);
+    let list = e.list;
     assert!(list.errors.is_empty(), "{:?}", list.errors);
     let [set] = sets.as_slice() else {
         panic!("expected one local set, got {}", sets.len());
@@ -961,7 +939,7 @@ fn test_local_set_timer_offline() {
     // scheduler's own task keeps its runtime's, and the harvest did not
     // take the listed task its own wheel entry names.
     assert_eq!(list.tasks.len(), 3, "{:#?}", list.tasks);
-    let group = runtimes.len();
+    let group = e.runtimes.len();
     let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
     assert_eq!(local.len(), 2, "{local:#?}");
     for task in &local {
@@ -1022,18 +1000,13 @@ fn test_local_set_io_offline() {
     let (bundle, snapshot) = load_any("local-set-io");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
-    let mut list = ctx
-        .enumerate_all_tasks(&runtimes)
-        .expect("the owned-task walk");
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
 
     // Before discovery: the scheduler owns one task, parked on a socket
     // of its own — so its own waker sits on a registration the harvest
     // walks, and being listed is what keeps it out of the candidates.
-    assert_eq!(list.tasks.len(), 1, "{:#?}", list.tasks);
-    let scheduler_task = list.tasks[0].addr;
+    assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
+    let scheduler_task = e.list.tasks[0].addr;
 
     // A resource holds wakers in three places, and this program has one
     // member parked in each. All three are candidates: a harvest that
@@ -1046,7 +1019,8 @@ fn test_local_set_io_offline() {
         "the listed task's own registration is not a candidate: {candidates:#x?}"
     );
 
-    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
+    let sets = e.discover(&ctx, &[]);
+    let list = e.list;
     assert!(list.errors.is_empty(), "{:?}", list.errors);
     let [set] = sets.as_slice() else {
         panic!("expected one local set, got {}", sets.len());
@@ -1057,7 +1031,7 @@ fn test_local_set_io_offline() {
     // All three members join the population under the set's group, and
     // they are exactly the three the harvest named.
     assert_eq!(list.tasks.len(), 4, "{:#?}", list.tasks);
-    let group = runtimes.len();
+    let group = e.runtimes.len();
     let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
     assert_eq!(local.len(), 3, "{local:#?}");
     let mut names: Vec<&str> = local.iter().map(|t| known_name(t)).collect();
@@ -1106,20 +1080,15 @@ fn test_foreign_runtime_offline() {
     let (bundle, snapshot) = load_any("foreign-runtime");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
-    let mut list = ctx
-        .enumerate_all_tasks(&runtimes)
-        .expect("the owned-task walk");
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
 
     // Before discovery: one runtime, one task — the joiner — and the
     // task it awaits is in no list, classified from its cell as a task
     // of a runtime this session has not reached.
-    assert_eq!(runtimes.len(), 1, "{runtimes:#?}");
-    assert_eq!(list.tasks.len(), 1, "{:#?}", list.tasks);
-    let joiner = list.tasks[0].addr;
-    let joined = match graph::analyze(&ctx, &list).waits[0].target.clone() {
+    assert_eq!(e.runtimes.len(), 1, "{:#?}", e.runtimes);
+    assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
+    let joiner = e.list.tasks[0].addr;
+    let joined = match graph::analyze(&ctx, &e.list).waits[0].target.clone() {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Task {
             addr, listed, kind, ..
         }) => {
@@ -1133,13 +1102,14 @@ fn test_foreign_runtime_offline() {
         other => panic!("the joiner does not await a task: {other:?}"),
     };
 
-    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
+    let sets = e.discover(&ctx, &[]);
+    let list = e.list;
     assert!(list.errors.is_empty(), "{:?}", list.errors);
 
     // The runtime joins the session's list with no thread inside it,
     // and the route that found it recorded.
-    let [_main, hidden] = runtimes.as_slice() else {
-        panic!("expected two runtimes, got {}", runtimes.len());
+    let [_main, hidden] = e.runtimes.as_slice() else {
+        panic!("expected two runtimes, got {}", e.runtimes.len());
     };
     assert_eq!(hidden.route, DiscoveryRoute::JoinHandle);
     assert!(hidden.worker_tids.is_empty(), "{hidden:#?}");
@@ -1168,7 +1138,7 @@ fn test_foreign_runtime_offline() {
         panic!("expected one local set, got {}", sets.len());
     };
     assert_eq!(set.route, DiscoveryRoute::Wheel);
-    let group = runtimes.len();
+    let group = e.runtimes.len();
     let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
     let [member] = local.as_slice() else {
         panic!("expected the set's one member, got {local:#?}");
@@ -1211,25 +1181,22 @@ fn test_excluded_runtime_stays_excluded() {
     let (bundle, snapshot) = load_any("foreign-runtime");
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
 
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
-    let mut list = ctx
-        .enumerate_all_tasks(&runtimes)
-        .expect("the owned-task walk");
+    // Discovery once, over a probe enumeration of its own, to learn
+    // the hidden runtime's handle.
+    let mut probe = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    probe.discover(&ctx, &[]);
+    let hidden = probe.runtimes[1].handle.addr;
 
-    // Discovery once, to learn the hidden runtime's handle.
-    let (probed, _, _) = hansei_runtime::testkit::discover(&ctx, &snapshot);
-    let hidden = probed[1].handle.addr;
-
-    // Again with that handle excluded, as a `--runtime` selection
-    // would: nothing is admitted, and the set inside it stays out of
-    // reach too, since only that runtime's own wheel names it.
-    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[hidden], &mut list);
-    assert_eq!(runtimes.len(), 1, "{runtimes:#?}");
-    assert_eq!(list.tasks.len(), 1, "{:#?}", list.tasks);
+    // A fresh sweep with that handle excluded, as a `--runtime`
+    // selection would run it: nothing is admitted, and the set inside
+    // it stays out of reach too, since only that runtime's own wheel
+    // names it.
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let sets = e.discover(&ctx, &[hidden]);
+    assert_eq!(e.runtimes.len(), 1, "{:#?}", e.runtimes);
+    assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
     assert!(sets.is_empty(), "{sets:#?}");
-    assert!(list.errors.is_empty(), "{:?}", list.errors);
+    assert!(e.list.errors.is_empty(), "{:?}", e.list.errors);
 }
 
 /// The wrong-bundle failure mode: a bundle from a

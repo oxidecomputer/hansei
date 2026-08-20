@@ -196,27 +196,13 @@ pub fn healthy_problems(census: &FutureCensus, list: &TaskList) -> Vec<String> {
     problems
 }
 
-/// Discovery and enumeration against an arbitrary target — generic so
-/// a fault-injecting wrapper over the snapshot can drive it too. The
-/// whole of what an attach finds, for the tests that assert on the
-/// runtimes and sets rather than only on the tasks.
-pub fn discover<'a, T: Target>(
-    ctx: &Context<'a, T>,
-    snapshot: &Snapshot,
-) -> (Vec<RuntimeRef<'a>>, Vec<LocalSetRef<'a>>, TaskList) {
-    let lwps = snapshot.lwps().unwrap();
-    let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
-    let mut runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
-    let mut list = ctx
-        .enumerate_all_tasks(&runtimes)
-        .expect("the owned-task walk");
-    let sets = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
-    (runtimes, sets, list)
-}
-
-/// Just the task population [`discover`] leaves behind.
-pub fn tasks<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> TaskList {
-    discover(ctx, snapshot).2
+/// Just the task population [`enumerate`] and a full discovery sweep
+/// leave behind — generic so a fault-injecting wrapper over the
+/// snapshot can drive it too.
+pub fn tasks<T: Target>(ctx: &Context<'_, T>, target: &T) -> TaskList {
+    let mut e = enumerate(ctx, target);
+    e.discover(ctx, &[]);
+    e.list
 }
 
 /// The future census over an enumerated list, held to its construction

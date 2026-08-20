@@ -208,7 +208,7 @@ fn test_an_unreadable_task_degrades_only_its_shard() {
 
     let corrupt = Corrupt::new(&snapshot).deny(victim..victim + 0x40);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let degraded = tasks_of(&ctx, &snapshot);
+    let degraded = tasks_of(&ctx, &corrupt);
 
     assert_eq!(degraded.errors.len(), 1, "{:?}", degraded.errors);
     let err = format!("{:#}", degraded.errors[0]);
@@ -234,7 +234,7 @@ fn test_an_unmapped_task_pointer_is_reported() {
 
     let corrupt = Corrupt::new(&snapshot).patch_words_equal(victim, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let degraded = tasks_of(&ctx, &snapshot);
+    let degraded = tasks_of(&ctx, &corrupt);
 
     let errs: Vec<String> = degraded.errors.iter().map(|e| format!("{e:#}")).collect();
     assert!(
@@ -259,7 +259,7 @@ fn test_a_task_list_cycle_is_caught() {
     // list reaches it second sees a task it has already walked.
     let corrupt = Corrupt::new(&snapshot).patch_words_equal(victim, decoy);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let degraded = tasks_of(&ctx, &snapshot);
+    let degraded = tasks_of(&ctx, &corrupt);
 
     let errs: Vec<String> = degraded.errors.iter().map(|e| format!("{e:#}")).collect();
     assert!(
@@ -444,7 +444,7 @@ fn test_a_held_future_with_an_unmapped_box_is_listed_undecoded() {
 
     let corrupt = Corrupt::new(&snapshot).patch(wide, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let list = tasks_of(&ctx, &snapshot);
+    let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
 
     assert_eq!(
@@ -471,7 +471,7 @@ fn test_a_held_future_with_an_unjoinable_vtable_is_listed_unresolved() {
         .patch(boxed, 0)
         .patch(boxed + 24, 0);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let list = tasks_of(&ctx, &snapshot);
+    let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
 
     let (future, depth) = held_row(&degraded, "future1");
@@ -508,7 +508,7 @@ fn test_a_second_reference_to_one_future_is_not_a_second_row() {
 
     let corrupt = Corrupt::new(&snapshot).patch(wide, root);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let list = tasks_of(&ctx, &snapshot);
+    let list = tasks_of(&ctx, &corrupt);
     let aliased = testkit::census(&ctx, &list);
 
     let rows: Vec<&census::HeldFuture> = aliased.held.iter().filter(|h| h.addr == root).collect();
@@ -564,7 +564,7 @@ fn test_an_unreadable_join_set_entry_keeps_the_walked_prefix() {
 
     let corrupt = Corrupt::new(&snapshot).deny(*second..*second + 0x10);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let list = tasks_of(&ctx, &snapshot);
+    let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
 
     let set = joined_set(&degraded);
@@ -594,7 +594,7 @@ fn test_a_join_set_entry_cycle_is_bounded() {
     // walk has already seen by the time it reaches it.
     let corrupt = Corrupt::new(&snapshot).patch_words_equal(*third, *first);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let list = tasks_of(&ctx, &snapshot);
+    let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
 
     let set = joined_set(&degraded);
@@ -619,7 +619,7 @@ fn test_an_unmapped_join_set_entry_is_reported() {
 
     let corrupt = Corrupt::new(&snapshot).patch_words_equal(first, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let list = tasks_of(&ctx, &snapshot);
+    let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
 
     let set = joined_set(&degraded);
@@ -657,7 +657,7 @@ fn test_a_join_set_listing_against_its_own_count_is_reported() {
     // more entries than its length, each of them valid.
     let corrupt = Corrupt::new(&snapshot).patch_words_equal(victim, graft);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let list = tasks_of(&ctx, &snapshot);
+    let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
 
     let kept = degraded
@@ -869,7 +869,7 @@ impl Drop for SeedGuard {
 fn healthy_read_set(bundle: &Bundle, snapshot: &Snapshot) -> Vec<Range<u64>> {
     let recorder = Recorder::new(snapshot);
     let ctx = Context::new(&recorder, BundleView::new(bundle)).expect("snapshot has mappings");
-    let list = tasks_of(&ctx, snapshot);
+    let list = tasks_of(&ctx, &recorder);
     let _ = graph::analyze(&ctx, &list);
     let _ = testkit::census(&ctx, &list);
     recorder
@@ -941,21 +941,12 @@ fn campaign_run(
     let Ok(ctx) = Context::new(&corrupt, BundleView::new(bundle)) else {
         return false;
     };
-    let Ok(lwps) = corrupt.lwps() else {
+    let Ok(mut e) = testkit::try_enumerate(&ctx, &corrupt) else {
         return false;
     };
-    let Ok(workers) = ctx.find_workers(&lwps) else {
-        return false;
-    };
-    let Ok(mut runtimes) = ctx.find_runtimes(&workers) else {
-        return false;
-    };
-    let Ok(mut list) = ctx.enumerate_all_tasks(&runtimes) else {
-        return false;
-    };
-    let _ = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
-    let _ = graph::analyze(&ctx, &list);
-    let _ = testkit::census(&ctx, &list);
+    e.discover(&ctx, &[]);
+    let _ = graph::analyze(&ctx, &e.list);
+    let _ = testkit::census(&ctx, &e.list);
     true
 }
 

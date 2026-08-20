@@ -279,7 +279,9 @@ mod whatis_tests {
     fn with_tasks(program: &str, check: impl FnOnce(&Target<'_>)) {
         let (bundle, snapshot) = testkit::load_any(program);
         let ctx = testkit::context(&bundle, &snapshot);
-        let (runtimes, local_sets, list) = testkit::discover(&ctx, &snapshot);
+        let mut e = testkit::enumerate(&ctx, &snapshot);
+        let local_sets = e.discover(&ctx, &[]);
+        let (runtimes, list) = (e.runtimes, e.list);
         let extents = ctx.task_extents(&list);
         let census = census::census(&ctx, &list);
         check(&Target {
