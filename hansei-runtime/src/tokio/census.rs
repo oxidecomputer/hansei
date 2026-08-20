@@ -3156,4 +3156,31 @@ mod tests {
             ["1 task(s) registered as `task_name`, but the listing shows 0"]
         );
     }
+
+    /// The `Run` methods report what the shared primitives see. The
+    /// suites over healthy pairs only ever show them empty, so a
+    /// doctored census is what pins the delegation itself.
+    #[test]
+    fn test_a_run_reports_problems_through_its_methods() {
+        let (bundle, snapshot) = testkit::load_any("simple-await");
+        let mut r = testkit::run(&bundle, &snapshot);
+        r.census.errors.push(anyhow!("the walk broke at 0xf00d"));
+        // A held row the fixture never registered: a fabrication the
+        // registry diff must flag.
+        r.census.held.push(a_held(0, 0xf00d));
+        let healthy = r.healthy_problems();
+        assert!(
+            healthy
+                .iter()
+                .any(|p| p.contains("census error: the walk broke at 0xf00d")),
+            "{healthy:#?}"
+        );
+        let registry_problems = r.registry_problems();
+        assert!(
+            registry_problems
+                .iter()
+                .any(|p| p.contains("unregistered held find")),
+            "{registry_problems:#?}"
+        );
+    }
 }
