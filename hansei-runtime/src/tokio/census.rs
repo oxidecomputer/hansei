@@ -3074,4 +3074,86 @@ mod tests {
             "{flagged:#?}"
         );
     }
+
+    // The problem lists (`testkit::healthy_problems`,
+    // `testkit::expect::problems`) are pinned here for the same reason
+    // as the diff: the offline suites only ever show them empty, so
+    // the reporting side is pinned over hand-built censuses or
+    // nowhere.
+
+    /// A clean walk owes a healthy capture nothing.
+    #[test]
+    fn test_healthy_problems_pass_a_clean_walk() {
+        assert_eq!(
+            testkit::healthy_problems(&blank(), &task_list(1)),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Each entitlement reports in its own spelling: every census
+    /// error, any cap, and every healthy-only audit violation.
+    #[test]
+    fn test_healthy_problems_report_errors_caps_and_audit_violations() {
+        let list = task_list(0);
+        let mut census = blank();
+        census.errors.push(anyhow!("the walk broke at 0x1000"));
+        census.capped.deep = 1;
+        // An owner off the list, which the audit flags.
+        census.held.push(a_held(0, 0x2000));
+        let problems = testkit::healthy_problems(&census, &list);
+        assert_eq!(problems.len(), 3, "{problems:#?}");
+        assert!(
+            problems[0].contains("census error: the walk broke at 0x1000"),
+            "{problems:#?}"
+        );
+        assert!(
+            problems[1].contains("the walk hit a hard limit"),
+            "{problems:#?}"
+        );
+        assert!(problems[2].contains("healthy-only audit:"), "{problems:#?}");
+    }
+
+    /// The registry ladder reports each missing rung as a problem —
+    /// absent, unparseable, empty — and a present registry's problems
+    /// are the diff's, verbatim.
+    #[test]
+    fn test_registry_problems_name_each_missing_rung() {
+        use crate::testkit::fake::{FakeTarget, registry};
+
+        let list = task_list(0);
+        let census = blank();
+        let target = |bytes: Vec<u8>, has_symbol: bool| FakeTarget {
+            base: 0x1000,
+            bytes,
+            has_symbol,
+            seam: None,
+        };
+
+        let absent = target(registry(&[]), false);
+        assert_eq!(
+            testkit::expect::problems(&absent, &census, &list),
+            ["the capture carries no census registry symbol"]
+        );
+
+        let unparseable = target(registry(&[(9, 0, 0, "")]), true);
+        let problems = testkit::expect::problems(&unparseable, &census, &list);
+        assert_eq!(problems.len(), 1, "{problems:#?}");
+        assert!(
+            problems[0].contains("the registry does not parse:"),
+            "{problems:#?}"
+        );
+
+        let empty = target(registry(&[]), true);
+        assert_eq!(
+            testkit::expect::problems(&empty, &census, &list),
+            ["the registry is empty; every registering fixture registers"]
+        );
+
+        let registered = target(registry(&[(5, 0, 0, "task_name")]), true);
+        let problems = testkit::expect::problems(&registered, &census, &list);
+        assert_eq!(
+            problems,
+            ["1 task(s) registered as `task_name`, but the listing shows 0"]
+        );
+    }
 }

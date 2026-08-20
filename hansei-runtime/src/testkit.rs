@@ -4,11 +4,13 @@
 //! Nothing on a session's path calls this. See [`FIXTURE_SET`] for why
 //! there is more than one set.
 
-use crate::tokio::bundle::{Context, LocalSetRef, RuntimeRef, TaskList};
+use crate::tokio::bundle::{Context, LocalSetRef, RuntimeRef, TaskList, Worker};
+use crate::tokio::census::FutureCensus;
 
+use anyhow::Context as _;
 use hansei_bundle::{Bundle, BundleView};
-use proc::Target;
 use proc::snapshot::Snapshot;
+use proc::{LwpInfo, Target};
 
 use std::path::PathBuf;
 
@@ -72,6 +74,126 @@ pub fn load(set: &str, program: &str) -> (Bundle, Snapshot) {
 /// Attach a loaded pair the way a session does.
 pub fn context<'a>(bundle: &'a Bundle, snapshot: &'a Snapshot) -> Context<'a, Snapshot> {
     Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings")
+}
+
+/// The state a session is in after enumerating what the runtimes own,
+/// stopped *before* hidden-task discovery — which is what the
+/// discovery tests assert against before letting the sweep run.
+pub struct Enumeration<'b> {
+    pub lwps: Vec<LwpInfo>,
+    pub workers: Vec<Worker>,
+    pub runtimes: Vec<RuntimeRef<'b>>,
+    pub list: TaskList,
+}
+
+/// Enumerate, stopping before discovery. Panics on a stage failure
+/// (a healthy pair enumerates); pipelines run over damaged targets
+/// use [`try_enumerate`].
+pub fn enumerate<'b, T: Target>(ctx: &Context<'b, T>, target: &T) -> Enumeration<'b> {
+    try_enumerate(ctx, target).expect("a healthy pair enumerates")
+}
+
+/// The fallible twin, for pipelines run over damaged targets: any
+/// stage failing is an `Err`, and which stage is in the error text —
+/// a caller that only cares that containment happened can drop it,
+/// but a triage log should still say where.
+pub fn try_enumerate<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    target: &T,
+) -> anyhow::Result<Enumeration<'b>> {
+    let lwps = target.lwps().context("LWP enumeration failed")?;
+    let workers = ctx
+        .find_workers(&lwps)
+        .context("TLS-key worker discovery failed")?;
+    let runtimes = ctx
+        .find_runtimes(&workers)
+        .context("runtime discovery failed")?;
+    let list = ctx
+        .enumerate_all_tasks(&runtimes)
+        .context("the owned-task walk failed")?;
+    Ok(Enumeration {
+        lwps,
+        workers,
+        runtimes,
+        list,
+    })
+}
+
+impl<'b> Enumeration<'b> {
+    /// Run hidden-task discovery — the sweep `discover_hidden_tasks`
+    /// performs — mutating the runtimes and list the way a session
+    /// does, and returning the local sets it admitted.
+    pub fn discover<T: Target>(
+        &mut self,
+        ctx: &Context<'b, T>,
+        exclude: &[u64],
+    ) -> Vec<LocalSetRef<'b>> {
+        ctx.discover_hidden_tasks(
+            &self.lwps,
+            &self.workers,
+            &mut self.runtimes,
+            exclude,
+            &mut self.list,
+        )
+    }
+}
+
+/// The full pipeline over a loaded pair: attach, enumerate, discover,
+/// census, total audit (which panics on violation, in [`census`]).
+/// What every census-judging suite starts from; what a *healthy*
+/// capture must satisfy beyond that is [`Run::healthy_problems`] and
+/// [`Run::registry_problems`], which a suite calls or does not — its
+/// strictness is visible at its call site.
+pub struct Run<'a> {
+    pub ctx: Context<'a, Snapshot>,
+    pub list: TaskList,
+    pub census: FutureCensus,
+}
+
+/// Run the pipeline over a loaded pair.
+pub fn run<'a>(bundle: &'a Bundle, snapshot: &'a Snapshot) -> Run<'a> {
+    let ctx = context(bundle, snapshot);
+    let list = tasks(&ctx, snapshot);
+    let census = census(&ctx, &list);
+    Run { ctx, list, census }
+}
+
+impl Run<'_> {
+    /// [`healthy_problems`] over this run.
+    #[must_use]
+    pub fn healthy_problems(&self) -> Vec<String> {
+        healthy_problems(&self.census, &self.list)
+    }
+
+    /// [`expect::problems`] over this run.
+    #[must_use]
+    pub fn registry_problems(&self) -> Vec<String> {
+        expect::problems(self.ctx.proc, &self.census, &self.list)
+    }
+}
+
+/// Everything a *healthy* capture is entitled to beyond the total
+/// audit, reported as problems rather than asserted, so the
+/// assert-each suites (`assert!(empty)`) and the collect-everything
+/// suites (extend a problem list) share one implementation: no census
+/// errors, no caps, and the healthy-only audit invariants.
+#[must_use]
+pub fn healthy_problems(census: &FutureCensus, list: &TaskList) -> Vec<String> {
+    let mut problems: Vec<String> = census
+        .errors
+        .iter()
+        .map(|e| format!("census error: {e:#}"))
+        .collect();
+    if census.capped.any() {
+        problems.push(format!("the walk hit a hard limit: {:?}", census.capped));
+    }
+    problems.extend(
+        census
+            .audit(list)
+            .into_iter()
+            .map(|v| format!("healthy-only audit: {v}")),
+    );
+    problems
 }
 
 /// Discovery and enumeration against an arbitrary target — generic so
@@ -188,6 +310,16 @@ pub fn outcomes(census: &crate::tokio::census::FutureCensus) -> Vec<(&'static st
             waits.iter().any(|w| matches!(w, WaitKind::Timer { .. })),
         ),
     ]
+}
+
+/// Print the outcome list in the one-line-per-outcome format the
+/// soak scripts' `note_outcomes` parses: `outcome: <name> = <bool>`.
+/// The format is an interface — genfix.sh/churn.sh parse it — so it
+/// changes only with its parser.
+pub fn print_outcomes(census: &FutureCensus) {
+    for (name, hit) in outcomes(census) {
+        println!("outcome: {name} = {hit}");
+    }
 }
 
 /// The fixture programs' ground-truth registry: reading back what a
@@ -308,6 +440,23 @@ pub mod expect {
             });
         }
         Ok(expectations)
+    }
+
+    /// The registry ladder — present, parses, non-empty — plus the
+    /// both-direction [`diff`], as problems. Callers are fixtures that
+    /// register by contract, so a missing or empty registry is a
+    /// problem, not a skip; a target legitimately without a registry
+    /// (a real core) simply never asks.
+    #[must_use]
+    pub fn problems<T: Target>(target: &T, census: &FutureCensus, list: &TaskList) -> Vec<String> {
+        match read_from(target) {
+            None => vec!["the capture carries no census registry symbol".into()],
+            Some(Err(e)) => vec![format!("the registry does not parse: {e:#}")],
+            Some(Ok(expected)) if expected.is_empty() => {
+                vec!["the registry is empty; every registering fixture registers".into()]
+            }
+            Some(Ok(expected)) => diff(&expected, census, list),
+        }
     }
 
     /// Diff a census (and the task listing it was built from) against
@@ -494,13 +643,12 @@ pub fn io_candidates<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> Ve
     found.into_iter().map(|(addr, _)| addr).collect()
 }
 
-// The registry *parser* is pinned here, over hand-laid bytes spelling
-// the write side's layout; the diff itself is pinned in the census's
-// own tests, which can build a `FutureCensus` by hand. The offline
-// registry test only ever shows both passing.
+/// Test doubles for the registry reader, shared with the census's own
+/// test module (which pins the problem lists over hand-built censuses
+/// and needs a target to point them at).
 #[cfg(test)]
-mod tests {
-    use super::expect::{Expectation, SYMBOL, read_from};
+pub(crate) mod fake {
+    use super::expect::SYMBOL;
 
     use proc::{Regs, SymbolBuf, Target};
 
@@ -509,11 +657,11 @@ mod tests {
     /// two the way a core's segment boundary does: a read crossing it
     /// is refused whole, and `readable_len` stops at it — which is
     /// what forces the reader through its chunking path.
-    struct FakeTarget {
-        base: u64,
-        bytes: Vec<u8>,
-        has_symbol: bool,
-        seam: Option<u64>,
+    pub(crate) struct FakeTarget {
+        pub(crate) base: u64,
+        pub(crate) bytes: Vec<u8>,
+        pub(crate) has_symbol: bool,
+        pub(crate) seam: Option<u64>,
     }
 
     impl Target for FakeTarget {
@@ -574,7 +722,7 @@ mod tests {
     /// The write side's layout, laid by hand: `committed`/`reserved`
     /// words, then 88-byte entries of `kind, flags, addr, count,
     /// name[64]`.
-    fn registry(entries: &[(u32, u64, u64, &str)]) -> Vec<u8> {
+    pub(crate) fn registry(entries: &[(u32, u64, u64, &str)]) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend((entries.len() as u64).to_le_bytes());
         bytes.extend((entries.len() as u64).to_le_bytes());
@@ -589,6 +737,16 @@ mod tests {
         }
         bytes
     }
+}
+
+// The registry *parser* is pinned here, over hand-laid bytes spelling
+// the write side's layout; the diff and the problem lists are pinned
+// in the census's own tests, which can build a `FutureCensus` by
+// hand. The offline registry test only ever shows both passing.
+#[cfg(test)]
+mod tests {
+    use super::expect::{Expectation, read_from};
+    use super::fake::{FakeTarget, registry};
 
     #[test]
     fn test_a_target_without_the_symbol_has_no_registry() {
