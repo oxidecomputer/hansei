@@ -39,25 +39,25 @@ fn test_churn_capture_walks_safely() {
     let bundle = Bundle::load(format!("{prefix}.bundle").as_ref()).expect("the bundle loads");
     let snapshot =
         Snapshot::load(format!("{prefix}.snapshot").as_ref()).expect("the snapshot loads");
-    let ctx = testkit::context(&bundle, &snapshot);
     // The capture-time pipeline ran to completion to produce this pair,
     // and a snapshot replays the same bytes, so discovery succeeding
-    // here is part of the determinism claim — a panic in `tasks` is a
-    // real finding, not a flaky capture.
-    let list = testkit::tasks(&ctx, &snapshot);
-    // Runs the total audit subset; violations panic in there.
-    let census = testkit::census(&ctx, &list);
+    // here is part of the determinism claim — a panic in the pipeline
+    // is a real finding, not a flaky capture. The total audit runs
+    // (and panics) inside it. Nothing beyond that is asked: a
+    // mid-flight capture is entitled to errors and caps, so the
+    // healthy and registry problem lists are deliberately not called.
+    let r = testkit::run(&bundle, &snapshot);
 
-    for (name, hit) in testkit::outcomes(&census) {
+    for (name, hit) in testkit::outcomes(&r.census) {
         println!("churn outcome: {name} = {hit}");
     }
     println!(
         "churn: {} tasks, {} held, {} sets, {} join sets, {} errors, capped: {:?}",
-        list.tasks.len(),
-        census.held.len(),
-        census.sets.len(),
-        census.join_sets.len(),
-        census.errors.len(),
-        census.capped,
+        r.list.tasks.len(),
+        r.census.held.len(),
+        r.census.sets.len(),
+        r.census.join_sets.len(),
+        r.census.errors.len(),
+        r.census.capped,
     );
 }

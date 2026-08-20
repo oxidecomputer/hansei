@@ -36,39 +36,19 @@ fn test_generated_pair_matches_its_registry() {
     let bundle = Bundle::load(format!("{prefix}.bundle").as_ref()).expect("the bundle loads");
     let snapshot =
         Snapshot::load(format!("{prefix}.snapshot").as_ref()).expect("the snapshot loads");
-    let ctx = testkit::context(&bundle, &snapshot);
-    let list = testkit::tasks(&ctx, &snapshot);
-    // Runs the total audit subset; violations panic in there.
-    let census = testkit::census(&ctx, &list);
+    // The total audit runs (and panics) inside the pipeline.
+    let r = testkit::run(&bundle, &snapshot);
+    let (list, census) = (&r.list, &r.census);
 
-    for (name, hit) in testkit::outcomes(&census) {
+    for (name, hit) in testkit::outcomes(census) {
         println!("genfix outcome: {name} = {hit}");
     }
 
-    let mut problems: Vec<String> = Vec::new();
-    // A healthy capture walks cleanly: an error or a cap on a program
-    // built to park quietly is a finding in itself.
-    problems.extend(census.errors.iter().map(|e| format!("census error: {e:#}")));
-    if census.capped.any() {
-        problems.push(format!("the walk hit a hard limit: {:?}", census.capped));
-    }
-    problems.extend(
-        census
-            .audit(&list)
-            .into_iter()
-            .map(|v| format!("healthy-only audit: {v}")),
-    );
-
-    match testkit::expect::read_from(&snapshot) {
-        None => problems.push("the capture carries no census registry symbol".into()),
-        Some(Err(e)) => problems.push(format!("the registry does not parse: {e:#}")),
-        Some(Ok(expected)) => {
-            if expected.is_empty() {
-                problems.push("the registry is empty; every genfix program registers".into());
-            }
-            problems.extend(testkit::expect::diff(&expected, &census, &list));
-        }
-    }
+    // A healthy capture walks cleanly — an error or a cap on a program
+    // built to park quietly is a finding in itself — and matches its
+    // registry both ways.
+    let mut problems = r.healthy_problems();
+    problems.extend(r.registry_problems());
 
     // Triage happens far from the failing host, so a failure carries
     // the whole population the diff judged, not just its verdicts.
