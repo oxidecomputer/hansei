@@ -48,9 +48,7 @@ fn test_churn_capture_walks_safely() {
     // healthy and registry problem lists are deliberately not called.
     let r = testkit::run(&bundle, &snapshot);
 
-    for (name, hit) in testkit::outcomes(&r.census) {
-        println!("churn outcome: {name} = {hit}");
-    }
+    testkit::print_outcomes(&r.census);
     println!(
         "churn: {} tasks, {} held, {} sets, {} join sets, {} errors, capped: {:?}",
         r.list.tasks.len(),

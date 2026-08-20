@@ -18,9 +18,9 @@
 //! `testkit::census`), the healthy-only audit, no errors, no caps, and
 //! a registry that parses and is non-empty. Every problem is collected
 //! before failing, so a bad seed reports its whole story at once. The
-//! shared outcome list (`testkit::outcomes`) is printed per run for
-//! the soak's coverage summary — the generated corpus's version of the
-//! checked-in corpus's "sometimes" test.
+//! shared outcome list is printed per run (`testkit::print_outcomes`)
+//! for the soak's coverage summary — the generated corpus's version of
+//! the checked-in corpus's "sometimes" test.
 
 use hansei_bundle::Bundle;
 use hansei_runtime::testkit;
@@ -40,9 +40,7 @@ fn test_generated_pair_matches_its_registry() {
     let r = testkit::run(&bundle, &snapshot);
     let (list, census) = (&r.list, &r.census);
 
-    for (name, hit) in testkit::outcomes(census) {
-        println!("genfix outcome: {name} = {hit}");
-    }
+    testkit::print_outcomes(census);
 
     // A healthy capture walks cleanly — an error or a cap on a program
     // built to park quietly is a finding in itself — and matches its
