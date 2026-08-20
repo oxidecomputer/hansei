@@ -57,6 +57,7 @@ use exegesis::detect::Family;
 use exegesis::extract::{ExtractOptions, extract_file};
 use exegesis::summary::portable_summary;
 use hansei_bundle::{Bundle, BundleView};
+use hansei_runtime::testkit::matrix::Matrix;
 use hansei_runtime::tokio::contract::verify_walk_contract;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -94,136 +95,54 @@ fn test_programs_dir() -> PathBuf {
 // The matrix manifest
 // ---------------------------------------------------------------------------
 
-/// What `matrix.toml` declares. Parsed by hand: the file is ours, its
-/// grammar is a fixed set of `key = "…"` / `key = […]` lines under
-/// three sections, and a full TOML dependency buys nothing here.
-struct Matrix {
-    primary_tokio: String,
-    primary_toolchain: String,
-    tokio_floor: String,
-    tokio_versions: Vec<String>,
-    toolchain_versions: Vec<String>,
-    no_unstable_tokio: Vec<String>,
-    secondary_toolchain_tokio: Vec<String>,
-    ct_only_tokio: Vec<String>,
+/// Resolve a `[cells]` role list to tokio versions, deduplicated —
+/// floor and primary are the same version today, so the roles name
+/// fewer versions than entries.
+fn roles(m: &Matrix, roles: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for role in roles {
+        let version: &str = match role.as_str() {
+            "floor" => &m.tokio.floor,
+            "primary" => &m.primary.tokio,
+            "latest" => m.tokio.versions.last().expect("versions is non-empty"),
+            other => other,
+        };
+        if !out.iter().any(|v| v == version) {
+            out.push(version.to_owned());
+        }
+    }
+    out
 }
 
-/// The quoted strings in a line, in order.
-fn quoted(line: &str) -> Vec<String> {
-    line.split('"')
-        .enumerate()
-        .filter(|(i, _)| i % 2 == 1)
-        .map(|(_, s)| s.to_owned())
-        .collect()
-}
-
-impl Matrix {
-    fn load() -> Matrix {
-        let path = test_programs_dir().join("matrix.toml");
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-
-        let mut section = String::new();
-        let mut m = Matrix {
-            primary_tokio: String::new(),
-            primary_toolchain: String::new(),
-            tokio_floor: String::new(),
-            tokio_versions: Vec::new(),
-            toolchain_versions: Vec::new(),
-            no_unstable_tokio: Vec::new(),
-            secondary_toolchain_tokio: Vec::new(),
-            ct_only_tokio: Vec::new(),
-        };
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-                section = name.to_owned();
-                continue;
-            }
-            let Some((key, _)) = line.split_once('=') else {
-                panic!("unparsed matrix.toml line: {line}");
-            };
-            let values = quoted(line);
-            match (section.as_str(), key.trim()) {
-                ("", "primary") => {
-                    let [tokio, toolchain] = values.as_slice() else {
-                        panic!("unparsed primary cell: {line}");
-                    };
-                    m.primary_tokio = tokio.clone();
-                    m.primary_toolchain = toolchain.clone();
-                }
-                ("tokio", "floor") => m.tokio_floor = values[0].clone(),
-                ("tokio", "versions") => m.tokio_versions = values,
-                ("toolchain", "floor") => {}
-                ("toolchain", "versions") => m.toolchain_versions = values,
-                ("cells", "no_unstable_tokio") => m.no_unstable_tokio = values,
-                ("cells", "secondary_toolchain_tokio") => m.secondary_toolchain_tokio = values,
-                ("cells", "ct_only_tokio") => m.ct_only_tokio = values,
-                _ => panic!("unrecognized matrix.toml key: {line}"),
-            }
-        }
-        for (what, value) in [
-            ("primary", &m.primary_tokio),
-            ("tokio floor", &m.tokio_floor),
-        ] {
-            assert!(!value.is_empty(), "matrix.toml declares no {what}");
-        }
-        assert!(!m.tokio_versions.is_empty(), "matrix.toml lists no tokio");
-        m
+/// Every cell the matrix builds, primary first: the whole tokio
+/// axis on the primary toolchain with the cfg on, then the trimmed
+/// secondary axes, then the features-limited cells.
+fn cells(m: &Matrix) -> Vec<Cell> {
+    let cell = |toolchain: &str, tokio: String, unstable: bool, ct_only: bool| Cell {
+        toolchain: toolchain.to_owned(),
+        tokio,
+        unstable,
+        ct_only,
+    };
+    let mut cells = Vec::new();
+    for tokio in &m.tokio.versions {
+        cells.push(cell(&m.primary.toolchain, tokio.clone(), true, false));
     }
-
-    /// Resolve a `[cells]` role list to tokio versions, deduplicated —
-    /// floor and primary are the same version today, so the roles name
-    /// fewer versions than entries.
-    fn roles(&self, roles: &[String]) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for role in roles {
-            let version: &str = match role.as_str() {
-                "floor" => &self.tokio_floor,
-                "primary" => &self.primary_tokio,
-                "latest" => self.tokio_versions.last().expect("versions is non-empty"),
-                other => other,
-            };
-            if !out.iter().any(|v| v == version) {
-                out.push(version.to_owned());
-            }
-        }
-        out
+    for tokio in roles(m, &m.cells.no_unstable_tokio) {
+        cells.push(cell(&m.primary.toolchain, tokio, false, false));
     }
-
-    /// Every cell the matrix builds, primary first: the whole tokio
-    /// axis on the primary toolchain with the cfg on, then the trimmed
-    /// secondary axes, then the features-limited cells.
-    fn cells(&self) -> Vec<Cell> {
-        let cell = |toolchain: &str, tokio: String, unstable: bool, ct_only: bool| Cell {
-            toolchain: toolchain.to_owned(),
-            tokio,
-            unstable,
-            ct_only,
-        };
-        let mut cells = Vec::new();
-        for tokio in &self.tokio_versions {
-            cells.push(cell(&self.primary_toolchain, tokio.clone(), true, false));
+    for toolchain in &m.toolchain.versions {
+        if *toolchain == m.primary.toolchain {
+            continue;
         }
-        for tokio in self.roles(&self.no_unstable_tokio) {
-            cells.push(cell(&self.primary_toolchain, tokio, false, false));
+        for tokio in roles(m, &m.cells.secondary_toolchain_tokio) {
+            cells.push(cell(toolchain, tokio, true, false));
         }
-        for toolchain in &self.toolchain_versions {
-            if *toolchain == self.primary_toolchain {
-                continue;
-            }
-            for tokio in self.roles(&self.secondary_toolchain_tokio) {
-                cells.push(cell(toolchain, tokio, true, false));
-            }
-        }
-        for tokio in self.roles(&self.ct_only_tokio) {
-            cells.push(cell(&self.primary_toolchain, tokio, false, true));
-        }
-        cells
     }
+    for tokio in roles(m, &m.cells.ct_only_tokio) {
+        cells.push(cell(&m.primary.toolchain, tokio, false, true));
+    }
+    cells
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +185,7 @@ impl Cell {
     }
 
     fn is_primary(&self, m: &Matrix) -> bool {
-        self.unstable && self.tokio == m.primary_tokio && self.toolchain == m.primary_toolchain
+        self.unstable && self.tokio == m.primary.tokio && self.toolchain == m.primary.toolchain
     }
 
     /// Where `regen.sh` lands this cell's binaries.
@@ -469,7 +388,7 @@ fn test_matrix() {
 
     let mut failures = Vec::new();
     let mut ran = 0usize;
-    for cell in matrix.cells() {
+    for cell in cells(&matrix) {
         let name = cell.name();
         if filter != "1" && !name.contains(&filter) {
             continue;

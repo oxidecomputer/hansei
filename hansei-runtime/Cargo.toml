@@ -20,3 +20,7 @@ foldhash.workspace = true
 hansei-bundle.workspace = true
 proc.workspace = true
 reify.workspace = true
+# testkit's matrix-manifest reader; testkit is part of the library (see
+# its module docs), so these cannot be dev-dependencies.
+serde.workspace = true
+toml.workspace = true

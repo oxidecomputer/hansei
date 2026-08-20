@@ -629,6 +629,73 @@ pub fn io_candidates<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> Ve
     found.into_iter().map(|(addr, _)| addr).collect()
 }
 
+/// The `test-programs/matrix.toml` manifest: the supported-versions
+/// statement the version matrix enumerates cells from, and where the
+/// fixture suites read the tokio floor. (`matrix.sh` keeps its own awk
+/// parse of the same file — bash cannot link this one.)
+pub mod matrix {
+    use serde::Deserialize;
+
+    use std::path::PathBuf;
+
+    /// What `matrix.toml` declares, in the file's own shape. Unknown
+    /// keys are refused everywhere: the manifest is the contract
+    /// tooling enumerates cells from, and a key only some of its
+    /// readers know about is drift.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Matrix {
+        pub primary: Primary,
+        pub tokio: Axis,
+        pub toolchain: Axis,
+        pub cells: Cells,
+    }
+
+    /// The `primary` cell: what `test-programs/Cargo.lock` resolves,
+    /// on the default toolchain.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Primary {
+        pub tokio: String,
+        pub toolchain: String,
+    }
+
+    /// One version axis: its floor and every version it supports.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Axis {
+        pub floor: String,
+        pub versions: Vec<String>,
+    }
+
+    /// The `[cells]` trim policy: which tokio versions (or roles —
+    /// `floor`, `primary`, `latest`) each secondary axis covers.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Cells {
+        pub no_unstable_tokio: Vec<String>,
+        pub secondary_toolchain_tokio: Vec<String>,
+        pub ct_only_tokio: Vec<String>,
+    }
+
+    impl Matrix {
+        pub fn load() -> Matrix {
+            let path =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-programs/matrix.toml");
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+            toml::from_str(&text)
+                .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()))
+        }
+    }
+
+    /// `matrix.toml`'s `[tokio]` floor, the version the endpoint
+    /// fixture sets pin.
+    pub fn floor() -> String {
+        Matrix::load().tokio.floor
+    }
+}
+
 /// Test doubles for the registry reader, shared with the census's own
 /// test module (which pins the problem lists over hand-built censuses
 /// and needs a target to point them at).
@@ -855,5 +922,42 @@ mod tests {
             seam: None,
         };
         assert!(read_from(&truncated).expect("the symbol resolves").is_err());
+    }
+
+    /// The manifest parse, over the real manifest. The exact versions
+    /// are the manifest's to choose, so this pins consistency rather
+    /// than values: every version another field's role can resolve to
+    /// must be in the axis that is actually there, and the `[cells]`
+    /// role lists must survive the parse non-empty (the matrix suite,
+    /// which would notice them dropped, is opt-in).
+    #[test]
+    fn test_the_matrix_manifest_parses_consistently() {
+        let m = super::matrix::Matrix::load();
+        assert!(
+            m.tokio.versions.contains(&m.tokio.floor),
+            "the floor {} is not in the tokio versions",
+            m.tokio.floor
+        );
+        assert!(
+            m.tokio.versions.contains(&m.primary.tokio),
+            "the primary tokio {} is not in the tokio versions",
+            m.primary.tokio
+        );
+        assert!(
+            m.toolchain.versions.contains(&m.primary.toolchain),
+            "the primary toolchain {} is not in the toolchain versions",
+            m.primary.toolchain
+        );
+        for (name, list) in [
+            ("no_unstable_tokio", &m.cells.no_unstable_tokio),
+            (
+                "secondary_toolchain_tokio",
+                &m.cells.secondary_toolchain_tokio,
+            ),
+            ("ct_only_tokio", &m.cells.ct_only_tokio),
+        ] {
+            assert!(!list.is_empty(), "[cells] {name} parsed to nothing");
+        }
+        assert_eq!(super::matrix::floor(), m.tokio.floor);
     }
 }
