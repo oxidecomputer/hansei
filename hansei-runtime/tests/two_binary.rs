@@ -40,7 +40,7 @@
 //! here would notice the programs moving on without them.
 
 use hansei_bundle::{Bundle, BundleView};
-use hansei_runtime::testkit::{FIXTURE_SETS, load, load_any};
+use hansei_runtime::testkit::{FIXTURE_SETS, load, load_any, matrix};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
@@ -105,30 +105,10 @@ fn test_programs_dir() -> std::path::PathBuf {
 /// every other set is the primary `Cargo.lock`.
 fn lockfile_of(set: &str) -> String {
     if set.ends_with("-floor") {
-        format!("locks/tokio-{}.lock", tokio_floor())
+        format!("locks/tokio-{}.lock", matrix::floor())
     } else {
         "Cargo.lock".to_owned()
     }
-}
-
-/// `matrix.toml`'s `[tokio]` floor, the version the endpoint set pins.
-fn tokio_floor() -> String {
-    let path = test_programs_dir().join("matrix.toml");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    let mut in_tokio = false;
-    for line in text.lines() {
-        if line.starts_with('[') {
-            in_tokio = line.trim() == "[tokio]";
-        } else if in_tokio && line.starts_with("floor") {
-            return line
-                .split('"')
-                .nth(1)
-                .expect("matrix.toml floor is a quoted version")
-                .to_owned();
-        }
-    }
-    panic!("matrix.toml declares no [tokio] floor");
 }
 
 /// The fixtures record programs that go on being edited underneath
@@ -180,7 +160,7 @@ fn test_fixtures_record_the_current_programs() {
         let recapture = if set.ends_with("-floor") {
             format!(
                 "test-programs/capture-snapshots.sh --tokio {}",
-                tokio_floor()
+                matrix::floor()
             )
         } else {
             "test-programs/capture-snapshots.sh".to_owned()
