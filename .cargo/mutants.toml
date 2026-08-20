@@ -101,6 +101,12 @@ exclude_re = [
     # version_ceiling_line's tests, the drift predicate and wording in
     # hansei-runtime's version_ceiling_notice tests.
     "replace Session<'b>::note_version_ceiling",
+    # A println loop over `outcomes` (whose list the corpus coverage
+    # test pins). Its output is for the soak scripts' coverage
+    # parsers, which run on a capture host, not in any sweep's judging
+    # suite — the same gap as exec_snapshot above, judged one step
+    # removed by the soak loops' coverage summaries.
+    "replace print_outcomes",
     # A 32-bit guard, unobservable anywhere this suite runs. On 64-bit
     # every recorded frame size converts, so the guard is always true;
     # forcing it false only routes the decode through the reallocating
