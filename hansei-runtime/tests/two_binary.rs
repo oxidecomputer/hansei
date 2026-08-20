@@ -50,7 +50,7 @@ use hansei_runtime::tokio::{census, graph};
 use proc::Target;
 use proc::snapshot::Snapshot;
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write;
 use std::path::Path;
 
@@ -172,6 +172,53 @@ fn test_fixtures_record_the_current_programs() {
              here and in value_render.rs."
         ));
         settings.bind(|| insta::assert_snapshot!("SOURCES", digests));
+    }
+}
+
+/// The other half of the inventory: every pair on disk is one the
+/// suite reads.
+///
+/// A program in [`PROGRAMS`] with no pair already fails loudly — the
+/// first `load` panics. The reverse is silent: a program added to
+/// `capture-snapshots.sh` but forgotten here leaves its pair sitting
+/// in every `fixtures/<set>/` directory with nothing reading it, and
+/// nothing to say so. So each set's `*.bundle`/`*.snapshot` basenames
+/// must be exactly the program list; non-pair files (`SOURCES.snap`)
+/// are exempt by extension.
+#[test]
+fn test_every_fixture_pair_is_in_the_program_list() {
+    let expected: BTreeSet<String> = PROGRAMS.iter().map(|p| p.to_string()).collect();
+    for set in FIXTURE_SETS {
+        let dir = hansei_runtime::testkit::fixture_dir(set);
+        let mut bundles = BTreeSet::new();
+        let mut snapshots = BTreeSet::new();
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", dir.display()))
+        {
+            let path = entry.expect("the fixture directory lists").path();
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            match path.extension().and_then(|e| e.to_str()) {
+                Some("bundle") => {
+                    bundles.insert(stem.to_owned());
+                }
+                Some("snapshot") => {
+                    snapshots.insert(stem.to_owned());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            bundles, expected,
+            "[{set}] the *.bundle files are not exactly PROGRAMS — \
+             a pair captured but not listed is read by nothing"
+        );
+        assert_eq!(
+            snapshots, expected,
+            "[{set}] the *.snapshot files are not exactly PROGRAMS — \
+             a pair captured but not listed is read by nothing"
+        );
     }
 }
 
