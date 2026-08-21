@@ -678,6 +678,32 @@ fn test_validate_rejects_out_of_range_member() {
         .validate()
         .expect_err("out-of-range Member must be rejected");
     assert!(format!("{err}").contains("out of range"), "{err}");
+
+    // The first index past the end is out of range too — the boundary
+    // where an off-by-one would let a renderer index one past `members`.
+    let mut b = b;
+    b.types.debug_formats.insert(
+        BundleTypeId(1),
+        DisplayNode::Struct {
+            fields: vec![Field::member(MemberRef::Index(2))],
+        },
+    );
+    let err = b
+        .validate()
+        .expect_err("member index == count must be rejected");
+    assert!(format!("{err}").contains("out of range"), "{err}");
+}
+
+/// `resolve`'s bound is the contract itself: the first index past the
+/// end answers to no member. The validator happens to re-screen with
+/// `get`, but reify's resolution and exegesis's describe index the
+/// member slice directly on a `Some`.
+#[test]
+fn test_member_ref_index_resolves_only_in_bounds() {
+    let unnamed = |_: usize, _: StrRef| false;
+    assert_eq!(MemberRef::Index(0).resolve(2, unnamed), Some(0));
+    assert_eq!(MemberRef::Index(1).resolve(2, unnamed), Some(1));
+    assert_eq!(MemberRef::Index(2).resolve(2, unnamed), None);
 }
 
 /// A member addressed by name resolves only when exactly one member answers to
@@ -1374,6 +1400,41 @@ fn test_symbol_lookup_falls_back_to_normalized_name() {
     assert!(tasks.lookup(NODEBUG).is_some());
 }
 
+/// Two same-named futures from different crate builds normalize to the
+/// same key; a third spelling must surface every candidate, and the
+/// single-entry lookup must decline rather than pick one.
+#[test]
+fn test_symbol_lookup_reports_every_ambiguous_spelling() {
+    const A: &str =
+        "_RNvNCNvNtNtCs4y941wpZLOZ_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+    const B: &str =
+        "_RNvNCNvNtNtCsbdypcaruIt3_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+    const OTHER: &str =
+        "_RNvNCNvNtNtCs4y941wpZLOX_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+
+    let entry = || TaskFutureEntry {
+        future: BundleTypeId(0),
+        cell: BundleTypeId(0),
+        stage: BundleTypeId(0),
+        scheduler: BundleTypeId(0),
+        display_name: StrRef(0),
+    };
+    let by_symbol = BTreeMap::from([
+        (A.to_owned(), TaskEntryId(0)),
+        (B.to_owned(), TaskEntryId(1)),
+    ]);
+    let tasks = TaskTable {
+        by_normalized_symbol: crate::symbols::normalized_value_index(&by_symbol),
+        by_symbol,
+        entries: vec![entry(), entry()],
+    };
+    assert_eq!(
+        tasks.lookup_id(OTHER),
+        SymbolLookup::Ambiguous(vec![TaskEntryId(0), TaskEntryId(1)])
+    );
+    assert!(tasks.lookup(OTHER).is_none());
+}
+
 #[test]
 fn test_find_by_name() {
     let mut strings = StringInterner::new();
@@ -1438,7 +1499,7 @@ mod view_tests {
     use crate::Encoding;
     use crate::schema::*;
     use crate::strings::StringInterner;
-    use crate::view::{BundleView, VariantError};
+    use crate::view::{BundleView, TypeKind, VariantError};
 
     /// Build a bundle whose type 0 is `u64`, type 1 is a zero-sized unit
     /// struct, and type 2 is an enum with the given shape. Additional
@@ -1902,6 +1963,7 @@ mod view_tests {
         let x = strings.intern("x");
         let y = strings.intern("y");
         let u32n = strings.intern("u32");
+        let f64n = strings.intern("f64");
         b.strings = strings.finish();
         b.types = TypeTable {
             types: vec![
@@ -1934,9 +1996,18 @@ mod view_tests {
                     elem: BundleTypeId(0),
                     count: 3,
                 },
+                TypeDef::Base {
+                    name: f64n,
+                    size: 8,
+                    encoding: Encoding::Float,
+                },
             ],
             debug_formats: std::collections::BTreeMap::new(),
-            name_index: vec![(point, BundleTypeId(1)), (u32n, BundleTypeId(0))],
+            name_index: vec![
+                (point, BundleTypeId(1)),
+                (f64n, BundleTypeId(4)),
+                (u32n, BundleTypeId(0)),
+            ],
             ..Default::default()
         };
         b.types.build_normalized_index(&b.strings);
@@ -1964,6 +2035,93 @@ mod view_tests {
         assert_eq!(elem.name(), "u32");
         assert_eq!(count, 3);
         assert_eq!(a.size(), 12);
+
+        // The coarse kinds, including the one float encoding splits off.
+        assert_eq!(s.kind(), TypeKind::Struct);
+        assert_eq!(view.ty(BundleTypeId(0)).unwrap().kind(), TypeKind::Integer);
+        assert_eq!(view.ty(BundleTypeId(4)).unwrap().kind(), TypeKind::Float);
+
+        // A handle is its bundle and id; another id is another type.
+        assert_eq!(view.ty(BundleTypeId(1)), view.ty(BundleTypeId(1)));
+        assert_ne!(view.ty(BundleTypeId(0)), view.ty(BundleTypeId(1)));
+
+        assert_eq!(s.size_by_name(" u32 "), Some(4));
+
+        // The member iterator's length tracks consumption.
+        let mut members = s.members();
+        assert_eq!(members.len(), 2);
+        members.next();
+        assert_eq!(members.len(), 1);
+
+        assert_eq!(format!("{view:?}"), "BundleView { types: 5, tasks: 0 }");
+    }
+
+    /// Duplicate DIEs behind one name are benign only while they agree:
+    /// same-size duplicates still answer `size_by_name`, two ids never
+    /// answer `type_by_name`, and conflicting sizes answer neither.
+    #[test]
+    fn test_lookup_by_name_screens_ambiguity() {
+        let mut b = super::tiny_bundle();
+        let mut strings = StringInterner::new();
+        let point = strings.intern("Point");
+        let wide = strings.intern("Wide");
+        let u32n = strings.intern("u32");
+        b.strings = strings.finish();
+        let sized_struct = |name, size| TypeDef::Struct {
+            name,
+            size,
+            members: vec![],
+        };
+        b.types = TypeTable {
+            types: vec![
+                TypeDef::Base {
+                    name: u32n,
+                    size: 4,
+                    encoding: Encoding::Unsigned,
+                },
+                sized_struct(point, 8),
+                sized_struct(point, 8),
+                sized_struct(wide, 8),
+                sized_struct(wide, 12),
+            ],
+            debug_formats: std::collections::BTreeMap::new(),
+            name_index: vec![
+                (point, BundleTypeId(1)),
+                (point, BundleTypeId(2)),
+                (wide, BundleTypeId(3)),
+                (wide, BundleTypeId(4)),
+                (u32n, BundleTypeId(0)),
+            ],
+            ..Default::default()
+        };
+        b.types.build_normalized_index(&b.strings);
+        b.validate().expect("test bundle must validate");
+
+        let view = BundleView::new(&b);
+        let scope = view.ty(BundleTypeId(0)).unwrap();
+        assert_eq!(scope.size_by_name("Point"), Some(8));
+        assert!(scope.type_by_name("Point").is_none());
+        assert_eq!(scope.size_by_name("Wide"), None);
+        assert!(scope.type_by_name("Wide").is_none());
+        assert_eq!(scope.size_by_name("u32"), Some(4));
+    }
+
+    /// The words a kind renders as — reify's type-mismatch errors quote
+    /// them.
+    #[test]
+    fn test_type_kind_display_words() {
+        for (kind, word) in [
+            (TypeKind::Integer, "integer"),
+            (TypeKind::Float, "float"),
+            (TypeKind::Pointer, "pointer"),
+            (TypeKind::Array, "array"),
+            (TypeKind::Struct, "struct"),
+            (TypeKind::Union, "union"),
+            (TypeKind::Enum, "enum"),
+            (TypeKind::Other, "other"),
+        ] {
+            assert_eq!(kind.to_string(), word);
+        }
     }
 }
 

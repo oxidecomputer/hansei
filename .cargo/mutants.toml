@@ -86,6 +86,23 @@ exclude_re = [
     # is never empty. The arm stays as the graceful answer should a
     # refactor of the index build ever make an empty entry possible.
     "delete match arm 0 in Context<'b, T>::object_symbol",
+    # Equivalent mutant, the same shape as object_symbol above: the
+    # normalized index's entries are created by
+    # `entry(key).or_default().insert(value)` in normalized_value_index
+    # — creation and insert are one statement, so no entry is ever
+    # empty and the guard's non-empty screen never says no. Forcing it
+    # true changes the answer only for an entry no builder can produce.
+    # (Only the `with true` spelling is excluded; `with false` and the
+    # deleted `!` collapse Ambiguous into Missing, which the ambiguous-
+    # spelling lookup test catches.)
+    "replace match guard !ids\\.is_empty\\(\\) with true in lookup_symbol_id",
+    # Equivalent mutant: the boundary loop is the fast half of a check
+    # the per-string `get` sweep below it repeats. A decreasing end
+    # inverts its own string's range and an out-of-bounds end overruns
+    # `data`; either way that string's `get` answers None and the sweep
+    # returns false. Weakening the join only changes which half rejects
+    # a corrupt table, never the answer.
+    "replace \\|\\| with && in StringTable::is_well_formed",
     # The io-route gate re-armed (`<` to `<=`) only re-runs the io
     # sweep over an empty runtime slice until the 64-round cap ends
     # the loop where the `break` would have: identical output, bounded
