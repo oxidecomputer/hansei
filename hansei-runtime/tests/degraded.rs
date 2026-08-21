@@ -1047,3 +1047,43 @@ fn test_a_patched_permit_word_decodes_count_and_closed_bit() {
     assert!(waiting.contains(", closed"), "{waiting}");
 }
 
+/// The bundle/target mismatch canary: a vtable whose trailer offset
+/// disagrees with the bundle's Cell layout must be a loud diagnostic,
+/// never a silent misparse. Every healthy pair agrees with itself by
+/// construction, so the vtable's word is made to lie here.
+#[test]
+fn test_a_lying_vtable_offset_is_a_loud_mismatch() {
+    let (bundle, snapshot) = load_any("futurelock");
+    let (ctx, list) = healthy(&bundle, &snapshot);
+    let task = list
+        .tasks
+        .iter()
+        .find(|t| {
+            matches!(
+                t.future,
+                hansei_runtime::tokio::bundle::FutureInfo::Known(_)
+            )
+        })
+        .expect("the fixture has resolved tasks");
+    let view = BundleView::new(&bundle);
+    let header_ty = view.ty(bundle.infra.header).expect("the header type");
+    let header = reify::Value::read(&snapshot, header_ty, task.addr.0).unwrap();
+    let vtable_addr: u64 = ctx.walk(WalkRole::HeaderVtable).read(header).unwrap();
+    let vtable_ty = view.ty(bundle.infra.vtable).expect("the vtable type");
+    let info = reify::Value::read(&snapshot, vtable_ty, vtable_addr).unwrap();
+    let word = ctx
+        .walk(WalkRole::VtableTrailerOffset)
+        .walk_at(info)
+        .unwrap();
+    let honest: u64 = word.parse(&snapshot).unwrap();
+
+    let corrupt = Corrupt::new(&snapshot).patch(word.addr, honest + 8);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &corrupt);
+    let errs: Vec<String> = list.errors.iter().map(|e| format!("{e:#}")).collect();
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("bundle/target layout mismatch")),
+        "{errs:?}"
+    );
+}
