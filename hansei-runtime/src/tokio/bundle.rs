@@ -3023,6 +3023,18 @@ mod tests {
             .find(|t| matches!(t.future, FutureInfo::Known(_)))
             .expect("the fixture has resolved tasks");
         let whole = ctx.task_extent(known).expect("the Cell route");
+        // The Cell route is really the one that answered: the bundle's
+        // Cell layout spans further than the vtable spelling below
+        // reaches (the fixture driver's Cell carries tail padding), so
+        // a walk shunted onto the fallback reports a different end.
+        let FutureInfo::Known(k) = &known.future else {
+            unreachable!()
+        };
+        let cell = ctx
+            .view
+            .ty(ctx.task_entry(k.entry).cell)
+            .expect("the Cell layout is in the bundle");
+        assert_eq!(whole.end - whole.start, cell.size());
         let erased = Task {
             addr: known.addr,
             state: known.state,
