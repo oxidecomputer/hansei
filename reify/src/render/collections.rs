@@ -799,6 +799,93 @@ mod tests {
         assert!(shown.contains("<invalid: node cycle>"), "{shown}");
     }
 
+    /// The length-mismatch markers join the entry list with the same
+    /// punctuation an entry gets: after a comma when entries were rendered,
+    /// as the whole body when none were.
+    #[test]
+    fn test_btree_map_length_mismatch_markers_join_the_entry_list() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ty = v.ty(BTREE_MAP).unwrap();
+        let show = |mem: &FakeMem, length: u64| {
+            let bytes = u64s(&[0x1000, 0, length]);
+            format!(
+                "{}",
+                Value::new(ty, 0x5000, &bytes).display_from_target(mem, 8)
+            )
+        };
+
+        // One entry against a claim of two: the marker follows the entry.
+        let one = FakeMem::new().at(0x1000, btree_leaf(&[(1, 10)]));
+        assert_eq!(
+            show(&one, 2),
+            "alloc::collections::btree::map::BTreeMap<u32, u32> \
+             { 1: 10, <invalid: tree contains fewer entries than length> }"
+        );
+        // No entries against a claim of one: the marker is the whole body.
+        let empty = FakeMem::new().at(0x1000, btree_leaf(&[]));
+        assert_eq!(
+            show(&empty, 1),
+            "alloc::collections::btree::map::BTreeMap<u32, u32> \
+             { <invalid: tree contains fewer entries than length> }"
+        );
+        // Two entries against a claim of one: the walk is cut off after the
+        // rendered entry and the marker follows it.
+        let two = FakeMem::new().at(0x1000, btree_leaf(&[(1, 10), (2, 20)]));
+        assert_eq!(
+            show(&two, 1),
+            "alloc::collections::btree::map::BTreeMap<u32, u32> \
+             { 1: 10, <invalid: tree contains more entries than length> }"
+        );
+    }
+
+    /// A chain of distinct nodes longer than the iteration cap stops at the
+    /// cap: the cycle guard never fires on it, so the cap is the only thing
+    /// bounding a corrupt (but acyclic) successor chain.
+    #[test]
+    fn test_node_list_caps_a_runaway_chain_at_the_iteration_guard() {
+        const COUNT: u64 = 4100;
+        let base = 0x10_0000u64;
+        let mut region = Vec::with_capacity((COUNT * 16) as usize);
+        for i in 0..COUNT {
+            let next = if i + 1 == COUNT {
+                0
+            } else {
+                base + (i + 1) * 16
+            };
+            region.extend_from_slice(&waiter_bytes(1, next));
+        }
+        let mem = FakeMem::new().at(base, region);
+
+        let b = node_bundle();
+        let v = BundleView::new(&b);
+        let bytes = thing_bytes(0, 0, 0, 0, base);
+        let value = Value::new(v.ty(N_THING).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&mem, 16));
+        let rendered = shown.matches("Waiter {").count();
+        assert_eq!(rendered, 4096, "{}", &shown[..shown.len().min(128)]);
+    }
+
+    /// A slice long enough that a parallel chunk holds more than one element
+    /// still stitches in order — 100 elements make every chunk a single
+    /// item on most hosts, leaving the chunk-start arithmetic unexercised.
+    #[test]
+    fn test_very_long_slice_chunks_stitch_in_order() {
+        const N: u32 = 4000;
+        let values: Vec<u32> = (0..N).collect();
+        let mem = FakeMem::new().at(0x2000, u32s(&values));
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = u64s(&[0x2000, N as u64, N as u64]);
+        let value = Value::new(v.ty(VEC).unwrap(), 0, &bytes);
+        let inline: Vec<String> = (0..N).map(|i| i.to_string()).collect();
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8)),
+            format!("[{}]", inline.join(", "))
+        );
+    }
+
     #[test]
     fn test_node_list_empty_and_degradation() {
         // An empty queue (head word 0) needs no target reads.

@@ -349,6 +349,109 @@ mod tests {
         );
     }
 
+    /// A null vtable word and a nonzero one nothing can read are different
+    /// findings, and each keeps its own spelling.
+    #[test]
+    fn test_dyn_pointer_distinguishes_null_and_unreadable_vtables() {
+        let mem = FakeMem::new();
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let show = |vtable: u64| {
+            let bytes = u64s(&[0x1234, vtable]);
+            let value = Value::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+            format!("{:#}", value.display_from_target(&mem, 8))
+        };
+
+        assert_eq!(
+            show(0),
+            concat!(
+                "FatPtr {\n",
+                "    pointer: 0x1234,\n",
+                "    concrete type: <unknown>,\n",
+                "    vtable: 0x0,\n",
+                "}"
+            )
+        );
+        assert_eq!(
+            show(0x3000),
+            concat!(
+                "FatPtr {\n",
+                "    pointer: 0x1234,\n",
+                "    concrete type: <unknown>,\n",
+                "    vtable: 0x3000 -> <unreadable>,\n",
+                "}"
+            )
+        );
+    }
+
+    /// The size and align words are data, not code: a function symbol that
+    /// happens to sit at the address they spell must not enter the method
+    /// list or sway concrete-type inference.
+    #[test]
+    fn test_vtable_size_and_align_slots_never_resolve_as_methods() {
+        let mem = FakeMem::new()
+            .at(0x1000, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0, 8, 8, 0x4000]))
+            .symbol(8, "<Other as app::Trait>::leak")
+            .symbol(0x4000, "<Point as app::Trait>::run");
+
+        let mut b = test_bundle();
+        let TypeDef::Array { count, .. } = &mut b.types.types[VTABLE_ARRAY.0 as usize] else {
+            panic!("vtable is not an array");
+        };
+        *count = 4;
+        b.validate().expect("expanded vtable must validate");
+        let v = BundleView::new(&b);
+        let bytes = u64s(&[0x1000, 0x3000]);
+        let value = Value::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        // A disagreeing "concrete type" leaked from the size/align words
+        // would turn the inferred `Point` into `<unknown>` and drop the
+        // pointee; the full expected text also pins the method line's
+        // one-deeper indentation.
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&mem, 8)),
+            concat!(
+                "FatPtr {\n",
+                "    pointer: 0x1000 -> Point {\n",
+                "        x: 1,\n",
+                "        y: 2,\n",
+                "    },\n",
+                "    concrete type: Point,\n",
+                "    vtable: {\n",
+                "        drop_in_place: 0x0,\n",
+                "        size: 8,\n",
+                "        align: 8,\n",
+                "        method[3]: 0x4000 -> <Point as app::Trait>::run,\n",
+                "    },\n",
+                "}"
+            )
+        );
+    }
+
+    /// One depth step below the budget the vtable is elided to its address,
+    /// not expanded — the boundary is `depth + 1`, the level its record
+    /// would render at.
+    #[test]
+    fn test_dyn_pointer_collapses_the_vtable_at_the_depth_budget() {
+        let mem = FakeMem::new().at(0x3000, u64s(&[0x2c557a0, 152, 8]));
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = u64s(&[0x1234, 0x3000]);
+        let value = Value::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&mem, 1)),
+            concat!(
+                "FatPtr {\n",
+                "    pointer: 0x1234,\n",
+                "    concrete type: <unknown>,\n",
+                "    vtable: 0x3000 -> ...,\n",
+                "}"
+            )
+        );
+    }
+
     #[test]
     fn test_dyn_pointer_format_is_preserved_in_enum_payload() {
         let mem = FakeMem::new().at(0x3000, u64s(&[0, 8, 8]));
