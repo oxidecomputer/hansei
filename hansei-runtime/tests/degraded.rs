@@ -1087,3 +1087,31 @@ fn test_a_lying_vtable_offset_is_a_loud_mismatch() {
         "{errs:?}"
     );
 }
+
+/// The poll slot alone resolves a dyn future: with the drop glue's
+/// slot zeroed, the join must still land through slot 3 — the drop
+/// slot is only a fallback for polls internalized out of the symtab,
+/// and a read that collapses the two slots together resolves nothing.
+#[test]
+fn test_a_dyn_box_resolves_through_its_poll_slot_alone() {
+    let (bundle, snapshot) = load_any("futurelock");
+    let (wide, _) = held_slot(&bundle, &snapshot, "future1");
+    let vtable = snapshot
+        .read_u64(wide + 8)
+        .expect("the wide pointer's vtable word");
+
+    let corrupt = Corrupt::new(&snapshot).patch(vtable, 0);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &corrupt);
+    let census = testkit::census(&ctx, &list);
+    let held = census
+        .held
+        .iter()
+        .find(|h| h.local == "future1")
+        .expect("the boxed future is found");
+    assert!(held.depth > 0, "{held:#?}");
+    assert!(
+        held.future.contains("do_async_thing"),
+        "the poll slot no longer resolves: {held:#?}"
+    );
+}
