@@ -18,7 +18,7 @@
 //! land on the exact structures the guards watch, whatever the
 //! snapshot's layout.
 
-use hansei_bundle::{Bundle, BundleTypeId, BundleView, DiscrValue};
+use hansei_bundle::{Bundle, BundleType, BundleTypeId, BundleView, DiscrValue, WalkRole};
 use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
 use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
 use hansei_runtime::tokio::{census, graph};
@@ -1002,3 +1002,48 @@ fn test_the_census_survives_seeded_faults_on_dyn_future() {
 fn test_the_census_survives_seeded_faults_on_sleep_join() {
     campaign("sleep-join");
 }
+
+// ---------------------------------------------------------------------------
+// Decode over patched words
+// ---------------------------------------------------------------------------
+
+/// The first bundle type whose name satisfies `pred`, in id order.
+fn ty_by_name<'b>(bundle: &'b Bundle, pred: impl Fn(&str) -> bool) -> BundleType<'b> {
+    let view = BundleView::new(bundle);
+    (0..bundle.types.types.len() as u32)
+        .filter_map(|i| view.ty(BundleTypeId(i)))
+        .find(|ty| pred(ty.name()))
+        .expect("the fixture bundle has such a type")
+}
+
+/// A semaphore's permit word packs the closed bit beside the count, and
+/// the decode must split them apart. The contended fixture semaphore
+/// holds the one value the two shift directions agree on — zero — so
+/// the word is patched to a count the healthy pair cannot show, and the
+/// held acquire's wait line is read back.
+#[test]
+fn test_a_patched_permit_word_decodes_count_and_closed_bit() {
+    let (bundle, snapshot) = load_any("futurelock");
+    let (ctx, list) = healthy(&bundle, &snapshot);
+    let analysis = graph::analyze(&ctx, &list);
+    let sem_addr = analysis.futurelocks[0].acquire.semaphore;
+    let sem_ty = ty_by_name(&bundle, |n| {
+        n.starts_with("tokio::sync::batch_semaphore::Semaphore")
+    });
+    let sem = reify::Value::read(&snapshot, sem_ty, sem_addr).unwrap();
+    let word = ctx.walk(WalkRole::SemaphorePermits).walk_at(sem).unwrap();
+
+    let corrupt = Corrupt::new(&snapshot).patch(word.addr, (5 << 1) | 1);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &corrupt);
+    let census = testkit::census(&ctx, &list);
+    let waiting = census
+        .held
+        .iter()
+        .find(|h| h.local == "future1")
+        .and_then(|h| h.waiting_on.clone())
+        .expect("the abandoned acquire waits on the semaphore");
+    assert!(waiting.contains("5 available"), "{waiting}");
+    assert!(waiting.contains(", closed"), "{waiting}");
+}
+
