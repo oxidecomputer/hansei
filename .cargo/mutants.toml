@@ -78,6 +78,14 @@ exclude_re = [
     # returning the same thing, so nothing can tell the difference. The
     # arm is there to say *why* a union is stopped at.
     "delete match arm TypeClass::Union in scan_plan",
+    # Equivalent mutant: past the `get` miss above it (which is where a
+    # symbol the target lacks returns None), `candidates` is an index
+    # entry, and entries are only created by the build loop's
+    # `entry(key).or_default().push(symbol)` — creation and push are one
+    # statement, so every entry holds at least one symbol and `by_addr`
+    # is never empty. The arm stays as the graceful answer should a
+    # refactor of the index build ever make an empty entry possible.
+    "delete match arm 0 in Context<'b, T>::object_symbol",
     # A constant type-name hash is a performance bug, not a behaviour
     # one, and no test can see it: the index groups candidates by this
     # hash and `rust_type_names_equal` still decides each one, so every
