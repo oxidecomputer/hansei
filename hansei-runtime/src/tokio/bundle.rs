@@ -2806,3 +2806,198 @@ enum DynAwaitee<'b> {
         candidates: Vec<String>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::testkit;
+
+    use hansei_bundle::Bundle;
+    use proc::snapshot::Snapshot;
+
+    use std::sync::OnceLock;
+
+    /// The `unordered` fixture pair: coroutines held plain and behind
+    /// `Pin<Box<dyn Future>>`, a `FuturesUnordered`, and the tokio
+    /// plumbing the predicates below pick from.
+    fn unordered() -> &'static (Bundle, Snapshot) {
+        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+        PAIR.get_or_init(|| testkit::load_any("unordered"))
+    }
+
+    fn unordered_ctx() -> Context<'static, Snapshot> {
+        let (bundle, snapshot) = unordered();
+        testkit::context(bundle, snapshot)
+    }
+
+    /// The first bundle type satisfying `pred`, scanned in id order so
+    /// one frozen fixture always yields the same type.
+    fn find_ty<'b>(
+        bundle: &'b Bundle,
+        mut pred: impl FnMut(BundleType<'b>) -> bool,
+    ) -> BundleType<'b> {
+        let view = BundleView::new(bundle);
+        (0..bundle.types.types.len() as u32)
+            .filter_map(|i| view.ty(BundleTypeId(i)))
+            .find(|ty| pred(*ty))
+            .expect("the fixture bundle has such a type")
+    }
+
+    /// A coroutine whose `poll` rustc inlined out of the symtab has no
+    /// poll-table entry, and must still screen as a future on
+    /// `is_coroutine` alone. Every debug-build fixture records every
+    /// poll, so the documented condition — no symbol, no entry — is
+    /// constructed here by taking the id out of the table.
+    #[test]
+    fn test_a_coroutine_off_the_poll_table_is_still_a_future() {
+        let mut ctx = unordered_ctx();
+        let (bundle, _) = unordered();
+        let ty = find_ty(bundle, |t| {
+            t.is_coroutine() && leaf_kind(t.name()).is_none()
+        });
+        ctx.futures.remove(&ty.id());
+        assert!(ctx.is_future(ty), "{}", ty.name());
+    }
+
+    /// The poll table alone is also enough: a hand-written future that
+    /// is no coroutine and no named wait primitive screens on its
+    /// recorded `poll`.
+    #[test]
+    fn test_a_poll_table_type_alone_is_a_future() {
+        let ctx = unordered_ctx();
+        let (bundle, _) = unordered();
+        let ty = find_ty(bundle, |t| {
+            ctx.known_futures().contains(&t.id())
+                && !t.is_coroutine()
+                && leaf_kind(t.name()).is_none()
+                && t.dyn_pointer().is_none()
+        });
+        assert!(ctx.is_future(ty), "{}", ty.name());
+    }
+
+    /// Every coroutine is a future, named leaf or not: the screen's
+    /// routes are alternatives, not conjuncts. Asserted over the whole
+    /// bundle rather than one witness, because a single frame can be
+    /// rescued through the unwrap loop (its sole member chains to a
+    /// poll-table type) and hide a broken screen.
+    #[test]
+    fn test_every_coroutine_is_a_future() {
+        let ctx = unordered_ctx();
+        let (bundle, _) = unordered();
+        let view = BundleView::new(bundle);
+        let mut coroutines = 0;
+        for i in 0..bundle.types.types.len() as u32 {
+            let Some(t) = view.ty(BundleTypeId(i)) else {
+                continue;
+            };
+            if t.is_coroutine() {
+                coroutines += 1;
+                assert!(ctx.is_future(t), "{}", t.name());
+            }
+        }
+        assert!(coroutines > 0, "the fixture bundle has coroutines");
+    }
+
+    /// A wrapper that is not a future by any direct route answers by
+    /// unwrapping its sole *sized* member — a filter that keeps ZSTs
+    /// instead finds nothing to follow, and a step that never recurses
+    /// never reaches the future inside. The witness is found by the
+    /// unwrap contract itself, so it cannot silently degrade into a
+    /// type the direct routes already accept.
+    #[test]
+    fn test_is_future_unwraps_the_sole_sized_member() {
+        let ctx = unordered_ctx();
+        let (bundle, _) = unordered();
+        let ty = find_ty(bundle, |t| {
+            if ctx.known_futures().contains(&t.id())
+                || t.is_coroutine()
+                || leaf_kind(t.name()).is_some()
+                || t.dyn_pointer().is_some()
+            {
+                return false;
+            }
+            let mut sized = t.members().map(|m| m.ty()).filter(|m| m.size() > 0);
+            match (sized.next(), sized.next()) {
+                (Some(inner), None) => ctx.is_future(inner),
+                _ => false,
+            }
+        });
+        assert!(ctx.is_future(ty), "{}", ty.name());
+    }
+
+    /// Plain data is not a future, and neither is a multi-member
+    /// container that merely holds them: the unwrap step follows a
+    /// *sole* sized member, never guesses among several.
+    #[test]
+    fn test_is_future_declines_plain_data_and_containers() {
+        let ctx = unordered_ctx();
+        let (bundle, _) = unordered();
+        let scalar = find_ty(bundle, |t| t.name() == "u32");
+        assert!(!ctx.is_future(scalar));
+        let set = find_ty(bundle, |t| {
+            t.name()
+                .starts_with("futures_util::stream::futures_unordered::FuturesUnordered<")
+        });
+        assert!(!ctx.is_future(set), "{}", set.name());
+    }
+
+    /// Where every hand-laid value is placed.
+    const AT: u64 = 0x1000;
+
+    /// The chain steps through a wrapper holding exactly one future,
+    /// and the step lands at the member's own address. The witness is
+    /// an enum variant payload whose sole future member sits at a
+    /// nonzero offset, so a step that mis-adds the offset lands
+    /// somewhere else and fails here rather than fabricating a frame.
+    #[test]
+    fn test_a_sole_inner_future_is_followed_at_its_member_offset() {
+        let ctx = unordered_ctx();
+        let (bundle, _) = unordered();
+        let ty = find_ty(bundle, |t| {
+            t.name().starts_with("core::option::Option<unordered::leaf")
+                && t.name().ends_with("::Some")
+        });
+        let member = ty.members().next().expect("Some has a payload");
+        assert!(member.offset() > 0, "the witness must not sit at zero");
+        let bytes = vec![0u8; ty.size() as usize];
+        let value = Value::new(ty, AT, &bytes);
+        let (name, follow) = ctx
+            .sole_inner_future(value)
+            .expect("exactly one member is a future");
+        assert_eq!(name, member.name());
+        let Follow::Next { future, .. } = follow else {
+            panic!("a by-value coroutine is followed, not stopped at");
+        };
+        assert_eq!(future.addr, AT + member.offset());
+        assert_eq!(future.ty.id(), member.ty().id());
+    }
+
+    /// Two candidate futures and the rule declines: a combinator with
+    /// several arms is a chain end, not a guess between them.
+    #[test]
+    fn test_two_candidate_futures_end_the_chain() {
+        let ctx = unordered_ctx();
+        let (bundle, _) = unordered();
+        let ty = find_ty(bundle, |t| {
+            t.name().starts_with("unordered::driver") && t.name().ends_with("::Suspend0")
+        });
+        let bytes = vec![0u8; ty.size() as usize];
+        assert!(ctx.sole_inner_future(Value::new(ty, AT, &bytes)).is_none());
+    }
+
+    /// A buffer too short to hold the member's bytes declines rather
+    /// than slicing out of range.
+    #[test]
+    fn test_a_short_buffer_declines_the_follow() {
+        let ctx = unordered_ctx();
+        let (bundle, _) = unordered();
+        let ty = find_ty(bundle, |t| {
+            t.name().starts_with("core::option::Option<unordered::leaf")
+                && t.name().ends_with("::Some")
+        });
+        let bytes = vec![0u8; 1];
+        assert!(ctx.sole_inner_future(Value::new(ty, AT, &bytes)).is_none());
+    }
+
+}
