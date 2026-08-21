@@ -48,20 +48,46 @@ fn workspace_root() -> &'static Path {
 }
 
 /// Build the fixture once per suite run and hand back its path.
+///
+/// Once per *run* rather than once per process: under nextest each test
+/// is its own process, and a rebuild landing while another test reads
+/// the binary's symbols — or executes it — hands that test a
+/// half-written file.
 fn fixture() -> &'static Path {
     static FIXTURE: OnceLock<PathBuf> = OnceLock::new();
     FIXTURE.get_or_init(|| {
         let test_programs = workspace_root().join("test-programs");
-        let status = Command::new(test_programs.join("regen.sh"))
-            .arg(PROGRAM)
-            .status()
-            .expect("failed to run regen.sh");
-        assert!(
-            status.success(),
-            "regen.sh failed; is the pinned toolchain installed?"
+        testrun::once_per_run(
+            &test_programs.join("fixtures/.built").join(PROGRAM),
+            || built_from(&test_programs),
+            || {
+                let status = Command::new(test_programs.join("regen.sh"))
+                    .arg(PROGRAM)
+                    .status()
+                    .expect("failed to run regen.sh");
+                assert!(
+                    status.success(),
+                    "regen.sh failed; is the pinned toolchain installed?"
+                );
+            },
         );
         test_programs.join("fixtures/bin").join(PROGRAM)
     })
+}
+
+/// What the fixture binary is built from, for a run reusing what an
+/// earlier one left behind (`testrun::REUSE`): the program's own source
+/// and the crate it calls into, the manifest and lock that pin what it
+/// links, and the script that drives the build and pins the toolchain.
+fn built_from(dir: &Path) -> String {
+    let mut inputs = testrun::Inputs::new();
+    inputs
+        .file(&dir.join("src/lib.rs"))
+        .file(&dir.join("src/bin").join(format!("{PROGRAM}.rs")))
+        .file(&dir.join("Cargo.toml"))
+        .file(&dir.join("Cargo.lock"))
+        .file(&dir.join("regen.sh"));
+    inputs.finish()
 }
 
 /// The fixture program, running at its parked steady state.
