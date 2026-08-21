@@ -93,7 +93,10 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
         .members()
         .find(|m| m.name() == "inner")
         .expect("Running declares inner");
-    assert!(inner.offset() > 0, "the witness member must not sit at zero");
+    assert!(
+        inner.offset() > 0,
+        "the witness member must not sit at zero"
+    );
     assert_eq!(
         chain.frames[3].future.addr,
         state.payload.addr + inner.offset()

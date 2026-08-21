@@ -1115,3 +1115,59 @@ fn test_a_dyn_box_resolves_through_its_poll_slot_alone() {
         "the poll slot no longer resolves: {held:#?}"
     );
 }
+
+/// A dyn join that runs and misses reports the *poll* slot's symbol —
+/// what the target called the function hansei could not join — not
+/// whatever another slot happened to hold. The poll slot is aimed at a
+/// real symbol no future was extracted under, and the drop fallback is
+/// zeroed, so the reported name can only have come from slot 3.
+#[test]
+fn test_an_unjoined_dyn_reports_the_poll_slots_symbol() {
+    let (bundle, snapshot) = load_any("futurelock");
+    let (wide, _) = held_slot(&bundle, &snapshot, "future1");
+    let vtable = snapshot
+        .read_u64(wide + 8)
+        .expect("the wide pointer's vtable word");
+    let main_fn = snapshot
+        .lookup_symbol_by_name("main")
+        .expect("the fixture binary names main");
+
+    let corrupt = Corrupt::new(&snapshot)
+        .patch(vtable + 24, main_fn.st_value)
+        .patch(vtable, 0);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let list = tasks_of(&ctx, &corrupt);
+
+    // Navigate to the slot the way held_slot did, over the corrupt
+    // target, and read the chain's end directly.
+    let census = testkit::census(&ctx, &list);
+    let held = census
+        .held
+        .iter()
+        .find(|h| h.local == "future1" && h.via.is_none())
+        .expect("the boxed future is still found");
+    let task = &list.tasks[held.owner];
+    let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
+        panic!("the holder is parked");
+    };
+    let chain = ctx.await_chain(root);
+    let frame = &chain.frames[held.frame];
+    let payload = match &frame.state {
+        Some(state) => &state.payload,
+        None => &frame.future,
+    };
+    let member = payload
+        .ty
+        .members()
+        .find(|m| m.name() == "future1")
+        .expect("the frame holds future1");
+    let start = member.offset() as usize;
+    let bytes = &payload.bytes[start..start + member.ty().size() as usize];
+    let value = reify::Value::new(member.ty(), payload.addr + member.offset(), bytes);
+    let inner = ctx.await_chain(value);
+    let ChainEnd::UnknownDyn { poll_symbol, .. } = &inner.end else {
+        panic!("the join runs and misses: {:?}", inner.end);
+    };
+    let symbol = poll_symbol.as_deref().expect("slot 3 resolves to a name");
+    assert!(symbol.contains("main"), "{symbol}");
+}
