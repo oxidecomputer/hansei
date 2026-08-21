@@ -1633,6 +1633,7 @@ dependencies = [
  "proc",
  "rustc-demangle",
  "tempfile",
+ "testrun",
 ]
 
 [[package]]
