@@ -105,6 +105,16 @@ exclude_re = [
     # drops, and a chain that fails before the leaf fails local_acquire
     # the same way. Equivalent on every reachable input.
     "replace \\|\\| with && in Context<'b, T>::abandoned_acquires",
+    # rustc's DWARF lays every enum variant payload at the enum's own
+    # address — variant members carry enum-relative offsets, and the
+    # decoded payload offset is structurally zero, for coroutine state
+    # enums and repr(C) enums alike (walk_shapes pins the convention).
+    # Adding or subtracting a zero offset is the same address, so the
+    # mutant on await_chain's payload placement cannot be told apart on
+    # any input a rustc-built target produces. (The regex also matches
+    # the payload slice bound a few lines up; that one every chain test
+    # kills, so skipping its report costs nothing.)
+    "bundle.rs.*replace \\+ with - in Context<'b, T>::await_chain",
     # A constant type-name hash is a performance bug, not a behaviour
     # one, and no test can see it: the index groups candidates by this
     # hash and `rust_type_names_equal` still decides each one, so every
