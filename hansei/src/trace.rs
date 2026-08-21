@@ -52,7 +52,7 @@ fn exec_trace_task(
     // A mid-poll task is being mutated while we read it; anything below
     // may be torn.
     if task.state.lifecycle() == Lifecycle::Running {
-        let lwp = polling_lwp(session, Some(task_id));
+        let lwp = polling_lwp(&session.workers, Some(task_id));
         writeln!(
             io::stderr(),
             "warning: task {task_id} is running{lwp}; its state may be torn"
@@ -141,7 +141,7 @@ fn exec_trace_future(
     // with them — while we read; anything below may be torn.
     let task = &list.tasks[owner];
     if task.state.lifecycle() == Lifecycle::Running {
-        let lwp = polling_lwp(session, task.task_id);
+        let lwp = polling_lwp(&session.workers, task.task_id);
         writeln!(
             io::stderr(),
             "warning: {} is running{lwp}; the future's state may be torn",
@@ -844,15 +844,118 @@ pub(crate) fn print_variable(
 
 /// The ` on LWP N` suffix of a torn-state warning, when some worker is
 /// mid-poll in the task.
-fn polling_lwp(session: &Session<'_>, id: Option<u64>) -> String {
-    id.and_then(|id| {
-        session
-            .workers
-            .iter()
-            .find(|w| w.current_task_id == Some(id))
-    })
-    .map(|w| format!(" on LWP {}", w.tid))
-    .unwrap_or_default()
+fn polling_lwp(workers: &[bundle::Worker], id: Option<u64>) -> String {
+    id.and_then(|id| workers.iter().find(|w| w.current_task_id == Some(id)))
+        .map(|w| format!(" on LWP {}", w.tid))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod polling_lwp_tests {
+    use super::polling_lwp;
+    use hansei_runtime::tokio::bundle;
+
+    /// The suffix names the worker mid-poll in the task — only a worker
+    /// whose thread-local names that very task, and nothing otherwise.
+    #[test]
+    fn test_the_suffix_names_the_polling_worker() {
+        let worker = |tid, id| bundle::Worker {
+            tid,
+            context_addr: 0x100,
+            current_task_id: id,
+        };
+        let workers = [worker(11, Some(7)), worker(12, Some(9))];
+        assert_eq!(polling_lwp(&workers, Some(9)), " on LWP 12");
+        assert_eq!(polling_lwp(&workers, Some(8)), "");
+        assert_eq!(polling_lwp(&workers, None), "");
+    }
+}
+
+#[cfg(test)]
+mod state_locals_tests {
+    use super::state_locals;
+    use hansei_bundle::{
+        Bundle, BundleTypeId, BundleView, Encoding, FORMAT_VERSION, InfraTypes, MemberDef, Meta,
+        StringInterner, TypeDef, TypeTable,
+    };
+
+    /// Source-level locals are the sized, non-compiler members, one per
+    /// (name, offset): ZSTs, `__` slots and positional repeats stay out.
+    #[test]
+    fn test_state_locals_are_the_sized_named_members() {
+        let mut strings = StringInterner::new();
+        let n_u64 = strings.intern("u64");
+        let n_state = strings.intern("State");
+        let n_ghost = strings.intern("Ghost");
+        let n_value = strings.intern("value");
+        let n_marker = strings.intern("marker");
+        let n_awaitee = strings.intern("__awaitee");
+        let strings = strings.finish();
+        let member = |name, ty, offset| MemberDef {
+            name,
+            ty: BundleTypeId(ty),
+            offset,
+        };
+        let types = vec![
+            TypeDef::Base {
+                name: n_u64,
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
+            // A PhantomData-shaped marker: named, sized zero.
+            TypeDef::Struct {
+                name: n_ghost,
+                size: 0,
+                members: vec![],
+            },
+            TypeDef::Struct {
+                name: n_state,
+                size: 24,
+                members: vec![
+                    member(n_value, 0, 0),
+                    // The same name at the same offset: a captured
+                    // upvar recorded beside the saved local.
+                    member(n_value, 0, 0),
+                    member(n_marker, 1, 8),
+                    member(n_awaitee, 0, 16),
+                ],
+            },
+        ];
+        let ty = BundleTypeId(0);
+        let bundle = Bundle {
+            meta: Meta {
+                format_version: FORMAT_VERSION,
+                ..Default::default()
+            },
+            strings,
+            types: TypeTable {
+                types,
+                ..Default::default()
+            },
+            tasks: Default::default(),
+            dyn_futures: Default::default(),
+            statics: Default::default(),
+            walks: Default::default(),
+            infra: InfraTypes {
+                header: ty,
+                vtable: ty,
+                trailer: ty,
+                context: ty,
+                scheduler_handle: ty,
+                mt_handle: ty,
+                ct_handle: ty,
+                location: ty,
+                raw_waker_vtable: ty,
+            },
+            provenance: Default::default(),
+        };
+        let view = BundleView::new(&bundle);
+        let state = view.ty(BundleTypeId(2)).expect("the state type resolves");
+
+        let locals = state_locals(state);
+        let names: Vec<&str> = locals.iter().map(|m| m.name()).collect();
+        assert_eq!(names, ["value"], "{names:?}");
+    }
 }
 
 #[cfg(test)]
@@ -941,6 +1044,20 @@ mod variable_format_tests {
                 Some("Suspend0")
             ),
             "async fn"
+        );
+    }
+
+    /// The closure spelling needs both delimiters: a component that
+    /// only starts like one, or only ends like one, is no closure.
+    #[test]
+    fn test_half_spelled_closure_names_stay_futures() {
+        assert_eq!(
+            async_kind("crate::{async_closure_env#1}tail", None),
+            "future"
+        );
+        assert_eq!(
+            async_kind("crate::not_{async_closure_env#1}", None),
+            "future"
         );
     }
 
@@ -1034,6 +1151,44 @@ mod future_trace_tests {
                 h.addr,
                 future1.addr + 1
             );
+        });
+    }
+
+    /// The containment check is half-open: an address one past a held
+    /// future's end belongs to whatever strictly contains *it*, never
+    /// to the future it borders.
+    #[test]
+    fn test_one_past_a_futures_end_is_outside_it() {
+        with_target("futurelock", |ctx, list, extents, census| {
+            let future1 = census
+                .held
+                .iter()
+                .find(|h| h.local == "future1")
+                .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
+            let size = ctx.view.ty(future1.ty).expect("the type resolves").size();
+            let end = future1.addr + size;
+
+            if let Ok(FutureAt::Held(h)) = future_at(&ctx.view, list, extents, census, end) {
+                assert_ne!(h.addr, future1.addr, "the future claims its own end");
+                let hsize = ctx.view.ty(h.ty).expect("the type resolves").size();
+                assert!(
+                    h.addr <= end && end < h.addr + hsize,
+                    "resolved to {:#x} (size {hsize:#x}), which does not contain {end:#x}",
+                    h.addr
+                );
+            }
+        });
+    }
+
+    /// A set's own address is refused with the set named: it is not one
+    /// future, and its children are what `trace` can follow.
+    #[test]
+    fn test_a_sets_address_names_the_set() {
+        with_target("unordered", |_ctx, list, extents, census| {
+            let set = census.sets.first().expect("the fixture holds a set");
+            let err = future_at(&_ctx.view, list, extents, census, set.addr)
+                .expect_err("a set is not one future");
+            assert!(err.to_string().contains("child node(s)"), "{err}");
         });
     }
 
@@ -1467,6 +1622,49 @@ mod trace_render_tests {
             .unwrap()
             .replace_all(&rendered, "0xADDR")
             .into_owned()
+    }
+
+    /// A frame whose rows hold no locals prints no locals column at
+    /// all: the awaitee follows the location cell directly, with no
+    /// blank gutter padded in between.
+    #[test]
+    fn test_an_empty_locals_column_is_omitted_not_padded() {
+        assert_eq!(
+            trace(
+                "walk-shapes",
+                "walk_shapes::side_parker::{async_fn_env#0}",
+                false
+            ),
+            "  0  async fn      walk_shapes::side_parker::{async_fn_env#0}
+     suspends:
+     ▸ Unresumed  src/bin/walk-shapes.rs:204
+       Suspend0   src/bin/walk-shapes.rs:205  core::future::pending::Pending<()>
+"
+        );
+    }
+
+    /// A plain-future frame has no suspend inventory: the chain
+    /// introduces its child under an `awaits:` line, and the indent
+    /// advances one detail step per such frame rather than a row step
+    /// it does not have.
+    #[test]
+    fn test_wrapper_frames_without_inventories_introduce_awaits() {
+        assert_eq!(
+            trace("walk-shapes", "walk_shapes::chained::{async_fn_env#0}", false),
+            "  0  async fn      walk_shapes::chained::{async_fn_env#0}
+     suspends:
+     ▸ Suspend0  src/bin/walk-shapes.rs:103  1 local
+       └─  1  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>>
+          awaits:
+          └─  2  future        walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>
+             state             Running
+             awaits:
+             └─  3  async fn      walk_shapes::deep::{async_fn_env#0}
+                suspends:
+                ▸ Suspend0  src/bin/walk-shapes.rs:88  1 local
+                  └─* 4  future        tokio::sync::notify::Notified
+"
+        );
     }
 
     /// Two suspend points, parked at the second: the row order is the

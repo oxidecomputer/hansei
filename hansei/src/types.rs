@@ -465,6 +465,8 @@ mod tests {
             "Some",
             "Many",
             "dup::Type",
+            "Pack",
+            "nodes",
         ] {
             names.insert(name, strings.intern(name));
         }
@@ -574,6 +576,17 @@ mod tests {
                 name: n("dup::Type"),
                 size: 16,
                 members: vec![member("value", 0, 8)],
+            },
+            // 13: [Node; 2] — an array whose element has a layout
+            TypeDef::Array {
+                elem: BundleTypeId(1),
+                count: 2,
+            },
+            // 14: Pack { nodes: [Node; 2] }
+            TypeDef::Struct {
+                name: n("Pack"),
+                size: 32,
+                members: vec![member("nodes", 13, 0)],
             },
         ];
 
@@ -743,6 +756,53 @@ mod tests {
         assert!(out.contains("= 0 "), "{out}");
         assert!(out.contains("1..=3"), "{out}");
         assert!(out.contains("otherwise"), "{out}");
+    }
+
+    /// A member whose type is a struct carries straight on below its
+    /// own line; only a crossing — a pointer, an array — earns an arrow
+    /// heading. Wrapper holds exactly three: `indirect`'s fresh Node,
+    /// that Node's own cyclic `next`, and inline `node`'s cyclic
+    /// `next`.
+    #[test]
+    fn test_only_a_crossing_earns_an_arrow_heading() {
+        let out = described("Wrapper", true, 8);
+        assert_eq!(out.matches("→ struct Node").count(), 3, "{out}");
+    }
+
+    /// A crossed body opens two columns in from the arrow line that
+    /// named it: `indirect`'s Node members sit at six spaces, two past
+    /// their arrow's four.
+    #[test]
+    fn test_a_crossed_body_indents_by_two() {
+        let out = described("Wrapper", true, 8);
+        assert!(
+            out.lines()
+                .any(|l| l.starts_with("      +0") && l.contains("value")),
+            "{out}"
+        );
+    }
+
+    /// At the depth boundary the root's own members still print
+    /// unmarked: the mark belongs to rows that sit below a crossing,
+    /// one level too deep to follow.
+    #[test]
+    fn test_the_depth_boundary_leaves_the_roots_members_unmarked() {
+        let out = described("Wrapper", true, 1);
+        let node = out
+            .lines()
+            .find(|l| l.contains("node"))
+            .expect("the node member row prints");
+        assert!(!node.contains(MORE_BELOW), "{node:?}");
+    }
+
+    /// An array member's element is reached like a pointee: the element
+    /// type's layout opens beneath an arrow heading of its own.
+    #[test]
+    fn test_an_array_member_reaches_its_element() {
+        let out = described("Pack", true, 8);
+        assert!(out.contains("[Node; 2]"), "{out}");
+        assert!(out.contains("→ struct Node"), "{out}");
+        assert!(out.contains("value"), "{out}");
     }
 
     /// Pointers and arrays are anonymous in the bundle; member lines

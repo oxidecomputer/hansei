@@ -2163,8 +2163,19 @@ fn test_threads_shows_workers_and_stacks() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
         let out = hansei_ok(&bundle, core, "threads");
-        assert!(out.contains("LWP "), "{out}");
+        // The listing opens with the first LWP's block, and the blank
+        // lines fall between blocks — not ahead of them, and not
+        // nowhere.
+        assert!(out.starts_with("LWP "), "{out}");
+        assert!(out.contains("\n\nLWP "), "{out}");
+        // The heading claims what each thread is polling, in one of
+        // its three spellings — all of which say "poll".
+        assert!(out.contains("poll"), "{out}");
         assert!(out.contains("worker 0"), "{out}");
+        // The thread's own tokio context prints ahead of the scheduler
+        // state.
+        assert!(out.contains("thread_id"), "{out}");
+        assert!(out.contains("budget"), "{out}");
         assert!(out.contains("multi_thread::worker::Core"), "{out}");
         assert!(out.contains("is_searching:"), "{out}");
         // The blocking thread holds a runtime context without running
@@ -2172,6 +2183,59 @@ fn test_threads_shows_workers_and_stacks() {
         assert!(out.contains("not in the scheduler's run loop"), "{out}");
         assert!(out.contains("stack:"), "{out}");
         assert!(out.contains("simple_await::main"), "{out}");
+    });
+}
+
+/// `runtime` selects by listed index and by handle address, and earns
+/// headings only from an ambiguity they resolve: one runtime and one
+/// section print the value alone.
+#[test]
+fn test_runtime_selects_by_index_and_address() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let out = hansei_ok(&bundle, core, "runtime -D");
+        assert!(out.contains("runtime::driver::Handle"), "{out}");
+        assert!(!out.contains("drivers:"), "{out}");
+        assert!(!out.contains("(multi_thread):"), "{out}");
+
+        let by_index = hansei_ok(&bundle, core, "runtime 0 -D");
+        assert_eq!(out, by_index, "index 0 selects the one runtime");
+
+        let listed = hansei_ok(&bundle, core, "runtimes");
+        let addr = regex::Regex::new(r"@(0x[0-9a-f]+)")
+            .unwrap()
+            .captures(&listed)
+            .expect("runtimes lists a handle address")[1]
+            .to_string();
+        let by_addr = hansei_ok(&bundle, core, &format!("runtime {addr} -D"));
+        assert_eq!(out, by_addr, "the listed handle address selects it");
+    });
+}
+
+/// `--runtime` past the end is refused with the list of what there is:
+/// a reader who guessed wrong wants the runtimes, not a bare refusal.
+#[test]
+fn test_runtime_selection_past_the_end_is_refused() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let out = hansei_with(&bundle, core, &["--runtime", "7"], "info");
+        assert!(!out.status.success(), "an absent runtime index attached");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("--runtime 7: the target has 1 runtime(s)"),
+            "{stderr}"
+        );
+    });
+}
+
+/// A script's blank lines and `#` comments are skipped, not executed:
+/// an annotated stored script runs clean.
+#[test]
+fn test_scripts_may_hold_comments_and_blank_lines() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let out = hansei_ok(&bundle, core, "# a note\n\ninfo");
+        assert!(out.contains("symbols resolved:"), "{out}");
     });
 }
 
