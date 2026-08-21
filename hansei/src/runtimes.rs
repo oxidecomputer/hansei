@@ -368,6 +368,32 @@ mod runtimes_tests {
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::census;
 
+    /// The futures column counts what the census found through each
+    /// group's tasks: the tasks themselves, plus the held futures and
+    /// live set children attributed to their owners.
+    #[test]
+    fn test_futures_count_the_censuss_finds() {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let mut e = testkit::enumerate(&ctx, &snapshot);
+        let local_sets = e.discover(&ctx, &[]);
+        let (runtimes, list) = (e.runtimes, e.list);
+        let census = census::census(&ctx, &list);
+        assert!(
+            !census.held.is_empty() && !census.sets.is_empty(),
+            "the fixture must hold futures for this to say anything"
+        );
+
+        let live: usize = census
+            .sets
+            .iter()
+            .map(|s| s.children.iter().filter(|c| c.future.is_some()).count())
+            .sum();
+        let rows = groups(&runtimes, &local_sets, &list, &census);
+        let total: usize = rows.iter().map(|g| g.futures).sum();
+        assert_eq!(total, list.tasks.len() + census.held.len() + live);
+    }
+
     /// Naming no section asks for the whole runtime; naming one asks
     /// for it alone, and naming both is spelling the whole out.
     #[test]

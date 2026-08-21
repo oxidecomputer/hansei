@@ -2169,8 +2169,11 @@ fn test_threads_shows_workers_and_stacks() {
         assert!(out.starts_with("LWP "), "{out}");
         assert!(out.contains("\n\nLWP "), "{out}");
         // The heading claims what each thread is polling, in one of
-        // its three spellings — all of which say "poll".
-        assert!(out.contains("poll"), "{out}");
+        // the claim's three spellings.
+        let claim =
+            regex::Regex::new(r"LWP \d+  (polling no task|polling task \d+|last polled task \d+)")
+                .unwrap();
+        assert!(claim.is_match(&out), "{out}");
         assert!(out.contains("worker 0"), "{out}");
         // The thread's own tokio context prints ahead of the scheduler
         // state.
@@ -2209,6 +2212,23 @@ fn test_runtime_selects_by_index_and_address() {
             .to_string();
         let by_addr = hansei_ok(&bundle, core, &format!("runtime {addr} -D"));
         assert_eq!(out, by_addr, "the listed handle address selects it");
+
+        // Two sections is an ambiguity, and earns each its heading.
+        let whole = hansei_ok(&bundle, core, "runtime");
+        assert!(whole.contains("drivers:\n"), "{whole}");
+        assert!(whole.contains("\n\nshared:\n"), "{whole}");
+    });
+}
+
+/// Several runtimes are an ambiguity too: each gets a heading naming
+/// it, with a blank line between one runtime's output and the next.
+#[test]
+fn test_several_runtimes_are_told_apart_by_headings() {
+    let bundle = fixtures().bundle("foreign-runtime");
+    with_core("foreign-runtime", |core| {
+        let out = hansei_ok(&bundle, core, "runtime -D");
+        assert_eq!(out.matches(" (current_thread):\n").count(), 2, "{out}");
+        assert!(out.contains("\n\nruntime 1 @"), "{out}");
     });
 }
 

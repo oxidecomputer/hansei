@@ -467,6 +467,7 @@ mod tests {
             "dup::Type",
             "Pack",
             "nodes",
+            "opts",
         ] {
             names.insert(name, strings.intern(name));
         }
@@ -549,7 +550,10 @@ mod tests {
                     variants: vec![
                         variant("None", Some(DiscrValues(vec![Value(0)])), 8),
                         variant("Some", Some(DiscrValues(vec![Range(1, 3)])), 0),
-                        variant("Many", None, 0),
+                        // A payload with a body of its own, so a
+                        // recursive description has something to nest
+                        // under a variant row.
+                        variant("Many", None, 5),
                     ],
                 },
             },
@@ -582,11 +586,11 @@ mod tests {
                 elem: BundleTypeId(1),
                 count: 2,
             },
-            // 14: Pack { nodes: [Node; 2] }
+            // 14: Pack { nodes: [Node; 2], opts: OptEnum }
             TypeDef::Struct {
                 name: n("Pack"),
-                size: 32,
-                members: vec![member("nodes", 13, 0)],
+                size: 48,
+                members: vec![member("nodes", 13, 0), member("opts", 9, 32)],
             },
         ];
 
@@ -728,7 +732,9 @@ mod tests {
                     assert!(!line.contains(MORE_BELOW), "{line:?}");
                 }
             }
-            if line.contains("indirect") {
+            // A c-enum with enumerators has a body the way a struct
+            // with members does, so the cut is marked.
+            if line.contains("color") || line.contains("indirect") {
                 assert!(line.contains(MORE_BELOW), "{line:?}");
             }
         }
@@ -803,6 +809,15 @@ mod tests {
         assert!(out.contains("[Node; 2]"), "{out}");
         assert!(out.contains("→ struct Node"), "{out}");
         assert!(out.contains("value"), "{out}");
+    }
+
+    /// A variant's payload opens two columns in from its row: the
+    /// `Many` payload's enumerators sit at six spaces, two past their
+    /// variant rows' four.
+    #[test]
+    fn test_a_variant_payload_indents_by_two() {
+        let out = described("Pack", true, 8);
+        assert!(out.contains("\n      Red = 0\n"), "{out}");
     }
 
     /// Pointers and arrays are anonymous in the bundle; member lines
