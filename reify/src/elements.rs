@@ -364,6 +364,27 @@ mod tests {
         assert_eq!(vec.parse::<Vec<u32>>(&mem).unwrap(), [7, 8, 9]);
     }
 
+    /// A zero-sized element leaves nothing for a read to corroborate, so the
+    /// count alone is capped at the ceiling — at it, believed whole; past
+    /// it, cut to the ceiling with the claim reported.
+    #[test]
+    fn test_a_zst_count_is_believed_only_to_the_ceiling() {
+        let mem = FakeMem::new();
+        let Ok(at) = super::read_buffer(Some(&mem), 0x1000, 0, super::MAX_ZST_ELEMENTS) else {
+            panic!("a count at the ceiling is served");
+        };
+        assert_eq!((at.count, at.claimed), (super::MAX_ZST_ELEMENTS, None));
+
+        let Ok(past) = super::read_buffer(Some(&mem), 0x1000, 0, super::MAX_ZST_ELEMENTS + 1)
+        else {
+            panic!("a count past the ceiling is capped, not refused");
+        };
+        assert_eq!(
+            (past.count, past.claimed),
+            (super::MAX_ZST_ELEMENTS, Some(super::MAX_ZST_ELEMENTS + 1))
+        );
+    }
+
     /// A length is read out of the target like any other word, so a corrupt
     /// one names whatever its bits say. It is believed only as far as the
     /// target corroborates it, and never past the ceiling -- and the

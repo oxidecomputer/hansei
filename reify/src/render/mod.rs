@@ -808,6 +808,25 @@ mod tests {
         );
     }
 
+    /// An array with no elements closes on the opening line even in pretty
+    /// mode — the break-and-indent close belongs only to a populated one.
+    #[test]
+    fn test_an_empty_array_closes_without_a_line_break() {
+        let mut b = test_bundle();
+        let hansei_bundle::TypeDef::Array { count, .. } = &mut b.types.types[ARR.0 as usize] else {
+            panic!("ARR is not an array");
+        };
+        *count = 0;
+        b.validate().expect("empty array must validate");
+
+        let v = BundleView::new(&b);
+        // The type is zero-sized but the buffer is not, so the rendering
+        // reaches the array body rather than the unit shortcut.
+        let bytes = [0u8; 4];
+        let value = Value::new(v.ty(ARR).unwrap(), 0, &bytes);
+        assert_eq!(format!("{:#}", value.display().depth(4)), "[]");
+    }
+
     #[test]
     fn test_integer_arrays_display_as_zero_padded_hex() {
         let b = test_bundle();
@@ -1267,6 +1286,9 @@ mod tests {
         assert!(glob_match("*", "anything at all"));
         assert!(glob_match("a*b*c", "a__b__b__c"));
         assert!(glob_match("exact", "exact"));
+        // A mismatch on the first character after a leading `*` widens the
+        // star from a zero-length match.
+        assert!(glob_match("*z", "az"));
 
         // Anchored: a bare segment is not a substring match.
         assert!(!glob_match("steno::*", "nexus::steno::Wrapper"));

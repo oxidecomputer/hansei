@@ -288,6 +288,35 @@ mod tests {
         );
     }
 
+    /// A zero-sized member does not cost a struct variant its one-named-field
+    /// shape: the marker is invisible to layout and to peeling alike, and the
+    /// payload's field keeps its label.
+    #[test]
+    fn test_zst_member_keeps_a_named_single_field_payload_labeled() {
+        let mut b = test_bundle();
+        // FlavorA { x: u64 @0 } gains a zero-sized marker: still one *sized*
+        // named field, so `Flavor::A { x: … }`, not `Flavor::A(…)`.
+        let marker = strref(&b, "pad");
+        let TypeDef::Struct { members, .. } = &mut b.types.types[FLAVOR_A.0 as usize] else {
+            panic!("FlavorA is not a struct");
+        };
+        members.push(hansei_bundle::MemberDef {
+            name: marker,
+            ty: UNIT,
+            offset: 8,
+        });
+        b.validate().expect("marker member must validate");
+
+        let v = BundleView::new(&b);
+        let mut bytes = vec![0u8; 24];
+        bytes[8..16].copy_from_slice(&5u64.to_le_bytes());
+        let value = Value::new(v.ty(FLAVOR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display().depth(4)),
+            "Flavor::A { x: 5 }"
+        );
+    }
+
     #[test]
     fn test_tuple_struct_elides_synthetic_field_names() {
         let b = test_bundle();

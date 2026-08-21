@@ -167,6 +167,34 @@ exclude_re = [
     # suite — the same gap as exec_snapshot above, judged one step
     # removed by the soak loops' coverage summaries.
     "replace print_outcomes",
+    # Equivalent mutant: each byte is shifted onto its own zeroed lane of
+    # the accumulator, so the operands never share a set bit and or, xor
+    # (and add) agree on every input. `|` is the spelling that says
+    # "assemble disjoint lanes".
+    "replace \\| with \\^ in u128_from_le",
+    # Equivalent mutant: `visited` is only consumed alongside `proc` —
+    # the pointer arms demand the `(ctx.proc, ctx.visited)` pair and the
+    # parallel gates read it after a read `proc` already served — and the
+    # same struct literal nulls `proc` (which has its own pin: the
+    # non-following-alias test that a `&str` target is never read), so
+    # whether `visited` was also nulled can never be observed. Note the
+    # tool does not currently apply name filters to delete-field mutants,
+    # so this entry documents the triage more than it trims the run.
+    "delete field visited from struct RenderCtx expression in eval_node",
+    # Equivalent mutant: a member's target address is threaded into every
+    # child for the node vocabulary's benefit, but no node consumes a
+    # child's own address terminally today — every target read goes
+    # through pointer words in the bytes — so scaling the address is
+    # unobservable. (The sibling wrapping-sub spelling dies on the debug
+    # overflow check.) If a node kind that reads at a value's own address
+    # ever lands, delete this entry and pin the arithmetic instead.
+    "replace \\+ with \\* in eval_struct",
+    # Equivalent mutant: retrying the star one position earlier only
+    # repeats the previous widening's comparison — the stored backtrack
+    # still advances by one each retry, so the same start positions are
+    # tried either way and the answer never differs. (The wrapping-sub
+    # spelling dies on the underflow check via the leading-star case.)
+    "replace \\+ with \\* in glob_match",
     # A 32-bit guard, unobservable anywhere this suite runs. On 64-bit
     # every recorded frame size converts, so the guard is always true;
     # forcing it false only routes the decode through the reallocating

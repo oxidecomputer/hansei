@@ -133,3 +133,19 @@ impl std::error::Error for Error {
         self.source.as_ref().map(|e| e.as_ref() as _)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::testhelper::FakeMem;
+
+    /// A failed target read keeps the refusing layer's own error chained
+    /// behind reify's, so a caller printing the chain sees both stories.
+    #[test]
+    fn test_a_read_failure_chains_its_source() {
+        let mem = FakeMem::new().unreadable();
+        let err = crate::target::read_bytes(&mem, 0x40, 8).expect_err("nothing is readable");
+        assert_eq!(format!("{err}"), "cannot read target memory at 0x40");
+        let source = std::error::Error::source(&err).expect("the target's error is chained");
+        assert!(format!("{source}").contains("0x40"), "{source}");
+    }
+}

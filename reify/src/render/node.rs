@@ -630,7 +630,7 @@ mod tests {
 
     use hansei_bundle::{
         Arm, BundleView, DisplayNode as BundleNode, MemberRef, ScalarDecode, Selector, Step,
-        ValueExpr,
+        TypeDef, ValueExpr,
     };
 
     #[test]
@@ -1387,6 +1387,161 @@ mod tests {
         // A null pointer degrades before any guard is consulted.
         let mem = FakeMem::new().panic_on_unmapped();
         assert_eq!(show(&mem, &outer(0)), "<null>");
+    }
+
+    /// A non-following alias nulls the target for everything under it: even
+    /// a target whose own format reads through a pointer (a `&str`) shows
+    /// its degradation, never the pointee.
+    #[test]
+    fn test_non_following_alias_never_reads_the_target() {
+        let mem = FakeMem::new()
+            .at(0x3000, b"hello".to_vec())
+            .panic_on_unmapped();
+
+        let mut b = test_bundle();
+        // GuardOuter { wrap @0, opt @8 } reshaped so the aliased member is
+        // a 16-byte `&str` — a format that reads the target when it has one.
+        let TypeDef::Struct { size, members, .. } = &mut b.types.types[GUARD_OUTER.0 as usize]
+        else {
+            panic!("GuardOuter is not a struct");
+        };
+        *size = 24;
+        members[1].ty = STR;
+        b.types.debug_formats.insert(
+            GUARD_OUTER,
+            BundleNode::Alias {
+                at: sel(&[1]),
+                follow_pointers: false,
+            },
+        );
+        b.validate().expect("non-following str alias must validate");
+
+        let v = BundleView::new(&b);
+        let bytes = u64s(&[0, 0x3000, 5]);
+        let value = Value::new(v.ty(GUARD_OUTER).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8)),
+            "<target unavailable>"
+        );
+    }
+
+    /// A degradation mid-walk writes its marker as a pseudo-element, joined
+    /// to the elements already emitted with the same `, ` an element gets.
+    #[test]
+    fn test_custom_list_marker_joins_the_emitted_elements() {
+        // Four queued messages exhaust the first block; the walk then moves
+        // to the unreadable second block and degrades after them.
+        let mem = FakeMem::new().at(0x4000, mpsc_block(&[20, 30, 40, 50], 0, 0x5000));
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // Chan { tail: 5, index: 0, head: 0x4000 }.
+        let bytes = u64s(&[5, 0, 0x4000]);
+        let value = Value::new(v.ty(CHAN).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&mem, 8));
+        assert!(
+            shown.contains("queued: [20, 30, 40, 50, <unreadable>]"),
+            "{shown}"
+        );
+    }
+
+    /// Guards recorded past the first pointer hop are checked against the
+    /// segment they were recorded for — a two-hop place whose enum sits at
+    /// the far end, like a waiter's state behind two links.
+    #[test]
+    fn test_place_guards_past_the_first_pointer_hop_are_checked() {
+        let mut b = test_bundle();
+        // Give Node's head slot an enum payload: Node { value: Opt @0,
+        // next: *Node @8 } — Opt is 8 bytes, so the layout still fits.
+        let TypeDef::Struct { members, .. } = &mut b.types.types[NODE.0 as usize] else {
+            panic!("Node is not a struct");
+        };
+        members[0].ty = OPT;
+        let path = Selector(vec![
+            Step::Member(MemberRef::Named(strref(&b, "next"))),
+            Step::Deref,
+            Step::Member(MemberRef::Named(strref(&b, "next"))),
+            Step::Deref,
+            Step::Member(MemberRef::Named(strref(&b, "value"))),
+            Step::Variant(strref(&b, "Some")),
+        ]);
+        b.types.debug_formats.insert(
+            NODE,
+            BundleNode::Alias {
+                at: path,
+                follow_pointers: true,
+            },
+        );
+        b.validate().expect("two-hop variant alias must validate");
+        let v = BundleView::new(&b);
+        let node = |value: u64, next: u64| u64s(&[value, next]);
+        let show = |mem: &FakeMem, bytes: &[u8]| {
+            format!(
+                "{}",
+                Value::new(v.ty(NODE).unwrap(), 0, bytes).display_from_target(mem, 8)
+            )
+        };
+
+        // Two hops in, the live `Some` payload reads through.
+        let mem = FakeMem::new()
+            .at(0x2000, node(0, 0x3000))
+            .at(0x3000, node(41, 0))
+            .panic_on_unmapped();
+        assert_eq!(show(&mem, &node(0, 0x2000)), "41");
+
+        // The guard two segments in finds `None` live and degrades.
+        let mem = FakeMem::new()
+            .at(0x2000, node(0, 0x3000))
+            .at(0x3000, node(0, 0))
+            .panic_on_unmapped();
+        assert_eq!(show(&mem, &node(0, 0x2000)), "<inactive variant>");
+
+        // A null first link is reported as such, not chased through.
+        let mem = FakeMem::new();
+        assert_eq!(show(&mem, &node(0, 0)), "<null>");
+    }
+
+    /// A no-discriminant enum with a single variant has nothing to decode,
+    /// so a variant step crosses it unguarded; the same shape with several
+    /// variants is undecodable, and resolution declines to structural.
+    #[test]
+    fn test_univariant_enum_needs_no_guard_but_several_variants_decline() {
+        let drop_discr = |b: &mut hansei_bundle::Bundle, univariant: bool| {
+            let TypeDef::Enum { shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+                panic!("Opt is not an enum");
+            };
+            shape.discr = None;
+            if univariant {
+                shape.variants.remove(0);
+            }
+        };
+        let alias = |b: &hansei_bundle::Bundle| BundleNode::Alias {
+            at: Selector(vec![
+                Step::Member(MemberRef::Named(strref(b, "opt"))),
+                Step::Variant(strref(b, "Some")),
+            ]),
+            follow_pointers: true,
+        };
+        // GuardOuter { wrap: null, opt: 123 }.
+        let bytes = u64s(&[0, 123]);
+
+        let mut b = test_bundle();
+        drop_discr(&mut b, true);
+        let node = alias(&b);
+        b.types.debug_formats.insert(GUARD_OUTER, node);
+        b.validate().expect("univariant alias must validate");
+        let v = BundleView::new(&b);
+        let value = Value::new(v.ty(GUARD_OUTER).unwrap(), 0, &bytes);
+        assert_eq!(format!("{}", value.display()), "123");
+
+        let mut b = test_bundle();
+        drop_discr(&mut b, false);
+        let node = alias(&b);
+        b.types.debug_formats.insert(GUARD_OUTER, node);
+        let v = BundleView::new(&b);
+        let value = Value::new(v.ty(GUARD_OUTER).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display());
+        assert!(shown.starts_with("GuardOuter"), "{shown}");
     }
 
     /// A `ValueExpr::Read` crossing a variant step carries the same guard, so
