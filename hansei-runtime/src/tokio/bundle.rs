@@ -2999,5 +2999,86 @@ mod tests {
         let bytes = vec![0u8; 1];
         assert!(ctx.sole_inner_future(Value::new(ty, AT, &bytes)).is_none());
     }
+    /// The `local-set-io` fixture pair: a `LocalSet` parked on I/O,
+    /// anchored both in the discovery statics and in its thread's TLS.
+    fn local_set_io() -> &'static (Bundle, Snapshot) {
+        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+        PAIR.get_or_init(|| testkit::load_any("local-set-io"))
+    }
 
+    /// The vtable fallback of a task's extent — taken when the bundle
+    /// has no Cell layout for the future — must still reach the
+    /// trailer's end. Forced by handing the walk the same task with its
+    /// future info erased, and pinned against the vtable spelling read
+    /// here independently; the Cell route may exceed it only by the
+    /// allocation's tail padding.
+    #[test]
+    fn test_an_unknown_futures_task_extent_reaches_the_trailers_end() {
+        let ctx = unordered_ctx();
+        let (_, snapshot) = unordered();
+        let list = testkit::tasks(&ctx, snapshot);
+        let known = list
+            .tasks
+            .iter()
+            .find(|t| matches!(t.future, FutureInfo::Known(_)))
+            .expect("the fixture has resolved tasks");
+        let whole = ctx.task_extent(known).expect("the Cell route");
+        let erased = Task {
+            addr: known.addr,
+            state: known.state,
+            owner_id: None,
+            task_id: None,
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            group: 0,
+        };
+        let ext = ctx.task_extent(&erased).expect("the vtable route");
+        assert_eq!(ext.start, known.addr.0);
+        let header_ty = ctx
+            .infra_ty(ctx.view.bundle().infra.header, "task Header")
+            .unwrap();
+        let header = Value::read(ctx.proc, header_ty, known.addr.0).unwrap();
+        let vtable_addr: u64 = ctx.walk(WalkRole::HeaderVtable).read(header).unwrap();
+        let vtable = ctx.task_vtable(vtable_addr).unwrap();
+        let trailer_ty = ctx
+            .infra_ty(ctx.view.bundle().infra.trailer, "task Trailer")
+            .unwrap();
+        assert_eq!(
+            ext.end,
+            known.addr.0 + vtable.trailer_offset + trailer_ty.size()
+        );
+        assert!(ext.end <= whole.end, "{ext:?} vs {whole:?}");
+    }
+
+    /// A bound walk role reports its recorded root type; the TLS probe
+    /// reads the payload with it, so `None` here silently disables the
+    /// whole route.
+    #[test]
+    fn test_walk_root_ty_reports_a_bound_roles_root() {
+        let (bundle, snapshot) = local_set_io();
+        let ctx = testkit::context(bundle, snapshot);
+        let ty = ctx
+            .walk_root_ty(WalkRole::LocalTlsCtx)
+            .expect("the role is bound in the local-set-io bundle");
+        assert!(ty.size() > 0);
+    }
+
+    /// A population discovery grew is re-sorted into task order; the
+    /// enumerated prefix alone arrives sorted, so the gate that skips
+    /// the sort when nothing was added must not skip it when
+    /// something was.
+    #[test]
+    fn test_a_discovered_population_lists_in_task_order() {
+        let (bundle, snapshot) = local_set_io();
+        let ctx = testkit::context(bundle, snapshot);
+        let list = testkit::tasks(&ctx, snapshot);
+        let keys: Vec<_> = list
+            .tasks
+            .iter()
+            .map(|t| (t.task_id.is_none(), t.task_id, t.addr.0))
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted);
+    }
 }
