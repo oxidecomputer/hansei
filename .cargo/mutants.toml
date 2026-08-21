@@ -96,6 +96,15 @@ exclude_re = [
     # local-set-io listing), this only stops the sweep from reporting
     # the one gate no input can distinguish.
     "replace < with <= in Context<'b, T>::discover_hidden_tasks",
+    # Weakening the member filter of abandoned_acquires' frame scan
+    # (`size == 0 || starts_with("__")` to `&&`) admits compiler slots
+    # and ZSTs to local_acquire, and neither can become a row: a ZST
+    # has no bytes to decode an acquire from, and a sized `__` member
+    # is the active awaitee, whose chain bottoms at the active leaf —
+    # an acquire there is the very node the active_node/queued filter
+    # drops, and a chain that fails before the leaf fails local_acquire
+    # the same way. Equivalent on every reachable input.
+    "replace \\|\\| with && in Context<'b, T>::abandoned_acquires",
     # A constant type-name hash is a performance bug, not a behaviour
     # one, and no test can see it: the index groups candidates by this
     # hash and `rust_type_names_equal` still decides each one, so every
