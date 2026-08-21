@@ -5,7 +5,7 @@ use crate::trace::print_variable;
 use crate::{Proc, RenderOpts, Session};
 
 use anyhow::Result;
-use hansei_runtime::tokio::{Lifecycle, bundle};
+use hansei_runtime::tokio::bundle;
 use reify::Value;
 
 use std::collections::BTreeMap;
@@ -89,18 +89,18 @@ pub(crate) fn exec_threads(
 /// has since finished — leaves a stale one behind, so the claim is only
 /// made for a task the runtime still owns and still calls running.
 fn polling(session: &Session<'_>, worker: &bundle::Worker) -> String {
-    let Some(id) = worker.current_task_id else {
-        return "polling no task".to_string();
-    };
-    let running = session
-        .tasks
-        .tasks
-        .iter()
-        .any(|t| t.task_id == Some(id) && t.state.lifecycle() == Lifecycle::Running);
-    if running {
-        format!("polling task {id}")
-    } else {
-        format!("last polled task {id}")
+    polling_line(
+        worker.current_task_id,
+        crate::tasks::polled_task(worker.current_task_id, &session.tasks),
+    )
+}
+
+/// The claim as the heading spells it: believed, stale, or absent.
+fn polling_line(current: Option<u64>, believed: Option<u64>) -> String {
+    match (current, believed) {
+        (None, _) => "polling no task".to_string(),
+        (Some(id), Some(_)) => format!("polling task {id}"),
+        (Some(id), None) => format!("last polled task {id}"),
     }
 }
 
@@ -248,4 +248,19 @@ pub(crate) fn render<'r, 'b>(
 ) -> reify::DisplayValue<'r, 'b, Proc> {
     let display = value.display_from_target(session.ctx.proc, opts.depth);
     if opts.ugly { display.ugly() } else { display }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::polling_line;
+
+    /// The three spellings of the heading's claim: believed, stale,
+    /// and absent — the stale word is reported, but not as a poll in
+    /// progress.
+    #[test]
+    fn test_the_polling_claim_has_three_spellings() {
+        assert_eq!(polling_line(None, None), "polling no task");
+        assert_eq!(polling_line(Some(7), Some(7)), "polling task 7");
+        assert_eq!(polling_line(Some(7), None), "last polled task 7");
+    }
 }

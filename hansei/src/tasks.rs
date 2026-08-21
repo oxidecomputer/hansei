@@ -698,7 +698,7 @@ fn runtime_threads(session: &Session<'_>) -> Result<Vec<summary::Thread>> {
 /// calls running. A stale or corrupt word names a task that is idle,
 /// complete, or not listed at all, and a summary column repeating it
 /// would send a reader chasing a poll that is not happening.
-fn polled_task(current_task_id: Option<u64>, list: &bundle::TaskList) -> Option<u64> {
+pub(crate) fn polled_task(current_task_id: Option<u64>, list: &bundle::TaskList) -> Option<u64> {
     current_task_id.filter(|id| {
         list.tasks
             .iter()

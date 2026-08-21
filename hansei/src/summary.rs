@@ -860,6 +860,7 @@ mod tests {
     use hansei_runtime::tokio::{Location, RawInstant, TaskAddr, TaskState};
 
     const RUNNING: u64 = 0b1;
+    const COMPLETE: u64 = 0b10;
     const NOTIFIED: u64 = 0b100;
     const JOIN_INTEREST: u64 = 0b1_000;
     const CANCELLED: u64 = 0b100_000;
@@ -1219,6 +1220,104 @@ mod tests {
             "{page}"
         );
         assert!(!page.contains("was woken"), "{page}");
+    }
+
+    /// A task whose future the bundle cannot name is counted in the
+    /// same "of note" line as the aborting ones.
+    #[test]
+    fn test_unnamed_futures_are_of_note() {
+        let mut unnamed = task(1, 0, "x", "x.rs");
+        unnamed.future = FutureInfo::Unknown { poll_symbol: None };
+        let list = TaskList {
+            tasks: vec![unnamed],
+            errors: Vec::new(),
+        };
+        let waits = [wait(1, None, 1)];
+        let page = census(&facts(&list, &waits), 5);
+        assert!(
+            page.contains("    Of note: 1 whose future the bundle cannot name\n"),
+            "{page}"
+        );
+    }
+
+    /// A finished task parks on nothing: the tally says so rather than
+    /// counting it among the chains that stopped short.
+    #[test]
+    fn test_complete_tasks_wait_on_nothing() {
+        let list = TaskList {
+            tasks: vec![task(1, COMPLETE, "x", "x.rs")],
+            errors: Vec::new(),
+        };
+        let waits = [wait(1, None, 1)];
+        let page = census(&facts(&list, &waits), 5);
+        assert!(page.contains("nothing — finished"), "{page}");
+    }
+
+    /// At exactly `top` leaves nothing is summarized, and no leaf row
+    /// is pinned to the bottom: every row still ranks among the others.
+    #[test]
+    fn test_exactly_top_leaves_still_rank_among_the_rows() {
+        let mut waits = Waits::default();
+        waits.leaves.insert("hot".to_string(), 5);
+        waits.leaves.insert("warm".to_string(), 2);
+        waits.undecoded = 1;
+        let whats: Vec<String> = waits.rows(2).into_iter().map(|r| r.what).collect();
+        assert_eq!(
+            whats,
+            ["hot", "warm", "a chain that stopped before any leaf"]
+        );
+    }
+
+    /// `top` truncates only past itself: at exactly `top` entries there
+    /// is nothing left out and no summary row is added.
+    #[test]
+    fn test_ranked_summarizes_only_past_top() {
+        let rows = |counts: &[usize]| -> Vec<Row> {
+            counts
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Row::new(*c, format!("k{i}")))
+                .collect()
+        };
+        assert_eq!(ranked(rows(&[5, 3]), 2, "leaf type").len(), 2);
+        let more = ranked(rows(&[5, 3, 1]), 2, "leaf type");
+        assert_eq!(more.len(), 3);
+        assert_eq!(more[2].what, "across 1 more leaf type");
+    }
+
+    /// A row names its runtime only when there are several to tell
+    /// apart: one runtime's name is on the section heading already.
+    #[test]
+    fn test_rows_name_their_runtime_only_among_several() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        assert_eq!(facts.whose(0), "");
+
+        facts.runtimes = vec![runtime(None, None), runtime(None, None)];
+        assert_eq!(facts.whose(0), " of runtime 0 @0x1000");
+        assert_eq!(facts.whose(9), "", "an index past the list names nothing");
+    }
+
+    /// Running tasks without a believed task id is awake, not polling:
+    /// the polling claim is only made when a task id backs it.
+    #[test]
+    fn test_running_tasks_without_a_task_id_is_awake() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.lwps = 1;
+        facts.runtime = vec![Thread {
+            tid: 11,
+            runtime: Some(0),
+            role: Some(ThreadRole::BlockOn(Some(CtParkState {
+                woken: false,
+                activity: CtActivity::RunningTasks,
+            }))),
+            polling: None,
+        }];
+
+        let page = census(&facts, 5);
+        assert!(page.contains("1 awake, polling no task\n"), "{page}");
+        assert!(!page.contains("polling a task"), "{page}");
     }
 
     /// A pool with nothing in it but the workers still prints its row:

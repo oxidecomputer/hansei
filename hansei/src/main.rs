@@ -912,15 +912,20 @@ fn main() {
 
     let res = run(&args.session, &args.exec);
     if let Err(e) = res {
-        if let Some(io_err) = e.downcast_ref::<io::Error>()
-            && io_err.kind() == io::ErrorKind::BrokenPipe
-        {
+        if exits_quietly(&e) {
             return;
         }
 
         let _ = writeln!(io::stderr(), "Error: {e:?}");
         std::process::exit(1);
     }
+}
+
+/// A broken pipe is the reader hanging up — `hansei … | head` — not a
+/// failure: the answer ends, quietly and successfully.
+fn exits_quietly(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<io::Error>()
+        .is_some_and(|io_err| io_err.kind() == io::ErrorKind::BrokenPipe)
 }
 
 /// Open the target and hand the session to the command reader.
@@ -1034,10 +1039,7 @@ fn check_program(proc: &Proc, args: &SessionArgs) -> Result<()> {
         return Ok(());
     };
     if !ids.disagree() {
-        // Nothing to check against is not evidence of a mismatch: a
-        // binary can be linked without a build id, and a core can dump
-        // too little of the executable to carry one.
-        if ids.core.is_none() || ids.program.is_none() {
+        if unverifiable(&ids) {
             writeln!(
                 io::stderr(),
                 "warning: no build id to check {} against the core with",
@@ -1071,16 +1073,7 @@ fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool)
     if fp.is_complete() {
         return Ok(());
     }
-    let mut sample = fp
-        .missing
-        .iter()
-        .take(5)
-        .map(|s| format!("  {:#}", rustc_demangle::demangle(s)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if fp.missing.len() > 5 {
-        sample.push_str(&format!("\n  ... and {} more", fp.missing.len() - 5));
-    }
+    let sample = missing_sample(&fp.missing);
     anyhow::ensure!(
         force,
         "only {}/{} bundle symbols resolve in the target — the bundle does \
@@ -1100,6 +1093,29 @@ fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool)
     Ok(())
 }
 
+/// Whether the id pair leaves the match unverified rather than agreed:
+/// nothing to check against is not evidence of a mismatch — a binary
+/// can be linked without a build id, and a core can dump too little of
+/// the executable to carry one — but it is worth a warning.
+fn unverifiable(ids: &proc::BuildIds) -> bool {
+    ids.core.is_none() || ids.program.is_none()
+}
+
+/// The first few missing symbols, demangled, and a count of the rest:
+/// enough to recognize the mismatch without pages of names.
+fn missing_sample(missing: &[String]) -> String {
+    let mut sample = missing
+        .iter()
+        .take(5)
+        .map(|s| format!("  {:#}", rustc_demangle::demangle(s)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if missing.len() > 5 {
+        sample.push_str(&format!("\n  ... and {} more", missing.len() - 5));
+    }
+    sample
+}
+
 /// Find the LWPs holding a tokio `Context`, through the thread-local
 /// the bundle names.
 fn discover_workers<T: proc::Target>(
@@ -1117,10 +1133,19 @@ fn discover_workers<T: proc::Target>(
 /// Report a walk's non-fatal errors the way every command does: one
 /// warning line per error, on stderr.
 fn print_warnings<'a>(errors: impl IntoIterator<Item = &'a anyhow::Error>) -> io::Result<()> {
-    for err in errors {
-        writeln!(io::stderr(), "warning: {err:#}")?;
+    for line in warning_lines(errors) {
+        writeln!(io::stderr(), "{line}")?;
     }
     Ok(())
+}
+
+/// The warning spelling itself, apart from the stream it goes to: the
+/// `warning:` prefix and the error with its whole context chain.
+fn warning_lines<'a>(errors: impl IntoIterator<Item = &'a anyhow::Error>) -> Vec<String> {
+    errors
+        .into_iter()
+        .map(|err| format!("warning: {err:#}"))
+        .collect()
 }
 
 /// The version-ceiling warning a walk command should print now: the
@@ -1173,5 +1198,73 @@ mod ceiling_notice_tests {
         let noticed = Cell::new(false);
         assert_eq!(version_ceiling_line(&Meta::default(), &noticed), None);
         assert!(noticed.get());
+    }
+}
+
+#[cfg(test)]
+mod glue_tests {
+    use super::{exits_quietly, unverifiable, warning_lines};
+    use std::io;
+
+    /// Only a broken pipe ends the answer quietly: any other error —
+    /// io or not — is a failure worth reporting and a nonzero exit.
+    #[test]
+    fn test_only_a_broken_pipe_exits_quietly() {
+        let broken = anyhow::Error::from(io::Error::from(io::ErrorKind::BrokenPipe));
+        assert!(exits_quietly(&broken));
+        let other_io = anyhow::Error::from(io::Error::from(io::ErrorKind::NotFound));
+        assert!(!exits_quietly(&other_io));
+        assert!(!exits_quietly(&anyhow::anyhow!("not io at all")));
+    }
+
+    /// Either id missing leaves the match unverified; both present is
+    /// checked, whichever way the comparison then goes.
+    #[test]
+    fn test_either_missing_id_is_unverifiable() {
+        let ids = |core: bool, program: bool| proc::BuildIds {
+            core: core.then(|| vec![1, 2]),
+            program: program.then(|| vec![1, 2]),
+        };
+        assert!(unverifiable(&ids(false, false)));
+        assert!(unverifiable(&ids(true, false)));
+        assert!(unverifiable(&ids(false, true)));
+        assert!(!unverifiable(&ids(true, true)));
+    }
+
+    /// One warning line per error, prefix and context chain included.
+    #[test]
+    fn test_warnings_spell_the_whole_context_chain() {
+        use anyhow::Context;
+        let errors = [
+            anyhow::anyhow!("plain"),
+            Err::<(), _>(anyhow::anyhow!("inner"))
+                .context("outer")
+                .unwrap_err(),
+        ];
+        assert_eq!(
+            warning_lines(&errors),
+            ["warning: plain", "warning: outer: inner"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::missing_sample;
+
+    /// Five missing symbols print whole; the tail count starts at the
+    /// sixth, and counts only what the sample left out.
+    #[test]
+    fn test_the_sample_counts_only_past_five() {
+        let missing: Vec<String> = (0..5).map(|i| format!("sym{i}")).collect();
+        let sample = missing_sample(&missing);
+        assert_eq!(sample.lines().count(), 5, "{sample}");
+        assert!(!sample.contains("more"), "{sample}");
+
+        let missing: Vec<String> = (0..6).map(|i| format!("sym{i}")).collect();
+        let sample = missing_sample(&missing);
+        assert!(sample.ends_with("  ... and 1 more"), "{sample}");
+        assert!(sample.contains("sym4"), "{sample}");
+        assert!(!sample.contains("sym5"), "{sample}");
     }
 }

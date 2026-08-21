@@ -258,7 +258,7 @@ pub(crate) fn via_suffix(census: &census::FutureCensus, via: Option<census::Via>
 /// extracted bundle joined against a real captured snapshot.
 #[cfg(test)]
 mod whatis_tests {
-    use super::report_whatis;
+    use super::{report_whatis, separate};
     use crate::parse_hex_addr;
     use hansei_bundle::BundleView;
     use hansei_runtime::testkit;
@@ -480,6 +480,81 @@ mod whatis_tests {
                 );
             }
         });
+    }
+
+    /// A set's own address names the set, counting the children in
+    /// flight and the completed ones not yet reaped — the reaped count
+    /// being the empty slots, not the sum of everything.
+    #[test]
+    fn test_a_sets_children_count_the_reaped() {
+        let (bundle, snapshot) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let mut e = testkit::enumerate(&ctx, &snapshot);
+        let local_sets = e.discover(&ctx, &[]);
+        let (runtimes, list) = (e.runtimes, e.list);
+        let extents = ctx.task_extents(&list);
+        let mut census = census::census(&ctx, &list);
+        let child = |future: Option<&str>| census::SetChild {
+            node: 0x2000,
+            depth: usize::from(future.is_some()),
+            future: future.map(str::to_string),
+            root: None,
+            state: None,
+            waiting_on: None,
+            wait: None,
+            leaf: None,
+        };
+        census.sets.push(census::FutureSet {
+            owner: 0,
+            frame: 0,
+            local: "set".to_string(),
+            via: None,
+            addr: 0xdead_0000,
+            ty: "FuturesUnordered<F>".to_string(),
+            children: vec![child(Some("f::{async_fn_env#0}")), child(None), child(None)],
+        });
+        let target = Target {
+            view: ctx.view,
+            runtimes,
+            local_sets,
+            list,
+            extents,
+            census,
+        };
+        let shown = report(&target, 0xdead_0000);
+        assert!(
+            shown.contains("Children: 1 in flight, 2 completed and not yet reaped\n"),
+            "{shown}"
+        );
+    }
+
+    /// A find reached through another find says so: the suffix names
+    /// the route, and a find in the task's own frames adds nothing.
+    #[test]
+    fn test_the_via_suffix_names_the_route() {
+        let (bundle, snapshot) = testkit::load_any("futurelock");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let census = census::census(&ctx, &list);
+        assert!(!census.held.is_empty(), "the fixture holds a future");
+
+        assert_eq!(super::via_suffix(&census, None), "");
+        let via = super::via_suffix(&census, Some(census::Via::Held(0)));
+        assert!(via.starts_with(", via "), "{via:?}");
+        assert!(via.len() > ", via ".len(), "{via:?}");
+    }
+
+    /// Blocks are separated by one blank line between each other: none
+    /// before the first, exactly one before each that follows.
+    #[test]
+    fn test_blocks_separate_only_between_each_other() {
+        let mut out = Vec::new();
+        let mut blocks = 0;
+        separate(&mut blocks, &mut out).expect("separate writes");
+        assert_eq!(out, b"", "a leading blank line before the first block");
+        separate(&mut blocks, &mut out).expect("separate writes");
+        assert_eq!(out, b"\n", "one blank line between two blocks");
+        assert_eq!(blocks, 2);
     }
 
     /// The `0x` prefix is required, and the digits behind it parse as

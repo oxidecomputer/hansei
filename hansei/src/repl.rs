@@ -133,19 +133,22 @@ fn scripted(session: &Session<'_>) -> Result<()> {
 fn execute(session: &Session<'_>, line: &str) -> Result<Flow> {
     let commands: Vec<&str> = line.split(';').collect();
     for command in &commands {
-        // Which command failed is only a question when the line held
-        // more than one; below, the line itself is the answer.
-        let flow = match commands.len() {
-            1 => execute_one(session, command)?,
-            _ => {
-                execute_one(session, command).with_context(|| format!("in `{}`", command.trim()))?
-            }
+        let flow = match command_frame(commands.len(), command) {
+            None => execute_one(session, command)?,
+            Some(frame) => execute_one(session, command).with_context(|| frame)?,
         };
         if let Flow::Quit = flow {
             return Ok(Flow::Quit);
         }
     }
     Ok(Flow::Continue)
+}
+
+/// How a failure names the command it came from. Which command failed
+/// is only a question when the line held more than one; on a
+/// single-command line, the line itself is the answer.
+fn command_frame(count: usize, command: &str) -> Option<String> {
+    (count > 1).then(|| format!("in `{}`", command.trim()))
 }
 
 /// Parse one command and answer it, sending the output to a shell
@@ -162,18 +165,9 @@ fn execute_one(session: &Session<'_>, line: &str) -> Result<Flow> {
         return Ok(Flow::Continue);
     }
 
-    // Splitting on whitespace means an argument cannot itself contain a
-    // space; no command takes one today.
-    let parsed = match Line::try_parse_from(command.split_whitespace()) {
-        Ok(parsed) => parsed,
-        // `use_stderr` is clap's own split between a real parse failure
-        // and output that was asked for: `help` renders as an error but
-        // is a successful command, and must not fail a script.
-        Err(e) if !e.use_stderr() => {
-            print!("{e}");
-            return Ok(Flow::Continue);
-        }
-        Err(e) => return Err(anyhow!("{}", clap_message(e))),
+    let parsed = match parse_command(command)? {
+        Some(parsed) => parsed,
+        None => return Ok(Flow::Continue),
     };
 
     // Either way the answer streams: a trace's output can run to
@@ -198,6 +192,26 @@ fn execute_one(session: &Session<'_>, line: &str) -> Result<Flow> {
             out.flush()?;
             Ok(flow)
         }
+    }
+}
+
+/// Parse one command, or answer it on the spot: `None` means the
+/// command was already answered with printed output rather than parsed
+/// into something to dispatch.
+///
+/// Splitting on whitespace means an argument cannot itself contain a
+/// space; no command takes one today.
+fn parse_command(command: &str) -> Result<Option<Line>> {
+    match Line::try_parse_from(command.split_whitespace()) {
+        Ok(parsed) => Ok(Some(parsed)),
+        // `use_stderr` is clap's own split between a real parse failure
+        // and output that was asked for: `help` renders as an error but
+        // is a successful command, and must not fail a script.
+        Err(e) if !e.use_stderr() => {
+            print!("{e}");
+            Ok(None)
+        }
+        Err(e) => Err(anyhow!("{}", clap_message(e))),
     }
 }
 
@@ -329,6 +343,107 @@ mod tests {
         };
         assert!(threads && futures && !tasks);
         assert_eq!(top, 9);
+    }
+
+    /// Which command failed is framed only on a multi-command line; a
+    /// single command's failure is already named by the line itself.
+    #[test]
+    fn test_only_multi_command_lines_frame_their_failures() {
+        assert_eq!(command_frame(1, " tasks "), None);
+        assert_eq!(command_frame(2, " tasks "), Some("in `tasks`".to_string()));
+    }
+
+    /// A shared sink that remembers what reached it, for standing in
+    /// as a shell child's stdin.
+    #[derive(Clone, Default)]
+    struct Recorded(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+    /// Accepts one byte per call, so the sink's hand-rolled loop has to
+    /// advance through several partial writes.
+    impl Write for Recorded {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            match buf.first() {
+                Some(byte) => {
+                    self.0.borrow_mut().push(*byte);
+                    Ok(1)
+                }
+                None => Ok(0),
+            }
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct Dead;
+
+    impl Write for Dead {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+    }
+
+    /// The feed claims the whole buffer written and delivers all of it,
+    /// through as many partial writes as the child takes — and stays
+    /// open for the next buffer, which arrives whole too.
+    #[test]
+    fn test_the_feed_delivers_whole_buffers() {
+        let child = Recorded::default();
+        let mut sink = ShellSink {
+            stdin: Some(Box::new(child.clone())),
+        };
+        assert_eq!(sink.write(b"abc").expect("the feed never errors"), 3);
+        assert_eq!(sink.write(b"def").expect("the feed never errors"), 3);
+        assert_eq!(*child.0.borrow(), b"abcdef");
+    }
+
+    /// A failing flush ends the feed the way a failing write does — and
+    /// reports success, since a dead pipe is normal.
+    #[test]
+    fn test_a_failing_flush_ends_the_feed() {
+        let mut sink = ShellSink {
+            stdin: Some(Box::new(Dead)),
+        };
+        sink.flush().expect("the feed never errors");
+        assert!(sink.stdin.is_none(), "a failed flush ends the feed");
+    }
+
+    /// `help` is a successful command that clap renders as an error;
+    /// a real parse failure is one, with clap's prefix stripped since
+    /// the caller frames it.
+    #[test]
+    fn test_help_is_answered_and_nonsense_is_refused() {
+        assert!(matches!(parse_command("help"), Ok(None)));
+        assert!(matches!(parse_command("tasks"), Ok(Some(_))));
+        let Err(err) = parse_command("no-such-command") else {
+            panic!("nonsense parsed as a command");
+        };
+        assert!(!err.to_string().starts_with("error: "), "{err}");
+    }
+
+    /// The history lives beside the home directory; a session without
+    /// one simply has no history rather than a made-up path.
+    #[test]
+    fn test_history_lives_under_home() {
+        // HOME is set wherever tests run; the path is derived from it.
+        let path = history_path().expect("HOME is set in a test environment");
+        assert!(path.ends_with(".hansei_history"), "{path:?}");
+        assert!(path.parent().is_some(), "{path:?}");
+    }
+
+    /// A write failure quietly ends the feed: the rest of the answer is
+    /// swallowed, and the command producing it never sees an error.
+    #[test]
+    fn test_a_dead_pipe_swallows_the_rest() {
+        let mut sink = ShellSink {
+            stdin: Some(Box::new(Dead)),
+        };
+        assert_eq!(sink.write(b"abc").expect("the feed never errors"), 3);
+        assert!(sink.stdin.is_none(), "the first failure ends the feed");
+        assert_eq!(sink.write(b"more").expect("the feed never errors"), 4);
     }
 
     /// `runtime` and `runtimes` are two commands whose names are a

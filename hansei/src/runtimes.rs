@@ -102,7 +102,9 @@ pub(crate) fn groups(
             Some(tid) => format!("on lwp {tid}, found via {}", set.route),
             None => format!("no thread holds it, found via {}", set.route),
         };
-        let group = runtimes.len() + i;
+        // The listing already holds one row per runtime, so the next
+        // row's position *is* the set's group index.
+        let group = groups.len();
         groups.push(Group {
             kind: "local set",
             index: i,
@@ -289,7 +291,7 @@ pub(crate) fn exec_runtime(
             printed = true;
         }
         for (i, (heading, member)) in members.iter().enumerate() {
-            if printed && !(head_runtimes && i == 0) {
+            if blank_before(printed, head_runtimes, i) {
                 writeln!(out)?;
             }
             if head_members {
@@ -305,6 +307,13 @@ pub(crate) fn exec_runtime(
         }
     }
     Ok(())
+}
+
+/// Whether a blank line goes before this member section: between
+/// everything the command prints, except ahead of the first section
+/// under a runtime's own heading, which already introduces it.
+fn blank_before(printed: bool, head_runtimes: bool, i: usize) -> bool {
+    printed && !(head_runtimes && i == 0)
 }
 
 /// The runtimes a scope names, with the index each is listed under:
@@ -355,9 +364,36 @@ fn no_such_runtime(session: &Session<'_>, scope: RuntimeScope) -> anyhow::Error 
 /// against a real captured snapshot resolves to.
 #[cfg(test)]
 mod runtimes_tests {
-    use super::{groups, print_groups};
+    use super::{Fields, blank_before, groups, print_groups};
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::census;
+
+    /// Naming no section asks for the whole runtime; naming one asks
+    /// for it alone, and naming both is spelling the whole out.
+    #[test]
+    fn test_naming_no_section_asks_for_all_of_them() {
+        let all = Fields::select(false, false);
+        assert!(all.drivers && all.shared);
+        let drivers = Fields::select(true, false);
+        assert!(drivers.drivers && !drivers.shared);
+        let shared = Fields::select(false, true);
+        assert!(!shared.drivers && shared.shared);
+        let both = Fields::select(true, true);
+        assert!(both.drivers && both.shared);
+    }
+
+    /// Blank lines fall between the pieces the command prints, and
+    /// nowhere else: never ahead of the very first piece, and never
+    /// between a runtime's heading and its first member section.
+    #[test]
+    fn test_blank_lines_fall_between_pieces() {
+        assert!(!blank_before(false, false, 0));
+        assert!(!blank_before(false, true, 0));
+        assert!(blank_before(true, false, 0));
+        assert!(!blank_before(true, true, 0));
+        assert!(blank_before(true, true, 1));
+        assert!(blank_before(true, false, 1));
+    }
 
     /// The listing over the fixture that holds every kind of row: a
     /// runtime threads are inside, a runtime none are — found only
@@ -387,6 +423,11 @@ mod runtimes_tests {
             "{shown}"
         );
         assert!(lines[0].contains(" on lwp "), "{shown}");
+        // The counts are the census's own: each group sums its tasks
+        // and the futures their frames hold.
+        assert!(lines[0].contains("  1 task, 1 future "), "{shown}");
+        assert!(lines[1].contains("  2 tasks, 2 futures  "), "{shown}");
+        assert!(lines[2].contains("  1 task, 1 future "), "{shown}");
         assert!(
             lines[1].starts_with("runtime    1  current_thread  @0x"),
             "{shown}"

@@ -71,6 +71,14 @@ exclude_globs = [
     "exegesis/**",
     # Fixture programs and the dashboard's TypeScript build.
     "test-programs/**",
+    # The snapshot command is a test-data producer behind the
+    # `snapshot` feature: no automated test drives a capture, so no
+    # sweep can see any of it stubbed or skewed. Its output *is*
+    # judged, one step removed — a capture that recorded nothing, or
+    # warmed the wrong pages, fails the offline suites the moment the
+    # pair is regenerated — but that loop runs a human and a capture
+    # host, not a mutant.
+    "hansei/src/snapshot_cmd.rs",
 ]
 
 exclude_re = [
@@ -147,13 +155,6 @@ exclude_re = [
     # between the bundle and the reader, which is what the
     # FORMAT_VERSION bump on foldhash is for.
     "replace rust_type_name_hash",
-    # The snapshot command is a test-data producer behind the
-    # `snapshot` feature: no automated test drives a capture, so no
-    # sweep can see it stubbed out. Its output *is* judged, one step
-    # removed — a capture that recorded nothing fails the offline
-    # suites the moment the pair is regenerated — but that loop runs a
-    # human and a capture host, not a mutant.
-    "replace exec_snapshot",
     # Two lines of stderr glue on a Session, which only a live attach
     # constructs — no automated test drives one, the same gap as
     # exec_snapshot above. Everything the method does is pinned one
@@ -195,6 +196,57 @@ exclude_re = [
     # tried either way and the answer never differs. (The wrapping-sub
     # spelling dies on the underflow check via the leading-star case.)
     "replace \\+ with \\* in glob_match",
+    # Equivalent mutant: a named pointer's arm answers ty.name(), and
+    # so does the `_` arm the deletion falls through to — the arm is
+    # there to say a named pointer keeps its name rather than being
+    # respelled from its pointee. (The name:None arm is not equivalent
+    # and stays reported; this matches only the Some spelling.)
+    "delete match arm TypeDef::Pointer\\{name:Some",
+    # Write batching, not behavior: CHUNK and BIG only decide how the
+    # renderer's pieces coalesce into sink writes, and every spelling
+    # of these mutants flushes the same bytes in the same order. The
+    # shifted constants and the re-aimed comparisons cost copies, not
+    # output.
+    "replace << with >> in print_variable",
+    "replace >= with < in print_variable::Stream",
+    # Equivalent mutant, the same shape as eval_struct's in reify: a
+    # local's own target address is threaded into the value for the
+    # node vocabulary's benefit, but no node consumes a value's own
+    # address terminally — every target read goes through pointer
+    # words in the bytes — so skewing it either way is unobservable
+    # (unlike eval_struct's, the minus spelling cannot even underflow:
+    # a member offset is small against a heap address). The regex also
+    # matches the indent-step sum a few lines down; that one the
+    # exact-string chain tests kill, so skipping its report costs
+    # nothing. If a consumer of a value's own address ever lands,
+    # delete this entry and pin the arithmetic instead.
+    "trace.rs.*replace \\+ with [*-] in print_await_chain",
+    # The best-effort hint on a refused attach: the guard re-attaches
+    # under the laxer policy to check the hint would be true, and only
+    # a core/bundle pair whose non-essential walk paths are broken can
+    # reach it. No automated test constructs one — the same gap as
+    # note_version_ceiling above, judged by a human against a broken
+    # target rather than by any sweep's suite.
+    "match guard !args\\.best_effort",
+    "replace && with \\|\\| in Session<'b>::attach",
+    "delete ! in Session<'b>::attach",
+    # The suspend table's empty-column screens. The locals half is
+    # pinned (the side_parker exact render has no locals column and an
+    # awaitee right after the location cell); the location half cannot
+    # be reached — rustc records a decl for every suspend state, so no
+    # fixture row lacks one, and with the column populated the two
+    # spellings agree. The regex necessarily covers both.
+    "replace > with >= in SuspendTable<'b>::print_range",
+    # Two lines of stderr glue: the spelling is pinned one call in
+    # (warning_lines), and which stream it goes to is not something a
+    # captured-stdout test can see — the same gap as
+    # note_version_ceiling above.
+    "replace print_warnings",
+    # The interactive REPL loop wants a terminal on stdin, which no
+    # automated test has: every scripted path through the same dispatch
+    # is exercised through stdin scripts, and what this adds — reedline,
+    # the prompt, ctrl-c/ctrl-d handling — only a person can drive.
+    "replace interactive ",
     # A 32-bit guard, unobservable anywhere this suite runs. On 64-bit
     # every recorded frame size converts, so the guard is always true;
     # forcing it false only routes the decode through the reallocating
