@@ -687,16 +687,23 @@ fn runtime_threads(session: &Session<'_>) -> Result<Vec<summary::Thread>> {
             tid: worker.tid,
             runtime: session.runtime_of(worker.tid).map(|(index, _)| index),
             role: thread_role(session, worker)?,
-            polling: worker.current_task_id.filter(|id| {
-                session
-                    .tasks
-                    .tasks
-                    .iter()
-                    .any(|t| t.task_id == Some(*id) && t.state.lifecycle() == Lifecycle::Running)
-            }),
+            polling: polled_task(worker.current_task_id, &session.tasks),
         });
     }
     Ok(runtime)
+}
+
+/// The task a thread's `Context` says it is polling, believed only when
+/// the listing agrees: a task with that very id that the runtime still
+/// calls running. A stale or corrupt word names a task that is idle,
+/// complete, or not listed at all, and a summary column repeating it
+/// would send a reader chasing a poll that is not happening.
+fn polled_task(current_task_id: Option<u64>, list: &bundle::TaskList) -> Option<u64> {
+    current_task_id.filter(|id| {
+        list.tasks
+            .iter()
+            .any(|t| t.task_id == Some(*id) && t.state.lifecycle() == Lifecycle::Running)
+    })
 }
 
 /// The run-loop role one thread holds, of either scheduler flavor, or
@@ -844,6 +851,143 @@ mod census_warning_tests {
 }
 
 #[cfg(test)]
+mod census_listing_tests {
+    use super::{Entry, Listing, bundle, census, census_counts, print_future_entry};
+
+    use hansei_bundle::BundleTypeId;
+    use hansei_runtime::tokio::TaskState;
+    use hansei_runtime::tokio::census::Via;
+
+    use std::collections::HashMap;
+
+    fn held(owner: usize, via: Option<Via>) -> census::HeldFuture {
+        census::HeldFuture {
+            owner,
+            frame: 0,
+            local: "fut".to_string(),
+            via,
+            slot: 0x1000,
+            addr: 0x1000,
+            ty: BundleTypeId(0),
+            depth: 1,
+            future: "app::work".to_string(),
+            state: None,
+            waiting_on: None,
+            wait: None,
+            leaf: None,
+        }
+    }
+
+    fn set_child(future: Option<&str>) -> census::SetChild {
+        census::SetChild {
+            node: 0x4000,
+            depth: 1,
+            future: future.map(str::to_string),
+            root: None,
+            state: None,
+            waiting_on: None,
+            wait: None,
+            leaf: None,
+        }
+    }
+
+    fn future_set(owner: usize) -> census::FutureSet {
+        census::FutureSet {
+            owner,
+            frame: 1,
+            local: "unordered".to_string(),
+            via: None,
+            addr: 0x2000,
+            ty: "FuturesUnordered".to_string(),
+            children: vec![set_child(Some("app::child")), set_child(None)],
+        }
+    }
+
+    fn joined(id: Option<u64>) -> census::JoinedTask {
+        census::JoinedTask {
+            entry: 0x5000,
+            task: 0x6000,
+            id,
+            state: TaskState(0),
+            listed: false,
+        }
+    }
+
+    fn join_set(owner: usize, length: u64, children: Vec<census::JoinedTask>) -> census::JoinSet {
+        census::JoinSet {
+            owner,
+            frame: 0,
+            local: "workers".to_string(),
+            via: None,
+            addr: 0x3000,
+            ty: "JoinSet<()>".to_string(),
+            length,
+            children,
+        }
+    }
+
+    /// Counts are keyed by the owning task's index in the task list, and
+    /// only a find at the top of the listing is counted — one the census
+    /// reached through another is inside it.
+    #[test]
+    fn test_census_counts_key_by_owner_and_skip_nested_finds() {
+        let held_list = vec![held(2, None), held(2, Some(Via::Held(0)))];
+        let sets = vec![future_set(3)];
+        let join_sets = vec![join_set(2, 2, vec![joined(Some(7)), joined(None)])];
+        let counts = census_counts(&held_list, &sets, &join_sets);
+
+        assert_eq!(counts.keys().copied().collect::<Vec<_>>(), [2, 3]);
+        let two = counts[&2];
+        assert_eq!((two.held, two.join_sets, two.joined), (1, 1, 2));
+        assert_eq!((two.sets, two.children_live), (0, 0));
+        let three = counts[&3];
+        assert_eq!((three.sets, three.children_live), (1, 1));
+        assert_eq!(three.held, 0);
+    }
+
+    /// A join set's row carries the count the walk reached; what the set
+    /// records for itself is appended only when the walk fell short of
+    /// it, since that is the row the stderr error belongs to.
+    #[test]
+    fn test_short_join_set_row_reports_the_recorded_length() {
+        let nested = HashMap::new();
+        let list = bundle::TaskList {
+            tasks: vec![],
+            errors: vec![],
+        };
+        let polling = HashMap::new();
+        let listing = Listing {
+            nested: &nested,
+            list: &list,
+            polling: &polling,
+        };
+        let show = |set: &census::JoinSet| {
+            let mut out = Vec::new();
+            print_future_entry(Entry::JoinSet(set), &listing, 0, false, &mut out)
+                .expect("printing a join set row succeeds");
+            String::from_utf8(out).expect("the listing is utf8")
+        };
+
+        // The walk reached what the set records: no annotation.
+        let full = join_set(2, 2, vec![joined(Some(7)), joined(None)]);
+        assert_eq!(
+            show(&full),
+            "- JoinSet<()> at 0x3000 (frame 0, `workers`): 2 tasks\n\
+             \x20   task 7  <idle, not in the scheduler's owned tasks>\n\
+             \x20   task at 0x6000  <idle, not in the scheduler's owned tasks>\n"
+        );
+
+        // The walk fell short: the row says what the set records.
+        let short = join_set(2, 5, vec![joined(Some(7))]);
+        assert_eq!(
+            show(&short),
+            "- JoinSet<()> at 0x3000 (frame 0, `workers`): 1 task (the set records 5)\n\
+             \x20   task 7  <idle, not in the scheduler's owned tasks>\n"
+        );
+    }
+}
+
+#[cfg(test)]
 mod task_state_tests {
     use super::task_state;
 
@@ -863,6 +1007,40 @@ mod task_state_tests {
             future: FutureInfo::Unknown { poll_symbol: None },
             group: 0,
         }
+    }
+
+    /// The summary's polling column believes a `Context`'s current-task
+    /// word only when the listing agrees — a running task with that very
+    /// id. Each leg of that belief is stated apart, because no capture
+    /// can: a healthy core never records an id whose task is not
+    /// mid-poll, so only a constructed list reaches the disagreeing
+    /// arms.
+    ///
+    /// No fixture cores a target with a task actually running on a
+    /// worker, so this too is stated here or nowhere.
+    #[test]
+    fn test_a_polled_task_is_believed_only_when_the_listing_agrees() {
+        use super::polled_task;
+        use hansei_runtime::tokio::bundle::TaskList;
+
+        const RUNNING: u64 = 0b0001;
+        const IDLE: u64 = 0;
+        let list = |state: u64, task_id: Option<u64>| TaskList {
+            tasks: vec![task(state, task_id)],
+            errors: vec![],
+        };
+
+        // The listing shows task 7 running: the word is believed.
+        assert_eq!(polled_task(Some(7), &list(RUNNING, Some(7))), Some(7));
+
+        // The id names a task the listing calls idle, a different task,
+        // or no task at all: the word is dropped, not repeated.
+        assert_eq!(polled_task(Some(7), &list(IDLE, Some(7))), None);
+        assert_eq!(polled_task(Some(9), &list(RUNNING, Some(7))), None);
+        assert_eq!(polled_task(Some(7), &list(RUNNING, None)), None);
+
+        // No word, nothing to believe.
+        assert_eq!(polled_task(None, &list(RUNNING, Some(7))), None);
     }
 
     /// Which worker is mid-poll on a task is the one thing `running`
