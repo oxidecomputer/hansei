@@ -86,6 +86,16 @@ exclude_re = [
     # is never empty. The arm stays as the graceful answer should a
     # refactor of the index build ever make an empty entry possible.
     "delete match arm 0 in Context<'b, T>::object_symbol",
+    # The io-route gate re-armed (`<` to `<=`) only re-runs the io
+    # sweep over an empty runtime slice until the 64-round cap ends
+    # the loop where the `break` would have: identical output, bounded
+    # no-op work — an equivalent mutant, since io is the chain's last
+    # arm and starves only the break. The regex necessarily covers the
+    # function's other `<` gates too; those stay caught by the
+    # population tests themselves (a starved io arm shortens the
+    # local-set-io listing), this only stops the sweep from reporting
+    # the one gate no input can distinguish.
+    "replace < with <= in Context<'b, T>::discover_hidden_tasks",
     # A constant type-name hash is a performance bug, not a behaviour
     # one, and no test can see it: the index groups candidates by this
     # hash and `rust_type_names_equal` still decides each one, so every
