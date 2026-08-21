@@ -185,6 +185,8 @@ mod tests {
         let t = i.finish();
         let all: Vec<_> = t.iter().collect();
         assert_eq!(all, ["a", "b", "c"]);
+        assert_eq!(t.len(), 3);
+        assert!(!t.is_empty());
     }
 
     #[test]
