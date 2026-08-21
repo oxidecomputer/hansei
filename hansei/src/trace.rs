@@ -1188,7 +1188,14 @@ mod future_trace_tests {
             let set = census.sets.first().expect("the fixture holds a set");
             let err = future_at(&_ctx.view, list, extents, census, set.addr)
                 .expect_err("a set is not one future");
-            assert!(err.to_string().contains("child node(s)"), "{err}");
+            // The *queried* set, not another one the census holds: its
+            // type and its own child count.
+            assert!(err.to_string().contains(&set.ty), "{err}");
+            assert!(
+                err.to_string()
+                    .contains(&format!("its {} child node(s)", set.children.len())),
+                "{err}"
+            );
         });
     }
 
