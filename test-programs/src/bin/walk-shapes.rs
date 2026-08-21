@@ -74,13 +74,28 @@ impl<F: Future> Future for WrapE<F> {
     }
 }
 
+/// Not a future and never polled: a pure wrapper whose only sized
+/// member is a future beside a zero-sized marker. Held across an
+/// await so the type survives into the bundle — the is_future unit
+/// tests pin that the wrapper unwrap follows the sized member and
+/// steps over the marker.
+struct WrapZ<F> {
+    inner: F,
+    _zst: std::marker::PhantomData<u8>,
+}
+
 async fn deep(park: Arc<Notify>) -> u32 {
     park.notified().await;
     5
 }
 
-async fn chained(ready: oneshot::Sender<()>, park: Arc<Notify>) -> u32 {
+async fn chained(ready: oneshot::Sender<()>, park: Arc<Notify>, held_park: Arc<Notify>) -> u32 {
     census_expect::task("walk_shapes::chained");
+    let wz = WrapZ {
+        inner: deep(held_park),
+        _zst: std::marker::PhantomData,
+    };
+    census_expect::held(&wz.inner as *const _ as u64, "deep");
     ready.send(()).expect("main waits for readiness");
     // Awaited as an expression, not a binding: a named local would
     // leave a moved-from copy of the wrappers in this frame for the
@@ -92,7 +107,9 @@ async fn chained(ready: oneshot::Sender<()>, park: Arc<Notify>) -> u32 {
             inner: deep(park),
         },
     }
-    .await
+    .await;
+    drop(wz);
+    17
 }
 
 async fn holder(
@@ -224,7 +241,8 @@ fn main() {
         let (r_joiner_tx, r_joiner_rx) = oneshot::channel();
         let (r_side_tx, r_side_rx) = oneshot::channel();
 
-        tokio::spawn(chained(r_chain_tx, chain_park.clone()));
+        let held_park = Arc::new(Notify::new());
+        tokio::spawn(chained(r_chain_tx, chain_park.clone(), held_park.clone()));
         tokio::spawn(holder(
             taken_a_tx,
             taken_v_tx,

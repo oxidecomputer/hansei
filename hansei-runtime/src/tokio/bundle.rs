@@ -2844,6 +2844,26 @@ mod tests {
             .expect("the fixture bundle has such a type")
     }
 
+    /// The `walk-shapes` pair, for the wrapper shapes the unordered
+    /// fixture has no reason to carry.
+    fn walk_shapes() -> &'static (Bundle, Snapshot) {
+        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+        PAIR.get_or_init(|| testkit::load_any("walk-shapes"))
+    }
+
+    /// The wrapper unwrap steps over zero-sized members: `WrapZ`'s only
+    /// sized member is a future beside a `PhantomData`, and a filter
+    /// that counts the marker sees two members and declines the whole
+    /// stack.
+    #[test]
+    fn test_is_future_steps_over_zero_sized_members() {
+        let (bundle, snapshot) = walk_shapes();
+        let ctx = testkit::context(bundle, snapshot);
+        let ty = find_ty(bundle, |t| t.name().starts_with("walk_shapes::WrapZ<"));
+        assert!(!ctx.known_futures().contains(&ty.id()), "never polled");
+        assert!(ctx.is_future(ty), "{}", ty.name());
+    }
+
     /// A coroutine whose `poll` rustc inlined out of the symtab has no
     /// poll-table entry, and must still screen as a future on
     /// `is_coroutine` alone. Every debug-build fixture records every
