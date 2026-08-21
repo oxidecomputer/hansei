@@ -115,6 +115,12 @@ exclude_re = [
     # the payload slice bound a few lines up; that one every chain test
     # kills, so skipping its report costs nothing.)
     "bundle.rs.*replace \\+ with - in Context<'b, T>::await_chain",
+    # A defensive filter on impossible input: task_extent only ever
+    # returns start..start+size with a nonzero size (a Cell's size or
+    # trailer_offset + trailer size), so no extent is empty and the
+    # degenerate-span guard never distinguishes. Weakened to >=, an
+    # empty span could enter the index — but nothing can produce one.
+    "replace > with >= in Context<'b, T>::task_extents",
     # A constant type-name hash is a performance bug, not a behaviour
     # one, and no test can see it: the index groups candidates by this
     # hash and `rust_type_names_equal` still decides each one, so every
