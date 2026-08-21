@@ -73,6 +73,7 @@ const PROGRAMS: &[&str] = &[
     "local-set-io",
     "foreign-runtime",
     "gen-0007",
+    "walk-shapes",
 ];
 
 /// What a fixture pair was captured from: the program's own source, and
