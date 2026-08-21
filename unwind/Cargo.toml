@@ -12,3 +12,4 @@ rustc-demangle.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+testrun = { workspace = true }

@@ -33,18 +33,31 @@ fn workspace_root() -> &'static Path {
 }
 
 /// Build the fixture, run it to its abort under gdb, and dump it there.
+///
+/// The build goes once per *run*, not once per process: under nextest
+/// each test is its own process, and proc's core suite reads the very
+/// same binary — a rebuild landing while another test's gdb runs it
+/// turns that test's mapped path into a deleted file. The stamp and
+/// digest match proc's for the same program, so whichever suite gets
+/// there first builds and every other caller skips.
 fn core() -> &'static Path {
     static CORE: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
     &CORE
         .get_or_init(|| {
             let test_programs = workspace_root().join("test-programs");
-            let status = Command::new(test_programs.join("regen.sh"))
-                .arg(PROGRAM)
-                .status()
-                .expect("failed to run regen.sh");
-            assert!(
-                status.success(),
-                "regen.sh failed; is the pinned toolchain installed?"
+            testrun::once_per_run(
+                &test_programs.join("fixtures/.built").join(PROGRAM),
+                || built_from(&test_programs),
+                || {
+                    let status = Command::new(test_programs.join("regen.sh"))
+                        .arg(PROGRAM)
+                        .status()
+                        .expect("failed to run regen.sh");
+                    assert!(
+                        status.success(),
+                        "regen.sh failed; is the pinned toolchain installed?"
+                    );
+                },
             );
             let fixture = test_programs.join("fixtures/bin").join(PROGRAM);
 
@@ -67,6 +80,20 @@ fn core() -> &'static Path {
             (dir, core)
         })
         .1
+}
+
+/// What the fixture binary is built from — byte-identical to the proc
+/// suite's digest for the same program, so the two suites agree on the
+/// stamp and only one of them builds.
+fn built_from(dir: &Path) -> String {
+    let mut inputs = testrun::Inputs::new();
+    inputs
+        .file(&dir.join("src/lib.rs"))
+        .file(&dir.join("src/bin").join(format!("{PROGRAM}.rs")))
+        .file(&dir.join("Cargo.toml"))
+        .file(&dir.join("Cargo.lock"))
+        .file(&dir.join("regen.sh"));
+    inputs.finish()
 }
 
 fn demangled(frames: &unwind::Backtrace) -> Vec<String> {
