@@ -64,11 +64,6 @@ test_package = [
 ]
 
 exclude_globs = [
-    # Not mutated, only asked to judge: its goldens rebuild every
-    # fixture program, and with them in scope that is one build per
-    # job — but mutating exegesis itself is now a sweep worth running,
-    # rather than the impossibility this said before.
-    "exegesis/**",
     # Fixture programs and the dashboard's TypeScript build.
     "test-programs/**",
     # The snapshot command is a test-data producer behind the
