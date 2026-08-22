@@ -978,3 +978,518 @@ fn classify_future(
     }
     Provenance { decl, kind }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::raw_types::{
+        NsId, RawBase, RawEnum, RawFunc, RawGenericParameter, RawMember, RawPointer, RawStruct,
+        RawSubParameter, RawType, SourceLoc as RawSourceLoc, VariantShape,
+    };
+    use crate::view::DwView;
+    use crate::{DwReader, Encoding, FuncId, StrId};
+
+    use gimli::{DebugInfoOffset, UnitSectionOffset};
+
+    use std::collections::BTreeMap;
+    use std::num::NonZero;
+
+    fn type_id(offset: usize) -> TypeId {
+        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    fn func_id(offset: usize) -> FuncId {
+        FuncId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    #[derive(Default)]
+    struct Fx {
+        reader: DwReader<'static>,
+    }
+
+    impl Fx {
+        fn ns(&mut self, path: &'static str) -> NsId {
+            self.ns_under(None, path)
+        }
+
+        fn ns_under(&mut self, parent: Option<NsId>, path: &'static str) -> NsId {
+            let mut ns = parent;
+            for seg in path.split("::") {
+                let name = self.reader.strings.intern(seg);
+                ns = Some(self.reader.namespaces.insert(ns, name));
+            }
+            ns.unwrap()
+        }
+
+        fn base(&mut self, id: TypeId, name: &'static str, encoding: Encoding, size: u64) {
+            let name = Some(self.reader.strings.intern(name));
+            self.reader.types.insert(
+                id,
+                RawType::Base(RawBase {
+                    name,
+                    namespace: None,
+                    encoding,
+                    size,
+                    alignment: None,
+                }),
+            );
+        }
+
+        fn strukt(
+            &mut self,
+            id: TypeId,
+            namespace: Option<NsId>,
+            name: &'static str,
+            members: &[(&'static str, TypeId, u64)],
+            params: &[(&'static str, TypeId)],
+        ) {
+            let members: Box<[RawMember<StrId>]> = members
+                .iter()
+                .map(|&(name, type_id, offset)| RawMember {
+                    name: Some(self.reader.strings.intern(name)),
+                    offset,
+                    type_id,
+                    source_loc: None,
+                })
+                .collect();
+            let template_params: Box<[RawGenericParameter<StrId>]> = params
+                .iter()
+                .map(|&(name, type_id)| RawGenericParameter {
+                    name: Some(self.reader.strings.intern(name)),
+                    type_id,
+                })
+                .collect();
+            let name = Some(self.reader.strings.intern(name));
+            self.reader.types.insert(
+                id,
+                RawType::Struct(RawStruct {
+                    name,
+                    namespace,
+                    size: 8,
+                    members,
+                    template_params,
+                    source_loc: None,
+                }),
+            );
+        }
+
+        fn stage_enum(&mut self, id: TypeId, namespace: NsId, name: &'static str) {
+            let name = Some(self.reader.strings.intern(name));
+            self.reader.types.insert(
+                id,
+                RawType::Enum(RawEnum {
+                    name,
+                    namespace: Some(namespace),
+                    size: 8,
+                    alignment: None,
+                    shape: VariantShape::Zero,
+                    template_params: Box::new([]),
+                    source_loc: None,
+                }),
+            );
+        }
+
+        fn pointer(&mut self, id: TypeId, target: TypeId) {
+            self.reader.types.insert(
+                id,
+                RawType::Pointer(RawPointer {
+                    name: None,
+                    target_type_id: target,
+                }),
+            );
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn func(
+            &mut self,
+            id: FuncId,
+            namespace: Option<NsId>,
+            name: &'static str,
+            linkage: Option<&'static str>,
+            template_params: &[(&'static str, TypeId)],
+            params: &[TypeId],
+            return_type_id: Option<TypeId>,
+            source_line: Option<u64>,
+        ) {
+            let template_params = template_params
+                .iter()
+                .map(|&(name, type_id)| RawGenericParameter {
+                    name: Some(self.reader.strings.intern(name)),
+                    type_id,
+                })
+                .collect();
+            let formal_parameters = params
+                .iter()
+                .map(|&type_id| RawSubParameter {
+                    name: None,
+                    type_id: Some(type_id),
+                    abstract_origin: None,
+                    const_value: None,
+                    source_loc: None,
+                })
+                .collect();
+            let source_loc = source_line.map(|line| {
+                Box::new(RawSourceLoc {
+                    file: Some(self.reader.strings.intern("main.rs")),
+                    dir: None,
+                    comp_dir: None,
+                    line: NonZero::new(line),
+                    column: None,
+                })
+            });
+            self.reader.functions.insert(
+                id,
+                RawFunc {
+                    name: Some(self.reader.strings.intern(name)),
+                    namespace,
+                    source_loc,
+                    return_type_id,
+                    formal_parameters,
+                    abstract_origin: None,
+                    linkage_name: linkage.map(|l| self.reader.strings.intern(l)),
+                    template_params,
+                    noreturn: false,
+                    awaitees: Box::new([]),
+                },
+            );
+        }
+
+        /// A `Pin<&mut T>` chain: the Pin struct, its pointer, the target.
+        fn pin_of(&mut self, pin: TypeId, pointer: TypeId, target: TypeId) -> TypeId {
+            self.pointer(pointer, target);
+            self.strukt(pin, None, "Pin<&mut T>", &[("__pointer", pointer, 0)], &[]);
+            pin
+        }
+    }
+
+    /// A synthetic target: three task seeds (a Cell via dealloc with a
+    /// Stage, a Cell via scan without one, no Cell at all), two dyn
+    /// futures (glue matched by template param and by display name), and
+    /// one of each self-recovery failure. With `infra` the nine infra
+    /// types exist; `unstable` gives the Vtable its unstable-only member.
+    fn world(infra: bool, unstable: bool) -> Fx {
+        let mut fx = Fx::default();
+        let tokio_runtime = fx.ns("tokio::runtime");
+        let task = fx.ns_under(Some(tokio_runtime), "task");
+        let raw_ns = fx.ns_under(Some(task), "raw");
+        let core_ns = fx.ns_under(Some(task), "core");
+        let core_ptr = fx.ns("core::ptr");
+        let app = fx.ns("app");
+
+        let word = type_id(1);
+        let sched = type_id(2);
+        fx.base(word, "u64", Encoding::Unsigned, 8);
+        fx.strukt(sched, None, "Sched", &[], &[]);
+
+        let fut_a = type_id(0x10);
+        let fut_b = type_id(0x11);
+        let fut_c = type_id(0x12);
+        fx.strukt(fut_a, Some(app), "FutA", &[], &[]);
+        fx.strukt(fut_b, Some(app), "FutB", &[], &[]);
+        fx.strukt(fut_c, Some(app), "FutC", &[], &[]);
+
+        // Seed A: Cell via dealloc's NonNull parameter, with a Stage.
+        let stage_a = type_id(0x13);
+        fx.stage_enum(stage_a, core_ns, "Stage<app::FutA>");
+        let cell_a = type_id(0x14);
+        fx.strukt(
+            cell_a,
+            Some(core_ns),
+            "Cell<app::FutA, Sched>",
+            &[("stage", stage_a, 0)],
+            &[],
+        );
+        let cell_a_ptr = type_id(0x15);
+        fx.pointer(cell_a_ptr, cell_a);
+        let non_null_a = type_id(0x16);
+        fx.strukt(
+            non_null_a,
+            None,
+            "NonNull<Cell<app::FutA, Sched>>",
+            &[("pointer", cell_a_ptr, 0)],
+            &[],
+        );
+        // Seed B: Cell found by the scan index, holding no Stage.
+        let cell_b = type_id(0x17);
+        fx.strukt(
+            cell_b,
+            Some(core_ns),
+            "Cell<app::FutB, Sched>",
+            &[("len", word, 0)],
+            &[("T", fut_b), ("S", sched)],
+        );
+
+        let t_s_a: &[(&str, TypeId)] = &[("T", fut_a), ("S", sched)];
+        let t_s_b: &[(&str, TypeId)] = &[("T", fut_b), ("S", sched)];
+        let t_s_c: &[(&str, TypeId)] = &[("T", fut_c), ("S", sched)];
+        fx.func(
+            func_id(0x100),
+            Some(raw_ns),
+            "poll<app::FutA, Sched>",
+            Some("poll_a"),
+            t_s_a,
+            &[],
+            None,
+            None,
+        );
+        fx.func(
+            func_id(0x110),
+            Some(raw_ns),
+            "dealloc<app::FutA, Sched>",
+            Some("dealloc_a"),
+            t_s_a,
+            &[non_null_a],
+            None,
+            None,
+        );
+        fx.func(
+            func_id(0x120),
+            Some(raw_ns),
+            "poll<app::FutB, Sched>",
+            Some("poll_b"),
+            t_s_b,
+            &[],
+            None,
+            None,
+        );
+        fx.func(
+            func_id(0x130),
+            Some(raw_ns),
+            "poll<app::FutC, Sched>",
+            Some("poll_c"),
+            t_s_c,
+            &[],
+            None,
+            None,
+        );
+        // A vtable fn with no linkage name is counted, not seeded.
+        fx.func(
+            func_id(0x140),
+            Some(raw_ns),
+            "shutdown<app::FutA, Sched>",
+            None,
+            t_s_a,
+            &[],
+            None,
+            None,
+        );
+
+        // A coroutine resume fn, its env, and glue matched by parameter.
+        let poll_ret = type_id(0x20);
+        fx.strukt(poll_ret, None, "Poll<()>", &[], &[]);
+        let env = type_id(0x21);
+        fx.strukt(env, None, "{async_fn_env#0}", &[], &[]);
+        let env_pin = fx.pin_of(type_id(0x22), type_id(0x23), env);
+        fx.func(
+            func_id(0x150),
+            None,
+            "{async_fn#0}",
+            Some("resume_e1"),
+            &[],
+            &[env_pin],
+            Some(poll_ret),
+            None,
+        );
+        fx.func(
+            func_id(0x160),
+            Some(core_ptr),
+            "drop_glue<{async_fn_env#0}>",
+            Some("glue_e1"),
+            &[("T", env)],
+            &[],
+            None,
+            None,
+        );
+
+        // A Future::poll impl and glue matched by display name.
+        let f2 = type_id(0x24);
+        fx.strukt(f2, Some(app), "F2", &[], &[]);
+        let f2_pin = fx.pin_of(type_id(0x25), type_id(0x26), f2);
+        fx.func(
+            func_id(0x170),
+            None,
+            "poll",
+            Some("<app::F2 as core::future::future::Future>::poll"),
+            &[],
+            &[f2_pin],
+            None,
+            None,
+        );
+        fx.func(
+            func_id(0x180),
+            Some(core_ptr),
+            "drop_glue<app::F2>",
+            Some("glue_f2"),
+            &[],
+            &[],
+            None,
+            None,
+        );
+
+        // One declaration-only self type, one unrecoverable.
+        let bare_pin = type_id(0x27);
+        fx.strukt(bare_pin, None, "Pin<&mut X>", &[], &[]);
+        fx.func(
+            func_id(0x190),
+            None,
+            "poll",
+            Some("<X as core::future::future::Future>::poll"),
+            &[],
+            &[bare_pin],
+            None,
+            None,
+        );
+        fx.func(
+            func_id(0x1a0),
+            None,
+            "poll",
+            Some("<Y as core::future::future::Future>::poll"),
+            &[],
+            &[],
+            None,
+            None,
+        );
+
+        if infra {
+            let context_ns = fx.ns_under(Some(tokio_runtime), "context");
+            let scheduler_ns = fx.ns_under(Some(tokio_runtime), "scheduler");
+            let mt_ns = fx.ns_under(Some(scheduler_ns), "multi_thread::handle");
+            let location_ns = fx.ns("core::panic::location");
+            let wake_ns = fx.ns("core::task::wake");
+            fx.strukt(type_id(0x30), Some(core_ns), "Header", &[], &[]);
+            let vtable_members: &[(&str, TypeId, u64)] = if unstable {
+                &[("spawn_location_offset", word, 0)]
+            } else {
+                &[("poll", word, 0)]
+            };
+            fx.strukt(type_id(0x31), Some(raw_ns), "Vtable", vtable_members, &[]);
+            fx.strukt(type_id(0x32), Some(core_ns), "Trailer", &[], &[]);
+            fx.strukt(type_id(0x33), Some(context_ns), "Context", &[], &[]);
+            fx.strukt(type_id(0x34), Some(scheduler_ns), "Handle", &[], &[]);
+            fx.strukt(type_id(0x35), Some(mt_ns), "Handle", &[], &[]);
+            fx.strukt(type_id(0x36), Some(location_ns), "Location", &[], &[]);
+            fx.strukt(type_id(0x37), Some(wake_ns), "RawWakerVTable", &[], &[]);
+        }
+        fx
+    }
+
+    fn run(fx: &Fx, allow_missing_infra: bool) -> Result<(Bundle, ExtractStats)> {
+        let view = DwView::new(&fx.reader);
+        let opts = ExtractOptions {
+            allow_missing_infra,
+            ..Default::default()
+        };
+        let ident = BinaryIdent {
+            basename: "synthetic".to_owned(),
+            build_id: None,
+            blake3: [0; 32],
+        };
+        extract_from_view(&view, &[], ident, &opts, &[])
+    }
+
+    #[test]
+    fn test_extraction_counts_what_it_skipped_and_bound() {
+        let fx = world(false, false);
+        let (_bundle, stats) = run(&fx, true).expect("a permissive extraction succeeds");
+
+        assert_eq!(stats.vtable_missing_linkage, 1);
+        assert_eq!(stats.dyn_decl_only_self, 1);
+        assert_eq!(stats.dyn_unresolved_self, 1);
+        assert_eq!(stats.cells_from_dealloc, 1);
+        assert_eq!(stats.cells_by_scan, 1);
+        assert_eq!(stats.cells_missing, 1);
+        assert_eq!(stats.stages_missing, 1);
+        assert_eq!(stats.dyn_futures, 2);
+        assert_eq!(stats.dyn_poll_symbols, 2);
+        assert_eq!(stats.dyn_glue_symbols, 2);
+        assert_eq!(stats.dyn_glue_by_name, 1);
+        assert_eq!(stats.task_entries, 3);
+        assert_eq!(stats.poll_instantiations, 3);
+        assert_eq!(stats.task_symbols, 4);
+        // No versioned detector ran, so no family was guessed.
+        assert_eq!(stats.tokio_family_guessed, None);
+        let display = format!("{stats}");
+        assert!(display.contains("task table:"), "{display}");
+        assert!(display.contains("  entries:                3"), "{display}");
+    }
+
+    #[test]
+    fn test_missing_statics_alone_refuse_a_strict_extraction() {
+        let fx = world(true, false);
+        let err = match run(&fx, false) {
+            Err(Error::MissingInfra(missing)) => missing,
+            other => panic!("expected MissingInfra, got {other:?}"),
+        };
+        // Every infra type resolves (one scheduler flavor is enough), so
+        // what refuses the extraction is the statics alone.
+        assert!(err.iter().all(|path| !path.contains("Handle")), "{err:?}");
+
+        let (_bundle, stats) = run(&fx, true).expect("the permissive form proceeds");
+        assert_eq!(stats.infra_missing, Vec::<String>::new());
+        assert!(!stats.statics_missing.is_empty());
+    }
+
+    #[test]
+    fn test_tokio_unstable_is_read_from_the_vtable_layout() {
+        let fx = world(true, true);
+        let (bundle, _) = run(&fx, true).expect("a permissive extraction succeeds");
+        assert_eq!(bundle.meta.tokio_unstable, Some(true));
+
+        let fx = world(true, false);
+        let (bundle, _) = run(&fx, true).expect("a permissive extraction succeeds");
+        assert_eq!(bundle.meta.tokio_unstable, Some(false));
+
+        let fx = world(false, false);
+        let (bundle, _) = run(&fx, true).expect("a permissive extraction succeeds");
+        assert_eq!(bundle.meta.tokio_unstable, None);
+    }
+
+    #[test]
+    fn test_futures_classify_by_their_root_namespace() {
+        let mut fx = Fx::default();
+        let combinators = fx.ns("futures_util::future");
+        let app = fx.ns("app");
+        let join_all = type_id(1);
+        let my_fut = type_id(2);
+        fx.strukt(join_all, Some(combinators), "JoinAll<F>", &[], &[]);
+        fx.strukt(my_fut, Some(app), "MyFut", &[], &[]);
+
+        let view = DwView::new(&fx.reader);
+        let mut em = Emitter::new(&fx.reader, BTreeMap::new(), None, None);
+        let mut stats = ExtractStats::default();
+        let p = classify_future(&fx.reader, &view, join_all, None, &mut em, &mut stats);
+        assert!(matches!(p.kind, FutureKind::Combinator));
+        let p = classify_future(&fx.reader, &view, my_fut, None, &mut em, &mut stats);
+        assert!(matches!(p.kind, FutureKind::Manual));
+        assert_eq!(stats.provenance_located, 0);
+    }
+
+    #[test]
+    fn test_async_fn_declarations_resolve_through_the_namespace_chain() {
+        let mut fx = Fx::default();
+        let app = fx.ns("app");
+        let outer = fx.ns_under(Some(app), "outer");
+        let closure = fx.ns_under(Some(outer), "{closure#0}");
+        let env = type_id(1);
+        fx.strukt(env, Some(closure), "{async_fn_env#0}", &[], &[]);
+        fx.func(
+            func_id(0x100),
+            Some(app),
+            "outer",
+            None,
+            &[],
+            &[],
+            None,
+            Some(42),
+        );
+
+        let view = DwView::new(&fx.reader);
+        let mut em = Emitter::new(&fx.reader, BTreeMap::new(), None, None);
+        let mut stats = ExtractStats::default();
+        let p = classify_future(&fx.reader, &view, env, None, &mut em, &mut stats);
+        assert!(matches!(p.kind, FutureKind::AsyncFn));
+        let decl = p.decl.expect("the defining fn names the declaration");
+        assert_eq!(decl.line, 42);
+        assert_eq!(stats.provenance_located, 1);
+    }
+}
