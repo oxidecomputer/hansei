@@ -232,7 +232,9 @@ pub struct ElideOverride {
     /// instantiation when it carries no generic arguments, the way a
     /// detector keyed on the base name does. Both sides are compared in
     /// the normalized spelling (no whitespace, default allocators
-    /// elided), so a pattern need not match the debug info's formatting.
+    /// elided), and a pattern matches the folded display spelling as
+    /// well as the raw one — so any name the output prints can be
+    /// pasted back, kind word and all.
     pub types: Vec<String>,
 }
 
@@ -242,15 +244,29 @@ impl ElideOverride {
         if self.types.is_empty() {
             return false;
         }
-        let name = hansei_bundle::symbols::normalized_rust_type_name(name);
-        let base = name.split_once('<').map_or(&*name, |(base, _)| base);
+        // The raw spelling and the folded one output displays are one
+        // type to the user, so a pattern matches against either — and a
+        // displayed name pasted whole carries the kind word the display
+        // joined, so a spec sheds one before comparing.
+        let raw = hansei_bundle::symbols::normalized_rust_type_name(name);
+        let folded = hansei_bundle::names::fold_type_name(name);
+        let folded = hansei_bundle::symbols::normalized_rust_type_name(&folded);
+        let spellings: &[&str] = if folded == raw {
+            &[&raw]
+        } else {
+            &[&raw, &folded]
+        };
         self.types.iter().any(|spec| {
+            let spec = hansei_bundle::names::strip_kind_prefix(spec);
             let spec = hansei_bundle::symbols::normalized_rust_type_name(spec);
-            if spec.contains('*') {
-                glob_match(&spec, &name)
-            } else {
-                spec == name || spec == base
-            }
+            spellings.iter().any(|name| {
+                if spec.contains('*') {
+                    glob_match(&spec, name)
+                } else {
+                    let base = name.split_once('<').map_or(*name, |(base, _)| base);
+                    spec == *name || spec == base
+                }
+            })
         })
     }
 }
@@ -1313,5 +1329,28 @@ mod tests {
         assert!(elide("slog::Logger").forces("slog::Logger<a::B>"));
         assert!(!elide("slog::Log*er").forces("slog::Logger<a::B>"));
         assert!(elide("slog::Log*er<*>").forces("slog::Logger<a::B>"));
+    }
+
+    /// The folded spellings the listings print are accepted back: the
+    /// short std path, the env-folded coroutine name, and either with
+    /// the kind word the display joined still attached.
+    #[test]
+    fn test_forces_accepts_the_displayed_spelling() {
+        use super::ElideOverride;
+
+        let elide = |spec: &str| ElideOverride {
+            no_elide: false,
+            types: vec![spec.to_owned()],
+        };
+        assert!(elide("Vec<u8>").forces("alloc::vec::Vec<u8, alloc::alloc::Global>"));
+        assert!(elide("Vec").forces("alloc::vec::Vec<u8, alloc::alloc::Global>"));
+        assert!(elide("app::work").forces("app::work::{async_fn_env#0}"));
+        assert!(elide("async fn app::work").forces("app::work::{async_fn_env#0}"));
+        assert!(elide("future tokio::time::Sleep").forces("tokio::time::Sleep"));
+        // The raw spelling still names the type it always did.
+        assert!(elide("app::work::{async_fn_env#0}").forces("app::work::{async_fn_env#0}"));
+        // Folding is a fold, not a licence: another crate's Vec is not
+        // std's.
+        assert!(!elide("Vec<u8>").forces("myalloc::vec::Vec<u8>"));
     }
 }

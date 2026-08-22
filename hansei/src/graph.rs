@@ -5,6 +5,7 @@ use crate::tasks::task_id;
 use crate::{Session, print_warnings};
 
 use anyhow::Result;
+use hansei_bundle::names;
 use hansei_runtime::tokio::{bundle, census, graph};
 
 use std::collections::HashMap;
@@ -287,7 +288,7 @@ impl GraphWalk<'_> {
         let wait = &self.analysis.waits[task];
         let target = match (&wait.target, &wait.leaf) {
             (Some(target), _) => target.to_string(),
-            (None, Some(leaf)) => leaf.clone(),
+            (None, Some(leaf)) => names::display_future_name(leaf),
             (None, None) => "-".to_string(),
         };
         self.rows.push([name, state, target]);
@@ -331,8 +332,18 @@ fn print_futurelock(fl: &graph::Futurelock, out: &mut dyn io::Write) -> Result<(
         .as_ref()
         .map(|(file, line)| format!(" — {file}:{line}"))
         .unwrap_or_default();
-    writeln!(out, "  `{}` ({})", acq.local, acq.future)?;
-    writeln!(out, "  held across {} state {}{loc}", acq.frame, acq.state)?;
+    writeln!(
+        out,
+        "  `{}` ({})",
+        acq.local,
+        names::display_future_name(&acq.future)
+    )?;
+    writeln!(
+        out,
+        "  held across {} state {}{loc}",
+        names::display_future_name(&acq.frame),
+        acq.state
+    )?;
     if fl.blocked.is_empty() {
         writeln!(out, "  nothing is blocked behind it yet")?;
     } else {
@@ -349,7 +360,7 @@ fn print_futurelock(fl: &graph::Futurelock, out: &mut dyn io::Write) -> Result<(
 
 #[cfg(test)]
 mod graph_tests {
-    use super::print_graph;
+    use super::{print_futurelock, print_graph};
 
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::bundle::{
@@ -670,6 +681,21 @@ TASK                          STATE  WAITING ON
 7                             idle   -
 └─ 8 [its handle held above]  idle   the timer: deadline 10.000s
 "
+        );
+    }
+
+    /// The diagnosis prose names the acquiring future and the frame it
+    /// is held across with the display fold applied: env marker gone,
+    /// kind word joined.
+    #[test]
+    fn test_futurelock_prose_folds_its_names() {
+        let mut out = Vec::new();
+        print_futurelock(&futurelock(51), &mut out).unwrap();
+        let prose = String::from_utf8(out).unwrap();
+        assert!(prose.contains("`lock` (async fn Mutex::lock)"), "{prose}");
+        assert!(
+            prose.contains("held across async fn worker state Suspend0"),
+            "{prose}"
         );
     }
 

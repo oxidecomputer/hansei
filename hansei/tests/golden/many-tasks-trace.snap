@@ -2,10 +2,10 @@
 source: hansei/tests/acceptance.rs
 expression: actual
 ---
-Task #park: many_tasks::park_task::{async_fn_env#0} (idle)
+Task #park: async fn many_tasks::park_task (idle)
 Defined at: src/bin/many-tasks.rs:9
 
-  0  async fn      many_tasks::park_task::{async_fn_env#0}
+  0  async fn      many_tasks::park_task
      suspends:
      ▸ Suspend0  src/bin/many-tasks.rs:11
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>

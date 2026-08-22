@@ -5,6 +5,7 @@ use crate::summary;
 use crate::{Session, print_warnings};
 
 use anyhow::Result;
+use hansei_bundle::names;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -310,7 +311,10 @@ fn print_future_entry<'a>(
             writeln!(
                 out,
                 "{pad}{mark}(frame {}, `{}`): {:#x}  {}{state}",
-                h.frame, h.local, h.addr, h.future
+                h.frame,
+                h.local,
+                h.addr,
+                names::display_future_name(&h.future)
             )?;
             if let Some(waiting) = &h.waiting_on {
                 writeln!(out, "{pad}  waiting on {waiting}")?;
@@ -329,7 +333,10 @@ fn print_future_entry<'a>(
             writeln!(
                 out,
                 "{pad}- {} at {:#x} (frame {}, `{}`): {live} child{plural} in flight{reaped}",
-                set.ty, set.addr, set.frame, set.local
+                names::fold_type_name(&set.ty),
+                set.addr,
+                set.frame,
+                set.local
             )?;
             for (child_index, child) in set.children.iter().enumerate() {
                 let Some(future) = &child.future else {
@@ -345,7 +352,12 @@ fn print_future_entry<'a>(
                     .as_ref()
                     .map(|s| format!("  {s}"))
                     .unwrap_or_default();
-                writeln!(out, "{pad}    {:#x}  {future}{state}", child.node)?;
+                writeln!(
+                    out,
+                    "{pad}    {:#x}  {}{state}",
+                    child.node,
+                    names::display_future_name(future)
+                )?;
                 if let Some(waiting) = &child.waiting_on {
                     writeln!(out, "{pad}      waiting on {waiting}")?;
                 }
@@ -371,7 +383,10 @@ fn print_future_entry<'a>(
             writeln!(
                 out,
                 "{pad}- {} at {:#x} (frame {}, `{}`): {held} task{plural}{short}",
-                set.ty, set.addr, set.frame, set.local
+                names::fold_type_name(&set.ty),
+                set.addr,
+                set.frame,
+                set.local
             )?;
             for child in &set.children {
                 writeln!(out, "{pad}    {}", joined_task(child, listing))?;
@@ -418,15 +433,21 @@ fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>) -> String {
 }
 
 /// The display name of a task's future, however well the symbol join
-/// resolved it.
+/// resolved it: the kind word joined to the folded name for a known
+/// future (`async fn foo::bar`), since none of the lines this opens
+/// carries a kind column of its own.
 pub fn future_name(future: &bundle::FutureInfo) -> String {
     match future {
-        bundle::FutureInfo::Known(known) => known.display_name.clone(),
+        bundle::FutureInfo::Known(known) => names::display_future_name(&known.display_name),
         bundle::FutureInfo::Unknown {
             poll_symbol: Some(sym),
         } => format!("<unknown: {:#}>", rustc_demangle::demangle(sym)),
         bundle::FutureInfo::Unknown { poll_symbol: None } => "<unknown>".to_string(),
         bundle::FutureInfo::Ambiguous { candidates, .. } => {
+            let candidates: Vec<_> = candidates
+                .iter()
+                .map(|c| names::fold_type_name(c))
+                .collect();
             format!("<ambiguous: {}>", candidates.join(" | "))
         }
     }

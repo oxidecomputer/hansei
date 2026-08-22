@@ -19,6 +19,7 @@
 use crate::tasks::future_name;
 
 use anyhow::Result;
+use hansei_bundle::names;
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     BlockingPool, CtActivity, CtParkState, FutureInfo, ParkState, ParkStates, Task, TaskList,
@@ -548,7 +549,12 @@ impl Waits {
             None => match (task.state.lifecycle(), &wait.leaf) {
                 (Lifecycle::Running, _) => self.running += 1,
                 (Lifecycle::Complete, _) => self.complete += 1,
-                (_, Some(leaf)) => *self.leaves.entry(leaf.clone()).or_default() += 1,
+                (_, Some(leaf)) => {
+                    *self
+                        .leaves
+                        .entry(names::display_future_name(leaf))
+                        .or_default() += 1
+                }
                 (_, None) => self.undecoded += 1,
             },
         }
@@ -562,7 +568,12 @@ impl Waits {
     fn add_future(&mut self, wait: Option<WaitKind>, leaf: &Option<String>) {
         match (wait, leaf) {
             (Some(wait), _) => self.add(wait),
-            (None, Some(leaf)) => *self.leaves.entry(leaf.clone()).or_default() += 1,
+            (None, Some(leaf)) => {
+                *self
+                    .leaves
+                    .entry(names::display_future_name(leaf))
+                    .or_default() += 1
+            }
             (None, None) => self.undecoded += 1,
         }
     }
@@ -700,7 +711,7 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
         .map(|h| (&h.future, h.wait, &h.leaf))
         .chain(children)
     {
-        let (count, waits) = types.entry(future.clone()).or_default();
+        let (count, waits) = types.entry(names::display_future_name(future)).or_default();
         *count += 1;
         waits.add_future(wait, leaf);
     }
@@ -1498,12 +1509,12 @@ mod tests {
         assert!(
             page.contains(
                 "    Future types and what they await:\n        \
-                 3  c::fut\n           \
-                 ├─ 2  tokio::runtime::io::scheduled_io::Readiness\n           \
+                 3  future c::fut\n           \
+                 ├─ 2  future tokio::runtime::io::scheduled_io::Readiness\n           \
                  └─ 1  a chain that stopped before any leaf\n        \
-                 2  a::fut\n           \
+                 2  future a::fut\n           \
                  └─ 2  a timer (1 already past due)\n        \
-                 2  b::fut\n           \
+                 2  future b::fut\n           \
                  ├─ 1  a tokio::sync::Mutex\n           \
                  └─ 1  nothing — mid-poll on a worker\n"
             ),
@@ -1539,9 +1550,9 @@ mod tests {
         assert!(
             page.contains(
                 "    Future types and what they await:\n        \
-                 11  f\n            \
-                 ├─ 4  leaf3\n            \
-                 ├─ 3  leaf2\n            \
+                 11  future f\n            \
+                 ├─ 4  future leaf3\n            \
+                 ├─ 3  future leaf2\n            \
                  ├─ 1  a timer\n            \
                  └─ 3  across 2 more leaf types\n"
             ),
@@ -1576,10 +1587,10 @@ mod tests {
         assert!(
             page.contains(
                 "    Future types and what they await:\n        \
-                 2  a::fut\n        \
-                 2  b::fut\n           \
+                 2  future a::fut\n        \
+                 2  future b::fut\n           \
                  ├─ 1  a timer\n           \
-                 └─ 1  b::fut\n"
+                 └─ 1  future b::fut\n"
             ),
             "{page}"
         );
@@ -1609,8 +1620,8 @@ mod tests {
         assert!(
             page.contains(
                 "    Future types and what they await:\n         \
-                 6  f5\n         \
-                 5  f4\n        \
+                 6  future f5\n         \
+                 5  future f4\n        \
                  10  across 4 more types\n"
             ),
             "{page}"
@@ -1667,9 +1678,9 @@ mod tests {
              1  held in frames, off any await chain\n        \
              1  in 1 FuturesUnordered, and 1 completed and not yet reaped\n    \
              Future types and what they await:\n        \
-             1  child::fut\n           \
+             1  future child::fut\n           \
              └─ 1  a timer\n        \
-             1  held::fut\n           \
+             1  future held::fut\n           \
              └─ 1  another task (JoinHandle)\n"
         );
     }
@@ -1681,6 +1692,11 @@ mod tests {
     fn test_future_types_tally_the_held_and_the_resident() {
         let list = empty();
         let held: Vec<HeldFuture> = (0..3).map(|_| held("hot::fut", None)).collect();
+        // One child's chain reached a leaf: its type's branch names it,
+        // display-folded, rather than counting it among the chains that
+        // stopped short.
+        let mut with_leaf = child(Some("cold::fut"), None);
+        with_leaf.leaf = Some("cold::park::{async_fn_env#0}".to_string());
         let sets = vec![FutureSet {
             owner: 0,
             frame: 0,
@@ -1690,7 +1706,7 @@ mod tests {
             ty: "FuturesUnordered<f>".to_string(),
             children: vec![
                 child(Some("hot::fut"), None),
-                child(Some("cold::fut"), None),
+                with_leaf,
                 child(Some("rare::fut"), None),
                 child(None, None),
             ],
@@ -1703,10 +1719,10 @@ mod tests {
         assert!(
             page.contains(
                 "    Future types and what they await:\n        \
-                 4  hot::fut\n           \
+                 4  future hot::fut\n           \
                  └─ 4  a chain that stopped before any leaf\n        \
-                 1  cold::fut\n           \
-                 └─ 1  a chain that stopped before any leaf\n        \
+                 1  future cold::fut\n           \
+                 └─ 1  async fn cold::park\n        \
                  1  across 1 more type\n"
             ),
             "{page}"

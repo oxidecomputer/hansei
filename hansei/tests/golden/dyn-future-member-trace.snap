@@ -2,10 +2,10 @@
 source: hansei/tests/acceptance.rs
 expression: actual
 ---
-Task #member: dyn_future::set_member::{async_fn_env#0} (idle)
+Task #member: async fn dyn_future::set_member (idle)
 Defined at: src/bin/dyn-future.rs:15
 
-  0  async fn      dyn_future::set_member::{async_fn_env#0}
+  0  async fn      dyn_future::set_member
      suspends:
      ▸ Suspend0  src/bin/dyn-future.rs:17
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>
