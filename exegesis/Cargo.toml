@@ -47,6 +47,6 @@ zstd-sys = { workspace = true, features = ["pkg-config"] }
 
 [dev-dependencies]
 insta.workspace = true
-object.workspace = true
+object = { workspace = true, features = ["write"] }
 tempfile.workspace = true
 testrun.workspace = true
