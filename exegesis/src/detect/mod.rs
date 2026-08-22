@@ -2371,4 +2371,166 @@ mod tests {
         );
         assert_eq!(detect(&reader, scalar_newtype_node, wrap_id), None);
     }
+
+    #[test]
+    fn test_member_labels_list_up_to_twelve_and_count_the_rest() {
+        let mut reader = DwReader::default();
+        let m = reader.strings.intern("m");
+        let mk = |count: usize| -> Vec<RawMember<crate::StrId>> {
+            (0..count)
+                .map(|i| RawMember {
+                    name: Some(m),
+                    offset: i as u64,
+                    type_id: type_id(1),
+                    source_loc: None,
+                })
+                .collect()
+        };
+        assert_eq!(super::member_labels(&reader, &[]), "no members");
+        assert_eq!(super::member_labels(&reader, &mk(2)), "m, m");
+        let twelve = ["m"; 12].join(", ");
+        assert_eq!(super::member_labels(&reader, &mk(12)), twelve);
+        assert_eq!(
+            super::member_labels(&reader, &mk(13)),
+            format!("{twelve} (and 1 more)")
+        );
+    }
+
+    #[test]
+    fn test_trace_activity_follows_capture() {
+        assert!(!trace::active());
+        let (was_active, _) = trace::capture(trace::active);
+        assert!(was_active);
+        assert!(!trace::active());
+    }
+
+    #[test]
+    fn test_want_labels_name_what_the_walk_seeks() {
+        let yes = |_: TypeId| true;
+        assert_eq!(super::Want::Type(&yes).label(), "a matching type");
+        assert_eq!(
+            super::Want::PointerTo(&yes).label(),
+            "a pointer to a matching type"
+        );
+    }
+
+    #[test]
+    fn test_find_unique_stops_at_the_wrapper_depth_cap() {
+        let mut reader = DwReader::default();
+        let needle = type_id(0x500);
+        let needle_name = reader.strings.intern("Needle");
+        reader.types.insert(needle, empty_struct(needle_name));
+        let link = reader.strings.intern("Link");
+        let m0 = reader.strings.intern("__0");
+        let chain = |reader: &mut DwReader<'static>, links: usize, ids: usize| -> TypeId {
+            let mut next = needle;
+            for offset in (0..links).rev() {
+                let id = type_id(ids + offset);
+                reader.types.insert(
+                    id,
+                    ns_struct(
+                        None,
+                        link,
+                        8,
+                        vec![RawMember {
+                            name: Some(m0),
+                            offset: 0,
+                            type_id: next,
+                            source_loc: None,
+                        }],
+                    ),
+                );
+                next = id;
+            }
+            next
+        };
+        let shallow = chain(&mut reader, 1, 0x100);
+        let deep = chain(&mut reader, 9, 0x200);
+        let is_needle = |id: TypeId| id == needle;
+        assert!(
+            super::find_unique(
+                &reader,
+                shallow,
+                super::Want::Type(&is_needle),
+                super::Through::ZeroOffset
+            )
+            .is_some()
+        );
+        // Nine wrappers put the needle past MAX_WRAPPER_DEPTH: the walk
+        // must give up rather than dig without bound.
+        assert!(
+            super::find_unique(
+                &reader,
+                deep,
+                super::Want::Type(&is_needle),
+                super::Through::ZeroOffset
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn test_addressing_holds_recurses_into_struct_and_variant_children() {
+        use crate::bundle::{Arm, Field, Selector, StringInterner, ValueExpr};
+
+        let mut reader = DwReader::default();
+        let word = type_id(1);
+        let root = type_id(2);
+        let u64n = reader.strings.intern("u64");
+        let value = reader.strings.intern("value");
+        let rootn = reader.strings.intern("Root");
+        reader.types.insert(word, base(u64n, 8, Encoding::Unsigned));
+        reader.types.insert(
+            root,
+            ns_struct(
+                None,
+                rootn,
+                8,
+                vec![RawMember {
+                    name: Some(value),
+                    offset: 0,
+                    type_id: word,
+                    source_loc: None,
+                }],
+            ),
+        );
+
+        let mut strings = StringInterner::new();
+        let good = MemberRef::Named(strings.intern("value"));
+        let bad = MemberRef::Named(strings.intern("missing"));
+        let label = strings.intern("x");
+        let alias = |at: MemberRef| DisplayNode::Alias {
+            at: Selector(vec![Step::Member(at)]),
+            follow_pointers: true,
+        };
+        let holds = |node: &DisplayNode| super::addressing_holds(&reader, &strings, root, node);
+
+        assert!(holds(&alias(good)));
+        assert!(!holds(&alias(bad)));
+
+        // A struct field's node is walked, not waved through.
+        assert!(holds(&DisplayNode::Struct {
+            fields: vec![Field::member(good)],
+        }));
+        assert!(!holds(&DisplayNode::Struct {
+            fields: vec![Field::Synth {
+                label,
+                node: alias(bad),
+            }],
+        }));
+
+        // Both halves of a variant are walked: every arm and the default.
+        let variant = |payload: MemberRef, default: MemberRef| DisplayNode::Variant {
+            discriminant: ValueExpr::Read(Selector(vec![Step::Member(good)])),
+            arms: vec![Arm {
+                value: 0,
+                label: None,
+                payload: Some(Box::new(alias(payload))),
+            }],
+            default: Some(Box::new(alias(default))),
+        };
+        assert!(holds(&variant(good, good)));
+        assert!(!holds(&variant(bad, good)));
+        assert!(!holds(&variant(good, bad)));
+    }
 }
