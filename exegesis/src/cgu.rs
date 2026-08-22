@@ -1137,3 +1137,438 @@ impl<'dw> DwString<'dw> for Attribute<Slice<'dw>> {
         Ok(s)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::StrId;
+    use crate::raw_types::{RawType, VariantShape};
+    use crate::reader::{DwReader, ReadArgs};
+
+    use gimli::write as gwrite;
+    use gimli::write::AttributeValue as W;
+
+    use std::collections::HashMap;
+
+    /// Build a unit with `build`, write it, parse it back with the real
+    /// reader, and hand the result to `check`.
+    fn parsed<R>(
+        endian: gimli::RunTimeEndian,
+        build: impl FnOnce(&mut gwrite::Dwarf, gwrite::UnitId),
+        check: impl FnOnce(&DwReader<'_>) -> R,
+    ) -> R {
+        let encoding = gimli::Encoding {
+            format: gimli::Format::Dwarf32,
+            version: 4,
+            address_size: 8,
+        };
+        let mut dwarf = gwrite::Dwarf::new();
+        let unit_id = dwarf
+            .units
+            .add(gwrite::Unit::new(encoding, gwrite::LineProgram::none()));
+        build(&mut dwarf, unit_id);
+
+        let mut data: HashMap<gimli::SectionId, Vec<u8>> = HashMap::new();
+        match endian {
+            gimli::RunTimeEndian::Little => {
+                let mut sections =
+                    gwrite::Sections::new(gwrite::EndianVec::new(gimli::LittleEndian));
+                dwarf.write(&mut sections).expect("the unit assembles");
+                sections
+                    .for_each(|id, vec| -> Result<(), ()> {
+                        data.insert(id, vec.slice().to_vec());
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            gimli::RunTimeEndian::Big => {
+                let mut sections = gwrite::Sections::new(gwrite::EndianVec::new(gimli::BigEndian));
+                dwarf.write(&mut sections).expect("the unit assembles");
+                sections
+                    .for_each(|id, vec| -> Result<(), ()> {
+                        data.insert(id, vec.slice().to_vec());
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+        }
+        let empty = Vec::new();
+        let dwarf = gimli::Dwarf::load(|id| -> Result<crate::Slice<'_>, gimli::Error> {
+            Ok(gimli::EndianSlice::new(
+                data.get(&id).unwrap_or(&empty).as_slice(),
+                endian,
+            ))
+        })
+        .expect("the sections load");
+        let reader = DwReader::read_types(&dwarf, ReadArgs::default()).expect("the unit parses");
+        check(&reader)
+    }
+
+    fn type_named<'r>(reader: &'r DwReader<'_>, want: &str) -> &'r RawType<StrId> {
+        let mut named = reader
+            .canonical_types()
+            .filter(|(_, ty)| ty.name().map(|n| reader.strings.get(n)) == Some(want));
+        let (_, found) = named
+            .next()
+            .unwrap_or_else(|| panic!("no type named {want}"));
+        assert!(
+            named.next().is_none(),
+            "several canonical types named {want}"
+        );
+        found
+    }
+
+    #[test]
+    fn test_synthetic_unit_parses_functions_statics_and_specifications() {
+        parsed(
+            gimli::RunTimeEndian::Little,
+            |dwarf, unit_id| {
+                let unit = dwarf.units.get_mut(unit_id);
+                let root = unit.root();
+
+                let word = unit.add(root, gimli::DW_TAG_base_type);
+                let entry = unit.get_mut(word);
+                entry.set(gimli::DW_AT_name, W::String(b"u64".to_vec()));
+                entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                entry.set(gimli::DW_AT_encoding, W::Encoding(gimli::DW_ATE_unsigned));
+                entry.set(gimli::DW_AT_alignment, W::Udata(16));
+
+                let var = unit.add(root, gimli::DW_TAG_variable);
+                let mut location = gwrite::Expression::new();
+                location.op_addr(gwrite::Address::Constant(0x1234));
+                let entry = unit.get_mut(var);
+                entry.set(gimli::DW_AT_name, W::String(b"MY_STATIC".to_vec()));
+                entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                entry.set(
+                    gimli::DW_AT_linkage_name,
+                    W::String(b"my_static_sym".to_vec()),
+                );
+                entry.set(gimli::DW_AT_location, W::Exprloc(location));
+
+                let die = unit.add(root, gimli::DW_TAG_subprogram);
+                let entry = unit.get_mut(die);
+                entry.set(gimli::DW_AT_name, W::String(b"die".to_vec()));
+                entry.set(gimli::DW_AT_noreturn, W::Flag(true));
+
+                let proto = unit.add(root, gimli::DW_TAG_subprogram);
+                let entry = unit.get_mut(proto);
+                entry.set(gimli::DW_AT_name, W::String(b"proto".to_vec()));
+
+                let specialized = unit.add(root, gimli::DW_TAG_subprogram);
+                let entry = unit.get_mut(specialized);
+                entry.set(gimli::DW_AT_name, W::String(b"specialized".to_vec()));
+                entry.set(gimli::DW_AT_abstract_origin, W::UnitRef(proto));
+
+                let with_params = unit.add(root, gimli::DW_TAG_subprogram);
+                let entry = unit.get_mut(with_params);
+                entry.set(gimli::DW_AT_name, W::String(b"with_params".to_vec()));
+                let located = unit.add(with_params, gimli::DW_TAG_formal_parameter);
+                let entry = unit.get_mut(located);
+                entry.set(gimli::DW_AT_name, W::String(b"located".to_vec()));
+                entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                entry.set(gimli::DW_AT_abstract_origin, W::UnitRef(proto));
+                entry.set(gimli::DW_AT_const_value, W::Udata(7));
+                entry.set(gimli::DW_AT_decl_line, W::Udata(9));
+                let bare = unit.add(with_params, gimli::DW_TAG_formal_parameter);
+                let entry = unit.get_mut(bare);
+                entry.set(gimli::DW_AT_name, W::String(b"bare".to_vec()));
+                entry.set(gimli::DW_AT_type, W::UnitRef(word));
+
+                // A definition inheriting its identity through each
+                // reference form DW_AT_specification is spelled with.
+                let decl_a = unit.add(root, gimli::DW_TAG_structure_type);
+                let entry = unit.get_mut(decl_a);
+                entry.set(gimli::DW_AT_name, W::String(b"SpecA".to_vec()));
+                entry.set(gimli::DW_AT_declaration, W::Flag(true));
+                let def_a = unit.add(root, gimli::DW_TAG_structure_type);
+                let entry = unit.get_mut(def_a);
+                entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                entry.set(gimli::DW_AT_specification, W::UnitRef(decl_a));
+
+                let decl_b = unit.add(root, gimli::DW_TAG_structure_type);
+                let entry = unit.get_mut(decl_b);
+                entry.set(gimli::DW_AT_name, W::String(b"SpecB".to_vec()));
+                entry.set(gimli::DW_AT_declaration, W::Flag(true));
+                let def_b = unit.add(root, gimli::DW_TAG_structure_type);
+                let entry = unit.get_mut(def_b);
+                entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                entry.set(
+                    gimli::DW_AT_specification,
+                    W::DebugInfoRef(gwrite::Reference::Entry(unit_id, decl_b)),
+                );
+
+                let coords = unit.add(root, gimli::DW_TAG_structure_type);
+                let entry = unit.get_mut(coords);
+                entry.set(gimli::DW_AT_name, W::String(b"Located".to_vec()));
+                entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                entry.set(gimli::DW_AT_decl_line, W::Udata(3));
+                entry.set(gimli::DW_AT_decl_column, W::Udata(7));
+            },
+            |reader| {
+                let RawType::Base(word) = type_named(reader, "u64") else {
+                    panic!("u64 parses as a base type");
+                };
+                assert_eq!(word.alignment.map(u64::from), Some(16));
+
+                let statics: Vec<_> = reader
+                    .variables
+                    .values()
+                    .filter(|v| v.name.map(|n| reader.strings.get(n)) == Some("MY_STATIC"))
+                    .collect();
+                let [my_static] = statics.as_slice() else {
+                    panic!("one static parses");
+                };
+                assert_eq!(my_static.addr, Some(0x1234));
+                assert_eq!(
+                    my_static.linkage_name.map(|n| reader.strings.get(n)),
+                    Some("my_static_sym")
+                );
+
+                let func = |want: &str| {
+                    reader
+                        .functions
+                        .values()
+                        .find(|f| f.name.map(|n| reader.strings.get(n)) == Some(want))
+                        .unwrap_or_else(|| panic!("no function named {want}"))
+                };
+                assert!(func("die").noreturn);
+                assert!(!func("proto").noreturn);
+                assert!(func("specialized").abstract_origin.is_some());
+
+                let [located, bare] = func("with_params").formal_parameters.as_ref() else {
+                    panic!("both parameters parse");
+                };
+                assert!(located.abstract_origin.is_some());
+                assert_eq!(located.const_value, Some(7));
+                let loc = located
+                    .source_loc
+                    .as_deref()
+                    .expect("the decl line is kept");
+                assert_eq!(loc.line.map(u64::from), Some(9));
+                assert!(bare.source_loc.is_none());
+
+                // Each specification pair collapsed to one canonical type
+                // carrying the declaration's name and the definition's size.
+                for name in ["SpecA", "SpecB"] {
+                    let RawType::Struct(spec) = type_named(reader, name) else {
+                        panic!("{name} stays a struct");
+                    };
+                    assert_eq!(spec.size, 8, "{name}");
+                }
+
+                let RawType::Struct(coords) = type_named(reader, "Located") else {
+                    panic!("Located parses as a struct");
+                };
+                let loc = coords.source_loc.as_deref().expect("decl coords are kept");
+                assert_eq!(loc.line.map(u64::from), Some(3));
+                assert_eq!(loc.column.map(u64::from), Some(7));
+            },
+        );
+    }
+
+    /// A variant-part-bearing struct with `shape(...)`'s discriminant
+    /// arrangement: `discr` says whether the variant part carries a
+    /// `DW_AT_discr` reference, and each entry in `values` is one
+    /// variant's optional `DW_AT_discr_value`.
+    fn variant_struct(
+        unit: &mut gwrite::Unit,
+        name: &'static [u8],
+        word: gwrite::UnitEntryId,
+        discr: bool,
+        values: &[Option<u64>],
+    ) {
+        let root = unit.root();
+        let outer = unit.add(root, gimli::DW_TAG_structure_type);
+        let entry = unit.get_mut(outer);
+        entry.set(gimli::DW_AT_name, W::String(name.to_vec()));
+        entry.set(gimli::DW_AT_byte_size, W::Udata(16));
+
+        let part = unit.add(outer, gimli::DW_TAG_variant_part);
+        if discr {
+            let member = unit.add(part, gimli::DW_TAG_member);
+            let entry = unit.get_mut(member);
+            entry.set(gimli::DW_AT_name, W::String(b"discr".to_vec()));
+            entry.set(gimli::DW_AT_type, W::UnitRef(word));
+            let entry = unit.get_mut(part);
+            entry.set(gimli::DW_AT_discr, W::UnitRef(member));
+        }
+        for (index, value) in values.iter().enumerate() {
+            let variant = unit.add(part, gimli::DW_TAG_variant);
+            if let Some(value) = value {
+                let entry = unit.get_mut(variant);
+                entry.set(gimli::DW_AT_discr_value, W::Udata(*value));
+            }
+            let payload = unit.add(variant, gimli::DW_TAG_member);
+            let entry = unit.get_mut(payload);
+            entry.set(
+                gimli::DW_AT_name,
+                W::String(format!("V{index}").into_bytes()),
+            );
+            entry.set(gimli::DW_AT_type, W::UnitRef(word));
+            entry.set(gimli::DW_AT_data_member_location, W::Udata(8));
+        }
+    }
+
+    fn shape<'r>(reader: &'r DwReader<'_>, name: &str) -> &'r VariantShape<StrId> {
+        let RawType::Enum(en) = type_named(reader, name) else {
+            panic!("{name} parses as an enum");
+        };
+        &en.shape
+    }
+
+    #[test]
+    fn test_variant_parts_parse_into_their_shapes() {
+        parsed(
+            gimli::RunTimeEndian::Little,
+            |dwarf, unit_id| {
+                let unit = dwarf.units.get_mut(unit_id);
+                let root = unit.root();
+                let word = unit.add(root, gimli::DW_TAG_base_type);
+                let entry = unit.get_mut(word);
+                entry.set(gimli::DW_AT_name, W::String(b"u64".to_vec()));
+                entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                entry.set(gimli::DW_AT_encoding, W::Encoding(gimli::DW_ATE_unsigned));
+
+                // One variant, no discriminant: the single-variant shape.
+                variant_struct(unit, b"OneShape", word, false, &[None]);
+                // Two discriminated variants: Many, keyed by value.
+                variant_struct(unit, b"TwoShape", word, true, &[Some(0), Some(3)]);
+                // One variant under a recorded discriminant: still Many —
+                // a niche single-variant enum reads its discriminant.
+                variant_struct(unit, b"PinnedShape", word, true, &[Some(3)]);
+                // Two variants with no discriminant member at all.
+                variant_struct(unit, b"LooseShape", word, false, &[None, None]);
+            },
+            |reader| {
+                assert!(matches!(shape(reader, "OneShape"), VariantShape::One(_)));
+
+                let VariantShape::Many { discr, variants } = shape(reader, "TwoShape") else {
+                    panic!("two discriminated variants are Many");
+                };
+                assert!(discr.is_some());
+                let keys: Vec<Option<u128>> = variants.iter().map(|(value, _)| *value).collect();
+                assert_eq!(keys, [Some(0), Some(3)]);
+
+                let VariantShape::Many { variants, .. } = shape(reader, "PinnedShape") else {
+                    panic!("a discriminated single variant stays Many");
+                };
+                assert_eq!(variants.len(), 1);
+
+                let VariantShape::Many { discr, variants } = shape(reader, "LooseShape") else {
+                    panic!("two undiscriminated variants are Many");
+                };
+                assert!(discr.is_none());
+                assert_eq!(variants.len(), 2);
+            },
+        );
+    }
+
+    #[test]
+    fn test_u128_discriminants_decode_from_blocks_in_either_byte_order() {
+        let value = (1u128 << 64) | 5;
+        for endian in [gimli::RunTimeEndian::Little, gimli::RunTimeEndian::Big] {
+            let block = match endian {
+                gimli::RunTimeEndian::Little => value.to_le_bytes(),
+                gimli::RunTimeEndian::Big => value.to_be_bytes(),
+            };
+            parsed(
+                endian,
+                |dwarf, unit_id| {
+                    let unit = dwarf.units.get_mut(unit_id);
+                    let root = unit.root();
+                    let word = unit.add(root, gimli::DW_TAG_base_type);
+                    let entry = unit.get_mut(word);
+                    entry.set(gimli::DW_AT_name, W::String(b"u64".to_vec()));
+                    entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                    entry.set(gimli::DW_AT_encoding, W::Encoding(gimli::DW_ATE_unsigned));
+
+                    let outer = unit.add(root, gimli::DW_TAG_structure_type);
+                    let entry = unit.get_mut(outer);
+                    entry.set(gimli::DW_AT_name, W::String(b"Wide".to_vec()));
+                    entry.set(gimli::DW_AT_byte_size, W::Udata(32));
+                    let part = unit.add(outer, gimli::DW_TAG_variant_part);
+                    let member = unit.add(part, gimli::DW_TAG_member);
+                    let entry = unit.get_mut(member);
+                    entry.set(gimli::DW_AT_name, W::String(b"discr".to_vec()));
+                    entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                    let entry = unit.get_mut(part);
+                    entry.set(gimli::DW_AT_discr, W::UnitRef(member));
+                    for value in [W::Block(block.to_vec()), W::Udata(0)] {
+                        let variant = unit.add(part, gimli::DW_TAG_variant);
+                        let entry = unit.get_mut(variant);
+                        entry.set(gimli::DW_AT_discr_value, value);
+                        let payload = unit.add(variant, gimli::DW_TAG_member);
+                        let entry = unit.get_mut(payload);
+                        entry.set(gimli::DW_AT_name, W::String(b"V".to_vec()));
+                        entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                    }
+                },
+                |reader| {
+                    let VariantShape::Many { variants, .. } = shape(reader, "Wide") else {
+                        panic!("the discriminated pair is Many");
+                    };
+                    let keys: Vec<Option<u128>> =
+                        variants.iter().map(|(value, _)| *value).collect();
+                    assert_eq!(keys, [Some(value), Some(0)], "{endian:?}");
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn test_awaitees_are_collected_only_from_resume_functions() {
+        parsed(
+            gimli::RunTimeEndian::Little,
+            |dwarf, unit_id| {
+                let unit = dwarf.units.get_mut(unit_id);
+                let root = unit.root();
+                let word = unit.add(root, gimli::DW_TAG_base_type);
+                let entry = unit.get_mut(word);
+                entry.set(gimli::DW_AT_name, W::String(b"u64".to_vec()));
+                entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                entry.set(gimli::DW_AT_encoding, W::Encoding(gimli::DW_ATE_unsigned));
+
+                // The resume body: a block holding an empty block and an
+                // awaitee, then a formal parameter and a direct awaitee.
+                let body = |unit: &mut gwrite::Unit, name: &[u8]| {
+                    let fn_die = unit.add(unit.root(), gimli::DW_TAG_subprogram);
+                    let entry = unit.get_mut(fn_die);
+                    entry.set(gimli::DW_AT_name, W::String(name.to_vec()));
+                    let block = unit.add(fn_die, gimli::DW_TAG_lexical_block);
+                    unit.add(block, gimli::DW_TAG_lexical_block);
+                    let nested = unit.add(block, gimli::DW_TAG_variable);
+                    let entry = unit.get_mut(nested);
+                    entry.set(gimli::DW_AT_name, W::String(b"__awaitee".to_vec()));
+                    entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                    let param = unit.add(fn_die, gimli::DW_TAG_formal_parameter);
+                    let entry = unit.get_mut(param);
+                    entry.set(gimli::DW_AT_name, W::String(b"p".to_vec()));
+                    entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                    let direct = unit.add(fn_die, gimli::DW_TAG_variable);
+                    let entry = unit.get_mut(direct);
+                    entry.set(gimli::DW_AT_name, W::String(b"__awaitee".to_vec()));
+                    entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                };
+                body(unit, b"{async_fn#0}");
+                body(unit, b"ordinary");
+            },
+            |reader| {
+                let func = |want: &str| {
+                    reader
+                        .functions
+                        .values()
+                        .find(|f| f.name.map(|n| reader.strings.get(n)) == Some(want))
+                        .unwrap_or_else(|| panic!("no function named {want}"))
+                };
+                // The resume fn yields both awaitees and keeps the
+                // parameter that follows the block.
+                let resume = func("{async_fn#0}");
+                assert_eq!(resume.awaitees.len(), 2);
+                assert_eq!(resume.formal_parameters.len(), 1);
+                // An ordinary fn collects no awaitees, wherever they sit.
+                let ordinary = func("ordinary");
+                assert_eq!(ordinary.awaitees.len(), 0);
+                assert_eq!(ordinary.formal_parameters.len(), 1);
+            },
+        );
+    }
+}

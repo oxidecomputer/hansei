@@ -626,6 +626,22 @@ mod tests {
     use crate::view::Namespace;
 
     #[test]
+    fn test_a_source_loc_is_empty_only_with_every_field_absent() {
+        let empty = SourceLoc::<&str>::default();
+        assert!(empty.is_empty());
+        let set = |f: fn(&mut SourceLoc<&str>)| {
+            let mut loc = SourceLoc::<&str>::default();
+            f(&mut loc);
+            loc
+        };
+        assert!(!set(|l| l.file = Some("main.rs")).is_empty());
+        assert!(!set(|l| l.dir = Some("src")).is_empty());
+        assert!(!set(|l| l.comp_dir = Some("/crate")).is_empty());
+        assert!(!set(|l| l.line = NonZero::new(3)).is_empty());
+        assert!(!set(|l| l.column = NonZero::new(7)).is_empty());
+    }
+
+    #[test]
     fn test_namespace_table_depth() {
         let mut table = NamespaceTable::<&str>::new();
 
