@@ -5,7 +5,6 @@ expression: actual
 Task #member: async fn dyn_future::set_member (idle)
 Defined at: src/bin/dyn-future.rs:15
 
-  0  async fn      dyn_future::set_member
-     suspends:
-     ▸ Suspend0  src/bin/dyn-future.rs:17
-       └─* 1  future        tokio::sync::oneshot::Receiver<u32>
+#0  async fn      dyn_future::set_member
+      awaiting at src/bin/dyn-future.rs:17 (Suspend0)
+#1  future        tokio::sync::oneshot::Receiver<u32>

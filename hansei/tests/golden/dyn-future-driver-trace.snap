@@ -5,11 +5,8 @@ expression: actual
 Task #driver: async fn dyn_future::driver (idle)
 Defined at: src/bin/dyn-future.rs:24
 
-  0  async fn      dyn_future::driver
-     suspends:
-     ▸ Suspend0  src/bin/dyn-future.rs:36  1 local
-       └─  1  async fn      dyn_future::boxed_leaf [dyn]
-          suspends:
-          ▸ Suspend0  src/bin/dyn-future.rs:12
-            └─* 2  future        tokio::sync::oneshot::Receiver<u32>
-       Suspend1  src/bin/dyn-future.rs:37  2 locals  async fn tokio::task::join_set::{impl#1}::join_next<u32>
+#0  async fn      dyn_future::driver
+      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
+#1  async fn      dyn_future::boxed_leaf [dyn]
+      awaiting at src/bin/dyn-future.rs:12 (Suspend0)
+#2  future        tokio::sync::oneshot::Receiver<u32>

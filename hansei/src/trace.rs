@@ -35,7 +35,12 @@ fn exec_trace_task(
     let ctx = &session.ctx;
     let list = &session.tasks;
 
-    let Some(task) = list.tasks.iter().find(|t| t.task_id == Some(task_id)) else {
+    let Some((index, task)) = list
+        .tasks
+        .iter()
+        .enumerate()
+        .find(|(_, t)| t.task_id == Some(task_id))
+    else {
         return Err(no_such_task(list, task_id));
     };
 
@@ -60,15 +65,15 @@ fn exec_trace_task(
         )?;
     }
 
-    writeln!(out)?;
     match ctx.task_stage(task)? {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
-            print_trace_chain(session, &chain, opts, out)?;
+            print_trace_chain(session, &chain, index, None, opts, out)?;
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
             // panic or cancellation.
+            writeln!(out)?;
             writeln!(
                 out,
                 "The task has finished; its output has not been consumed:"
@@ -80,6 +85,7 @@ fn exec_trace_task(
             writeln!(out, "  {:#}", value)?;
         }
         bundle::TaskStage::Consumed => {
+            writeln!(out)?;
             writeln!(out, "The task has finished and its output was consumed.")?;
         }
     }
@@ -100,8 +106,9 @@ fn exec_trace_future(
     let census = session.census();
 
     let found = future_at(&ctx.view, list, session.extents(), census, addr)?;
-    let (root, owner) = match found {
-        FutureAt::Held(h) => {
+    let (root, owner, origin) = match found {
+        FutureAt::Held(index) => {
+            let h = &census.held[index];
             let via = via_suffix(census, h.via);
             writeln!(
                 out,
@@ -123,26 +130,32 @@ fn exec_trace_future(
                     ty: h.ty,
                 },
                 h.owner,
+                census::Via::Held(index),
             )
         }
-        FutureAt::Child { set, child, root } => {
-            let via = via_suffix(census, set.via);
-            let future = match &child.future {
+        FutureAt::Child { set, child } => {
+            let s = &census.sets[set];
+            let c = &s.children[child];
+            let via = via_suffix(census, s.via);
+            let future = match &c.future {
                 Some(future) => names::display_future_name(future),
                 None => "<undecoded>".to_string(),
             };
-            writeln!(out, "Future {:#x}: {future}", child.node)?;
+            writeln!(out, "Future {:#x}: {future}", c.node)?;
             writeln!(
                 out,
                 "Child of: {} at {:#x} (frame {}, `{}`{via}), polled by {} — {}",
-                names::fold_type_name(&set.ty),
-                set.addr,
-                set.frame,
-                set.local,
-                task_label(list, set.owner),
-                future_name(&list.tasks[set.owner].future)
+                names::fold_type_name(&s.ty),
+                s.addr,
+                s.frame,
+                s.local,
+                task_label(list, s.owner),
+                future_name(&list.tasks[s.owner].future)
             )?;
-            (root, set.owner)
+            let root = c
+                .root
+                .expect("future_at returns only children still in flight");
+            (root, s.owner, census::Via::SetChild { set, child })
         }
     };
 
@@ -165,21 +178,19 @@ fn exec_trace_future(
     let value = Value::read(ctx.proc, ty, root.addr)
         .with_context(|| format!("failed to read the future at {:#x}", root.addr))?;
 
-    writeln!(out)?;
     let chain = ctx.await_chain(value);
-    print_trace_chain(session, &chain, opts, out)
+    print_trace_chain(session, &chain, owner, Some(origin), opts, out)
 }
 
-/// What a future address resolved to: the census row that names it,
-/// and — for a set child — the chain root to trace it from.
+/// What a future address resolved to: the census row that names it, as
+/// the indices the census records it under.
 #[derive(Debug)]
-enum FutureAt<'c> {
-    Held(&'c census::HeldFuture),
-    Child {
-        set: &'c census::FutureSet,
-        child: &'c census::SetChild,
-        root: census::FutureRoot,
-    },
+enum FutureAt {
+    /// Index into [`census::FutureCensus::held`].
+    Held(usize),
+    /// Indices into [`census::FutureCensus::sets`] and that set's
+    /// children.
+    Child { set: usize, child: usize },
 }
 
 /// Resolve `addr` to the census future it names: a held future's
@@ -188,20 +199,20 @@ enum FutureAt<'c> {
 /// by-value awaitee sits inside the future holding it. A miss says
 /// what the address *is* whenever that can be said: a set itself, a
 /// completed child, a task's own allocation.
-fn future_at<'c>(
+fn future_at(
     view: &BundleView<'_>,
     list: &bundle::TaskList,
     extents: &bundle::TaskExtents,
-    census: &'c census::FutureCensus,
+    census: &census::FutureCensus,
     addr: u64,
-) -> Result<FutureAt<'c>> {
-    if let Some(h) = census.held.iter().find(|h| h.addr == addr) {
-        return Ok(FutureAt::Held(h));
+) -> Result<FutureAt> {
+    if let Some(index) = census.held.iter().position(|h| h.addr == addr) {
+        return Ok(FutureAt::Held(index));
     }
     if let Some((set_index, child_index, _)) = census.locate(addr) {
         let set = &census.sets[set_index];
         let child = &set.children[child_index];
-        let Some(root) = child.root else {
+        if child.root.is_none() {
             anyhow::bail!(
                 "the child at {:#x} of the {} at {:#x} has completed; \
                  there is no future left to trace",
@@ -209,8 +220,11 @@ fn future_at<'c>(
                 names::fold_type_name(&set.ty),
                 set.addr
             );
-        };
-        return Ok(FutureAt::Child { set, child, root });
+        }
+        return Ok(FutureAt::Child {
+            set: set_index,
+            child: child_index,
+        });
     }
     if let Some(set) = census.sets.iter().find(|s| s.addr == addr) {
         anyhow::bail!(
@@ -224,13 +238,14 @@ fn future_at<'c>(
     let containing = census
         .held
         .iter()
-        .filter_map(|h| {
+        .enumerate()
+        .filter_map(|(index, h)| {
             let size = view.ty(h.ty)?.size();
-            (h.addr <= addr && addr < h.addr + size).then_some((size, h))
+            (h.addr <= addr && addr < h.addr + size).then_some((size, index))
         })
         .min_by_key(|&(size, _)| size);
-    if let Some((_, h)) = containing {
-        return Ok(FutureAt::Held(h));
+    if let Some((_, index)) = containing {
+        return Ok(FutureAt::Held(index));
     }
     if let Some((index, offset)) = extents.locate(addr) {
         anyhow::bail!(
@@ -245,21 +260,31 @@ fn future_at<'c>(
     )
 }
 
-/// Render an await chain the way `trace` prints one. Values shown
-/// under --verbose may hold raw pointers into task allocations
-/// (wakers, JoinHandles); name those with the task id so the reader
-/// knows what to trace next. The traced task itself is named like any
-/// other: a wake-queue entry resolving back to it is a finding (the
-/// futurelock shape), not noise. A pointer into a sub-executor's child
-/// node instead names the task that polls the set — the task a wake
-/// there would ultimately run.
+/// Render an await chain the way `trace` prints one: the `Waiting on:`
+/// summary line, then the flat frame list. Values shown under --verbose
+/// may hold raw pointers into task allocations (wakers, JoinHandles);
+/// name those with the task id so the reader knows what to trace next.
+/// The traced task itself is named like any other: a wake-queue entry
+/// resolving back to it is a finding (the futurelock shape), not noise.
+/// A pointer into a sub-executor's child node instead names the task
+/// that polls the set — the task a wake there would ultimately run.
+///
+/// `owner` and `origin` say which chain this is the way the census
+/// records it — the owning task's index, and `None` for the task's own
+/// chain or the held-future/set-child origin for a `trace 0x…` chain —
+/// so each frame can carry the tally of futures the census found parked
+/// beside it.
 fn print_trace_chain<'b>(
     session: &Session<'b>,
     chain: &bundle::AwaitChain<'b>,
+    owner: usize,
+    origin: Option<census::Via>,
     opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let list = &session.tasks;
+    let wait = wait_line(&session.ctx, chain, list)?;
+    let holds = frame_holds(session.census(), owner, origin, chain.frames.len());
     let lookups = opts.verbose.then(|| (session.extents(), session.census()));
     let annotate = lookups.map(|(extents, census)| {
         move |ptr: u64| {
@@ -274,35 +299,92 @@ fn print_trace_chain<'b>(
         }
     });
     let annotate = annotate.as_ref().map(|a| a as &reify::AddrAnnotator<'_>);
-    print_await_chain(&session.ctx, list, chain, opts, annotate, out)
+    print_await_chain(
+        &session.ctx,
+        chain,
+        opts,
+        wait.as_deref(),
+        &holds,
+        annotate,
+        out,
+    )
 }
 
-/// Render an await chain, one line per future, each coroutine frame
-/// followed by every place it can park with the one it is parked at
-/// marked, and the live locals of that state when verbose.
+/// The deepest frame's decoded wait target, formatted once: it prints
+/// twice, in the header's `Waiting on:` line and again as the leaf
+/// frame's detail, and reading the target twice for that would be
+/// waste. A leaf that was recognized but failed to read warns on stderr
+/// rather than failing the trace.
+fn wait_line<T: proc::Target>(
+    ctx: &bundle::Context<'_, T>,
+    chain: &bundle::AwaitChain<'_>,
+    list: &bundle::TaskList,
+) -> Result<Option<String>> {
+    match ctx.wait_target(chain, list) {
+        Some(Ok(target)) => Ok(Some(target.to_string())),
+        Some(Err(e)) => {
+            writeln!(
+                io::stderr(),
+                "warning: failed to read what the leaf future waits on: {e:#}"
+            )?;
+            Ok(None)
+        }
+        None => Ok(None),
+    }
+}
+
+/// How many census-found futures each frame of this chain holds beside
+/// it: futures parked in a frame's live state that the chain does not
+/// run through — the shape a futurelock grows from. `origin` matches
+/// [`census::HeldFuture::via`]: `None` counts the finds in `owner`'s
+/// own frames, an origin those in the chain it names.
+fn frame_holds(
+    census: &census::FutureCensus,
+    owner: usize,
+    origin: Option<census::Via>,
+    frames: usize,
+) -> Vec<usize> {
+    let mut holds = vec![0; frames];
+    for h in &census.held {
+        if h.owner == owner
+            && h.via == origin
+            && let Some(count) = holds.get_mut(h.frame)
+        {
+            *count += 1;
+        }
+    }
+    holds
+}
+
+/// Render an await chain flat, root-first: a blank line, the decoded
+/// wait target as a `Waiting on:` summary when there is one, then one
+/// `#N` frame line per future with a detail line under each saying what
+/// the target's memory says about that frame — its live state, or the
+/// wait target again on the leaf. Under `--verbose` each frame also
+/// lists its live locals and its other suspend points.
 ///
-/// A frame's child hangs from its active suspend row, so how far each
-/// frame indents follows from its predecessors' inventories rather than
-/// from its depth alone, and a state listed after the active one is
-/// printed once the subtree that grew out of the active one is closed.
+/// Reading convention: frame N is the future stored in frame N−1's live
+/// state. The frame line ends with the type name, so a terminal
+/// soft-wrap belongs to the name and triple-click still copies the
+/// whole logical line.
 fn print_await_chain<'b, T: proc::Target>(
     ctx: &bundle::Context<'b, T>,
-    list: &bundle::TaskList,
     chain: &bundle::AwaitChain<'b>,
     opts: &TraceOpts<'_>,
+    wait: Option<&str>,
+    holds: &[usize],
     annotate: Option<&reify::AddrAnnotator<'_>>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let active_frame = chain.frames.len().checked_sub(1);
-    let mut node_indent = FRAME_ROOT_INDENT;
-    let mut detail_indent = frame_detail_indent(node_indent);
-    // One per frame, kept so the states listed after each active row can
-    // be printed — in the columns their whole inventory was laid out
-    // in — once the chain below them is done.
-    let mut tables: Vec<SuspendTable<'b>> = Vec::new();
+    writeln!(out)?;
+    if let Some(wait) = wait {
+        writeln!(out, "Waiting on: {wait}")?;
+        writeln!(out)?;
+    }
+
+    let last = chain.frames.len().checked_sub(1);
+    let num_width = format!("#{}", last.unwrap_or(0)).len();
     for (i, frame) in chain.frames.iter().enumerate() {
-        let active = Some(i) == active_frame;
-        let marker = if active { '*' } else { ' ' };
         let kind = async_kind(
             frame.future.ty.name(),
             frame.state.as_ref().map(|state| state.name),
@@ -313,103 +395,164 @@ fn print_await_chain<'b, T: proc::Target>(
             ""
         };
         let name = names::fold_type_name(frame.future.ty.name());
-        if i == 0 {
-            writeln!(out, "  {i}  {kind:<13} {name}{dyn_marker}")?;
-        } else {
-            let indent = " ".repeat(node_indent);
-            writeln!(out, "{indent}└─{marker} {i}  {kind:<13} {name}{dyn_marker}")?;
-        }
+        let number = format!("#{i}");
+        writeln!(out, "{number:<num_width$}  {kind:<13} {name}{dyn_marker}")?;
 
-        detail_indent = frame_detail_indent(node_indent);
-        let table = SuspendTable::new(suspend_rows(frame), opts.verbose, detail_indent.clone());
-        let rows_empty = table.is_empty();
-        tables.push(table);
-
-        if rows_empty {
-            // Not a coroutine: a leaf future has no states at all, and an
-            // ordinary enum's variants are not suspend points, so the one
-            // it decoded to is reported on its own.
-            if let Some(state) = &frame.state {
-                let loc = state
-                    .await_loc
-                    .map(|(file, line)| format!(" — {file}:{line}"))
-                    .unwrap_or_default();
-                // Align the state value with the type name above it. Child
-                // nodes have a frame-number column between the tree branch
-                // and the kind label; the state line must account for it.
-                let label_width = state_label_width(i);
-                writeln!(
-                    out,
-                    "{detail_indent}{:<label_width$} {}{loc}",
-                    "state", state.name
-                )?;
+        let held = holds.get(i).copied().unwrap_or(0);
+        match wait {
+            Some(wait) if Some(i) == last => {
+                writeln!(out, "{DETAIL_INDENT}waiting on {wait}")?;
             }
-        } else {
-            writeln!(out, "{detail_indent}suspends:")?;
-            tables.last().expect("just pushed").print_to_active(out)?;
-        }
-
-        if opts.verbose && (frame.state.is_some() || active) {
-            let payload = match &frame.state {
-                Some(state) => state.payload,
-                None => frame.future,
-            };
-            let locals = state_locals(payload.ty);
-            // The locals belong to the marked row, so they hang from it
-            // rather than from the frame; a frame with no inventory keeps
-            // them against its own detail column.
-            let heading_indent = if rows_empty {
-                detail_indent.clone()
-            } else {
-                format!("{detail_indent}  ")
-            };
-            if !locals.is_empty() {
-                let heading = if frame.state.is_some() {
-                    "locals:"
-                } else {
-                    "fields:"
-                };
-                writeln!(out, "{heading_indent}{heading}")?;
-            }
-            let value_indent = format!("{heading_indent}  ");
-            // print_variable's contract: the value's lines after the
-            // first open with the variable's indent plus two spaces.
-            let value_prefix = format!("{value_indent}  ");
-            for m in locals {
-                let start = m.offset() as usize;
-                let end = start + m.ty().size() as usize;
-                match payload.bytes.get(start..end) {
-                    Some(bytes) => {
-                        let v = reify::Value::new(m.ty(), payload.addr + m.offset(), bytes).peel();
-                        let mut disp = v
-                            .display_from_target(ctx.proc, opts.render.depth)
-                            .elide_override(opts.elide)
-                            .line_prefix(&value_prefix);
-                        if let Some(annotate) = annotate {
-                            disp = disp.annotate_addrs(annotate);
-                        }
-                        if opts.render.ugly {
-                            disp = disp.ugly();
-                        }
-                        print_variable(out, &value_indent, m.name(), &format_args!("{disp:#}"))?;
-                    }
-                    None => writeln!(out, "{value_indent}{}: <unreadable>", m.name())?,
+            _ => {
+                if let Some(detail) = frame_detail(frame, held) {
+                    writeln!(out, "{DETAIL_INDENT}{detail}")?;
                 }
             }
         }
 
-        // An inventory introduces the child itself: the marked row *is*
-        // the await that produced it, and the branch descends from there.
-        if rows_empty {
-            if !active {
-                writeln!(out, "{detail_indent}awaits:")?;
+        if opts.verbose {
+            print_frame_verbose(ctx, frame, Some(i) == last, opts, annotate, out)?;
+        }
+    }
+    print_chain_end(chain, out)
+}
+
+/// Everything under a frame line sits at this indent; entries in a
+/// sub-block one step deeper, their values one more.
+const DETAIL_INDENT: &str = "      ";
+const ENTRY_INDENT: &str = "        ";
+
+/// The detail line under a frame: the frame's target state, in one of
+/// three spellings making three distinct claims. `awaiting at <loc>
+/// (SuspendN…)` is a coroutine's resume point — the frame is awaiting
+/// the next one at that source line; `state <Name>[ — <loc>]` is a
+/// coroutine's terminal state; `state: <Name>` is a plain enum's
+/// decoded variant on a non-coroutine wrapper, which makes no
+/// resume-point claim. `held` futures the census found parked in the
+/// frame ride along as a tally. `None` when there is nothing to say.
+fn frame_detail(frame: &bundle::AwaitFrame<'_>, held: usize) -> Option<String> {
+    let holds = match held {
+        0 => String::new(),
+        1 => "holds 1 pending future".to_string(),
+        n => format!("holds {n} pending futures"),
+    };
+    let Some(state) = &frame.state else {
+        return (!holds.is_empty()).then_some(holds);
+    };
+    let loc = state.await_loc.map(|(file, line)| format!("{file}:{line}"));
+    if frame.future.ty.is_coroutine() && state.name.starts_with("Suspend") {
+        let mut quals = state.name.to_string();
+        match state_locals(state.payload.ty).len() {
+            0 => {}
+            1 => quals.push_str(", 1 local"),
+            n => {
+                quals.push_str(&format!(", {n} locals"));
             }
-            node_indent += FRAME_DETAIL_STEP;
-        } else {
-            node_indent += FRAME_DETAIL_STEP + SUSPEND_ROW_STEP;
+        }
+        if !holds.is_empty() {
+            quals.push_str("; ");
+            quals.push_str(&holds);
+        }
+        let at = loc.map(|loc| format!("at {loc} ")).unwrap_or_default();
+        return Some(format!("awaiting {at}({quals})"));
+    }
+    let mut detail = if frame.future.ty.is_coroutine() {
+        match loc {
+            Some(loc) => format!("state {} — {loc}", state.name),
+            None => format!("state {}", state.name),
+        }
+    } else {
+        format!("state: {}", state.name)
+    };
+    if !holds.is_empty() {
+        detail.push_str(&format!(" ({holds})"));
+    }
+    Some(detail)
+}
+
+/// The `--verbose` blocks under one frame, in order: the live state's
+/// locals (a plain leaf's fields), then the frame's other suspend
+/// points — the inventory of where else the coroutine could park.
+/// The inventory is type information, which is why it stays out of the
+/// default view: interleaving "where could this park" with "where is it
+/// parked" is what made the nested layout ambiguous.
+fn print_frame_verbose<'b, T: proc::Target>(
+    ctx: &bundle::Context<'b, T>,
+    frame: &bundle::AwaitFrame<'b>,
+    leaf: bool,
+    opts: &TraceOpts<'_>,
+    annotate: Option<&reify::AddrAnnotator<'_>>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    if frame.state.is_some() || leaf {
+        let payload = match &frame.state {
+            Some(state) => state.payload,
+            None => frame.future,
+        };
+        let locals = state_locals(payload.ty);
+        if !locals.is_empty() {
+            let heading = if frame.state.is_some() {
+                "locals:"
+            } else {
+                "fields:"
+            };
+            writeln!(out, "{DETAIL_INDENT}{heading}")?;
+        }
+        // print_variable's contract: the value's lines after the first
+        // open with the variable's indent plus two spaces.
+        let value_prefix = format!("{ENTRY_INDENT}  ");
+        for m in locals {
+            let start = m.offset() as usize;
+            let end = start + m.ty().size() as usize;
+            match payload.bytes.get(start..end) {
+                Some(bytes) => {
+                    let v = reify::Value::new(m.ty(), payload.addr + m.offset(), bytes).peel();
+                    let mut disp = v
+                        .display_from_target(ctx.proc, opts.render.depth)
+                        .elide_override(opts.elide)
+                        .line_prefix(&value_prefix);
+                    if let Some(annotate) = annotate {
+                        disp = disp.annotate_addrs(annotate);
+                    }
+                    if opts.render.ugly {
+                        disp = disp.ugly();
+                    }
+                    print_variable(out, ENTRY_INDENT, m.name(), &format_args!("{disp:#}"))?;
+                }
+                None => writeln!(out, "{ENTRY_INDENT}{}: <unreadable>", m.name())?,
+            }
         }
     }
 
+    let rows: Vec<SuspendRow<'_>> = suspend_rows(frame)
+        .into_iter()
+        .filter(|row| !row.active)
+        .collect();
+    if rows.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "{DETAIL_INDENT}other suspend points:")?;
+    for row in rows {
+        let mut line = format!("{ENTRY_INDENT}{}", row.name);
+        if let Some((file, lineno)) = row.loc {
+            line.push_str(&format!(" — {file}:{lineno}"));
+        }
+        match row.locals {
+            0 => {}
+            1 => line.push_str(" (1 local)"),
+            n => line.push_str(&format!(" ({n} locals)")),
+        }
+        if let Some(awaitee) = row.awaitee {
+            line.push_str(&format!(" → {}", names::display_future_name(awaitee)));
+        }
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
+}
+
+/// Why the chain stopped, printed after the last frame — nothing for a
+/// chain that bottomed out in its leaf normally.
+fn print_chain_end(chain: &bundle::AwaitChain<'_>, out: &mut dyn io::Write) -> Result<()> {
     match &chain.end {
         bundle::ChainEnd::Leaf => {}
         bundle::ChainEnd::UnknownDyn {
@@ -461,53 +604,7 @@ fn print_await_chain<'b, T: proc::Target>(
             writeln!(out, "await chain truncated: {e:#}")?;
         }
     }
-
-    // Name what the task is actually waiting on when the leaf is a
-    // known primitive. It belongs to the deepest frame, so it goes out
-    // before any inventory closes back over it.
-    match ctx.wait_target(chain, list) {
-        Some(Ok(target)) => writeln!(out, "{detail_indent}waiting on {target}")?,
-        Some(Err(e)) => writeln!(
-            io::stderr(),
-            "warning: failed to read what the leaf future waits on: {e:#}"
-        )?,
-        None => {}
-    }
-
-    // The states each frame lists after the one it is parked in. They
-    // are printed here, innermost frame first, because the subtree that
-    // grew out of the active row sits between them and their own block.
-    for table in tables.iter().rev() {
-        table.print_after_active(out)?;
-    }
     Ok(())
-}
-
-/// The column the outermost future's node line starts at.
-const FRAME_ROOT_INDENT: usize = 2;
-
-/// How far a frame's detail sits inside its node line.
-const FRAME_DETAIL_STEP: usize = 3;
-
-/// How far a suspend row's text sits inside the detail column, leaving
-/// room for the marker in front of it.
-const SUSPEND_ROW_STEP: usize = 2;
-
-/// Marks the state a coroutine is parked in. Distinct from the `*` the
-/// tree puts on the leaf frame, which says where the chain ends rather
-/// than which of a frame's suspend points is live.
-const SUSPEND_MARKER: char = '▸';
-
-fn frame_detail_indent(node_indent: usize) -> String {
-    " ".repeat(node_indent + FRAME_DETAIL_STEP)
-}
-
-fn state_label_width(frame: usize) -> usize {
-    if frame == 0 {
-        13
-    } else {
-        frame.to_string().len() + 16
-    }
 }
 
 /// One row of a coroutine frame's suspend-point inventory: somewhere the
@@ -582,111 +679,6 @@ fn state_locals(ty: BundleType<'_>) -> Vec<BundleMember<'_>> {
             m.ty().size() > 0 && !m.name().starts_with("__") && seen.insert((m.name(), m.offset()))
         })
         .collect()
-}
-
-/// A frame's suspend rows laid out in columns, printable in two pieces.
-///
-/// The child frame is printed between them — it hangs from the marked
-/// row — so the widths are settled once, over the whole inventory, and
-/// both pieces are written against them. An empty column is omitted
-/// rather than padded, so a frame whose states hold nothing does not
-/// carry a blank gutter down the trace.
-struct SuspendTable<'b> {
-    rows: Vec<SuspendRow<'b>>,
-    /// `(location, locals, awaitee)`, already reduced to what each row
-    /// shows: the marked row drops its awaitee, which the child frame
-    /// beneath it names anyway, and under `verbose` drops its locals
-    /// count, since those values are about to be listed in full.
-    cells: Vec<(String, String, String)>,
-    detail_indent: String,
-    name_width: usize,
-    loc_width: usize,
-    locals_width: usize,
-}
-
-impl<'b> SuspendTable<'b> {
-    fn new(rows: Vec<SuspendRow<'b>>, verbose: bool, detail_indent: String) -> Self {
-        let cells: Vec<(String, String, String)> = rows
-            .iter()
-            .map(|row| {
-                let loc = row
-                    .loc
-                    .map(|(file, line)| format!("{file}:{line}"))
-                    .unwrap_or_default();
-                let locals = match row.locals {
-                    0 => String::new(),
-                    _ if row.active && verbose => String::new(),
-                    1 => "1 local".to_string(),
-                    n => format!("{n} locals"),
-                };
-                let awaitee = match row.active {
-                    true => String::new(),
-                    false => row
-                        .awaitee
-                        .map(names::display_future_name)
-                        .unwrap_or_default(),
-                };
-                (loc, locals, awaitee)
-            })
-            .collect();
-        let width =
-            |f: fn(&(String, String, String)) -> usize| cells.iter().map(f).max().unwrap_or(0);
-        Self {
-            name_width: rows.iter().map(|row| row.name.len()).max().unwrap_or(0),
-            loc_width: width(|c| c.0.len()),
-            locals_width: width(|c| c.1.len()),
-            rows,
-            cells,
-            detail_indent,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.rows.is_empty()
-    }
-
-    /// Where the marked row sits, or the end of the table when no row is
-    /// marked — a state that matched no variant, which leaves nothing to
-    /// hang a child from.
-    fn active(&self) -> usize {
-        self.rows
-            .iter()
-            .position(|row| row.active)
-            .unwrap_or(self.rows.len().saturating_sub(1))
-    }
-
-    /// The states up to and including the one the frame is parked in.
-    fn print_to_active(&self, out: &mut dyn io::Write) -> Result<()> {
-        self.print_range(0, self.active() + 1, out)
-    }
-
-    /// The states the frame lists after the one it is parked in.
-    fn print_after_active(&self, out: &mut dyn io::Write) -> Result<()> {
-        if self.is_empty() {
-            return Ok(());
-        }
-        self.print_range(self.active() + 1, self.rows.len(), out)
-    }
-
-    fn print_range(&self, from: usize, to: usize, out: &mut dyn io::Write) -> Result<()> {
-        let (name_width, loc_width, locals_width) =
-            (self.name_width, self.loc_width, self.locals_width);
-        for (row, (loc, locals, awaitee)) in self.rows[from..to].iter().zip(&self.cells[from..to]) {
-            let marker = if row.active { SUSPEND_MARKER } else { ' ' };
-            let mut line = format!("{}{marker} {:<name_width$}", self.detail_indent, row.name);
-            if loc_width > 0 {
-                line.push_str(&format!("  {loc:<loc_width$}"));
-            }
-            if locals_width > 0 {
-                line.push_str(&format!("  {locals:<locals_width$}"));
-            }
-            if !awaitee.is_empty() {
-                line.push_str(&format!("  {awaitee}"));
-            }
-            writeln!(out, "{}", line.trim_end())?;
-        }
-        Ok(())
-    }
 }
 
 /// Classify the outer future type from rustc's generated DWARF basename.
@@ -946,8 +938,80 @@ mod state_locals_tests {
 }
 
 #[cfg(test)]
+mod chain_end_tests {
+    use super::print_chain_end;
+    use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd};
+
+    fn rendered(end: ChainEnd) -> String {
+        let chain = AwaitChain {
+            frames: Vec::new(),
+            end,
+        };
+        let mut out = Vec::new();
+        print_chain_end(&chain, &mut out).expect("the message renders");
+        String::from_utf8(out).expect("rendered output is UTF-8")
+    }
+
+    /// A leaf ended the chain normally: there is nothing to explain.
+    #[test]
+    fn test_a_leaf_prints_nothing() {
+        assert_eq!(rendered(ChainEnd::Leaf), "");
+    }
+
+    /// The dyn continuations name the pointee — display-folded like
+    /// every printed name — and what is known about the poll fn:
+    /// the demangled symbol for an unknown type, the candidate list
+    /// (folded, no kind word: they are lookup handles) for an
+    /// ambiguous one.
+    #[test]
+    fn test_dyn_ends_name_the_pointee_and_the_poll_fn() {
+        let out = rendered(ChainEnd::UnknownDyn {
+            pointee: "core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future>>"
+                .to_string(),
+            poll_symbol: Some("_ZN4core3fut4pollE".to_string()),
+        });
+        assert_eq!(
+            out,
+            "the chain continues into a Pin<Box<dyn Future>> \
+             whose concrete type is not in the bundle\n     \
+             its poll fn is core::fut::poll (_ZN4core3fut4pollE)\n"
+        );
+
+        let out = rendered(ChainEnd::AmbiguousDyn {
+            pointee: "dyn core::future::future::Future".to_string(),
+            symbol: "poll_sym".to_string(),
+            candidates: vec!["work::step::{async_fn_env#0}".to_string()],
+        });
+        assert_eq!(
+            out,
+            "the chain continues into a dyn Future, \
+             but its normalized poll symbol is ambiguous\n     \
+             poll fn: poll_sym\n     candidate: work::step\n"
+        );
+    }
+
+    /// The truncation messages say why the walk stopped and, for the
+    /// depth bound, how far it got.
+    #[test]
+    fn test_truncations_say_why_the_walk_stopped() {
+        assert_eq!(
+            rendered(ChainEnd::DepthLimit),
+            "await chain truncated after 0 futures (depth bound); corrupt memory?\n"
+        );
+        assert_eq!(
+            rendered(ChainEnd::Cycle { addr: 0x40 }),
+            "await chain truncated: it loops back to 0x40; corrupt memory?\n"
+        );
+        assert_eq!(
+            rendered(ChainEnd::Error(anyhow::anyhow!("torn read"))),
+            "await chain truncated: torn read\n"
+        );
+    }
+}
+
+#[cfg(test)]
 mod variable_format_tests {
-    use super::{async_kind, print_variable, state_label_width};
+    use super::{async_kind, print_variable};
 
     #[test]
     fn scalar_stays_on_the_name_line() {
@@ -1047,13 +1111,6 @@ mod variable_format_tests {
             "future"
         );
     }
-
-    #[test]
-    fn state_alignment_accounts_for_frame_number_width() {
-        assert_eq!(state_label_width(0), 13);
-        assert_eq!(state_label_width(1), 17);
-        assert_eq!(state_label_width(10), 18);
-    }
 }
 
 /// Offline future-trace tests: what `trace <0x-address>` resolves an
@@ -1061,7 +1118,7 @@ mod variable_format_tests {
 /// extracted bundle joined against a real captured snapshot.
 #[cfg(test)]
 mod future_trace_tests {
-    use super::{FutureAt, TraceOpts, future_at, print_await_chain};
+    use super::{FutureAt, TraceOpts, frame_holds, future_at, print_await_chain, wait_line};
     use crate::RenderOpts;
     use crate::tasks::{future_name, print_tasks};
     use crate::{TraceTarget, parse_trace_target};
@@ -1121,16 +1178,17 @@ mod future_trace_tests {
 
             let found = future_at(&ctx.view, list, extents, census, future1.addr)
                 .expect("the printed address resolves");
-            let FutureAt::Held(h) = found else {
+            let FutureAt::Held(index) = found else {
                 panic!("future1 did not resolve as a held future");
             };
-            assert_eq!(h.addr, future1.addr);
+            assert_eq!(census.held[index].addr, future1.addr);
 
             let found = future_at(&ctx.view, list, extents, census, future1.addr + 1)
                 .expect("an interior pointer resolves");
-            let FutureAt::Held(h) = found else {
+            let FutureAt::Held(index) = found else {
                 panic!("the interior pointer did not resolve as a held future");
             };
+            let h = &census.held[index];
             let size = ctx.view.ty(h.ty).expect("the root type resolves").size();
             assert!(
                 h.addr <= future1.addr + 1 && future1.addr + 1 < h.addr + size,
@@ -1155,7 +1213,8 @@ mod future_trace_tests {
             let size = ctx.view.ty(future1.ty).expect("the type resolves").size();
             let end = future1.addr + size;
 
-            if let Ok(FutureAt::Held(h)) = future_at(&ctx.view, list, extents, census, end) {
+            if let Ok(FutureAt::Held(index)) = future_at(&ctx.view, list, extents, census, end) {
+                let h = &census.held[index];
                 assert_ne!(h.addr, future1.addr, "the future claims its own end");
                 let hsize = ctx.view.ty(h.ty).expect("the type resolves").size();
                 assert!(
@@ -1218,11 +1277,12 @@ mod future_trace_tests {
     #[test]
     fn test_held_future_renders_its_own_chain() {
         with_target("futurelock", |ctx, list, _extents, census| {
-            let future1 = census
+            let index = census
                 .held
                 .iter()
-                .find(|h| h.local == "future1")
+                .position(|h| h.local == "future1")
                 .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
+            let future1 = &census.held[index];
 
             let ty = ctx
                 .view
@@ -1231,6 +1291,13 @@ mod future_trace_tests {
             let root =
                 Value::read(ctx.proc, ty, future1.addr).expect("the recorded root reads back");
             let chain = ctx.await_chain(root);
+            let holds = frame_holds(
+                census,
+                future1.owner,
+                Some(census::Via::Held(index)),
+                chain.frames.len(),
+            );
+            let wait = wait_line(ctx, &chain, list).expect("the wait target reads");
 
             let mut out = Vec::new();
             let elide = Default::default();
@@ -1242,7 +1309,8 @@ mod future_trace_tests {
                 },
                 elide: &elide,
             };
-            print_await_chain(ctx, list, &chain, &opts, None, &mut out).expect("the chain renders");
+            print_await_chain(ctx, &chain, &opts, wait.as_deref(), &holds, None, &mut out)
+                .expect("the chain renders");
             let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
             assert!(
                 rendered.contains("async fn      futurelock::do_async_thing"),
@@ -1566,33 +1634,37 @@ mod future_trace_tests {
     }
 }
 
-/// Offline trace-rendering tests: the await tree as `trace` prints it,
-/// driven from a real extracted bundle joined against a real captured
-/// snapshot.
+/// Offline trace-rendering tests: the flat await chain as `trace`
+/// prints it, driven from a real extracted bundle joined against a real
+/// captured snapshot.
 ///
 /// The acceptance suite covers the same rendering end to end, but only
 /// where a process can be cored; these run in plain `cargo test` on any
-/// platform, which is what keeps the tree's shape — the suspend
-/// inventories and the indent that accumulates through them — under test
+/// platform, which is what keeps the layout — the frame and detail
+/// lines, the verbose blocks, the wait-target placement — under test
 /// while it is being changed.
 #[cfg(test)]
 mod trace_render_tests {
-    use super::{TraceOpts, print_await_chain};
+    use super::{TraceOpts, frame_holds, print_await_chain, wait_line};
     use crate::RenderOpts;
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::bundle::TaskStage;
+    use hansei_runtime::tokio::census;
 
-    /// Render task `task_id`'s await chain from the named fixture pair,
-    /// with heap addresses masked so the expectation compares exactly.
+    /// Render the named task's await chain the way `trace` prints it —
+    /// wait target and per-frame holds computed like the command's own
+    /// path — with heap addresses masked so expectations compare
+    /// exactly.
     fn trace(program: &str, future: &str, verbose: bool) -> String {
         let (bundle, snapshot) = testkit::load_any(program);
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
 
-        let task = list
+        let (index, task) = list
             .tasks
             .iter()
-            .find(|t| match &t.future {
+            .enumerate()
+            .find(|(_, t)| match &t.future {
                 hansei_runtime::tokio::bundle::FutureInfo::Known(known) => {
                     known.display_name == future
                 }
@@ -1605,6 +1677,9 @@ mod trace_render_tests {
         };
 
         let chain = ctx.await_chain(root);
+        let census = census::census(&ctx, &list);
+        let holds = frame_holds(&census, index, None, chain.frames.len());
+        let wait = wait_line(&ctx, &chain, &list).expect("the wait target reads");
         let mut out = Vec::new();
         let elide = Default::default();
         let opts = TraceOpts {
@@ -1615,7 +1690,8 @@ mod trace_render_tests {
             },
             elide: &elide,
         };
-        print_await_chain(&ctx, &list, &chain, &opts, None, &mut out).expect("the chain renders");
+        print_await_chain(&ctx, &chain, &opts, wait.as_deref(), &holds, None, &mut out)
+            .expect("the chain renders");
         let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
         regex::Regex::new(r"0x[0-9a-f]+")
             .unwrap()
@@ -1623,78 +1699,80 @@ mod trace_render_tests {
             .into_owned()
     }
 
-    /// A frame whose rows hold no locals prints no locals column at
-    /// all: the awaitee follows the location cell directly, with no
-    /// blank gutter padded in between.
+    /// A frame parked in a terminal state reports the state and its
+    /// source site with the `state` spelling — no resume-point claim —
+    /// and the suspend inventory, being type information, is out of the
+    /// default view entirely.
     #[test]
-    fn test_an_empty_locals_column_is_omitted_not_padded() {
+    fn test_a_terminal_state_reports_itself_without_inventory() {
         assert_eq!(
             trace(
                 "walk-shapes",
                 "walk_shapes::side_parker::{async_fn_env#0}",
                 false
             ),
-            "  0  async fn      walk_shapes::side_parker
-     suspends:
-     ▸ Unresumed  src/bin/walk-shapes.rs:204
-       Suspend0   src/bin/walk-shapes.rs:205  future core::future::pending::Pending<()>
+            "
+#0  async fn      walk_shapes::side_parker
+      state Unresumed — src/bin/walk-shapes.rs:204
 "
         );
     }
 
-    /// A plain-future frame has no suspend inventory: the chain
-    /// introduces its child under an `awaits:` line, and the indent
-    /// advances one detail step per such frame rather than a row step
-    /// it does not have.
+    /// The three detail spellings in one chain: a coroutine's live
+    /// state is `awaiting at` its resume point, a wrapper frame with no
+    /// decoded state has no detail at all — the reading convention
+    /// (frame N sits in frame N−1's live state) carries the chain — and
+    /// a plain enum's decoded variant is `state:`, which claims no
+    /// resume point. Frame 0 also holds `wz` — a future the chain does
+    /// not run through — which its detail line tallies.
     #[test]
-    fn test_wrapper_frames_without_inventories_introduce_awaits() {
+    fn test_wrapper_frames_read_by_position() {
         assert_eq!(
             trace(
                 "walk-shapes",
                 "walk_shapes::chained::{async_fn_env#0}",
                 false
             ),
-            "  0  async fn      walk_shapes::chained
-     suspends:
-     ▸ Suspend0  src/bin/walk-shapes.rs:103  1 local
-       └─  1  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
-          awaits:
-          └─  2  future        walk_shapes::WrapE<walk_shapes::deep>
-             state             Running
-             awaits:
-             └─  3  async fn      walk_shapes::deep
-                suspends:
-                ▸ Suspend0  src/bin/walk-shapes.rs:88  1 local
-                  └─* 4  future        tokio::sync::notify::Notified
+            "
+#0  async fn      walk_shapes::chained
+      awaiting at src/bin/walk-shapes.rs:103 (Suspend0, 1 local; holds 1 pending future)
+#1  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
+#2  future        walk_shapes::WrapE<walk_shapes::deep>
+      state: Running
+#3  async fn      walk_shapes::deep
+      awaiting at src/bin/walk-shapes.rs:88 (Suspend0, 1 local)
+#4  future        tokio::sync::notify::Notified
 "
         );
     }
 
-    /// Two suspend points, parked at the second: the row order is the
-    /// enum's, the marked row drops the awaitee its child already names,
-    /// and the child hangs from it.
+    /// The live state is the frame's one default detail: the other
+    /// suspend point (line 33 and what it would await) is type
+    /// information and stays out until `--verbose` asks for it.
     #[test]
-    fn test_inventory_marks_the_active_state() {
+    fn test_the_live_state_is_the_frames_one_detail() {
         assert_eq!(
             trace(
                 "simple-await",
                 "simple_await::work::{async_fn_env#0}",
                 false
             ),
-            "  0  async fn      simple_await::work
-     suspends:
-       Suspend0  src/bin/simple-await.rs:33  11 locals  async fn simple_await::ready_value
-     ▸ Suspend1  src/bin/simple-await.rs:35  10 locals
-       └─* 1  future        tokio::sync::oneshot::Receiver<u32>
+            "
+#0  async fn      simple_await::work
+      awaiting at src/bin/simple-await.rs:35 (Suspend1, 10 locals)
+#1  future        tokio::sync::oneshot::Receiver<u32>
 "
         );
     }
 
-    /// A frame whose states hold nothing carries no locals column, and
-    /// the indent accumulates through each frame's inventory rather than
-    /// by a fixed step per level.
+    /// The whole flat layout on a deep chain: the decoded wait target
+    /// leads as the `Waiting on:` summary and lands again on the leaf
+    /// frame, every frame keeps the same two-line shape at the same
+    /// indent, and the frame holding a future the chain does not run
+    /// through — the futurelock tell — carries the tally on its detail
+    /// line.
     #[test]
-    fn test_deep_chain_indents_through_its_inventories() {
+    fn test_the_wait_target_leads_and_the_leaf_repeats_it() {
         let rendered = trace(
             "futurelock",
             "futurelock::main::{async_block#0}::{async_block_env#0}",
@@ -1702,48 +1780,41 @@ mod trace_render_tests {
         );
         assert_eq!(
             rendered,
-            "  0  async block   futurelock::main::{async_block#0}
-     suspends:
-       Suspend0  src/bin/futurelock.rs:25  1 local  async fn futurelock::start_background_task
-     ▸ Suspend1  src/bin/futurelock.rs:28  1 local
-       └─  1  async fn      futurelock::do_stuff
-          suspends:
-            Suspend0  src/bin/futurelock.rs:65  4 locals  future core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}>
-          ▸ Suspend1  src/bin/futurelock.rs:70  3 locals
-            └─  2  async fn      futurelock::do_async_thing
-               suspends:
-               ▸ Suspend0  src/bin/futurelock.rs:78  2 locals
-                 └─  3  async fn      tokio::sync::mutex::{impl#10}::lock<()>
-                    suspends:
-                    ▸ Suspend0  tokio-1.52.4/src/sync/mutex.rs:455
-                      └─  4  async block   tokio::sync::mutex::{impl#10}::lock::{async_fn#0}<()>
-                         suspends:
-                         ▸ Suspend0  tokio-1.52.4/src/sync/mutex.rs:436
-                           └─  5  async fn      tokio::sync::mutex::{impl#10}::acquire<()>
-                              suspends:
-                                Suspend0  tokio-1.52.4/src/sync/mutex.rs:656  1 local  async fn tokio::trace::async_trace_leaf
-                              ▸ Suspend1  tokio-1.52.4/src/sync/mutex.rs:658
-                                └─* 6  future        tokio::sync::batch_semaphore::Acquire
-                                   waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+            "
+Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+
+#0  async block   futurelock::main::{async_block#0}
+      awaiting at src/bin/futurelock.rs:28 (Suspend1, 1 local)
+#1  async fn      futurelock::do_stuff
+      awaiting at src/bin/futurelock.rs:70 (Suspend1, 3 locals; holds 1 pending future)
+#2  async fn      futurelock::do_async_thing
+      awaiting at src/bin/futurelock.rs:78 (Suspend0, 2 locals)
+#3  async fn      tokio::sync::mutex::{impl#10}::lock<()>
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:455 (Suspend0)
+#4  async block   tokio::sync::mutex::{impl#10}::lock::{async_fn#0}<()>
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:436 (Suspend0)
+#5  async fn      tokio::sync::mutex::{impl#10}::acquire<()>
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1)
+#6  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
 "
         );
     }
 
-    /// A frame parked at a state its inventory lists others after: the
-    /// rows keep the enum's order, so the one below the active row is
-    /// printed once the subtree hanging off the active row is closed.
+    /// A dyn frame keeps its ` [dyn]` marker as part of the name's
+    /// identity — the one thing allowed after a type name — and a
+    /// suspend point listed after the live one stays out of the default
+    /// view like any other.
     #[test]
-    fn test_states_after_the_active_one_close_over_the_subtree() {
+    fn test_dyn_frames_keep_their_marker() {
         assert_eq!(
             trace("dyn-future", "dyn_future::driver::{async_fn_env#0}", false),
-            "  0  async fn      dyn_future::driver
-     suspends:
-     ▸ Suspend0  src/bin/dyn-future.rs:36  1 local
-       └─  1  async fn      dyn_future::boxed_leaf [dyn]
-          suspends:
-          ▸ Suspend0  src/bin/dyn-future.rs:12
-            └─* 2  future        tokio::sync::oneshot::Receiver<u32>
-       Suspend1  src/bin/dyn-future.rs:37  2 locals  async fn tokio::task::join_set::{impl#1}::join_next<u32>
+            "
+#0  async fn      dyn_future::driver
+      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
+#1  async fn      dyn_future::boxed_leaf [dyn]
+      awaiting at src/bin/dyn-future.rs:12 (Suspend0)
+#2  future        tokio::sync::oneshot::Receiver<u32>
 "
         );
     }
@@ -1775,6 +1846,7 @@ mod trace_render_tests {
         };
 
         let chain = ctx.await_chain(root);
+        let wait = wait_line(&ctx, &chain, &list).expect("the wait target reads");
         let mut out = Vec::new();
         let elide = Default::default();
         let opts = TraceOpts {
@@ -1785,28 +1857,48 @@ mod trace_render_tests {
             },
             elide: &elide,
         };
-        print_await_chain(&ctx, &list, &chain, &opts, Some(&annotate), &mut out)
-            .expect("the chain renders");
+        print_await_chain(
+            &ctx,
+            &chain,
+            &opts,
+            wait.as_deref(),
+            &[],
+            Some(&annotate),
+            &mut out,
+        )
+        .expect("the chain renders");
         let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
         assert!(rendered.contains("(task 3)"), "{rendered}");
     }
 
-    /// Under `--verbose` the marked row drops its count — the values it
-    /// counted are listed right below it — and the listing hangs from
-    /// the row rather than from the frame.
+    /// `--verbose` adds the frame's blocks in order — the live state's
+    /// locals, then the other suspend points — at the fixed indent
+    /// ladder: sub-blocks at 6, entries at 8, values at 10. The detail
+    /// line keeps its tally, and the inactive row keeps its count:
+    /// every variant shares the enum's storage, so its locals cannot be
+    /// read at all — and names its would-be awaitee.
     #[test]
-    fn test_verbose_lists_the_active_states_locals_under_its_row() {
+    fn test_verbose_adds_locals_then_the_inventory() {
         let rendered = trace("simple-await", "simple_await::work::{async_fn_env#0}", true);
         assert!(
-            rendered.contains("     ▸ Suspend1  src/bin/simple-await.rs:35\n       locals:\n"),
+            rendered.contains(
+                "      awaiting at src/bin/simple-await.rs:35 (Suspend1, 10 locals)\
+                 \n      locals:\n        count: 3\n"
+            ),
             "{rendered}"
         );
-        // The inactive row keeps its count: every variant shares the
-        // enum's storage, so its locals cannot be read at all.
         assert!(
-            rendered.contains("       Suspend0  src/bin/simple-await.rs:33  11 locals  "),
+            rendered.contains(
+                "      other suspend points:\n        Suspend0 — src/bin/simple-await.rs:33 \
+                 (11 locals) → async fn simple_await::ready_value\n"
+            ),
             "{rendered}"
         );
-        assert!(rendered.contains("\n         count: 3\n"), "{rendered}");
+        // The blocks keep their order: locals, then the inventory.
+        let locals = rendered.find("locals:").expect("a locals block");
+        let inventory = rendered
+            .find("other suspend points:")
+            .expect("an inventory block");
+        assert!(locals < inventory, "{rendered}");
     }
 }

@@ -5,26 +5,19 @@ expression: actual
 Task #blocked: async block futurelock::main::{async_block#0} (idle)
 Defined at: src/bin/futurelock.rs:16
 
-  0  async block   futurelock::main::{async_block#0}
-     suspends:
-       Suspend0  src/bin/futurelock.rs:25  1 local  async fn futurelock::start_background_task
-     ▸ Suspend1  src/bin/futurelock.rs:28  1 local
-       └─  1  async fn      futurelock::do_stuff
-          suspends:
-            Suspend0  src/bin/futurelock.rs:65  4 locals  future core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}>
-          ▸ Suspend1  src/bin/futurelock.rs:70  3 locals
-            └─  2  async fn      futurelock::do_async_thing
-               suspends:
-               ▸ Suspend0  src/bin/futurelock.rs:78  2 locals
-                 └─  3  async fn      tokio::sync::mutex::{impl#10}::lock<()>
-                    suspends:
-                    ▸ Suspend0  tokio/src/sync/mutex.rs:LINE
-                      └─  4  async block   tokio::sync::mutex::{impl#10}::lock::{async_fn#0}<()>
-                         suspends:
-                         ▸ Suspend0  tokio/src/sync/mutex.rs:LINE
-                           └─  5  async fn      tokio::sync::mutex::{impl#10}::acquire<()>
-                              suspends:
-                                Suspend0  tokio/src/sync/mutex.rs:LINE  1 local  tokio::trace::async_trace_leaf::TY
-                              ▸ Suspend1  tokio/src/sync/mutex.rs:LINE
-                                └─* 6  future        tokio::sync::batch_semaphore::Acquire
-                                   waiting on a tokio::sync::Mutex (semaphore ADDR1): 1 permit requested, 0 available; wake queue: task #blocked
+Waiting on: a tokio::sync::Mutex (semaphore ADDR1): 1 permit requested, 0 available; wake queue: task #blocked
+
+#0  async block   futurelock::main::{async_block#0}
+      awaiting at src/bin/futurelock.rs:28 (Suspend1, 1 local)
+#1  async fn      futurelock::do_stuff
+      awaiting at src/bin/futurelock.rs:70 (Suspend1, 3 locals; holds 1 pending future)
+#2  async fn      futurelock::do_async_thing
+      awaiting at src/bin/futurelock.rs:78 (Suspend0, 2 locals)
+#3  async fn      tokio::sync::mutex::{impl#10}::lock<()>
+      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend0)
+#4  async block   tokio::sync::mutex::{impl#10}::lock::{async_fn#0}<()>
+      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend0)
+#5  async fn      tokio::sync::mutex::{impl#10}::acquire<()>
+      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend1)
+#6  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Mutex (semaphore ADDR1): 1 permit requested, 0 available; wake queue: task #blocked
