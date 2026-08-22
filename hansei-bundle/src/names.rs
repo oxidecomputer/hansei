@@ -26,7 +26,7 @@ const ENV_MARKERS: [&str; 3] = [
 
 /// Std paths whose short name is unambiguous, folded to it wherever a
 /// whole path segment spells them out.
-const STD_SHORTENINGS: [(&str, &str); 11] = [
+const STD_SHORTENINGS: [(&str, &str); 12] = [
     ("alloc::vec::Vec", "Vec"),
     ("alloc::string::String", "String"),
     ("alloc::boxed::Box", "Box"),
@@ -38,6 +38,7 @@ const STD_SHORTENINGS: [(&str, &str); 11] = [
     ("core::future::future::Future", "Future"),
     ("core::marker::Send", "Send"),
     ("core::marker::Sync", "Sync"),
+    ("core::ops::control_flow::ControlFlow", "ControlFlow"),
 ];
 
 /// The defaulted allocator argument, dropped from the generic list that
@@ -222,6 +223,10 @@ mod tests {
         assert_eq!(
             fold_type_name("core::option::Option<alloc::string::String>"),
             "Option<String>"
+        );
+        assert_eq!(
+            fold_type_name("core::ops::control_flow::ControlFlow<(), app::Inventory>"),
+            "ControlFlow<(), app::Inventory>"
         );
         assert_eq!(
             fold_type_name(
