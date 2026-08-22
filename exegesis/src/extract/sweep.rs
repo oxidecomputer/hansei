@@ -847,7 +847,7 @@ mod tests {
 
     /// A chain of alternating structs and unions `length` links long,
     /// ending at a `Stage<…>` enum in `core_ns`; returns the head and the
-    /// stage id. The stage sits at depth `length + 1` from the head.
+    /// stage id. The head is depth 0, so the stage sits at depth `length`.
     fn insert_stage_chain(
         reader: &mut DwReader<'static>,
         core_ns: NsId,
@@ -873,15 +873,15 @@ mod tests {
         let mut reader = DwReader::default();
         let core = reader.strings.intern("core");
         let core_ns = reader.namespaces.insert(None, core);
-        // Head at depth 0, seven links, stage at depth 8: the last depth
+        // Head at depth 0, eight links, stage at depth 8: the last depth
         // the walk still visits.
-        let (head, stage) = insert_stage_chain(&mut reader, core_ns, 7);
+        let (head, stage) = insert_stage_chain(&mut reader, core_ns, 8);
         assert_eq!(find_stage(&reader, Some(core_ns), head), Some(stage));
 
         let mut reader = DwReader::default();
         let core = reader.strings.intern("core");
         let core_ns = reader.namespaces.insert(None, core);
-        // Nine links put the stage at depth 10, past the cap.
+        // One more link puts the stage at depth 9, past the cap.
         let (head, _stage) = insert_stage_chain(&mut reader, core_ns, 9);
         assert_eq!(find_stage(&reader, Some(core_ns), head), None);
     }

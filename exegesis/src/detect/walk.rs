@@ -2042,6 +2042,29 @@ mod tests {
     }
 
     #[test]
+    fn test_expected_absence_wins_over_a_broken_binding() {
+        // The spelling binds but its terminal fails — on a target whose
+        // capability is off, that is the expected shape, not drift.
+        let (reader, ctx) = context_fixture();
+        let decl = WalkDecl {
+            role: WalkRole::ALL[0],
+            root: WalkRoot::Infra(InfraRoot::Context),
+            spellings: Row::All(value_spelling),
+            terminal: Terminal::Pointer,
+            needs: Some(Capability::TokioUnstable),
+        };
+        let mut roots = context_roots(ctx);
+        roots.tokio_unstable = Some(false);
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(ctx);
+        let (binding, _, _) = bind_decl(&mut em, &roots, &BTreeMap::new(), &decl);
+        let WalkOutcome::Absent { reason } = binding.outcome else {
+            panic!("a capability-off target's breakage is expected absence");
+        };
+        assert_eq!(reason, "the target was built without tokio_unstable");
+    }
+
+    #[test]
     fn test_absence_is_expected_only_without_the_capability() {
         let decl = WalkDecl {
             role: WalkRole::ALL[0],
