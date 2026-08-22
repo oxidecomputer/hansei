@@ -98,3 +98,21 @@ impl fmt::Debug for FuncId {
         write!(f, "{inner:#x}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gimli::{DebugInfoOffset, DebugTypesOffset};
+
+    /// The id wrappers debug-print as the bare hex offset — what an
+    /// operator pastes between `dump` output and `--include-type`.
+    #[test]
+    fn test_ids_debug_print_as_hex_offsets() {
+        let info = UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(0x1f));
+        let types = UnitSectionOffset::DebugTypesOffset(DebugTypesOffset(0x2c));
+        assert_eq!(format!("{:?}", TypeId(info)), "0x1f");
+        assert_eq!(format!("{:?}", TypeId(types)), "0x2c");
+        assert_eq!(format!("{:?}", VarId(info)), "0x1f");
+        assert_eq!(format!("{:?}", FuncId(info)), "0x1f");
+    }
+}
