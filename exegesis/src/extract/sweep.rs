@@ -403,3 +403,543 @@ fn is_coroutine_env(reader: &DwReader<'_>, id: TypeId) -> bool {
         .map(|n| reader.strings.get(n))
         .is_some_and(|n| n.starts_with("{async_fn_env#") || n.starts_with("{async_block_env#"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::raw_types::{
+        RawEnum, RawFunc, RawGenericParameter, RawMember, RawPointer, RawStruct, RawSubParameter,
+        RawUnion, VariantShape,
+    };
+    use gimli::{DebugInfoOffset, UnitSectionOffset};
+
+    fn type_id(offset: usize) -> TypeId {
+        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    fn func_id(offset: usize) -> FuncId {
+        FuncId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    fn insert_struct(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        namespace: Option<NsId>,
+        name: &'static str,
+        members: &[(&'static str, TypeId)],
+    ) {
+        let members = members
+            .iter()
+            .enumerate()
+            .map(|(index, &(name, type_id))| RawMember {
+                name: Some(reader.strings.intern(name)),
+                offset: index as u64 * 8,
+                type_id,
+                source_loc: None,
+            })
+            .collect();
+        reader.types.insert(
+            id,
+            RawType::Struct(RawStruct {
+                name: Some(reader.strings.intern(name)),
+                namespace,
+                size: 8,
+                members,
+                template_params: Box::new([]),
+                source_loc: None,
+            }),
+        );
+    }
+
+    fn insert_union(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        name: &'static str,
+        members: &[(&'static str, TypeId)],
+    ) {
+        let members = members
+            .iter()
+            .map(|&(name, type_id)| RawMember {
+                name: Some(reader.strings.intern(name)),
+                offset: 0,
+                type_id,
+                source_loc: None,
+            })
+            .collect();
+        reader.types.insert(
+            id,
+            RawType::Union(RawUnion {
+                name: Some(reader.strings.intern(name)),
+                namespace: None,
+                size: 8,
+                members,
+                template_params: Box::new([]),
+                source_loc: None,
+            }),
+        );
+    }
+
+    fn insert_enum(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        namespace: Option<NsId>,
+        name: &'static str,
+    ) {
+        reader.types.insert(
+            id,
+            RawType::Enum(RawEnum {
+                name: Some(reader.strings.intern(name)),
+                namespace,
+                size: 8,
+                alignment: None,
+                shape: VariantShape::Zero,
+                template_params: Box::new([]),
+                source_loc: None,
+            }),
+        );
+    }
+
+    fn insert_pointer(reader: &mut DwReader<'static>, id: TypeId, target: TypeId) {
+        reader.types.insert(
+            id,
+            RawType::Pointer(RawPointer {
+                name: None,
+                target_type_id: target,
+            }),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_func(
+        reader: &mut DwReader<'static>,
+        id: FuncId,
+        namespace: Option<NsId>,
+        name: &'static str,
+        linkage: Option<&'static str>,
+        template_params: &[(&'static str, TypeId)],
+        params: &[TypeId],
+        return_type_id: Option<TypeId>,
+    ) {
+        let template_params = template_params
+            .iter()
+            .map(|&(name, type_id)| RawGenericParameter {
+                name: Some(reader.strings.intern(name)),
+                type_id,
+            })
+            .collect();
+        let formal_parameters = params
+            .iter()
+            .map(|&type_id| RawSubParameter {
+                name: None,
+                type_id: Some(type_id),
+                abstract_origin: None,
+                const_value: None,
+                source_loc: None,
+            })
+            .collect();
+        reader.functions.insert(
+            id,
+            RawFunc {
+                name: Some(reader.strings.intern(name)),
+                namespace,
+                source_loc: None,
+                return_type_id,
+                formal_parameters,
+                abstract_origin: None,
+                linkage_name: linkage.map(|l| reader.strings.intern(l)),
+                template_params,
+                noreturn: false,
+                awaitees: Box::new([]),
+            },
+        );
+    }
+
+    fn symbols(set: &BTreeSet<String>) -> Vec<&str> {
+        set.iter().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn test_sweep_collects_vtable_seeds_by_role() {
+        let mut reader = DwReader::default();
+        let raw = reader.strings.intern("raw");
+        let raw_ns = reader.namespaces.insert(None, raw);
+        let fut = type_id(0x10);
+        let sched = type_id(0x20);
+        insert_struct(&mut reader, fut, None, "Fut", &[]);
+        insert_struct(&mut reader, sched, None, "Sched", &[]);
+        let poll_param = type_id(0x30);
+        let dealloc_param = type_id(0x40);
+        let late_dealloc_param = type_id(0x50);
+        insert_struct(&mut reader, poll_param, None, "PollArg", &[]);
+        insert_struct(&mut reader, dealloc_param, None, "DeallocArg", &[]);
+        insert_struct(&mut reader, late_dealloc_param, None, "LateArg", &[]);
+
+        let t_s: &[(&str, TypeId)] = &[("T", fut), ("S", sched)];
+        insert_func(
+            &mut reader,
+            func_id(0x100),
+            Some(raw_ns),
+            "poll<Fut, Sched>",
+            Some("poll_sym"),
+            t_s,
+            &[poll_param],
+            None,
+        );
+        insert_func(
+            &mut reader,
+            func_id(0x110),
+            Some(raw_ns),
+            "dealloc<Fut, Sched>",
+            Some("dealloc_sym"),
+            t_s,
+            &[dealloc_param],
+            None,
+        );
+        insert_func(
+            &mut reader,
+            func_id(0x120),
+            Some(raw_ns),
+            "dealloc<Fut, Sched>",
+            Some("late_dealloc_sym"),
+            t_s,
+            &[late_dealloc_param],
+            None,
+        );
+        insert_func(
+            &mut reader,
+            func_id(0x130),
+            Some(raw_ns),
+            "shutdown<Fut, Sched>",
+            None,
+            t_s,
+            &[],
+            None,
+        );
+
+        let view = reader.view();
+        let sweep = sweep_functions(&view, Some(raw_ns), None);
+
+        assert_eq!(sweep.seeds.len(), 1);
+        let seed = &sweep.seeds[&(fut, sched)];
+        assert_eq!(
+            symbols(&seed.symbols),
+            ["dealloc_sym", "late_dealloc_sym", "poll_sym"]
+        );
+        // Only the poll vtable fn contributes a poll symbol.
+        assert_eq!(symbols(&seed.poll_symbols), ["poll_sym"]);
+        // The first dealloc's parameter wins; a later one never replaces it.
+        assert_eq!(seed.dealloc_param, Some(dealloc_param));
+        // The linkage-less vtable fn is counted, not seeded.
+        assert_eq!(sweep.vtable_missing_linkage, 1);
+    }
+
+    #[test]
+    fn test_sweep_records_drop_glue_only_under_its_namespace_and_name() {
+        let mut reader = DwReader::default();
+        let glue = reader.strings.intern("glue");
+        let glue_ns = reader.namespaces.insert(None, glue);
+        let fut = type_id(0x10);
+        insert_struct(&mut reader, fut, None, "Fut", &[]);
+
+        insert_func(
+            &mut reader,
+            func_id(0x100),
+            Some(glue_ns),
+            "drop_glue<Fut>",
+            Some("glue_sym"),
+            &[("T", fut)],
+            &[],
+            None,
+        );
+        insert_func(
+            &mut reader,
+            func_id(0x110),
+            Some(glue_ns),
+            "drop_glue<foo::Bar>",
+            Some("named_glue_sym"),
+            &[],
+            &[],
+            None,
+        );
+        // In the glue namespace but not glue: never recorded.
+        insert_func(
+            &mut reader,
+            func_id(0x120),
+            Some(glue_ns),
+            "other<Fut>",
+            Some("other_sym"),
+            &[("T", fut)],
+            &[],
+            None,
+        );
+
+        let view = reader.view();
+        let sweep = sweep_functions(&view, None, Some(glue_ns));
+        assert_eq!(sweep.drop_glues.len(), 1);
+        assert_eq!(symbols(&sweep.drop_glues[&fut]), ["glue_sym"]);
+        assert_eq!(sweep.glue_by_name.len(), 1);
+        assert_eq!(symbols(&sweep.glue_by_name["foo::Bar"]), ["named_glue_sym"]);
+
+        // Without a glue namespace nothing is glue, whatever its spelling.
+        let mut reader = DwReader::default();
+        let fut = type_id(0x10);
+        insert_struct(&mut reader, fut, None, "Fut", &[]);
+        insert_func(
+            &mut reader,
+            func_id(0x100),
+            None,
+            "drop_glue<Fut>",
+            Some("glue_sym"),
+            &[("T", fut)],
+            &[],
+            None,
+        );
+        let view = reader.view();
+        let sweep = sweep_functions(&view, None, None);
+        assert!(sweep.drop_glues.is_empty());
+        assert!(sweep.glue_by_name.is_empty());
+    }
+
+    /// A `Pin<&mut T>`-shaped self parameter: the `Pin` struct, its pointer
+    /// member, and the pointee, returning the `Pin` type's id.
+    fn insert_pin_of(
+        reader: &mut DwReader<'static>,
+        pin: TypeId,
+        pointer: TypeId,
+        target: TypeId,
+    ) -> TypeId {
+        insert_pointer(reader, pointer, target);
+        insert_struct(reader, pin, None, "Pin<&mut T>", &[("__pointer", pointer)]);
+        pin
+    }
+
+    #[test]
+    fn test_sweep_keeps_non_coroutine_resume_shapes_out_of_the_dyn_table() {
+        let mut reader = DwReader::default();
+        let poll_ret = type_id(0x10);
+        insert_struct(&mut reader, poll_ret, None, "Poll<()>", &[]);
+        let env = type_id(0x20);
+        insert_struct(&mut reader, env, None, "{async_fn_env#0}", &[]);
+        let env_pin = insert_pin_of(&mut reader, type_id(0x30), type_id(0x40), env);
+        let plain = type_id(0x50);
+        insert_struct(&mut reader, plain, None, "Plain", &[]);
+        let plain_pin = insert_pin_of(&mut reader, type_id(0x60), type_id(0x70), plain);
+
+        insert_func(
+            &mut reader,
+            func_id(0x100),
+            None,
+            "{async_fn#0}",
+            Some("resume_sym"),
+            &[],
+            &[env_pin],
+            Some(poll_ret),
+        );
+        // Poll-shaped, but over a self type that is no coroutine env.
+        insert_func(
+            &mut reader,
+            func_id(0x110),
+            None,
+            "{closure#0}",
+            Some("closure_sym"),
+            &[],
+            &[plain_pin],
+            Some(poll_ret),
+        );
+
+        let view = reader.view();
+        let sweep = sweep_functions(&view, None, None);
+        assert_eq!(sweep.fut_polls.len(), 1);
+        assert_eq!(symbols(&sweep.fut_polls[&env]), ["resume_sym"]);
+    }
+
+    #[test]
+    fn test_sweep_counts_the_poll_impls_it_cannot_resolve() {
+        let mut reader = DwReader::default();
+        // A declaration-shaped `Pin`: no members to recover `T` through.
+        let bare_pin = type_id(0x10);
+        insert_struct(&mut reader, bare_pin, None, "Pin<&mut F>", &[]);
+        insert_func(
+            &mut reader,
+            func_id(0x100),
+            None,
+            "poll",
+            Some("<F as core::future::future::Future>::poll"),
+            &[],
+            &[bare_pin],
+            None,
+        );
+        insert_func(
+            &mut reader,
+            func_id(0x110),
+            None,
+            "poll",
+            Some("<G as core::future::future::Future>::poll"),
+            &[],
+            &[],
+            None,
+        );
+
+        let view = reader.view();
+        let sweep = sweep_functions(&view, None, None);
+        assert!(sweep.fut_polls.is_empty());
+        assert_eq!(sweep.dyn_decl_only_self, 1);
+        assert_eq!(sweep.dyn_unresolved_self, 1);
+    }
+
+    #[test]
+    fn test_merge_sums_the_sweep_counters() {
+        let mut left = Sweep {
+            vtable_missing_linkage: 3,
+            dyn_decl_only_self: 5,
+            dyn_unresolved_self: 7,
+            ..Sweep::default()
+        };
+        let right = Sweep {
+            vtable_missing_linkage: 2,
+            dyn_decl_only_self: 4,
+            dyn_unresolved_self: 6,
+            ..Sweep::default()
+        };
+
+        left.merge(right);
+        assert_eq!(left.vtable_missing_linkage, 5);
+        assert_eq!(left.dyn_decl_only_self, 9);
+        assert_eq!(left.dyn_unresolved_self, 13);
+    }
+
+    #[test]
+    fn test_find_stage_screens_on_namespace_and_name() {
+        let mut reader = DwReader::default();
+        let core = reader.strings.intern("core");
+        let core_ns = reader.namespaces.insert(None, core);
+        let stage = type_id(0x10);
+        insert_enum(&mut reader, stage, Some(core_ns), "Stage<Fut>");
+        let cell = type_id(0x20);
+        insert_struct(
+            &mut reader,
+            cell,
+            Some(core_ns),
+            "Cell<Fut>",
+            &[("stage", stage)],
+        );
+        assert_eq!(find_stage(&reader, Some(core_ns), cell), Some(stage));
+
+        // The right name outside the namespace, the right namespace under
+        // another name: neither is the stage.
+        let mut reader = DwReader::default();
+        let core = reader.strings.intern("core");
+        let core_ns = reader.namespaces.insert(None, core);
+        let stray = type_id(0x10);
+        insert_enum(&mut reader, stray, None, "Stage<Fut>");
+        let renamed = type_id(0x20);
+        insert_enum(&mut reader, renamed, Some(core_ns), "Phase<Fut>");
+        let cell = type_id(0x30);
+        insert_struct(
+            &mut reader,
+            cell,
+            Some(core_ns),
+            "Cell<Fut>",
+            &[("a", stray), ("b", renamed)],
+        );
+        assert_eq!(find_stage(&reader, Some(core_ns), cell), None);
+    }
+
+    /// A chain of alternating structs and unions `length` links long,
+    /// ending at a `Stage<…>` enum in `core_ns`; returns the head and the
+    /// stage id. The stage sits at depth `length + 1` from the head.
+    fn insert_stage_chain(
+        reader: &mut DwReader<'static>,
+        core_ns: NsId,
+        length: usize,
+    ) -> (TypeId, TypeId) {
+        let stage = type_id(0x1000);
+        insert_enum(reader, stage, Some(core_ns), "Stage<Fut>");
+        let mut next = stage;
+        for link in (0..length).rev() {
+            let id = type_id(0x100 + link);
+            if link % 2 == 0 {
+                insert_struct(reader, id, None, "Link", &[("next", next)]);
+            } else {
+                insert_union(reader, id, "LinkUnion", &[("next", next)]);
+            }
+            next = id;
+        }
+        (next, stage)
+    }
+
+    #[test]
+    fn test_find_stage_traverses_to_the_depth_cap_and_no_further() {
+        let mut reader = DwReader::default();
+        let core = reader.strings.intern("core");
+        let core_ns = reader.namespaces.insert(None, core);
+        // Head at depth 0, seven links, stage at depth 8: the last depth
+        // the walk still visits.
+        let (head, stage) = insert_stage_chain(&mut reader, core_ns, 7);
+        assert_eq!(find_stage(&reader, Some(core_ns), head), Some(stage));
+
+        let mut reader = DwReader::default();
+        let core = reader.strings.intern("core");
+        let core_ns = reader.namespaces.insert(None, core);
+        // Nine links put the stage at depth 10, past the cap.
+        let (head, _stage) = insert_stage_chain(&mut reader, core_ns, 9);
+        assert_eq!(find_stage(&reader, Some(core_ns), head), None);
+    }
+
+    #[test]
+    fn test_cell_is_recovered_through_the_dealloc_parameter() {
+        let mut reader = DwReader::default();
+        let core = reader.strings.intern("core");
+        let core_ns = reader.namespaces.insert(None, core);
+        let cell = type_id(0x10);
+        insert_struct(&mut reader, cell, Some(core_ns), "Cell<Fut, Sched>", &[]);
+        let cell_ptr = type_id(0x20);
+        insert_pointer(&mut reader, cell_ptr, cell);
+        let non_null = type_id(0x30);
+        insert_struct(
+            &mut reader,
+            non_null,
+            None,
+            "NonNull<Cell<Fut, Sched>>",
+            &[("pointer", cell_ptr)],
+        );
+        assert_eq!(
+            cell_from_dealloc_param(&reader, Some(core_ns), non_null),
+            Some(cell)
+        );
+
+        // The same shape outside the task-core namespace is not a cell.
+        let stray_cell = type_id(0x40);
+        insert_struct(&mut reader, stray_cell, None, "Cell<Fut, Sched>", &[]);
+        let stray_ptr = type_id(0x50);
+        insert_pointer(&mut reader, stray_ptr, stray_cell);
+        let stray_non_null = type_id(0x60);
+        insert_struct(
+            &mut reader,
+            stray_non_null,
+            None,
+            "NonNull<Cell<Fut, Sched>>",
+            &[("pointer", stray_ptr)],
+        );
+        assert_eq!(
+            cell_from_dealloc_param(&reader, Some(core_ns), stray_non_null),
+            None
+        );
+    }
+
+    #[test]
+    fn test_coroutine_envs_are_recognized_by_name() {
+        let mut reader = DwReader::default();
+        let async_fn = type_id(0x10);
+        let async_block = type_id(0x20);
+        let plain = type_id(0x30);
+        insert_struct(&mut reader, async_fn, None, "{async_fn_env#0}", &[]);
+        insert_struct(&mut reader, async_block, None, "{async_block_env#0}", &[]);
+        insert_struct(&mut reader, plain, None, "Plain", &[]);
+
+        assert!(is_coroutine_env(&reader, async_fn));
+        assert!(is_coroutine_env(&reader, async_block));
+        assert!(!is_coroutine_env(&reader, plain));
+        assert!(!is_coroutine_env(&reader, type_id(0xdead)));
+    }
+}

@@ -88,6 +88,10 @@ exclude_re = [
     # the partitioning between the inline and rayon paths, which produce
     # the same aliases (each id is in exactly one independent group).
     "replace < with [<=>]+ in DwReader<'dw>::named_aliases",
+    # And the subprogram sweep's copy of it: the chunked parallel path
+    # merges per-worker sweeps in chunk order, which resolves the
+    # "first wins" fields exactly as the serial loop does.
+    "replace < with [<=>]+ in sweep_functions",
     # Equivalent mutant: the arm deleted falls through to a `_` arm doing
     # the same nothing. It is there to say arrays carry no descriptive
     # fields to inherit, not to change behavior.
