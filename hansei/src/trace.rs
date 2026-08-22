@@ -6,6 +6,7 @@ use crate::whatis::via_suffix;
 use crate::{Session, TraceOpts, TraceTarget};
 
 use anyhow::{Context as _, Result};
+use hansei_bundle::names;
 use hansei_bundle::{BundleMember, BundleType, BundleView};
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 use reify::Value;
@@ -102,7 +103,12 @@ fn exec_trace_future(
     let (root, owner) = match found {
         FutureAt::Held(h) => {
             let via = via_suffix(census, h.via);
-            writeln!(out, "Future {:#x}: {}", h.addr, h.future)?;
+            writeln!(
+                out,
+                "Future {:#x}: {}",
+                h.addr,
+                names::display_future_name(&h.future)
+            )?;
             writeln!(
                 out,
                 "Held by: {} — {} (frame {}, `{}`{via})",
@@ -121,12 +127,15 @@ fn exec_trace_future(
         }
         FutureAt::Child { set, child, root } => {
             let via = via_suffix(census, set.via);
-            let future = child.future.as_deref().unwrap_or("<undecoded>");
+            let future = match &child.future {
+                Some(future) => names::display_future_name(future),
+                None => "<undecoded>".to_string(),
+            };
             writeln!(out, "Future {:#x}: {future}", child.node)?;
             writeln!(
                 out,
                 "Child of: {} at {:#x} (frame {}, `{}`{via}), polled by {} — {}",
-                set.ty,
+                names::fold_type_name(&set.ty),
                 set.addr,
                 set.frame,
                 set.local,
@@ -197,7 +206,7 @@ fn future_at<'c>(
                 "the child at {:#x} of the {} at {:#x} has completed; \
                  there is no future left to trace",
                 child.node,
-                set.ty,
+                names::fold_type_name(&set.ty),
                 set.addr
             );
         };
@@ -207,7 +216,7 @@ fn future_at<'c>(
         anyhow::bail!(
             "{addr:#x} is the {} polled by {}, not one future; \
              trace one of its {} child node(s) (`tasks --futures` lists them)",
-            set.ty,
+            names::fold_type_name(&set.ty),
             task_label(list, set.owner),
             set.children.len()
         );
@@ -303,19 +312,12 @@ fn print_await_chain<'b, T: proc::Target>(
         } else {
             ""
         };
+        let name = names::fold_type_name(frame.future.ty.name());
         if i == 0 {
-            writeln!(
-                out,
-                "  {i}  {kind:<13} {}{dyn_marker}",
-                frame.future.ty.name()
-            )?;
+            writeln!(out, "  {i}  {kind:<13} {name}{dyn_marker}")?;
         } else {
             let indent = " ".repeat(node_indent);
-            writeln!(
-                out,
-                "{indent}└─{marker} {i}  {kind:<13} {}{dyn_marker}",
-                frame.future.ty.name()
-            )?;
+            writeln!(out, "{indent}└─{marker} {i}  {kind:<13} {name}{dyn_marker}")?;
         }
 
         detail_indent = frame_detail_indent(node_indent);
@@ -416,7 +418,8 @@ fn print_await_chain<'b, T: proc::Target>(
         } => {
             writeln!(
                 out,
-                "the chain continues into a {pointee} whose concrete type is not in the bundle"
+                "the chain continues into a {} whose concrete type is not in the bundle",
+                names::fold_type_name(pointee)
             )?;
             if let Some(sym) = poll_symbol {
                 writeln!(
@@ -433,11 +436,12 @@ fn print_await_chain<'b, T: proc::Target>(
         } => {
             writeln!(
                 out,
-                "the chain continues into a {pointee}, but its normalized poll symbol is ambiguous"
+                "the chain continues into a {}, but its normalized poll symbol is ambiguous",
+                names::fold_type_name(pointee)
             )?;
             writeln!(out, "     poll fn: {symbol}")?;
             for candidate in candidates {
-                writeln!(out, "     candidate: {candidate}")?;
+                writeln!(out, "     candidate: {}", names::fold_type_name(candidate))?;
             }
         }
         bundle::ChainEnd::DepthLimit => {
@@ -593,7 +597,7 @@ struct SuspendTable<'b> {
     /// shows: the marked row drops its awaitee, which the child frame
     /// beneath it names anyway, and under `verbose` drops its locals
     /// count, since those values are about to be listed in full.
-    cells: Vec<(String, String, &'b str)>,
+    cells: Vec<(String, String, String)>,
     detail_indent: String,
     name_width: usize,
     loc_width: usize,
@@ -602,7 +606,7 @@ struct SuspendTable<'b> {
 
 impl<'b> SuspendTable<'b> {
     fn new(rows: Vec<SuspendRow<'b>>, verbose: bool, detail_indent: String) -> Self {
-        let cells: Vec<(String, String, &'b str)> = rows
+        let cells: Vec<(String, String, String)> = rows
             .iter()
             .map(|row| {
                 let loc = row
@@ -615,16 +619,18 @@ impl<'b> SuspendTable<'b> {
                     1 => "1 local".to_string(),
                     n => format!("{n} locals"),
                 };
-                let awaitee = if row.active {
-                    ""
-                } else {
-                    row.awaitee.unwrap_or_default()
+                let awaitee = match row.active {
+                    true => String::new(),
+                    false => row
+                        .awaitee
+                        .map(names::display_future_name)
+                        .unwrap_or_default(),
                 };
                 (loc, locals, awaitee)
             })
             .collect();
         let width =
-            |f: fn(&(String, String, &str)) -> usize| cells.iter().map(f).max().unwrap_or(0);
+            |f: fn(&(String, String, String)) -> usize| cells.iter().map(f).max().unwrap_or(0);
         Self {
             name_width: rows.iter().map(|row| row.name.len()).max().unwrap_or(0),
             loc_width: width(|c| c.0.len()),
@@ -685,33 +691,14 @@ impl<'b> SuspendTable<'b> {
 
 /// Classify the outer future type from rustc's generated DWARF basename.
 /// The names are an implementation detail, so an unrecognized state
-/// machine deliberately receives the neutral `async` label.
+/// machine deliberately receives the neutral `async` label. Always
+/// judged on the *raw* name, before display folding removes the very
+/// marker this reads.
 fn async_kind(name: &str, state: Option<&str>) -> &'static str {
-    // Ignore generic arguments: an ordinary wrapper such as
-    // `PollFn<foo::{async_fn_env#0}>` is not itself an async fn.
-    let mut outer = String::with_capacity(name.len());
-    let mut generic_depth = 0usize;
-    for c in name.chars() {
-        match c {
-            '<' => generic_depth += 1,
-            '>' => generic_depth = generic_depth.saturating_sub(1),
-            _ if generic_depth == 0 => outer.push(c),
-            _ => {}
-        }
+    if let Some(kind) = names::coroutine_kind(name) {
+        return kind;
     }
-    if outer.rsplit("::").next().is_some_and(|component| {
-        component.starts_with("{async_fn_env#") && component.ends_with('}')
-    }) {
-        "async fn"
-    } else if outer.rsplit("::").next().is_some_and(|component| {
-        component.starts_with("{async_block_env#") && component.ends_with('}')
-    }) {
-        "async block"
-    } else if outer.rsplit("::").next().is_some_and(|component| {
-        component.starts_with("{async_closure_env#") && component.ends_with('}')
-    }) {
-        "async closure"
-    } else if state.is_some_and(|state| {
+    if state.is_some_and(|state| {
         state.starts_with("Suspend") || matches!(state, "Unresumed" | "Returned" | "Panicked")
     }) {
         "async"
@@ -1189,8 +1176,13 @@ mod future_trace_tests {
             let err = future_at(&_ctx.view, list, extents, census, set.addr)
                 .expect_err("a set is not one future");
             // The *queried* set, not another one the census holds: its
-            // type and its own child count.
-            assert!(err.to_string().contains(&set.ty), "{err}");
+            // type — display-folded like every printed name — and its
+            // own child count.
+            assert!(
+                err.to_string()
+                    .contains(&*hansei_bundle::names::fold_type_name(&set.ty)),
+                "{err}"
+            );
             assert!(
                 err.to_string()
                     .contains(&format!("its {} child node(s)", set.children.len())),
@@ -1253,7 +1245,7 @@ mod future_trace_tests {
             print_await_chain(ctx, list, &chain, &opts, None, &mut out).expect("the chain renders");
             let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
             assert!(
-                rendered.contains("futurelock::do_async_thing::{async_fn_env#0}"),
+                rendered.contains("async fn      futurelock::do_async_thing"),
                 "{rendered}"
             );
             assert!(
@@ -1441,10 +1433,10 @@ mod future_trace_tests {
             assert!(
                 rendered.contains(
                     "    Held futures: 0\n    Join sets: 1 (1 future)\n        \
-                     - FuturesUnordered<step::{async_fn_env#0}> at 0x1000 (frame 0, `pending`): \
+                     - FuturesUnordered<step> at 0x1000 (frame 0, `pending`): \
                      1 child in flight, 1 completed and not yet reaped\n            \
-                     0x2000  step::{async_fn_env#0}  Suspend0 — step.rs:9\n                \
-                     held (frame 1, `lock`): 0x3000  Mutex::lock::{async_fn_env#0}\n"
+                     0x2000  async fn step  Suspend0 — step.rs:9\n                \
+                     held (frame 1, `lock`): 0x3000  async fn Mutex::lock\n"
                 ),
                 "{rendered}"
             );
@@ -1642,10 +1634,10 @@ mod trace_render_tests {
                 "walk_shapes::side_parker::{async_fn_env#0}",
                 false
             ),
-            "  0  async fn      walk_shapes::side_parker::{async_fn_env#0}
+            "  0  async fn      walk_shapes::side_parker
      suspends:
      ▸ Unresumed  src/bin/walk-shapes.rs:204
-       Suspend0   src/bin/walk-shapes.rs:205  core::future::pending::Pending<()>
+       Suspend0   src/bin/walk-shapes.rs:205  future core::future::pending::Pending<()>
 "
         );
     }
@@ -1657,16 +1649,20 @@ mod trace_render_tests {
     #[test]
     fn test_wrapper_frames_without_inventories_introduce_awaits() {
         assert_eq!(
-            trace("walk-shapes", "walk_shapes::chained::{async_fn_env#0}", false),
-            "  0  async fn      walk_shapes::chained::{async_fn_env#0}
+            trace(
+                "walk-shapes",
+                "walk_shapes::chained::{async_fn_env#0}",
+                false
+            ),
+            "  0  async fn      walk_shapes::chained
      suspends:
      ▸ Suspend0  src/bin/walk-shapes.rs:103  1 local
-       └─  1  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>>
+       └─  1  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
           awaits:
-          └─  2  future        walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>
+          └─  2  future        walk_shapes::WrapE<walk_shapes::deep>
              state             Running
              awaits:
-             └─  3  async fn      walk_shapes::deep::{async_fn_env#0}
+             └─  3  async fn      walk_shapes::deep
                 suspends:
                 ▸ Suspend0  src/bin/walk-shapes.rs:88  1 local
                   └─* 4  future        tokio::sync::notify::Notified
@@ -1685,9 +1681,9 @@ mod trace_render_tests {
                 "simple_await::work::{async_fn_env#0}",
                 false
             ),
-            "  0  async fn      simple_await::work::{async_fn_env#0}
+            "  0  async fn      simple_await::work
      suspends:
-       Suspend0  src/bin/simple-await.rs:33  11 locals  simple_await::ready_value::{async_fn_env#0}
+       Suspend0  src/bin/simple-await.rs:33  11 locals  async fn simple_await::ready_value
      ▸ Suspend1  src/bin/simple-await.rs:35  10 locals
        └─* 1  future        tokio::sync::oneshot::Receiver<u32>
 "
@@ -1706,26 +1702,26 @@ mod trace_render_tests {
         );
         assert_eq!(
             rendered,
-            "  0  async block   futurelock::main::{async_block#0}::{async_block_env#0}
+            "  0  async block   futurelock::main::{async_block#0}
      suspends:
-       Suspend0  src/bin/futurelock.rs:25  1 local  futurelock::start_background_task::{async_fn_env#0}
+       Suspend0  src/bin/futurelock.rs:25  1 local  async fn futurelock::start_background_task
      ▸ Suspend1  src/bin/futurelock.rs:28  1 local
-       └─  1  async fn      futurelock::do_stuff::{async_fn_env#0}
+       └─  1  async fn      futurelock::do_stuff
           suspends:
-            Suspend0  src/bin/futurelock.rs:65  4 locals  core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}>
+            Suspend0  src/bin/futurelock.rs:65  4 locals  future core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}>
           ▸ Suspend1  src/bin/futurelock.rs:70  3 locals
-            └─  2  async fn      futurelock::do_async_thing::{async_fn_env#0}
+            └─  2  async fn      futurelock::do_async_thing
                suspends:
                ▸ Suspend0  src/bin/futurelock.rs:78  2 locals
-                 └─  3  async fn      tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()>
+                 └─  3  async fn      tokio::sync::mutex::{impl#10}::lock<()>
                     suspends:
                     ▸ Suspend0  tokio-1.52.4/src/sync/mutex.rs:455
-                      └─  4  async block   tokio::sync::mutex::{impl#10}::lock::{async_fn#0}::{async_block_env#0}<()>
+                      └─  4  async block   tokio::sync::mutex::{impl#10}::lock::{async_fn#0}<()>
                          suspends:
                          ▸ Suspend0  tokio-1.52.4/src/sync/mutex.rs:436
-                           └─  5  async fn      tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()>
+                           └─  5  async fn      tokio::sync::mutex::{impl#10}::acquire<()>
                               suspends:
-                                Suspend0  tokio-1.52.4/src/sync/mutex.rs:656  1 local  tokio::trace::async_trace_leaf::{async_fn_env#0}
+                                Suspend0  tokio-1.52.4/src/sync/mutex.rs:656  1 local  async fn tokio::trace::async_trace_leaf
                               ▸ Suspend1  tokio-1.52.4/src/sync/mutex.rs:658
                                 └─* 6  future        tokio::sync::batch_semaphore::Acquire
                                    waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
@@ -1740,14 +1736,14 @@ mod trace_render_tests {
     fn test_states_after_the_active_one_close_over_the_subtree() {
         assert_eq!(
             trace("dyn-future", "dyn_future::driver::{async_fn_env#0}", false),
-            "  0  async fn      dyn_future::driver::{async_fn_env#0}
+            "  0  async fn      dyn_future::driver
      suspends:
      ▸ Suspend0  src/bin/dyn-future.rs:36  1 local
-       └─  1  async fn      dyn_future::boxed_leaf::{async_fn_env#0} [dyn]
+       └─  1  async fn      dyn_future::boxed_leaf [dyn]
           suspends:
           ▸ Suspend0  src/bin/dyn-future.rs:12
             └─* 2  future        tokio::sync::oneshot::Receiver<u32>
-       Suspend1  src/bin/dyn-future.rs:37  2 locals  tokio::task::join_set::{impl#1}::join_next::{async_fn_env#0}<u32>
+       Suspend1  src/bin/dyn-future.rs:37  2 locals  async fn tokio::task::join_set::{impl#1}::join_next<u32>
 "
         );
     }

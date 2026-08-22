@@ -10,7 +10,8 @@
 
 use anyhow::{Result, bail};
 use hansei_bundle::{
-    BundleType, BundleTypeId, BundleView, DiscrValue, TypeDef, VariantDef, variant_name,
+    BundleType, BundleTypeId, BundleView, DiscrValue, TypeDef, VariantDef, names, symbols,
+    variant_name,
 };
 
 use std::io;
@@ -54,6 +55,11 @@ impl Nesting {
 /// One name can have several definitions: identical instantiations
 /// emitted by different compilation units are recorded per id, and a
 /// name that resolves to more than one layout is worth seeing in full.
+///
+/// The listings print names display-folded, and what they print must be
+/// accepted back: the raw name is tried first, and a miss falls back to
+/// comparing both sides folded — shedding the kind word a listing may
+/// have joined — so a pasted line still names its type.
 pub fn describe(
     view: &BundleView<'_>,
     name: &str,
@@ -61,11 +67,19 @@ pub fn describe(
     depth: usize,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let matches: Vec<BundleType<'_>> = view
+    let mut matches: Vec<BundleType<'_>> = view
         .named_types()
         .filter(|(n, _)| *n == name)
         .map(|(_, ty)| ty)
         .collect();
+    if matches.is_empty() {
+        let want = names::fold_type_name(names::strip_kind_prefix(name));
+        matches = view
+            .named_types()
+            .filter(|(n, _)| symbols::rust_type_names_equal(&names::fold_type_name(n), &want))
+            .map(|(_, ty)| ty)
+            .collect();
+    }
     if matches.is_empty() {
         bail!("the bundle records no type named {name}; try `find-types {name}`");
     }
@@ -468,6 +482,7 @@ mod tests {
             "Pack",
             "nodes",
             "opts",
+            "app::work::{async_fn_env#0}",
         ] {
             names.insert(name, strings.intern(name));
         }
@@ -592,6 +607,13 @@ mod tests {
                 size: 48,
                 members: vec![member("nodes", 13, 0), member("opts", 9, 32)],
             },
+            // 15: a coroutine env, recorded under its raw name — what
+            // the folded-lookup fallback resolves.
+            TypeDef::Struct {
+                name: n("app::work::{async_fn_env#0}"),
+                size: 8,
+                members: vec![member("value", 0, 0)],
+            },
         ];
 
         let strings = strings.finish();
@@ -678,6 +700,29 @@ mod tests {
         let out = found("");
         assert!(out.contains("Wrapper"), "{out}");
         assert!(out.contains("OptEnum"), "{out}");
+    }
+
+    /// The listings print folded names, so a folded name — with or
+    /// without the kind word a listing joined — looks its type back up,
+    /// and the raw spelling still does.
+    #[test]
+    fn test_describe_accepts_the_folded_spelling() {
+        for name in [
+            "app::work::{async_fn_env#0}",
+            "app::work",
+            "async fn app::work",
+        ] {
+            let out = described(name, false, 0);
+            assert!(
+                out.contains("struct app::work::{async_fn_env#0}"),
+                "{name:?}: {out}"
+            );
+        }
+        // The fold is a lookup aid, not a wildcard: a name no type
+        // folds to still misses.
+        let bundle = bundle();
+        let view = BundleView::new(&bundle);
+        assert!(describe(&view, "app::other", false, 0, &mut Vec::new()).is_err());
     }
 
     #[test]

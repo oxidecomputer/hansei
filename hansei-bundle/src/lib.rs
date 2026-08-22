@@ -4,6 +4,7 @@
 //! between the two.
 
 mod io;
+pub mod names;
 mod schema;
 mod shape;
 mod strings;

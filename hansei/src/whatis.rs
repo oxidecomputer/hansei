@@ -5,6 +5,7 @@ use crate::tasks::{future_name, task_id, task_label};
 
 use anyhow::Result;
 use hansei_bundle::BundleView;
+use hansei_bundle::names;
 use hansei_runtime::tokio::{bundle, census};
 
 use std::io;
@@ -118,10 +119,10 @@ fn report_whatis(
         let set = &census.sets[set_index];
         let child = &set.children[child_index];
         separate(&mut blocks, out)?;
-        let future = child
-            .future
-            .as_deref()
-            .unwrap_or("<completed, not yet reaped>");
+        let future = match &child.future {
+            Some(future) => names::display_future_name(future),
+            None => "<completed, not yet reaped>".to_string(),
+        };
         writeln!(out, "Future {:#x}: {future}", child.node)?;
         writeln!(
             out,
@@ -136,7 +137,7 @@ fn report_whatis(
         writeln!(
             out,
             "    Child of: {} at {:#x} (frame {}, `{}`{})",
-            set.ty,
+            names::fold_type_name(&set.ty),
             set.addr,
             set.frame,
             set.local,
@@ -167,7 +168,12 @@ fn report_whatis(
     held.sort_by_key(|&(size, h)| (std::cmp::Reverse(size), h.addr));
     for (_, h) in held {
         separate(&mut blocks, out)?;
-        writeln!(out, "Future {:#x}: {}", h.addr, h.future)?;
+        writeln!(
+            out,
+            "Future {:#x}: {}",
+            h.addr,
+            names::display_future_name(&h.future)
+        )?;
         writeln!(out, "    At: offset {:#x} in the future", addr - h.addr)?;
         if let Some(state) = &h.state {
             writeln!(out, "    State: {state}")?;
@@ -196,7 +202,7 @@ fn report_whatis(
             0 => String::new(),
             n => format!(", {n} completed and not yet reaped"),
         };
-        writeln!(out, "Set {addr:#x}: {}", set.ty)?;
+        writeln!(out, "Set {addr:#x}: {}", names::fold_type_name(&set.ty))?;
         writeln!(out, "    Children: {live} in flight{reaped}")?;
         writeln!(
             out,
@@ -326,7 +332,7 @@ mod whatis_tests {
 
             let shown = report(t, header);
             assert!(
-                shown.contains("Task 3: sleep_join::sleeper::{async_fn_env#0}\n"),
+                shown.contains("Task 3: async fn sleep_join::sleeper\n"),
                 "{shown}"
             );
             assert!(
@@ -383,7 +389,11 @@ mod whatis_tests {
             for offset in [0, 0x10] {
                 let shown = report(t, future1.addr + offset);
                 assert!(
-                    shown.contains(&format!("Future {:#x}: {}", future1.addr, future1.future)),
+                    shown.contains(&format!(
+                        "Future {:#x}: {}",
+                        future1.addr,
+                        hansei_bundle::names::display_future_name(&future1.future)
+                    )),
                     "{shown}"
                 );
                 assert!(

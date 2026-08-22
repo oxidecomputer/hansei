@@ -448,8 +448,10 @@ pub enum Command {
         /// Render matching types as `<elided>`; repeat the flag to add
         /// more. `*` matches any run of characters (quote the pattern
         /// from the shell), a name without a `*` covers every
-        /// instantiation, and a matched type stays elided under
-        /// --no-elide.
+        /// instantiation, a matched type stays elided under --no-elide,
+        /// and a name may be spelled the way the listings display it
+        /// (folded, kind word and all) or the way the debug info
+        /// records it.
         #[arg(long, short = 'e', value_name = "TYPE")]
         elide: Vec<String>,
     },
@@ -458,7 +460,8 @@ pub enum Command {
     /// fully-qualified name: members and their offsets, or an enum's
     /// variants and the discriminant that selects them.
     Type {
-        /// The fully-qualified name, as `find-types` lists it.
+        /// The fully-qualified name, as `find-types` lists it — or as
+        /// another listing displays it, folded and with the kind word.
         name: String,
 
         /// Follow what the layout names: open every type it reaches —

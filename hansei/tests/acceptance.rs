@@ -638,7 +638,8 @@ fn mask(out: &str) -> String {
     let deadlines =
         regex::Regex::new(r"deadline -?\d+\.\d{3}s( on the target's monotonic clock)?").unwrap();
     let tokio_sites = regex::Regex::new(r"tokio-\d+\.\d+\.\d+(/[^ :]+):\d+").unwrap();
-    let trace_leaf = regex::Regex::new(r"tokio::trace::async_trace_leaf::\S+").unwrap();
+    let trace_leaf =
+        regex::Regex::new(r"(async fn |future )?tokio::trace::async_trace_leaf(::\S+)?").unwrap();
     let masked = deadlines.replace_all(out, "deadline TS");
     let masked = tokio_sites.replace_all(&masked, "tokio$1:LINE");
     trace_leaf
@@ -1043,7 +1044,7 @@ fn test_simple_await_acceptance() {
     with_core("simple-await", |core| {
         let rows = list_tasks(&bundle, core);
         assert_eq!(rows.len(), 1, "{rows:#?}");
-        let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
+        let task = task_with_future(&rows, "async fn simple_await::work");
         assert_eq!(task.state, "idle");
         assert_eq!(task.spawned, spawned("src/bin/simple-await.rs:68:21"));
         assert_eq!(task.defined, "src/bin/simple-await.rs:16");
@@ -1120,7 +1121,7 @@ fn test_local_values_come_back_from_the_target() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
         let rows = list_tasks(&bundle, core);
-        let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
+        let task = task_with_future(&rows, "async fn simple_await::work");
         let verbose = trace(&bundle, core, &task.id, true);
 
         // Scalars, including one the task computed after its first
@@ -1154,7 +1155,7 @@ fn test_ugly_locals_acceptance() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
         let rows = list_tasks(&bundle, core);
-        let task = task_with_future(&rows, "simple_await::work::{async_fn_env#0}");
+        let task = task_with_future(&rows, "async fn simple_await::work");
         // Normal verbose rendering: each local reads as its decoded value,
         // through its own formatter.
         let pretty = trace_opts(&bundle, core, &task.id, true, false);
@@ -1196,7 +1197,7 @@ fn test_nested_await_acceptance() {
     with_core("nested-await", |core| {
         let rows = list_tasks(&bundle, core);
         assert_eq!(rows.len(), 1, "{rows:#?}");
-        let task = task_with_future(&rows, "nested_await::outer::{async_fn_env#0}");
+        let task = task_with_future(&rows, "async fn nested_await::outer");
         assert_eq!(task.state, "idle");
         assert_eq!(task.spawned, spawned("src/bin/nested-await.rs:33:21"));
         assert_eq!(task.defined, "src/bin/nested-await.rs:16");
@@ -1221,7 +1222,7 @@ fn test_dyn_future_acceptance() {
         let rows = list_tasks(&bundle, core);
         assert_eq!(rows.len(), 2, "{rows:#?}");
 
-        let driver = task_with_future(&rows, "dyn_future::driver::{async_fn_env#0}");
+        let driver = task_with_future(&rows, "async fn dyn_future::driver");
         assert_eq!(driver.state, "idle");
         assert_eq!(driver.spawned, spawned("src/bin/dyn-future.rs:53:21"));
         assert_eq!(driver.defined, "src/bin/dyn-future.rs:24");
@@ -1232,7 +1233,7 @@ fn test_dyn_future_acceptance() {
             &Symbols::new().task(&driver.id, "driver").apply(&out),
         );
 
-        let member = task_with_future(&rows, "dyn_future::set_member::{async_fn_env#0}");
+        let member = task_with_future(&rows, "async fn dyn_future::set_member");
         assert_eq!(member.state, "idle");
         assert_eq!(member.spawned, spawned("src/bin/dyn-future.rs:28:9"));
         assert_eq!(member.defined, "src/bin/dyn-future.rs:15");
@@ -1257,10 +1258,7 @@ fn test_futurelock_acceptance() {
         // The background task completed and left OwnedTasks; only the
         // deadlocked main task remains.
         assert_eq!(rows.len(), 1, "{rows:#?}");
-        let task = task_with_future(
-            &rows,
-            "futurelock::main::{async_block#0}::{async_block_env#0}",
-        );
+        let task = task_with_future(&rows, "async block futurelock::main::{async_block#0}");
         assert_eq!(task.state, "idle");
         assert_eq!(task.spawned, spawned("src/bin/futurelock.rs:16:17"));
         assert_eq!(task.defined, "src/bin/futurelock.rs:16");
@@ -1312,7 +1310,7 @@ fn test_many_tasks_acceptance() {
         assert_eq!(rows.len(), 32, "{rows:#?}");
         for row in &rows {
             assert_eq!(row.state, "idle", "{row:#?}");
-            assert_eq!(row.future, "many_tasks::park_task::{async_fn_env#0}");
+            assert_eq!(row.future, "async fn many_tasks::park_task");
             assert_eq!(row.spawned, spawned("src/bin/many-tasks.rs:27:13"));
             assert_eq!(row.defined, "src/bin/many-tasks.rs:9");
         }
@@ -1343,8 +1341,8 @@ fn test_sleep_join_acceptance() {
     with_core("sleep-join", |core| {
         let rows = list_tasks(&bundle, core);
         assert_eq!(rows.len(), 2, "{rows:#?}");
-        let sleeper = task_with_future(&rows, "sleep_join::sleeper::{async_fn_env#0}");
-        let joiner = task_with_future(&rows, "sleep_join::joiner::{async_fn_env#0}");
+        let sleeper = task_with_future(&rows, "async fn sleep_join::sleeper");
+        let joiner = task_with_future(&rows, "async fn sleep_join::joiner");
         assert_eq!(sleeper.state, "idle");
         assert_eq!(joiner.state, "idle");
 
@@ -1378,8 +1376,8 @@ fn test_ct_runtime_acceptance() {
     with_core("ct-runtime", |core| {
         let rows = list_tasks(&bundle, core);
         assert_eq!(rows.len(), 2, "{rows:#?}");
-        let sleeper = task_with_future(&rows, "ct_runtime::sleeper::{async_fn_env#0}");
-        let acquirer = task_with_future(&rows, "ct_runtime::acquirer::{async_fn_env#0}");
+        let sleeper = task_with_future(&rows, "async fn ct_runtime::sleeper");
+        let acquirer = task_with_future(&rows, "async fn ct_runtime::acquirer");
         assert_eq!(sleeper.state, "idle");
         assert_eq!(acquirer.state, "idle");
 
@@ -1437,9 +1435,9 @@ fn test_local_set_acceptance() {
     with_core("local-set", |core| {
         let rows = list_tasks(&bundle, core);
         assert_eq!(rows.len(), 3, "{rows:#?}");
-        let joiner = task_with_future(&rows, "local_set::joiner::{async_fn_env#0}");
-        let sleeper = task_with_future(&rows, "local_set::local_sleeper::{async_fn_env#0}");
-        let acquirer = task_with_future(&rows, "local_set::local_acquirer::{async_fn_env#0}");
+        let joiner = task_with_future(&rows, "async fn local_set::joiner");
+        let sleeper = task_with_future(&rows, "async fn local_set::local_sleeper");
+        let acquirer = task_with_future(&rows, "async fn local_set::local_acquirer");
 
         // Groups: the scheduler task carries the runtime's tag, the two
         // local tasks the set's, with the owner LWP joined on.
@@ -1491,9 +1489,9 @@ fn test_local_set_timer_acceptance() {
     with_core("local-set-timer", |core| {
         let rows = list_tasks(&bundle, core);
         assert_eq!(rows.len(), 3, "{rows:#?}");
-        let spawned = task_with_future(&rows, "local_set_timer::sleeper::{async_fn_env#0}");
-        let sleeper = task_with_future(&rows, "local_set_timer::local_sleeper::{async_fn_env#0}");
-        let acquirer = task_with_future(&rows, "local_set_timer::local_acquirer::{async_fn_env#0}");
+        let spawned = task_with_future(&rows, "async fn local_set_timer::sleeper");
+        let sleeper = task_with_future(&rows, "async fn local_set_timer::local_sleeper");
+        let acquirer = task_with_future(&rows, "async fn local_set_timer::local_acquirer");
 
         // The spawned task keeps its runtime's tag — its own entry is in
         // the same wheel, and being listed is what keeps it out of the
@@ -1536,10 +1534,9 @@ fn test_local_set_io_acceptance() {
     with_core("local-set-io", |core| {
         let rows = list_tasks(&bundle, core);
         assert_eq!(rows.len(), 4, "{rows:#?}");
-        let spawned = task_with_future(&rows, "local_set_io::reader::{async_fn_env#0}");
-        let members = ["local_reader", "local_watcher", "local_writer"].map(|name| {
-            task_with_future(&rows, &format!("local_set_io::{name}::{{async_fn_env#0}}"))
-        });
+        let spawned = task_with_future(&rows, "async fn local_set_io::reader");
+        let members = ["local_reader", "local_watcher", "local_writer"]
+            .map(|name| task_with_future(&rows, &format!("async fn local_set_io::{name}")));
 
         // The spawned task keeps its runtime's tag — its own waker is on
         // a registration the harvest walks, and being listed is what
@@ -1583,10 +1580,10 @@ fn test_foreign_runtime_acceptance() {
     with_core("foreign-runtime", |core| {
         let rows = list_tasks(&bundle, core);
         assert_eq!(rows.len(), 4, "{rows:#?}");
-        let joiner = task_with_future(&rows, "foreign_runtime::joiner::{async_fn_env#0}");
-        let joined = task_with_future(&rows, "foreign_runtime::joined::{async_fn_env#0}");
-        let detached = task_with_future(&rows, "foreign_runtime::detached::{async_fn_env#0}");
-        let sleeper = task_with_future(&rows, "foreign_runtime::local_sleeper::{async_fn_env#0}");
+        let joiner = task_with_future(&rows, "async fn foreign_runtime::joiner");
+        let joined = task_with_future(&rows, "async fn foreign_runtime::joined");
+        let detached = task_with_future(&rows, "async fn foreign_runtime::detached");
+        let sleeper = task_with_future(&rows, "async fn foreign_runtime::local_sleeper");
 
         let rt_tag = regex::Regex::new(r"^runtime 0 @0x[0-9a-f]+ \(current_thread\)$").unwrap();
         assert!(rt_tag.is_match(&joiner.owner), "{rows:#?}");
@@ -1640,8 +1637,8 @@ fn test_whatis_acceptance() {
     let bundle = fixtures().bundle("sleep-join");
     with_core("sleep-join", |core| {
         let rows = list_tasks(&bundle, core);
-        let sleeper = task_with_future(&rows, "sleep_join::sleeper::{async_fn_env#0}");
-        let joiner = task_with_future(&rows, "sleep_join::joiner::{async_fn_env#0}");
+        let sleeper = task_with_future(&rows, "async fn sleep_join::sleeper");
+        let joiner = task_with_future(&rows, "async fn sleep_join::joiner");
 
         let verbose = trace(&bundle, core, &joiner.id, true);
         let labelled = regex::Regex::new(r"(0x[0-9a-f]+) \(task (\d+)\)")
@@ -1654,7 +1651,7 @@ fn test_whatis_acceptance() {
         let out = hansei_ok(&bundle, core, &format!("whatis {header}"));
         assert!(
             out.contains(&format!(
-                "Task {}: sleep_join::sleeper::{{async_fn_env#0}}\n",
+                "Task {}: async fn sleep_join::sleeper\n",
                 sleeper.id
             )),
             "{out}"
@@ -1703,7 +1700,7 @@ fn test_futures_acceptance() {
     let bundle = fixtures().bundle("unordered");
     with_core("unordered", |core| {
         let rows = list_tasks(&bundle, core);
-        let driver = task_with_future(&rows, "unordered::driver::{async_fn_env#0}");
+        let driver = task_with_future(&rows, "async fn unordered::driver");
 
         // Five held futures, and one set holding three children — the
         // driver's own finds, counted apart from what the census went
@@ -1733,7 +1730,7 @@ fn test_futures_acceptance() {
         assert!(
             futures.contains(
                 "futures_util::stream::futures_unordered::FuturesUnordered\
-                 <unordered::set_member::{async_fn_env#0}> at 0x"
+                 <unordered::set_member> at 0x"
             ),
             "{futures}"
         );
@@ -1742,10 +1739,9 @@ fn test_futures_acceptance() {
         assert!(futures.contains("`): 3 children in flight"), "{futures}");
         // Set-child rows sit one indent step deeper than the set's own
         // bulleted row.
-        let child = regex::Regex::new(
-            r"\n            (0x[0-9a-f]+)  unordered::set_member::\{async_fn_env#0\}",
-        )
-        .unwrap();
+        let child =
+            regex::Regex::new(r"\n            (0x[0-9a-f]+)  async fn unordered::set_member")
+                .unwrap();
         let nodes: Vec<String> = child
             .captures_iter(&futures)
             .map(|c| c[1].to_string())
@@ -1764,7 +1760,7 @@ fn test_futures_acceptance() {
             );
         }
         assert!(
-            futures.contains("unordered::set_member::{async_fn_env#0}  Unresumed"),
+            futures.contains("async fn unordered::set_member  Unresumed"),
             "{futures}"
         );
 
@@ -1773,15 +1769,14 @@ fn test_futures_acceptance() {
         // one indent step deeper than the child, and one of them holds
         // a whole set of its own, whose children are deeper again. The
         // tree is the census's attribution, drawn.
-        let held_row =
-            r"held \(frame 0, `held`\): 0x[0-9a-f]+  unordered::leaf::\{async_fn_env#0\}";
+        let held_row = r"held \(frame 0, `held`\): 0x[0-9a-f]+  async fn unordered::leaf";
         let under_child =
             regex::Regex::new(&format!(r"\n                {held_row}  Unresumed")).unwrap();
         assert_eq!(under_child.find_iter(&futures).count(), 3, "{futures}");
         assert!(
             futures.contains(
                 "\n                - futures_util::stream::futures_unordered::FuturesUnordered\
-                 <unordered::leaf::{async_fn_env#0}> at 0x"
+                 <unordered::leaf> at 0x"
             ),
             "{futures}"
         );
@@ -1790,7 +1785,7 @@ fn test_futures_acceptance() {
             "{futures}"
         );
         let under_set = regex::Regex::new(
-            r"\n                    0x[0-9a-f]+  unordered::leaf::\{async_fn_env#0\}  Unresumed",
+            r"\n                    0x[0-9a-f]+  async fn unordered::leaf  Unresumed",
         )
         .unwrap();
         assert_eq!(under_set.find_iter(&futures).count(), 2, "{futures}");
@@ -1799,7 +1794,7 @@ fn test_futures_acceptance() {
         // holds carries one, so its row sits one step under the row
         // that holds it, inside the `Held futures` block. No `held`
         // mark there — the heading is already the word.
-        let carried_row = r"\(frame 0, `inner`\): 0x[0-9a-f]+  unordered::leaf::\{async_fn_env#0\}";
+        let carried_row = r"\(frame 0, `inner`\): 0x[0-9a-f]+  async fn unordered::leaf";
         let under_held =
             regex::Regex::new(&format!(r"\n            {carried_row}  Unresumed")).unwrap();
         assert_eq!(under_held.find_iter(&futures).count(), 1, "{futures}");
@@ -1845,7 +1840,7 @@ fn test_futures_acceptance() {
         let out = hansei_ok(&bundle, core, &format!("whatis {}", nodes[0]));
         assert!(
             out.contains(&format!(
-                "Future {}: unordered::set_member::{{async_fn_env#0}}",
+                "Future {}: async fn unordered::set_member",
                 nodes[0]
             )),
             "{out}"
@@ -1887,7 +1882,7 @@ fn test_futures_acceptance() {
         let out = hansei_ok(&bundle, core, &format!("trace {}", nodes[0]));
         assert!(
             out.contains(&format!(
-                "Future {}: unordered::set_member::{{async_fn_env#0}}",
+                "Future {}: async fn unordered::set_member",
                 nodes[0]
             )),
             "{out}"
@@ -1901,7 +1896,7 @@ fn test_futures_acceptance() {
             "{out}"
         );
         assert!(
-            out.contains("0  async fn      unordered::set_member::{async_fn_env#0}"),
+            out.contains("0  async fn      unordered::set_member"),
             "{out}"
         );
 
@@ -1914,7 +1909,7 @@ fn test_futures_acceptance() {
         let out = hansei_ok(&bundle, core, &format!("trace {held}"));
         assert!(
             out.contains(&format!(
-                "Held by: task {} — unordered::driver::{{async_fn_env#0}} (frame 0, `held`)",
+                "Held by: task {} — async fn unordered::driver (frame 0, `held`)",
                 driver.id
             )),
             "{out}"
@@ -1926,22 +1921,17 @@ fn test_futures_acceptance() {
         // than stopping at whichever it found first.
         let out = hansei_ok(&bundle, core, &format!("whatis {held}"));
         let task_block = out
-            .find(&format!(
-                "Task {}: unordered::driver::{{async_fn_env#0}}",
-                driver.id
-            ))
+            .find(&format!("Task {}: async fn unordered::driver", driver.id))
             .unwrap_or_else(|| panic!("the task holding the future is not reported:\n{out}"));
         assert!(out.contains("in the task's allocation (header 0x"), "{out}");
         assert!(out.contains("    At: offset 0x0 in the future"), "{out}");
         let future_block = out
-            .find(&format!(
-                "Future {held}: unordered::set_member::{{async_fn_env#0}}"
-            ))
+            .find(&format!("Future {held}: async fn unordered::set_member"))
             .unwrap_or_else(|| panic!("the held future itself is not reported:\n{out}"));
         assert!(task_block < future_block, "{out}");
         assert!(
             out.contains(&format!(
-                "    Held by: task {} — unordered::driver::{{async_fn_env#0}} (frame 0, `held`)",
+                "    Held by: task {} — async fn unordered::driver (frame 0, `held`)",
                 driver.id
             )),
             "{out}"
@@ -2018,7 +2008,7 @@ fn test_join_set_acceptance() {
     let bundle = fixtures().bundle("joinset");
     with_core("joinset", |core| {
         let rows = list_tasks(&bundle, core);
-        let driver = task_with_future(&rows, "joinset::driver::{async_fn_env#0}");
+        let driver = task_with_future(&rows, "async fn joinset::driver");
 
         // Two sets of three members each — tasks, counted apart from
         // the futures a set of futures would hold — and nothing held in
@@ -2044,8 +2034,7 @@ fn test_join_set_acceptance() {
         // set reads as an edge into the listing rather than as a
         // population beside it.
         let member =
-            regex::Regex::new(r"\n            task (\d+)  joinset::member::\{async_fn_env#0\}")
-                .unwrap();
+            regex::Regex::new(r"\n            task (\d+)  async fn joinset::member").unwrap();
         let ids: Vec<String> = member
             .captures_iter(&futures)
             .map(|c| c[1].to_string())
@@ -2054,10 +2043,7 @@ fn test_join_set_acceptance() {
         for id in &ids {
             assert!(rows.iter().any(|row| &row.id == id), "{rows:?}");
             let traced = hansei_ok(&bundle, core, &format!("trace {id}"));
-            assert!(
-                traced.contains("joinset::member::{async_fn_env#0}"),
-                "{traced}"
-            );
+            assert!(traced.contains("async fn joinset::member"), "{traced}");
         }
 
         // Except the member of the unjoined set that has run to
@@ -2118,10 +2104,7 @@ fn test_futurelock_graph() {
     let bundle = fixtures().bundle("futurelock");
     with_core("futurelock", |core| {
         let rows = list_tasks(&bundle, core);
-        let task = task_with_future(
-            &rows,
-            "futurelock::main::{async_block#0}::{async_block_env#0}",
-        );
+        let task = task_with_future(&rows, "async block futurelock::main::{async_block#0}");
         let symbols = Symbols::new().task(&task.id, "blocked");
         golden("futurelock-graph", &symbols.apply(&graph(&bundle, core)));
     });
@@ -2140,8 +2123,8 @@ fn test_sleep_join_graph() {
     let bundle = fixtures().bundle("sleep-join");
     with_core("sleep-join", |core| {
         let rows = list_tasks(&bundle, core);
-        let sleeper = task_with_future(&rows, "sleep_join::sleeper::{async_fn_env#0}");
-        let joiner = task_with_future(&rows, "sleep_join::joiner::{async_fn_env#0}");
+        let sleeper = task_with_future(&rows, "async fn sleep_join::sleeper");
+        let joiner = task_with_future(&rows, "async fn sleep_join::joiner");
 
         let symbols = Symbols::new()
             .task(&joiner.id, "joiner")
@@ -2301,14 +2284,14 @@ fn test_census_counts_the_target() {
         assert!(out.contains("    Lifecycle: 2 idle\n"), "{out}");
         assert!(
             out.contains(
-                "        1  sleep_join::sleeper::{async_fn_env#0}\n           \
+                "        1  async fn sleep_join::sleeper\n           \
                  └─ 1  a timer\n"
             ),
             "{out}"
         );
         assert!(
             out.contains(
-                "        1  sleep_join::joiner::{async_fn_env#0}\n           \
+                "        1  async fn sleep_join::joiner\n           \
                  └─ 1  another task (JoinHandle)\n"
             ),
             "{out}"
@@ -2364,7 +2347,7 @@ fn test_census_prints_only_the_sections_named() {
         assert!(!tasks.contains("Futures: "), "{tasks}");
         assert!(
             tasks.contains(
-                "        1  sleep_join::sleeper::{async_fn_env#0}\n           \
+                "        1  async fn sleep_join::sleeper\n           \
                  └─ 1  a timer\n"
             ),
             "{tasks}"
@@ -2396,7 +2379,7 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         // own two children, and the one carried by the future the
         // driver holds for it.
         assert!(
-            out.contains("        8  unordered::leaf::{async_fn_env#0}\n"),
+            out.contains("        8  async fn unordered::leaf\n"),
             "{out}"
         );
         // What all five of them are — the set's children and the two
@@ -2410,8 +2393,8 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         // what leaves this branch at three of the five.
         assert!(
             out.contains(
-                "        5  unordered::set_member::{async_fn_env#0}\n           \
-                 ├─ 3  tokio::sync::notify::Notified\n"
+                "        5  async fn unordered::set_member\n           \
+                 ├─ 3  future tokio::sync::notify::Notified\n"
             ),
             "{out}"
         );
