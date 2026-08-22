@@ -1843,4 +1843,425 @@ mod tests {
         );
         assert_eq!(spell(&[Named("head"), Variant("Some")]), "head.<Some>");
     }
+
+    use crate::raw_types::{
+        NsId, RawArray, RawBase, RawEnum, RawMember, RawPointer, RawStruct, RawUnion, VariantShape,
+    };
+    use gimli::{DebugInfoOffset, UnitSectionOffset};
+
+    fn type_id(offset: usize) -> TypeId {
+        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    fn ns(reader: &mut DwReader<'static>, path: &'static str) -> NsId {
+        let mut ns = None;
+        for seg in path.split("::") {
+            let name = reader.strings.intern(seg);
+            ns = Some(reader.namespaces.insert(ns, name));
+        }
+        ns.unwrap()
+    }
+
+    fn insert_base(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        name: &'static str,
+        encoding: Encoding,
+        size: u64,
+    ) {
+        let name = Some(reader.strings.intern(name));
+        reader.types.insert(
+            id,
+            RawType::Base(RawBase {
+                name,
+                namespace: None,
+                encoding,
+                size,
+                alignment: None,
+            }),
+        );
+    }
+
+    fn insert_struct(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        namespace: Option<NsId>,
+        name: &'static str,
+        members: &[(&'static str, TypeId, u64)],
+    ) {
+        let members: Box<[RawMember<crate::StrId>]> = members
+            .iter()
+            .map(|&(name, type_id, offset)| RawMember {
+                name: Some(reader.strings.intern(name)),
+                offset,
+                type_id,
+                source_loc: None,
+            })
+            .collect();
+        let name = Some(reader.strings.intern(name));
+        reader.types.insert(
+            id,
+            RawType::Struct(RawStruct {
+                name,
+                namespace,
+                size: 8,
+                members,
+                template_params: Box::new([]),
+                source_loc: None,
+            }),
+        );
+    }
+
+    /// A reader with a `Ctx { value: u64 }` root, and roots naming it as
+    /// the context infra type.
+    fn context_fixture() -> (DwReader<'static>, TypeId) {
+        let mut reader = DwReader::default();
+        let word = type_id(1);
+        let ctx = type_id(2);
+        insert_base(&mut reader, word, "u64", Encoding::Unsigned, 8);
+        insert_struct(&mut reader, ctx, None, "Ctx", &[("value", word, 0)]);
+        (reader, ctx)
+    }
+
+    fn context_roots(ctx: TypeId) -> WalkRoots<'static> {
+        WalkRoots {
+            context: Some(ctx),
+            header: None,
+            trailer: None,
+            vtable: None,
+            location: None,
+            mt_handle: None,
+            ct_handle: None,
+            cells: &[],
+            tokio_unstable: None,
+        }
+    }
+
+    fn value_spelling() -> Vec<Reach<'static>> {
+        vec![reach![Named("value")]]
+    }
+
+    fn missing_spelling() -> Vec<Reach<'static>> {
+        vec![reach![Named("nope")]]
+    }
+
+    fn missing_pair_spelling() -> Vec<Reach<'static>> {
+        vec![reach![Named("nope")], reach![Named("still_nope")]]
+    }
+
+    #[test]
+    fn test_binding_a_versioned_row_flags_versioned_dispatch() {
+        static VERSIONED: [(Family, Spellings); 1] = [(Family::V1_47, value_spelling)];
+        let (reader, ctx) = context_fixture();
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(ctx);
+        assert!(!em.versioned_dispatch);
+
+        let versioned = WalkDecl {
+            role: WalkRole::ALL[0],
+            root: WalkRoot::Infra(InfraRoot::Context),
+            spellings: Row::Versioned(&VERSIONED),
+            terminal: Terminal::Word,
+            needs: None,
+        };
+        let (binding, _, trace) =
+            bind_decl(&mut em, &context_roots(ctx), &BTreeMap::new(), &versioned);
+        assert!(
+            matches!(binding.outcome, WalkOutcome::Bound { .. }),
+            "{trace:?} {:?}",
+            binding.outcome
+        );
+        assert!(em.versioned_dispatch);
+
+        // An unversioned row leaves the flag alone.
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(ctx);
+        let plain = decl(
+            WalkRole::ALL[0],
+            WalkRoot::Infra(InfraRoot::Context),
+            Terminal::Word,
+            value_spelling,
+        );
+        let (binding, _, _) = bind_decl(&mut em, &context_roots(ctx), &BTreeMap::new(), &plain);
+        assert!(matches!(binding.outcome, WalkOutcome::Bound { .. }));
+        assert!(!em.versioned_dispatch);
+    }
+
+    #[test]
+    fn test_misses_name_the_spelling_only_when_there_are_alternatives() {
+        let (reader, ctx) = context_fixture();
+
+        let one = decl(
+            WalkRole::ALL[0],
+            WalkRoot::Infra(InfraRoot::Context),
+            Terminal::Word,
+            missing_spelling,
+        );
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(ctx);
+        let (binding, _, _) = bind_decl(&mut em, &context_roots(ctx), &BTreeMap::new(), &one);
+        let WalkOutcome::Broken { errors } = binding.outcome else {
+            panic!("a missing spelling breaks the role");
+        };
+        assert!(!errors[0].contains('['), "{errors:?}");
+
+        let two = decl(
+            WalkRole::ALL[0],
+            WalkRoot::Infra(InfraRoot::Context),
+            Terminal::Word,
+            missing_pair_spelling,
+        );
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(ctx);
+        let (binding, _, _) = bind_decl(&mut em, &context_roots(ctx), &BTreeMap::new(), &two);
+        let WalkOutcome::Broken { errors } = binding.outcome else {
+            panic!("missing spellings break the role");
+        };
+        assert!(
+            errors[0].contains("[nope]") && errors[0].contains("[still_nope]"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_a_binding_whose_terminal_fails_is_broken() {
+        let (reader, ctx) = context_fixture();
+        let decl = decl(
+            WalkRole::ALL[0],
+            WalkRoot::Infra(InfraRoot::Context),
+            Terminal::Pointer,
+            value_spelling,
+        );
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(ctx);
+        let (binding, _, _) = bind_decl(&mut em, &context_roots(ctx), &BTreeMap::new(), &decl);
+        let WalkOutcome::Broken { errors } = binding.outcome else {
+            panic!("a wrong-shaped landing breaks the role");
+        };
+        assert!(errors[0].contains("not Pointer-shaped"), "{errors:?}");
+    }
+
+    #[test]
+    fn test_absence_is_expected_only_without_the_capability() {
+        let decl = WalkDecl {
+            role: WalkRole::ALL[0],
+            root: WalkRoot::Infra(InfraRoot::Context),
+            spellings: Row::All(missing_spelling),
+            terminal: Terminal::Word,
+            needs: Some(Capability::TokioUnstable),
+        };
+        let mut roots = context_roots(type_id(2));
+        roots.tokio_unstable = Some(false);
+        assert_eq!(
+            expected_absence(&decl, &roots).as_deref(),
+            Some("the target was built without tokio_unstable")
+        );
+        roots.tokio_unstable = Some(true);
+        assert_eq!(expected_absence(&decl, &roots), None);
+        roots.tokio_unstable = None;
+        assert_eq!(expected_absence(&decl, &roots), None);
+    }
+
+    #[test]
+    fn test_any_handle_root_notes_the_absent_flavor() {
+        let (reader, ctx) = context_fixture();
+        let em = Emitter::new(&reader, BTreeMap::new(), None, None);
+
+        let mut roots = context_roots(ctx);
+        roots.mt_handle = Some(ctx);
+        roots.ct_handle = Some(ctx);
+        let Roots::Types { types, note } =
+            resolve_root(&em, &roots, &BTreeMap::new(), &WalkRoot::AnyHandle)
+        else {
+            panic!("both flavors present resolve");
+        };
+        assert_eq!(types.len(), 2);
+        assert_eq!(note, None);
+
+        roots.ct_handle = None;
+        let Roots::Types { types, note } =
+            resolve_root(&em, &roots, &BTreeMap::new(), &WalkRoot::AnyHandle)
+        else {
+            panic!("one flavor present resolves");
+        };
+        assert_eq!(types.len(), 1);
+        assert_eq!(note.as_deref(), Some("no current_thread Handle"));
+    }
+
+    #[test]
+    fn test_leaf_root_notes_a_monomorphization_count_past_one() {
+        let mut reader = DwReader::default();
+        let sleep_ns = ns(&mut reader, "tokio::time::sleep");
+        let a = type_id(1);
+        let b = type_id(2);
+        insert_struct(&mut reader, a, Some(sleep_ns), "Sleep", &[]);
+        insert_struct(&mut reader, b, Some(sleep_ns), "Sleep", &[]);
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(a);
+        let roots = context_roots(a);
+        let Roots::Types { types, note } =
+            resolve_root(&em, &roots, &BTreeMap::new(), &WalkRoot::Leaf(SLEEP))
+        else {
+            panic!("one emitted leaf resolves");
+        };
+        assert_eq!(types.len(), 1);
+        assert_eq!(note, None);
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(a);
+        em.reserve(b);
+        let Roots::Types { types, note } =
+            resolve_root(&em, &roots, &BTreeMap::new(), &WalkRoot::Leaf(SLEEP))
+        else {
+            panic!("two emitted leaves resolve");
+        };
+        assert_eq!(types.len(), 2);
+        assert_eq!(note.as_deref(), Some("2 types"));
+    }
+
+    #[test]
+    fn test_task_cell_root_counts_the_opaque_cells_it_skips() {
+        let (reader, ctx) = context_fixture();
+        let em = Emitter::new(&reader, BTreeMap::new(), None, None);
+
+        let cells = vec![
+            ("a".to_owned(), Some(ctx)),
+            ("b".to_owned(), Some(type_id(0xdead))),
+            ("c".to_owned(), None),
+        ];
+        let mut roots = context_roots(ctx);
+        roots.cells = &cells;
+        let Roots::Types { types, note } =
+            resolve_root(&em, &roots, &BTreeMap::new(), &WalkRoot::TaskCells)
+        else {
+            panic!("a bound cell resolves");
+        };
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].0, "a");
+        assert_eq!(note.as_deref(), Some("1 cells, 2 opaque skipped"));
+
+        let cells = vec![("a".to_owned(), Some(ctx)), ("b".to_owned(), Some(ctx))];
+        let mut roots = context_roots(ctx);
+        roots.cells = &cells;
+        let Roots::Types { types, note } =
+            resolve_root(&em, &roots, &BTreeMap::new(), &WalkRoot::TaskCells)
+        else {
+            panic!("bound cells resolve");
+        };
+        assert_eq!(types.len(), 2);
+        assert_eq!(note.as_deref(), Some("2 cells"));
+    }
+
+    #[test]
+    fn test_terminal_shapes_and_kind_labels() {
+        let mut reader = DwReader::default();
+        let word = type_id(1);
+        let float = type_id(2);
+        let pointer = type_id(3);
+        let arr = type_id(4);
+        let st = type_id(5);
+        let un = type_id(6);
+        let en = type_id(7);
+        insert_base(&mut reader, word, "u64", Encoding::Unsigned, 8);
+        insert_base(&mut reader, float, "f64", Encoding::Float, 8);
+        reader.types.insert(
+            pointer,
+            RawType::Pointer(RawPointer {
+                name: None,
+                target_type_id: word,
+            }),
+        );
+        reader.types.insert(
+            arr,
+            RawType::Array(RawArray {
+                elem_type_id: word,
+                count: 2,
+            }),
+        );
+        insert_struct(&mut reader, st, None, "S", &[]);
+        let un_name = reader.strings.intern("U");
+        reader.types.insert(
+            un,
+            RawType::Union(RawUnion {
+                name: Some(un_name),
+                namespace: None,
+                size: 8,
+                members: Box::new([]),
+                template_params: Box::new([]),
+                source_loc: None,
+            }),
+        );
+        let en_name = reader.strings.intern("E");
+        reader.types.insert(
+            en,
+            RawType::Enum(RawEnum {
+                name: Some(en_name),
+                namespace: None,
+                size: 8,
+                alignment: None,
+                shape: VariantShape::Zero,
+                template_params: Box::new([]),
+                source_loc: None,
+            }),
+        );
+
+        assert!(terminal_ok(&reader, word, Terminal::Word).is_ok());
+        // A float is a word-sized base, but not a state word.
+        assert!(terminal_ok(&reader, float, Terminal::Word).is_err());
+        assert!(terminal_ok(&reader, word, Terminal::Pointer).is_err());
+        assert!(terminal_ok(&reader, pointer, Terminal::Pointer).is_ok());
+
+        assert_eq!(kind_label(&reader, float), "float");
+        assert_eq!(kind_label(&reader, word), "integer");
+        assert_eq!(kind_label(&reader, pointer), "pointer");
+        assert_eq!(kind_label(&reader, arr), "array");
+        assert_eq!(kind_label(&reader, st), "struct");
+        assert_eq!(kind_label(&reader, un), "union");
+        assert_eq!(kind_label(&reader, en), "enum");
+        assert_eq!(kind_label(&reader, type_id(0xdead)), "unmodeled");
+    }
+
+    #[test]
+    fn test_slice_shape_needs_a_data_pointer_and_a_length() {
+        let mut reader = DwReader::default();
+        let word = type_id(1);
+        let pointer = type_id(2);
+        insert_base(&mut reader, word, "u64", Encoding::Unsigned, 8);
+        reader.types.insert(
+            pointer,
+            RawType::Pointer(RawPointer {
+                name: None,
+                target_type_id: word,
+            }),
+        );
+        let slice = type_id(0x10);
+        insert_struct(
+            &mut reader,
+            slice,
+            None,
+            "Box<[T]>",
+            &[("data_ptr", pointer, 0), ("length", word, 8)],
+        );
+        let unlengthed = type_id(0x11);
+        insert_struct(
+            &mut reader,
+            unlengthed,
+            None,
+            "NotASlice",
+            &[("data_ptr", pointer, 0)],
+        );
+        let unpointered = type_id(0x12);
+        insert_struct(
+            &mut reader,
+            unpointered,
+            None,
+            "NotASlice",
+            &[("data_ptr", word, 0), ("length", word, 8)],
+        );
+
+        assert!(slice_shaped(&reader, slice));
+        assert!(!slice_shaped(&reader, unlengthed));
+        assert!(!slice_shaped(&reader, unpointered));
+    }
 }
