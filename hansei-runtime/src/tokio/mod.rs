@@ -251,6 +251,51 @@ mod tests {
         assert!(state.is_join_waker_set());
         assert!(state.is_cancelled());
         assert!(!state.is_notified());
+        assert!(!state.is_join_interested());
+
+        // A word that is only the tested bit still answers true — the
+        // case that separates a mask test from an xor.
+        assert!(TaskState(JOIN_INTEREST).is_join_interested());
+    }
+
+    /// The debug form spells out the derived fields — it is what a
+    /// value dump of a task's Header shows.
+    #[test]
+    fn test_task_state_debug_names_the_fields() {
+        let dbg = format!("{:?}", TaskState(0xCC));
+        for needle in [
+            "lifecycle: Queued",
+            "ref_count: 3",
+            "is_cancelled: false",
+            "is_join_interested: true",
+            "is_join_waker_set: false",
+            "bits: 0b11001100",
+        ] {
+            assert!(dbg.contains(needle), "{needle} not in {dbg}");
+        }
+    }
+
+    /// The timespec validation: nanoseconds must lie in [0, 1s), with
+    /// both boundaries valid and either side out refused.
+    #[test]
+    fn test_raw_instant_rejects_invalid_timespecs() {
+        let convert = |tv_sec, tv_nsec| RawInstant::try_from(proc::Timespec { tv_sec, tv_nsec });
+        assert_eq!(
+            convert(1, 0).unwrap(),
+            RawInstant {
+                tv_sec: 1,
+                tv_nsec: 0
+            }
+        );
+        assert_eq!(
+            convert(1, 999_999_999).unwrap(),
+            RawInstant {
+                tv_sec: 1,
+                tv_nsec: 999_999_999
+            }
+        );
+        assert!(convert(1, -1).is_err());
+        assert!(convert(1, 1_000_000_000).is_err());
     }
 
     /// Both spellings of a timer deadline. Which one a real target gets
@@ -273,6 +318,11 @@ mod tests {
         assert_eq!(
             timer(at(1_030, 0), Some(at(1_031, 250_000_000))),
             "the timer: deadline -1.250s"
+        );
+        // A deadline exactly at the stop is zero, not negative zero.
+        assert_eq!(
+            timer(at(1_030, 0), Some(at(1_030, 0))),
+            "the timer: deadline 0.000s"
         );
         // With no stop time there is nothing to be relative to, so the
         // absolute point is reported with its clock spelled out.

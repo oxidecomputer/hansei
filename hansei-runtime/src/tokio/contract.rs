@@ -781,6 +781,29 @@ mod tests {
         assert!(shown.contains("absent  Sleep.deadline"), "{shown}");
     }
 
+    /// A single-spelling bound row is bare: no "(spelling 1 of 1)"
+    /// noise on the overwhelmingly common case.
+    #[test]
+    fn test_a_single_spelling_row_is_bare() {
+        let e = entry("Header.state", Class::Required, ok());
+        assert_eq!(e.line(), "ok      Header.state");
+    }
+
+    /// degraded reports exactly the broken-but-optional rows: a healthy
+    /// optional row is not degraded, and Required breakage is a
+    /// refusal, not a degradation.
+    #[test]
+    fn test_degraded_reports_only_broken_optional_rows() {
+        let r = report(vec![
+            entry("Header.state", Class::Required, broken("no member state")),
+            entry("Parker.state", Class::Optional, ok()),
+            entry("Sleep.deadline", Class::Optional, broken("no member entry")),
+        ]);
+        let degraded = r.degraded(WalkPolicy::BestEffort);
+        assert_eq!(degraded.len(), 1);
+        assert!(degraded[0].contains("Sleep.deadline"), "{degraded:?}");
+    }
+
     /// The report names which spelling bound (and, via the recorded
     /// note, under which family), so "1.55 silently started taking the
     /// fallback" is a reviewable diff.
@@ -974,6 +997,24 @@ mod tests {
         }
     }
 
+    /// A walk failure names the role whose recorded steps were being
+    /// executed — the handle an operator greps the contract report for.
+    #[test]
+    fn test_walk_errors_name_their_role() {
+        let ctx = walk_ctx();
+        let role = WalkRole::HeaderState;
+        let base = find_ty(&ctx, |t| matches!(t.def(), TypeDef::Base { .. }));
+        let root = Value::new(base, 0x1000, &[0u8; 8]);
+        let Err(err) = ctx.walk(role).walk(root) else {
+            panic!("a base type walks nowhere");
+        };
+        let text = format!("{err:#}");
+        assert!(
+            text.contains(&format!("walk path {}", role.name())),
+            "{text}"
+        );
+    }
+
     #[test]
     fn test_walk_steps_with_no_steps_is_the_value_itself() {
         let ctx = walk_ctx();
@@ -1094,12 +1135,19 @@ mod tests {
         let (first_name, first_value) = e.variants[0];
         let (second_name, _) = e.variants[1];
 
-        // The active variant's payload is walked into.
+        // The active variant's payload is walked into, at the offset
+        // the discriminant decode reports.
         let buf = e.bytes(first_value);
         let root = Value::new(e.ty, 0x1000, &buf);
-        let Walked::At(_) = walk_steps(&ctx, root, &[Step::Variant(first_name)]).unwrap() else {
+        let Walked::At(info) = walk_steps(&ctx, root, &[Step::Variant(first_name)]).unwrap() else {
             panic!("the laid-down variant is active");
         };
+        let name = ctx.view.str(first_name).unwrap();
+        let Some(Ok(Some((payload, offset)))) = e.ty.check_variant(&buf, name) else {
+            panic!("the laid-down variant decodes");
+        };
+        assert_eq!(info.addr, 0x1000 + offset);
+        assert_eq!(info.ty.id(), payload.id());
 
         // Asking for the other is the runtime outcome, named.
         let Walked::Inactive(name) = walk_steps(&ctx, root, &[Step::Variant(second_name)]).unwrap()
@@ -1127,9 +1175,14 @@ mod tests {
 
         let buf = e.bytes(first_value);
         let root = Value::new(e.ty, 0x1000, &buf);
-        let Walked::At(_) = walk_steps(&ctx, root, &[Step::ActiveVariant]).unwrap() else {
+        let Walked::At(info) = walk_steps(&ctx, root, &[Step::ActiveVariant]).unwrap() else {
             panic!("the laid-down variant decodes");
         };
+        let Some(Ok(active)) = e.ty.active_variant(&buf) else {
+            panic!("the laid-down variant decodes");
+        };
+        assert_eq!(info.addr, 0x1000 + active.offset);
+        assert_eq!(info.ty.id(), active.ty.id());
 
         // A discriminant no variant claims is an error naming the type.
         let buf = e.bytes(e.unclaimed);
