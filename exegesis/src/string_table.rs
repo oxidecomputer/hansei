@@ -202,6 +202,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_ids_are_distinct_and_duplicates_are_counted() {
+        let mut strings = FrozenStrings::default();
+        let a = strings.intern("a");
+        let again = strings.intern("a");
+        let b = strings.intern("b");
+        assert_eq!(a, again);
+        assert_ne!(a.get(), b.get());
+        strings.intern("a");
+        assert_eq!(strings.dups_found(), 2);
+    }
+
+    #[test]
     fn test_intern_and_retrieve() {
         let t = ShardedInterner::new();
         let id = t.intern("hello");

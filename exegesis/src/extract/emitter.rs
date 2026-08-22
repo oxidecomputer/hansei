@@ -549,3 +549,206 @@ pub(super) struct Emitted {
     pub(super) demoted: usize,
     pub(super) states: StatePass,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::raw_types::{
+        RawEnum, RawEnumerator, RawMember, RawStruct, RawType, SourceLoc as RawSourceLoc,
+        VariantShape,
+    };
+    use crate::{DwReader, StrId, TypeId};
+
+    use gimli::{DebugInfoOffset, UnitSectionOffset};
+
+    use std::collections::BTreeMap;
+    use std::num::NonZero;
+
+    fn type_id(offset: usize) -> TypeId {
+        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    fn insert_struct(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        name: &'static str,
+        members: &[(&'static str, TypeId)],
+    ) {
+        let members: Box<[RawMember<StrId>]> = members
+            .iter()
+            .map(|&(name, type_id)| RawMember {
+                name: Some(reader.strings.intern(name)),
+                offset: 0,
+                type_id,
+                source_loc: None,
+            })
+            .collect();
+        let name = Some(reader.strings.intern(name));
+        reader.types.insert(
+            id,
+            RawType::Struct(RawStruct {
+                name,
+                namespace: None,
+                size: 8,
+                members,
+                template_params: Box::new([]),
+                source_loc: None,
+            }),
+        );
+    }
+
+    /// A variant member awaiting `awaitee` (through a payload struct whose
+    /// `__awaitee` member holds it), declared at `file:line` when given.
+    fn awaiting_member(
+        reader: &mut DwReader<'static>,
+        payload: TypeId,
+        awaitee: TypeId,
+        loc: Option<(&'static str, u64)>,
+    ) -> RawMember<StrId> {
+        insert_struct(
+            reader,
+            payload,
+            "{async_fn_env#0}::Suspend0",
+            &[("__awaitee", awaitee)],
+        );
+        let source_loc = loc.map(|(file, line)| {
+            Box::new(RawSourceLoc {
+                file: Some(reader.strings.intern(file)),
+                dir: None,
+                comp_dir: None,
+                line: NonZero::new(line),
+                column: None,
+            })
+        });
+        RawMember {
+            name: Some(reader.strings.intern("0")),
+            offset: 0,
+            type_id: payload,
+            source_loc,
+        }
+    }
+
+    fn local(awaitee: TypeId, file: &str, line: u64) -> (Option<TypeId>, OwnedLoc) {
+        (
+            Some(awaitee),
+            OwnedLoc {
+                file: Some(file.to_owned()),
+                dir: None,
+                comp_dir: None,
+                line: Some(line),
+            },
+        )
+    }
+
+    #[test]
+    fn test_unresolved_references_are_counted_per_reference() {
+        let reader = DwReader::default();
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(type_id(0x10));
+        em.reserve(type_id(0x20));
+        assert_eq!(em.unresolved_refs, 2);
+    }
+
+    #[test]
+    fn test_a_cstyle_enum_without_a_repr_synthesizes_one_each_time() {
+        let mut reader = DwReader::default();
+        for offset in [0x10usize, 0x20] {
+            let name = reader.strings.intern("Bare");
+            reader.types.insert(
+                type_id(offset),
+                RawType::Enum(RawEnum {
+                    name: Some(name),
+                    namespace: None,
+                    size: 1,
+                    alignment: None,
+                    shape: VariantShape::CStyle {
+                        repr_type_id: None,
+                        enumerators: Box::new([RawEnumerator {
+                            name: reader.strings.intern("Red"),
+                            value: 0,
+                        }]),
+                    },
+                    template_params: Box::new([]),
+                    source_loc: None,
+                }),
+            );
+        }
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.emit(type_id(0x10));
+        em.emit(type_id(0x20));
+        assert_eq!(em.cenum_synth_repr, 2);
+    }
+
+    #[test]
+    fn test_awaits_pair_only_where_type_and_coordinates_agree() {
+        let mut reader = DwReader::default();
+        let t1 = type_id(1);
+        let t2 = type_id(2);
+        insert_struct(&mut reader, t1, "T1", &[]);
+        insert_struct(&mut reader, t2, "T2", &[]);
+        let env = type_id(3);
+        insert_struct(&mut reader, env, "{async_fn_env#0}", &[]);
+        // Member A: rustc already attributed the await to main.rs:5,
+        // which local 0 confirms; local 1 shares the type but not the
+        // line, so coordinates decide. Member B awaits a type no local
+        // carries and must stay unmatched, whatever its coordinates say.
+        let a = awaiting_member(&mut reader, type_id(0x10), t1, Some(("main.rs", 5)));
+        let b = awaiting_member(&mut reader, type_id(0x11), t2, Some(("main.rs", 9)));
+
+        let locals =
+            BTreeMap::from([(env, vec![local(t1, "main.rs", 5), local(t1, "main.rs", 9)])]);
+        let mut em = Emitter::new(&reader, locals, None, None);
+        let sites = em.await_sites(env, &[&a, &b]);
+        let [site_a, site_b] = sites.as_slice() else {
+            panic!("one site per member");
+        };
+        let site_a = site_a.as_ref().expect("agreeing coordinates pair");
+        assert_eq!(site_a.line, 5);
+        assert_eq!(em.interner.get(site_a.file), Some("main.rs"));
+        assert!(site_b.is_none(), "no local carries T2");
+    }
+
+    #[test]
+    fn test_a_shared_awaited_type_needs_agreeing_coordinates() {
+        let mut reader = DwReader::default();
+        let t = type_id(1);
+        insert_struct(&mut reader, t, "T", &[]);
+        let env = type_id(2);
+        insert_struct(&mut reader, env, "{async_fn_env#0}", &[]);
+        // Two awaits of one type, neither agreeing with the local's
+        // coordinates (the file differs): matching either would be a
+        // guess, so both stay unmatched.
+        let c = awaiting_member(&mut reader, type_id(0x10), t, Some(("x.rs", 5)));
+        let d = awaiting_member(&mut reader, type_id(0x11), t, Some(("y.rs", 6)));
+
+        let locals = BTreeMap::from([(env, vec![local(t, "main.rs", 5)])]);
+        let mut em = Emitter::new(&reader, locals, None, None);
+        let sites = em.await_sites(env, &[&c, &d]);
+        assert_eq!(sites, vec![None, None]);
+    }
+
+    #[test]
+    fn test_a_decisive_type_pairs_without_coordinates() {
+        let mut reader = DwReader::default();
+        let t4 = type_id(1);
+        let t5 = type_id(2);
+        insert_struct(&mut reader, t4, "T4", &[]);
+        insert_struct(&mut reader, t5, "T5", &[]);
+        let env = type_id(3);
+        insert_struct(&mut reader, env, "{async_fn_env#0}", &[]);
+        // Neither member carries coordinates. T4 has no local; T5 picks
+        // out exactly one on each side, which is enough.
+        let e = awaiting_member(&mut reader, type_id(0x10), t4, None);
+        let f = awaiting_member(&mut reader, type_id(0x11), t5, None);
+
+        let locals = BTreeMap::from([(env, vec![local(t5, "main.rs", 7)])]);
+        let mut em = Emitter::new(&reader, locals, None, None);
+        let sites = em.await_sites(env, &[&e, &f]);
+        let [site_e, site_f] = sites.as_slice() else {
+            panic!("one site per member");
+        };
+        assert!(site_e.is_none(), "T4 has no local");
+        let site_f = site_f.as_ref().expect("a decisive type pairs");
+        assert_eq!(site_f.line, 7);
+    }
+}

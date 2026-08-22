@@ -337,6 +337,58 @@ mod tests {
     /// its saved-local slot (and doubled); where it is dead it is left at the
     /// slot it had in `Unresumed`, which is another state's storage and reads
     /// as whatever the coroutine last left there.
+    /// The coroutine screen keys on rustc's own state names: any one of
+    /// `Returned`, `Panicked`, or a `Suspend` state marks the enum, and
+    /// no other name does.
+    #[test]
+    fn test_coroutines_are_recognized_by_any_state_name() {
+        use crate::bundle::{
+            BundleTypeId, MemberDef, StringInterner, TypeDef, TypeTable, VariantDef, VariantShape,
+        };
+
+        for (state, seen) in [
+            ("Returned", 1),
+            ("Panicked", 1),
+            ("Suspend7", 1),
+            ("Working", 0),
+        ] {
+            let mut strings = StringInterner::new();
+            let name = strings.intern(state);
+            let envn = strings.intern("E");
+            let mut types = TypeTable {
+                types: vec![
+                    TypeDef::Struct {
+                        name,
+                        size: 8,
+                        members: vec![],
+                    },
+                    TypeDef::Enum {
+                        name: envn,
+                        size: 8,
+                        shape: VariantShape {
+                            discr: None,
+                            variants: vec![VariantDef {
+                                name,
+                                discr_values: None,
+                                payload: MemberDef {
+                                    name,
+                                    ty: BundleTypeId(0),
+                                    offset: 0,
+                                },
+                                decl: None,
+                                await_site: None,
+                            }],
+                        },
+                    },
+                ],
+                ..Default::default()
+            };
+            let names = vec![Some(format!("E::{state}")), Some("E".to_owned())];
+            let found = drop_members_of_other_states(&mut types, &names);
+            assert_eq!(found.coroutines_seen, seen, "{state}");
+        }
+    }
+
     #[test]
     fn test_drop_members_of_other_states() {
         use crate::bundle::{

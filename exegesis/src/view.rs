@@ -470,6 +470,47 @@ mod tests {
         id.map(|id| reader.strings.get(id))
     }
 
+    #[test]
+    fn test_func_accessors_pass_the_raw_facts_through() {
+        use crate::raw_types::SourceLoc;
+        use gimli::{DebugInfoOffset, UnitSectionOffset};
+        use std::num::NonZero;
+
+        let mut reader = DwReader::default();
+        let name = reader.strings.intern("die");
+        let file = reader.strings.intern("main.rs");
+        let dir = reader.strings.intern("src");
+        let comp_dir = reader.strings.intern("/crate");
+        reader.functions.insert(
+            crate::FuncId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(0x10))),
+            crate::raw_types::RawFunc {
+                name: Some(name),
+                namespace: None,
+                source_loc: Some(Box::new(SourceLoc {
+                    file: Some(file),
+                    dir: Some(dir),
+                    comp_dir: Some(comp_dir),
+                    line: NonZero::new(3),
+                    column: None,
+                })),
+                return_type_id: None,
+                formal_parameters: Box::new([]),
+                abstract_origin: None,
+                linkage_name: None,
+                template_params: Box::new([]),
+                noreturn: true,
+                awaitees: Box::new([]),
+            },
+        );
+        let view = reader.view();
+        let (_, func) = view.functions().next().expect("the function is listed");
+        assert!(func.noreturn());
+        let loc = func.source_loc().expect("the coordinates are kept");
+        assert_eq!(loc.file(), Some("main.rs"));
+        assert_eq!(loc.dir(), Some("src"));
+        assert_eq!(loc.comp_dir(), Some("/crate"));
+    }
+
     /// A type's name, resolved through the string table.
     fn name_of<'a>(reader: &'a DwReader<'a>, ty: &RawType<StrId>) -> Option<&'a str> {
         str_of(reader, ty.name())

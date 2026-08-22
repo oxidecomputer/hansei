@@ -561,3 +561,134 @@ fn describe_field(bundle: &Bundle, root: BundleTypeId, fld: &Field) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hansei_bundle::{Bundle, Encoding, StringInterner, TypeTable, VariantDef, VariantShape};
+
+    struct Refs {
+        value: hansei_bundle::StrRef,
+        a: hansei_bundle::StrRef,
+        ghost: hansei_bundle::StrRef,
+    }
+
+    /// A bundle whose enum keeps its payload away from offset zero, so a
+    /// selector through a variant carries the payload offset visibly.
+    fn bundle() -> (Bundle, Refs) {
+        let mut strings = StringInterner::new();
+        let u64n = strings.intern("u64");
+        let payload_name = strings.intern("Payload");
+        let value = strings.intern("value");
+        let enum_name = strings.intern("E");
+        let a = strings.intern("A");
+        let ghost = strings.intern("ghost");
+        let types = TypeTable {
+            types: vec![
+                TypeDef::Base {
+                    name: u64n,
+                    size: 8,
+                    encoding: Encoding::Unsigned,
+                },
+                TypeDef::Struct {
+                    name: payload_name,
+                    size: 16,
+                    members: vec![MemberDef {
+                        name: value,
+                        ty: BundleTypeId(0),
+                        offset: 4,
+                    }],
+                },
+                TypeDef::Enum {
+                    name: enum_name,
+                    size: 24,
+                    shape: VariantShape {
+                        discr: None,
+                        variants: vec![VariantDef {
+                            name: a,
+                            discr_values: None,
+                            payload: MemberDef {
+                                name: a,
+                                ty: BundleTypeId(1),
+                                offset: 8,
+                            },
+                            decl: None,
+                            await_site: None,
+                        }],
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+        let placeholder = BundleTypeId(0);
+        let bundle = Bundle {
+            meta: Default::default(),
+            strings: strings.finish(),
+            types,
+            tasks: Default::default(),
+            dyn_futures: Default::default(),
+            statics: Default::default(),
+            walks: Default::default(),
+            infra: hansei_bundle::InfraTypes {
+                header: placeholder,
+                vtable: placeholder,
+                trailer: placeholder,
+                context: placeholder,
+                scheduler_handle: placeholder,
+                mt_handle: placeholder,
+                ct_handle: placeholder,
+                location: placeholder,
+                raw_waker_vtable: placeholder,
+            },
+            provenance: Default::default(),
+        };
+        (bundle, Refs { value, a, ghost })
+    }
+
+    fn describe_alias_at(bundle: &Bundle, root: u32, steps: Vec<Step>) -> String {
+        let node = DisplayNode::Alias {
+            at: hansei_bundle::Selector(steps),
+            follow_pointers: true,
+        };
+        describe_node(bundle, BundleTypeId(root), &node)
+    }
+
+    fn describe_alias(bundle: &Bundle, steps: Vec<Step>) -> String {
+        describe_alias_at(bundle, 2, steps)
+    }
+
+    #[test]
+    fn test_selector_chains_accumulate_variant_payload_offsets() {
+        let (bundle, refs) = bundle();
+        let (a, value) = (refs.a, refs.value);
+
+        // A named variant hop and the active-variant fan both add the
+        // payload's own offset under the member's.
+        let named = describe_alias(
+            &bundle,
+            vec![Step::Variant(a), Step::Member(MemberRef::Named(value))],
+        );
+        assert!(named.contains("{A}.value@+12"), "{named}");
+        let fanned = describe_alias(
+            &bundle,
+            vec![Step::ActiveVariant, Step::Member(MemberRef::Named(value))],
+        );
+        assert!(fanned.contains("{A}.value@+12"), "{fanned}");
+    }
+
+    #[test]
+    fn test_unresolvable_members_print_markers_not_panics() {
+        let (bundle, refs) = bundle();
+
+        let oob = describe_alias_at(&bundle, 1, vec![Step::Member(MemberRef::Index(9))]);
+        assert!(oob.contains("<oob:9>"), "{oob}");
+        let missing = describe_alias(
+            &bundle,
+            vec![
+                Step::Variant(refs.a),
+                Step::Member(MemberRef::Named(refs.ghost)),
+            ],
+        );
+        assert!(missing.contains("<no unique member `ghost`>"), "{missing}");
+    }
+}
