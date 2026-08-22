@@ -1137,7 +1137,7 @@ fn remap_ns_in_place<S>(ty: &mut RawType<S>, ns_remap: &HashMap<NsId, NsId>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raw_types::RawArray;
+    use crate::raw_types::{Encoding, RawArray};
     use gimli::{DebugInfoOffset, UnitSectionOffset};
 
     fn type_id(offset: usize) -> TypeId {
@@ -1341,5 +1341,847 @@ mod tests {
         assert_eq!(reader.canonicalize(anonymous_b), anonymous_b);
         assert_eq!(reader.canonicalize(named_struct), named_struct);
         assert_eq!(reader.canonicalize(named_union), named_union);
+    }
+
+    fn align(value: u64) -> Option<NonZero<u64>> {
+        Some(NonZero::new(value).unwrap())
+    }
+
+    fn insert_base(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        encoding: Encoding,
+        size: u64,
+        alignment: Option<NonZero<u64>>,
+    ) {
+        reader.types.insert(
+            id,
+            RawType::Base(RawBase {
+                name: Some(reader.strings.intern("base")),
+                namespace: None,
+                encoding,
+                size,
+                alignment,
+            }),
+        );
+    }
+
+    fn insert_named_struct(reader: &mut DwReader<'static>, id: TypeId, name: &'static str) {
+        insert_struct(reader, id, Some(name), 8);
+    }
+
+    fn insert_array(reader: &mut DwReader<'static>, id: TypeId, elem: TypeId, count: u64) {
+        reader.types.insert(
+            id,
+            RawType::Array(RawArray {
+                elem_type_id: elem,
+                count,
+            }),
+        );
+    }
+
+    fn member(
+        reader: &mut DwReader<'static>,
+        name: &'static str,
+        offset: u64,
+        type_id: TypeId,
+    ) -> RawMember<StrId> {
+        RawMember {
+            name: Some(reader.strings.intern(name)),
+            offset,
+            type_id,
+            source_loc: None,
+        }
+    }
+
+    fn param(
+        reader: &mut DwReader<'static>,
+        name: &'static str,
+        type_id: TypeId,
+    ) -> RawGenericParameter<StrId> {
+        RawGenericParameter {
+            name: Some(reader.strings.intern(name)),
+            type_id,
+        }
+    }
+
+    fn variant(
+        reader: &mut DwReader<'static>,
+        name: &'static str,
+        offset: u64,
+        type_id: TypeId,
+    ) -> RawVariant<StrId> {
+        RawVariant {
+            member: member(reader, name, offset, type_id),
+        }
+    }
+
+    fn enumerator(
+        reader: &mut DwReader<'static>,
+        name: &'static str,
+        value: u128,
+    ) -> RawEnumerator<StrId> {
+        RawEnumerator {
+            name: reader.strings.intern(name),
+            value,
+        }
+    }
+
+    fn insert_union_with(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        name: &'static str,
+        size: u64,
+        members: Box<[RawMember<StrId>]>,
+        template_params: Box<[RawGenericParameter<StrId>]>,
+    ) {
+        reader.types.insert(
+            id,
+            RawType::Union(RawUnion {
+                name: Some(reader.strings.intern(name)),
+                namespace: None,
+                size,
+                members,
+                template_params,
+                source_loc: None,
+            }),
+        );
+    }
+
+    fn insert_enum_with(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        size: u64,
+        alignment: Option<NonZero<u64>>,
+        shape: VariantShape<StrId>,
+        template_params: Box<[RawGenericParameter<StrId>]>,
+    ) {
+        reader.types.insert(
+            id,
+            RawType::Enum(RawEnum {
+                name: Some(reader.strings.intern("E")),
+                namespace: None,
+                size,
+                alignment,
+                shape,
+                template_params,
+                source_loc: None,
+            }),
+        );
+    }
+
+    fn identity(reader: &DwReader<'static>, left: TypeId, right: TypeId) -> bool {
+        reader.type_references_have_same_identity(left, right, &mut HashSet::new())
+    }
+
+    #[test]
+    fn test_layout_detail_counts_the_recorded_structure() {
+        let mut reader = DwReader::new();
+        let base = type_id(0x10);
+        let pointer = type_id(0x20);
+        let array = type_id(0x30);
+        insert_base(&mut reader, base, Encoding::Unsigned, 4, None);
+        insert_pointer(&mut reader, pointer, base);
+        insert_array(&mut reader, array, base, 4);
+
+        let members: Box<[_]> = (0..3)
+            .map(|i| member(&mut reader, "m", i * 4, base))
+            .collect();
+        let params: Box<[_]> = (0..5).map(|_| param(&mut reader, "T", base)).collect();
+        let rich_struct = type_id(0x40);
+        reader.types.insert(
+            rich_struct,
+            RawType::Struct(RawStruct {
+                name: Some(reader.strings.intern("S")),
+                namespace: None,
+                size: 12,
+                members: members.clone(),
+                template_params: params.clone(),
+                source_loc: None,
+            }),
+        );
+        let rich_union = type_id(0x50);
+        insert_union_with(&mut reader, rich_union, "U", 12, members, params.clone());
+
+        let variants: Box<[_]> = (0u128..3)
+            .map(|i| (Some(i), variant(&mut reader, "V", 8, base)))
+            .collect();
+        let discr = member(&mut reader, "discr", 0, base);
+        let many = type_id(0x60);
+        insert_enum_with(
+            &mut reader,
+            many,
+            16,
+            None,
+            VariantShape::Many {
+                discr: Some(discr),
+                variants,
+            },
+            params,
+        );
+
+        let zero = type_id(0x70);
+        insert_enum_with(&mut reader, zero, 0, None, VariantShape::Zero, Box::new([]));
+        let one_variant = variant(&mut reader, "V", 0, base);
+        let one = type_id(0x80);
+        insert_enum_with(
+            &mut reader,
+            one,
+            8,
+            None,
+            VariantShape::One(one_variant),
+            Box::new([]),
+        );
+        let enumerators: Box<[_]> = [("Red", 0), ("Green", 1)]
+            .into_iter()
+            .map(|(name, value)| enumerator(&mut reader, name, value))
+            .collect();
+        let repr = param(&mut reader, "R", base);
+        let cstyle = type_id(0x90);
+        insert_enum_with(
+            &mut reader,
+            cstyle,
+            1,
+            None,
+            VariantShape::CStyle {
+                repr_type_id: None,
+                enumerators,
+            },
+            Box::new([repr]),
+        );
+
+        assert_eq!(reader.layout_detail(base), 1);
+        assert_eq!(reader.layout_detail(pointer), 2);
+        assert_eq!(reader.layout_detail(array), 2);
+        // 3 members * 2 + 5 params + 1.
+        assert_eq!(reader.layout_detail(rich_struct), 12);
+        assert_eq!(reader.layout_detail(rich_union), 12);
+        // 3 variants * 2 + a discriminant + 5 params + 1.
+        assert_eq!(reader.layout_detail(many), 13);
+        assert_eq!(reader.layout_detail(zero), 1);
+        assert_eq!(reader.layout_detail(one), 2);
+        // 2 enumerators + 1 param + 1.
+        assert_eq!(reader.layout_detail(cstyle), 4);
+        assert_eq!(reader.layout_detail(type_id(0xdead)), 0);
+    }
+
+    #[test]
+    fn test_base_layouts_need_encoding_size_and_alignment_to_agree() {
+        let mut reader = DwReader::new();
+        let unsigned = type_id(0x10);
+        let same = type_id(0x20);
+        let signed = type_id(0x30);
+        let wide = type_id(0x40);
+        let aligned_4 = type_id(0x50);
+        let aligned_8 = type_id(0x60);
+        insert_base(&mut reader, unsigned, Encoding::Unsigned, 4, None);
+        insert_base(&mut reader, same, Encoding::Unsigned, 4, None);
+        insert_base(&mut reader, signed, Encoding::Signed, 4, None);
+        insert_base(&mut reader, wide, Encoding::Unsigned, 8, None);
+        insert_base(&mut reader, aligned_4, Encoding::Unsigned, 4, align(4));
+        insert_base(&mut reader, aligned_8, Encoding::Unsigned, 4, align(8));
+
+        assert!(reader.types_have_compatible_layout(unsigned, same));
+        assert!(!reader.types_have_compatible_layout(unsigned, signed));
+        assert!(!reader.types_have_compatible_layout(unsigned, wide));
+        assert!(!reader.types_have_compatible_layout(aligned_4, aligned_8));
+        // An absent alignment is compatible with any recorded one.
+        assert!(reader.types_have_compatible_layout(unsigned, aligned_8));
+    }
+
+    #[test]
+    fn test_pointer_layouts_follow_target_identity() {
+        let mut reader = DwReader::new();
+        let value_a = type_id(0x10);
+        let value_b = type_id(0x20);
+        let other = type_id(0x30);
+        insert_named_struct(&mut reader, value_a, "Value");
+        insert_named_struct(&mut reader, value_b, "Value");
+        insert_named_struct(&mut reader, other, "Other");
+        let to_value_a = type_id(0x40);
+        let to_value_b = type_id(0x50);
+        let to_other = type_id(0x60);
+        insert_pointer(&mut reader, to_value_a, value_a);
+        insert_pointer(&mut reader, to_value_b, value_b);
+        insert_pointer(&mut reader, to_other, other);
+
+        assert!(reader.types_have_compatible_layout(to_value_a, to_value_b));
+        assert!(!reader.types_have_compatible_layout(to_value_a, to_other));
+    }
+
+    #[test]
+    fn test_array_layouts_need_count_and_element_identity() {
+        let mut reader = DwReader::new();
+        let value_a = type_id(0x10);
+        let value_b = type_id(0x20);
+        let other = type_id(0x30);
+        insert_named_struct(&mut reader, value_a, "Value");
+        insert_named_struct(&mut reader, value_b, "Value");
+        insert_named_struct(&mut reader, other, "Other");
+        let four_a = type_id(0x40);
+        let four_b = type_id(0x50);
+        let eight = type_id(0x60);
+        let four_other = type_id(0x70);
+        insert_array(&mut reader, four_a, value_a, 4);
+        insert_array(&mut reader, four_b, value_b, 4);
+        insert_array(&mut reader, eight, value_a, 8);
+        insert_array(&mut reader, four_other, other, 4);
+
+        assert!(reader.types_have_compatible_layout(four_a, four_b));
+        assert!(!reader.types_have_compatible_layout(four_a, eight));
+        assert!(!reader.types_have_compatible_layout(four_a, four_other));
+    }
+
+    #[test]
+    fn test_union_layouts_need_size_members_and_params_to_agree() {
+        let mut reader = DwReader::new();
+        let elem = type_id(0x10);
+        insert_base(&mut reader, elem, Encoding::Unsigned, 4, None);
+
+        let twin = |reader: &mut DwReader<'static>, member_name, param_target| {
+            let members = Box::new([member(reader, member_name, 0, elem)]);
+            let params = Box::new([param(reader, "T", param_target)]);
+            (members, params)
+        };
+        let a = type_id(0x20);
+        let (members, params) = twin(&mut reader, "value", elem);
+        insert_union_with(&mut reader, a, "U", 8, members, params);
+        let same = type_id(0x30);
+        let (members, params) = twin(&mut reader, "value", elem);
+        insert_union_with(&mut reader, same, "U", 8, members, params);
+        let small = type_id(0x40);
+        let (members, params) = twin(&mut reader, "value", elem);
+        insert_union_with(&mut reader, small, "U", 4, members, params);
+        let respelled = type_id(0x50);
+        let (members, params) = twin(&mut reader, "other", elem);
+        insert_union_with(&mut reader, respelled, "U", 8, members, params);
+        let retargeted = type_id(0x60);
+        let (members, params) = twin(&mut reader, "value", type_id(0xdead));
+        insert_union_with(&mut reader, retargeted, "U", 8, members, params);
+
+        assert!(reader.types_have_compatible_layout(a, same));
+        assert!(!reader.types_have_compatible_layout(a, small));
+        assert!(!reader.types_have_compatible_layout(a, respelled));
+        assert!(!reader.types_have_compatible_layout(a, retargeted));
+    }
+
+    #[test]
+    fn test_enum_layouts_need_size_alignment_shape_and_params_to_agree() {
+        let mut reader = DwReader::new();
+        let elem = type_id(0x10);
+        insert_base(&mut reader, elem, Encoding::Unsigned, 4, None);
+
+        let cstyle = |reader: &mut DwReader<'static>| VariantShape::CStyle {
+            repr_type_id: None,
+            enumerators: Box::new([enumerator(reader, "Red", 0)]),
+        };
+        let a = type_id(0x20);
+        let shape = cstyle(&mut reader);
+        let params = Box::new([param(&mut reader, "T", elem)]);
+        insert_enum_with(&mut reader, a, 4, align(4), shape, params);
+        let same = type_id(0x30);
+        let shape = cstyle(&mut reader);
+        let params = Box::new([param(&mut reader, "T", elem)]);
+        insert_enum_with(&mut reader, same, 4, align(4), shape, params);
+        let small = type_id(0x40);
+        let shape = cstyle(&mut reader);
+        let params = Box::new([param(&mut reader, "T", elem)]);
+        insert_enum_with(&mut reader, small, 2, align(4), shape, params);
+        let realigned = type_id(0x50);
+        let shape = cstyle(&mut reader);
+        let params = Box::new([param(&mut reader, "T", elem)]);
+        insert_enum_with(&mut reader, realigned, 4, align(2), shape, params);
+        let reshaped = type_id(0x60);
+        let params = Box::new([param(&mut reader, "T", elem)]);
+        insert_enum_with(
+            &mut reader,
+            reshaped,
+            4,
+            align(4),
+            VariantShape::Zero,
+            params,
+        );
+        let retargeted = type_id(0x70);
+        let shape = cstyle(&mut reader);
+        let params = Box::new([param(&mut reader, "T", type_id(0xdead))]);
+        insert_enum_with(&mut reader, retargeted, 4, align(4), shape, params);
+
+        assert!(reader.types_have_compatible_layout(a, same));
+        assert!(!reader.types_have_compatible_layout(a, small));
+        assert!(!reader.types_have_compatible_layout(a, realigned));
+        assert!(!reader.types_have_compatible_layout(a, reshaped));
+        assert!(!reader.types_have_compatible_layout(a, retargeted));
+    }
+
+    #[test]
+    fn test_reference_identity_compares_names_not_layout() {
+        let mut reader = DwReader::new();
+        let value_a = type_id(0x10);
+        let value_b = type_id(0x20);
+        let other = type_id(0x30);
+        insert_named_struct(&mut reader, value_a, "Value");
+        insert_named_struct(&mut reader, value_b, "Value");
+        insert_named_struct(&mut reader, other, "Other");
+        let union_value = type_id(0x40);
+        insert_union_with(
+            &mut reader,
+            union_value,
+            "Value",
+            8,
+            Box::new([]),
+            Box::new([]),
+        );
+
+        // The same id is one identity even when nothing is known about it.
+        assert!(identity(&reader, type_id(0xdead), type_id(0xdead)));
+        // Two spellings of one name; a different name; a different kind.
+        assert!(identity(&reader, value_a, value_b));
+        assert!(!identity(&reader, value_a, other));
+        assert!(!identity(&reader, value_a, union_value));
+    }
+
+    #[test]
+    fn test_reference_identity_recurses_through_pointers_and_arrays() {
+        let mut reader = DwReader::new();
+        let value_a = type_id(0x10);
+        let value_b = type_id(0x20);
+        let other = type_id(0x30);
+        insert_named_struct(&mut reader, value_a, "Value");
+        insert_named_struct(&mut reader, value_b, "Value");
+        insert_named_struct(&mut reader, other, "Other");
+        let to_value = type_id(0x40);
+        let to_twin = type_id(0x50);
+        let to_other = type_id(0x60);
+        insert_pointer(&mut reader, to_value, value_a);
+        insert_pointer(&mut reader, to_twin, value_b);
+        insert_pointer(&mut reader, to_other, other);
+        // A named pointer to the target an anonymous one has.
+        let named = reader.strings.intern("Ptr");
+        let named_to_value = type_id(0x70);
+        reader.types.insert(
+            named_to_value,
+            RawType::Pointer(RawPointer {
+                name: Some(named),
+                target_type_id: value_a,
+            }),
+        );
+        let four_a = type_id(0x80);
+        let four_b = type_id(0x90);
+        let eight = type_id(0xa0);
+        let four_other = type_id(0xb0);
+        insert_array(&mut reader, four_a, value_a, 4);
+        insert_array(&mut reader, four_b, value_b, 4);
+        insert_array(&mut reader, eight, value_a, 8);
+        insert_array(&mut reader, four_other, other, 4);
+
+        assert!(identity(&reader, to_value, to_twin));
+        assert!(!identity(&reader, to_value, to_other));
+        // One side being named does not put the pair on the name arm.
+        assert!(identity(&reader, named_to_value, to_value));
+        assert!(identity(&reader, four_a, four_b));
+        assert!(!identity(&reader, four_a, eight));
+        assert!(!identity(&reader, four_a, four_other));
+    }
+
+    #[test]
+    fn test_reference_identity_of_subroutine_types() {
+        let mut reader = DwReader::new();
+        let signature_a = type_id(0x10);
+        let signature_b = type_id(0x20);
+        reader.subroutine_types.insert(signature_a);
+        reader.subroutine_types.insert(signature_b);
+
+        assert!(identity(&reader, signature_a, signature_b));
+        assert!(!identity(&reader, signature_a, type_id(0xdead)));
+    }
+
+    #[test]
+    fn test_member_layouts_compare_name_offset_and_type() {
+        let mut reader = DwReader::new();
+        let a = member(&mut reader, "first", 0, type_id(0x10));
+        let a_twin = member(&mut reader, "first", 0, type_id(0x10));
+        let b = member(&mut reader, "second", 8, type_id(0x10));
+        let renamed = member(&mut reader, "renamed", 0, type_id(0x10));
+        let moved = member(&mut reader, "first", 4, type_id(0x10));
+        let retyped = member(&mut reader, "first", 0, type_id(0xdead));
+
+        let compat = |left: &[RawMember<StrId>], right: &[RawMember<StrId>]| {
+            reader.members_have_compatible_layout(left, right)
+        };
+        // A side with no recorded members is compatible with anything.
+        assert!(compat(&[], std::slice::from_ref(&a)));
+        assert!(compat(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&a_twin)
+        ));
+        assert!(!compat(&[a.clone(), b.clone()], std::slice::from_ref(&a)));
+        assert!(!compat(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&renamed)
+        ));
+        assert!(!compat(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&moved)
+        ));
+        assert!(!compat(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&retyped)
+        ));
+    }
+
+    #[test]
+    fn test_param_layouts_compare_name_and_type() {
+        let mut reader = DwReader::new();
+        let t = param(&mut reader, "T", type_id(0x10));
+        let t_twin = param(&mut reader, "T", type_id(0x10));
+        let u = param(&mut reader, "U", type_id(0x10));
+        let retargeted = param(&mut reader, "T", type_id(0xdead));
+
+        let compat = |left: &[RawGenericParameter<StrId>], right: &[RawGenericParameter<StrId>]| {
+            reader.params_have_compatible_layout(left, right)
+        };
+        assert!(compat(&[], std::slice::from_ref(&t)));
+        assert!(compat(
+            std::slice::from_ref(&t),
+            std::slice::from_ref(&t_twin)
+        ));
+        assert!(!compat(&[t.clone(), u.clone()], std::slice::from_ref(&t)));
+        assert!(!compat(std::slice::from_ref(&t), std::slice::from_ref(&u)));
+        assert!(!compat(
+            std::slice::from_ref(&t),
+            std::slice::from_ref(&retargeted)
+        ));
+    }
+
+    #[test]
+    fn test_variant_shape_compatibility() {
+        let mut reader = DwReader::new();
+        let elem = type_id(0x10);
+        insert_base(&mut reader, elem, Encoding::Unsigned, 4, None);
+
+        let one = |reader: &mut DwReader<'static>, offset| {
+            VariantShape::One(variant(reader, "V", offset, elem))
+        };
+        let many = |reader: &mut DwReader<'static>, with_discr: bool, values: &[u128]| {
+            let variants = values
+                .iter()
+                .map(|&value| (Some(value), variant(reader, "V", 8, elem)))
+                .collect();
+            VariantShape::Many {
+                discr: with_discr.then(|| member(reader, "discr", 0, elem)),
+                variants,
+            }
+        };
+        let compat = |reader: &DwReader<'static>,
+                      left: &VariantShape<StrId>,
+                      right: &VariantShape<StrId>| {
+            reader.variant_shapes_have_compatible_layout(left, right)
+        };
+
+        let zero = VariantShape::<StrId>::Zero;
+        let one_a = one(&mut reader, 0);
+        let one_twin = one(&mut reader, 0);
+        let one_moved = one(&mut reader, 4);
+        assert!(compat(&reader, &zero, &zero));
+        assert!(!compat(&reader, &zero, &one_a));
+        assert!(compat(&reader, &one_a, &one_twin));
+        assert!(!compat(&reader, &one_a, &one_moved));
+
+        let pair = many(&mut reader, true, &[0, 1]);
+        let pair_twin = many(&mut reader, true, &[0, 1]);
+        let pair_bare = many(&mut reader, false, &[0, 1]);
+        let pair_renumbered = many(&mut reader, true, &[0, 2]);
+        let empty = many(&mut reader, false, &[]);
+        let single_bare = many(&mut reader, false, &[0]);
+        let pair_bare_twin = many(&mut reader, false, &[0, 1]);
+        assert!(compat(&reader, &pair, &pair_twin));
+        // A side with no decoded variants is compatible with anything.
+        assert!(compat(&reader, &empty, &pair));
+        assert!(!compat(&reader, &pair, &pair_bare));
+        assert!(!compat(&reader, &pair, &pair_renumbered));
+        assert!(!compat(&reader, &single_bare, &pair_bare_twin));
+    }
+
+    #[test]
+    fn test_cstyle_shape_compatibility() {
+        let mut reader = DwReader::new();
+        let repr_a = type_id(0x10);
+        let repr_b = type_id(0x20);
+        insert_named_struct(&mut reader, repr_a, "u8");
+        insert_named_struct(&mut reader, repr_b, "u16");
+
+        let cstyle = |reader: &mut DwReader<'static>,
+                      repr: Option<TypeId>,
+                      names: &[(&'static str, u128)]| {
+            VariantShape::CStyle {
+                repr_type_id: repr,
+                enumerators: names
+                    .iter()
+                    .map(|&(name, value)| enumerator(reader, name, value))
+                    .collect(),
+            }
+        };
+        let compat = |reader: &DwReader<'static>,
+                      left: &VariantShape<StrId>,
+                      right: &VariantShape<StrId>| {
+            reader.variant_shapes_have_compatible_layout(left, right)
+        };
+
+        let colors = [("Red", 0), ("Green", 1)];
+        let a = cstyle(&mut reader, None, &colors);
+        let a_twin = cstyle(&mut reader, None, &colors);
+        let renumbered = cstyle(&mut reader, None, &[("Red", 0), ("Green", 2)]);
+        let bare = cstyle(&mut reader, None, &[]);
+        let narrow = cstyle(&mut reader, Some(repr_a), &colors);
+        let narrow_twin = cstyle(&mut reader, Some(repr_a), &colors);
+        let wide = cstyle(&mut reader, Some(repr_b), &colors);
+        assert!(compat(&reader, &a, &a_twin));
+        assert!(!compat(&reader, &a, &renumbered));
+        // A side with no decoded enumerators is compatible either way around.
+        assert!(compat(&reader, &bare, &a));
+        assert!(compat(&reader, &a, &bare));
+        assert!(!compat(&reader, &narrow, &wide));
+        assert!(compat(&reader, &narrow, &narrow_twin));
+    }
+
+    #[test]
+    fn test_optional_member_and_repr_compatibility() {
+        let mut reader = DwReader::new();
+        let a = member(&mut reader, "first", 0, type_id(0x10));
+        let a_twin = member(&mut reader, "first", 0, type_id(0x10));
+        let moved = member(&mut reader, "first", 4, type_id(0x10));
+
+        assert!(optional_members_have_compatible_layout(&reader, None, None));
+        assert!(optional_members_have_compatible_layout(
+            &reader,
+            Some(&a),
+            Some(&a_twin)
+        ));
+        assert!(!optional_members_have_compatible_layout(
+            &reader,
+            Some(&a),
+            Some(&moved)
+        ));
+        assert!(!optional_members_have_compatible_layout(
+            &reader,
+            Some(&a),
+            None
+        ));
+
+        let value_a = type_id(0x20);
+        let value_b = type_id(0x30);
+        let other = type_id(0x40);
+        insert_named_struct(&mut reader, value_a, "Value");
+        insert_named_struct(&mut reader, value_b, "Value");
+        insert_named_struct(&mut reader, other, "Other");
+        assert!(optional_type_ids_have_compatible_layout(
+            &reader, None, None
+        ));
+        assert!(optional_type_ids_have_compatible_layout(
+            &reader,
+            Some(value_a),
+            Some(value_b)
+        ));
+        assert!(!optional_type_ids_have_compatible_layout(
+            &reader,
+            Some(value_a),
+            Some(other)
+        ));
+        assert!(!optional_type_ids_have_compatible_layout(
+            &reader,
+            Some(value_a),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_grouping_helpers() {
+        let base = RawType::<StrId>::Base(RawBase {
+            name: None,
+            namespace: None,
+            encoding: Encoding::Unsigned,
+            size: 4,
+            alignment: None,
+        });
+        let pointer = RawType::<StrId>::Pointer(RawPointer {
+            name: None,
+            target_type_id: type_id(0x10),
+        });
+        let en = RawType::<StrId>::Enum(RawEnum {
+            name: None,
+            namespace: None,
+            size: 4,
+            alignment: None,
+            shape: VariantShape::Zero,
+            template_params: Box::new([]),
+            source_loc: None,
+        });
+        let st = RawType::<StrId>::Struct(RawStruct {
+            name: None,
+            namespace: None,
+            size: 4,
+            members: Box::new([]),
+            template_params: Box::new([]),
+            source_loc: None,
+        });
+        let un = RawType::<StrId>::Union(RawUnion {
+            name: None,
+            namespace: None,
+            size: 4,
+            members: Box::new([]),
+            template_params: Box::new([]),
+            source_loc: None,
+        });
+        let arr = RawType::<StrId>::Array(RawArray {
+            elem_type_id: type_id(0x10),
+            count: 1,
+        });
+        let kinds: HashSet<u8> = [base, pointer, en, st, un, arr]
+            .iter()
+            .map(raw_type_kind)
+            .collect();
+        assert_eq!(kinds.len(), 6, "each raw-type kind groups separately");
+
+        let low = type_id(0x10);
+        let high = type_id(0x20);
+        assert_eq!(ordered_pair(low, high), (low, high));
+        assert_eq!(ordered_pair(high, low), (low, high));
+        assert_eq!(ordered_pair(low, low), (low, low));
+
+        assert!(compatible_alignment(None, align(8)));
+        assert!(compatible_alignment(align(8), None));
+        assert!(compatible_alignment(align(8), align(8)));
+        assert!(!compatible_alignment(align(4), align(8)));
+    }
+
+    #[test]
+    fn test_inherited_identity_names_every_definition_kind() {
+        let mut reader = DwReader::new();
+        let assert_named = |reader: &mut DwReader<'static>, def: TypeId, decl: TypeId, name| {
+            reader.inherit_type_identity(def, decl);
+            let inherited = reader
+                .types
+                .get(&def)
+                .and_then(RawType::name)
+                .map(|id| reader.strings.get(id).to_owned());
+            assert_eq!(inherited.as_deref(), Some(name));
+        };
+
+        let base_def = type_id(0x10);
+        let base_decl = type_id(0x20);
+        insert_base(&mut reader, base_def, Encoding::Unsigned, 4, None);
+        insert_base(&mut reader, base_decl, Encoding::Unsigned, 4, None);
+        let RawType::Base(unnamed) = reader.types.get_mut(&base_def).unwrap() else {
+            unreachable!();
+        };
+        unnamed.name = None;
+        assert_named(&mut reader, base_def, base_decl, "base");
+
+        let target = type_id(0x30);
+        insert_named_struct(&mut reader, target, "Value");
+        let pointer_def = type_id(0x40);
+        let pointer_decl = type_id(0x50);
+        insert_pointer(&mut reader, pointer_def, target);
+        let named = reader.strings.intern("Ptr");
+        reader.types.insert(
+            pointer_decl,
+            RawType::Pointer(RawPointer {
+                name: Some(named),
+                target_type_id: target,
+            }),
+        );
+        assert_named(&mut reader, pointer_def, pointer_decl, "Ptr");
+
+        let enum_def = type_id(0x60);
+        let enum_decl = type_id(0x70);
+        insert_enum_with(
+            &mut reader,
+            enum_def,
+            4,
+            None,
+            VariantShape::Zero,
+            Box::new([]),
+        );
+        let RawType::Enum(unnamed) = reader.types.get_mut(&enum_def).unwrap() else {
+            unreachable!();
+        };
+        unnamed.name = None;
+        insert_enum_with(
+            &mut reader,
+            enum_decl,
+            4,
+            None,
+            VariantShape::Zero,
+            Box::new([]),
+        );
+        assert_named(&mut reader, enum_def, enum_decl, "E");
+
+        let union_def = type_id(0x80);
+        let union_decl = type_id(0x90);
+        insert_union_with(&mut reader, union_def, "U", 4, Box::new([]), Box::new([]));
+        let RawType::Union(unnamed) = reader.types.get_mut(&union_def).unwrap() else {
+            unreachable!();
+        };
+        unnamed.name = None;
+        insert_union_with(&mut reader, union_decl, "U", 4, Box::new([]), Box::new([]));
+        assert_named(&mut reader, union_def, union_decl, "U");
+    }
+
+    #[test]
+    fn test_finalization_prefers_the_complete_side_of_a_specification() {
+        // The definition side of the DW_AT_specification edge is itself
+        // marked a declaration, the "declaration" side is complete, and the
+        // incomplete side has the lower id — so neither completeness order
+        // nor the id tie-break agree with each other.
+        let mut reader = DwReader::new();
+        let incomplete = type_id(0x10);
+        let complete = type_id(0x50);
+        insert_struct(&mut reader, incomplete, Some("Value"), 0);
+        insert_struct(&mut reader, complete, Some("Value"), 8);
+        reader.type_declarations.insert(incomplete);
+        reader.type_specifications.insert(incomplete, complete);
+
+        reader.finalize_types();
+
+        assert_eq!(reader.canonicalize(incomplete), complete);
+    }
+
+    #[test]
+    fn test_named_pointers_stay_out_of_structural_deduplication() {
+        let mut reader = DwReader::new();
+        let target = type_id(0x10);
+        insert_named_struct(&mut reader, target, "Value");
+        let named = type_id(0x20);
+        let name = reader.strings.intern("Ptr");
+        reader.types.insert(
+            named,
+            RawType::Pointer(RawPointer {
+                name: Some(name),
+                target_type_id: target,
+            }),
+        );
+        let anonymous = type_id(0x30);
+        insert_pointer(&mut reader, anonymous, target);
+
+        reader.finalize_types();
+
+        assert_eq!(reader.canonicalize(anonymous), anonymous);
+        assert_eq!(reader.canonicalize(named), named);
+    }
+
+    #[test]
+    fn test_declaration_only_groups_collapse_to_one() {
+        let mut reader = DwReader::new();
+        let first = type_id(0x10);
+        let second = type_id(0x20);
+        insert_struct(&mut reader, first, Some("Value"), 0);
+        insert_struct(&mut reader, second, Some("Value"), 0);
+        reader.type_declarations.insert(first);
+        reader.type_declarations.insert(second);
+
+        reader.finalize_types();
+
+        assert_eq!(reader.canonicalize(second), first);
+        assert_eq!(reader.canonicalize(first), first);
     }
 }
