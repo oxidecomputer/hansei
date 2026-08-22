@@ -715,3 +715,88 @@ impl fmt::Display for WaitTarget {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The park-state prose the thread listings embed.
+    #[test]
+    fn test_park_state_display() {
+        let cases = [
+            (ParkState::Awake, "awake"),
+            (ParkState::Condvar, "parked"),
+            (ParkState::Driver, "parked in the io driver"),
+            (ParkState::Notified, "notified, waking"),
+            (ParkState::Unknown(7), "an unknown park state (7)"),
+        ];
+        for (state, expected) in cases {
+            assert_eq!(state.to_string(), expected);
+        }
+    }
+
+    /// The CT activity prose, likewise.
+    #[test]
+    fn test_ct_activity_display() {
+        let cases = [
+            (CtActivity::Parked, "parked in the driver"),
+            (CtActivity::PollingBlockOn, "polling the block_on future"),
+            (CtActivity::RunningTasks, "running tasks"),
+        ];
+        for (activity, expected) in cases {
+            assert_eq!(activity.to_string(), expected);
+        }
+    }
+
+    /// A span is half-open: locate answers for its start and last byte
+    /// and not for its one-past end, whichever span follows.
+    #[test]
+    fn test_task_extents_spans_are_half_open() {
+        let extents = TaskExtents {
+            spans: vec![(0x1000, 0x1040, 0), (0x2000, 0x2010, 1)],
+        };
+        assert_eq!(extents.locate(0x0fff), None);
+        assert_eq!(extents.locate(0x1000), Some((0, 0)));
+        assert_eq!(extents.locate(0x103f), Some((0, 0x3f)));
+        assert_eq!(extents.locate(0x1040), None);
+        assert_eq!(extents.locate(0x2000), Some((1, 0)));
+        assert_eq!(extents.locate(0x2010), None);
+    }
+
+    /// past_due is strict: a deadline exactly at the stop instant has
+    /// not passed yet, on either side of the seconds/nanos split.
+    #[test]
+    fn test_timer_past_due_is_strict() {
+        let at = |tv_sec, tv_nsec| RawInstant { tv_sec, tv_nsec };
+        let kind = |deadline, stopped| WaitTarget::Timer { deadline, stopped }.kind();
+        let past_due = |past_due| WaitKind::Timer { past_due };
+
+        assert_eq!(kind(at(10, 0), Some(at(10, 0))), past_due(Some(false)));
+        assert_eq!(
+            kind(at(9, 999_999_999), Some(at(10, 0))),
+            past_due(Some(true))
+        );
+        assert_eq!(kind(at(10, 1), Some(at(10, 0))), past_due(Some(false)));
+        assert_eq!(kind(at(10, 0), None), past_due(None));
+    }
+
+    /// Granted means nothing more is needed — the future holds the
+    /// resource, not merely a place in line.
+    #[test]
+    fn test_granted_is_needed_zero() {
+        let acquire = |needed| AbandonedAcquire {
+            frame: "frame".to_owned(),
+            state: "Suspend0".to_owned(),
+            await_loc: None,
+            local: "fut".to_owned(),
+            future: "Acquire".to_owned(),
+            owner: None,
+            semaphore: 0x10,
+            node: 0x20,
+            num_permits: 2,
+            needed,
+        };
+        assert!(acquire(0).granted());
+        assert!(!acquire(1).granted());
+    }
+}

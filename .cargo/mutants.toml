@@ -140,6 +140,15 @@ exclude_re = [
     # the payload slice bound a few lines up; that one every chain test
     # kills, so skipping its report costs nothing.)
     "bundle.rs.*replace \\+ with - in Context<'b, T>::await_chain",
+    # The same structurally-zero offset at the step interpreter's two
+    # variant arms: subtracting a zero payload offset is the same
+    # address on any input a rustc-built bundle produces. The `*`
+    # spellings are not equivalent (addr * 0 is 0) and the step tests'
+    # address assertions catch them. The regex necessarily covers the
+    # function's member-arm and slice-bound `-` too; the step tests
+    # kill both (a nonzero member offset, a short buffer), so skipping
+    # their report costs nothing.
+    "contract.rs.*replace \\+ with - in walk_steps",
     # A defensive filter on impossible input: task_extent only ever
     # returns start..start+size with a nonzero size (a Cell's size or
     # trailer_offset + trailer size), so no extent is empty and the
@@ -173,6 +182,12 @@ exclude_re = [
     # (and add) agree on every input. `|` is the spelling that says
     # "assemble disjoint lanes".
     "replace \\| with \\^ in u128_from_le",
+    # Equivalent mutants, the same disjoint-lanes argument: TaskState's
+    # STATE_MASK is assembled from single-bit constants no two of which
+    # share a bit, so or and xor agree on every pair. The anchor keeps
+    # the file's *function* or-mutants (which carry an "in fn" suffix)
+    # reported.
+    "tokio/mod.rs.*replace \\| with \\^$",
     # Equivalent mutant: `visited` is only consumed alongside `proc` —
     # the pointer arms demand the `(ctx.proc, ctx.visited)` pair and the
     # parallel gates read it after a read `proc` already served — and the
