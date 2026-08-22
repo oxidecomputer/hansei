@@ -5,7 +5,6 @@ expression: actual
 Task #park: async fn many_tasks::park_task (idle)
 Defined at: src/bin/many-tasks.rs:9
 
-  0  async fn      many_tasks::park_task
-     suspends:
-     ▸ Suspend0  src/bin/many-tasks.rs:11
-       └─* 1  future        tokio::sync::oneshot::Receiver<u32>
+#0  async fn      many_tasks::park_task
+      awaiting at src/bin/many-tasks.rs:11 (Suspend0)
+#1  future        tokio::sync::oneshot::Receiver<u32>
