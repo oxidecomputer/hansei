@@ -77,6 +77,21 @@ exclude_globs = [
 ]
 
 exclude_re = [
+    # Throughput knobs, not behavior: the worker count and the in-flight
+    # CGU ceiling only decide how the parse fan-out is scheduled, and
+    # collection is order-independent by design (references are global
+    # offsets, dedup is deferred), so every spelling folds to the same
+    # DwReader. A count of 0 is "pick a default" to the pool builder.
+    "replace default_parallelism",
+    "replace \\* with [+/] in DwReader<'dw>::read_types",
+    # The same knob one layer down: the group-count threshold only routes
+    # the partitioning between the inline and rayon paths, which produce
+    # the same aliases (each id is in exactly one independent group).
+    "replace < with [<=>]+ in DwReader<'dw>::named_aliases",
+    # Equivalent mutant: the arm deleted falls through to a `_` arm doing
+    # the same nothing. It is there to say arrays carry no descriptive
+    # fields to inherit, not to change behavior.
+    "delete match arm \\(RawType::Array\\(_\\), RawType::Array\\(_\\)\\) in DwReader<'dw>::inherit_type_identity",
     # Equivalent mutants: the arm deleted falls through to a `_` arm
     # returning the same thing, so nothing can tell the difference. The
     # arm is there to say *why* a union is stopped at.
