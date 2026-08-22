@@ -66,6 +66,18 @@ test_package = [
 exclude_globs = [
     # Fixture programs and the dashboard's TypeScript build.
     "test-programs/**",
+    # Non-primary tokio version families. A family's detectors run only
+    # when the target's tokio version selects it, which the default fixture
+    # build never does — their judge is the opt-in version matrix, whose
+    # goldens pin which family attached per cell (formats.snap), every
+    # attached format's member chains, and which walk spelling bound. A
+    # sweep's suite never selects these modules, so every mutant in them
+    # reads as missed. The primary family's module (today tokio_v1_49.rs)
+    # stays swept because the extraction goldens judge it; when the primary
+    # pin advances, move the newly-primary module out of this list and the
+    # newly-non-primary one in.
+    "exegesis/src/detect/tokio_v1_47.rs",
+    "exegesis/src/detect/tokio_v1_53.rs",
     # The snapshot command is a test-data producer behind the
     # `snapshot` feature: no automated test drives a capture, so no
     # sweep can see any of it stubbed or skewed. Its output *is*
