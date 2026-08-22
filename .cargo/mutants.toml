@@ -112,6 +112,9 @@ exclude_re = [
     # the same nothing. It is there to say arrays carry no descriptive
     # fields to inherit, not to change behavior.
     "delete match arm \\(RawType::Array\\(_\\), RawType::Array\\(_\\)\\) in DwReader<'dw>::inherit_type_identity",
+    # A tracing predicate: the conjunction only decides whether a debug
+    # line is logged for a nameless type, and no test reads the log.
+    "replace && with \\|\\| in CodegenUnit<'dw>::add_type",
     # Equivalent mutants: the arm deleted falls through to a `_` arm
     # returning the same thing, so nothing can tell the difference. The
     # arm is there to say *why* a union is stopped at.
