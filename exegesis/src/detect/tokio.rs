@@ -1001,3 +1001,142 @@ impl Emitter<'_> {
         Some(fields)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DwReader;
+    use crate::raw_types::{NsId, RawBase, RawGenericParameter, RawMember, RawStruct, RawType};
+    use crate::{Encoding, StrId};
+
+    use gimli::{DebugInfoOffset, UnitSectionOffset};
+
+    use std::collections::BTreeMap;
+
+    fn type_id(offset: usize) -> TypeId {
+        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    fn ns(reader: &mut DwReader<'static>, path: &'static str) -> NsId {
+        let mut ns = None;
+        for seg in path.split("::") {
+            let name = reader.strings.intern(seg);
+            ns = Some(reader.namespaces.insert(ns, name));
+        }
+        ns.unwrap()
+    }
+
+    fn strukt(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        namespace: Option<NsId>,
+        name: &'static str,
+        members: &[(&'static str, TypeId, u64)],
+        params: &[(&'static str, TypeId)],
+    ) {
+        let members: Box<[RawMember<StrId>]> = members
+            .iter()
+            .map(|&(name, type_id, offset)| RawMember {
+                name: Some(reader.strings.intern(name)),
+                offset,
+                type_id,
+                source_loc: None,
+            })
+            .collect();
+        let template_params: Box<[RawGenericParameter<StrId>]> = params
+            .iter()
+            .map(|&(name, type_id)| RawGenericParameter {
+                name: Some(reader.strings.intern(name)),
+                type_id,
+            })
+            .collect();
+        let name = Some(reader.strings.intern(name));
+        reader.types.insert(
+            id,
+            RawType::Struct(RawStruct {
+                name,
+                namespace,
+                size: 8,
+                members,
+                template_params,
+                source_loc: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_batch_semaphore_is_recognized_by_its_full_name() {
+        let mut reader = DwReader::default();
+        let sem_ns = ns(&mut reader, "tokio::sync::batch_semaphore");
+        let sem = type_id(1);
+        let plain = type_id(2);
+        strukt(&mut reader, sem, Some(sem_ns), "Semaphore", &[], &[]);
+        strukt(&mut reader, plain, None, "Semaphore", &[], &[]);
+        assert!(is_batch_semaphore(&reader, sem));
+        assert!(!is_batch_semaphore(&reader, plain));
+    }
+
+    /// The loom shim with its atomic module namespace spelled `module`.
+    fn loom_atomic(module: &'static str) -> (DwReader<'static>, TypeId) {
+        let mut reader = DwReader::default();
+        let shim_ns = ns(&mut reader, module);
+        let cell_ns = ns(&mut reader, "core::cell");
+        let atomic_ns = ns(&mut reader, "core::sync::atomic");
+        let word = type_id(1);
+        reader.types.insert(
+            word,
+            RawType::Base(RawBase {
+                name: Some(reader.strings.intern("u64")),
+                namespace: None,
+                encoding: Encoding::Unsigned,
+                size: 8,
+                alignment: None,
+            }),
+        );
+        let atomic = type_id(2);
+        strukt(
+            &mut reader,
+            atomic,
+            Some(atomic_ns),
+            "Atomic<u64>",
+            &[("v", word, 0)],
+            &[("T", word)],
+        );
+        let cell = type_id(3);
+        strukt(
+            &mut reader,
+            cell,
+            Some(cell_ns),
+            "UnsafeCell<Atomic<u64>>",
+            &[("value", atomic, 0)],
+            &[("T", atomic)],
+        );
+        let shim = type_id(0x10);
+        strukt(
+            &mut reader,
+            shim,
+            Some(shim_ns),
+            "AtomicU64",
+            &[("inner", cell, 0)],
+            &[],
+        );
+        (reader, shim)
+    }
+
+    fn detect_shim(reader: &DwReader<'_>, shim: TypeId) -> Option<DisplayNode> {
+        loom_atomic_node(&mut Emitter::new(reader, BTreeMap::new(), None, None), shim)
+    }
+
+    #[test]
+    fn test_loom_atomic_requires_one_width_module_segment() {
+        let (reader, shim) = loom_atomic("tokio::loom::std::atomic_u64");
+        assert!(detect_shim(&reader, shim).is_some());
+
+        // The bare prefix names no width, and a nested module is not the
+        // shim's: both stay structural.
+        let (reader, shim) = loom_atomic("tokio::loom::std::atomic_");
+        assert!(detect_shim(&reader, shim).is_none());
+        let (reader, shim) = loom_atomic("tokio::loom::std::atomic_u64::extra");
+        assert!(detect_shim(&reader, shim).is_none());
+    }
+}
