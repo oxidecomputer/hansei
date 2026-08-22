@@ -104,6 +104,10 @@ exclude_re = [
     # merges per-worker sweeps in chunk order, which resolves the
     # "first wins" fields exactly as the serial loop does.
     "replace < with [<=>]+ in sweep_functions",
+    # And the vtable name index's: the per-shard maps merge into one
+    # name-keyed index, and each hint's candidates collapse through a
+    # BTreeSet, so shard order cannot reach the answer.
+    "replace < with [<=>]+ in resolve_vtable_type_hints",
     # Equivalent mutant: the arm deleted falls through to a `_` arm doing
     # the same nothing. It is there to say arrays carry no descriptive
     # fields to inherit, not to change behavior.

@@ -206,7 +206,9 @@ pub(super) fn resolve_vtable_type_hints(
 
 #[cfg(test)]
 mod tests {
-    use super::{VtableTypeHint, scan_vtable_section};
+    use super::{
+        VtableTypeHint, discover_vtable_types, resolve_vtable_type_hints, scan_vtable_section,
+    };
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
@@ -241,5 +243,145 @@ mod tests {
             name: "app::NullDrop".to_owned(),
             size: 16,
         }));
+    }
+
+    fn entry(drop: u64, size: u64, align: u64) -> Vec<u8> {
+        [drop, size, align]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect()
+    }
+
+    fn scan(data: &[u8], address: u64) -> BTreeSet<VtableTypeHint> {
+        let drop = 0x1000;
+        let text_addresses = BTreeSet::from([drop]);
+        let concrete_by_address =
+            BTreeMap::from([(drop, BTreeSet::from(["app::Dropped".to_owned()]))]);
+        let mut hints = BTreeSet::new();
+        scan_vtable_section(
+            data,
+            address,
+            true,
+            &text_addresses,
+            &concrete_by_address,
+            &mut hints,
+        );
+        hints
+    }
+
+    #[test]
+    fn test_scan_screens_the_alignment_word() {
+        // A power of two up to 2^30 is an alignment; zero, a non-power,
+        // and anything wider is not a vtable header.
+        assert_eq!(scan(&entry(0x1000, 24, 8), 0).len(), 1);
+        assert_eq!(scan(&entry(0x1000, 24, 1 << 30), 0).len(), 1);
+        assert_eq!(scan(&entry(0x1000, 24, 0), 0).len(), 0);
+        assert_eq!(scan(&entry(0x1000, 24, 3), 0).len(), 0);
+        assert_eq!(scan(&entry(0x1000, 24, 1 << 31), 0).len(), 0);
+    }
+
+    #[test]
+    fn test_scan_walks_word_aligned_addresses_only() {
+        // A section based at address 2 has its first aligned word six
+        // bytes in; an entry there is found, the misaligned start is not
+        // read as one.
+        let mut data = vec![0u8; 6];
+        data.extend(entry(0x1000, 24, 8));
+        assert_eq!(scan(&data, 2).len(), 1);
+
+        // A section of exactly one entry is scanned.
+        assert_eq!(scan(&entry(0x1000, 24, 8), 0).len(), 1);
+    }
+
+    #[test]
+    fn test_hints_resolve_by_normalized_name_and_size() {
+        use crate::raw_types::{RawStruct, RawType};
+        use crate::{DwReader, TypeId};
+        use gimli::{DebugInfoOffset, UnitSectionOffset};
+
+        let type_id = |offset| TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)));
+        let mut reader = DwReader::default();
+        let strukt = |reader: &mut DwReader<'static>, id, name: &'static str, size| {
+            let name = Some(reader.strings.intern(name));
+            reader.types.insert(
+                id,
+                RawType::Struct(RawStruct {
+                    name,
+                    namespace: None,
+                    size,
+                    members: Box::new([]),
+                    template_params: Box::new([]),
+                    source_loc: None,
+                }),
+            );
+        };
+        let dropped = type_id(1);
+        strukt(&mut reader, dropped, "Dropped", 24);
+        // Two same-named, same-sized candidates: ambiguous.
+        strukt(&mut reader, type_id(2), "Ambig", 8);
+        strukt(&mut reader, type_id(3), "Ambig", 8);
+
+        let hint = |name: &str, size| VtableTypeHint {
+            name: name.to_owned(),
+            size,
+        };
+        let hints = [
+            hint("Dropped", 24),
+            hint("Dropped", 999),
+            hint("NoSuchType", 8),
+            hint("Ambig", 8),
+        ];
+        let mut stats = super::ExtractStats::default();
+        let roots = resolve_vtable_type_hints(&reader, &hints, &mut stats);
+
+        assert_eq!(roots, BTreeSet::from([dropped]));
+        assert_eq!(stats.vtable_type_hints, 4);
+        assert_eq!(stats.vtable_types_missing, 2);
+        assert_eq!(stats.vtable_types_ambiguous, 1);
+        assert_eq!(stats.vtable_type_roots, 1);
+    }
+
+    /// Discovery over a synthetic relocatable ELF: a `.data` section
+    /// holding two vtable images — one with null drop glue named by its
+    /// method slot, one whose drop glue is the text symbol itself — and
+    /// one legacy-mangled `<app::Foo as app::Trait>::poll` symbol naming
+    /// the concrete type. On-disk fixtures cannot cover this pass: a PIE
+    /// binary's vtable slots are relocation-filled at load time and zero
+    /// in the file.
+    #[test]
+    fn test_discovery_scans_data_sections_by_symbol_kind() {
+        use object::write::{Object as WriteObject, Symbol, SymbolSection};
+        use object::{
+            Architecture, BinaryFormat, Endianness, SectionKind, SymbolFlags, SymbolKind,
+            SymbolScope,
+        };
+
+        let method = 0x2000u64;
+        let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let section = obj.add_section(vec![], b".data".to_vec(), SectionKind::Data);
+        let data: Vec<u8> = [0, 24, 8, method, method, 48, 8, 0]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        obj.append_section_data(section, &data, 8);
+        obj.add_symbol(Symbol {
+            name: b"_ZN39_$LT$app..Foo$u20$as$u20$app..Trait$GT$4poll17h0000000000000000E".to_vec(),
+            value: method,
+            size: 0,
+            kind: SymbolKind::Text,
+            scope: SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Absolute,
+            flags: SymbolFlags::None,
+        });
+        let bytes = obj.write().expect("a synthetic ELF assembles");
+        let file = object::File::parse(&*bytes).expect("the synthetic ELF parses");
+
+        let hints = discover_vtable_types(&file);
+        let hint = |size| VtableTypeHint {
+            name: "app::Foo".to_owned(),
+            size,
+        };
+        assert_eq!(hints, vec![hint(24), hint(48)]);
     }
 }
