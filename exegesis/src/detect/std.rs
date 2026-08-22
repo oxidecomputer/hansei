@@ -714,3 +714,668 @@ pub(super) fn is_generic_atomic(reader: &DwReader<'_>, id: TypeId) -> bool {
         && name.ends_with('>')
         && sole_param_target(reader, st).is_some()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DwReader;
+    use crate::raw_types::{
+        NsId, RawArray, RawBase, RawEnum, RawGenericParameter, RawMember, RawPointer, RawStruct,
+        RawUnion, RawVariant, VariantShape,
+    };
+
+    use gimli::{DebugInfoOffset, UnitSectionOffset};
+
+    use ::std::collections::BTreeMap;
+
+    use crate::bundle::POINTER_SIZE;
+
+    fn type_id(offset: usize) -> TypeId {
+        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+    }
+
+    /// A fixture reader with builder methods spelling layouts the way the
+    /// detectors read them.
+    #[derive(Default)]
+    struct Fx {
+        reader: DwReader<'static>,
+    }
+
+    impl Fx {
+        fn ns(&mut self, path: &'static str) -> NsId {
+            let mut ns = None;
+            for seg in path.split("::") {
+                let name = self.reader.strings.intern(seg);
+                ns = Some(self.reader.namespaces.insert(ns, name));
+            }
+            ns.unwrap()
+        }
+
+        fn base(&mut self, id: TypeId, name: &'static str, encoding: Encoding, size: u64) {
+            let name = Some(self.reader.strings.intern(name));
+            self.reader.types.insert(
+                id,
+                RawType::Base(RawBase {
+                    name,
+                    namespace: None,
+                    encoding,
+                    size,
+                    alignment: None,
+                }),
+            );
+        }
+
+        fn members(
+            &mut self,
+            members: &[(&'static str, TypeId, u64)],
+        ) -> Box<[RawMember<crate::StrId>]> {
+            members
+                .iter()
+                .map(|&(name, type_id, offset)| RawMember {
+                    name: Some(self.reader.strings.intern(name)),
+                    offset,
+                    type_id,
+                    source_loc: None,
+                })
+                .collect()
+        }
+
+        fn params(
+            &mut self,
+            params: &[(&'static str, TypeId)],
+        ) -> Box<[RawGenericParameter<crate::StrId>]> {
+            params
+                .iter()
+                .map(|&(name, type_id)| RawGenericParameter {
+                    name: Some(self.reader.strings.intern(name)),
+                    type_id,
+                })
+                .collect()
+        }
+
+        fn strukt(
+            &mut self,
+            id: TypeId,
+            namespace: Option<NsId>,
+            name: &'static str,
+            members: &[(&'static str, TypeId, u64)],
+            params: &[(&'static str, TypeId)],
+        ) {
+            let members = self.members(members);
+            let template_params = self.params(params);
+            let name = Some(self.reader.strings.intern(name));
+            self.reader.types.insert(
+                id,
+                RawType::Struct(RawStruct {
+                    name,
+                    namespace,
+                    size: 8,
+                    members,
+                    template_params,
+                    source_loc: None,
+                }),
+            );
+        }
+
+        fn onion(
+            &mut self,
+            id: TypeId,
+            namespace: Option<NsId>,
+            name: &'static str,
+            members: &[(&'static str, TypeId, u64)],
+            params: &[(&'static str, TypeId)],
+        ) {
+            let members = self.members(members);
+            let template_params = self.params(params);
+            let name = Some(self.reader.strings.intern(name));
+            self.reader.types.insert(
+                id,
+                RawType::Union(RawUnion {
+                    name,
+                    namespace,
+                    size: 8,
+                    members,
+                    template_params,
+                    source_loc: None,
+                }),
+            );
+        }
+
+        fn pointer(&mut self, id: TypeId, target: TypeId) {
+            self.reader.types.insert(
+                id,
+                RawType::Pointer(RawPointer {
+                    name: None,
+                    target_type_id: target,
+                }),
+            );
+        }
+
+        fn array(&mut self, id: TypeId, elem: TypeId, count: u64) {
+            self.reader.types.insert(
+                id,
+                RawType::Array(RawArray {
+                    elem_type_id: elem,
+                    count,
+                }),
+            );
+        }
+
+        /// A `core::option::Option` whose `Some` payload is `payload`.
+        fn option_of(&mut self, id: TypeId, namespace: NsId, payload: TypeId) {
+            let some = RawVariant {
+                member: RawMember {
+                    name: Some(self.reader.strings.intern("Some")),
+                    offset: 0,
+                    type_id: payload,
+                    source_loc: None,
+                },
+            };
+            let name = Some(self.reader.strings.intern("Option<T>"));
+            self.reader.types.insert(
+                id,
+                RawType::Enum(RawEnum {
+                    name,
+                    namespace: Some(namespace),
+                    size: 8,
+                    alignment: None,
+                    shape: VariantShape::Many {
+                        discr: None,
+                        variants: Box::new([(Some(1), some)]),
+                    },
+                    template_params: Box::new([]),
+                    source_loc: None,
+                }),
+            );
+        }
+    }
+
+    fn detect(fx: &Fx, detector: super::super::Detector, id: TypeId) -> Option<DisplayNode> {
+        detector(
+            &mut Emitter::new(&fx.reader, BTreeMap::new(), None, None),
+            id,
+        )
+    }
+
+    /// Which leg of the BTreeMap layout to break, if any.
+    #[derive(PartialEq, Clone, Copy)]
+    enum Btree {
+        Valid,
+        ParamNotK,
+        ParamNotA,
+        LengthNarrow,
+        ZeroCountKeys,
+        CountMismatch,
+        KeysWrongTarget,
+        DataMoved,
+    }
+
+    fn btree(kind: Btree) -> (Fx, TypeId) {
+        let mut fx = Fx::default();
+        let map_ns = fx.ns("alloc::collections::btree::map");
+        let node_ns = fx.ns("alloc::collections::btree::node");
+        let option_ns = fx.ns("core::option");
+        let mu_ns = fx.ns("core::mem::maybe_uninit");
+
+        let key = type_id(1);
+        let value = type_id(2);
+        let global = type_id(3);
+        let u64t = type_id(4);
+        let u16t = type_id(5);
+        let u32t = type_id(6);
+        fx.base(key, "i64", Encoding::Signed, 8);
+        fx.base(value, "u64", Encoding::Unsigned, 8);
+        fx.strukt(global, None, "Global", &[], &[]);
+        fx.base(u64t, "u64", Encoding::Unsigned, 8);
+        fx.base(u16t, "u16", Encoding::Unsigned, 2);
+        fx.base(u32t, "u32", Encoding::Unsigned, 4);
+
+        let map = type_id(0x10);
+        let opt = type_id(0x11);
+        let node_ref = type_id(0x12);
+        let non_null_leaf = type_id(0x13);
+        let ptr_leaf = type_id(0x14);
+        let leaf = type_id(0x15);
+        let arr_k = type_id(0x16);
+        let arr_v = type_id(0x17);
+        let mu_k = type_id(0x18);
+        let mu_v = type_id(0x19);
+        let opt_parent = type_id(0x1a);
+        let non_null_internal = type_id(0x1b);
+        let ptr_internal = type_id(0x1c);
+        let internal = type_id(0x1d);
+        let arr_edge = type_id(0x1e);
+        let mu_edge = type_id(0x1f);
+
+        let length_ty = if kind == Btree::LengthNarrow {
+            u32t
+        } else {
+            u64t
+        };
+        fx.strukt(
+            map,
+            Some(map_ns),
+            "BTreeMap<i64, u64, alloc::alloc::Global>",
+            &[("root", opt, 0), ("length", length_ty, 8)],
+            &[
+                (if kind == Btree::ParamNotK { "X" } else { "K" }, key),
+                ("V", value),
+                (if kind == Btree::ParamNotA { "B" } else { "A" }, global),
+            ],
+        );
+        fx.option_of(opt, option_ns, node_ref);
+        fx.strukt(
+            node_ref,
+            Some(node_ns),
+            "NodeRef<marker::Owned, i64, u64, marker::LeafOrInternal>",
+            &[("height", u64t, 0), ("node", non_null_leaf, 8)],
+            &[
+                ("BorrowType", global),
+                ("K", key),
+                ("V", value),
+                ("Type", global),
+            ],
+        );
+        fx.strukt(
+            non_null_leaf,
+            None,
+            "NonNull<LeafNode<i64, u64>>",
+            &[("pointer", ptr_leaf, 0)],
+            &[],
+        );
+        fx.pointer(ptr_leaf, leaf);
+        let keys_count = if kind == Btree::ZeroCountKeys { 0 } else { 11 };
+        let vals_count = if kind == Btree::CountMismatch {
+            keys_count + 1
+        } else {
+            keys_count
+        };
+        fx.strukt(
+            leaf,
+            Some(node_ns),
+            "LeafNode<i64, u64>",
+            &[
+                ("len", u16t, 0),
+                ("keys", arr_k, 8),
+                ("vals", arr_v, 96),
+                ("parent", opt_parent, 184),
+            ],
+            &[("K", key), ("V", value)],
+        );
+        fx.array(arr_k, mu_k, keys_count);
+        fx.array(arr_v, mu_v, vals_count);
+        let keys_target = if kind == Btree::KeysWrongTarget {
+            value
+        } else {
+            key
+        };
+        fx.onion(
+            mu_k,
+            Some(mu_ns),
+            "MaybeUninit<i64>",
+            &[("value", keys_target, 0)],
+            &[("T", keys_target)],
+        );
+        fx.onion(
+            mu_v,
+            Some(mu_ns),
+            "MaybeUninit<u64>",
+            &[("value", value, 0)],
+            &[("T", value)],
+        );
+        fx.option_of(opt_parent, option_ns, non_null_internal);
+        fx.strukt(
+            non_null_internal,
+            None,
+            "NonNull<InternalNode<i64, u64>>",
+            &[("pointer", ptr_internal, 0)],
+            &[],
+        );
+        fx.pointer(ptr_internal, internal);
+        let data_offset = if kind == Btree::DataMoved { 8 } else { 0 };
+        fx.strukt(
+            internal,
+            Some(node_ns),
+            "InternalNode<i64, u64>",
+            &[("data", leaf, data_offset), ("edges", arr_edge, 200)],
+            &[("K", key), ("V", value)],
+        );
+        fx.array(arr_edge, mu_edge, keys_count + 1);
+        fx.onion(
+            mu_edge,
+            Some(mu_ns),
+            "MaybeUninit<NonNull<LeafNode<i64, u64>>>",
+            &[("value", non_null_leaf, 0)],
+            &[("T", non_null_leaf)],
+        );
+
+        (fx, map)
+    }
+
+    #[test]
+    fn test_btree_map_screens_each_leg_of_its_layout() {
+        let (fx, map) = btree(Btree::Valid);
+        assert!(detect(&fx, btree_map_node, map).is_some());
+
+        for kind in [
+            Btree::ParamNotK,
+            Btree::ParamNotA,
+            Btree::LengthNarrow,
+            Btree::ZeroCountKeys,
+            Btree::CountMismatch,
+            Btree::KeysWrongTarget,
+            Btree::DataMoved,
+        ] {
+            let (fx, map) = btree(kind);
+            assert!(
+                detect(&fx, btree_map_node, map).is_none(),
+                "a broken leg must decline"
+            );
+        }
+    }
+
+    #[test]
+    fn test_btree_node_screens_compare_names_and_key_value_types() {
+        let (fx, _) = btree(Btree::Valid);
+        let reader = &fx.reader;
+        let key = type_id(1);
+        let value = type_id(2);
+        let node_ref = type_id(0x12);
+        let leaf = type_id(0x15);
+        let internal = type_id(0x1d);
+
+        assert!(is_btree_node_ref(reader, node_ref, key, value));
+        assert!(!is_btree_node_ref(reader, node_ref, value, key));
+        assert!(!is_btree_node_ref(reader, leaf, key, value));
+        // The node-ref shape under some other name is not a NodeRef.
+        let mut fx = btree(Btree::Valid).0;
+        let fake_ref = type_id(0x40);
+        let node_ns = fx.ns("alloc::collections::btree::node");
+        fx.strukt(
+            fake_ref,
+            Some(node_ns),
+            "NodeRefish<marker::Owned, i64, u64, marker::LeafOrInternal>",
+            &[],
+            &[
+                ("BorrowType", type_id(3)),
+                ("K", key),
+                ("V", value),
+                ("Type", type_id(3)),
+            ],
+        );
+        assert!(!is_btree_node_ref(&fx.reader, fake_ref, key, value));
+
+        assert!(is_btree_node(reader, leaf, "LeafNode", key, value));
+        assert!(is_btree_node(reader, internal, "InternalNode", key, value));
+        assert!(!is_btree_node(reader, leaf, "InternalNode", key, value));
+        assert!(!is_btree_node(reader, leaf, "LeafNode", value, key));
+        assert!(!is_btree_node(reader, leaf, "LeafNode", key, key));
+        assert!(!is_btree_node(reader, leaf, "LeafNode", value, value));
+        assert!(!is_btree_node(reader, node_ref, "LeafNode", key, value));
+    }
+
+    fn vec_fixture(param_t: &'static str, retarget_alloc: bool) -> (Fx, TypeId) {
+        let mut fx = Fx::default();
+        let vec_ns = fx.ns("alloc::vec");
+        let raw_vec_ns = fx.ns("alloc::raw_vec");
+        let niche_ns = fx.ns("core::num::niche_types");
+
+        let elem = type_id(1);
+        let global = type_id(2);
+        let other = type_id(3);
+        let u8t = type_id(4);
+        let u64t = type_id(5);
+        let usize_t = type_id(6);
+        fx.base(elem, "i64", Encoding::Signed, 8);
+        fx.strukt(global, None, "Global", &[], &[]);
+        fx.strukt(other, None, "Other", &[], &[]);
+        fx.base(u8t, "u8", Encoding::Unsigned, 1);
+        fx.base(u64t, "u64", Encoding::Unsigned, 8);
+        fx.base(usize_t, "usize", Encoding::Unsigned, 8);
+
+        let vec = type_id(0x10);
+        let raw_vec = type_id(0x11);
+        let inner = type_id(0x12);
+        let byte_ptr = type_id(0x13);
+        let cap = type_id(0x14);
+        fx.strukt(
+            vec,
+            Some(vec_ns),
+            "Vec<i64, alloc::alloc::Global>",
+            &[("buf", raw_vec, 0), ("len", u64t, 8)],
+            &[(param_t, elem), ("A", global)],
+        );
+        fx.strukt(
+            raw_vec,
+            Some(raw_vec_ns),
+            "RawVec<i64, alloc::alloc::Global>",
+            &[("inner", inner, 0)],
+            &[
+                ("T", elem),
+                ("A", if retarget_alloc { other } else { global }),
+            ],
+        );
+        fx.strukt(
+            inner,
+            Some(raw_vec_ns),
+            "RawVecInner<alloc::alloc::Global>",
+            &[("ptr", byte_ptr, 0), ("cap", cap, 8)],
+            &[("A", global)],
+        );
+        fx.pointer(byte_ptr, u8t);
+        fx.strukt(
+            cap,
+            Some(niche_ns),
+            "UsizeNoHighBit",
+            &[("__0", usize_t, 0)],
+            &[],
+        );
+        (fx, vec)
+    }
+
+    #[test]
+    fn test_vec_shape_validates_the_buffer_chain() {
+        let (fx, vec) = vec_fixture("T", false);
+        let mut emitter = Emitter::new(&fx.reader, BTreeMap::new(), None, None);
+        assert!(vec_shape(&mut emitter, vec).is_some());
+
+        // A first template param not named T is not a Vec.
+        let (fx, vec) = vec_fixture("X", false);
+        let mut emitter = Emitter::new(&fx.reader, BTreeMap::new(), None, None);
+        assert!(vec_shape(&mut emitter, vec).is_none());
+
+        // A RawVec bound over some other allocator is not this Vec's.
+        let (fx, vec) = vec_fixture("T", true);
+        let mut emitter = Emitter::new(&fx.reader, BTreeMap::new(), None, None);
+        assert!(vec_shape(&mut emitter, vec).is_none());
+    }
+
+    fn dyn_fixture(elem_encoding: Encoding, elem_size: u64, double_vtable: bool) -> (Fx, TypeId) {
+        let mut fx = Fx::default();
+        let target = type_id(1);
+        let data_ptr = type_id(2);
+        let usize_t = type_id(3);
+        let slots = type_id(4);
+        let vtable_ptr = type_id(5);
+        let wide = type_id(0x10);
+        fx.strukt(target, None, "dyn app::Trait", &[], &[]);
+        fx.pointer(data_ptr, target);
+        fx.base(usize_t, "usize", elem_encoding, elem_size);
+        fx.array(slots, usize_t, 3);
+        fx.pointer(vtable_ptr, slots);
+        let mut members = vec![("pointer", data_ptr, 0u64), ("vtable", vtable_ptr, 8)];
+        if double_vtable {
+            members.push(("vtable", vtable_ptr, 16));
+        }
+        fx.strukt(wide, None, "&dyn app::Trait", &members, &[]);
+        (fx, wide)
+    }
+
+    #[test]
+    fn test_dyn_pointer_screens_the_vtable_member() {
+        // Three usize slots is the smallest vtable header.
+        let (fx, wide) = dyn_fixture(Encoding::Unsigned, POINTER_SIZE, false);
+        assert!(detect(&fx, dyn_pointer_node, wide).is_some());
+
+        // A signed or narrow slot array is not a vtable, and two vtable
+        // candidates leave the answer ambiguous.
+        let (fx, wide) = dyn_fixture(Encoding::Signed, POINTER_SIZE, false);
+        assert!(detect(&fx, dyn_pointer_node, wide).is_none());
+        let (fx, wide) = dyn_fixture(Encoding::Unsigned, 4, false);
+        assert!(detect(&fx, dyn_pointer_node, wide).is_none());
+        let (fx, wide) = dyn_fixture(Encoding::Unsigned, POINTER_SIZE, true);
+        assert!(detect(&fx, dyn_pointer_node, wide).is_none());
+    }
+
+    #[test]
+    fn test_dyn_tail_search_stops_at_the_wrapper_depth_cap() {
+        let mut fx = Fx::default();
+        let tail = type_id(0x50);
+        fx.strukt(tail, None, "dyn app::Trait", &[], &[]);
+        let mut next = tail;
+        for link in (0..9).rev() {
+            let id = type_id(0x100 + link);
+            fx.strukt(id, None, "Wrapper", &[("last", next, 16)], &[]);
+            next = id;
+        }
+        assert_eq!(dyn_tail_offset(&fx.reader, next, &mut Vec::new()), None);
+    }
+
+    #[test]
+    fn test_unsafe_cell_and_non_null_screen_namespace_and_name() {
+        let mut fx = Fx::default();
+        let cell_ns = fx.ns("core::cell");
+        let ptr_ns = fx.ns("core::ptr::non_null");
+        let word = type_id(1);
+        fx.base(word, "u64", Encoding::Unsigned, 8);
+
+        let cell = type_id(0x10);
+        fx.strukt(
+            cell,
+            Some(cell_ns),
+            "UnsafeCell<u64>",
+            &[("value", word, 0)],
+            &[("T", word)],
+        );
+        assert!(unsafe_cell_layout(&fx.reader, cell).is_some());
+        let strayed = type_id(0x11);
+        fx.strukt(
+            strayed,
+            Some(ptr_ns),
+            "UnsafeCell<u64>",
+            &[("value", word, 0)],
+            &[("T", word)],
+        );
+        assert!(unsafe_cell_layout(&fx.reader, strayed).is_none());
+        let unclosed = type_id(0x12);
+        fx.strukt(
+            unclosed,
+            Some(cell_ns),
+            "UnsafeCell<u64",
+            &[("value", word, 0)],
+            &[("T", word)],
+        );
+        assert!(unsafe_cell_layout(&fx.reader, unclosed).is_none());
+
+        let target = type_id(2);
+        let ptr = type_id(3);
+        fx.strukt(target, None, "Value", &[], &[]);
+        fx.pointer(ptr, target);
+        let non_null = type_id(0x20);
+        fx.strukt(
+            non_null,
+            Some(ptr_ns),
+            "NonNull<Value>",
+            &[("pointer", ptr, 0)],
+            &[("T", target)],
+        );
+        assert!(non_null_layout(&fx.reader, non_null).is_some());
+        let strayed = type_id(0x21);
+        fx.strukt(
+            strayed,
+            Some(cell_ns),
+            "NonNull<Value>",
+            &[("pointer", ptr, 0)],
+            &[("T", target)],
+        );
+        assert!(non_null_layout(&fx.reader, strayed).is_none());
+        let unclosed = type_id(0x22);
+        fx.strukt(
+            unclosed,
+            Some(ptr_ns),
+            "NonNull<Value",
+            &[("pointer", ptr, 0)],
+            &[("T", target)],
+        );
+        assert!(non_null_layout(&fx.reader, unclosed).is_none());
+    }
+
+    #[test]
+    fn test_usize_no_high_bit_is_transparent_over_its_word() {
+        let mut fx = Fx::default();
+        let niche_ns = fx.ns("core::num::niche_types");
+        let word = type_id(1);
+        fx.base(word, "usize", Encoding::Unsigned, POINTER_SIZE);
+        let cap = type_id(0x10);
+        fx.strukt(
+            cap,
+            Some(niche_ns),
+            "UsizeNoHighBit",
+            &[("__0", word, 0)],
+            &[],
+        );
+        assert!(matches!(
+            detect(&fx, usize_no_high_bit_node, cap),
+            Some(DisplayNode::Alias { .. })
+        ));
+    }
+
+    #[test]
+    fn test_is_integer_admits_only_integer_encodings() {
+        let mut fx = Fx::default();
+        let unsigned = type_id(1);
+        let signed = type_id(2);
+        let float = type_id(3);
+        let aggregate = type_id(4);
+        fx.base(unsigned, "u64", Encoding::Unsigned, 8);
+        fx.base(signed, "i64", Encoding::Signed, 8);
+        fx.base(float, "f64", Encoding::Float, 8);
+        fx.strukt(aggregate, None, "S", &[], &[]);
+
+        assert!(is_integer(&fx.reader, unsigned));
+        assert!(is_integer(&fx.reader, signed));
+        assert!(!is_integer(&fx.reader, float));
+        assert!(!is_integer(&fx.reader, aggregate));
+    }
+
+    fn generic_atomic(ns_path: &'static str, name: &'static str, params: usize) -> (Fx, TypeId) {
+        let mut fx = Fx::default();
+        let ns = fx.ns(ns_path);
+        let word = type_id(1);
+        fx.base(word, "u64", Encoding::Unsigned, 8);
+        let atomic = type_id(0x10);
+        let params: Vec<(&'static str, TypeId)> = (0..params).map(|_| ("T", word)).collect();
+        fx.strukt(atomic, Some(ns), name, &[("v", word, 0)], &params);
+        (fx, atomic)
+    }
+
+    #[test]
+    fn test_generic_atomic_screens_namespace_name_and_param() {
+        let (fx, atomic) = generic_atomic("core::sync::atomic", "Atomic<u64>", 1);
+        assert!(is_generic_atomic(&fx.reader, atomic));
+        // The generic spelling also formats: an alias to the stored word.
+        assert!(matches!(
+            detect(&fx, atomic_node, atomic),
+            Some(DisplayNode::Alias { .. })
+        ));
+
+        let (fx, atomic) = generic_atomic("core::sync", "Atomic<u64>", 1);
+        assert!(!is_generic_atomic(&fx.reader, atomic));
+        let (fx, atomic) = generic_atomic("core::sync::atomic", "AtomicU64", 1);
+        assert!(!is_generic_atomic(&fx.reader, atomic));
+        let (fx, atomic) = generic_atomic("core::sync::atomic", "Atomic<u64", 1);
+        assert!(!is_generic_atomic(&fx.reader, atomic));
+        let (fx, atomic) = generic_atomic("core::sync::atomic", "Atomic<u64>", 2);
+        assert!(!is_generic_atomic(&fx.reader, atomic));
+    }
+}
