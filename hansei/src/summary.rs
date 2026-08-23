@@ -16,6 +16,7 @@
 //! be tested from values laid out by hand rather than from a core that
 //! happens to hold the shape under test.
 
+use crate::output;
 use crate::tasks::future_name;
 
 use anyhow::Result;
@@ -848,18 +849,18 @@ fn rows(label: &str, rows: impl IntoIterator<Item = Row>, out: &mut dyn io::Writ
 /// as branches of the row they hang from rather than as a listing in
 /// their own right.
 fn level(rows: &[Row], indent: &str, branch: bool, out: &mut dyn io::Write) -> Result<()> {
-    let width = rows
-        .iter()
-        .map(|row| row.count.to_string().len())
-        .max()
-        .unwrap_or(1);
-    for (i, row) in rows.iter().enumerate() {
+    let mut table = output::Table::new(2).align_right(0);
+    for row in rows {
+        table.row([row.count.to_string(), row.what.clone()]);
+    }
+    let width = table.width(0);
+    for ((i, row), line) in rows.iter().enumerate().zip(table.render()) {
         let (stem, run) = match (branch, i + 1 == rows.len()) {
             (false, _) => ("", ""),
             (true, true) => ("└─ ", "   "),
             (true, false) => ("├─ ", "│  "),
         };
-        writeln!(out, "{indent}{stem}{:>width$}  {}", row.count, row.what)?;
+        writeln!(out, "{indent}{stem}{line}")?;
         if !row.under.is_empty() {
             // Indented to where this row's label starts, so what breaks
             // it down reads as hanging from the name and not from the

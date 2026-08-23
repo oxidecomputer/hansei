@@ -10,6 +10,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 mod graph;
+mod output;
 pub mod repl;
 mod runtimes;
 #[cfg(feature = "snapshot")]

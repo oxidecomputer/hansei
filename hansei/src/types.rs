@@ -8,6 +8,8 @@
 //! layout of everything that definition in turn names, nested under the
 //! line that names it.
 
+use crate::output;
+
 use anyhow::{Result, bail};
 use hansei_bundle::{
     BundleType, BundleTypeId, BundleView, DiscrValue, TypeDef, VariantDef, names, symbols,
@@ -237,25 +239,17 @@ fn members(
     // memory, and rustc reorders fields freely.
     let mut members: Vec<_> = ty.members().collect();
     members.sort_by_key(|m| m.offset());
-    let width = members
-        .iter()
-        .map(|m| m.name().len())
-        .max()
-        .unwrap_or_default();
-    for m in members {
+    let mut table = output::Table::new(2);
+    for m in &members {
         let more = if nesting.stops_at(m.ty()) {
             MORE_BELOW
         } else {
             ""
         };
-        writeln!(
-            out,
-            "{:indent$}+{:<6} {:<width$}  {}{more}",
-            "",
-            m.offset(),
-            m.name(),
-            label(m.ty())
-        )?;
+        table.row([m.name().to_string(), format!("{}{more}", label(m.ty()))]);
+    }
+    for (m, line) in members.iter().zip(table.render()) {
+        writeln!(out, "{:indent$}+{:<6} {line}", "", m.offset())?;
         follow(m.ty(), indent + 2, nesting, out)?;
     }
     Ok(())
@@ -285,12 +279,7 @@ fn enum_variants(
     }
     let name_of =
         |v: &VariantDef| variant_name(ty.resolve_str(v.name), ty.related_type(v.payload.ty));
-    let width = shape
-        .variants
-        .iter()
-        .map(|v| name_of(v).len())
-        .max()
-        .unwrap_or_default();
+    let mut table = output::Table::new(2).sep(" ");
     for v in &shape.variants {
         let selector = match &v.discr_values {
             Some(values) => values
@@ -316,15 +305,18 @@ fn enum_variants(
         } else {
             ""
         };
-        writeln!(
-            out,
-            "{:indent$}{:<width$} = {selector:<10} +{:<6} {}{more}{decl}",
-            "",
-            name_of(v),
-            v.payload.offset,
-            label(payload),
-        )?;
-        follow(payload, indent + 2, nesting, out)?;
+        table.row([
+            name_of(v).to_string(),
+            format!(
+                "= {selector:<10} +{:<6} {}{more}{decl}",
+                v.payload.offset,
+                label(payload)
+            ),
+        ]);
+    }
+    for (v, line) in shape.variants.iter().zip(table.render()) {
+        writeln!(out, "{:indent$}{line}", "")?;
+        follow(ty.related_type(v.payload.ty), indent + 2, nesting, out)?;
     }
     Ok(())
 }
