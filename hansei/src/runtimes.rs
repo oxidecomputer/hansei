@@ -165,7 +165,8 @@ pub(crate) fn print_groups(
     excluded: usize,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let mut table = output::Table::new(6);
+    let mut table =
+        output::Table::new(6).header(["KIND", "ID", "FLAVOR", "HANDLE", "HOLDS", "WHERE"]);
     for g in groups {
         table.row([
             g.kind.to_string(),
@@ -180,7 +181,9 @@ pub(crate) fn print_groups(
             g.where_.clone(),
         ]);
     }
-    table.write(out)?;
+    if !table.is_empty() {
+        table.write(out)?;
+    }
     if excluded > 0 {
         writeln!(
             out,
@@ -426,34 +429,40 @@ mod runtimes_tests {
         print_groups(&rows, 0, &mut out).expect("the listing renders");
         let shown = String::from_utf8(out).expect("rendered output is UTF-8");
         let lines: Vec<&str> = shown.lines().collect();
-        assert_eq!(lines.len(), 3, "{shown}");
+        assert_eq!(lines.len(), 4, "{shown}");
 
+        // The header names the columns, padded with the rows it names —
+        // which is what lets the acceptance suite slice them by label.
+        assert!(lines[0].starts_with("KIND       ID  FLAVOR"), "{shown}");
+        for label in ["HANDLE", "HOLDS", "WHERE"] {
+            assert!(lines[0].contains(label), "{shown}");
+        }
         assert!(
-            lines[0].starts_with("runtime    0  current_thread  @0x"),
+            lines[1].starts_with("runtime    0   current_thread  @0x"),
             "{shown}"
         );
-        assert!(lines[0].contains(" on lwp "), "{shown}");
+        assert!(lines[1].contains(" on lwp "), "{shown}");
         // The counts are the census's own: each group sums its tasks
         // and the futures their frames hold.
-        assert!(lines[0].contains("  1 task, 1 future "), "{shown}");
-        assert!(lines[1].contains("  2 tasks, 2 futures  "), "{shown}");
-        assert!(lines[2].contains("  1 task, 1 future "), "{shown}");
+        assert!(lines[1].contains("  1 task, 1 future "), "{shown}");
+        assert!(lines[2].contains("  2 tasks, 2 futures  "), "{shown}");
+        assert!(lines[3].contains("  1 task, 1 future "), "{shown}");
         assert!(
-            lines[1].starts_with("runtime    1  current_thread  @0x"),
+            lines[2].starts_with("runtime    1   current_thread  @0x"),
             "{shown}"
         );
         assert!(
-            lines[1].ends_with(
+            lines[2].ends_with(
                 "  no thread inside it, found via a JoinHandle held by an enumerated task"
             ),
             "{shown}"
         );
         // The set has no flavor to print, and its index still lands in
         // the column the runtimes' indices are in.
-        assert!(lines[2].starts_with("local set  0  "), "{shown}");
-        assert!(lines[2].contains("  @0x"), "{shown}");
+        assert!(lines[3].starts_with("local set  0   "), "{shown}");
+        assert!(lines[3].contains("  @0x"), "{shown}");
         assert!(
-            lines[2].ends_with("found via a task waker on a timer parked in a runtime's wheel"),
+            lines[3].ends_with("found via a task waker on a timer parked in a runtime's wheel"),
             "{shown}"
         );
 
