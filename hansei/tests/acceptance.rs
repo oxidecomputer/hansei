@@ -2158,6 +2158,56 @@ fn test_futurelock_graph() {
     });
 }
 
+/// The resource-centric view of the same diagnosis the graph draws:
+/// one block for the contended Mutex, its holder named from the
+/// futurelock analysis, the blocked task and the wake queue agreeing on
+/// who waits. The semaphore address in the block heading is the same
+/// spelling trace prints, and the argument `sync 0x…` takes back — the
+/// selected block is byte-identical to the listing's one block.
+#[test]
+fn test_sync_lists_the_contended_semaphore() {
+    let bundle = fixtures().bundle("futurelock");
+    with_core("futurelock", |core| {
+        let rows = list_tasks(&bundle, core);
+        let task = task_with_future(&rows, "async block futurelock::main::{async_block#0}");
+        let out = hansei_ok(&bundle, core, "sync");
+        golden(
+            "futurelock-sync",
+            &Symbols::new().task(&task.id, "blocked").apply(&out),
+        );
+
+        let addr = regex::Regex::new(r"semaphore (0x[0-9a-f]+)")
+            .unwrap()
+            .captures(&out)
+            .unwrap_or_else(|| panic!("no semaphore address in {out}"))[1]
+            .to_string();
+        let one = hansei_ok(&bundle, core, &format!("sync {addr}"));
+        assert_eq!(one, out);
+
+        // An address the analysis never decoded is refused rather than
+        // answered with silence.
+        let miss = hansei(&bundle, core, "sync 0x10");
+        assert!(!miss.status.success());
+        assert!(
+            String::from_utf8_lossy(&miss.stderr).contains("no decoded semaphore"),
+            "{}",
+            String::from_utf8_lossy(&miss.stderr)
+        );
+    });
+}
+
+/// A target with no contention prints nothing at all: the analysis
+/// reads only the edges it knows how to read, and an empty answer is
+/// "none found here".
+#[test]
+fn test_sync_prints_nothing_without_contention() {
+    let bundle = fixtures().bundle("sleep-join");
+    with_core("sleep-join", |core| {
+        let out = hansei_ok(&bundle, core, "sync");
+        assert_eq!(out, "", "sleep-join contends on nothing");
+    });
+}
+
 /// Wait edges without a diagnosis: the joiner's JoinHandle edge points
 /// at the sleeper, the sleeper waits on the timer, and a healthy
 /// runtime reports no futurelock.

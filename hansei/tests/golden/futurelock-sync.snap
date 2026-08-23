@@ -1,0 +1,8 @@
+---
+source: hansei/tests/acceptance.rs
+expression: actual
+---
+a tokio::sync::Mutex (semaphore ADDR1): 0 permits available
+    Held by: task #blocked — 1 permit granted to `future1` (async fn futurelock::do_async_thing), a future it stopped polling
+    Blocked on it: task #blocked (1 permit requested)
+    Wake queue: task #blocked
