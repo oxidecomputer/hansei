@@ -135,12 +135,28 @@ fn load_images<T: Target>(target: &T, mappings: &Mappings) -> Vec<Image> {
         let mut bytes = vec![0u8; len];
         let mut any = false;
         for part in parts {
-            let Ok(chunk) = target.read_bytes(part.vaddr, part.size) else {
-                continue;
-            };
-            let at = (part.vaddr - base) as usize;
-            bytes[at..at + chunk.len()].copy_from_slice(chunk);
-            any = true;
+            // A part is rarely readable end to end: the dump filter keeps
+            // a file-backed mapping's first page and leaves the rest to
+            // the backing file, and no single read crosses that seam. So
+            // the part is read in whatever runs the target can serve,
+            // page-stepping over holes, rather than skipped whole on the
+            // first seam — which would zero the ELF header along with it.
+            const PAGE: u64 = 4096;
+            let mut off = 0u64;
+            while off < part.size {
+                let addr = part.vaddr + off;
+                let n = target.readable_len(addr, part.size - off);
+                if n == 0 {
+                    off += PAGE - (addr & (PAGE - 1));
+                    continue;
+                }
+                if let Ok(chunk) = target.read_bytes(addr, n) {
+                    let at = (addr - base) as usize;
+                    bytes[at..at + chunk.len()].copy_from_slice(chunk);
+                    any = true;
+                }
+                off += n;
+            }
         }
         if any {
             images.push(Image {

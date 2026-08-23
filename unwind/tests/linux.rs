@@ -208,6 +208,87 @@ fn test_the_aborting_thread_unwinds_through_libc() {
     );
 }
 
+/// A copy of the core cut down to what the kernel's default
+/// `coredump_filter` would have written: a file-backed read-only
+/// mapping keeps only its first page, and everything else about it —
+/// the ELF header past that page, `.eh_frame`, the symtab — has to
+/// come from the backing file on disk. gdb's `gcore` dumps those pages
+/// wholesale, which is why a suite built on it alone never notices a
+/// reader that cannot cross the dumped/on-disk seam.
+///
+/// The cut is done to the program headers of the copy: every
+/// non-writable `PT_LOAD` that lands in a mapping with a backing path
+/// gets its `p_filesz` clamped to one page. Offsets all stay valid —
+/// readers just find less of the segment in the file.
+fn kernel_shaped(core: &Path) -> (tempfile::TempDir, PathBuf) {
+    const PAGE: u64 = 4096;
+    const PT_LOAD: u32 = 1;
+    const PF_W: u32 = 2;
+
+    let pathed: Vec<std::ops::Range<u64>> = {
+        let p = Proc::open_core(core).expect("failed to open the core");
+        let maps = p.mappings().unwrap();
+        maps.iter()
+            .filter(|m| m.path.is_some())
+            .map(|m| m.range())
+            .collect()
+    };
+
+    let mut bytes = std::fs::read(core).expect("failed to read the core");
+    let e_phoff = u64::from_le_bytes(bytes[0x20..0x28].try_into().unwrap());
+    let e_phentsize = u16::from_le_bytes(bytes[0x36..0x38].try_into().unwrap()) as u64;
+    let e_phnum = u16::from_le_bytes(bytes[0x38..0x3a].try_into().unwrap()) as u64;
+
+    let mut cut = 0;
+    for i in 0..e_phnum {
+        let at = (e_phoff + i * e_phentsize) as usize;
+        let p_type = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let p_flags = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap());
+        let p_vaddr = u64::from_le_bytes(bytes[at + 16..at + 24].try_into().unwrap());
+        let p_filesz = u64::from_le_bytes(bytes[at + 32..at + 40].try_into().unwrap());
+        if p_type != PT_LOAD
+            || p_flags & PF_W != 0
+            || p_filesz <= PAGE
+            || !pathed.iter().any(|r| r.contains(&p_vaddr))
+        {
+            continue;
+        }
+        bytes[at + 32..at + 40].copy_from_slice(&PAGE.to_le_bytes());
+        cut += 1;
+    }
+    // A cut that removes nothing is a fixture change, not a pass: gcore
+    // stopped dumping these pages itself, and the test is now vacuous.
+    assert!(cut > 0, "no segment was cut; what does gcore dump now?");
+
+    let dir = tempfile::tempdir().expect("failed to create a tempdir");
+    let doctored = dir.path().join("core");
+    std::fs::write(&doctored, bytes).expect("failed to write the doctored core");
+    (dir, doctored)
+}
+
+/// The workers still unwind out of libc and back into the executable
+/// when the core carries only the first page of every file-backed
+/// read-only mapping — the shape the kernel actually dumps, where the
+/// unwind tables exist only in the files on disk.
+#[test]
+fn test_a_kernel_shaped_core_unwinds() {
+    let (_dir, doctored) = kernel_shaped(core());
+    let p = Proc::open_core(&doctored).expect("failed to open the doctored core");
+    let stacks = unwind::load_frames(&p).expect("failed to unwind the doctored core");
+
+    let parked = stacks
+        .values()
+        .map(demangled)
+        .filter(|names| names.iter().any(|n| n.contains(PARK_FN)))
+        .count();
+    assert_eq!(
+        parked,
+        3,
+        "the 3 workers no longer reach {PARK_FN}; stacks were {:#?}",
+        stacks.values().map(demangled).collect::<Vec<_>>()
+    );
+}
+
 /// The rendered form callers actually print.
 #[test]
 fn test_stack_trace_renders_frames() {
