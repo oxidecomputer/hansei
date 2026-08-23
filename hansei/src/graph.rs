@@ -388,6 +388,7 @@ mod graph_tests {
             target,
             depth: 1,
             leaf: None,
+            site: None,
         }
     }
 
