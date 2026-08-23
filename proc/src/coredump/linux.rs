@@ -1759,6 +1759,50 @@ mod tests {
         );
     }
 
+    /// The signal also answers through the `Proc` facade, which is how
+    /// every caller actually opens a core.
+    #[test]
+    fn test_the_fatal_signal_reaches_through_proc() {
+        let mut builder = CoreBuilder::default()
+            .thread(42, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize]);
+        builder.cursig = 11;
+        builder.siginfo = Some((11, 1, 0));
+        let dir = tempfile::tempdir().expect("failed to create a tempdir");
+        let path = builder.write_into(dir.path());
+
+        let p = crate::Proc::open_core(&path).expect("failed to open the core");
+        assert_eq!(p.fatal_signal().map(|sig| sig.name), Some("SIGSEGV"));
+    }
+
+    /// A truncated `NT_SIGINFO` is skipped, not read: the death still
+    /// decodes from `cursig`, with nothing where the code and the
+    /// address would have been — rather than a slice past the note's
+    /// end.
+    #[test]
+    fn test_a_short_siginfo_note_is_skipped() {
+        let mut desc = prstatus(42, &regs_at(0, 0x9000));
+        desc[PR_CURSIG..PR_CURSIG + 2].copy_from_slice(&11i16.to_le_bytes());
+        let mut notes = note(NT_PRSTATUS, "CORE", &desc);
+        notes.extend(note(NT_SIGINFO, "CORE", &[0u8; 16]));
+        let mut builder =
+            CoreBuilder::default().dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize]);
+        builder.raw_notes = Some(notes);
+        let (_dir, p) = builder.proc();
+
+        assert_eq!(
+            p.fatal_signal(),
+            Some(FatalSignal {
+                name: "SIGSEGV",
+                signo: 11,
+                code: 0,
+                code_name: None,
+                fault_addr: None,
+                lwp: Some(42),
+            })
+        );
+    }
+
     /// gdb's `gcore` writes an `NT_SIGINFO` describing the `SIGSTOP`
     /// it attached with, over prstatus notes whose `cursig` is 0. That
     /// is a capture, not a death: the siginfo alone proves nothing.

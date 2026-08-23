@@ -52,18 +52,7 @@ pub(crate) fn exec_threads(
                 None => String::new(),
             }
         };
-        // The thread that took the fatal signal is marked on its own
-        // heading: the signal tied to what the thread was polling is
-        // the join this listing exists to make.
-        let took = match &fatal {
-            Some(sig) if sig.lwp == Some(worker.tid) => {
-                format!(
-                    " — took the fatal {}",
-                    crate::summary::fatal_signal_line(sig)
-                )
-            }
-            _ => String::new(),
-        };
+        let took = fatal_tag(fatal.as_ref(), worker.tid);
         writeln!(
             out,
             "lwp {}  {}{tag}{took}",
@@ -100,6 +89,22 @@ pub(crate) fn exec_threads(
         }
     }
     Ok(())
+}
+
+/// The heading tag for the lwp that took the fatal signal — empty for
+/// every other thread, and for a target that took none. The signal
+/// tied to what the thread was polling is the join this listing
+/// exists to make.
+fn fatal_tag(fatal: Option<&proc::FatalSignal>, tid: u32) -> String {
+    match fatal {
+        Some(sig) if sig.lwp == Some(tid) => {
+            format!(
+                " — took the fatal {}",
+                crate::summary::fatal_signal_line(sig)
+            )
+        }
+        _ => String::new(),
+    }
 }
 
 /// What a thread is doing with the task it last entered. tokio restores
@@ -271,7 +276,7 @@ pub(crate) fn render<'r, 'b>(
 
 #[cfg(test)]
 mod tests {
-    use super::polling_line;
+    use super::{fatal_tag, polling_line};
 
     /// The three spellings of the heading's claim: believed, stale,
     /// and absent — the stale word is reported, but not as a poll in
@@ -281,5 +286,31 @@ mod tests {
         assert_eq!(polling_line(None, None), "polling no task");
         assert_eq!(polling_line(Some(7), Some(7)), "polling task 7");
         assert_eq!(polling_line(Some(7), None), "last polled task 7");
+    }
+
+    fn segv(lwp: Option<u32>) -> proc::FatalSignal {
+        proc::FatalSignal {
+            name: "SIGSEGV",
+            signo: 11,
+            code: 1,
+            code_name: Some("SEGV_MAPERR"),
+            fault_addr: Some(0),
+            lwp,
+        }
+    }
+
+    /// Exactly the lwp the signal names is tagged: not its siblings,
+    /// not anyone on a target that took no signal, and nobody when the
+    /// core did not say which lwp took it.
+    #[test]
+    fn test_the_faulting_lwp_alone_is_tagged() {
+        let sig = segv(Some(7));
+        assert_eq!(
+            fatal_tag(Some(&sig), 7),
+            " — took the fatal SIGSEGV (SEGV_MAPERR), fault address 0x0"
+        );
+        assert_eq!(fatal_tag(Some(&sig), 8), "");
+        assert_eq!(fatal_tag(None, 7), "");
+        assert_eq!(fatal_tag(Some(&segv(None)), 7), "");
     }
 }

@@ -591,3 +591,23 @@ fn test_errors_wrap_their_sources() {
     let io = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
     assert!(Error::read(io).to_string().starts_with("error: "));
 }
+
+// ---------------------------------------------------------------------------
+// Fatal signals
+// ---------------------------------------------------------------------------
+
+/// Every fault-class signal decodes its codes through the shared
+/// table, and everything else — codes past a table, user-sent codes,
+/// signals that never fault — decodes nothing.
+#[test]
+fn test_fault_codes_decode_for_every_fault_signal() {
+    assert_eq!(fault_code_name("SIGSEGV", 1), Some("SEGV_MAPERR"));
+    assert_eq!(fault_code_name("SIGBUS", 3), Some("BUS_OBJERR"));
+    assert_eq!(fault_code_name("SIGILL", 8), Some("ILL_BADSTK"));
+    assert_eq!(fault_code_name("SIGFPE", 1), Some("FPE_INTDIV"));
+    assert_eq!(fault_code_name("SIGTRAP", 2), Some("TRAP_TRACE"));
+    assert_eq!(fault_code_name("SIGSEGV", 3), None);
+    assert_eq!(fault_code_name("SIGSEGV", 0), None);
+    assert_eq!(fault_code_name("SIGSEGV", -1), None);
+    assert_eq!(fault_code_name("SIGKILL", 1), None);
+}
