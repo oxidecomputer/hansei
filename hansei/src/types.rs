@@ -83,30 +83,9 @@ pub fn describe(
     // indexes the type table directly, so it reaches even the
     // anonymous types no name lookup can.
     if let Ok(id) = name.parse::<u32>() {
-        let Some(ty) = view.ty(BundleTypeId(id)) else {
-            bail!(
-                "no type {id} in this bundle: type ids index its type table, \
-                 which records {} types",
-                view.bundle().types.types.len()
-            );
-        };
-        return definition(ty, 0, &mut nesting, out);
+        return definition(type_by_id(view, id)?, 0, &mut nesting, out);
     }
-    let mut matches: Vec<BundleType<'_>> = view
-        .named_types()
-        .filter(|(n, _)| *n == name)
-        .map(|(_, ty)| ty)
-        .collect();
-    if matches.is_empty() {
-        let want = names::fold_type_name(names::strip_kind_prefix(name), impls);
-        matches = view
-            .named_types()
-            .filter(|(n, _)| {
-                symbols::rust_type_names_equal(&names::fold_type_name(n, impls), &want)
-            })
-            .map(|(_, ty)| ty)
-            .collect();
-    }
+    let matches = definitions_named(view, impls, name);
     if matches.is_empty() {
         bail!("the bundle records no type named {name}; try `find-types {name}`");
     }
@@ -131,6 +110,110 @@ pub fn describe(
     Ok(())
 }
 
+/// The type an id indexes, or the error every id lookup shares: a
+/// number past the table's end misses loudly rather than becoming a
+/// name that matches nothing.
+fn type_by_id<'a>(view: &BundleView<'a>, id: u32) -> Result<BundleType<'a>> {
+    view.ty(BundleTypeId(id)).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no type {id} in this bundle: type ids index its type table, \
+             which records {} types",
+            view.bundle().types.types.len()
+        )
+    })
+}
+
+/// Every definition recorded under `name`. The listings print names
+/// display-folded, and what they print must be accepted back: the raw
+/// spelling is tried first, and a miss falls back to comparing both
+/// sides folded — shedding the kind word a listing may have joined — so
+/// a pasted line still names its type.
+fn definitions_named<'a>(
+    view: &BundleView<'a>,
+    impls: &names::ImplFold,
+    name: &str,
+) -> Vec<BundleType<'a>> {
+    let mut matches: Vec<BundleType<'a>> = view
+        .named_types()
+        .filter(|(n, _)| *n == name)
+        .map(|(_, ty)| ty)
+        .collect();
+    if matches.is_empty() {
+        let want = names::fold_type_name(names::strip_kind_prefix(name), impls);
+        matches = view
+            .named_types()
+            .filter(|(n, _)| {
+                symbols::rust_type_names_equal(&names::fold_type_name(n, impls), &want)
+            })
+            .map(|(_, ty)| ty)
+            .collect();
+    }
+    matches
+}
+
+/// Resolve a type spec — a bundle type id, or an exact fully-qualified
+/// type name as `find-types` lists it — to the one definition it names,
+/// for a command that must read memory with exactly one layout.
+///
+/// The display spellings the other lookups also accept are refused
+/// here: a kind-joined `async fn app::work` names a function, not the
+/// environment type its memory holds, and reading an address "as an
+/// async fn" is not a sentence — the refusal names the recorded type
+/// instead, so the reader has the spelling to paste back. A name with
+/// several recorded definitions is likewise refused, with the ids that
+/// pick one, rather than read with a guessed layout.
+pub fn resolve_type_spec<'a>(
+    view: &BundleView<'a>,
+    impls: &names::ImplFold,
+    spec: &str,
+) -> Result<BundleType<'a>> {
+    if let Ok(id) = spec.parse::<u32>() {
+        return type_by_id(view, id);
+    }
+    let matches: Vec<BundleType<'a>> = view
+        .named_types()
+        .filter(|(n, _)| *n == spec)
+        .map(|(_, ty)| ty)
+        .collect();
+    match matches.as_slice() {
+        [] => {
+            // The exact lookup missed, so anything this finds it found
+            // through the display fold — the very spellings refused
+            // above, worth naming rather than sending the reader to
+            // find-types empty-handed.
+            let mut displayed: Vec<&str> = definitions_named(view, impls, spec)
+                .iter()
+                .map(|ty| ty.name())
+                .collect();
+            displayed.dedup();
+            match displayed.as_slice() {
+                [] => bail!("the bundle records no type named {spec}; try `find-types {spec}`"),
+                [name] => bail!(
+                    "{spec} is a display spelling, not a type name; \
+                     the recorded type is {name}"
+                ),
+                names_ => bail!(
+                    "{spec} is a display spelling, not a type name; \
+                     the recorded types are {}",
+                    names_.join(", ")
+                ),
+            }
+        }
+        [one] => Ok(*one),
+        several => {
+            let ids = several
+                .iter()
+                .map(|ty| format!("type {}", ty.id().0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "{spec} has {} recorded definitions; pick one by id: {ids}",
+                several.len()
+            );
+        }
+    }
+}
+
 /// Resolve one `--elide` spec: a name or pattern passes through as
 /// given, and a bare number — a bundle type id — resolves to that
 /// type's exact raw name, generics and all, so the id pins the one
@@ -139,14 +222,7 @@ pub fn resolve_elide_spec(view: &BundleView<'_>, spec: String) -> Result<String>
     let Ok(id) = spec.parse::<u32>() else {
         return Ok(spec);
     };
-    let Some(ty) = view.ty(BundleTypeId(id)) else {
-        bail!(
-            "no type {id} in this bundle: type ids index its type table, \
-             which records {} types",
-            view.bundle().types.types.len()
-        );
-    };
-    Ok(ty.name().to_string())
+    Ok(type_by_id(view, id)?.name().to_string())
 }
 
 /// List the names containing `needle`, one per line.
@@ -845,6 +921,51 @@ mod tests {
         );
         let err = resolve_elide_spec(&view, "9999".to_string()).unwrap_err();
         assert!(err.to_string().contains("no type 9999"), "{err}");
+    }
+
+    /// A type spec resolves to exactly one definition: by id — reaching
+    /// even the anonymous types no name can — or by the exact recorded
+    /// name, and by nothing looser.
+    #[test]
+    fn test_a_type_spec_resolves_to_one_definition() {
+        let bundle = bundle();
+        let view = BundleView::new(&bundle);
+        let impls = names::ImplFold::default();
+        let resolve = |spec: &str| resolve_type_spec(&view, &impls, spec);
+
+        assert_eq!(resolve("12").unwrap().id(), BundleTypeId(12));
+        // Id 2 is the anonymous `*Node` pointer no name lookup reaches.
+        assert_eq!(resolve("2").unwrap().id(), BundleTypeId(2));
+        assert_eq!(resolve("Node").unwrap().name(), "Node");
+        assert_eq!(
+            resolve("app::work::{async_fn_env#0}").unwrap().name(),
+            "app::work::{async_fn_env#0}"
+        );
+    }
+
+    /// The refusals, each naming its way out: an unknown name suggests
+    /// `find-types`, an id past the table's end says how far the table
+    /// goes, a name with several definitions lists the ids that pick
+    /// one, and a display spelling — which names a function, not the
+    /// type its memory holds — is refused with the recorded name to
+    /// paste back. Memory is never read with a guessed layout.
+    #[test]
+    fn test_a_type_spec_that_names_no_one_definition_is_refused() {
+        let bundle = bundle();
+        let view = BundleView::new(&bundle);
+        let impls = names::ImplFold::default();
+        let resolve = |spec: &str| resolve_type_spec(&view, &impls, spec).unwrap_err();
+
+        assert!(resolve("no::such::Type").to_string().contains("find-types"));
+        assert!(resolve("9999").to_string().contains("no type 9999"));
+        let ambiguous = resolve("dup::Type").to_string();
+        assert!(ambiguous.contains("2 recorded definitions"), "{ambiguous}");
+        assert!(ambiguous.contains("type 11, type 12"), "{ambiguous}");
+        for displayed in ["app::work", "async fn app::work"] {
+            let refused = resolve(displayed).to_string();
+            assert!(refused.contains("display spelling"), "{refused}");
+            assert!(refused.contains("app::work::{async_fn_env#0}"), "{refused}");
+        }
     }
 
     /// A bare number is a type id: it selects exactly one definition —

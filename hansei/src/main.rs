@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 mod graph;
 mod output;
+mod print;
 pub mod repl;
 mod runtimes;
 #[cfg(feature = "snapshot")]
@@ -251,6 +252,33 @@ pub enum Command {
 
     /// Show the target, the bundle, and how far its symbols resolve.
     Info,
+
+    /// Render the memory at an address as a value of a named type: the
+    /// inverse of `whatis`, for reading a structure the listings only
+    /// point at. The address says where and the type says how, and
+    /// nothing checks one against the other — printing the wrong type
+    /// at an address renders that memory as the type asked for.
+    Print {
+        /// The address to read, written in hex with a required leading
+        /// `0x` (e.g. `0x7fffb1c26100`).
+        #[arg(value_parser = parse_hex_addr)]
+        addr: u64,
+
+        /// The type to render the memory as: the exact fully-qualified
+        /// name as `find-types` lists it (several words are joined back
+        /// into one name, so generics holding spaces paste in whole),
+        /// or a bundle type id — the `type 4821` a listing prints where
+        /// a name alone is not a handle. The kind-joined spelling the
+        /// listings display (`async fn app::work`) names a function
+        /// rather than the type its memory holds, so it is refused with
+        /// the recorded name to use instead; a name with several
+        /// recorded definitions is refused with the ids that pick one.
+        #[arg(value_name = "TYPE", required = true, num_args = 1..)]
+        ty: Vec<String>,
+
+        #[command(flatten)]
+        render: RenderOpts,
+    },
 
     /// Show a runtime's own state, read straight through the bundle's
     /// layouts: its drivers, and the scheduler state its workers share.
@@ -866,6 +894,9 @@ pub fn dispatch(
         Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
         Command::Graph => graph::exec_graph(session, out)?,
         Command::Info => exec_info(session, out)?,
+        Command::Print { addr, ty, render } => {
+            print::exec_print(session, addr, &ty.join(" "), render, out)?
+        }
         Command::Runtime {
             scope,
             drivers,
