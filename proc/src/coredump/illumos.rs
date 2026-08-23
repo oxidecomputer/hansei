@@ -1792,6 +1792,19 @@ mod tests {
         assert_eq!(p.status().active_lwp, 2);
     }
 
+    /// A truncated `NT_PSTATUS` holds no representative lwp, and is
+    /// skipped rather than sliced past its end.
+    #[test]
+    fn test_a_short_pstatus_note_is_skipped() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .note(NT_PSTATUS, vec![0u8; 64])
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        assert_eq!(p.fatal_signal(), None);
+    }
+
     /// A sibling's recorded `SIGKILL` with no pstatus signal behind it
     /// is not a death either — nothing is, without the representative
     /// lwp saying so.
