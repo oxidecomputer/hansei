@@ -289,6 +289,112 @@ fn test_a_kernel_shaped_core_unwinds() {
     );
 }
 
+/// A copy of the core doctored to look like `tid` called through a null
+/// function pointer: its pc is 0, and the address the faulting `call`
+/// pushed — the thread's real pc — sits at the top of its stack.
+fn with_null_call(core: &Path, tid: u32, rip: u64, rsp: u64) -> (tempfile::TempDir, PathBuf) {
+    const PT_LOAD: u32 = 1;
+    const PT_NOTE: u32 = 4;
+    const NT_PRSTATUS: u32 = 1;
+    // Offsets into `struct elf_prstatus`: the thread id, then `pr_reg`,
+    // within which `rip` and `rsp` sit at their `user_regs_struct`
+    // indices (16 and 19).
+    const PR_PID: usize = 32;
+    const PR_RIP: usize = 112 + 16 * 8;
+    const PR_RSP: usize = 112 + 19 * 8;
+
+    let mut bytes = std::fs::read(core).expect("failed to read the core");
+    let e_phoff = u64::from_le_bytes(bytes[0x20..0x28].try_into().unwrap());
+    let e_phentsize = u16::from_le_bytes(bytes[0x36..0x38].try_into().unwrap()) as u64;
+    let e_phnum = u16::from_le_bytes(bytes[0x38..0x3a].try_into().unwrap()) as u64;
+
+    // (p_type, p_offset, p_vaddr, p_filesz) of every program header,
+    // read out before any of the bytes they describe are rewritten.
+    let phdrs: Vec<(u32, u64, u64, u64)> = (0..e_phnum)
+        .map(|i| {
+            let at = (e_phoff + i * e_phentsize) as usize;
+            let field =
+                |o: usize| u64::from_le_bytes(bytes[at + o..at + o + 8].try_into().unwrap());
+            (
+                u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()),
+                field(8),
+                field(16),
+                field(32),
+            )
+        })
+        .collect();
+
+    // The faulting call: pc 0, return address pushed at rsp - 8.
+    let pushed_at = rsp - 8;
+    let &(_, p_offset, p_vaddr, _) = phdrs
+        .iter()
+        .find(|&&(p_type, _, p_vaddr, p_filesz)| {
+            p_type == PT_LOAD && (p_vaddr..p_vaddr + p_filesz).contains(&pushed_at)
+        })
+        .expect("no dumped segment holds the top of the thread's stack");
+    let at = (p_offset + (pushed_at - p_vaddr)) as usize;
+    bytes[at..at + 8].copy_from_slice(&rip.to_le_bytes());
+
+    // The thread's registers: walk the note segment to its NT_PRSTATUS.
+    let mut patched = false;
+    for &(p_type, p_offset, _, p_filesz) in &phdrs {
+        if p_type != PT_NOTE {
+            continue;
+        }
+        let mut at = p_offset as usize;
+        let end = (p_offset + p_filesz) as usize;
+        while at + 12 <= end {
+            let word = |o: usize| u32::from_le_bytes(bytes[at + o..at + o + 4].try_into().unwrap());
+            let (namesz, descsz, n_type) = (word(0), word(4), word(8));
+            let desc = at + 12 + (namesz as usize).next_multiple_of(4);
+            if n_type == NT_PRSTATUS
+                && u32::from_le_bytes(bytes[desc + PR_PID..desc + PR_PID + 4].try_into().unwrap())
+                    == tid
+            {
+                bytes[desc + PR_RIP..desc + PR_RIP + 8].copy_from_slice(&0u64.to_le_bytes());
+                bytes[desc + PR_RSP..desc + PR_RSP + 8].copy_from_slice(&pushed_at.to_le_bytes());
+                patched = true;
+            }
+            at = desc + (descsz as usize).next_multiple_of(4);
+        }
+    }
+    assert!(patched, "no NT_PRSTATUS note carries tid {tid}");
+
+    let dir = tempfile::tempdir().expect("failed to create a tempdir");
+    let doctored = dir.path().join("core");
+    std::fs::write(&doctored, bytes).expect("failed to write the doctored core");
+    (dir, doctored)
+}
+
+/// A thread that called through a null pointer faults with pc 0, which
+/// no CFI describes. The return address the `call` pushed is still at
+/// the top of its stack, and popping it by hand recovers the caller —
+/// so the doctored thread's backtrace is the null frame followed by
+/// exactly the frames the undoctored thread had.
+#[test]
+fn test_a_null_call_unwinds_to_the_caller() {
+    let p = Proc::open_core(core()).expect("failed to open the core");
+    let stacks = unwind::load_frames(&p).expect("failed to unwind the core");
+
+    let (tid, original) = stacks
+        .iter()
+        .find(|(_, bt)| demangled(bt).iter().any(|n| n.contains(PARK_FN)))
+        .expect("no parked worker to doctor");
+    let frame0 = &original.frames[0];
+    let (_dir, doctored) = with_null_call(core(), *tid, frame0.regs.rip, frame0.regs.rsp);
+
+    let p = Proc::open_core(&doctored).expect("failed to open the doctored core");
+    let crashed = &unwind::load_frames(&p).expect("failed to unwind the doctored core")[tid];
+
+    assert_eq!(crashed.frames[0].pc, 0, "the null frame leads the walk");
+    let pcs = |frames: &[unwind::Frame]| frames.iter().map(|f| f.pc).collect::<Vec<_>>();
+    assert_eq!(
+        pcs(&crashed.frames[1..]),
+        pcs(&original.frames),
+        "past the null frame, the walk is the original thread's"
+    );
+}
+
 /// The rendered form callers actually print.
 #[test]
 fn test_stack_trace_renders_frames() {
