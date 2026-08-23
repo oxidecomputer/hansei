@@ -17,6 +17,7 @@ mod runtimes;
 #[cfg(feature = "snapshot")]
 mod snapshot_cmd;
 pub mod summary;
+mod sync;
 mod tasks;
 mod threads;
 mod trace;
@@ -345,6 +346,33 @@ pub enum Command {
     Snapshot {
         /// Where to write the snapshot.
         output: PathBuf,
+    },
+
+    /// List the contended synchronization primitives: one block per
+    /// semaphore — the primitive backing tokio's Mutex, RwLock, and
+    /// Semaphore — with its available permits, any holder the
+    /// futurelock analysis can name, the tasks blocked on it, and its
+    /// wake queue in wake order.
+    ///
+    /// This is `graph` turned resource-centric: the graph nests tasks
+    /// under the tasks blocking them, and this lists the resources
+    /// they contend on, each with everything known about it in one
+    /// block. A tokio semaphore records no owner, so `Held by:`
+    /// appears only where the futurelock analysis found an abandoned
+    /// acquire holding permits (RFD 609) — the one case a holder is
+    /// knowable at all.
+    ///
+    /// The address heading each block is the one `trace` prints in its
+    /// `waiting on … (semaphore 0x…)` line, and the one this command
+    /// takes to narrow to a single block. Discovery runs through the
+    /// tasks' await chains and the futurelock scan, not a sweep of
+    /// memory: a semaphore nothing waits on is not listed, and nothing
+    /// at all prints on a target with no contention.
+    Sync {
+        /// One semaphore to show, by the address the listings print,
+        /// in hex with a required leading `0x`. Every one by default.
+        #[arg(value_parser = parse_hex_addr)]
+        addr: Option<u64>,
     },
 
     /// List every task the target's executors own: id, lifecycle state,
@@ -909,6 +937,7 @@ pub fn dispatch(
         Command::Runtimes => runtimes::exec_runtimes(session, out)?,
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
+        Command::Sync { addr } => sync::exec_sync(session, addr, out)?,
         Command::Tasks { futures, task } => {
             session.note_version_ceiling();
             tasks::exec_tasks(session, futures, &task, out)?
