@@ -1064,6 +1064,19 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         fp.total,
         if fp.is_complete() { "" } else { " (forced)" }
     )?;
+    // What ended the process, or that nothing did: a core with no
+    // fatal signal is a live capture, which is worth saying outright —
+    // "why does hansei show no crash?" is the question this preempts.
+    match session.proc.fatal_signal() {
+        Some(sig) => {
+            let lwp = sig
+                .lwp
+                .map(|tid| format!(", taken on lwp {tid}"))
+                .unwrap_or_default();
+            writeln!(out, "signal: {}{lwp}", summary::fatal_signal_line(&sig))?;
+        }
+        None => writeln!(out, "signal: none recorded (a live capture, not a crash)")?,
+    }
     writeln!(
         out,
         "{} worker thread(s), {} task(s)",

@@ -99,6 +99,28 @@ pub struct Facts<'a> {
     pub sets: &'a [FutureSet],
     /// The bundle's impl-path substitutions for the display fold.
     pub impls: &'a names::ImplFold,
+    /// The signal that killed the target, where its core records one —
+    /// `None` for a live capture. It heads the census: what ended the
+    /// process is the one fact a reader wants before any count.
+    pub fatal: Option<proc::FatalSignal>,
+}
+
+/// The one-line spelling of a fatal signal every surface shares:
+/// `SIGSEGV (SEGV_MAPERR), fault address 0x0`. The code appears by name
+/// when it is a fault code, by number when it is some other refinement,
+/// and not at all for a plain user-sent signal; the address only when
+/// the code says the siginfo carried one.
+pub fn fatal_signal_line(sig: &proc::FatalSignal) -> String {
+    let mut line = sig.name.to_string();
+    match (sig.code_name, sig.code) {
+        (Some(code), _) => line.push_str(&format!(" ({code})")),
+        (None, 0) => {}
+        (None, code) => line.push_str(&format!(" (code {code})")),
+    }
+    if let Some(addr) = sig.fault_addr {
+        line.push_str(&format!(", fault address {addr:#x}"));
+    }
+    line
 }
 
 impl Facts<'_> {
@@ -176,6 +198,17 @@ pub fn print(
         }
         Ok(())
     };
+    // The signal heads every census whatever sections were asked for:
+    // it is a header rather than a section, and what ended the process
+    // is the one fact a reader wants before any count.
+    if let Some(sig) = &facts.fatal {
+        separate(out)?;
+        let lwp = sig
+            .lwp
+            .map(|tid| format!(", taken on lwp {tid}"))
+            .unwrap_or_default();
+        writeln!(out, "Terminated by {}{lwp}", fatal_signal_line(sig))?;
+    }
     if sections.threads {
         separate(out)?;
         threads(facts, out)?;
@@ -1081,6 +1114,7 @@ mod tests {
             held: &[],
             sets: &[],
             impls: &EMPTY_IMPLS,
+            fatal: None,
         }
     }
 
@@ -1089,6 +1123,79 @@ mod tests {
             tasks: Vec::new(),
             errors: Vec::new(),
         }
+    }
+
+    /// A fault heads the census in full: the signal by name, the code
+    /// by its name, the faulting address, and the lwp that took it —
+    /// separated from the sections below by a blank line.
+    #[test]
+    fn test_a_fatal_signal_heads_the_census() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.fatal = Some(proc::FatalSignal {
+            name: "SIGSEGV",
+            signo: 11,
+            code: 1,
+            code_name: Some("SEGV_MAPERR"),
+            fault_addr: Some(0),
+            lwp: Some(3950440),
+        });
+        let page = census(&facts, 5);
+        assert!(
+            page.starts_with(
+                "Terminated by SIGSEGV (SEGV_MAPERR), fault address 0x0, taken on lwp 3950440\n\n"
+            ),
+            "{page}"
+        );
+    }
+
+    /// A signal that faulted nowhere — user-sent, no decoded code —
+    /// is its name alone, and it still heads a census narrowed to one
+    /// section: it is a header, not a section.
+    #[test]
+    fn test_a_plain_signal_heads_a_narrowed_census() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.fatal = Some(proc::FatalSignal {
+            name: "SIGTERM",
+            signo: 15,
+            code: 0,
+            code_name: None,
+            fault_addr: None,
+            lwp: Some(7),
+        });
+        let page = sections(&facts, Sections::select(false, true, false), 5);
+        assert!(
+            page.starts_with("Terminated by SIGTERM, taken on lwp 7\n\n"),
+            "{page}"
+        );
+        assert!(!page.contains("Threads:"), "{page}");
+    }
+
+    /// A code the fault table does not name is still evidence — it is
+    /// printed as a number rather than dropped, with no address, since
+    /// an undecoded code does not say the siginfo carried one.
+    #[test]
+    fn test_an_unnamed_code_prints_as_a_number() {
+        let sig = proc::FatalSignal {
+            name: "SIGSEGV",
+            signo: 11,
+            code: 128,
+            code_name: None,
+            fault_addr: None,
+            lwp: None,
+        };
+        assert_eq!(fatal_signal_line(&sig), "SIGSEGV (code 128)");
+    }
+
+    /// No signal, no line: a live capture's census starts with its
+    /// counts.
+    #[test]
+    fn test_a_live_capture_has_no_signal_line() {
+        let list = empty();
+        let facts = facts(&list, &[]);
+        let page = census(&facts, 5);
+        assert!(page.starts_with("Threads:"), "{page}");
     }
 
     /// The two threads a reader came for — the one holding the driver
