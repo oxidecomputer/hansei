@@ -3,7 +3,7 @@
 
 use crate::summary::counted;
 use crate::threads::render;
-use crate::{RenderOpts, RuntimeScope, Session};
+use crate::{RenderOpts, RuntimeScope, Session, output};
 
 use anyhow::{Result, anyhow};
 use hansei_runtime::tokio::{bundle, census};
@@ -165,39 +165,22 @@ pub(crate) fn print_groups(
     excluded: usize,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let rows: Vec<[String; 6]> = groups
-        .iter()
-        .map(|g| {
-            [
-                g.kind.to_string(),
-                g.index.to_string(),
-                g.flavor.clone(),
-                format!("@{:#x}", g.addr),
-                format!(
-                    "{}, {}",
-                    counted(g.tasks, "task"),
-                    counted(g.futures, "future")
-                ),
-                g.where_.clone(),
-            ]
-        })
-        .collect();
-    // The last column is what varies most in length and nothing follows
-    // it, so only the five before it are padded.
-    let mut widths = [0; 5];
-    for row in &rows {
-        for (width, cell) in widths.iter_mut().zip(&row[..5]) {
-            *width = (*width).max(cell.chars().count());
-        }
+    let mut table = output::Table::new(6);
+    for g in groups {
+        table.row([
+            g.kind.to_string(),
+            g.index.to_string(),
+            g.flavor.clone(),
+            format!("@{:#x}", g.addr),
+            format!(
+                "{}, {}",
+                counted(g.tasks, "task"),
+                counted(g.futures, "future")
+            ),
+            g.where_.clone(),
+        ]);
     }
-    for row in &rows {
-        let padded: Vec<String> = row[..5]
-            .iter()
-            .zip(&widths)
-            .map(|(cell, &width)| format!("{cell:<width$}"))
-            .collect();
-        writeln!(out, "{}  {}", padded.join("  "), row[5])?;
-    }
+    table.write(out)?;
     if excluded > 0 {
         writeln!(
             out,

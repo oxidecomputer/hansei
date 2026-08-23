@@ -2,7 +2,7 @@
 //! futurelock diagnosis.
 
 use crate::tasks::task_id;
-use crate::{Session, print_warnings};
+use crate::{Session, output, print_warnings};
 
 use anyhow::Result;
 use hansei_bundle::names;
@@ -178,11 +178,7 @@ fn print_graph(
     // are the whole reason the related ones cannot be found.
     let alone = |i: usize| edges[i].is_empty() && !waited_for[i];
 
-    let mut rows = vec![[
-        "TASK".to_string(),
-        "STATE".to_string(),
-        "WAITING ON".to_string(),
-    ]];
+    let mut rows = Vec::new();
     let mut walk = GraphWalk {
         list,
         analysis,
@@ -208,28 +204,14 @@ fn print_graph(
         }
     }
 
-    // Counted in characters rather than bytes: a nested row's branch is
-    // drawn with box-drawing characters, which are three bytes each,
-    // and padding a column to a byte count would indent every tree
-    // deeper than the one beside it.
-    let mut widths = [0usize; 2];
-    for row in &rows {
-        for (w, cell) in widths.iter_mut().zip(row) {
-            *w = (*w).max(cell.chars().count());
-        }
+    let mut table = output::Table::new(3).header(["TASK", "STATE", "WAITING ON"]);
+    for [id, state, target] in rows {
+        table.row([id, state, target]);
     }
     // A heading over nothing reads as a graph that failed to print
     // rather than a target with no edges to draw.
-    if rows.len() > 1 {
-        for row in &rows {
-            let [id, state, target] = row;
-            writeln!(
-                out,
-                "{id:<w0$}  {state:<w1$}  {target}",
-                w0 = widths[0],
-                w1 = widths[1],
-            )?;
-        }
+    if !table.is_empty() {
+        table.write(out)?;
     }
     Ok(())
 }
