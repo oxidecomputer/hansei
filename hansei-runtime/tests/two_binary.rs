@@ -301,6 +301,9 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
         match ctx.task_stage(task).expect("stage decodes") {
             TaskStage::Running(future) => {
                 render_chain(&mut out, &ctx.await_chain(future));
+                if let Some((file, line)) = &wait.site {
+                    writeln!(out, "  site {file}:{line}").unwrap();
+                }
                 if let Some(target) = &wait.target {
                     writeln!(out, "  waiting on {}", mask(&target.to_string())).unwrap();
                 }

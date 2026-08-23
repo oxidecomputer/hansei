@@ -2345,6 +2345,20 @@ fn test_census_counts_the_target() {
             "{out}"
         );
 
+        // Where the two are suspended, by their own live await sites —
+        // the same lines their traces spell as `awaiting at` — with no
+        // task left over to report an absence for.
+        assert!(
+            out.contains(
+                "    Awaiting at:\n        \
+                 1  src/bin/sleep-join.rs:12\n        \
+                 1  src/bin/sleep-join.rs:19\n    \
+                 Spawned at:\n"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("no live await site"), "{out}");
+
         // Two two-frame chains — each an async fn over its leaf — and
         // nothing at all off them. Two futures in flight, standing on
         // four frames: the heading counts the futures and the frames

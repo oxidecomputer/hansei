@@ -57,6 +57,16 @@ pub struct TaskWait {
     /// for the few primitives hansei decodes, so this is what a task
     /// waits on where nothing decoded it.
     pub leaf: Option<String>,
+    /// The outermost live await site on the chain: the first frame,
+    /// walking from the root, whose live state records one — the line
+    /// of the task's own code it is suspended behind, rather than of
+    /// the libraries awaited through. That is the root frame's own
+    /// site whenever the root is a coroutine; a root that is a wrapper
+    /// (an `Instrumented`, a boxed `dyn`) has no state to record one,
+    /// and the first coroutine below it answers instead. `None` where
+    /// no frame records one: no resident chain (never polled,
+    /// finished), or a chain of plain futures end to end.
+    pub site: Option<(String, u32)>,
 }
 
 /// A diagnosed futurelock (RFD 609): an abandoned acquire clogging a
@@ -98,6 +108,7 @@ pub fn analyze<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> Analysis {
         let mut target = None;
         let mut depth = 0;
         let mut leaf = None;
+        let mut site = None;
         // Unknown futures cannot be traced (the task listing already
         // calls them out); finished tasks wait on nothing.
         if matches!(task.future, FutureInfo::Known(_)) {
@@ -106,6 +117,11 @@ pub fn analyze<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> Analysis {
                     let chain = ctx.await_chain(future);
                     depth = chain.frames.len();
                     leaf = chain.leaf().map(str::to_string);
+                    site = chain
+                        .frames
+                        .iter()
+                        .find_map(|frame| frame.state.as_ref()?.await_loc)
+                        .map(|(file, line)| (file.to_string(), line));
                     match ctx.wait_target(&chain, list) {
                         Some(Ok(t)) => target = Some(t),
                         Some(Err(e)) => {
@@ -128,6 +144,7 @@ pub fn analyze<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> Analysis {
             target,
             depth,
             leaf,
+            site,
         });
     }
 

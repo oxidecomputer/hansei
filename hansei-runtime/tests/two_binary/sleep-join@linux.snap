@@ -9,6 +9,7 @@ task 3 idle sleep_join::sleeper::{async_fn_env#0}
   await sleep_join::sleeper::{async_fn_env#0} Suspend0 @ src/bin/sleep-join.rs:12
   await tokio::time::sleep::Sleep
   end leaf
+  site src/bin/sleep-join.rs:12
   waiting on the timer: deadline TS on the target's monotonic clock
 task 4 idle sleep_join::joiner::{async_fn_env#0}
   spawned src/bin/sleep-join.rs:31:23
@@ -16,4 +17,5 @@ task 4 idle sleep_join::joiner::{async_fn_env#0}
   await sleep_join::joiner::{async_fn_env#0} Suspend0 @ src/bin/sleep-join.rs:19
   await tokio::runtime::task::join::JoinHandle<u32>
   end leaf
+  site src/bin/sleep-join.rs:19
   waiting on task 3 (JoinHandle)

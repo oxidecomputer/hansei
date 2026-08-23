@@ -14,6 +14,7 @@ task 5 idle futurelock::main::{async_block#0}::{async_block_env#0}
   await tokio::sync::mutex::{impl#10}::acquire::{async_fn_env#0}<()> Suspend1 @ tokio-1.47.5/src/sync/mutex.rs:654
   await tokio::sync::batch_semaphore::Acquire
   end leaf
+  site src/bin/futurelock.rs:28
   waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
 futurelock: task 5 holds `future1` (futurelock::do_async_thing::{async_fn_env#0}), granted 1 permit(s) of the tokio::sync::Mutex semaphore 0xADDR
   held across futurelock::do_stuff::{async_fn_env#0} Suspend1 @ src/bin/futurelock.rs:70
