@@ -3,7 +3,7 @@
 
 use crate::tasks::{future_name, no_such_task, task_label};
 use crate::whatis::via_suffix;
-use crate::{Session, TraceOpts, TraceTarget};
+use crate::{Session, TraceOpts, TraceTarget, output};
 
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
@@ -45,7 +45,12 @@ fn exec_trace_task(
     };
 
     let name = future_name(&task.future, &session.impl_fold);
-    writeln!(out, "Task {task_id}: {name} ({})", task.state.lifecycle())?;
+    writeln!(
+        out,
+        "Task {task_id}: {} ({})",
+        opts.theme.type_name(&name),
+        task.state.lifecycle()
+    )?;
     if let Some(loc) = &task.spawn_location {
         writeln!(out, "Spawned at: {loc}")?;
     }
@@ -121,7 +126,8 @@ fn exec_trace_future(
                 out,
                 "Future {:#x}: {}",
                 h.addr,
-                names::display_future_name(&h.future, &session.impl_fold)
+                opts.theme
+                    .type_name(&names::display_future_name(&h.future, &session.impl_fold))
             )?;
             writeln!(
                 out,
@@ -148,7 +154,12 @@ fn exec_trace_future(
                 Some(future) => names::display_future_name(future, &session.impl_fold),
                 None => "<undecoded>".to_string(),
             };
-            writeln!(out, "Future {:#x}: {future}", c.node)?;
+            writeln!(
+                out,
+                "Future {:#x}: {}",
+                c.node,
+                opts.theme.type_name(&future)
+            )?;
             writeln!(
                 out,
                 "Child of: {} at {:#x} (frame {}, `{}`{via}), polled by {} — {}",
@@ -389,7 +400,7 @@ fn print_await_chain<'b, T: proc::Target>(
 ) -> Result<()> {
     writeln!(out)?;
     if let Some(wait) = wait {
-        writeln!(out, "Waiting on: {wait}")?;
+        writeln!(out, "Waiting on: {}", opts.theme.bold(wait))?;
         writeln!(out)?;
     }
 
@@ -407,15 +418,19 @@ fn print_await_chain<'b, T: proc::Target>(
         };
         let name = names::fold_type_name(frame.future.ty.name(), impls);
         let number = format!("#{i}");
-        writeln!(out, "{number:<num_width$}  {kind:<13} {name}{dyn_marker}")?;
+        writeln!(
+            out,
+            "{number:<num_width$}  {kind:<13} {}",
+            opts.theme.type_name(&format!("{name}{dyn_marker}"))
+        )?;
 
         let held = holds.get(i).copied().unwrap_or(0);
         match wait {
             Some(wait) if Some(i) == last => {
-                writeln!(out, "{DETAIL_INDENT}waiting on {wait}")?;
+                writeln!(out, "{DETAIL_INDENT}waiting on {}", opts.theme.bold(wait))?;
             }
             _ => {
-                if let Some(detail) = frame_detail(frame, held) {
+                if let Some(detail) = frame_detail(frame, held, &opts.theme) {
                     writeln!(out, "{DETAIL_INDENT}{detail}")?;
                 }
             }
@@ -441,7 +456,11 @@ const ENTRY_INDENT: &str = "        ";
 /// decoded variant on a non-coroutine wrapper, which makes no
 /// resume-point claim. `held` futures the census found parked in the
 /// frame ride along as a tally. `None` when there is nothing to say.
-fn frame_detail(frame: &bundle::AwaitFrame<'_>, held: usize) -> Option<String> {
+fn frame_detail(
+    frame: &bundle::AwaitFrame<'_>,
+    held: usize,
+    theme: &output::Theme,
+) -> Option<String> {
     let holds = match held {
         0 => String::new(),
         1 => "holds 1 pending future".to_string(),
@@ -450,7 +469,9 @@ fn frame_detail(frame: &bundle::AwaitFrame<'_>, held: usize) -> Option<String> {
     let Some(state) = &frame.state else {
         return (!holds.is_empty()).then_some(holds);
     };
-    let loc = state.await_loc.map(|(file, line)| format!("{file}:{line}"));
+    let loc = state
+        .await_loc
+        .map(|(file, line)| theme.loc(&format!("{file}:{line}")).into_owned());
     if frame.future.ty.is_coroutine() && state.name.starts_with("Suspend") {
         let mut quals = state.name.to_string();
         match state_locals(state.payload.ty).len() {
@@ -543,9 +564,13 @@ fn print_frame_verbose<'b, T: proc::Target>(
     if rows.is_empty() {
         return Ok(());
     }
-    writeln!(out, "{DETAIL_INDENT}other suspend points:")?;
+    // Dimmed whole, inner spans unstyled: the inventory is inactive
+    // material, and a styled span inside a dimmed line would end the
+    // dimming at its own reset.
+    let theme = &opts.theme;
+    writeln!(out, "{DETAIL_INDENT}{}", theme.dim("other suspend points:"))?;
     for row in rows {
-        let mut line = format!("{ENTRY_INDENT}{}", row.name);
+        let mut line = row.name.to_string();
         if let Some((file, lineno)) = row.loc {
             line.push_str(&format!(" — {file}:{lineno}"));
         }
@@ -560,7 +585,7 @@ fn print_frame_verbose<'b, T: proc::Target>(
                 names::display_future_name(awaitee, impls)
             ));
         }
-        writeln!(out, "{line}")?;
+        writeln!(out, "{ENTRY_INDENT}{}", theme.dim(&line))?;
     }
     Ok(())
 }
@@ -1144,8 +1169,8 @@ mod variable_format_tests {
 #[cfg(test)]
 mod future_trace_tests {
     use super::{FutureAt, TraceOpts, frame_holds, future_at, print_await_chain, wait_line};
-    use crate::RenderOpts;
     use crate::tasks::{future_name, print_tasks};
+    use crate::{RenderOpts, output};
     use crate::{TraceTarget, parse_trace_target};
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::TaskState;
@@ -1378,6 +1403,7 @@ mod future_trace_tests {
                     ugly: false,
                 },
                 elide: &elide,
+                theme: output::Theme::plain(),
             };
             print_await_chain(
                 ctx,
@@ -1733,7 +1759,7 @@ mod future_trace_tests {
 #[cfg(test)]
 mod trace_render_tests {
     use super::{TraceOpts, frame_holds, print_await_chain, wait_line};
-    use crate::RenderOpts;
+    use crate::{RenderOpts, output};
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::bundle::TaskStage;
     use hansei_runtime::tokio::census;
@@ -1743,6 +1769,10 @@ mod trace_render_tests {
     /// path — with heap addresses masked so expectations compare
     /// exactly.
     fn trace(program: &str, future: &str, verbose: bool) -> String {
+        trace_with(program, future, verbose, output::Theme::plain())
+    }
+
+    fn trace_with(program: &str, future: &str, verbose: bool, theme: output::Theme) -> String {
         let (bundle, snapshot) = testkit::load_any(program);
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
@@ -1776,6 +1806,7 @@ mod trace_render_tests {
                 ugly: false,
             },
             elide: &elide,
+            theme,
         };
         print_await_chain(
             &ctx,
@@ -1954,6 +1985,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
                 ugly: false,
             },
             elide: &elide,
+            theme: output::Theme::plain(),
         };
         print_await_chain(
             &ctx,
@@ -1999,5 +2031,58 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
             .find("other suspend points:")
             .expect("an inventory block");
         assert!(locals < inventory, "{rendered}");
+    }
+
+    /// A terminal theme styles without saying anything new: the wait
+    /// target is bold in both its places, a frame's type name carries
+    /// the name hue, a detail line's source location the location hue —
+    /// and the plain theme, which every non-terminal sink gets, emits
+    /// not one escape byte.
+    #[test]
+    fn test_a_terminal_theme_styles_and_the_plain_one_stays_bytes() {
+        let future = "futurelock::main::{async_block#0}::{async_block_env#0}";
+        let styled = trace_with("futurelock", future, false, output::Theme::forced());
+        let target = "a tokio::sync::Mutex (semaphore 0xADDR): \
+                      1 permit requested, 0 available; wake queue: task 5";
+        assert!(
+            styled.contains(&format!("Waiting on: \x1b[1m{target}\x1b[0m\n")),
+            "{styled}"
+        );
+        assert!(
+            styled.contains(&format!("      waiting on \x1b[1m{target}\x1b[0m\n")),
+            "{styled}"
+        );
+        assert!(
+            styled.contains("#0  async block   \x1b[36mfuturelock::main::{async_block#0}\x1b[0m\n"),
+            "{styled}"
+        );
+        assert!(
+            styled.contains(
+                "      awaiting at \x1b[32msrc/bin/futurelock.rs:28\x1b[0m (Suspend1, 1 local)\n"
+            ),
+            "{styled}"
+        );
+        assert!(!trace("futurelock", future, false).contains('\x1b'));
+    }
+
+    /// The inventory is dimmed whole — the heading and each row — with
+    /// no styled span inside it, whose reset would end the dimming
+    /// mid-line.
+    #[test]
+    fn test_the_inventory_dims_whole_lines() {
+        let styled = trace_with(
+            "simple-await",
+            "simple_await::work::{async_fn_env#0}",
+            true,
+            output::Theme::forced(),
+        );
+        assert!(
+            styled.contains(
+                "      \x1b[2mother suspend points:\x1b[0m\n        \
+                 \x1b[2mSuspend0 — src/bin/simple-await.rs:33 (11 locals) \
+                 → async fn simple_await::ready_value\x1b[0m\n"
+            ),
+            "{styled}"
+        );
     }
 }

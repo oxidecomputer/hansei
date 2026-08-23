@@ -561,6 +561,7 @@ struct TraceOpts<'a> {
     verbose: bool,
     render: RenderOpts,
     elide: &'a reify::ElideOverride,
+    theme: output::Theme,
 }
 
 /// Parse a target address: hex digits behind a required `0x`. The
@@ -837,7 +838,12 @@ impl<'b> Session<'b> {
 }
 
 /// Run one command against an attached session.
-pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write) -> Result<Flow> {
+pub fn dispatch(
+    session: &Session<'_>,
+    command: Command,
+    theme: output::Theme,
+    out: &mut dyn io::Write,
+) -> Result<Flow> {
     match command {
         Command::Census {
             threads,
@@ -886,6 +892,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
                 verbose,
                 render,
                 elide: &elide,
+                theme,
             };
             trace::exec_trace(session, target, &opts, out)?
         }

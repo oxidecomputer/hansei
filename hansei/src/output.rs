@@ -1,4 +1,5 @@
-//! The one aligner behind every columned listing.
+//! The output layer: the one aligner behind every columned listing,
+//! and the theme that styles a terminal's output.
 //!
 //! Each listing used to pad its own columns, and each did it a little
 //! differently — one of them measured cells in bytes, so a row holding
@@ -9,7 +10,87 @@
 //! copies the whole logical line — and a header row, where a listing
 //! has one, is padded with the same widths as the rows it names.
 
-use std::io;
+use std::borrow::Cow;
+use std::io::{self, IsTerminal};
+
+/// Whether and how output is styled. A theme is decided once per
+/// command, by where the output is going: a terminal gets ANSI styles,
+/// and anything else — a golden, a script, a `!` pipe — gets the same
+/// bytes it always got. `NO_COLOR` set non-empty, or a dumb terminal,
+/// keeps a terminal plain too.
+///
+/// Styling never carries information of its own: every claim a style
+/// emphasizes is spelled out in the text it styles, so the plain
+/// rendering says everything the styled one does.
+#[derive(Clone, Copy)]
+pub struct Theme {
+    enabled: bool,
+}
+
+impl Theme {
+    /// No styling: the bytes are the text.
+    pub fn plain() -> Self {
+        Self { enabled: false }
+    }
+
+    /// The theme for output going to stdout: styled when stdout is a
+    /// terminal that wants styles.
+    pub fn for_stdout() -> Self {
+        Self {
+            enabled: stdout_styles(
+                io::stdout().is_terminal(),
+                std::env::var_os("NO_COLOR"),
+                std::env::var_os("TERM"),
+            ),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forced() -> Self {
+        Self { enabled: true }
+    }
+
+    /// The one emphasis: what the reader came for — the wait target.
+    pub fn bold<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        self.paint("1", text)
+    }
+
+    /// De-emphasis, for inventory and other inactive material.
+    pub fn dim<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        self.paint("2", text)
+    }
+
+    /// The hue every type name prints in.
+    pub fn type_name<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        self.paint("36", text)
+    }
+
+    /// The hue every source location prints in.
+    pub fn loc<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        self.paint("32", text)
+    }
+
+    fn paint<'a>(&self, sgr: &str, text: &'a str) -> Cow<'a, str> {
+        match self.enabled && !text.is_empty() {
+            true => Cow::Owned(format!("\x1b[{sgr}m{text}\x1b[0m")),
+            false => Cow::Borrowed(text),
+        }
+    }
+}
+
+/// Whether stdout with these facts about it gets styles: only a
+/// terminal, only when `NO_COLOR` is unset or empty — set non-empty is
+/// the request to stay plain, per its convention — and only when
+/// `TERM` says the terminal understands more than plain text.
+fn stdout_styles(
+    tty: bool,
+    no_color: Option<std::ffi::OsString>,
+    term: Option<std::ffi::OsString>,
+) -> bool {
+    let refused = no_color.is_some_and(|v| !v.is_empty());
+    let dumb = term.is_some_and(|t| t == "dumb");
+    tty && !refused && !dumb
+}
 
 /// Which edge of its column a cell sits against. Counts sit right, so
 /// their magnitudes line up; everything else sits left.
@@ -209,5 +290,21 @@ mod tests {
         t.row(["a", "b"]);
         t.row(["ccc", "d"]);
         assert_eq!(rendered(&t), ["a   b", "ccc d"]);
+    }
+
+    /// Stdout gets styles only as a terminal that has not refused them:
+    /// a pipe never styles whatever the environment says, `NO_COLOR`
+    /// set non-empty refuses them (set empty does not, per its
+    /// convention), and a dumb terminal cannot show them.
+    #[test]
+    fn test_only_a_willing_terminal_gets_styles() {
+        let env = |s: &str| Some(std::ffi::OsString::from(s));
+        assert!(stdout_styles(true, None, None));
+        assert!(stdout_styles(true, None, env("xterm-256color")));
+        assert!(!stdout_styles(false, None, None));
+        assert!(!stdout_styles(false, env("1"), env("dumb")));
+        assert!(!stdout_styles(true, env("1"), None));
+        assert!(stdout_styles(true, env(""), None));
+        assert!(!stdout_styles(true, None, env("dumb")));
     }
 }
