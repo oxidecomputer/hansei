@@ -309,7 +309,7 @@ pub enum Command {
     /// Capture a replayable snapshot of everything the bundle-backed
     /// analysis reads from the target: task enumeration and every task's
     /// await chain are driven once with a recording wrapper in place,
-    /// and the memory, symbol, and LWP state they touched is written
+    /// and the memory, symbol, and lwp state they touched is written
     /// out. Together with a bundle extracted from a *separate* build of
     /// the same source, the snapshot feeds the offline two-binary tests.
     #[cfg(feature = "snapshot")]
@@ -540,16 +540,19 @@ pub enum RuntimeScope {
 /// Parse a runtime scope. The split is the one `parse_trace_target`
 /// makes for the same reason: the listing prints indices in decimal and
 /// addresses in `0x` hex, so neither spelling can be mistaken for the
-/// other.
+/// other. The listing prints the handle as `@0x…`, so that exact
+/// spelling pastes back in; the `@` is its dress, not its identity,
+/// and a bare address means the same handle.
 fn parse_runtime_scope(s: &str) -> std::result::Result<RuntimeScope, String> {
-    if s.starts_with("0x") || s.starts_with("0X") {
-        parse_hex_addr(s).map(RuntimeScope::Handle)
+    let addr = s.strip_prefix('@').unwrap_or(s);
+    if addr.starts_with("0x") || addr.starts_with("0X") {
+        parse_hex_addr(addr).map(RuntimeScope::Handle)
     } else {
         s.parse().map(RuntimeScope::Index).map_err(|_| {
             format!(
                 "a runtime is named by its index in the `runtimes` listing, or \
-                 by the handle address printed beside it in hex with a leading \
-                 0x, got {s:?}"
+                 by the handle address printed beside it there (with or \
+                 without its leading @), got {s:?}"
             )
         })
     }
@@ -1139,7 +1142,7 @@ fn missing_sample(missing: &[String]) -> String {
     sample
 }
 
-/// Find the LWPs holding a tokio `Context`, through the thread-local
+/// Find the lwps holding a tokio `Context`, through the thread-local
 /// the bundle names.
 fn discover_workers<T: proc::Target>(
     lwps: &[proc::LwpInfo],
@@ -1148,7 +1151,7 @@ fn discover_workers<T: proc::Target>(
     let workers = ctx.find_workers(lwps)?;
     anyhow::ensure!(
         !workers.is_empty(),
-        "no LWP has a tokio Context in thread-local storage; is this a tokio program?"
+        "no lwp has a tokio Context in thread-local storage; is this a tokio program?"
     );
     Ok(workers)
 }

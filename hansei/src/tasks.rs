@@ -465,7 +465,7 @@ pub(crate) fn exec_tasks(
 ) -> Result<()> {
     let list = &session.tasks;
 
-    // Which LWP is polling which task right now.
+    // Which lwp is polling which task right now.
     let polling: HashMap<u64, u32> = session
         .workers
         .iter()

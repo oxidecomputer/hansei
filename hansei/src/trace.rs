@@ -869,11 +869,11 @@ pub(crate) fn print_variable(
     }
 }
 
-/// The ` on LWP N` suffix of a torn-state warning, when some worker is
+/// The ` on lwp N` suffix of a torn-state warning, when some worker is
 /// mid-poll in the task.
 fn polling_lwp(workers: &[bundle::Worker], id: Option<u64>) -> String {
     id.and_then(|id| workers.iter().find(|w| w.current_task_id == Some(id)))
-        .map(|w| format!(" on LWP {}", w.tid))
+        .map(|w| format!(" on lwp {}", w.tid))
         .unwrap_or_default()
 }
 
@@ -892,7 +892,7 @@ mod polling_lwp_tests {
             current_task_id: id,
         };
         let workers = [worker(11, Some(7)), worker(12, Some(9))];
-        assert_eq!(polling_lwp(&workers, Some(9)), " on LWP 12");
+        assert_eq!(polling_lwp(&workers, Some(9)), " on lwp 12");
         assert_eq!(polling_lwp(&workers, Some(8)), "");
         assert_eq!(polling_lwp(&workers, None), "");
     }
@@ -1429,7 +1429,7 @@ mod future_trace_tests {
     }
 
     /// Render the task listing the way `tasks` does, with no worker
-    /// polling anything: what LWP holds a task is the session's to say,
+    /// polling anything: what lwp holds a task is the session's to say,
     /// and no listing test turns on it.
     fn render(
         list: &TaskList,

@@ -1418,7 +1418,7 @@ fn test_ct_runtime_acceptance() {
 /// A `LocalSet` on a current_thread runtime: its two tasks live in the
 /// set's own list, which the ordinary spawned task's JoinHandle edge
 /// bootstraps — the whole set from one member. They merge into the flat
-/// listing tagged with the set (and the LWP it is pinned to, joined
+/// listing tagged with the set (and the lwp it is pinned to, joined
 /// through the runtime context's thread id), the joined local task is
 /// simply listed with no unlisted caveat, and `info` names the set with
 /// the route that found it. The TLS route finds nothing here on
@@ -1434,7 +1434,7 @@ fn test_local_set_acceptance() {
         let acquirer = task_with_future(&rows, "async fn local_set::local_acquirer");
 
         // Groups: the scheduler task carries the runtime's tag, the two
-        // local tasks the set's, with the owner LWP joined on.
+        // local tasks the set's, with the owner lwp joined on.
         let rt_tag = regex::Regex::new(r"^runtime 0 @0x[0-9a-f]+ \(current_thread\)$").unwrap();
         assert!(rt_tag.is_match(&joiner.owner), "{rows:#?}");
         let set_tag = regex::Regex::new(r"^local set 0 @0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
@@ -2140,15 +2140,15 @@ fn test_threads_shows_workers_and_stacks() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
         let out = hansei_ok(&bundle, core, "threads");
-        // The listing opens with the first LWP's block, and the blank
+        // The listing opens with the first lwp's block, and the blank
         // lines fall between blocks — not ahead of them, and not
         // nowhere.
-        assert!(out.starts_with("LWP "), "{out}");
-        assert!(out.contains("\n\nLWP "), "{out}");
+        assert!(out.starts_with("lwp "), "{out}");
+        assert!(out.contains("\n\nlwp "), "{out}");
         // The heading claims what each thread is polling, in one of
         // the claim's three spellings.
         let claim =
-            regex::Regex::new(r"LWP \d+  (polling no task|polling task \d+|last polled task \d+)")
+            regex::Regex::new(r"lwp \d+  (polling no task|polling task \d+|last polled task \d+)")
                 .unwrap();
         assert!(claim.is_match(&out), "{out}");
         assert!(out.contains("worker 0"), "{out}");
@@ -2617,7 +2617,7 @@ fn test_a_unique_prefix_names_a_command() {
     with_core("simple-await", |core| {
         assert!(hansei_ok(&bundle, core, "i").contains("symbols resolved:"));
         // The prefix names the command; its arguments are never inferred.
-        assert!(hansei_ok(&bundle, core, "thr -f 0").contains("LWP "));
+        assert!(hansei_ok(&bundle, core, "thr -f 0").contains("lwp "));
         // `runtime` and `runtimes` share every shorter prefix, so each
         // answers to its exact name and to nothing else.
         assert!(hansei_ok(&bundle, core, "runtime -D -d 1").contains("runtime::driver::Handle"));
