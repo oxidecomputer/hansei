@@ -96,6 +96,8 @@ pub struct Facts<'a> {
     /// census of futures has nothing to say about them.
     pub held: &'a [HeldFuture],
     pub sets: &'a [FutureSet],
+    /// The bundle's impl-path substitutions for the display fold.
+    pub impls: &'a names::ImplFold,
 }
 
 impl Facts<'_> {
@@ -495,10 +497,12 @@ fn tasks(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
     let mut types: BTreeMap<String, (usize, Waits)> = BTreeMap::new();
     let mut sites: BTreeMap<String, usize> = BTreeMap::new();
     for (index, task) in list.tasks.iter().enumerate() {
-        let (count, waits) = types.entry(future_name(&task.future)).or_default();
+        let (count, waits) = types
+            .entry(future_name(&task.future, facts.impls))
+            .or_default();
         *count += 1;
         if let Some(wait) = facts.waits.get(index) {
-            waits.add_task(task, wait);
+            waits.add_task(task, wait, facts.impls);
         }
         let site = match &task.spawn_location {
             Some(loc) => loc.to_string(),
@@ -543,7 +547,7 @@ impl Waits {
     /// most of them on any real target, so it is named by the leaf its
     /// chain reached rather than lumped under a bucket saying only that
     /// hansei has no primitive for it.
-    fn add_task(&mut self, task: &Task, wait: &TaskWait) {
+    fn add_task(&mut self, task: &Task, wait: &TaskWait, impls: &names::ImplFold) {
         match wait.target.as_ref() {
             Some(target) => self.add(target.kind()),
             None => match (task.state.lifecycle(), &wait.leaf) {
@@ -552,7 +556,7 @@ impl Waits {
                 (_, Some(leaf)) => {
                     *self
                         .leaves
-                        .entry(names::display_future_name(leaf))
+                        .entry(names::display_future_name(leaf, impls))
                         .or_default() += 1
                 }
                 (_, None) => self.undecoded += 1,
@@ -565,13 +569,18 @@ impl Waits {
     /// to be mid-poll or finished by, so the two buckets that reason
     /// about one cannot arise: what is left is the primitive, the leaf,
     /// or a chain that reached neither.
-    fn add_future(&mut self, wait: Option<WaitKind>, leaf: &Option<String>) {
+    fn add_future(
+        &mut self,
+        wait: Option<WaitKind>,
+        leaf: &Option<String>,
+        impls: &names::ImplFold,
+    ) {
         match (wait, leaf) {
             (Some(wait), _) => self.add(wait),
             (None, Some(leaf)) => {
                 *self
                     .leaves
-                    .entry(names::display_future_name(leaf))
+                    .entry(names::display_future_name(leaf, impls))
                     .or_default() += 1
             }
             (None, None) => self.undecoded += 1,
@@ -711,9 +720,11 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
         .map(|h| (&h.future, h.wait, &h.leaf))
         .chain(children)
     {
-        let (count, waits) = types.entry(names::display_future_name(future)).or_default();
+        let (count, waits) = types
+            .entry(names::display_future_name(future, facts.impls))
+            .or_default();
         *count += 1;
-        waits.add_future(wait, leaf);
+        waits.add_future(wait, leaf, facts.impls);
     }
     let futures = types
         .into_iter()
@@ -870,6 +881,10 @@ mod tests {
     use hansei_runtime::tokio::graph::TaskRef;
     use hansei_runtime::tokio::{Location, RawInstant, TaskAddr, TaskState};
 
+    /// No impl substitutions: the fixtures spell no `{impl#N}` names.
+    static EMPTY_IMPLS: std::sync::LazyLock<names::ImplFold> =
+        std::sync::LazyLock::new(names::ImplFold::default);
+
     const RUNNING: u64 = 0b1;
     const COMPLETE: u64 = 0b10;
     const NOTIFIED: u64 = 0b100;
@@ -1019,6 +1034,7 @@ mod tests {
             waits,
             held: &[],
             sets: &[],
+            impls: &EMPTY_IMPLS,
         }
     }
 

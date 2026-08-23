@@ -20,6 +20,7 @@ pub(crate) fn exec_graph(session: &Session<'_>, out: &mut dyn io::Write) -> Resu
         analysis,
         &census.held,
         &census.join_sets,
+        &session.impl_fold,
         out,
     )?;
 
@@ -30,7 +31,7 @@ pub(crate) fn exec_graph(session: &Session<'_>, out: &mut dyn io::Write) -> Resu
     // claim.
     for fl in &analysis.futurelocks {
         writeln!(out)?;
-        print_futurelock(fl, out)?;
+        print_futurelock(fl, &session.impl_fold, out)?;
     }
     Ok(())
 }
@@ -162,6 +163,7 @@ fn print_graph(
     analysis: &graph::Analysis,
     held: &[census::HeldFuture],
     join_sets: &[census::JoinSet],
+    impls: &names::ImplFold,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let edges = wait_edges(list, analysis, held, join_sets);
@@ -188,6 +190,7 @@ fn print_graph(
         printed: vec![false; list.tasks.len()],
         path: Vec::new(),
         rows: &mut rows,
+        impls,
     };
     // The tasks nothing waits for are the tops of the trees. What is
     // left over after them is in a cycle — a task joining itself, or two
@@ -245,6 +248,7 @@ struct GraphWalk<'a> {
     /// closes back on one of them.
     path: Vec<usize>,
     rows: &'a mut Vec<[String; 3]>,
+    impls: &'a names::ImplFold,
 }
 
 impl GraphWalk<'_> {
@@ -288,7 +292,7 @@ impl GraphWalk<'_> {
         let wait = &self.analysis.waits[task];
         let target = match (&wait.target, &wait.leaf) {
             (Some(target), _) => target.to_string(),
-            (None, Some(leaf)) => names::display_future_name(leaf),
+            (None, Some(leaf)) => names::display_future_name(leaf, self.impls),
             (None, None) => "-".to_string(),
         };
         self.rows.push([name, state, target]);
@@ -310,7 +314,11 @@ impl GraphWalk<'_> {
 
 /// Render one futurelock diagnosis: who holds what, where the
 /// abandoned future is parked, and who is stuck behind it.
-fn print_futurelock(fl: &graph::Futurelock, out: &mut dyn io::Write) -> Result<()> {
+fn print_futurelock(
+    fl: &graph::Futurelock,
+    impls: &names::ImplFold,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     let acq = &fl.acquire;
     let semaphore = match acq.owner {
         Some(owner) => format!("a {owner} (semaphore {:#x})", acq.semaphore),
@@ -336,12 +344,12 @@ fn print_futurelock(fl: &graph::Futurelock, out: &mut dyn io::Write) -> Result<(
         out,
         "  `{}` ({})",
         acq.local,
-        names::display_future_name(&acq.future)
+        names::display_future_name(&acq.future, impls)
     )?;
     writeln!(
         out,
         "  held across {} state {}{loc}",
-        names::display_future_name(&acq.frame),
+        names::display_future_name(&acq.frame, impls),
         acq.state
     )?;
     if fl.blocked.is_empty() {
@@ -360,7 +368,7 @@ fn print_futurelock(fl: &graph::Futurelock, out: &mut dyn io::Write) -> Result<(
 
 #[cfg(test)]
 mod graph_tests {
-    use super::{print_futurelock, print_graph};
+    use super::{names, print_futurelock, print_graph};
 
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::bundle::{
@@ -493,7 +501,15 @@ mod graph_tests {
             errors: Vec::new(),
         };
         let mut out = Vec::new();
-        print_graph(&list, &analysis, held, join_sets, &mut out).unwrap();
+        print_graph(
+            &list,
+            &analysis,
+            held,
+            join_sets,
+            &names::ImplFold::default(),
+            &mut out,
+        )
+        .unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -690,7 +706,7 @@ TASK                          STATE  WAITING ON
     #[test]
     fn test_futurelock_prose_folds_its_names() {
         let mut out = Vec::new();
-        print_futurelock(&futurelock(51), &mut out).unwrap();
+        print_futurelock(&futurelock(51), &names::ImplFold::default(), &mut out).unwrap();
         let prose = String::from_utf8(out).unwrap();
         assert!(prose.contains("`lock` (async fn Mutex::lock)"), "{prose}");
         assert!(

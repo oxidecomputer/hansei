@@ -71,6 +71,7 @@ fn tiny_bundle() -> Bundle {
             raw_waker_vtable: ty,
         },
         provenance: ProvenanceTable::default(),
+        impls: ImplTable::default(),
     }
 }
 
@@ -318,6 +319,7 @@ fn random_bundle(seed: u64) -> Bundle {
             raw_waker_vtable: any_ty(&mut rng),
         },
         provenance,
+        impls: ImplTable::default(),
     }
 }
 
@@ -474,6 +476,49 @@ fn test_validate_rejects_oob_str_ref() {
     assert!(matches!(loaded.validate(), Err(Error::Corrupt(_))));
 }
 
+/// [`tiny_bundle`] with an impl table holding `entries`, their strings
+/// appended to the table (re-interning preserves every existing ref).
+fn with_impls(entries: &[(&str, &str)]) -> Bundle {
+    let mut b = tiny_bundle();
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    b.impls.entries = entries
+        .iter()
+        .map(|&(k, v)| (strings.intern(k), strings.intern(v)))
+        .collect();
+    b.strings = strings.finish();
+    b
+}
+
+#[test]
+fn test_impl_table_roundtrips() {
+    let b = with_impls(&[("a::{impl#0}", "a::A"), ("b::{impl#12}", "b::B")]);
+    b.validate().expect("sorted impl table validates");
+    let loaded = Bundle::read_from(encode(&b).as_slice()).expect("well-framed bundle must load");
+    assert_eq!(loaded, b);
+}
+
+#[test]
+fn test_validate_rejects_broken_impl_tables() {
+    // Out of order, duplicated, no impl segment in the key, an impl
+    // segment in the value, and a dangling string ref.
+    for broken in [
+        with_impls(&[("b::{impl#1}", "b::B"), ("a::{impl#0}", "a::A")]),
+        with_impls(&[("a::{impl#0}", "a::A"), ("a::{impl#0}", "a::B")]),
+        with_impls(&[("a::plain", "a::A")]),
+        with_impls(&[("a::{impl#0}", "a::{impl#1}")]),
+        {
+            let mut b = with_impls(&[("a::{impl#0}", "a::A")]);
+            b.impls.entries[0].1 = StrRef(999);
+            b
+        },
+    ] {
+        assert!(matches!(broken.validate(), Err(Error::Corrupt(_))));
+    }
+}
+
 #[test]
 fn test_validate_rejects_bad_debug_format_path() {
     let mut b = tiny_bundle();
@@ -570,6 +615,7 @@ fn test_validate_accepts_selector_through_deref() {
             raw_waker_vtable: ty,
         },
         provenance: ProvenanceTable::default(),
+        impls: ImplTable::default(),
     };
     assert!(b.validate().is_ok());
     // Round-trips: validation runs on save and load too.
@@ -673,6 +719,7 @@ fn test_validate_rejects_out_of_range_member() {
             raw_waker_vtable: ty,
         },
         provenance: ProvenanceTable::default(),
+        impls: ImplTable::default(),
     };
     let err = b
         .validate()
@@ -776,6 +823,7 @@ fn test_validate_requires_a_named_member_to_be_unique() {
             raw_waker_vtable: ty,
         },
         provenance: ProvenanceTable::default(),
+        impls: ImplTable::default(),
     };
 
     let point = BundleTypeId(1);
@@ -901,6 +949,7 @@ fn walk_bundle(broken_b: bool) -> Bundle {
             raw_waker_vtable: ty,
         },
         provenance: ProvenanceTable::default(),
+        impls: ImplTable::default(),
     };
     b.walks.entries.insert(
         WalkRole::SleepDeadline,

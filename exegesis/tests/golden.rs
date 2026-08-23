@@ -277,6 +277,22 @@ fn assert_walk(program: &str, bundle: &Bundle, role: WalkRole, expected: &str) {
 /// drops" checks plus metadata sanity.
 fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert_addresses_by_name(program, bundle);
+    // The impl table records only what the bundle's strings mention —
+    // an entry nothing names is dead weight the emit filter should have
+    // dropped. (Sortedness and the plain-path value rules are the
+    // validator's, which the save above already ran.)
+    for &(path, _) in &bundle.impls.entries {
+        let path = bundle.strings.get(path).unwrap();
+        // Strictly longer: the key itself was interned for the table,
+        // so its own row must not count as a mention.
+        assert!(
+            bundle
+                .strings
+                .iter()
+                .any(|s| s.len() > path.len() && s.contains(path)),
+            "{program}: impl table entry {path:?} is mentioned by no string"
+        );
+    }
     // Every tokio target has a scheduler owned list, so its id binds
     // everywhere. The summary says only that it did; this says it
     // landed beside `owned.list` rather than on some other counter.
@@ -733,6 +749,24 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         );
     }
     if program == "channels" {
+        // The impl table resolved mpsc's Sender impl from a member
+        // symbol: the `{impl#N}` index is a source-order accident a
+        // tokio bump may shift, so the key pins everything but N.
+        let sender_impl = bundle.impls.entries.iter().find_map(|&(path, self_type)| {
+            (bundle.strings.get(self_type) == Some("tokio::sync::mpsc::bounded::Sender"))
+                .then(|| bundle.strings.get(path).unwrap())
+        });
+        let sender_impl = sender_impl.unwrap_or_else(|| {
+            panic!("{program}: no impl table entry resolves to the mpsc Sender")
+        });
+        assert!(
+            sender_impl
+                .strip_prefix("tokio::sync::mpsc::bounded::{impl#")
+                .is_some_and(|rest| rest
+                    .strip_suffix('}')
+                    .is_some_and(|n| { !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) })),
+            "{program}: unexpected impl path {sender_impl:?} for the mpsc Sender"
+        );
         // The tokio-sync formatters have no fixture elsewhere, and are the
         // most intricate detectors (multi-path, cross-pointer, waiter queues).
         // Assert their fully-resolved paths so a wrong-member navigation trips

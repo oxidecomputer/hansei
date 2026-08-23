@@ -236,6 +236,11 @@ pub struct ElideOverride {
     /// well as the raw one — so any name the output prints can be
     /// pasted back, kind word and all.
     pub types: Vec<String>,
+    /// The bundle's impl-path substitutions, so the folded spelling a
+    /// pattern is matched against is the one the output prints. The
+    /// caller that builds the override holds the bundle; the renderer
+    /// down here does not.
+    pub impls: hansei_bundle::names::ImplFold,
 }
 
 impl ElideOverride {
@@ -249,7 +254,7 @@ impl ElideOverride {
         // displayed name pasted whole carries the kind word the display
         // joined, so a spec sheds one before comparing.
         let raw = hansei_bundle::symbols::normalized_rust_type_name(name);
-        let folded = hansei_bundle::names::fold_type_name(name);
+        let folded = hansei_bundle::names::fold_type_name(name, &self.impls);
         let folded = hansei_bundle::symbols::normalized_rust_type_name(&folded);
         let spellings: &[&str] = if folded == raw {
             &[&raw]
@@ -1320,6 +1325,7 @@ mod tests {
         let elide = |spec: &str| ElideOverride {
             no_elide: false,
             types: vec![spec.to_owned()],
+            ..Default::default()
         };
         // Both sides are compared normalized: whitespace gone, default
         // allocator elided.
@@ -1341,6 +1347,7 @@ mod tests {
         let elide = |spec: &str| ElideOverride {
             no_elide: false,
             types: vec![spec.to_owned()],
+            ..Default::default()
         };
         assert!(elide("Vec<u8>").forces("alloc::vec::Vec<u8, alloc::alloc::Global>"));
         assert!(elide("Vec").forces("alloc::vec::Vec<u8, alloc::alloc::Global>"));
@@ -1352,5 +1359,30 @@ mod tests {
         // Folding is a fold, not a licence: another crate's Vec is not
         // std's.
         assert!(!elide("Vec<u8>").forces("myalloc::vec::Vec<u8>"));
+    }
+
+    /// With the bundle's impl substitutions on the override, a spec in
+    /// the folded spelling matches the raw impl-path name the bundle
+    /// records — and without them, it does not pretend to.
+    #[test]
+    fn test_forces_accepts_the_impl_folded_spelling() {
+        use super::ElideOverride;
+
+        let elide = |spec: &str, impls| ElideOverride {
+            no_elide: false,
+            types: vec![spec.to_owned()],
+            impls,
+        };
+        let impls = || {
+            hansei_bundle::names::ImplFold::from_pairs([(
+                "tokio::sync::mutex::{impl#10}",
+                "tokio::sync::mutex::Mutex",
+            )])
+        };
+        let raw = "tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()>";
+        assert!(elide("tokio::sync::mutex::Mutex::lock<()>", impls()).forces(raw));
+        assert!(elide("async fn tokio::sync::mutex::Mutex::lock<()>", impls()).forces(raw));
+        assert!(elide(raw, impls()).forces(raw));
+        assert!(!elide("tokio::sync::mutex::Mutex::lock<()>", Default::default()).forces(raw));
     }
 }

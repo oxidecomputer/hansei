@@ -9,8 +9,8 @@ use super::passes::{
 };
 use super::paths::{OwnedLoc, display_path};
 use crate::bundle::{
-    BundleTypeId, DiscrDef, DiscrValue, DiscrValues, DisplayNode, MemberDef, MemberRef, SourceLoc,
-    StrRef, StringInterner, TypeDef, TypeTable, VariantDef, VariantShape,
+    BundleTypeId, DiscrDef, DiscrValue, DiscrValues, DisplayNode, ImplTable, MemberDef, MemberRef,
+    SourceLoc, StrRef, StringInterner, TypeDef, TypeTable, VariantDef, VariantShape,
 };
 use crate::detect::{Family, FormatExplanation, trace, unique_member};
 use crate::raw_types::{RawType, VariantShape as RawVariantShape};
@@ -503,8 +503,15 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Finish emission: build the sorted name index and the string table.
-    pub(super) fn finish(mut self) -> (TypeTable, crate::bundle::StringTable, Emitted) {
+    /// Finish emission: build the sorted name index, the impl table,
+    /// and the string table. `impl_selfs` is the sweep's impl-path →
+    /// self-type map; only the paths some interned string mentions are
+    /// recorded, so the table stays proportional to the names that will
+    /// display, not to the binary's impl count.
+    pub(super) fn finish(
+        mut self,
+        impl_selfs: &BTreeMap<String, String>,
+    ) -> (TypeTable, crate::bundle::StringTable, ImplTable, Emitted) {
         let mut index: Vec<(String, BundleTypeId)> = self
             .names
             .iter()
@@ -537,9 +544,31 @@ impl<'a> Emitter<'a> {
             demoted,
             states,
         };
+
+        // Which recovered impl paths the bundle's strings mention. The
+        // scan collects before interning: pushing entries grows the
+        // very table being iterated. A `BTreeSet` hands the keys back
+        // sorted, which is the order the validator requires.
+        let mentioned: std::collections::BTreeSet<String> = self
+            .interner
+            .iter()
+            .flat_map(|s| crate::bundle::names::impl_paths(s))
+            .filter(|path| impl_selfs.contains_key(*path))
+            .map(str::to_owned)
+            .collect();
+        let impls = ImplTable {
+            entries: mentioned
+                .iter()
+                .map(|path| {
+                    let self_type = &impl_selfs[path];
+                    (self.interner.intern(path), self.interner.intern(self_type))
+                })
+                .collect(),
+        };
+
         let strings = self.interner.finish();
         types.build_normalized_index(&strings);
-        (types, strings, counts)
+        (types, strings, impls, counts)
     }
 }
 

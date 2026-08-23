@@ -18,6 +18,7 @@ pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Wr
         &session.tasks,
         session.extents(),
         session.census(),
+        &session.impl_fold,
         addr,
         out,
     )
@@ -46,6 +47,7 @@ fn report_whatis(
     list: &bundle::TaskList,
     extents: &bundle::TaskExtents,
     census: &census::FutureCensus,
+    impls: &names::ImplFold,
     addr: u64,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -100,7 +102,7 @@ fn report_whatis(
         let task = &list.tasks[index];
         let id = task_id(list, index);
         separate(&mut blocks, out)?;
-        writeln!(out, "Task {id}: {}", future_name(&task.future))?;
+        writeln!(out, "Task {id}: {}", future_name(&task.future, impls))?;
         writeln!(
             out,
             "    At: offset {offset:#x} in the task's allocation (header {:?})",
@@ -120,7 +122,7 @@ fn report_whatis(
         let child = &set.children[child_index];
         separate(&mut blocks, out)?;
         let future = match &child.future {
-            Some(future) => names::display_future_name(future),
+            Some(future) => names::display_future_name(future, impls),
             None => "<completed, not yet reaped>".to_string(),
         };
         writeln!(out, "Future {:#x}: {future}", child.node)?;
@@ -137,7 +139,7 @@ fn report_whatis(
         writeln!(
             out,
             "    Child of: {} at {:#x} (frame {}, `{}`{})",
-            names::fold_type_name(&set.ty),
+            names::fold_type_name(&set.ty, impls),
             set.addr,
             set.frame,
             set.local,
@@ -147,7 +149,7 @@ fn report_whatis(
             out,
             "    Polled by: {} — {}",
             task_label(list, set.owner),
-            future_name(&list.tasks[set.owner].future)
+            future_name(&list.tasks[set.owner].future, impls)
         )?;
     }
 
@@ -172,7 +174,7 @@ fn report_whatis(
             out,
             "Future {:#x}: {}",
             h.addr,
-            names::display_future_name(&h.future)
+            names::display_future_name(&h.future, impls)
         )?;
         writeln!(out, "    At: offset {:#x} in the future", addr - h.addr)?;
         if let Some(state) = &h.state {
@@ -185,7 +187,7 @@ fn report_whatis(
             out,
             "    Held by: {} — {} (frame {}, `{}`{})",
             task_label(list, h.owner),
-            future_name(&list.tasks[h.owner].future),
+            future_name(&list.tasks[h.owner].future, impls),
             h.frame,
             h.local,
             via_suffix(census, h.via)
@@ -202,13 +204,17 @@ fn report_whatis(
             0 => String::new(),
             n => format!(", {n} completed and not yet reaped"),
         };
-        writeln!(out, "Set {addr:#x}: {}", names::fold_type_name(&set.ty))?;
+        writeln!(
+            out,
+            "Set {addr:#x}: {}",
+            names::fold_type_name(&set.ty, impls)
+        )?;
         writeln!(out, "    Children: {live} in flight{reaped}")?;
         writeln!(
             out,
             "    Driven by: {} — {} (frame {}, `{}`{})",
             task_label(list, set.owner),
-            future_name(&list.tasks[set.owner].future),
+            future_name(&list.tasks[set.owner].future, impls),
             set.frame,
             set.local,
             via_suffix(census, set.via)
@@ -309,6 +315,7 @@ mod whatis_tests {
             &target.list,
             &target.extents,
             &target.census,
+            &hansei_bundle::names::ImplFold::default(),
             addr,
             &mut out,
         )
@@ -392,7 +399,10 @@ mod whatis_tests {
                     shown.contains(&format!(
                         "Future {:#x}: {}",
                         future1.addr,
-                        hansei_bundle::names::display_future_name(&future1.future)
+                        hansei_bundle::names::display_future_name(
+                            &future1.future,
+                            &hansei_bundle::names::ImplFold::default()
+                        )
                     )),
                     "{shown}"
                 );

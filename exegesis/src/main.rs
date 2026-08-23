@@ -316,6 +316,7 @@ fn stats(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         with_decl,
         bundle.provenance.entries.len()
     );
+    println!("  impls:           {}", bundle.impls.entries.len());
     Ok(())
 }
 
@@ -458,6 +459,11 @@ fn dump(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             StaticRole::TlsLocalSetKey => "tls-local-set-key",
         };
         println!("{role}: {} ({})", def.symbol, def.display);
+    }
+
+    println!("== impls ({}) ==", bundle.impls.entries.len());
+    for &(path, self_type) in &bundle.impls.entries {
+        println!("{} -> {}", s(path), s(self_type));
     }
 
     println!("== walks ({}) ==", bundle.walks.entries.len());

@@ -44,7 +44,7 @@ fn exec_trace_task(
         return Err(no_such_task(list, task_id));
     };
 
-    let name = future_name(&task.future);
+    let name = future_name(&task.future, &session.impl_fold);
     writeln!(out, "Task {task_id}: {name} ({})", task.state.lifecycle())?;
     if let Some(loc) = &task.spawn_location {
         writeln!(out, "Spawned at: {loc}")?;
@@ -105,7 +105,14 @@ fn exec_trace_future(
     let list = &session.tasks;
     let census = session.census();
 
-    let found = future_at(&ctx.view, list, session.extents(), census, addr)?;
+    let found = future_at(
+        &ctx.view,
+        list,
+        session.extents(),
+        census,
+        &session.impl_fold,
+        addr,
+    )?;
     let (root, owner, origin) = match found {
         FutureAt::Held(index) => {
             let h = &census.held[index];
@@ -114,13 +121,13 @@ fn exec_trace_future(
                 out,
                 "Future {:#x}: {}",
                 h.addr,
-                names::display_future_name(&h.future)
+                names::display_future_name(&h.future, &session.impl_fold)
             )?;
             writeln!(
                 out,
                 "Held by: {} — {} (frame {}, `{}`{via})",
                 task_label(list, h.owner),
-                future_name(&list.tasks[h.owner].future),
+                future_name(&list.tasks[h.owner].future, &session.impl_fold),
                 h.frame,
                 h.local
             )?;
@@ -138,19 +145,19 @@ fn exec_trace_future(
             let c = &s.children[child];
             let via = via_suffix(census, s.via);
             let future = match &c.future {
-                Some(future) => names::display_future_name(future),
+                Some(future) => names::display_future_name(future, &session.impl_fold),
                 None => "<undecoded>".to_string(),
             };
             writeln!(out, "Future {:#x}: {future}", c.node)?;
             writeln!(
                 out,
                 "Child of: {} at {:#x} (frame {}, `{}`{via}), polled by {} — {}",
-                names::fold_type_name(&s.ty),
+                names::fold_type_name(&s.ty, &session.impl_fold),
                 s.addr,
                 s.frame,
                 s.local,
                 task_label(list, s.owner),
-                future_name(&list.tasks[s.owner].future)
+                future_name(&list.tasks[s.owner].future, &session.impl_fold)
             )?;
             let root = c
                 .root
@@ -204,6 +211,7 @@ fn future_at(
     list: &bundle::TaskList,
     extents: &bundle::TaskExtents,
     census: &census::FutureCensus,
+    impls: &names::ImplFold,
     addr: u64,
 ) -> Result<FutureAt> {
     if let Some(index) = census.held.iter().position(|h| h.addr == addr) {
@@ -217,7 +225,7 @@ fn future_at(
                 "the child at {:#x} of the {} at {:#x} has completed; \
                  there is no future left to trace",
                 child.node,
-                names::fold_type_name(&set.ty),
+                names::fold_type_name(&set.ty, impls),
                 set.addr
             );
         }
@@ -230,7 +238,7 @@ fn future_at(
         anyhow::bail!(
             "{addr:#x} is the {} polled by {}, not one future; \
              trace one of its {} child node(s) (`tasks --futures` lists them)",
-            names::fold_type_name(&set.ty),
+            names::fold_type_name(&set.ty, impls),
             task_label(list, set.owner),
             set.children.len()
         );
@@ -305,6 +313,7 @@ fn print_trace_chain<'b>(
         opts,
         wait.as_deref(),
         &holds,
+        &session.impl_fold,
         annotate,
         out,
     )
@@ -367,12 +376,14 @@ fn frame_holds(
 /// state. The frame line ends with the type name, so a terminal
 /// soft-wrap belongs to the name and triple-click still copies the
 /// whole logical line.
+#[allow(clippy::too_many_arguments)]
 fn print_await_chain<'b, T: proc::Target>(
     ctx: &bundle::Context<'b, T>,
     chain: &bundle::AwaitChain<'b>,
     opts: &TraceOpts<'_>,
     wait: Option<&str>,
     holds: &[usize],
+    impls: &names::ImplFold,
     annotate: Option<&reify::AddrAnnotator<'_>>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -394,7 +405,7 @@ fn print_await_chain<'b, T: proc::Target>(
         } else {
             ""
         };
-        let name = names::fold_type_name(frame.future.ty.name());
+        let name = names::fold_type_name(frame.future.ty.name(), impls);
         let number = format!("#{i}");
         writeln!(out, "{number:<num_width$}  {kind:<13} {name}{dyn_marker}")?;
 
@@ -411,10 +422,10 @@ fn print_await_chain<'b, T: proc::Target>(
         }
 
         if opts.verbose {
-            print_frame_verbose(ctx, frame, Some(i) == last, opts, annotate, out)?;
+            print_frame_verbose(ctx, frame, Some(i) == last, opts, impls, annotate, out)?;
         }
     }
-    print_chain_end(chain, out)
+    print_chain_end(chain, impls, out)
 }
 
 /// Everything under a frame line sits at this indent; entries in a
@@ -481,6 +492,7 @@ fn print_frame_verbose<'b, T: proc::Target>(
     frame: &bundle::AwaitFrame<'b>,
     leaf: bool,
     opts: &TraceOpts<'_>,
+    impls: &names::ImplFold,
     annotate: Option<&reify::AddrAnnotator<'_>>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -543,7 +555,10 @@ fn print_frame_verbose<'b, T: proc::Target>(
             n => line.push_str(&format!(" ({n} locals)")),
         }
         if let Some(awaitee) = row.awaitee {
-            line.push_str(&format!(" → {}", names::display_future_name(awaitee)));
+            line.push_str(&format!(
+                " → {}",
+                names::display_future_name(awaitee, impls)
+            ));
         }
         writeln!(out, "{line}")?;
     }
@@ -552,7 +567,11 @@ fn print_frame_verbose<'b, T: proc::Target>(
 
 /// Why the chain stopped, printed after the last frame — nothing for a
 /// chain that bottomed out in its leaf normally.
-fn print_chain_end(chain: &bundle::AwaitChain<'_>, out: &mut dyn io::Write) -> Result<()> {
+fn print_chain_end(
+    chain: &bundle::AwaitChain<'_>,
+    impls: &names::ImplFold,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     match &chain.end {
         bundle::ChainEnd::Leaf => {}
         bundle::ChainEnd::UnknownDyn {
@@ -562,7 +581,7 @@ fn print_chain_end(chain: &bundle::AwaitChain<'_>, out: &mut dyn io::Write) -> R
             writeln!(
                 out,
                 "the chain continues into a {} whose concrete type is not in the bundle",
-                names::fold_type_name(pointee)
+                names::fold_type_name(pointee, impls)
             )?;
             if let Some(sym) = poll_symbol {
                 writeln!(
@@ -580,11 +599,15 @@ fn print_chain_end(chain: &bundle::AwaitChain<'_>, out: &mut dyn io::Write) -> R
             writeln!(
                 out,
                 "the chain continues into a {}, but its normalized poll symbol is ambiguous",
-                names::fold_type_name(pointee)
+                names::fold_type_name(pointee, impls)
             )?;
             writeln!(out, "     poll fn: {symbol}")?;
             for candidate in candidates {
-                writeln!(out, "     candidate: {}", names::fold_type_name(candidate))?;
+                writeln!(
+                    out,
+                    "     candidate: {}",
+                    names::fold_type_name(candidate, impls)
+                )?;
             }
         }
         bundle::ChainEnd::DepthLimit => {
@@ -927,6 +950,7 @@ mod state_locals_tests {
                 raw_waker_vtable: ty,
             },
             provenance: Default::default(),
+            impls: Default::default(),
         };
         let view = BundleView::new(&bundle);
         let state = view.ty(BundleTypeId(2)).expect("the state type resolves");
@@ -940,6 +964,7 @@ mod state_locals_tests {
 #[cfg(test)]
 mod chain_end_tests {
     use super::print_chain_end;
+    use hansei_bundle::names::ImplFold;
     use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd};
 
     fn rendered(end: ChainEnd) -> String {
@@ -948,7 +973,7 @@ mod chain_end_tests {
             end,
         };
         let mut out = Vec::new();
-        print_chain_end(&chain, &mut out).expect("the message renders");
+        print_chain_end(&chain, &ImplFold::default(), &mut out).expect("the message renders");
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
 
@@ -1176,15 +1201,29 @@ mod future_trace_tests {
                 .find(|h| h.local == "future1")
                 .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
 
-            let found = future_at(&ctx.view, list, extents, census, future1.addr)
-                .expect("the printed address resolves");
+            let found = future_at(
+                &ctx.view,
+                list,
+                extents,
+                census,
+                &hansei_bundle::names::ImplFold::default(),
+                future1.addr,
+            )
+            .expect("the printed address resolves");
             let FutureAt::Held(index) = found else {
                 panic!("future1 did not resolve as a held future");
             };
             assert_eq!(census.held[index].addr, future1.addr);
 
-            let found = future_at(&ctx.view, list, extents, census, future1.addr + 1)
-                .expect("an interior pointer resolves");
+            let found = future_at(
+                &ctx.view,
+                list,
+                extents,
+                census,
+                &hansei_bundle::names::ImplFold::default(),
+                future1.addr + 1,
+            )
+            .expect("an interior pointer resolves");
             let FutureAt::Held(index) = found else {
                 panic!("the interior pointer did not resolve as a held future");
             };
@@ -1213,7 +1252,14 @@ mod future_trace_tests {
             let size = ctx.view.ty(future1.ty).expect("the type resolves").size();
             let end = future1.addr + size;
 
-            if let Ok(FutureAt::Held(index)) = future_at(&ctx.view, list, extents, census, end) {
+            if let Ok(FutureAt::Held(index)) = future_at(
+                &ctx.view,
+                list,
+                extents,
+                census,
+                &hansei_bundle::names::ImplFold::default(),
+                end,
+            ) {
                 let h = &census.held[index];
                 assert_ne!(h.addr, future1.addr, "the future claims its own end");
                 let hsize = ctx.view.ty(h.ty).expect("the type resolves").size();
@@ -1232,14 +1278,24 @@ mod future_trace_tests {
     fn test_a_sets_address_names_the_set() {
         with_target("unordered", |_ctx, list, extents, census| {
             let set = census.sets.first().expect("the fixture holds a set");
-            let err = future_at(&_ctx.view, list, extents, census, set.addr)
-                .expect_err("a set is not one future");
+            let err = future_at(
+                &_ctx.view,
+                list,
+                extents,
+                census,
+                &hansei_bundle::names::ImplFold::default(),
+                set.addr,
+            )
+            .expect_err("a set is not one future");
             // The *queried* set, not another one the census holds: its
             // type — display-folded like every printed name — and its
             // own child count.
             assert!(
                 err.to_string()
-                    .contains(&*hansei_bundle::names::fold_type_name(&set.ty)),
+                    .contains(&*hansei_bundle::names::fold_type_name(
+                        &set.ty,
+                        &hansei_bundle::names::ImplFold::default()
+                    )),
                 "{err}"
             );
             assert!(
@@ -1257,15 +1313,29 @@ mod future_trace_tests {
     fn test_future_misses_explain_the_address() {
         with_target("futurelock", |ctx, list, extents, census| {
             let header = list.tasks[0].addr.0;
-            let err = future_at(&ctx.view, list, extents, census, header)
-                .expect_err("a task header is not a census future")
-                .to_string();
+            let err = future_at(
+                &ctx.view,
+                list,
+                extents,
+                census,
+                &hansei_bundle::names::ImplFold::default(),
+                header,
+            )
+            .expect_err("a task header is not a census future")
+            .to_string();
             assert!(err.contains("trace <id>"), "{err}");
             assert!(err.contains("task"), "{err}");
 
-            let err = future_at(&ctx.view, list, extents, census, 0x10)
-                .expect_err("nothing contains 0x10")
-                .to_string();
+            let err = future_at(
+                &ctx.view,
+                list,
+                extents,
+                census,
+                &hansei_bundle::names::ImplFold::default(),
+                0x10,
+            )
+            .expect_err("nothing contains 0x10")
+            .to_string();
             assert!(err.contains("`tasks --futures`"), "{err}");
         });
     }
@@ -1309,8 +1379,17 @@ mod future_trace_tests {
                 },
                 elide: &elide,
             };
-            print_await_chain(ctx, &chain, &opts, wait.as_deref(), &holds, None, &mut out)
-                .expect("the chain renders");
+            print_await_chain(
+                ctx,
+                &chain,
+                &opts,
+                wait.as_deref(),
+                &holds,
+                &hansei_bundle::names::ImplFold::default(),
+                None,
+                &mut out,
+            )
+            .expect("the chain renders");
             let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
             assert!(
                 rendered.contains("async fn      futurelock::do_async_thing"),
@@ -1349,6 +1428,7 @@ mod future_trace_tests {
         let mut out: Vec<u8> = Vec::new();
         print_tasks(
             list,
+            &hansei_bundle::names::ImplFold::default(),
             &[],
             &HashMap::new(),
             held,
@@ -1568,10 +1648,16 @@ mod future_trace_tests {
                  task {}  {}  {}\n            task {}  {}  {}\n            \
                  task 99  <complete, awaiting join>\n",
                 joined[0].task_id.expect("the fixture's tasks have ids"),
-                future_name(&joined[0].future),
+                future_name(
+                    &joined[0].future,
+                    &hansei_bundle::names::ImplFold::default()
+                ),
                 joined[0].state.lifecycle(),
                 joined[1].task_id.expect("the fixture's tasks have ids"),
-                future_name(&joined[1].future),
+                future_name(
+                    &joined[1].future,
+                    &hansei_bundle::names::ImplFold::default()
+                ),
                 joined[1].state.lifecycle(),
             );
             assert!(rendered.contains(&expected), "{rendered}");
@@ -1617,6 +1703,7 @@ mod future_trace_tests {
             let mut out = Vec::new();
             let err = print_tasks(
                 list,
+                &hansei_bundle::names::ImplFold::default(),
                 &[],
                 &HashMap::new(),
                 &census.held,
@@ -1690,8 +1777,19 @@ mod trace_render_tests {
             },
             elide: &elide,
         };
-        print_await_chain(&ctx, &chain, &opts, wait.as_deref(), &holds, None, &mut out)
-            .expect("the chain renders");
+        print_await_chain(
+            &ctx,
+            &chain,
+            &opts,
+            wait.as_deref(),
+            &holds,
+            // The fixture bundle's own substitutions, like a session's:
+            // the tokio frames of these chains print impl-folded.
+            &hansei_bundle::names::ImplFold::for_bundle(&bundle),
+            None,
+            &mut out,
+        )
+        .expect("the chain renders");
         let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
         regex::Regex::new(r"0x[0-9a-f]+")
             .unwrap()
@@ -1789,11 +1887,11 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
       awaiting at src/bin/futurelock.rs:70 (Suspend1, 3 locals; holds 1 pending future)
 #2  async fn      futurelock::do_async_thing
       awaiting at src/bin/futurelock.rs:78 (Suspend0, 2 locals)
-#3  async fn      tokio::sync::mutex::{impl#10}::lock<()>
+#3  async fn      tokio::sync::mutex::Mutex::lock<()>
       awaiting at tokio-1.52.4/src/sync/mutex.rs:455 (Suspend0)
-#4  async block   tokio::sync::mutex::{impl#10}::lock::{async_fn#0}<()>
+#4  async block   tokio::sync::mutex::Mutex::lock::{async_fn#0}<()>
       awaiting at tokio-1.52.4/src/sync/mutex.rs:436 (Suspend0)
-#5  async fn      tokio::sync::mutex::{impl#10}::acquire<()>
+#5  async fn      tokio::sync::mutex::Mutex::acquire<()>
       awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1)
 #6  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
@@ -1863,6 +1961,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
             &opts,
             wait.as_deref(),
             &[],
+            &hansei_bundle::names::ImplFold::default(),
             Some(&annotate),
             &mut out,
         )

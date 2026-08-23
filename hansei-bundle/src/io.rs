@@ -26,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 39;
+pub const FORMAT_VERSION: u32 = 40;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -1336,6 +1336,27 @@ impl Bundle {
             if let Some(loc) = &p.decl {
                 check_str(&format!("provenance {i}"), loc.file)?;
             }
+        }
+
+        let mut prev: Option<&str> = None;
+        for &(path, self_type) in &self.impls.entries {
+            check_str("impl table", path)?;
+            check_str("impl table", self_type)?;
+            let path = self.strings.get(path).unwrap();
+            let self_type = self.strings.get(self_type).unwrap();
+            if !path.contains("{impl#") {
+                return corrupt(format!("impl table key {path:?} names no impl segment"));
+            }
+            // A self type carrying an impl segment would make display
+            // substitution grow names on every pass instead of fixing
+            // them once.
+            if self_type.is_empty() || self_type.contains("{impl#") {
+                return corrupt(format!("impl table value {self_type:?} for {path:?}"));
+            }
+            if prev.is_some_and(|p| p >= path) {
+                return corrupt(format!("impl table not sorted at {path:?}"));
+            }
+            prev = Some(path);
         }
 
         Ok(())

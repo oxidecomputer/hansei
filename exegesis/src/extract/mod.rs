@@ -494,10 +494,18 @@ fn extract_from_view(
         vtable_missing_linkage,
         dyn_decl_only_self,
         dyn_unresolved_self,
+        impl_selfs,
     } = sweep_functions(view, raw_ns, glue_ns);
     stats.vtable_missing_linkage += vtable_missing_linkage;
     stats.dyn_decl_only_self += dyn_decl_only_self;
     stats.dyn_unresolved_self += dyn_unresolved_self;
+
+    // The sweep's impl resolutions, keyed by namespace path — the
+    // spelling names mention them by — for the emit-side filter.
+    let impl_selfs: BTreeMap<String, String> = impl_selfs
+        .into_iter()
+        .filter_map(|(ns, self_type)| Some((ns_path(reader, ns), self_type?)))
+        .collect();
 
     if seeds.is_empty() && !opts.allow_missing_infra {
         return Err(Error::NoTaskFutures);
@@ -826,7 +834,7 @@ fn extract_from_view(
     stats.format_explanations = std::mem::take(&mut em.explanations);
     stats.tokio_family_guessed = (em.versioned_dispatch && em.tokio_version.is_none())
         .then(|| Family::select(None).name().to_owned());
-    let (types, strings, counts) = em.finish();
+    let (types, strings, impls, counts) = em.finish(&impl_selfs);
     stats.types_emitted = types.types.len();
     stats.opaque_types = counts.opaque;
     stats.types_demoted_out_of_bounds = counts.demoted;
@@ -856,6 +864,7 @@ fn extract_from_view(
         provenance: ProvenanceTable {
             entries: provenance,
         },
+        impls,
     };
 
     Ok((bundle, stats))
