@@ -139,23 +139,17 @@ fn load_images<T: Target>(target: &T, mappings: &Mappings) -> Vec<Image> {
             // a file-backed mapping's first page and leaves the rest to
             // the backing file, and no single read crosses that seam. So
             // the part is read in whatever runs the target can serve,
-            // page-stepping over holes, rather than skipped whole on the
-            // first seam — which would zero the ELF header along with it.
-            const PAGE: u64 = 4096;
-            let mut off = 0u64;
-            while off < part.size {
-                let addr = part.vaddr + off;
-                let n = target.readable_len(addr, part.size - off);
-                if n == 0 {
-                    off += PAGE - (addr & (PAGE - 1));
-                    continue;
-                }
-                if let Ok(chunk) = target.read_bytes(addr, n) {
+            // rather than skipped whole on the first seam — which would
+            // zero the ELF header along with it.
+            let runs = readable_runs(part.vaddr, part.size, |addr, max| {
+                target.readable_len(addr, max)
+            });
+            for (addr, run) in runs {
+                if let Ok(chunk) = target.read_bytes(addr, run) {
                     let at = (addr - base) as usize;
                     bytes[at..at + chunk.len()].copy_from_slice(chunk);
                     any = true;
                 }
-                off += n;
             }
         }
         if any {
@@ -166,6 +160,30 @@ fn load_images<T: Target>(target: &T, mappings: &Mappings) -> Vec<Image> {
         }
     }
     images
+}
+
+/// The maximal readable stretches of the `size` bytes at `vaddr`, as
+/// `(addr, len)` pairs in address order. `readable` answers how many of
+/// at most `max` bytes at an address it can serve — zero inside a hole
+/// — and a hole is skipped to the next page boundary, the only place a
+/// new readable region can begin: mappings and the dumped extents
+/// within them start page-aligned, and only a readable run's *end* (a
+/// backing file's last partial page) falls mid-page.
+fn readable_runs(vaddr: u64, size: u64, readable: impl Fn(u64, u64) -> u64) -> Vec<(u64, u64)> {
+    const PAGE: u64 = 4096;
+    let mut runs = Vec::new();
+    let mut off = 0u64;
+    while off < size {
+        let addr = vaddr + off;
+        let n = readable(addr, size - off);
+        if n == 0 {
+            off += PAGE - (addr & (PAGE - 1));
+            continue;
+        }
+        runs.push((addr, n));
+        off += n;
+    }
+    runs
 }
 
 /// One object's mapped image, at the addresses it occupies.
@@ -601,5 +619,46 @@ impl<'a> ObjectInfo<'a> {
             eh_frame,
             bases,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::readable_runs;
+
+    /// A target with no holes serves the whole range as one run.
+    #[test]
+    fn test_readable_runs_serves_a_contiguous_range() {
+        let runs = readable_runs(0x10000, 0x5000, |_, max| max);
+        assert_eq!(runs, vec![(0x10000, 0x5000)]);
+    }
+
+    /// A run ending mid-page — a backing file's last partial page —
+    /// resumes at the very next page boundary, neither re-probing the
+    /// dead half-page nor overshooting a region that starts right
+    /// after it.
+    #[test]
+    fn test_readable_runs_steps_a_hole_to_the_next_page_boundary() {
+        let regions = [(0x10000u64, 0x11800u64), (0x12000, 0x14000)];
+        let readable = |addr: u64, max: u64| {
+            regions
+                .iter()
+                .find(|&&(start, end)| (start..end).contains(&addr))
+                .map_or(0, |&(_, end)| (end - addr).min(max))
+        };
+        let runs = readable_runs(0x10000, 0x4000, readable);
+        assert_eq!(runs, vec![(0x10000, 0x1800), (0x12000, 0x2000)]);
+    }
+
+    /// The probe never asks past the end of the part, even when the
+    /// target could serve more — a region is one source's extent, and
+    /// what lies beyond the part belongs to the next part's own reads.
+    #[test]
+    fn test_readable_runs_stays_within_the_range() {
+        // A hole over the first page, then readable as far as anyone
+        // asks: only the `max` the probe passes bounds the run.
+        let readable = |addr: u64, max: u64| if addr < 0x11000 { 0 } else { max };
+        let runs = readable_runs(0x10000, 0x4000, readable);
+        assert_eq!(runs, vec![(0x11000, 0x3000)]);
     }
 }
