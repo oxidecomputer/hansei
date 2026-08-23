@@ -57,6 +57,10 @@ impl Nesting {
 /// One name can have several definitions: identical instantiations
 /// emitted by different compilation units are recorded per id, and a
 /// name that resolves to more than one layout is worth seeing in full.
+/// Several definitions are told apart by their type id — the number
+/// this command also accepts in place of a name, so a listing that
+/// printed `type 4821` beside an ambiguous name looks that one
+/// definition straight up.
 ///
 /// The listings print names display-folded, and what they print must be
 /// accepted back: the raw name is tried first, and a miss falls back to
@@ -70,6 +74,24 @@ pub fn describe(
     depth: usize,
     out: &mut dyn io::Write,
 ) -> Result<()> {
+    let mut nesting = Nesting {
+        follow: recursive,
+        depth,
+        open: Vec::new(),
+    };
+    // A bare number is a type id — no Rust type is named one — and it
+    // indexes the type table directly, so it reaches even the
+    // anonymous types no name lookup can.
+    if let Ok(id) = name.parse::<u32>() {
+        let Some(ty) = view.ty(BundleTypeId(id)) else {
+            bail!(
+                "no type {id} in this bundle: type ids index its type table, \
+                 which records {} types",
+                view.bundle().types.types.len()
+            );
+        };
+        return definition(ty, 0, &mut nesting, out);
+    }
     let mut matches: Vec<BundleType<'_>> = view
         .named_types()
         .filter(|(n, _)| *n == name)
@@ -88,19 +110,43 @@ pub fn describe(
     if matches.is_empty() {
         bail!("the bundle records no type named {name}; try `find-types {name}`");
     }
-    let mut nesting = Nesting {
-        follow: recursive,
-        depth,
-        open: Vec::new(),
-    };
     for (i, ty) in matches.iter().enumerate() {
-        if i > 0 {
-            writeln!(out)?;
-            writeln!(out, "(definition {} of {})", i + 1, matches.len())?;
+        // With several definitions the name alone no longer says which
+        // layout is being read, so every one is bannered with the id
+        // that names it exactly.
+        if matches.len() > 1 {
+            if i > 0 {
+                writeln!(out)?;
+            }
+            writeln!(
+                out,
+                "(definition {} of {} — type {})",
+                i + 1,
+                matches.len(),
+                ty.id().0
+            )?;
         }
         definition(*ty, 0, &mut nesting, out)?;
     }
     Ok(())
+}
+
+/// Resolve one `--elide` spec: a name or pattern passes through as
+/// given, and a bare number — a bundle type id — resolves to that
+/// type's exact raw name, generics and all, so the id pins the one
+/// instantiation it names rather than every one sharing the base.
+pub fn resolve_elide_spec(view: &BundleView<'_>, spec: String) -> Result<String> {
+    let Ok(id) = spec.parse::<u32>() else {
+        return Ok(spec);
+    };
+    let Some(ty) = view.ty(BundleTypeId(id)) else {
+        bail!(
+            "no type {id} in this bundle: type ids index its type table, \
+             which records {} types",
+            view.bundle().types.types.len()
+        );
+    };
+    Ok(ty.name().to_string())
 }
 
 /// List the names containing `needle`, one per line.
@@ -108,21 +154,21 @@ pub fn find(view: &BundleView<'_>, needle: &str, out: &mut dyn io::Write) -> Res
     // The index is sorted by name, so repeated definitions of one name
     // arrive together and collapse into a single line.
     let mut count = 0usize;
-    let mut previous: Option<(&str, usize)> = None;
-    for (name, _) in view.named_types().filter(|(n, _)| n.contains(needle)) {
+    let mut previous: Option<(&str, Vec<BundleTypeId>)> = None;
+    for (name, ty) in view.named_types().filter(|(n, _)| n.contains(needle)) {
         match &mut previous {
-            Some((seen, definitions)) if *seen == name => *definitions += 1,
+            Some((seen, definitions)) if *seen == name => definitions.push(ty.id()),
             _ => {
-                if let Some((seen, definitions)) = previous {
-                    write_name(out, seen, definitions)?;
+                if let Some((seen, definitions)) = previous.take() {
+                    write_name(out, seen, &definitions)?;
                 }
-                previous = Some((name, 1));
+                previous = Some((name, vec![ty.id()]));
                 count += 1;
             }
         }
     }
     if let Some((seen, definitions)) = previous {
-        write_name(out, seen, definitions)?;
+        write_name(out, seen, &definitions)?;
     }
     match count {
         1 => writeln!(out, "\n1 type")?,
@@ -131,10 +177,20 @@ pub fn find(view: &BundleView<'_>, needle: &str, out: &mut dyn io::Write) -> Res
     Ok(())
 }
 
-fn write_name(out: &mut dyn io::Write, name: &str, definitions: usize) -> Result<()> {
+/// One name's row. A name with a single definition is its own handle;
+/// one with several names none of them exactly, so the row carries the
+/// ids that do — each pasteable as `type <id>`.
+fn write_name(out: &mut dyn io::Write, name: &str, definitions: &[BundleTypeId]) -> Result<()> {
     match definitions {
-        1 => writeln!(out, "{name}")?,
-        n => writeln!(out, "{name}  ({n} definitions)")?,
+        [_] => writeln!(out, "{name}")?,
+        ids => {
+            let ids = ids
+                .iter()
+                .map(|id| format!("type {}", id.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(out, "{name}  ({} definitions: {ids})", definitions.len())?;
+        }
     }
     Ok(())
 }
@@ -692,9 +748,13 @@ mod tests {
         assert!(out.contains("Node\n"), "{out}");
         assert!(out.ends_with("1 type\n"), "{out}");
 
-        // Repeated definitions of one name collapse into one line.
+        // Repeated definitions of one name collapse into one line,
+        // which carries the ids the shared name cannot tell apart.
         let out = found("dup");
-        assert!(out.contains("dup::Type  (2 definitions)"), "{out}");
+        assert!(
+            out.contains("dup::Type  (2 definitions: type 11, type 12)"),
+            "{out}"
+        );
         assert!(out.ends_with("1 type\n"), "{out}");
 
         let out = found("no_such_needle");
@@ -755,11 +815,68 @@ mod tests {
         assert!(err.to_string().contains("find-types"), "{err}");
     }
 
+    /// Several definitions of one name each get a banner carrying the
+    /// id that names the layout exactly — the first included, since the
+    /// name heading the page is equally true of both — with a blank
+    /// line between one definition and the next banner.
     #[test]
     fn test_describe_prints_every_definition_of_a_name() {
         let out = described("dup::Type", false, 0);
-        assert!(out.contains("(definition 2 of 2)"), "{out}");
+        assert!(out.starts_with("(definition 1 of 2 — type 11)\n"), "{out}");
+        assert!(out.contains("\n\n(definition 2 of 2 — type 12)\n"), "{out}");
         assert_eq!(out.matches("struct dup::Type").count(), 2, "{out}");
+    }
+
+    /// An `--elide` spec passes through untouched unless it is a bare
+    /// number, which resolves to that type's exact raw name — and
+    /// misses loudly past the table's end rather than becoming a
+    /// pattern that silently matches nothing.
+    #[test]
+    fn test_elide_specs_resolve_ids_to_exact_names() {
+        let bundle = bundle();
+        let view = BundleView::new(&bundle);
+        assert_eq!(
+            resolve_elide_spec(&view, "12".to_string()).unwrap(),
+            "dup::Type"
+        );
+        assert_eq!(
+            resolve_elide_spec(&view, "a::B<*>".to_string()).unwrap(),
+            "a::B<*>"
+        );
+        let err = resolve_elide_spec(&view, "9999".to_string()).unwrap_err();
+        assert!(err.to_string().contains("no type 9999"), "{err}");
+    }
+
+    /// A bare number is a type id: it selects exactly one definition —
+    /// no banner needed — reaches the anonymous types no name can, and
+    /// misses loudly past the table's end. A single-definition name
+    /// keeps its bare heading: the name is handle enough.
+    #[test]
+    fn test_describe_accepts_a_type_id() {
+        let out = described("12", false, 0);
+        assert!(out.starts_with("struct dup::Type — 16 bytes"), "{out}");
+        assert!(!out.contains("definition"), "{out}");
+
+        // Id 2 is the anonymous `*Node` pointer.
+        let out = described("2", false, 0);
+        assert!(out.starts_with("pointer *Node"), "{out}");
+
+        let bundle = bundle();
+        let view = BundleView::new(&bundle);
+        let err = describe(
+            &view,
+            "9999",
+            &names::ImplFold::default(),
+            false,
+            0,
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no type 9999"), "{err}");
+
+        let out = described("Node", false, 0);
+        assert!(out.starts_with("struct Node"), "{out}");
+        assert!(!out.contains("definition"), "{out}");
     }
 
     /// A list node reaches itself across its `next` pointer; the second
