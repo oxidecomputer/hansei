@@ -450,6 +450,29 @@ mod tests {
         assert_eq!(sink.write(b"more").expect("the feed never errors"), 4);
     }
 
+    /// `print`'s type is the rest of the line: the words are joined
+    /// back into one name, so a name whose generic arguments hold
+    /// spaces pastes in whole, with the render flags still parsed out
+    /// from among them.
+    #[test]
+    fn test_print_takes_the_rest_of_the_line_as_one_type() {
+        let Command::Print { addr, ty, render } =
+            Line::try_parse_from(["print", "0x7f10", "Vec<(u64,", "u64)>", "-u"])
+                .expect("print takes an address and a type")
+                .command
+        else {
+            panic!("print parsed as another command");
+        };
+        assert_eq!(addr, 0x7f10);
+        assert_eq!(ty.join(" "), "Vec<(u64, u64)>");
+        assert!(render.ugly);
+
+        // The address keeps its required prefix, so it can never be
+        // read as the leading word of a type name.
+        assert!(Line::try_parse_from(["print", "7f10", "u64"]).is_err());
+        assert!(Line::try_parse_from(["print", "0x7f10"]).is_err());
+    }
+
     /// `runtime` and `runtimes` are two commands whose names are a
     /// prefix apart, so an exact name has to beat inference — and every
     /// shorter prefix now fits both, which is the price of the listing
