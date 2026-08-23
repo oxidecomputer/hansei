@@ -43,6 +43,7 @@ pub struct Bundle {
     pub walks: WalksTable,
     pub infra: InfraTypes,
     pub provenance: ProvenanceTable,
+    pub impls: ImplTable,
 }
 
 // Parallel rendering shares one loaded bundle across worker threads:
@@ -1419,6 +1420,29 @@ pub struct InfraTypes {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct ProvenanceTable {
     pub entries: Vec<Provenance>,
+}
+
+/// The impl-block namespaces this bundle's names mention, each resolved
+/// to its impl's self type.
+///
+/// rustc's debug info spells an impl block as an artificial `{impl#N}`
+/// namespace, so a method-scoped type's name reads
+/// `tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}` — truthful
+/// and unreadable. The namespace DIE records nothing about the self
+/// type; extraction recovers it from the mangled name of a subprogram
+/// inside the block, which spells the real path. Keys are namespace
+/// paths up to and including their `{impl#N}` segment; values are the
+/// self type's path with generic arguments stripped
+/// (`tokio::sync::mutex::Mutex`). Only impl paths occurring in one of
+/// the bundle's strings are recorded — display substitution
+/// ([`crate::names::ImplFold`]) is the sole consumer, and an impl no
+/// name mentions has nothing to substitute into.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct ImplTable {
+    /// `(impl path, self type path)`, sorted and unique by the resolved
+    /// key string. A value never contains an `{impl#` segment of its
+    /// own, which keeps substitution idempotent.
+    pub entries: Vec<(StrRef, StrRef)>,
 }
 
 /// Source provenance for one future type.

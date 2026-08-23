@@ -275,6 +275,7 @@ struct Listing<'a> {
     nested: &'a HashMap<census::Via, Vec<Entry<'a>>>,
     list: &'a bundle::TaskList,
     polling: &'a HashMap<u64, u32>,
+    impls: &'a names::ImplFold,
 }
 
 /// Print one find and, indented under it, everything the census reached
@@ -314,7 +315,7 @@ fn print_future_entry<'a>(
                 h.frame,
                 h.local,
                 h.addr,
-                names::display_future_name(&h.future)
+                names::display_future_name(&h.future, listing.impls)
             )?;
             if let Some(waiting) = &h.waiting_on {
                 writeln!(out, "{pad}  waiting on {waiting}")?;
@@ -333,7 +334,7 @@ fn print_future_entry<'a>(
             writeln!(
                 out,
                 "{pad}- {} at {:#x} (frame {}, `{}`): {live} child{plural} in flight{reaped}",
-                names::fold_type_name(&set.ty),
+                names::fold_type_name(&set.ty, listing.impls),
                 set.addr,
                 set.frame,
                 set.local
@@ -356,7 +357,7 @@ fn print_future_entry<'a>(
                     out,
                     "{pad}    {:#x}  {}{state}",
                     child.node,
-                    names::display_future_name(future)
+                    names::display_future_name(future, listing.impls)
                 )?;
                 if let Some(waiting) = &child.waiting_on {
                     writeln!(out, "{pad}      waiting on {waiting}")?;
@@ -383,7 +384,7 @@ fn print_future_entry<'a>(
             writeln!(
                 out,
                 "{pad}- {} at {:#x} (frame {}, `{}`): {held} task{plural}{short}",
-                names::fold_type_name(&set.ty),
+                names::fold_type_name(&set.ty, listing.impls),
                 set.addr,
                 set.frame,
                 set.local
@@ -417,7 +418,10 @@ fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>) -> String {
     };
     if let Some(task) = listing.list.tasks.iter().find(|t| t.addr.0 == child.task) {
         let state = task_state(task, listing.polling);
-        return format!("{who}  {}  {state}", future_name(&task.future));
+        return format!(
+            "{who}  {}  {state}",
+            future_name(&task.future, listing.impls)
+        );
     }
     // Complete means off the runtime's owned list, alive only through
     // the set's entry until its output is taken; alive but unlisted
@@ -436,9 +440,9 @@ fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>) -> String {
 /// resolved it: the kind word joined to the folded name for a known
 /// future (`async fn foo::bar`), since none of the lines this opens
 /// carries a kind column of its own.
-pub fn future_name(future: &bundle::FutureInfo) -> String {
+pub fn future_name(future: &bundle::FutureInfo, impls: &names::ImplFold) -> String {
     match future {
-        bundle::FutureInfo::Known(known) => names::display_future_name(&known.display_name),
+        bundle::FutureInfo::Known(known) => names::display_future_name(&known.display_name, impls),
         bundle::FutureInfo::Unknown {
             poll_symbol: Some(sym),
         } => format!("<unknown: {:#}>", rustc_demangle::demangle(sym)),
@@ -446,7 +450,7 @@ pub fn future_name(future: &bundle::FutureInfo) -> String {
         bundle::FutureInfo::Ambiguous { candidates, .. } => {
             let candidates: Vec<_> = candidates
                 .iter()
-                .map(|c| names::fold_type_name(c))
+                .map(|c| names::fold_type_name(c, impls))
                 .collect();
             format!("<ambiguous: {}>", candidates.join(" | "))
         }
@@ -483,6 +487,7 @@ pub(crate) fn exec_tasks(
 
     print_tasks(
         list,
+        &session.impl_fold,
         &session.group_tags(),
         &polling,
         &census.held,
@@ -513,6 +518,7 @@ pub(crate) fn exec_tasks(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn print_tasks(
     list: &bundle::TaskList,
+    impls: &names::ImplFold,
     group_tags: &[String],
     polling: &HashMap<u64, u32>,
     census_held: &[census::HeldFuture],
@@ -539,6 +545,7 @@ pub(crate) fn print_tasks(
         nested: &census.nested,
         list,
         polling,
+        impls,
     };
 
     // A block per task rather than a row: a future type is long enough
@@ -551,7 +558,7 @@ pub(crate) fn print_tasks(
         }
         shown += 1;
         let id = task_id(list, index);
-        writeln!(out, "Task {id}: {}", future_name(&task.future))?;
+        writeln!(out, "Task {id}: {}", future_name(&task.future, impls))?;
         writeln!(out, "    State: {}", task_state(task, polling))?;
         if let Some(tag) = group_tags.get(task.group) {
             writeln!(out, "    Owner: {tag}")?;
@@ -653,6 +660,7 @@ pub(crate) fn exec_census(
         waits: analysis.map(|analysis| &analysis.waits[..]).unwrap_or(&[]),
         held: census.map(|census| &census.held[..]).unwrap_or(&[]),
         sets: census.map(|census| &census.sets[..]).unwrap_or(&[]),
+        impls: &session.impl_fold,
     };
     summary::print(&facts, sections, top, out)
 }
@@ -977,10 +985,12 @@ mod census_listing_tests {
             errors: vec![],
         };
         let polling = HashMap::new();
+        let impls = hansei_bundle::names::ImplFold::default();
         let listing = Listing {
             nested: &nested,
             list: &list,
             polling: &polling,
+            impls: &impls,
         };
         let show = |set: &census::JoinSet| {
             let mut out = Vec::new();

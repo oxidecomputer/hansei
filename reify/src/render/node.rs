@@ -1226,6 +1226,7 @@ mod tests {
         let force_point = ElideOverride {
             no_elide: false,
             types: vec!["Point".to_owned()],
+            ..Default::default()
         };
         assert_eq!(
             format!(
@@ -1241,6 +1242,7 @@ mod tests {
         let force_logger = ElideOverride {
             no_elide: true,
             types: vec!["Logger".to_owned()],
+            ..Default::default()
         };
         assert_eq!(
             format!(

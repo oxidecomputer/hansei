@@ -8,10 +8,10 @@ use hansei_bundle::Encoding;
 use hansei_bundle::{
     Arm, BitField as BundleBitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION, Field as BundleField,
-    FieldRender as BundleFieldRender, InfraTypes, MapEntries as BundleMapEntries, MemberDef,
-    MemberRef, Meta, Notation, ProvenanceTable, ScalarDecode as BundleScalarDecode, Selector,
-    StaticsTable, Step, Stmt as BundleStmt, StrRef, StringInterner, TaskTable, TypeDef, TypeTable,
-    ValueExpr, VariantDef, VariantShape, WalksTable,
+    FieldRender as BundleFieldRender, ImplTable, InfraTypes, MapEntries as BundleMapEntries,
+    MemberDef, MemberRef, Meta, Notation, ProvenanceTable, ScalarDecode as BundleScalarDecode,
+    Selector, StaticsTable, Step, Stmt as BundleStmt, StrRef, StringInterner, TaskTable, TypeDef,
+    TypeTable, ValueExpr, VariantDef, VariantShape, WalksTable,
 };
 
 use std::collections::BTreeMap;
@@ -2179,6 +2179,7 @@ pub fn test_bundle() -> Bundle {
             raw_waker_vtable: RAW_WAKER_VTABLE,
         },
         provenance: ProvenanceTable::default(),
+        impls: ImplTable::default(),
     };
     b.types.build_normalized_index(&b.strings);
     b.validate().expect("test bundle must validate");
@@ -2432,6 +2433,7 @@ pub fn node_bundle() -> Bundle {
             raw_waker_vtable: N_U32,
         },
         provenance: ProvenanceTable::default(),
+        impls: ImplTable::default(),
     };
     b.types.build_normalized_index(&b.strings);
     b.validate().expect("node bundle must validate");

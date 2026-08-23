@@ -13,6 +13,10 @@
 //! noise (whitespace, the default allocator) and must never diverge
 //! from it.
 
+use crate::schema::Bundle;
+
+use foldhash::{HashMap, HashMapExt};
+
 use std::borrow::Cow;
 
 /// The coroutine-environment markers rustc appends to an async item's
@@ -62,12 +66,169 @@ fn closes_segment(after: Option<char>) -> bool {
     after.is_none_or(|c| !is_ident(c))
 }
 
-/// Fold `name` for display: drop `#0` coroutine-env markers wherever
-/// they appear (generic arguments included), shorten the std paths of
+/// The impl-path substitutions of one bundle's [`ImplTable`]
+/// (`crate::schema::ImplTable`), resolved to owned strings so the fold
+/// can consume them without borrowing the bundle. Built once per loaded
+/// bundle; [`ImplFold::default`] substitutes nothing, which is the
+/// right fold for a name with no bundle behind it (tests, symbols).
+#[derive(Clone, Debug, Default)]
+pub struct ImplFold {
+    map: HashMap<String, String>,
+}
+
+impl ImplFold {
+    /// The substitutions `bundle` carries. A ref its own string table
+    /// cannot resolve is skipped — [`Bundle::validate`] already refuses
+    /// such a bundle loudly.
+    pub fn for_bundle(bundle: &Bundle) -> Self {
+        let mut map = HashMap::with_capacity(bundle.impls.entries.len());
+        for &(path, self_type) in &bundle.impls.entries {
+            if let (Some(path), Some(self_type)) =
+                (bundle.strings.get(path), bundle.strings.get(self_type))
+            {
+                map.insert(path.to_owned(), self_type.to_owned());
+            }
+        }
+        Self { map }
+    }
+
+    /// A fold from literal `(impl path, self type)` pairs, for tests
+    /// and tools that have no bundle in hand.
+    pub fn from_pairs<K: Into<String>, V: Into<String>>(
+        pairs: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        Self {
+            map: pairs
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        }
+    }
+
+    /// Replace every known `a::b::{impl#N}` prefix in `name` with its
+    /// impl's self type path, wherever the prefix opens a path — at the
+    /// top of the name or inside a generic argument. The longest known
+    /// prefix wins, so a nested impl path substitutes whole. Borrows
+    /// when nothing substitutes.
+    fn substitute<'a>(&self, name: &'a str) -> Cow<'a, str> {
+        if self.map.is_empty() || !name.contains("{impl#") {
+            return Cow::Borrowed(name);
+        }
+        let mut out: Option<String> = None;
+        let mut pos = 0;
+        while pos < name.len() {
+            let before = name[..pos].chars().next_back();
+            let rest = &name[pos..];
+            let sub = if opens_path(before) {
+                impl_prefixes(rest)
+                    .rev()
+                    .find_map(|end| self.map.get(&rest[..end]).map(|to| (end, to)))
+            } else {
+                None
+            };
+            if let Some((end, to)) = sub {
+                out.get_or_insert_with(|| name[..pos].to_string())
+                    .push_str(to);
+                pos += end;
+                continue;
+            }
+            let c = rest.chars().next().expect("pos is on a char boundary");
+            if let Some(out) = &mut out {
+                out.push(c);
+            }
+            pos += c.len_utf8();
+        }
+        match out {
+            Some(subbed) => Cow::Owned(subbed),
+            None => Cow::Borrowed(name),
+        }
+    }
+}
+
+/// The end offsets in `rest` of every path prefix closing with an
+/// `{impl#N}` segment, shortest first: for
+/// `a::{impl#0}::m::{impl#1}::rest` the offsets after `{impl#0}` and
+/// after `{impl#1}`. The scan stops at the first segment that is
+/// neither an identifier nor such a marker, which is where a name's
+/// path run ends anyway (a generic list, an env marker).
+pub fn impl_prefixes(rest: &str) -> impl DoubleEndedIterator<Item = usize> {
+    let mut ends = Vec::new();
+    let mut pos = 0;
+    loop {
+        let seg = &rest[pos..];
+        let end = if let Some(digits) = seg.strip_prefix("{impl#") {
+            let n = digits.bytes().take_while(u8::is_ascii_digit).count();
+            match (n, digits.as_bytes().get(n)) {
+                (1.., Some(b'}')) => {
+                    ends.push(pos + "{impl#".len() + n + 1);
+                    pos + "{impl#".len() + n + 1
+                }
+                _ => break,
+            }
+        } else {
+            let n = seg.chars().take_while(|&c| is_ident(c)).count();
+            if n == 0 {
+                break;
+            }
+            pos + seg.chars().take(n).map(char::len_utf8).sum::<usize>()
+        };
+        match rest[end..].strip_prefix("::") {
+            Some(_) => pos = end + 2,
+            None => break,
+        }
+    }
+    ends.into_iter()
+}
+
+/// Every impl path occurring in `text` wherever a path opens — at the
+/// top or inside a generic argument — nested prefixes included:
+/// `C<a::{impl#0}::m::{impl#1}::go>` mentions `a::{impl#0}` and
+/// `a::{impl#0}::m::{impl#1}`. What extraction scans the string table
+/// with, so a bundle records only the impl entries its strings mention.
+pub fn impl_paths(text: &str) -> Vec<&str> {
+    let mut paths = Vec::new();
+    if !text.contains("{impl#") {
+        return paths;
+    }
+    let mut pos = 0;
+    while pos < text.len() {
+        let before = text[..pos].chars().next_back();
+        let rest = &text[pos..];
+        if opens_path(before) {
+            let mut last = None;
+            for prefix_end in impl_prefixes(rest) {
+                paths.push(&rest[..prefix_end]);
+                last = Some(prefix_end);
+            }
+            if let Some(end) = last {
+                pos += end;
+                continue;
+            }
+        }
+        pos += rest
+            .chars()
+            .next()
+            .expect("pos is on a char boundary")
+            .len_utf8();
+    }
+    paths
+}
+
+/// Fold `name` for display: substitute impl-block paths with their self
+/// types per `impls`, drop `#0` coroutine-env markers wherever they
+/// appear (generic arguments included), shorten the std paths of
 /// [`STD_SHORTENINGS`] on path-segment boundaries, and drop a spelled
 /// out default allocator closing a generic argument list. Borrows when
 /// nothing folds, which most names do not need.
-pub fn fold_type_name(name: &str) -> Cow<'_, str> {
+pub fn fold_type_name<'a>(name: &'a str, impls: &ImplFold) -> Cow<'a, str> {
+    match impls.substitute(name) {
+        Cow::Borrowed(name) => fold_markers(name),
+        Cow::Owned(subbed) => Cow::Owned(fold_markers(&subbed).into_owned()),
+    }
+}
+
+/// The marker folds of [`fold_type_name`], after impl substitution.
+fn fold_markers(name: &str) -> Cow<'_, str> {
     let mut out: Option<String> = None;
     let mut pos = 0;
     // Copy everything before the first fold lazily, so an unchanged
@@ -150,9 +311,9 @@ pub fn coroutine_kind(name: &str) -> Option<&'static str> {
 /// A future's display name where no kind column carries the kind for
 /// it: the kind word joined to the folded name — `async fn foo::bar`,
 /// or `future tokio::time::Sleep` for a plain future.
-pub fn display_future_name(name: &str) -> String {
+pub fn display_future_name(name: &str, impls: &ImplFold) -> String {
     let kind = coroutine_kind(name).unwrap_or("future");
-    format!("{kind} {}", fold_type_name(name))
+    format!("{kind} {}", fold_type_name(name, impls))
 }
 
 /// Strip the kind word [`display_future_name`] joined, so a displayed
@@ -176,9 +337,93 @@ pub fn strip_kind_prefix(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{coroutine_kind, display_future_name, fold_type_name, strip_kind_prefix};
+    use super::{ImplFold, coroutine_kind, impl_prefixes, strip_kind_prefix};
 
     use std::borrow::Cow;
+
+    /// The fold with no impl substitutions, which most cases exercise.
+    fn fold_type_name(name: &str) -> Cow<'_, str> {
+        super::fold_type_name(name, &ImplFold::default())
+    }
+
+    fn display_future_name(name: &str) -> String {
+        super::display_future_name(name, &ImplFold::default())
+    }
+
+    #[test]
+    fn test_impl_paths_substitute_their_self_types() {
+        let impls = ImplFold::from_pairs([
+            ("tokio::sync::mutex::{impl#10}", "tokio::sync::mutex::Mutex"),
+            ("alloc::sync::{impl#12}", "alloc::sync::Arc"),
+        ]);
+        assert_eq!(
+            super::fold_type_name(
+                "tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()>",
+                &impls
+            ),
+            "tokio::sync::mutex::Mutex::lock<()>"
+        );
+        // Inside a generic argument, composed with the other folds —
+        // and the substituted self type is itself display-folded.
+        assert_eq!(
+            super::fold_type_name(
+                "tokio::time::timeout::Timeout<tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()>>",
+                &impls
+            ),
+            "tokio::time::timeout::Timeout<tokio::sync::mutex::Mutex::lock<()>>"
+        );
+        assert_eq!(
+            super::fold_type_name("alloc::sync::{impl#12}::drop_slow<u8>", &impls),
+            "Arc::drop_slow<u8>"
+        );
+        // An impl the table does not know stays spelled as-is; so does
+        // a known path where it does not open a whole path.
+        assert_eq!(
+            super::fold_type_name("tokio::sync::mutex::{impl#11}::try_lock<()>", &impls),
+            "tokio::sync::mutex::{impl#11}::try_lock<()>"
+        );
+        assert_eq!(
+            super::fold_type_name("my::tokio::sync::mutex::{impl#10}::lock<()>", &impls),
+            "my::tokio::sync::mutex::{impl#10}::lock<()>"
+        );
+    }
+
+    /// A nested impl path substitutes whole: the longest known prefix
+    /// wins over its own outer impl's entry.
+    #[test]
+    fn test_nested_impl_paths_substitute_longest_first() {
+        let impls = ImplFold::from_pairs([
+            ("a::{impl#0}", "a::A"),
+            ("a::{impl#0}::m::{impl#1}", "a::m::B"),
+        ]);
+        assert_eq!(
+            super::fold_type_name("a::{impl#0}::m::{impl#1}::run", &impls),
+            "a::m::B::run"
+        );
+        assert_eq!(super::fold_type_name("a::{impl#0}::go", &impls), "a::A::go");
+    }
+
+    /// The substitution is part of the fold's idempotency contract: a
+    /// substituted name must pass through the fold unchanged.
+    #[test]
+    fn test_substitution_is_idempotent() {
+        let impls = ImplFold::from_pairs([("b::{impl#3}", "b::B")]);
+        let once = super::fold_type_name("c::C<b::{impl#3}::go::{closure_env#0}>", &impls);
+        assert_eq!(once, "c::C<b::B::go::{closure_env#0}>");
+        assert_eq!(super::fold_type_name(&once, &impls), once.as_ref());
+    }
+
+    #[test]
+    fn test_impl_prefixes_walks_the_path_run() {
+        let name = "a::{impl#0}::m::{impl#12}::rest::{async_fn_env#0}";
+        let ends: Vec<usize> = impl_prefixes(name).collect();
+        assert_eq!(ends.len(), 2);
+        assert_eq!(&name[..ends[0]], "a::{impl#0}");
+        assert_eq!(&name[..ends[1]], "a::{impl#0}::m::{impl#12}");
+        assert_eq!(impl_prefixes("a::b::C<d::{impl#0}::e>").count(), 0);
+        assert_eq!(impl_prefixes("{impl#}::x").count(), 0);
+        assert_eq!(impl_prefixes("{impl#7}::x").count(), 1);
+    }
 
     #[test]
     fn test_env_markers_fold_wherever_they_appear() {

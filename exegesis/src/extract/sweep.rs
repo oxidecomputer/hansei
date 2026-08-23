@@ -57,6 +57,12 @@ pub(super) struct Sweep {
     pub(super) vtable_missing_linkage: usize,
     pub(super) dyn_decl_only_self: usize,
     pub(super) dyn_unresolved_self: usize,
+    /// `{impl#N}` namespace → the impl's self type path, recovered by
+    /// demangling one member subprogram's linkage name (the namespace
+    /// DIE itself records nothing). `None` caches a failed recovery so
+    /// an impl full of unparseable members costs one demangle, not one
+    /// per member.
+    pub(super) impl_selfs: BTreeMap<NsId, Option<String>>,
 }
 
 impl Sweep {
@@ -92,6 +98,9 @@ impl Sweep {
         self.vtable_missing_linkage += other.vtable_missing_linkage;
         self.dyn_decl_only_self += other.dyn_decl_only_self;
         self.dyn_unresolved_self += other.dyn_unresolved_self;
+        for (ns, self_type) in other.impl_selfs {
+            self.impl_selfs.entry(ns).or_insert(self_type);
+        }
     }
 }
 
@@ -152,6 +161,8 @@ fn sweep_function(
     out: &mut Sweep,
 ) {
     let Some(name) = func.name() else { return };
+
+    note_impl_self(reader, name, func, out);
 
     if func.namespace_id() == raw_ns && raw_ns.is_some() {
         let Some(vtable_fn) = VTABLE_FNS
@@ -392,6 +403,114 @@ fn future_poll_self_type(
         return Err(unresolved);
     };
     Ok(reader.canonicalize(p.target_type_id))
+}
+
+/// Record the self type of the impl block enclosing `func`, when its
+/// namespace chain passes through an `{impl#N}` namespace not yet
+/// resolved. rustc invents those namespaces because a namespace cannot
+/// spell a type, and records nothing else on them; the one place that
+/// spells the real path is the mangled name of a member subprogram,
+/// which demangles to `<tokio::sync::mutex::Mutex<T>>::lock…` (or
+/// `<T as Trait>::method…`). The display fold substitutes the recovered
+/// path back over the impl path. Recovery fails safe: an impl whose
+/// members yield no plain self path stays unresolved, and names that
+/// mention it display raw.
+fn note_impl_self(reader: &DwReader<'_>, name: &str, func: &Func<'_>, out: &mut Sweep) {
+    let mut ns = func.namespace_id();
+    // The nearest `{impl#N}` ancestor, and the path segment the
+    // demangled method chain must open with: the name of the chain
+    // entry below that ancestor, or the subprogram's own name where it
+    // is a direct member.
+    let mut expected = name;
+    let impl_ns = loop {
+        let Some(id) = ns else { return };
+        let entry = reader.namespaces.get(id);
+        let ns_name = reader.strings.get(entry.name);
+        if ns_name.starts_with("{impl#") {
+            break id;
+        }
+        expected = ns_name;
+        ns = entry.parent;
+    };
+    if out.impl_selfs.contains_key(&impl_ns) {
+        return;
+    }
+    // Absence of a linkage name is not cached: a sibling that has one
+    // can still resolve the block.
+    let Some(linkage) = func.linkage_name() else {
+        return;
+    };
+    let demangled = format!("{:#}", rustc_demangle::demangle(linkage));
+    let recovered = impl_self_type(&demangled, expected);
+    if recovered.is_none() {
+        debug!("cannot recover impl self type: {demangled}");
+    }
+    out.impl_selfs.insert(impl_ns, recovered);
+}
+
+/// Recover the self type from a demangled impl-member symbol —
+/// `<a::b::Type<T>>::method…` or `<Type as Trait>::method…` — as the
+/// plain path with generic arguments stripped (`a::b::Type`).
+/// `expected` is the path segment the method chain must open with,
+/// guarding against a demangling this parser does not understand.
+/// `None` for a self type that is not a plain path (`&mut F`, a tuple,
+/// `dyn …`) — or a legacy demangling, which spells no leading `<`.
+fn impl_self_type(demangled: &str, expected: &str) -> Option<String> {
+    let inner = demangled.strip_prefix('<')?;
+    let close = angle_close(inner)?;
+    let chain = inner[close + 1..].strip_prefix("::")?;
+    let boundary = chain.strip_prefix(expected).map(|r| r.chars().next());
+    if !matches!(boundary, Some(next) if next.is_none_or(|c| !c.is_alphanumeric() && c != '_')) {
+        return None;
+    }
+    // A plain find, not a depth-aware one: an ` as ` that is not the
+    // trait separator sits inside a generic list — so anything before
+    // it contains a `<`, and the strip below reduces either split to
+    // the same base.
+    let self_type = &inner[..close];
+    let self_type = match self_type.find(" as ") {
+        Some(at) => &self_type[..at],
+        None => self_type,
+    };
+    let base = match self_type.find('<') {
+        Some(at) => &self_type[..at],
+        None => self_type,
+    }
+    .trim();
+    is_plain_path(base).then(|| base.to_owned())
+}
+
+/// The index in `s` of the `>` matching an angle bracket already open
+/// when it starts, skipping the `>` of `->` (a fn-pointer return type
+/// inside the generic arguments).
+fn angle_close(s: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut prev = '\0';
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' if prev != '-' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        prev = c;
+    }
+    None
+}
+
+/// Whether `s` is a bare `a::b::C` path: identifier segments only, no
+/// generics, references, or brace markers left.
+fn is_plain_path(s: &str) -> bool {
+    !s.is_empty()
+        && s.split("::").all(|seg| {
+            !seg.is_empty()
+                && seg.chars().all(|c| c.is_alphanumeric() || c == '_')
+                && !seg.starts_with(|c: char| c.is_ascii_digit())
+        })
 }
 
 /// Is this type a compiler-generated coroutine environment?
@@ -925,6 +1044,84 @@ mod tests {
             cell_from_dealloc_param(&reader, Some(core_ns), stray_non_null),
             None
         );
+    }
+
+    #[test]
+    fn test_impl_self_type_parses_demangled_members() {
+        // Inherent impl, generic self type.
+        assert_eq!(
+            impl_self_type("<tokio::sync::mutex::Mutex<()>>::lock", "lock").as_deref(),
+            Some("tokio::sync::mutex::Mutex")
+        );
+        // Trait impl: the ` as Trait` half is dropped.
+        assert_eq!(
+            impl_self_type(
+                "<core::task::wake::Waker as core::ops::drop::Drop>::drop",
+                "drop"
+            )
+            .as_deref(),
+            Some("core::task::wake::Waker")
+        );
+        // A method's inner item: the chain check matches the segment
+        // below the impl, not the leaf.
+        assert_eq!(
+            impl_self_type("<core::alloc::layout::Layout>::array::inner", "array").as_deref(),
+            Some("core::alloc::layout::Layout")
+        );
+        // A generic method's turbofish, and a fn-pointer's `->` inside
+        // the self type's arguments.
+        assert_eq!(
+            impl_self_type(
+                "<crossbeam_epoch::guard::Guard>::defer_unchecked::<foo::{closure#0}, ()>",
+                "defer_unchecked"
+            )
+            .as_deref(),
+            Some("crossbeam_epoch::guard::Guard")
+        );
+        assert_eq!(
+            impl_self_type("<h::Handler<fn(u8) -> u16, ()> as t::T>::go", "go").as_deref(),
+            Some("h::Handler")
+        );
+        // An ` as ` inside the self type's generic arguments is not
+        // the trait separator, but everything before it is inside the
+        // generics too, so the base is the same either way.
+        assert_eq!(
+            impl_self_type("<h::H<<x::X as y::Y>::Out> as t::T>::go", "go").as_deref(),
+            Some("h::H")
+        );
+    }
+
+    /// Whatever the parser does not positively understand resolves to
+    /// nothing: the impl stays unresolved and displays raw.
+    #[test]
+    fn test_impl_self_type_declines_what_it_cannot_parse() {
+        // Blanket impls on non-path self types.
+        for demangled in [
+            "<&mut F as core::future::future::Future>::poll",
+            "<(A, B) as t::T>::go",
+            "<dyn core::fmt::Debug as t::T>::go",
+        ] {
+            assert_eq!(impl_self_type(demangled, "poll"), None, "{demangled}");
+            assert_eq!(impl_self_type(demangled, "go"), None, "{demangled}");
+        }
+        // Legacy demangling spells no leading `<`.
+        assert_eq!(
+            impl_self_type("tokio::sync::mutex::Mutex<()>::lock", "lock"),
+            None
+        );
+        // A chain that does not open with the expected segment.
+        assert_eq!(
+            impl_self_type("<a::A>::other", "lock"),
+            None,
+            "chain mismatch"
+        );
+        assert_eq!(
+            impl_self_type("<a::A>::locker", "lock"),
+            None,
+            "segment boundary"
+        );
+        // An unclosed self type.
+        assert_eq!(impl_self_type("<a::A<()>::lock", "lock"), None);
     }
 
     #[test]

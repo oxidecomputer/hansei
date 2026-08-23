@@ -108,6 +108,11 @@ impl StringInterner {
         self.table.get(r)
     }
 
+    /// Iterate the strings interned so far, in interning order.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.table.iter()
+    }
+
     /// Consume the interner, returning the finished table.
     pub fn finish(self) -> StringTable {
         self.table

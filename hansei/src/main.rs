@@ -643,6 +643,9 @@ pub struct Session<'b> {
     /// whose bundle shows no local-set machinery linked.
     local_sets: Vec<bundle::LocalSetRef<'b>>,
     tasks: bundle::TaskList,
+    /// The bundle's impl-path substitutions, threaded into every
+    /// display fold ([`hansei_bundle::names::fold_type_name`]).
+    impl_fold: hansei_bundle::names::ImplFold,
     /// Task extents, the sub-executor census and the wait analysis,
     /// built on first use: a core does not change, so the address→task
     /// answers never do either, and the two walks cover every chain —
@@ -736,6 +739,7 @@ impl<'b> Session<'b> {
             excluded,
             local_sets,
             tasks,
+            impl_fold: hansei_bundle::names::ImplFold::for_bundle(bundle),
             extents: OnceCell::new(),
             census: OnceCell::new(),
             bounds: census::Bounds {
@@ -875,6 +879,7 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             let elide = reify::ElideOverride {
                 no_elide,
                 types: elide,
+                impls: session.impl_fold.clone(),
             };
             let opts = TraceOpts {
                 verbose,
@@ -887,7 +892,14 @@ pub fn dispatch(session: &Session<'_>, command: Command, out: &mut dyn io::Write
             name,
             recursive,
             depth,
-        } => types::describe(&session.ctx.view, &name, recursive, depth, out)?,
+        } => types::describe(
+            &session.ctx.view,
+            &name,
+            &session.impl_fold,
+            recursive,
+            depth,
+            out,
+        )?,
         Command::Whatis { addr } => whatis::exec_whatis(session, addr, out)?,
         Command::Quit | Command::Exit => return Ok(Flow::Quit),
     }

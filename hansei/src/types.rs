@@ -63,6 +63,7 @@ impl Nesting {
 pub fn describe(
     view: &BundleView<'_>,
     name: &str,
+    impls: &names::ImplFold,
     recursive: bool,
     depth: usize,
     out: &mut dyn io::Write,
@@ -73,10 +74,12 @@ pub fn describe(
         .map(|(_, ty)| ty)
         .collect();
     if matches.is_empty() {
-        let want = names::fold_type_name(names::strip_kind_prefix(name));
+        let want = names::fold_type_name(names::strip_kind_prefix(name), impls);
         matches = view
             .named_types()
-            .filter(|(n, _)| symbols::rust_type_names_equal(&names::fold_type_name(n), &want))
+            .filter(|(n, _)| {
+                symbols::rust_type_names_equal(&names::fold_type_name(n, impls), &want)
+            })
             .map(|(_, ty)| ty)
             .collect();
     }
@@ -663,6 +666,7 @@ mod tests {
                 raw_waker_vtable: ty,
             },
             provenance: Default::default(),
+            impls: Default::default(),
         }
     }
 
@@ -670,7 +674,15 @@ mod tests {
         let bundle = bundle();
         let view = BundleView::new(&bundle);
         let mut out = Vec::new();
-        describe(&view, name, recursive, depth, &mut out).expect("describe succeeds");
+        describe(
+            &view,
+            name,
+            &names::ImplFold::default(),
+            recursive,
+            depth,
+            &mut out,
+        )
+        .expect("describe succeeds");
         String::from_utf8(out).unwrap()
     }
 
@@ -722,14 +734,32 @@ mod tests {
         // folds to still misses.
         let bundle = bundle();
         let view = BundleView::new(&bundle);
-        assert!(describe(&view, "app::other", false, 0, &mut Vec::new()).is_err());
+        assert!(
+            describe(
+                &view,
+                "app::other",
+                &names::ImplFold::default(),
+                false,
+                0,
+                &mut Vec::new()
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn test_describe_unknown_name_suggests_find() {
         let bundle = bundle();
         let view = BundleView::new(&bundle);
-        let err = describe(&view, "no::such::Type", false, 0, &mut Vec::new()).unwrap_err();
+        let err = describe(
+            &view,
+            "no::such::Type",
+            &names::ImplFold::default(),
+            false,
+            0,
+            &mut Vec::new(),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("find-types"), "{err}");
     }
 

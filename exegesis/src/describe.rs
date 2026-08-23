@@ -641,6 +641,7 @@ mod tests {
                 raw_waker_vtable: placeholder,
             },
             provenance: Default::default(),
+            impls: Default::default(),
         };
         (bundle, Refs { value, a, ghost })
     }
