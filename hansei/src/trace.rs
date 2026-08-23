@@ -630,8 +630,9 @@ fn print_chain_end(
             for candidate in candidates {
                 writeln!(
                     out,
-                    "     candidate: {}",
-                    names::fold_type_name(candidate, impls)
+                    "     candidate: {} (type {})",
+                    names::fold_type_name(&candidate.name, impls),
+                    candidate.ty.0
                 )?;
             }
         }
@@ -990,7 +991,7 @@ mod state_locals_tests {
 mod chain_end_tests {
     use super::print_chain_end;
     use hansei_bundle::names::ImplFold;
-    use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd};
+    use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd, TypeCandidate};
 
     fn rendered(end: ChainEnd) -> String {
         let chain = AwaitChain {
@@ -1012,7 +1013,9 @@ mod chain_end_tests {
     /// every printed name — and what is known about the poll fn:
     /// the demangled symbol for an unknown type, the candidate list
     /// (folded, no kind word: they are lookup handles) for an
-    /// ambiguous one.
+    /// ambiguous one. Each candidate carries its type id — the folded
+    /// names often agree exactly, and the id is the handle that does
+    /// not.
     #[test]
     fn test_dyn_ends_name_the_pointee_and_the_poll_fn() {
         let out = rendered(ChainEnd::UnknownDyn {
@@ -1030,13 +1033,16 @@ mod chain_end_tests {
         let out = rendered(ChainEnd::AmbiguousDyn {
             pointee: "dyn core::future::future::Future".to_string(),
             symbol: "poll_sym".to_string(),
-            candidates: vec!["work::step::{async_fn_env#0}".to_string()],
+            candidates: vec![TypeCandidate {
+                name: "work::step::{async_fn_env#0}".to_string(),
+                ty: hansei_bundle::BundleTypeId(41),
+            }],
         });
         assert_eq!(
             out,
             "the chain continues into a dyn Future, \
              but its normalized poll symbol is ambiguous\n     \
-             poll fn: poll_sym\n     candidate: work::step\n"
+             poll fn: poll_sym\n     candidate: work::step (type 41)\n"
         );
     }
 

@@ -450,7 +450,13 @@ pub fn future_name(future: &bundle::FutureInfo, impls: &names::ImplFold) -> Stri
         bundle::FutureInfo::Ambiguous { candidates, .. } => {
             let candidates: Vec<_> = candidates
                 .iter()
-                .map(|c| names::fold_type_name(c, impls))
+                .map(|c| {
+                    format!(
+                        "{} (type {})",
+                        names::fold_type_name(&c.name, impls),
+                        c.ty.0
+                    )
+                })
                 .collect();
             format!("<ambiguous: {}>", candidates.join(" | "))
         }
