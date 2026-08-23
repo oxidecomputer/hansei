@@ -682,8 +682,8 @@ impl Symbols {
         self
     }
 
-    /// Re-flow a fixed-width table no header row names — what
-    /// `runtimes` prints — around the symbols replacing its addresses.
+    /// Re-flow a fixed-width table by its header row — what `runtimes`
+    /// prints — around the symbols replacing its addresses.
     fn columns(mut self) -> Self {
         self.columns = true;
         self
@@ -886,51 +886,45 @@ impl Symbols {
 /// between see ordinary text.
 const COLUMN: char = '\u{1}';
 
-/// Mark the column boundaries of a fixed-width table no header row
-/// names.
+/// Mark the column boundaries of a fixed-width table by its header
+/// row's label offsets.
 ///
-/// A boundary is two or more character positions where *every* row
-/// holds a space — which is what padding a column to its widest cell
-/// leaves behind, and what the single spaces inside a cell never are.
-/// `runtimes` needs this where the graph table does not: its columns
-/// are named by no header whose labels give their offsets away.
+/// The header is padded to the same widths as every row and holds no
+/// wide characters, so where its labels start — the first character
+/// after a two-space run — is where every row's columns start. This is
+/// how `runtimes` is re-flowed; the graph table has its own pass in
+/// [`Symbols::table`], whose first column needs symbol substitution.
 fn split_columns(out: &str) -> String {
-    let rows: Vec<Vec<char>> = out
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.chars().collect())
-        .collect();
-    if rows.len() < 2 {
+    let lines: Vec<&str> = out.lines().collect();
+    let Some(header) = lines.first() else {
         return out.to_owned();
-    }
-    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let at = |row: &Vec<char>, i: usize| row.get(i).copied().unwrap_or(' ');
-    let blank = |i: usize| rows.iter().all(|row| at(row, i) == ' ');
-
-    let mut gutters: Vec<(usize, usize)> = Vec::new();
-    let mut run = 0usize;
-    for i in 0..width {
-        if blank(i) {
-            run += 1;
+    };
+    let mut cuts: Vec<usize> = Vec::new();
+    let mut spaces = 2;
+    for (i, c) in header.chars().enumerate() {
+        if c == ' ' {
+            spaces += 1;
             continue;
         }
-        if run >= 2 {
-            gutters.push((i - run, i));
+        if spaces >= 2 {
+            cuts.push(i);
         }
-        run = 0;
+        spaces = 0;
     }
 
     let mut text = String::new();
-    for row in &rows {
-        let mut from = 0;
-        for &(gutter, next) in &gutters {
-            let cell: String = (from..gutter).map(|i| at(row, i)).collect();
+    for line in &lines {
+        let chars: Vec<char> = line.chars().collect();
+        for (at, &from) in cuts.iter().enumerate() {
+            if at > 0 {
+                text.push(COLUMN);
+            }
+            let to = cuts.get(at + 1).copied().unwrap_or(chars.len());
+            let cell: String = chars[from.min(chars.len())..to.min(chars.len())]
+                .iter()
+                .collect();
             text.push_str(cell.trim_end());
-            text.push(COLUMN);
-            from = next;
         }
-        let rest: String = (from..row.len()).map(|i| at(row, i)).collect();
-        text.push_str(rest.trim_end());
         text.push('\n');
     }
     text
