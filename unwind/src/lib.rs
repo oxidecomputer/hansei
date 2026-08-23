@@ -203,6 +203,25 @@ impl<T: Target> Unwinder<'_, T> {
         };
         frames.push(initial_frame);
 
+        // A thread that called through a bad pointer faults with its pc
+        // outside every mapping, where no CFI can describe it. But the
+        // frame that made the call is one word down: the `call` pushed
+        // the return address and nothing ran after it. Popping that word
+        // by hand lands the walk back where CFI resumes.
+        if !self.mappings.contains_addr(regs.rip)
+            && let Ok(ret) = self.target.read_u64(regs.rsp)
+            && self.mappings.contains_addr(ret)
+        {
+            regs.rip = ret;
+            regs.rsp += size_of::<u64>() as u64;
+            pc = ret;
+            frames.push(Frame {
+                pc: ret,
+                symbol: self.symbol_at(ret),
+                regs: regs.clone(),
+            });
+        }
+
         for _ in 0..max_frames {
             // Out of the address space entirely: there is nothing below.
             if !self.mappings.contains_addr(regs.rip) {
