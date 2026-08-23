@@ -9,7 +9,7 @@
 
 use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 
-use hansei_bundle::{FutureKind, TaskEntryId};
+use hansei_bundle::{BundleTypeId, FutureKind, TaskEntryId};
 use reify::Value;
 
 use std::fmt;
@@ -345,8 +345,19 @@ pub enum FutureInfo {
     /// Normalization joined the vtable functions to distinct task entries.
     Ambiguous {
         symbol: String,
-        candidates: Vec<String>,
+        candidates: Vec<TypeCandidate>,
     },
+}
+
+/// One concrete type an ambiguous symbol join could mean. The id is the
+/// part of the report the shared normalized spelling cannot carry: two
+/// candidates often differ only inside their generic arguments, and
+/// `type <id>` is the handle that names each exactly.
+#[derive(Clone, Debug)]
+pub struct TypeCandidate {
+    /// The raw bundle type name, folded for display by the printer.
+    pub name: String,
+    pub ty: BundleTypeId,
 }
 
 /// A future resolved through the bundle's task join table.
@@ -454,8 +465,8 @@ pub enum ChainEnd {
         pointee: String,
         /// The target's raw mangled symbol.
         symbol: String,
-        /// Concrete bundle type names sharing the normalized key.
-        candidates: Vec<String>,
+        /// The concrete bundle types sharing the normalized key.
+        candidates: Vec<TypeCandidate>,
     },
     /// The depth bound was hit.
     DepthLimit,

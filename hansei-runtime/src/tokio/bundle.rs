@@ -871,7 +871,7 @@ impl<'b, T: Target> Context<'b, T> {
             vt.drop_abort_handle,
             vt.shutdown,
         ];
-        let mut ambiguous: Option<(String, Vec<String>)> = None;
+        let mut ambiguous: Option<(String, Vec<TypeCandidate>)> = None;
         for addr in candidates.into_iter().flatten() {
             let Some(symbol) = self.symbol_at(addr) else {
                 continue;
@@ -882,8 +882,12 @@ impl<'b, T: Target> Context<'b, T> {
                     let names = ids
                         .into_iter()
                         .filter_map(|id| self.view.bundle().tasks.entries.get(id.0 as usize))
-                        .filter_map(|entry| self.view.str(entry.display_name))
-                        .map(str::to_owned)
+                        .filter_map(|entry| {
+                            Some(TypeCandidate {
+                                name: self.view.str(entry.display_name)?.to_owned(),
+                                ty: entry.future,
+                            })
+                        })
                         .collect();
                     ambiguous.get_or_insert((symbol, names));
                     continue;
@@ -1016,7 +1020,11 @@ impl<'b, T: Target> Context<'b, T> {
             }
             FutureInfo::Ambiguous { symbol, candidates } => bail!(
                 "the task's normalized future symbol {symbol} is ambiguous: {}; nothing can be traced",
-                candidates.join(", ")
+                candidates
+                    .iter()
+                    .map(|c| format!("{} (type {})", c.name, c.ty.0))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         };
         let entry = self.task_entry(known.entry);
@@ -1410,7 +1418,10 @@ impl<'b, T: Target> Context<'b, T> {
                     let candidates = ids
                         .into_iter()
                         .filter_map(|id| self.view.ty(id))
-                        .map(|ty| ty.name().to_owned())
+                        .map(|ty| TypeCandidate {
+                            name: ty.name().to_owned(),
+                            ty: ty.id(),
+                        })
                         .collect();
                     return Ok(DynAwaitee::Ambiguous { symbol, candidates });
                 }
@@ -2803,7 +2814,7 @@ enum DynAwaitee<'b> {
     /// The normalized symbol joined more than one concrete bundle type.
     Ambiguous {
         symbol: String,
-        candidates: Vec<String>,
+        candidates: Vec<TypeCandidate>,
     },
 }
 
