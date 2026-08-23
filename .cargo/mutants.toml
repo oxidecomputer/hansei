@@ -317,4 +317,10 @@ exclude_re = [
     # size that does not fit a 32-bit usize, where `size as usize`
     # would truncate — cannot be built on the hosts that test this.
     "replace match guard usize::try_from",
+    # Equivalent mutant: the loop's `<=` spelling only admits one extra
+    # probe at off == size, whose max is size - size = 0 — and a probe
+    # answers at most max, so it answers 0, the hole step runs once
+    # more, and the loop ends with the same runs either way. A probe
+    # answering more than its max is outside readable_len's contract.
+    "replace < with <= in readable_runs",
 ]
