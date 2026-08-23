@@ -199,6 +199,15 @@ pub trait Target: Sync {
         Ok(Vec::new())
     }
 
+    /// The signal that terminated the target, where its core records
+    /// one. `None` for a target that was not killed by a signal at all:
+    /// a live process, a snapshot, or a live capture — `gcore` on
+    /// either system stops the process rather than crashing it, and
+    /// leaves no fatal signal behind.
+    fn fatal_signal(&self) -> Option<FatalSignal> {
+        None
+    }
+
     /// The target's memory mappings.
     fn mappings(&self) -> Result<Mappings>;
 
@@ -511,6 +520,73 @@ pub struct Status {
     pub active_lwp: u32,
     pub brk_range: Range<u64>,
     pub stack_range: Range<u64>,
+}
+
+/// The signal that terminated the target, as its core records it.
+///
+/// Every field is decoded by the backend that read the core, because
+/// only it knows which system's numbering the bytes use — `SIGBUS` is
+/// 7 on Linux and 10 on illumos, and a display layer mapping numbers
+/// itself would be wrong on whichever system it was not written on.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FatalSignal {
+    /// The signal's name as its own system spells it (`"SIGSEGV"`).
+    pub name: &'static str,
+    pub signo: i32,
+    /// The `siginfo` code refining the signal, and its name where it is
+    /// one of the fault codes (`"SEGV_MAPERR"`). User-sent and
+    /// kernel-internal codes stay numbers: the union they select in the
+    /// `siginfo` carries no address, which is what `fault_addr`'s
+    /// absence says.
+    pub code: i32,
+    pub code_name: Option<&'static str>,
+    /// The faulting address, present only when `code` is a fault code —
+    /// for any other code the same `siginfo` bytes mean something else
+    /// (a sender's pid, a queued value), and reading them as an address
+    /// would print confident garbage.
+    pub fault_addr: Option<u64>,
+    /// The lwp that took the signal, where the core identifies one.
+    pub lwp: Option<u32>,
+}
+
+/// The fault codes whose `siginfo` union holds the faulting address.
+///
+/// The values are shared: Linux took the SVR4 numbering, so
+/// `SEGV_MAPERR` is 1 and `BUS_ADRERR` is 2 on both systems, and one
+/// table serves either backend. What is *not* shared is the signal
+/// numbering that keys it, which is why callers pass the decoded name
+/// rather than a number.
+pub fn fault_code_name(signal: &str, code: i32) -> Option<&'static str> {
+    let names: &[&'static str] = match signal {
+        "SIGSEGV" => &["SEGV_MAPERR", "SEGV_ACCERR"],
+        "SIGBUS" => &["BUS_ADRALN", "BUS_ADRERR", "BUS_OBJERR"],
+        "SIGILL" => &[
+            "ILL_ILLOPC",
+            "ILL_ILLOPN",
+            "ILL_ILLADR",
+            "ILL_ILLTRP",
+            "ILL_PRVOPC",
+            "ILL_PRVREG",
+            "ILL_COPROC",
+            "ILL_BADSTK",
+        ],
+        "SIGFPE" => &[
+            "FPE_INTDIV",
+            "FPE_INTOVF",
+            "FPE_FLTDIV",
+            "FPE_FLTOVF",
+            "FPE_FLTUND",
+            "FPE_FLTRES",
+            "FPE_FLTINV",
+            "FPE_FLTSUB",
+        ],
+        "SIGTRAP" => &["TRAP_BRKPT", "TRAP_TRACE"],
+        _ => &[],
+    };
+    usize::try_from(code)
+        .ok()
+        .and_then(|code| code.checked_sub(1))
+        .and_then(|index| names.get(index).copied())
 }
 
 /// The executable's GNU build id, from the two places it is recorded:
