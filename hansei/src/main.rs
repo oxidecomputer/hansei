@@ -451,8 +451,10 @@ pub enum Command {
         /// from the shell), a name without a `*` covers every
         /// instantiation, a matched type stays elided under --no-elide,
         /// and a name may be spelled the way the listings display it
-        /// (folded, kind word and all) or the way the debug info
-        /// records it.
+        /// (folded, kind word and all), the way the debug info records
+        /// it, or as a bundle type id — the `type 4821` a listing
+        /// prints where a name alone is not a handle — which elides
+        /// that exact instantiation.
         #[arg(long, short = 'e', value_name = "TYPE")]
         elide: Vec<String>,
     },
@@ -462,7 +464,10 @@ pub enum Command {
     /// variants and the discriminant that selects them.
     Type {
         /// The fully-qualified name, as `find-types` lists it — or as
-        /// another listing displays it, folded and with the kind word.
+        /// another listing displays it, folded and with the kind word —
+        /// or a bundle type id, the `type 4821` a listing prints where
+        /// the name alone is not a handle (an ambiguous site, one
+        /// definition of several).
         name: String,
 
         /// Follow what the layout names: open every type it reaches —
@@ -888,7 +893,10 @@ pub fn dispatch(
             session.note_version_ceiling();
             let elide = reify::ElideOverride {
                 no_elide,
-                types: elide,
+                types: elide
+                    .into_iter()
+                    .map(|spec| types::resolve_elide_spec(&session.ctx.view, spec))
+                    .collect::<Result<_>>()?,
                 impls: session.impl_fold.clone(),
             };
             let opts = TraceOpts {
