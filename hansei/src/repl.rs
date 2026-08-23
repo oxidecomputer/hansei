@@ -15,6 +15,7 @@
 //! - `--exec` carries the commands on the command line under those same
 //!   rules, for a caller with one question to ask and no stdin to spare.
 
+use crate::output::Theme;
 use crate::{Command, Flow, Session, dispatch};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -175,20 +176,23 @@ fn execute_one(session: &Session<'_>, line: &str) -> Result<Flow> {
     // traffic and the resident set. The writer buffers small pieces (a
     // heading line) and passes big ones through; a command that fails
     // mid-answer has printed what it printed.
+    // The theme is where the output is going: a `!` pipe is a script's
+    // input however the session was started, so only the plain stdout
+    // path may style.
     match shell {
         Some(shell) => {
             let sink = ShellSink {
                 stdin: Some(Box::new(Exec::shell(shell.trim()).stream_stdin()?)),
             };
             let mut out = io::BufWriter::new(sink);
-            let flow = dispatch(session, parsed.command, &mut out)?;
+            let flow = dispatch(session, parsed.command, Theme::plain(), &mut out)?;
             out.flush()?;
             Ok(flow)
         }
         None => {
             let stdout = io::stdout();
             let mut out = io::BufWriter::new(stdout.lock());
-            let flow = dispatch(session, parsed.command, &mut out)?;
+            let flow = dispatch(session, parsed.command, Theme::for_stdout(), &mut out)?;
             out.flush()?;
             Ok(flow)
         }
