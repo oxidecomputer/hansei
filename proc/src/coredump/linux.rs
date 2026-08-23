@@ -20,8 +20,8 @@
 
 use super::common::{Segment, Symbols};
 use crate::{
-    BuildIds, Error, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs, Result,
-    Status, SymbolBuf, Target, Timespec,
+    BuildIds, Error, FatalSignal, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings,
+    Regs, Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
 };
 
 use goblin::elf::Elf;
@@ -48,11 +48,60 @@ const AT_NULL: u64 = 0;
 const AT_PHDR: u64 = 3;
 
 /// Field offsets into `struct elf_prstatus` for x86-64, which is fixed
-/// ABI: `pr_pid` is the thread id, `pr_reg` a `user_regs_struct`.
+/// ABI: `pr_pid` is the thread id, `pr_reg` a `user_regs_struct`, and
+/// `pr_cursig` the signal being taken when the thread was dumped.
 const PR_PID: usize = 32;
+const PR_CURSIG: usize = 12;
 const PR_REG: usize = 112;
 const PR_REG_COUNT: usize = 27;
 const PRSTATUS_LEN: usize = PR_REG + PR_REG_COUNT * 8 + 8;
+
+/// The `siginfo_t` of the terminating signal, written once by the
+/// kernel (since 3.10) among the first thread's notes. goblin does not
+/// name it; the value is `"SIG"` `"I"` as a little-endian word.
+const NT_SIGINFO: u32 = 0x5349_4749;
+/// Field offsets into `siginfo_t` for x86-64: three ints — in Linux's
+/// order, `si_signo`, `si_errno`, `si_code` — then padding to the
+/// 8-aligned union, whose fault variant leads with `si_addr`.
+const SI_SIGNO: usize = 0;
+const SI_CODE: usize = 8;
+const SI_ADDR: usize = 16;
+const SIGINFO_LEN: usize = 128;
+
+/// The signal names as Linux numbers them on x86-64. Real-time signals
+/// have spellings rather than names; 32 and 33 are the two glibc
+/// reserves below `SIGRTMIN`, so the spellings run from 34.
+#[rustfmt::skip]
+const SIGNAL_NAMES: [&str; 31] = [
+    "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT",
+    "SIGBUS", "SIGFPE", "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2",
+    "SIGPIPE", "SIGALRM", "SIGTERM", "SIGSTKFLT", "SIGCHLD", "SIGCONT",
+    "SIGSTOP", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGURG", "SIGXCPU",
+    "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGIO", "SIGPWR",
+    "SIGSYS",
+];
+#[rustfmt::skip]
+const RT_SIGNAL_NAMES: [&str; 33] = [
+    "SIG32", "SIG33", "SIGRTMIN", "SIGRTMIN+1", "SIGRTMIN+2",
+    "SIGRTMIN+3", "SIGRTMIN+4", "SIGRTMIN+5", "SIGRTMIN+6", "SIGRTMIN+7",
+    "SIGRTMIN+8", "SIGRTMIN+9", "SIGRTMIN+10", "SIGRTMIN+11",
+    "SIGRTMIN+12", "SIGRTMIN+13", "SIGRTMIN+14", "SIGRTMIN+15",
+    "SIGRTMAX-14", "SIGRTMAX-13", "SIGRTMAX-12", "SIGRTMAX-11",
+    "SIGRTMAX-10", "SIGRTMAX-9", "SIGRTMAX-8", "SIGRTMAX-7",
+    "SIGRTMAX-6", "SIGRTMAX-5", "SIGRTMAX-4", "SIGRTMAX-3", "SIGRTMAX-2",
+    "SIGRTMAX-1", "SIGRTMAX",
+];
+
+/// The name Linux gives `signo`, or `None` for a number outside the
+/// signal range — which no signal-killed core produces, so it is read
+/// the way a wrong-sized note is: another system's bytes, not a signal.
+fn signal_name(signo: i32) -> Option<&'static str> {
+    let index = usize::try_from(signo.checked_sub(1)?).ok()?;
+    SIGNAL_NAMES
+        .get(index)
+        .or_else(|| RT_SIGNAL_NAMES.get(index - SIGNAL_NAMES.len()))
+        .copied()
+}
 
 impl Regs {
     /// Decode a `user_regs_struct` (x86-64), whose field order is fixed
@@ -182,6 +231,10 @@ pub struct Core {
     backing: BTreeMap<String, Option<BackingFile>>,
     mappings: Mappings,
     lwps: Vec<LwpInfo>,
+    /// The signal that killed the process, decoded from the first
+    /// prstatus's `pr_cursig` and the `NT_SIGINFO` note; `None` for a
+    /// live capture, which records no fatal signal.
+    fatal: Option<FatalSignal>,
     /// The executable's path and load bias, found via `AT_PHDR`.
     exec: Option<ExecInfo>,
 }
@@ -254,10 +307,37 @@ impl Core {
         let mut lwps = Vec::new();
         let mut files = Vec::new();
         let mut auxv = BTreeMap::new();
+        let mut cursig = 0i16;
+        let mut siginfo = None;
         for note in elf.iter_note_headers(&core).into_iter().flatten() {
             let note = note.map_err(|_| Error::bad_core("malformed note"))?;
             match note.n_type {
-                NT_PRSTATUS => lwps.push(parse_prstatus(note.desc)?),
+                NT_PRSTATUS => {
+                    // `parse_prstatus` also validates the size, so the
+                    // cursig read below it cannot be out of bounds.
+                    let lwp = parse_prstatus(note.desc)?;
+                    // The kernel writes the dumping thread's notes
+                    // first, so the first prstatus is the thread that
+                    // took the signal — and the only one whose `cursig`
+                    // says anything: the kernel stamps the same signal
+                    // into every thread's prstatus, so the field can
+                    // name the signal but never the thread.
+                    if lwps.is_empty() {
+                        cursig = i16::from_le_bytes(
+                            note.desc[PR_CURSIG..PR_CURSIG + 2].try_into().unwrap(),
+                        );
+                    }
+                    lwps.push(lwp);
+                }
+                NT_SIGINFO if note.desc.len() >= SIGINFO_LEN => {
+                    let field =
+                        |at: usize| i32::from_le_bytes(note.desc[at..at + 4].try_into().unwrap());
+                    siginfo = Some((
+                        field(SI_SIGNO),
+                        field(SI_CODE),
+                        u64::from_le_bytes(note.desc[SI_ADDR..SI_ADDR + 8].try_into().unwrap()),
+                    ));
+                }
                 NT_FILE => parse_nt_file(note.desc, &mut files)?,
                 NT_AUXV => {
                     let mut c = Cursor::new(note.desc);
@@ -323,6 +403,7 @@ impl Core {
             backing.insert(f.path.clone(), opened);
         }
 
+        let fatal = decode_fatal_signal(cursig, lwps[0].tid, siginfo);
         let mut core_file = Core {
             core,
             segments,
@@ -330,6 +411,7 @@ impl Core {
             backing,
             mappings: Mappings { inner: Vec::new() },
             lwps,
+            fatal,
             exec: None,
         };
         core_file.mappings = core_file.build_mappings();
@@ -814,6 +896,38 @@ impl Core {
     }
 }
 
+/// The terminating signal, from the first prstatus's `cursig` and the
+/// `NT_SIGINFO` note — in that order of authority. `cursig` decides
+/// whether the process died of a signal at all: gdb's `gcore` writes an
+/// `NT_SIGINFO` too, describing the `SIGSTOP` it attached with, over
+/// prstatus notes whose `cursig` is 0 — so a siginfo alone is not a
+/// death. Once `cursig` says there was one, the siginfo's code and
+/// address are believed only when it describes the same signal.
+fn decode_fatal_signal(
+    cursig: i16,
+    tid: u32,
+    siginfo: Option<(i32, i32, u64)>,
+) -> Option<FatalSignal> {
+    if cursig == 0 {
+        return None;
+    }
+    let signo = i32::from(cursig);
+    let name = signal_name(signo)?;
+    let (code, addr) = match siginfo {
+        Some((si_signo, si_code, si_addr)) if si_signo == signo => (si_code, si_addr),
+        _ => (0, 0),
+    };
+    let code_name = fault_code_name(name, code);
+    Some(FatalSignal {
+        name,
+        signo,
+        code,
+        code_name,
+        fault_addr: code_name.is_some().then_some(addr),
+        lwp: Some(tid),
+    })
+}
+
 fn parse_prstatus(desc: &[u8]) -> Result<LwpInfo> {
     // Exactly, not merely enough. `struct elf_prstatus` is fixed ABI, so
     // a note of another size is another system's: illumos writes the
@@ -885,6 +999,10 @@ const _: () = {
 impl Target for Core {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]> {
         Core::pslice(self, addr, len).ok_or_else(|| Error::unmapped(addr, len))
+    }
+
+    fn fatal_signal(&self) -> Option<FatalSignal> {
+        self.fatal.clone()
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
@@ -986,6 +1104,12 @@ mod tests {
         threads: Vec<(u32, Regs)>,
         files: Vec<(Range<u64>, u64, String)>,
         auxv: Vec<(u64, u64)>,
+        /// Stamped into every thread's `pr_cursig`, the way the kernel
+        /// stamps the killing signal into all of them alike.
+        cursig: i16,
+        /// An `NT_SIGINFO` note among the first thread's notes:
+        /// `(si_signo, si_code, si_addr)`.
+        siginfo: Option<(i32, i32, u64)>,
         /// Emitted verbatim in place of the real notes, for the
         /// malformed-core tests.
         raw_notes: Option<Vec<u8>>,
@@ -1066,10 +1190,19 @@ mod tests {
         fn notes(&self) -> Vec<u8> {
             let mut out = Vec::new();
             for (i, (tid, regs)) in self.threads.iter().enumerate() {
-                out.extend(note(NT_PRSTATUS, "CORE", &prstatus(*tid, regs)));
+                let mut desc = prstatus(*tid, regs);
+                desc[PR_CURSIG..PR_CURSIG + 2].copy_from_slice(&self.cursig.to_le_bytes());
+                out.extend(note(NT_PRSTATUS, "CORE", &desc));
                 // The process-wide notes follow the first thread's, the
                 // way the kernel writes them.
                 if i == 0 {
+                    if let Some((signo, code, addr)) = self.siginfo {
+                        let mut desc = vec![0u8; SIGINFO_LEN];
+                        desc[SI_SIGNO..SI_SIGNO + 4].copy_from_slice(&signo.to_le_bytes());
+                        desc[SI_CODE..SI_CODE + 4].copy_from_slice(&code.to_le_bytes());
+                        desc[SI_ADDR..SI_ADDR + 8].copy_from_slice(&addr.to_le_bytes());
+                        out.extend(note(NT_SIGINFO, "CORE", &desc));
+                    }
                     if !self.files.is_empty() {
                         out.extend(note(NT_FILE, "CORE", &nt_file(&self.files)));
                     }
@@ -1597,6 +1730,104 @@ mod tests {
         // The first thread is the one that died.
         assert_eq!(p.status().active_lwp, 42);
         assert_eq!(p.status().stack_range, 0x9000..0x9000 + PAGE);
+    }
+
+    /// A crash core carries the fault whole: the signal named by
+    /// Linux's numbering, the code by its fault-code name, the address
+    /// the siginfo recorded, and the first thread as the one that took
+    /// it.
+    #[test]
+    fn test_a_fatal_fault_is_decoded() {
+        let mut builder = CoreBuilder::default()
+            .thread(42, regs_at(0, 0x9000))
+            .thread(43, regs_at(0, 0x18000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize]);
+        builder.cursig = 11;
+        builder.siginfo = Some((11, 1, 0xdead_b000));
+        let (_dir, p) = builder.proc();
+
+        assert_eq!(
+            p.fatal_signal(),
+            Some(FatalSignal {
+                name: "SIGSEGV",
+                signo: 11,
+                code: 1,
+                code_name: Some("SEGV_MAPERR"),
+                fault_addr: Some(0xdead_b000),
+                lwp: Some(42),
+            })
+        );
+    }
+
+    /// gdb's `gcore` writes an `NT_SIGINFO` describing the `SIGSTOP`
+    /// it attached with, over prstatus notes whose `cursig` is 0. That
+    /// is a capture, not a death: the siginfo alone proves nothing.
+    #[test]
+    fn test_a_gcore_siginfo_is_not_a_death() {
+        let mut builder = CoreBuilder::default()
+            .thread(42, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize]);
+        builder.siginfo = Some((19, 128, 0));
+        let (_dir, p) = builder.proc();
+
+        assert_eq!(p.fatal_signal(), None);
+    }
+
+    /// A siginfo describing some other signal than the one `cursig`
+    /// records contributes nothing: the death is `cursig`'s, spelled
+    /// without a code or an address rather than with another signal's.
+    #[test]
+    fn test_a_mismatched_siginfo_is_ignored() {
+        let mut builder = CoreBuilder::default()
+            .thread(42, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize]);
+        builder.cursig = 11;
+        builder.siginfo = Some((19, 128, 0x5000));
+        let (_dir, p) = builder.proc();
+
+        let fatal = p.fatal_signal().unwrap();
+        assert_eq!(fatal.name, "SIGSEGV");
+        assert_eq!(fatal.code, 0);
+        assert_eq!(fatal.fault_addr, None);
+    }
+
+    /// A user-sent signal's siginfo union holds the sender, not an
+    /// address: no fault code, no fault address, however tempting the
+    /// bytes.
+    #[test]
+    fn test_a_user_sent_signal_has_no_fault_address() {
+        let mut builder = CoreBuilder::default()
+            .thread(42, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize]);
+        builder.cursig = 15;
+        builder.siginfo = Some((15, 0, 0x1234));
+        let (_dir, p) = builder.proc();
+
+        assert_eq!(
+            p.fatal_signal(),
+            Some(FatalSignal {
+                name: "SIGTERM",
+                signo: 15,
+                code: 0,
+                code_name: None,
+                fault_addr: None,
+                lwp: Some(42),
+            })
+        );
+    }
+
+    /// The name table covers the platform's whole range — the named
+    /// set, then the real-time spellings — and refuses numbers beyond
+    /// it rather than panicking or inventing one.
+    #[test]
+    fn test_linux_signal_names_cover_the_range() {
+        assert_eq!(signal_name(7), Some("SIGBUS"));
+        assert_eq!(signal_name(31), Some("SIGSYS"));
+        assert_eq!(signal_name(34), Some("SIGRTMIN"));
+        assert_eq!(signal_name(64), Some("SIGRTMAX"));
+        assert_eq!(signal_name(0), None);
+        assert_eq!(signal_name(65), None);
+        assert_eq!(signal_name(-1), None);
     }
 
     /// `trapno` and `err` have no Linux counterpart, and `orig_rax`

@@ -23,8 +23,8 @@
 
 use super::common::{Segment, Symbols, elf_ctx};
 use crate::{
-    Error, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs, Result, Status,
-    SymbolBuf, Target, Timespec,
+    Error, FatalSignal, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs,
+    Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
 };
 
 use goblin::elf::Elf;
@@ -49,6 +49,10 @@ use std::path::{Path, PathBuf};
 
 /// Note types from `<sys/procfs.h>`.
 const NT_AUXV: u32 = 6;
+/// `pstatus_t`, whose last member is the *representative* lwp's
+/// `lwpstatus_t` — for a crash core, the lwp that took the killing
+/// signal.
+const NT_PSTATUS: u32 = 10;
 const NT_PSINFO: u32 = 13;
 const NT_LWPSTATUS: u32 = 16;
 const NT_LWPNAME: u32 = 25;
@@ -58,6 +62,20 @@ const NT_LWPNAME: u32 = 25;
 /// three-quarters of the way in.
 const LWPSTATUS_LEN: usize = 1296;
 const LWPSTATUS_PR_LWPID: usize = 4;
+/// The signal the lwp was taking when it was dumped. Only the
+/// representative lwp embedded in `NT_PSTATUS` answers what killed the
+/// process: on a multi-lwp crash the kernel stops the *other* lwps
+/// with `SIGKILL`, and their own lwpstatus notes record that — so a
+/// per-lwp scan finds a `SIGKILL` on whichever sibling sorts first,
+/// not the fault. `gcore` sets it nowhere at all.
+const LWPSTATUS_PR_CURSIG: usize = 12;
+/// The `siginfo_t` for that signal, embedded in the lwpstatus: three
+/// ints in SVR4 order — `si_signo`, `si_code`, `si_errno` — then
+/// padding to the 8-aligned union, whose fault variant leads with
+/// `si_addr`.
+const LWPSTATUS_PR_INFO: usize = 16;
+const SI_CODE: usize = 4;
+const SI_ADDR: usize = 16;
 const LWPSTATUS_PR_TSTAMP: usize = 464;
 /// Points at the `stack_t` in the thread's own memory that describes
 /// the stack it was given. Reading it is how the whole stack is found:
@@ -70,6 +88,42 @@ const LWPSTATUS_PR_REG: usize = 544;
 /// `stack_t`: base, length, flags.
 const STACK_SS_SP: u64 = 0;
 const STACK_SS_SIZE: u64 = 8;
+
+/// The signal names as illumos numbers them — a different assignment
+/// from Linux's past the first six (`SIGBUS` is 10 here and 7 there),
+/// which is why each backend owns its table. Real-time signals run
+/// from `_SIGRTMIN` (42) to `_SIGRTMAX` (73).
+#[rustfmt::skip]
+const SIGNAL_NAMES: [&str; 41] = [
+    "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT",
+    "SIGEMT", "SIGFPE", "SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS",
+    "SIGPIPE", "SIGALRM", "SIGTERM", "SIGUSR1", "SIGUSR2", "SIGCHLD",
+    "SIGPWR", "SIGWINCH", "SIGURG", "SIGPOLL", "SIGSTOP", "SIGTSTP",
+    "SIGCONT", "SIGTTIN", "SIGTTOU", "SIGVTALRM", "SIGPROF", "SIGXCPU",
+    "SIGXFSZ", "SIGWAITING", "SIGLWP", "SIGFREEZE", "SIGTHAW",
+    "SIGCANCEL", "SIGLOST", "SIGXRES", "SIGJVM1", "SIGJVM2", "SIGINFO",
+];
+#[rustfmt::skip]
+const RT_SIGNAL_NAMES: [&str; 32] = [
+    "SIGRTMIN", "SIGRTMIN+1", "SIGRTMIN+2", "SIGRTMIN+3", "SIGRTMIN+4",
+    "SIGRTMIN+5", "SIGRTMIN+6", "SIGRTMIN+7", "SIGRTMIN+8", "SIGRTMIN+9",
+    "SIGRTMIN+10", "SIGRTMIN+11", "SIGRTMIN+12", "SIGRTMIN+13",
+    "SIGRTMIN+14", "SIGRTMIN+15", "SIGRTMAX-15", "SIGRTMAX-14",
+    "SIGRTMAX-13", "SIGRTMAX-12", "SIGRTMAX-11", "SIGRTMAX-10",
+    "SIGRTMAX-9", "SIGRTMAX-8", "SIGRTMAX-7", "SIGRTMAX-6", "SIGRTMAX-5",
+    "SIGRTMAX-4", "SIGRTMAX-3", "SIGRTMAX-2", "SIGRTMAX-1", "SIGRTMAX",
+];
+
+/// The name illumos gives `signo`, or `None` for a number outside the
+/// signal range — which no signal-killed core produces, so it is read
+/// the way a wrong-sized note is: another system's bytes, not a signal.
+fn signal_name(signo: i32) -> Option<&'static str> {
+    let index = usize::try_from(signo.checked_sub(1)?).ok()?;
+    SIGNAL_NAMES
+        .get(index)
+        .or_else(|| RT_SIGNAL_NAMES.get(index - SIGNAL_NAMES.len()))
+        .copied()
+}
 
 /// `psinfo_t`: the command line is what names the executable, since an
 /// illumos core has no equivalent of Linux's `NT_FILE`.
@@ -233,6 +287,10 @@ pub struct Core {
     mappings: Mappings,
     /// The executable's path, from the command line the core recorded.
     exec: Option<String>,
+    /// The signal that killed the process, decoded from the faulting
+    /// lwp's `pr_cursig` and embedded `pr_info`; `None` for a live
+    /// capture, which records no fatal signal.
+    fatal: Option<FatalSignal>,
     /// Symbols of every object whose table the core carries, keyed by
     /// the address that object was loaded at.
     symbols: BTreeMap<u64, Symbols>,
@@ -282,6 +340,7 @@ impl Core {
         let mut lwp_names = BTreeMap::new();
         let mut auxv = BTreeMap::new();
         let mut exec = None;
+        let mut fatal = None;
         for note in elf.iter_note_headers(&core).into_iter().flatten() {
             let note = note.map_err(|_| Error::bad_core("malformed note"))?;
             let desc = note.desc;
@@ -293,6 +352,16 @@ impl Core {
                             .try_into()
                             .unwrap(),
                     ));
+                }
+                // The killing signal is the representative lwp's — the
+                // `lwpstatus_t` that ends the pstatus, anchored at the
+                // tail so a pstatus header of any vintage reads the
+                // same. It is not readable from the per-lwp notes: on a
+                // multi-lwp crash the kernel stops the *siblings* with
+                // SIGKILL, which their own lwpstatus notes record, so a
+                // cursig scan finds a SIGKILL before the fault.
+                NT_PSTATUS if desc.len() >= LWPSTATUS_LEN && fatal.is_none() => {
+                    fatal = decode_fatal_signal(&desc[desc.len() - LWPSTATUS_LEN..]);
                 }
                 NT_LWPNAME if desc.len() >= LWPNAME_LEN => {
                     let (tid, name) = parse_lwpname(desc);
@@ -334,6 +403,7 @@ impl Core {
             ustacks,
             mappings: Mappings { inner: Vec::new() },
             exec,
+            fatal,
             symbols,
             exec_base: None,
         };
@@ -614,8 +684,19 @@ impl Core {
     }
 
     pub fn status(&self) -> Status {
+        // The lwp to report as current: the one that took the fatal
+        // signal, where there is one. The per-lwp notes come in id
+        // order — unlike a Linux core, which leads with the dumping
+        // thread — so the first lwp is just the lowest id, and on a
+        // multi-lwp crash core usually not the one that crashed.
+        let active = self
+            .fatal
+            .as_ref()
+            .and_then(|f| f.lwp)
+            .and_then(|tid| self.lwps.iter().find(|l| l.tid == tid))
+            .or_else(|| self.lwps.first());
         Status {
-            active_lwp: self.lwps.first().map(|l| l.tid).unwrap_or(0),
+            active_lwp: active.map(|l| l.tid).unwrap_or(0),
             // A core records no break; the heap is the writable
             // anonymous region above the executable.
             brk_range: self
@@ -628,11 +709,7 @@ impl Core {
                 })
                 .map(Segment::range)
                 .unwrap_or(0..0),
-            stack_range: self
-                .lwps
-                .first()
-                .map(|l| l.stack_range.clone())
-                .unwrap_or(0..0),
+            stack_range: active.map(|l| l.stack_range.clone()).unwrap_or(0..0),
         }
     }
 
@@ -901,6 +978,48 @@ fn libproc_order(a: &SymbolBuf, b: &SymbolBuf) -> Ordering {
     a.st_size.cmp(&b.st_size).then_with(|| a_name.cmp(b_name))
 }
 
+/// The terminating signal, from the representative lwp's `lwpstatus_t`
+/// at the tail of the pstatus — `None` when it was taking no signal,
+/// which is every capture `gcore` writes. The embedded `pr_info`
+/// refines it: the kernel fills the siginfo alongside `pr_cursig`, and
+/// its code and address are believed only when it describes the same
+/// signal.
+fn decode_fatal_signal(desc: &[u8]) -> Option<FatalSignal> {
+    let cursig = i16::from_le_bytes(
+        desc[LWPSTATUS_PR_CURSIG..LWPSTATUS_PR_CURSIG + 2]
+            .try_into()
+            .unwrap(),
+    );
+    if cursig == 0 {
+        return None;
+    }
+    let signo = i32::from(cursig);
+    let name = signal_name(signo)?;
+    let tid = u32::from_le_bytes(
+        desc[LWPSTATUS_PR_LWPID..LWPSTATUS_PR_LWPID + 4]
+            .try_into()
+            .unwrap(),
+    );
+    let info = &desc[LWPSTATUS_PR_INFO..];
+    let si_signo = i32::from_le_bytes(info[..4].try_into().unwrap());
+    let (code, addr) = match si_signo == signo {
+        true => (
+            i32::from_le_bytes(info[SI_CODE..SI_CODE + 4].try_into().unwrap()),
+            u64::from_le_bytes(info[SI_ADDR..SI_ADDR + 8].try_into().unwrap()),
+        ),
+        false => (0, 0),
+    };
+    let code_name = fault_code_name(name, code);
+    Some(FatalSignal {
+        name,
+        signo,
+        code,
+        code_name,
+        fault_addr: code_name.is_some().then_some(addr),
+        lwp: Some(tid),
+    })
+}
+
 fn parse_lwpstatus(desc: &[u8]) -> LwpInfo {
     let tid = u32::from_le_bytes(
         desc[LWPSTATUS_PR_LWPID..LWPSTATUS_PR_LWPID + 4]
@@ -958,6 +1077,10 @@ const _: () = {
 impl Target for Core {
     fn read_bytes(&self, addr: u64, len: u64) -> Result<&[u8]> {
         Core::pslice(self, addr, len).ok_or_else(|| Error::unmapped(addr, len))
+    }
+
+    fn fatal_signal(&self) -> Option<FatalSignal> {
+        self.fatal.clone()
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
@@ -1064,6 +1187,25 @@ mod tests {
                 tv_nsec: 0,
             };
             self.note(NT_LWPSTATUS, lwpstatus(tid, &regs, ustack, zero))
+        }
+
+        /// A crash core's signal record, as the kernel writes it: the
+        /// faulting lwp's own note, plus an `NT_PSTATUS` whose
+        /// representative lwp — the tail `lwpstatus_t` — is that lwp
+        /// taking `cursig`, details in the embedded `pr_info`.
+        fn crashed(self, tid: u32, regs: Regs, cursig: i16, code: i32, addr: u64) -> Self {
+            let lwp = lwpstatus_taking(tid, &regs, cursig, code, addr);
+            let mut desc = vec![0u8; PSTATUS_TEST_LEN];
+            let at = desc.len() - LWPSTATUS_LEN;
+            desc[at..].copy_from_slice(&lwp);
+            self.thread(tid, regs).note(NT_PSTATUS, desc)
+        }
+
+        /// A sibling lwp the kernel stopped while dumping: its own
+        /// note records the `SIGKILL` that stopped it, exactly the
+        /// spelling that must never read as what killed the process.
+        fn sigkilled_thread(self, tid: u32, regs: Regs) -> Self {
+            self.note(NT_LWPSTATUS, lwpstatus_taking(tid, &regs, 9, 0, 0))
         }
 
         fn lwp_name(self, tid: u32, name: &str) -> Self {
@@ -1278,6 +1420,27 @@ mod tests {
             out[at..at + 8].copy_from_slice(&v.to_le_bytes());
         }
         out
+    }
+
+    /// The size of the `pstatus_t` an illumos kernel writes today; the
+    /// reader tail-anchors the embedded lwpstatus rather than trusting
+    /// this, but the fixture matches reality.
+    const PSTATUS_TEST_LEN: usize = 1680;
+
+    /// An lwpstatus caught taking `cursig`: `pr_cursig` set and the
+    /// embedded `pr_info` filled the way the kernel fills them.
+    fn lwpstatus_taking(tid: u32, regs: &Regs, cursig: i16, code: i32, addr: u64) -> Vec<u8> {
+        let zero = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let mut desc = lwpstatus(tid, regs, 0, zero);
+        desc[LWPSTATUS_PR_CURSIG..LWPSTATUS_PR_CURSIG + 2].copy_from_slice(&cursig.to_le_bytes());
+        let info = LWPSTATUS_PR_INFO;
+        desc[info..info + 4].copy_from_slice(&i32::from(cursig).to_le_bytes());
+        desc[info + SI_CODE..info + SI_CODE + 4].copy_from_slice(&code.to_le_bytes());
+        desc[info + SI_ADDR..info + SI_ADDR + 8].copy_from_slice(&addr.to_le_bytes());
+        desc
     }
 
     fn lwpname(tid: u32, name: &str) -> Vec<u8> {
@@ -1578,6 +1741,95 @@ mod tests {
         assert!(p.regs(99).is_err());
         assert_eq!(p.status().active_lwp, 42);
         assert_eq!(p.status().stack_range, 0x10_0000..0x10_0000 + 4 * PAGE);
+    }
+
+    /// A crash core names its faulting lwp through the pstatus's
+    /// representative lwp, not by position: the per-lwp notes come in
+    /// id order, so the lwp that took the signal is usually not first.
+    /// The signal is decoded with illumos's own numbering — 10 is
+    /// `SIGBUS` here, `SIGUSR1` on Linux — and the faulting lwp becomes
+    /// the current one, stack and all.
+    #[test]
+    fn test_the_faulting_lwp_carries_the_fatal_signal() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .crashed(2, regs_at(0, 0x18000), 10, 2, 0xdead_b000)
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .dumped(0x18000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        assert_eq!(
+            p.fatal_signal(),
+            Some(FatalSignal {
+                name: "SIGBUS",
+                signo: 10,
+                code: 2,
+                code_name: Some("BUS_ADRERR"),
+                fault_addr: Some(0xdead_b000),
+                lwp: Some(2),
+            })
+        );
+        let status = p.status();
+        assert_eq!(status.active_lwp, 2);
+        assert_eq!(status.stack_range, p.lwps().unwrap()[1].stack_range);
+    }
+
+    /// While dumping, the kernel stops the faulting lwp's siblings
+    /// with `SIGKILL`, and each sibling's own lwpstatus records it —
+    /// with the lowest id sorting first. What killed the process is
+    /// the representative lwp's signal, never a sibling's.
+    #[test]
+    fn test_stopped_siblings_are_not_the_death() {
+        let (_dir, p) = CoreBuilder::default()
+            .sigkilled_thread(1, regs_at(0, 0x9000))
+            .crashed(2, regs_at(0, 0x18000), 11, 1, 0)
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .dumped(0x18000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        let fatal = p.fatal_signal().unwrap();
+        assert_eq!((fatal.name, fatal.lwp), ("SIGSEGV", Some(2)));
+        assert_eq!(p.status().active_lwp, 2);
+    }
+
+    /// A sibling's recorded `SIGKILL` with no pstatus signal behind it
+    /// is not a death either — nothing is, without the representative
+    /// lwp saying so.
+    #[test]
+    fn test_a_sibling_signal_alone_records_no_death() {
+        let (_dir, p) = CoreBuilder::default()
+            .sigkilled_thread(1, regs_at(0, 0x9000))
+            .thread(2, regs_at(0, 0x18000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        assert_eq!(p.fatal_signal(), None);
+    }
+
+    /// A capture taken live — `gcore`, with no lwp taking a signal —
+    /// records no death, and the current lwp falls back to the first.
+    #[test]
+    fn test_a_live_capture_records_no_signal() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .thread(2, regs_at(0, 0x18000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        assert_eq!(p.fatal_signal(), None);
+        assert_eq!(p.status().active_lwp, 1);
+    }
+
+    /// The name table covers illumos's whole range — the named set,
+    /// then the real-time spellings — and refuses numbers beyond it.
+    #[test]
+    fn test_illumos_signal_names_cover_the_range() {
+        assert_eq!(signal_name(10), Some("SIGBUS"));
+        assert_eq!(signal_name(41), Some("SIGINFO"));
+        assert_eq!(signal_name(42), Some("SIGRTMIN"));
+        assert_eq!(signal_name(73), Some("SIGRTMAX"));
+        assert_eq!(signal_name(0), None);
+        assert_eq!(signal_name(74), None);
     }
 
     /// The stack comes from the `stack_t` at `pr_ustack`, read out of

@@ -101,6 +101,13 @@ impl Target for Proc {
         dispatch!(self, readable_len(addr, max))
     }
 
+    fn fatal_signal(&self) -> Option<crate::FatalSignal> {
+        match self {
+            Proc::LinuxCore(c) => Target::fatal_signal(c),
+            Proc::IllumosCore(c) => Target::fatal_signal(c),
+        }
+    }
+
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
         dispatch!(self, lookup_symbol_by_addr(addr))
     }
