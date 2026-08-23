@@ -6,6 +6,7 @@ use crate::{Proc, RenderOpts, Session};
 
 use anyhow::Result;
 use hansei_runtime::tokio::bundle;
+use proc::Target;
 use reify::Value;
 
 use std::collections::BTreeMap;
@@ -35,6 +36,7 @@ pub(crate) fn exec_threads(
         }
     };
 
+    let fatal = session.proc.fatal_signal();
     for (i, worker) in session.workers.iter().enumerate() {
         if i > 0 {
             writeln!(out)?;
@@ -50,7 +52,24 @@ pub(crate) fn exec_threads(
                 None => String::new(),
             }
         };
-        writeln!(out, "lwp {}  {}{tag}", worker.tid, polling(session, worker))?;
+        // The thread that took the fatal signal is marked on its own
+        // heading: the signal tied to what the thread was polling is
+        // the join this listing exists to make.
+        let took = match &fatal {
+            Some(sig) if sig.lwp == Some(worker.tid) => {
+                format!(
+                    " — took the fatal {}",
+                    crate::summary::fatal_signal_line(sig)
+                )
+            }
+            _ => String::new(),
+        };
+        writeln!(
+            out,
+            "lwp {}  {}{tag}{took}",
+            worker.tid,
+            polling(session, worker)
+        )?;
 
         if let Err(e) = print_thread_context(session, worker, opts, out) {
             writeln!(out, "  thread context unreadable: {e:#}")?;

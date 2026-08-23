@@ -7,6 +7,7 @@ use crate::{Session, print_warnings};
 use anyhow::Result;
 use hansei_bundle::names;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
+use proc::Target;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, Write};
@@ -667,6 +668,7 @@ pub(crate) fn exec_census(
         held: census.map(|census| &census.held[..]).unwrap_or(&[]),
         sets: census.map(|census| &census.sets[..]).unwrap_or(&[]),
         impls: &session.impl_fold,
+        fatal: session.proc.fatal_signal(),
     };
     summary::print(&facts, sections, top, out)
 }
