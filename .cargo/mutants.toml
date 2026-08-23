@@ -58,6 +58,7 @@ test_package = [
     "hansei-bundle",
     "reify",
     "proc",
+    "unwind",
     "hansei-runtime",
     "hansei",
     "exegesis",
