@@ -46,10 +46,10 @@ pub(crate) struct Group {
 /// `runtimes` listing lists it under, and the handle address printed
 /// beside it there.
 ///
-/// Both halves identify it on their own — `--runtime` and the `runtime`
-/// command take either — so a name printed anywhere in a session pastes
-/// straight back in, and an index that shifts under `--runtime` is
-/// still pinned by the address next to it.
+/// Both halves identify it on their own — the `runtime` command takes
+/// either, `@` included, and `--runtime` the index — so a name printed
+/// anywhere in a session pastes straight back in, and an index that
+/// shifts under `--runtime` is still pinned by the address next to it.
 pub(crate) fn runtime_label(index: usize, rt: &bundle::RuntimeRef<'_>) -> String {
     format!("runtime {index} @{:#x}", rt.handle.addr)
 }

@@ -50,7 +50,7 @@ pub(crate) fn exec_threads(
                 None => String::new(),
             }
         };
-        writeln!(out, "LWP {}  {}{tag}", worker.tid, polling(session, worker))?;
+        writeln!(out, "lwp {}  {}{tag}", worker.tid, polling(session, worker))?;
 
         if let Err(e) = print_thread_context(session, worker, opts, out) {
             writeln!(out, "  thread context unreadable: {e:#}")?;

@@ -510,6 +510,12 @@ mod tests {
             scope(&["runtime", "0x7f11c0"]),
             Some(RuntimeScope::Handle(0x7f11c0))
         ));
+        // The listing spells the handle `@0x…`, so a pasted cell works
+        // with the `@` still on it.
+        assert!(matches!(
+            scope(&["runtime", "@0x7f11c0"]),
+            Some(RuntimeScope::Handle(0x7f11c0))
+        ));
         assert!(matches!(
             scope(&["runtime", "2"]),
             Some(RuntimeScope::Index(2))
@@ -517,7 +523,9 @@ mod tests {
         assert!(scope(&["runtime"]).is_none());
 
         // An address without its prefix would be an index; one that is
-        // neither is refused rather than guessed at.
+        // neither is refused rather than guessed at, as is an `@` on
+        // anything but an address.
         assert!(Line::try_parse_from(["runtime", "7f11c0"]).is_err());
+        assert!(Line::try_parse_from(["runtime", "@2"]).is_err());
     }
 }
