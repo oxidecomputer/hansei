@@ -519,12 +519,14 @@ pub enum Command {
     /// fully-qualified name: members and their offsets, or an enum's
     /// variants and the discriminant that selects them.
     Type {
-        /// The fully-qualified name, as `find-types` lists it — or as
-        /// another listing displays it, folded and with the kind word —
-        /// or a bundle type id, the `type 4821` a listing prints where
-        /// the name alone is not a handle (an ambiguous site, one
-        /// definition of several).
-        name: String,
+        /// The fully-qualified name, as `find-types` lists it (several
+        /// words are joined back into one name, so generics holding
+        /// spaces paste in whole) — or as another listing displays it,
+        /// folded and with the kind word — or a bundle type id, the
+        /// `type 4821` a listing prints where the name alone is not a
+        /// handle (an ambiguous site, one definition of several).
+        #[arg(value_name = "NAME", required = true, num_args = 1..)]
+        name: Vec<String>,
 
         /// Follow what the layout names: open every type it reaches —
         /// through members, pointees, array elements and enum payloads
@@ -973,7 +975,7 @@ pub fn dispatch(
             depth,
         } => types::describe(
             &session.ctx.view,
-            &name,
+            &name.join(" "),
             &session.impl_fold,
             recursive,
             depth,
