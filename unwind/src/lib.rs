@@ -41,15 +41,24 @@ const _: () = assert!(usize::BITS == 64, "host system must be 64-bit");
 #[derive(Clone, PartialEq, Default, Debug)]
 pub struct Backtrace {
     pub frames: Vec<Frame>,
+    /// Why the walk stopped before the CFI's own bottom, when it did:
+    /// a pc no sourced CFI covers and the frame-pointer walk could not
+    /// bridge, or an error popping a frame. `None` for a stack walked
+    /// to its end.
+    pub truncated: Option<String>,
 }
 
 impl Backtrace {
     pub fn new(frames: Vec<Frame>) -> Self {
-        Self { frames }
+        Self {
+            frames,
+            truncated: None,
+        }
     }
 
     pub fn stack_trace(&self, max_frames: usize) -> Vec<String> {
-        self.frames
+        let mut lines: Vec<String> = self
+            .frames
             .iter()
             .take(max_frames)
             .map(|frame| {
@@ -58,13 +67,27 @@ impl Backtrace {
                     .as_ref()
                     .map(|s| s.name.as_str())
                     .unwrap_or_default();
+                let mark = if frame.heuristic {
+                    "  (frame-pointer walk)"
+                } else {
+                    ""
+                };
                 format!(
-                    "{:#018x} {:#}",
+                    "{:#018x} {:#}{mark}",
                     frame.regs.rip,
                     rustc_demangle::demangle(mangled)
                 )
             })
-            .collect()
+            .collect();
+        // The reason binds to the walk's end, so it prints only when
+        // the end is in view — a listing cut short by `max_frames`
+        // already says less than the walk found.
+        if self.frames.len() <= max_frames
+            && let Some(why) = &self.truncated
+        {
+            lines.push(format!("(walk ended: {why})"));
+        }
+        lines
     }
 }
 
@@ -73,17 +96,47 @@ pub struct Frame {
     pub pc: u64,
     pub regs: Regs,
     pub symbol: Option<SymbolBuf>,
+    /// Whether the frame-pointer walk produced this frame rather than
+    /// CFI. Such a frame is a validated guess — the return address
+    /// landed in mapped text — not a fact the unwind tables state, and
+    /// a rendering may want to say so.
+    pub heuristic: bool,
 }
 
-pub fn load_frames<T: Target>(target: &T) -> Result<BTreeMap<u32, Backtrace>> {
+/// Every thread's backtrace, plus what the walk could not source: the
+/// mapped objects whose CFI never loaded, whose pcs the walks bridge
+/// by frame pointer or stop at.
+pub struct Unwound {
+    pub stacks: BTreeMap<u32, Backtrace>,
+    pub missing: Vec<MissingCfi>,
+}
+
+/// A mapped object whose CFI could not be sourced, and why: its pages
+/// are not in the core and the backing file is not on this machine, or
+/// what is readable does not parse.
+#[derive(Clone, PartialEq, Debug)]
+pub struct MissingCfi {
+    pub range: Range<u64>,
+    pub path: String,
+    pub why: String,
+}
+
+pub fn load_frames<T: Target>(target: &T) -> Result<Unwound> {
     let mappings = target
         .mappings()
         .context("failed to retrieve memory mappings from the target")?;
-    let images = load_images(target, &mappings);
-    let objects: Vec<ObjectInfo<'_>> = images
-        .iter()
-        .filter_map(|image| ObjectInfo::parse(&image.bytes, image.range.clone()).ok())
-        .collect();
+    let (images, mut missing) = load_images(target, &mappings);
+    let mut objects: Vec<ObjectInfo<'_>> = Vec::new();
+    for image in &images {
+        match ObjectInfo::parse(&image.bytes, image.range.clone()) {
+            Ok(object) => objects.push(object),
+            Err(e) => missing.push(MissingCfi {
+                range: image.range.clone(),
+                path: image.path.clone(),
+                why: format!("{e:#}"),
+            }),
+        }
+    }
     anyhow::ensure!(
         !objects.is_empty(),
         "no mapped object in the target carries unwind information"
@@ -93,16 +146,18 @@ pub fn load_frames<T: Target>(target: &T) -> Result<BTreeMap<u32, Backtrace>> {
         target,
         objects: &objects,
         mappings: &mappings,
+        missing: &missing,
     };
 
-    let mut frame_map = BTreeMap::new();
+    let mut stacks = BTreeMap::new();
     for lwp in target.lwps()? {
-        let frames = unwinder
-            .unwind_stack(&lwp.regs, &mut UnwindContext::new(), 64)
-            .with_context(|| format!("failed to unwind stack for tid {}", lwp.tid))?;
-        frame_map.insert(lwp.tid, Backtrace::new(frames));
+        // One thread's ragged stack is that thread's news alone: the
+        // walk records why it stopped rather than costing every other
+        // thread its backtrace.
+        let backtrace = unwinder.unwind_stack(&lwp.regs, &mut UnwindContext::new(), 64);
+        stacks.insert(lwp.tid, backtrace);
     }
-    Ok(frame_map)
+    Ok(Unwound { stacks, missing })
 }
 
 /// The mapped image of every file-backed object in the target, read
@@ -112,12 +167,13 @@ pub fn load_frames<T: Target>(target: &T) -> Result<BTreeMap<u32, Backtrace>> {
 /// An object's mappings are read one at a time and laid out at their
 /// own offsets, leaving anything unreadable — an alignment gap between
 /// two segments, say — zeroed rather than failing the whole object.
-fn load_images<T: Target>(target: &T, mappings: &Mappings) -> Vec<Image> {
+fn load_images<T: Target>(target: &T, mappings: &Mappings) -> (Vec<Image>, Vec<MissingCfi>) {
     let mut paths: Vec<&str> = mappings.iter().filter_map(|m| m.path.as_deref()).collect();
     paths.sort_unstable();
     paths.dedup();
 
     let mut images = Vec::new();
+    let mut missing = Vec::new();
     for path in paths {
         let parts: Vec<_> = mappings
             .iter()
@@ -156,11 +212,20 @@ fn load_images<T: Target>(target: &T, mappings: &Mappings) -> Vec<Image> {
         if any {
             images.push(Image {
                 range: base..end,
+                path: path.to_string(),
                 bytes,
+            });
+        } else {
+            missing.push(MissingCfi {
+                range: base..end,
+                path: path.to_string(),
+                why: "none of its pages are in the core, and the backing file \
+                      is not on this machine"
+                    .to_string(),
             });
         }
     }
-    images
+    (images, missing)
 }
 
 /// The maximal readable stretches of the `size` bytes at `vaddr`, as
@@ -190,6 +255,7 @@ fn readable_runs(vaddr: u64, size: u64, readable: impl Fn(u64, u64) -> u64) -> V
 /// One object's mapped image, at the addresses it occupies.
 struct Image {
     range: Range<u64>,
+    path: String,
     bytes: Vec<u8>,
 }
 
@@ -197,6 +263,24 @@ struct Unwinder<'a, T> {
     target: &'a T,
     objects: &'a [ObjectInfo<'a>],
     mappings: &'a Mappings,
+    /// The objects whose CFI never loaded, for naming in a walk's
+    /// truncation reason when it stops inside one.
+    missing: &'a [MissingCfi],
+}
+
+/// What popping one frame produced. The frame rides boxed: `Regs`
+/// makes it an order of magnitude larger than the other variants, and
+/// every pop moves one through two returns.
+enum Pop {
+    Frame(Box<Frame>),
+    /// The CFI marked the return address undefined: the stack's own
+    /// bottom, ending the walk with nothing to explain.
+    End,
+    /// The walk is out of facts short of the bottom: a pc no sourced
+    /// CFI covers, where the frame-pointer walk found nothing it could
+    /// validate. The reason names the missing CFI when the pc is in an
+    /// object known to lack it.
+    Lost(String),
 }
 
 impl<T: Target> Unwinder<'_, T> {
@@ -210,8 +294,9 @@ impl<T: Target> Unwinder<'_, T> {
         initial_regs: &Regs,
         ctx: &mut UnwindContext<usize>,
         max_frames: usize,
-    ) -> Result<Vec<Frame>> {
+    ) -> Backtrace {
         let mut frames = Vec::new();
+        let mut truncated = None;
         let mut regs = initial_regs.clone();
         let mut pc = regs.rip;
 
@@ -219,6 +304,7 @@ impl<T: Target> Unwinder<'_, T> {
             pc: regs.rip,
             regs: regs.clone(),
             symbol: self.target.lookup_symbol_by_addr(regs.rip),
+            heuristic: false,
         };
         frames.push(initial_frame);
 
@@ -229,7 +315,7 @@ impl<T: Target> Unwinder<'_, T> {
         // by hand lands the walk back where CFI resumes.
         if !self.mappings.contains_addr(regs.rip)
             && let Ok(ret) = self.target.read_u64(regs.rsp)
-            && self.mappings.contains_addr(ret)
+            && self.is_text(ret)
         {
             regs.rip = ret;
             regs.rsp += size_of::<u64>() as u64;
@@ -238,6 +324,7 @@ impl<T: Target> Unwinder<'_, T> {
                 pc: ret,
                 symbol: self.symbol_at(ret),
                 regs: regs.clone(),
+                heuristic: false,
             });
         }
 
@@ -263,8 +350,21 @@ impl<T: Target> Unwinder<'_, T> {
             // is all that is left to walk.
             let object = self.object_at(pc);
 
-            let Some(prev_frame) = self.unwind_frame_with_cfi(pc, &regs, object, ctx)? else {
-                break;
+            // An error popping one frame — CFI the reader cannot
+            // evaluate, a torn stack — ends this walk with what it has,
+            // and says why; the frames above the failure are real
+            // either way.
+            let prev_frame = match self.unwind_frame_with_cfi(pc, &regs, object, ctx) {
+                Ok(Pop::Frame(frame)) => *frame,
+                Ok(Pop::End) => break,
+                Ok(Pop::Lost(why)) => {
+                    truncated = Some(why);
+                    break;
+                }
+                Err(e) => {
+                    truncated = Some(format!("{e:#}"));
+                    break;
+                }
             };
 
             regs = prev_frame.regs.clone();
@@ -273,15 +373,27 @@ impl<T: Target> Unwinder<'_, T> {
             frames.push(prev_frame);
         }
 
-        Ok(frames)
+        Backtrace { frames, truncated }
+    }
+
+    /// Whether `addr` is in a mapping that holds code. This is what a
+    /// guessed return address must satisfy to be believed: any mapped
+    /// word can be read, but only text can have been called from.
+    fn is_text(&self, addr: u64) -> bool {
+        self.mappings.get(addr).is_some_and(|m| m.is_text())
     }
 
     /// Attempt to pop the frame to the previous function based on the frame pointer.
-    /// RIP, RBP, and RSP will be updated, callee-saved registers will remain unchanges,
+    /// RIP, RBP, and RSP will be updated, callee-saved registers will remain unchanged,
     /// and caller-saved registers will be zeroed.
-    fn pop_frame_with_frame_pointer(&self, initial_regs: &Regs) -> Result<Option<Regs>> {
+    ///
+    /// `None` when the chain ends or was never there: rbp not pointing
+    /// at readable memory is how a walk off a function that keeps no
+    /// frame pointer announces itself, and is the end of what can be
+    /// known, not an error.
+    fn pop_frame_with_frame_pointer(&self, initial_regs: &Regs) -> Option<Regs> {
         if initial_regs.rip == 0 {
-            return Ok(None);
+            return None;
         }
         let mut regs = initial_regs.clone();
         for reg in REGS {
@@ -291,42 +403,43 @@ impl<T: Target> Unwinder<'_, T> {
             }
         }
 
-        let return_addr_addr = regs.rbp + 8;
-        regs.rip = self
-            .target
-            .read_u64(return_addr_addr)
-            .context("failed to read return address")?;
+        regs.rip = self.target.read_u64(initial_regs.rbp + 8).ok()?;
+        regs.rbp = self.target.read_u64(initial_regs.rbp).ok()?;
+        regs.rsp = initial_regs.rbp + 16;
 
-        regs.rbp = self
-            .target
-            .read_u64(regs.rbp)
-            .context("failed to read saved RBP")?;
-
-        regs.rsp = regs.rbp + 16;
-
-        Ok(Some(regs))
+        Some(regs)
     }
 
     /// The frame below one no CFI describes, walked with the frame
-    /// pointer. `None` once there is nothing recognisable below.
-    fn pop_frame_without_cfi(&self, regs: &Regs) -> Result<Option<Frame>> {
-        let Some(prev_regs) = self
+    /// pointer — a validated guess, marked as such. [`Pop::Lost`] once
+    /// there is nothing recognisable below: a popped return address
+    /// that does not land in mapped text is a chain that was never
+    /// real, and believing it would fabricate a frame.
+    fn pop_frame_without_cfi(&self, pc: u64, regs: &Regs) -> Pop {
+        let popped = self
             .pop_frame_with_frame_pointer(regs)
-            .context("failed to pop stack of function without FDE")?
-        else {
-            return Ok(None);
-        };
-
-        // Definitely unmapped, no frame to return.
-        if !self.mappings.contains_addr(prev_regs.rip) {
-            return Ok(None);
+            .filter(|prev| self.is_text(prev.rip));
+        match popped {
+            Some(prev_regs) => Pop::Frame(Box::new(Frame {
+                pc: prev_regs.rip,
+                symbol: self.symbol_at(prev_regs.rip),
+                regs: prev_regs,
+                heuristic: true,
+            })),
+            None => Pop::Lost(self.lost_at(pc)),
         }
+    }
 
-        Ok(Some(Frame {
-            pc: prev_regs.rip,
-            symbol: self.symbol_at(prev_regs.rip),
-            regs: prev_regs,
-        }))
+    /// The truncation reason for a walk that ran out of facts at `pc`:
+    /// name the object whose missing CFI is why, when it is known.
+    fn lost_at(&self, pc: u64) -> String {
+        match self.missing.iter().find(|m| m.range.contains(&pc)) {
+            Some(m) => format!(
+                "no CFI for {} ({}); the frame-pointer walk found nothing below {pc:#x}",
+                m.path, m.why
+            ),
+            None => format!("no CFI covers {pc:#x}; the frame-pointer walk found nothing below it"),
+        }
     }
 
     /// The symbol a return address belongs to. A return address points
@@ -348,11 +461,11 @@ impl<T: Target> Unwinder<'_, T> {
         regs: &Regs,
         object: Option<&ObjectInfo>,
         ctx: &mut UnwindContext<usize>,
-    ) -> Result<Option<Frame>> {
+    ) -> Result<Pop> {
         // Nothing carries unwind information for this pc; the frame
         // pointer is the only way down.
         let Some(object) = object else {
-            return self.pop_frame_without_cfi(regs);
+            return Ok(self.pop_frame_without_cfi(pc, regs));
         };
 
         // We confirmed in `parse` that the table is present.
@@ -365,7 +478,9 @@ impl<T: Target> Unwinder<'_, T> {
             gimli::EhFrame::cie_from_offset,
         ) {
             Ok(fde) => fde,
-            Err(gimli::Error::NoUnwindInfoForAddress) => return self.pop_frame_without_cfi(regs),
+            Err(gimli::Error::NoUnwindInfoForAddress) => {
+                return Ok(self.pop_frame_without_cfi(pc, regs));
+            }
             Err(e) => {
                 return Err(e.into());
             }
@@ -389,7 +504,7 @@ impl<T: Target> Unwinder<'_, T> {
         // — it is what glibc's thread entry and the program's own
         // `_start` carry — so this is the bottom, not a failure.
         let Some(prev_pc) = self.restore_register(RIP, regs, cfa, row)? else {
-            return Ok(None);
+            return Ok(Pop::End);
         };
 
         prev_regs.rsp = cfa;
@@ -399,9 +514,10 @@ impl<T: Target> Unwinder<'_, T> {
             pc: prev_pc,
             symbol: self.symbol_at(prev_regs.rip),
             regs: prev_regs,
+            heuristic: false,
         };
 
-        Ok(Some(prev_frame))
+        Ok(Pop::Frame(Box::new(prev_frame)))
     }
 
     fn restore_register(
@@ -632,6 +748,196 @@ impl<'a> ObjectInfo<'a> {
             eh_frame,
             bases,
         })
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::{Backtrace, MissingCfi, Unwinder};
+    use gimli::UnwindContext;
+    use proc::{LoadedObjectWithPath, MapFlags, Mappings, Regs, SymbolBuf, Target};
+
+    /// Memory regions and a mapping table, and nothing else: with no
+    /// parsed objects, every pop goes through the frame-pointer
+    /// fallback, which is what these tests pin.
+    struct FakeTarget {
+        mem: Vec<(u64, Vec<u8>)>,
+        mappings: Mappings,
+    }
+
+    impl Target for FakeTarget {
+        fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
+            for (base, bytes) in &self.mem {
+                if addr >= *base && addr + len <= base + bytes.len() as u64 {
+                    let at = (addr - base) as usize;
+                    return Ok(&bytes[at..at + len as usize]);
+                }
+            }
+            Err(proc::Error::unmapped(addr, len))
+        }
+        fn lookup_symbol_by_addr(&self, _: u64) -> Option<SymbolBuf> {
+            None
+        }
+        fn lookup_symbol_by_name(&self, _: &str) -> Option<SymbolBuf> {
+            None
+        }
+        fn symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
+            Ok(Vec::new())
+        }
+        fn mappings(&self) -> proc::Result<Mappings> {
+            unreachable!("the tests hand the unwinder its mappings")
+        }
+        fn lwps(&self) -> proc::Result<Vec<proc::LwpInfo>> {
+            Ok(Vec::new())
+        }
+        fn tls_var_addr(&self, _: &Regs, _: &SymbolBuf) -> proc::Result<Option<u64>> {
+            Ok(None)
+        }
+    }
+
+    const TEXT: u64 = 0x40_0000;
+    const HEAP: u64 = 0x60_0000;
+    const STACK: u64 = 0x7000_0000;
+
+    fn mapping(vaddr: u64, size: u64, flags: u32) -> LoadedObjectWithPath {
+        LoadedObjectWithPath {
+            path: None,
+            vaddr,
+            size,
+            flags: MapFlags(flags),
+        }
+    }
+
+    /// A target whose stack memory holds the given words, with a text,
+    /// a heap and a stack mapping. No CFI anywhere.
+    fn target(stack_words: &[(u64, u64)]) -> FakeTarget {
+        const READ: u32 = 0x04;
+        const WRITE: u32 = 0x02;
+        const EXEC: u32 = 0x01;
+        let mem = stack_words
+            .iter()
+            .map(|&(addr, word)| (addr, word.to_le_bytes().to_vec()))
+            .collect();
+        let mappings = [
+            mapping(TEXT, 0x1000, READ | EXEC),
+            mapping(HEAP, 0x1000, READ | WRITE),
+            mapping(STACK, 0x1_0000, READ | WRITE),
+        ]
+        .into_iter()
+        .collect();
+        FakeTarget { mem, mappings }
+    }
+
+    fn walk(target: &FakeTarget, regs: &Regs, missing: &[MissingCfi]) -> Backtrace {
+        let unwinder = Unwinder {
+            target,
+            objects: &[],
+            mappings: &target.mappings,
+            missing,
+        };
+        unwinder.unwind_stack(regs, &mut UnwindContext::new(), 8)
+    }
+
+    /// A real rbp chain walks: each popped frame lands in text, is
+    /// marked as the guess it is, and the chain's zeroed-rbp end
+    /// truncates the walk with a reason instead of failing it.
+    #[test]
+    fn test_a_valid_rbp_chain_walks_and_its_end_truncates() {
+        let regs = Regs {
+            rip: TEXT + 0x10,
+            rsp: STACK + 0xf0,
+            rbp: STACK + 0x100,
+            ..Regs::default()
+        };
+        let t = target(&[
+            (STACK + 0x100, STACK + 0x200), // saved rbp
+            (STACK + 0x108, TEXT + 0x20),   // return address, in text
+            (STACK + 0x200, 0),             // chain terminator
+            (STACK + 0x208, TEXT + 0x30),
+        ]);
+        let bt = walk(&t, &regs, &[]);
+        let pcs: Vec<u64> = bt.frames.iter().map(|f| f.pc).collect();
+        assert_eq!(pcs, [TEXT + 0x10, TEXT + 0x20, TEXT + 0x30]);
+        assert!(!bt.frames[0].heuristic);
+        assert!(bt.frames[1].heuristic && bt.frames[2].heuristic);
+        // The pop restores the caller's registers, not just its pc: a
+        // wrong rsp here skews every CFI frame below the hop.
+        assert_eq!(bt.frames[1].regs.rbp, STACK + 0x200);
+        assert_eq!(bt.frames[1].regs.rsp, STACK + 0x100 + 16);
+        // The terminator: rbp 0, so the next pop reads address 8,
+        // which is unreadable — the walk ends with the reason, it
+        // does not error.
+        let why = bt.truncated.expect("the chain's end is explained");
+        assert!(why.contains("no CFI covers"), "{why}");
+    }
+
+    /// A popped word that lands outside text — a heap pointer where a
+    /// return address should be — is a chain that was never real: no
+    /// frame is fabricated from it.
+    #[test]
+    fn test_a_non_text_return_address_is_not_believed() {
+        let regs = Regs {
+            rip: TEXT + 0x10,
+            rsp: STACK + 0xf0,
+            rbp: STACK + 0x100,
+            ..Regs::default()
+        };
+        let t = target(&[
+            (STACK + 0x100, STACK + 0x200),
+            (STACK + 0x108, HEAP + 0x40), // mapped, but nothing to call
+        ]);
+        let bt = walk(&t, &regs, &[]);
+        assert_eq!(bt.frames.len(), 1, "{:?}", bt.frames);
+        assert!(bt.truncated.is_some());
+    }
+
+    /// The truncation reason names the object whose CFI is missing
+    /// when the pc falls in one, so the reader learns which file to
+    /// supply rather than only that the walk stopped.
+    #[test]
+    fn test_the_reason_names_the_object_missing_its_cfi() {
+        let regs = Regs {
+            rip: TEXT + 0x10,
+            rsp: STACK + 0xf0,
+            rbp: 0,
+            ..Regs::default()
+        };
+        let missing = [MissingCfi {
+            range: TEXT..TEXT + 0x1000,
+            path: "/usr/lib64/libc.so.6".to_string(),
+            why: "none of its pages are in the core".to_string(),
+        }];
+        let bt = walk(&target(&[]), &regs, &missing);
+        let why = bt.truncated.expect("the walk explains its end");
+        assert!(why.contains("/usr/lib64/libc.so.6"), "{why}");
+        assert!(why.contains("none of its pages are in the core"), "{why}");
+    }
+
+    /// The truncation reason prints only when the walk's end is in
+    /// view: a listing cut short by max_frames says less than the walk
+    /// found, and the guessed frames carry their mark.
+    #[test]
+    fn test_stack_trace_binds_the_reason_to_the_visible_end() {
+        let frame = |pc, heuristic| super::Frame {
+            pc,
+            regs: Regs {
+                rip: pc,
+                ..Regs::default()
+            },
+            symbol: None,
+            heuristic,
+        };
+        let bt = Backtrace {
+            frames: vec![frame(0x10, false), frame(0x20, true)],
+            truncated: Some("no CFI covers 0x20".to_string()),
+        };
+        let lines = bt.stack_trace(8);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(!lines[0].contains("frame-pointer walk"), "{}", lines[0]);
+        assert!(lines[1].ends_with("(frame-pointer walk)"), "{}", lines[1]);
+        assert_eq!(lines[2], "(walk ended: no CFI covers 0x20)");
+        let cut = bt.stack_trace(1);
+        assert_eq!(cut.len(), 1, "{cut:?}");
     }
 }
 

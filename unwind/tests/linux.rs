@@ -112,7 +112,9 @@ fn demangled(frames: &unwind::Backtrace) -> Vec<String> {
 #[test]
 fn test_every_thread_unwinds() {
     let p = Proc::open_core(core()).expect("failed to open the core");
-    let stacks = unwind::load_frames(&p).expect("failed to unwind the core");
+    let stacks = unwind::load_frames(&p)
+        .expect("failed to unwind the core")
+        .stacks;
 
     let lwps = p.lwps().unwrap();
     assert_eq!(stacks.len(), lwps.len(), "not every thread got a backtrace");
@@ -131,6 +133,14 @@ fn test_every_thread_unwinds() {
         );
         // The innermost frame is where the thread actually stopped.
         assert_eq!(bt.frames[0].pc, bt.frames[0].regs.rip);
+        // Every backing file is on this machine, so every walk should
+        // reach the CFI's own bottom: a truncation here means CFI that
+        // should have loaded did not.
+        assert!(
+            bt.truncated.is_none(),
+            "tid {tid}'s walk ended early ({:?}): {names:#?}",
+            bt.truncated
+        );
     }
 }
 
@@ -142,7 +152,9 @@ fn test_every_thread_unwinds() {
 #[test]
 fn test_backtraces_cross_objects() {
     let p = Proc::open_core(core()).expect("failed to open the core");
-    let stacks = unwind::load_frames(&p).expect("failed to unwind the core");
+    let stacks = unwind::load_frames(&p)
+        .expect("failed to unwind the core")
+        .stacks;
     let maps = p.mappings().unwrap();
 
     let exec = p.exec_name().unwrap();
@@ -185,7 +197,9 @@ fn test_backtraces_cross_objects() {
 #[test]
 fn test_the_aborting_thread_unwinds_through_libc() {
     let p = Proc::open_core(core()).expect("failed to open the core");
-    let stacks = unwind::load_frames(&p).expect("failed to unwind the core");
+    let stacks = unwind::load_frames(&p)
+        .expect("failed to unwind the core")
+        .stacks;
 
     let aborted = stacks
         .values()
@@ -274,7 +288,9 @@ fn kernel_shaped(core: &Path) -> (tempfile::TempDir, PathBuf) {
 fn test_a_kernel_shaped_core_unwinds() {
     let (_dir, doctored) = kernel_shaped(core());
     let p = Proc::open_core(&doctored).expect("failed to open the doctored core");
-    let stacks = unwind::load_frames(&p).expect("failed to unwind the doctored core");
+    let stacks = unwind::load_frames(&p)
+        .expect("failed to unwind the doctored core")
+        .stacks;
 
     let parked = stacks
         .values()
@@ -374,7 +390,9 @@ fn with_null_call(core: &Path, tid: u32, rip: u64, rsp: u64) -> (tempfile::TempD
 #[test]
 fn test_a_null_call_unwinds_to_the_caller() {
     let p = Proc::open_core(core()).expect("failed to open the core");
-    let stacks = unwind::load_frames(&p).expect("failed to unwind the core");
+    let stacks = unwind::load_frames(&p)
+        .expect("failed to unwind the core")
+        .stacks;
 
     let (tid, original) = stacks
         .iter()
@@ -384,7 +402,9 @@ fn test_a_null_call_unwinds_to_the_caller() {
     let (_dir, doctored) = with_null_call(core(), *tid, frame0.regs.rip, frame0.regs.rsp);
 
     let p = Proc::open_core(&doctored).expect("failed to open the doctored core");
-    let crashed = &unwind::load_frames(&p).expect("failed to unwind the doctored core")[tid];
+    let crashed = &unwind::load_frames(&p)
+        .expect("failed to unwind the doctored core")
+        .stacks[tid];
 
     assert_eq!(crashed.frames[0].pc, 0, "the null frame leads the walk");
     let pcs = |frames: &[unwind::Frame]| frames.iter().map(|f| f.pc).collect::<Vec<_>>();
@@ -399,7 +419,9 @@ fn test_a_null_call_unwinds_to_the_caller() {
 #[test]
 fn test_stack_trace_renders_frames() {
     let p = Proc::open_core(core()).expect("failed to open the core");
-    let stacks = unwind::load_frames(&p).expect("failed to unwind the core");
+    let stacks = unwind::load_frames(&p)
+        .expect("failed to unwind the core")
+        .stacks;
     let bt = stacks.values().next().expect("at least one thread");
 
     let lines = bt.stack_trace(3);
