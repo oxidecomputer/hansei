@@ -489,6 +489,12 @@ pub enum Command {
     /// set child's node address; any pointer into either resolves.
     /// Either way the future type is resolved automatically, via the
     /// symbol join for a task and via the census for an address.
+    ///
+    /// A task that is mid-poll continues past its last committed
+    /// await into the polling thread's native stack: the frames below
+    /// the task's own poll fn, numbered on from the chain, with panic
+    /// plumbing folded and the fatal signal attributed when this
+    /// thread took it. `threads` shows the same stack raw.
     Trace {
         /// What to trace: a decimal task id from `tasks`, or a future
         /// address from `tasks --futures`, in hex with a required
@@ -496,7 +502,8 @@ pub enum Command {
         #[arg(value_parser = parse_trace_target)]
         target: TraceTarget,
 
-        /// Show the variables present at each await point.
+        /// Show the variables present at each await point, and print
+        /// a folded panic-plumbing run frame by frame.
         #[arg(long, short)]
         verbose: bool,
 

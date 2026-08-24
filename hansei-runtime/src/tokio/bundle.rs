@@ -1559,6 +1559,48 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(task.addr.0..task.addr.0 + vtable.trailer_offset + trailer.size())
     }
 
+    /// The address range of the task's resolved poll symbol: the
+    /// symtab symbol covering the poll fn its vtable stores, as
+    /// `st_value..st_value + st_size`. This is the anchor for joining
+    /// a mid-poll task's native stack to its await chain — a native
+    /// frame whose pc falls in this range is this task's poll, by the
+    /// bundle's own task-join key rather than by any spelling. `None`
+    /// when no symtab symbol covers the poll address, where a caller
+    /// must refuse the join rather than guess. Note a task may have
+    /// *resolved* through a sibling vtable fn ([`KnownFuture::symbol`]
+    /// can be dealloc); the anchor is always the poll slot's symbol.
+    ///
+    /// A release build may emit `raw::poll` as a bare trampoline that
+    /// tail-jumps into `Harness::poll` — a symbol far too small to
+    /// hold a poll body, ending in an unconditional `jmp`. No return
+    /// address can land inside such a symbol, so the range follows the
+    /// jump (a bounded chain of them) to the symbol whose code
+    /// actually runs the poll.
+    pub fn poll_symbol_range(&self, task: &Task) -> Result<Option<std::ops::Range<u64>>> {
+        let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
+        let header = Value::read(self.proc, header_ty, task.addr.0)
+            .with_context(|| format!("failed to read the task Header at {:?}", task.addr))?;
+        let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
+        let vtable = self
+            .task_vtable(vtable_addr)
+            .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
+        let Some(mut sym) = self.proc.lookup_symbol_by_addr(vtable.poll) else {
+            return Ok(None);
+        };
+        for _ in 0..4 {
+            let target = self
+                .proc
+                .read_bytes(sym.st_value, sym.st_size)
+                .ok()
+                .and_then(|bytes| thunk_target(sym.st_value, bytes));
+            match target.and_then(|t| self.proc.lookup_symbol_by_addr(t)) {
+                Some(next) => sym = next,
+                None => break,
+            }
+        }
+        Ok(Some(sym.st_value..sym.st_value + sym.st_size))
+    }
+
     /// Index every task's allocation for address lookup — which task a
     /// raw pointer points into. A task whose extent cannot be computed
     /// is simply absent: it claims no address.
@@ -2778,6 +2820,34 @@ fn normalized_key_set(symbols: &[SymbolBuf]) -> HashSet<String> {
     })
 }
 
+/// Where a trampoline's code continues: the target of the
+/// unconditional `jmp rel32` a tail-call thunk ends in, or `None` for
+/// any symbol that could hold a real function body. `addr` is where
+/// `bytes` — the symbol's whole code — was read from.
+///
+/// The rule errs narrow, since following a jump out of a real poll
+/// body would anchor the join on the wrong function: only a symbol too
+/// small to be anything but a trampoline (nexus's `raw::poll` is ten
+/// bytes: `push rbp; mov rbp, rsp; pop rbp; jmp Harness::poll`) whose
+/// final five bytes decode as `e9 rel32` qualifies.
+fn thunk_target(addr: u64, bytes: &[u8]) -> Option<u64> {
+    /// The largest symbol treated as a trampoline. A prologue, its
+    /// unwind, and the jump fit well inside this; no real poll body
+    /// does.
+    const THUNK_MAX: usize = 16;
+    if bytes.len() > THUNK_MAX {
+        return None;
+    }
+    let jmp = bytes.get(bytes.len().checked_sub(5)?..)?;
+    if jmp[0] != 0xe9 {
+        return None;
+    }
+    let rel = i32::from_le_bytes(jmp[1..5].try_into().unwrap());
+    // rel32 is relative to the next instruction, which is the symbol's
+    // end: the jump is its last five bytes.
+    Some((addr + bytes.len() as u64).wrapping_add_signed(rel as i64))
+}
+
 /// A task vtable decoded from target memory (bundle layout, target values).
 #[derive(Clone, Debug)]
 struct TaskVtable {
@@ -3123,5 +3193,60 @@ mod tests {
         let mut sorted = keys.clone();
         sorted.sort();
         assert_eq!(keys, sorted);
+    }
+
+    /// Only a trampoline-sized symbol ending in `jmp rel32` yields a
+    /// target — computed relative to the symbol's end — and everything
+    /// that could hold a real body (a big symbol, a return, an
+    /// indirect jump, bytes too short to hold a jump) yields none.
+    #[test]
+    fn test_a_thunk_target_follows_only_a_trailing_rel32_jump() {
+        // nexus's `raw::poll` trampoline verbatim:
+        // push rbp; mov rbp, rsp; pop rbp; jmp +0x2e98b6.
+        let thunk = [0x55, 0x48, 0x89, 0xe5, 0x5d, 0xe9, 0xb6, 0x98, 0x2e, 0x00];
+        assert_eq!(thunk_target(0xa16dd80, &thunk), Some(0xa457640));
+        // A bare jump, and one jumping backwards to its own start.
+        let back = [0xe9, 0xfb, 0xff, 0xff, 0xff];
+        assert_eq!(thunk_target(0x1000, &back), Some(0x1000));
+        // Too big to be a trampoline, even ending in the right bytes.
+        let mut big = vec![0x90; 17];
+        big[12..].copy_from_slice(&[0xe9, 0, 0, 0, 0]);
+        assert_eq!(thunk_target(0x1000, &big), None);
+        // The tail is not a rel32 jmp: a plain return, an indirect
+        // (`ff 25`) jump.
+        assert_eq!(thunk_target(0x1000, &[0x55, 0x5d, 0xc3]), None);
+        assert_eq!(thunk_target(0x1000, &[0xff, 0x25, 0, 0, 0, 0]), None);
+        // Too short to hold a jmp at all.
+        assert_eq!(thunk_target(0x1000, &[0xe9, 0x00]), None);
+        assert_eq!(thunk_target(0x1000, &[]), None);
+        // The boundary: sixteen bytes — the largest trampoline — still
+        // follows.
+        let mut edge = vec![0x90; 11];
+        edge.extend_from_slice(&[0xe9, 0, 0, 0, 0]);
+        assert_eq!(thunk_target(0x1000, &edge), Some(0x1010));
+    }
+
+    /// The anchor range handed to the stack join is the symtab
+    /// symbol covering the vtable's poll fn, as `st_value ..
+    /// st_value + st_size` — recomputed here from the symbol itself,
+    /// so a range computed any other way fails.
+    #[test]
+    fn test_poll_symbol_range_is_the_polls_symtab_extent() {
+        let (_, snapshot) = unordered();
+        let ctx = unordered_ctx();
+        let list = testkit::tasks(&ctx, snapshot);
+        let task = list.tasks.first().expect("the fixture owns tasks");
+        let range = ctx
+            .poll_symbol_range(task)
+            .expect("the header and vtable read back")
+            .expect("a symbol covers the poll fn");
+        let sym = snapshot
+            .lookup_symbol_by_addr(range.start)
+            .expect("the range starts inside a symbol");
+        assert_eq!(range, sym.st_value..sym.st_value + sym.st_size);
+        assert!(range.start < range.end);
+        // The v0 spelling of `task::raw::poll`, however the future
+        // type parameter mangles.
+        assert!(sym.name.contains("3raw4poll"), "{}", sym.name);
     }
 }

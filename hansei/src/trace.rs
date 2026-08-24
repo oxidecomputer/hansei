@@ -7,8 +7,9 @@ use crate::{Session, TraceOpts, TraceTarget, output};
 
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
-use hansei_bundle::{BundleMember, BundleType, BundleView};
-use hansei_runtime::tokio::{Lifecycle, bundle, census};
+use hansei_bundle::{BundleMember, BundleType, BundleTypeId, BundleView, SymbolLookup};
+use hansei_runtime::tokio::{Lifecycle, bundle, census, stackjoin};
+use proc::Target as _;
 use reify::Value;
 
 use std::fmt;
@@ -74,6 +75,12 @@ fn exec_trace_task(
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
             print_trace_chain(session, &chain, index, None, opts, out)?;
+            // A mid-poll task's chain stops at the last *committed*
+            // await; the truth of what the poll is doing right now is
+            // on the polling thread's native stack, joined below.
+            if task.state.lifecycle() == Lifecycle::Running {
+                print_native_continuation(session, task, task_id, &chain, opts, out)?;
+            }
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
@@ -656,6 +663,251 @@ fn print_chain_end(
     Ok(())
 }
 
+/// Append a mid-poll task's native continuation to its printed chain:
+/// find the thread polling it (the corroborated claim `threads`
+/// makes), unwind it, and classify its stack against the task's
+/// resolved poll symbol and the committed chain's future types. When
+/// any join fails — no claim, no unwind, no resolved poll symbol, no
+/// frame inside it — nothing native is glued on: the section says why
+/// and names `threads` for the raw stack.
+fn print_native_continuation(
+    session: &Session<'_>,
+    task: &bundle::Task,
+    task_id: u64,
+    chain: &bundle::AwaitChain<'_>,
+    opts: &TraceOpts<'_>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let ctx = &session.ctx;
+    // The task is running here, so a worker whose context names it is
+    // believed the way the `threads` heading believes it; a stale
+    // claim (the id of a task that is *not* running) never gets this
+    // far.
+    let Some(worker) = polling_worker(&session.workers, task_id) else {
+        return refuse_join(out, "no thread's context claims the task", None);
+    };
+    let lwp = worker.tid;
+
+    // The anchor: the address range of this task's own poll symbol —
+    // the bundle's task-join key, never a spelling match. A task whose
+    // poll did not resolve (a --force attach) refuses here.
+    let poll = match ctx.poll_symbol_range(task) {
+        Ok(Some(range)) => range,
+        Ok(None) => {
+            return refuse_join(out, "no symbol covers the task's poll fn", Some(lwp));
+        }
+        Err(e) => {
+            let why = format!("the task's poll fn cannot be resolved: {e:#}");
+            return refuse_join(out, &why, Some(lwp));
+        }
+    };
+
+    // Unwinding reads the CFI of every mapped object; the join pays
+    // for it only once it has a thread and an anchor to use it on.
+    let stacks = match unwind::load_frames(session.proc) {
+        Ok(stacks) => stacks,
+        Err(e) => {
+            let why = format!("the target's threads cannot be unwound: {e:#}");
+            return refuse_join(out, &why, Some(lwp));
+        }
+    };
+    let Some(backtrace) = stacks.get(&lwp) else {
+        let why = format!("lwp {lwp}'s stack was not unwound");
+        return refuse_join(out, &why, Some(lwp));
+    };
+
+    let frames = native_frames(&ctx.view, &backtrace.frames);
+    let chain_ids: Vec<BundleTypeId> = chain.frames.iter().map(|f| f.future.ty.id()).collect();
+    let Some(joined) = stackjoin::classify(&frames, &poll, &chain_ids) else {
+        let why = format!(
+            "lwp {lwp}'s stack holds no frame in the task's poll symbol \
+             (a stale claim, or a torn stack)"
+        );
+        return refuse_join(out, &why, Some(lwp));
+    };
+
+    let fatal = session.proc.fatal_signal();
+    print_native_section(
+        &frames,
+        &joined,
+        lwp,
+        chain.frames.len(),
+        fatal.as_ref(),
+        &|pc| ctx.mappings.contains_addr(pc),
+        opts,
+        out,
+    )
+}
+
+/// The refusal path: the joined section's place says why there is
+/// nothing native under the chain, and where the raw stack is.
+fn refuse_join(out: &mut dyn io::Write, why: &str, lwp: Option<u32>) -> Result<()> {
+    let threads = match lwp {
+        Some(tid) => format!("threads {tid}"),
+        None => "threads".to_string(),
+    };
+    writeln!(out)?;
+    writeln!(out, "mid-poll, but {why}; `{threads}` shows the raw stack")?;
+    Ok(())
+}
+
+/// Lay the unwinder's frames out for the classifier: the demangled
+/// name (for display and the plumbing predicate) and the future types
+/// the *mangled* symbol resolves to through the bundle's poll-symbol
+/// join. Matching the seam by resolved type id is what bridges the
+/// coroutine spellings — the frame demangles to `{closure#0}` where
+/// the bundle's type says `{async_fn_env#0}` — with no string
+/// comparison anywhere.
+fn native_frames(view: &BundleView<'_>, frames: &[unwind::Frame]) -> Vec<stackjoin::NativeFrame> {
+    frames
+        .iter()
+        .map(|f| {
+            let mangled = f.symbol.as_ref().map(|s| s.name.as_str());
+            let name = mangled
+                .map(|m| format!("{:#}", rustc_demangle::demangle(m)))
+                .unwrap_or_default();
+            let futures = match mangled.map(|m| view.dyn_future_ids_for_symbol(m)) {
+                Some(SymbolLookup::Unique(id)) => vec![id],
+                Some(SymbolLookup::Ambiguous(ids)) => ids,
+                Some(SymbolLookup::Missing) | None => Vec::new(),
+            };
+            stackjoin::NativeFrame {
+                pc: f.pc,
+                name,
+                futures,
+            }
+        })
+        .collect()
+}
+
+/// One printed line of the native section, after the plumbing-fold and
+/// signal-row decisions.
+enum NativeLine {
+    /// One native frame, by index into the classifier's input frames.
+    Frame(usize),
+    /// A folded plumbing run, as its half-open input-index range.
+    Fold(std::ops::Range<usize>),
+    /// The synthesized signal row's text.
+    Signal(String),
+}
+
+/// Render the native continuation: the section below the seam, in
+/// chain order, numbered on from `start` (the count of chain frames
+/// already printed) with the kind words `native` and `signal`.
+/// `fatal` is the target's fatal signal — only when *this* lwp took
+/// it does the section end with the signal row, since another
+/// thread's signal has nothing to do with this poll. `mapped` says
+/// whether an address falls inside any mapping, which is what turns
+/// the wild frame a bad call pushes into the signal attribution
+/// instead of a frame row.
+#[allow(clippy::too_many_arguments)]
+fn print_native_section(
+    frames: &[stackjoin::NativeFrame],
+    joined: &stackjoin::Continuation,
+    lwp: u32,
+    start: usize,
+    fatal: Option<&proc::FatalSignal>,
+    mapped: &dyn Fn(u64) -> bool,
+    opts: &TraceOpts<'_>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let mut lines: Vec<NativeLine> = Vec::new();
+    for row in &joined.rows {
+        match row {
+            stackjoin::Row::Frame(i) => lines.push(NativeLine::Frame(*i)),
+            stackjoin::Row::Fold(r) => {
+                if opts.verbose {
+                    // The run whole, outermost first: descending index.
+                    lines.extend(r.clone().rev().map(NativeLine::Frame));
+                } else {
+                    lines.push(NativeLine::Fold(r.clone()));
+                }
+            }
+        }
+    }
+
+    if let Some(sig) = fatal.filter(|sig| sig.lwp == Some(lwp)) {
+        // A call through a bad pointer pushes the unmapped pc itself
+        // as the innermost frame; the frame under it is the caller the
+        // unwinder hand-popped. The wild frame *is* the signal, so it
+        // prints as the attribution, not as a frame.
+        let wild = match lines.last() {
+            Some(NativeLine::Frame(i)) if !mapped(frames[*i].pc) => Some(frames[*i].pc),
+            _ => None,
+        };
+        let text = if let Some(pc) = wild {
+            lines.pop();
+            let caller = start + lines.len() - 1;
+            format!(
+                "{} — the call from #{caller} landed at {pc:#x}, unmapped",
+                crate::summary::signal_name(sig)
+            )
+        } else if matches!(joined.rows.last(), Some(stackjoin::Row::Fold(_))) {
+            format!(
+                "{} — raised by the panic above",
+                crate::summary::signal_name(sig)
+            )
+        } else {
+            crate::summary::fatal_signal_line(sig)
+        };
+        lines.push(NativeLine::Signal(text));
+    }
+
+    writeln!(out)?;
+    if lines.is_empty() {
+        // The seam sat at the innermost frame: execution is exactly at
+        // the committed leaf, and there is nothing novel to print.
+        writeln!(
+            out,
+            "mid-poll on lwp {lwp} — the poll is at the chain's leaf frame; \
+             nothing deeper is on the native stack"
+        )?;
+    } else {
+        writeln!(out, "mid-poll on lwp {lwp} — the poll is currently at:")?;
+        let num_width = format!("#{}", start + lines.len() - 1).len();
+        for (n, line) in lines.iter().enumerate() {
+            let number = format!("#{}", start + n);
+            match line {
+                NativeLine::Frame(i) => {
+                    let f = &frames[*i];
+                    let text = if f.name.is_empty() {
+                        format!("<no symbol> at {:#x}", f.pc)
+                    } else {
+                        f.name.clone()
+                    };
+                    writeln!(out, "{number:<num_width$}  {:<13} {text}", "native")?;
+                }
+                NativeLine::Fold(r) => {
+                    writeln!(
+                        out,
+                        "{number:<num_width$}  {:<13} panic plumbing: {} … {} \
+                         ({} frames; -v shows each)",
+                        "native",
+                        frames[r.end - 1].name,
+                        frames[r.start].name,
+                        r.len(),
+                    )?;
+                }
+                NativeLine::Signal(text) => {
+                    writeln!(out, "{number:<num_width$}  {:<13} {text}", "signal")?;
+                }
+            }
+        }
+    }
+    // The provenance footer: what anchored the join, and that the
+    // scheduler frames outward of it never print.
+    writeln!(
+        out,
+        "{}",
+        opts.theme.dim(&format!(
+            "(below {}; scheduler frames above it omitted — \
+             `threads {lwp}` shows the raw stack)",
+            frames[joined.anchor].name
+        ))
+    )?;
+    Ok(())
+}
+
 /// One row of a coroutine frame's suspend-point inventory: somewhere the
 /// future can park, read from its type rather than from the target.
 struct SuspendRow<'b> {
@@ -870,10 +1122,16 @@ pub(crate) fn print_variable(
     }
 }
 
+/// The worker mid-poll in the task: the one whose thread-local
+/// context names it.
+fn polling_worker(workers: &[bundle::Worker], id: u64) -> Option<&bundle::Worker> {
+    workers.iter().find(|w| w.current_task_id == Some(id))
+}
+
 /// The ` on lwp N` suffix of a torn-state warning, when some worker is
 /// mid-poll in the task.
 fn polling_lwp(workers: &[bundle::Worker], id: Option<u64>) -> String {
-    id.and_then(|id| workers.iter().find(|w| w.current_task_id == Some(id)))
+    id.and_then(|id| polling_worker(workers, id))
         .map(|w| format!(" on lwp {}", w.tid))
         .unwrap_or_default()
 }
@@ -1061,6 +1319,347 @@ mod chain_end_tests {
         assert_eq!(
             rendered(ChainEnd::Error(anyhow::anyhow!("torn read"))),
             "await chain truncated: torn read\n"
+        );
+    }
+}
+
+/// The native continuation as `trace` renders it, over hand-laid
+/// frames: the classifier is pure and covered in `hansei-runtime`, so
+/// these fix the printed layout — numbering on from the chain, the
+/// kind words, the fold line, the signal attributions, the footer and
+/// the refusal spelling.
+#[cfg(test)]
+mod native_section_tests {
+    use super::{TraceOpts, print_native_section, refuse_join};
+    use crate::{RenderOpts, output};
+    use hansei_bundle::BundleTypeId;
+    use hansei_runtime::tokio::stackjoin::{self, NativeFrame};
+
+    fn frame(pc: u64, name: &str) -> NativeFrame {
+        NativeFrame {
+            pc,
+            name: name.to_owned(),
+            futures: Vec::new(),
+        }
+    }
+
+    fn poll_frame(pc: u64, name: &str, futures: &[u32]) -> NativeFrame {
+        NativeFrame {
+            futures: futures.iter().map(|&id| BundleTypeId(id)).collect(),
+            ..frame(pc, name)
+        }
+    }
+
+    const POLL: std::ops::Range<u64> = 0x5000..0x5100;
+
+    /// Classify and render one section the way the command does.
+    fn section(
+        frames: &[NativeFrame],
+        chain: &[BundleTypeId],
+        lwp: u32,
+        start: usize,
+        fatal: Option<&proc::FatalSignal>,
+        mapped: &dyn Fn(u64) -> bool,
+        verbose: bool,
+    ) -> String {
+        let joined = stackjoin::classify(frames, &POLL, chain).expect("the poll frame anchors");
+        let mut out = Vec::new();
+        let elide = Default::default();
+        let opts = TraceOpts {
+            verbose,
+            render: RenderOpts {
+                depth: 4,
+                ugly: false,
+            },
+            elide: &elide,
+            theme: output::Theme::plain(),
+        };
+        print_native_section(frames, &joined, lwp, start, fatal, mapped, &opts, &mut out)
+            .expect("the section renders");
+        String::from_utf8(out).expect("rendered output is UTF-8")
+    }
+
+    fn segv() -> proc::FatalSignal {
+        proc::FatalSignal {
+            name: "SIGSEGV",
+            signo: 11,
+            code: 1,
+            code_name: Some("SEGV_MAPERR"),
+            fault_addr: Some(0),
+            lwp: Some(115),
+        }
+    }
+
+    fn abrt() -> proc::FatalSignal {
+        proc::FatalSignal {
+            name: "SIGABRT",
+            signo: 6,
+            code: 0,
+            code_name: None,
+            fault_addr: None,
+            lwp: Some(7),
+        }
+    }
+
+    /// The healthy-capture shape: every novel frame below the seam
+    /// prints as a `native` row, numbered on from the chain's frames,
+    /// under the neutral header and over the provenance footer — and a
+    /// capture that took no signal ends at its innermost frame with no
+    /// signal row.
+    #[test]
+    fn test_the_section_numbers_on_from_the_chain() {
+        let chain = [BundleTypeId(10), BundleTypeId(11), BundleTypeId(12)];
+        let frames = [
+            frame(0x9000, "__lwp_park"),
+            frame(0x9010, "mutex_lock"),
+            frame(0x9020, "vmem_xalloc"),
+            frame(0x9030, "memalign"),
+            poll_frame(0x9040, "reqwest::connect::{closure#0}", &[77]),
+            poll_frame(0x9050, "<FuturesUnordered as Future>::poll_next", &[12]),
+            poll_frame(0x9060, "nexus::saga::{closure#0}", &[10]),
+            frame(0x9070, "tokio::runtime::task::harness::poll"),
+            frame(0x5010, "tokio::runtime::task::raw::poll"),
+            frame(0x9090, "tokio::runtime::scheduler::run"),
+        ];
+        assert_eq!(
+            section(&frames, &chain, 115, 3, None, &|_| true, false),
+            "
+mid-poll on lwp 115 — the poll is currently at:
+#3  native        reqwest::connect::{closure#0}
+#4  native        memalign
+#5  native        vmem_xalloc
+#6  native        mutex_lock
+#7  native        __lwp_park
+(below tokio::runtime::task::raw::poll; scheduler frames above it omitted \
+— `threads 115` shows the raw stack)
+"
+        );
+    }
+
+    /// The panic-abort shape: the plumbing run folds to one counted
+    /// line, and the fatal signal — this lwp's — ends the section
+    /// attributed to the panic above it.
+    #[test]
+    fn test_a_panic_abort_folds_and_ends_with_the_signal_row() {
+        let chain = [BundleTypeId(20)];
+        let frames = [
+            frame(0x9000, "_lwp_kill"),
+            frame(0x9010, "raise"),
+            frame(0x9020, "abort"),
+            frame(0x9030, "std::sys::pal::unix::abort_internal"),
+            frame(0x9040, "std::panicking::rust_panic"),
+            frame(0x9050, "std::panicking::rust_panic_with_hook"),
+            frame(0x9060, "std::panicking::begin_panic_handler::{closure#0}"),
+            frame(0x9070, "std::sys::backtrace::__rust_end_short_backtrace"),
+            frame(0x9080, "std::panicking::begin_panic_handler"),
+            frame(0x9090, "core::panicking::panic_fmt"),
+            frame(0x90a0, "panic_join::boom"),
+            poll_frame(0x90b0, "panic_join::main::{closure#0}", &[20]),
+            frame(0x90c0, "core::panic::unwind_safe::AssertUnwindSafe"),
+            frame(0x5020, "tokio::runtime::task::raw::poll"),
+            frame(0x90e0, "tokio::runtime::scheduler::run"),
+        ];
+        let sig = abrt();
+        assert_eq!(
+            section(&frames, &chain, 7, 1, Some(&sig), &|_| true, false),
+            "
+mid-poll on lwp 7 — the poll is currently at:
+#1  native        panic_join::boom
+#2  native        panic plumbing: core::panicking::panic_fmt … _lwp_kill \
+(10 frames; -v shows each)
+#3  signal        SIGABRT — raised by the panic above
+(below tokio::runtime::task::raw::poll; scheduler frames above it omitted \
+— `threads 7` shows the raw stack)
+"
+        );
+
+        // -v prints the run whole, outermost first, each frame taking
+        // its own number; the signal row keeps its attribution.
+        let verbose = section(&frames, &chain, 7, 1, Some(&sig), &|_| true, true);
+        assert_eq!(verbose.matches(" native ").count(), 11, "{verbose}");
+        assert!(!verbose.contains("panic plumbing:"), "{verbose}");
+        assert!(
+            verbose.contains("#2   native        core::panicking::panic_fmt\n"),
+            "{verbose}"
+        );
+        assert!(
+            verbose.contains("#11  native        _lwp_kill\n"),
+            "{verbose}"
+        );
+        assert!(
+            verbose.contains("#12  signal        SIGABRT — raised by the panic above\n"),
+            "{verbose}"
+        );
+    }
+
+    /// The release-crash shape: the wild frame a bad call pushes — an
+    /// unmapped pc with no symbol — prints as the signal attribution
+    /// naming its caller, not as a frame row.
+    #[test]
+    fn test_a_wild_pc_becomes_the_signal_attribution() {
+        let chain = [BundleTypeId(30), BundleTypeId(31)];
+        let frames = [
+            frame(0x0, ""),
+            frame(0x9010, "rama::service::dispatch"),
+            frame(0x9020, "rama::stream::next"),
+            frame(0x5000, "tokio::runtime::task::raw::poll"),
+            poll_frame(0x9040, "other::task::{closure#0}", &[30]),
+        ];
+        let sig = segv();
+        // `start` deliberately differs from the section's row count, so
+        // the caller's number is wrong unless computed as start + rows.
+        assert_eq!(
+            section(&frames, &chain, 115, 3, Some(&sig), &|pc| pc != 0, false),
+            "
+mid-poll on lwp 115 — the poll is currently at:
+#3  native        rama::stream::next
+#4  native        rama::service::dispatch
+#5  signal        SIGSEGV (SEGV_MAPERR) — the call from #4 landed at 0x0, unmapped
+(below tokio::runtime::task::raw::poll; scheduler frames above it omitted \
+— `threads 115` shows the raw stack)
+"
+        );
+    }
+
+    /// Another thread's fatal signal has nothing to do with this poll:
+    /// only the section's own lwp earns the signal row.
+    #[test]
+    fn test_another_lwps_signal_earns_no_row() {
+        let frames = [
+            frame(0x9000, "app::handler"),
+            frame(0x5000, "tokio::runtime::task::raw::poll"),
+        ];
+        let mut sig = segv();
+        sig.lwp = Some(116);
+        let rendered = section(&frames, &[], 115, 1, Some(&sig), &|_| true, false);
+        assert!(!rendered.contains("signal"), "{rendered}");
+        sig.lwp = None;
+        let rendered = section(&frames, &[], 115, 1, Some(&sig), &|_| true, false);
+        assert!(!rendered.contains("signal"), "{rendered}");
+    }
+
+    /// A fault at a mapped pc is neither the wild-call shape nor a
+    /// panic: the signal row carries the full spelling, fault address
+    /// and all, with no attribution to invent.
+    #[test]
+    fn test_a_mapped_fault_keeps_the_full_signal_spelling() {
+        let frames = [
+            frame(0x9000, "app::handler"),
+            frame(0x5000, "tokio::runtime::task::raw::poll"),
+        ];
+        let sig = segv();
+        let rendered = section(&frames, &[], 115, 1, Some(&sig), &|_| true, false);
+        assert!(
+            rendered.contains("#2  signal        SIGSEGV (SEGV_MAPERR), fault address 0x0\n"),
+            "{rendered}"
+        );
+    }
+
+    /// A seam at the innermost frame means execution is exactly at the
+    /// committed leaf: the header says so instead of opening an empty
+    /// list, and the footer still says what anchored the join.
+    #[test]
+    fn test_an_execution_at_the_committed_leaf_prints_the_quiet_header() {
+        let chain = [BundleTypeId(10), BundleTypeId(11)];
+        let frames = [
+            poll_frame(0x9000, "leaf::{closure#0}", &[11]),
+            frame(0x5000, "task::raw::poll"),
+        ];
+        assert_eq!(
+            section(&frames, &chain, 12, 2, None, &|_| true, false),
+            "
+mid-poll on lwp 12 — the poll is at the chain's leaf frame; \
+nothing deeper is on the native stack
+(below task::raw::poll; scheduler frames above it omitted \
+— `threads 12` shows the raw stack)
+"
+        );
+    }
+
+    /// A frame the unwinder found no symbol for still prints — by
+    /// address, since a nameless row would claim nothing — when no
+    /// signal turns it into an attribution.
+    #[test]
+    fn test_a_nameless_frame_prints_its_address() {
+        let frames = [
+            frame(0x4242, ""),
+            frame(0x5000, "tokio::runtime::task::raw::poll"),
+        ];
+        let rendered = section(&frames, &[], 3, 1, None, &|_| true, false);
+        assert!(
+            rendered.contains("#1  native        <no symbol> at 0x4242\n"),
+            "{rendered}"
+        );
+    }
+
+    /// The unwinder's frames laid out for the classifier: the
+    /// demangled name for display and the plumbing predicate, and the
+    /// future ids the *mangled* symbol resolves to through the
+    /// bundle's own poll-symbol join — while a frame with no symbol
+    /// claims nothing.
+    #[test]
+    fn test_native_frames_resolve_futures_through_the_bundle_join() {
+        let (bundle, _snapshot) = hansei_runtime::testkit::load_any("unordered");
+        let view = hansei_bundle::BundleView::new(&bundle);
+        let (symbol, ty) = bundle
+            .dyn_futures
+            .by_symbol
+            .iter()
+            .next()
+            .expect("the fixture records dyn futures");
+        let sym = proc::SymbolBuf {
+            name: symbol.clone(),
+            st_name: 0,
+            st_info: 0,
+            st_other: 0,
+            st_shndx: 0,
+            st_value: 0x7000,
+            st_size: 0x40,
+        };
+        let frames = [
+            unwind::Frame {
+                pc: 0x7004,
+                regs: proc::Regs::default(),
+                symbol: Some(sym),
+            },
+            unwind::Frame {
+                pc: 0x9000,
+                regs: proc::Regs::default(),
+                symbol: None,
+            },
+        ];
+        let laid = super::native_frames(&view, &frames);
+        assert_eq!(laid.len(), 2);
+        assert_eq!(laid[0].pc, 0x7004);
+        assert_eq!(laid[0].futures, vec![*ty]);
+        assert_eq!(
+            laid[0].name,
+            format!("{:#}", rustc_demangle::demangle(symbol))
+        );
+        assert!(laid[1].name.is_empty());
+        assert!(laid[1].futures.is_empty());
+    }
+
+    /// The refusal path glues nothing on: one line saying why, naming
+    /// `threads` — narrowed to the lwp when the join got far enough to
+    /// have one.
+    #[test]
+    fn test_the_refusal_says_why_and_names_threads() {
+        let mut out = Vec::new();
+        refuse_join(&mut out, "no thread's context claims the task", None)
+            .expect("the refusal renders");
+        assert_eq!(
+            String::from_utf8(out).expect("rendered output is UTF-8"),
+            "\nmid-poll, but no thread's context claims the task; \
+             `threads` shows the raw stack\n"
+        );
+
+        let mut out = Vec::new();
+        refuse_join(&mut out, "lwp 9's stack was not unwound", Some(9))
+            .expect("the refusal renders");
+        assert_eq!(
+            String::from_utf8(out).expect("rendered output is UTF-8"),
+            "\nmid-poll, but lwp 9's stack was not unwound; `threads 9` shows the raw stack\n"
         );
     }
 }

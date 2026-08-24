@@ -111,14 +111,22 @@ pub struct Facts<'a> {
 /// and not at all for a plain user-sent signal; the address only when
 /// the code says the siginfo carried one.
 pub fn fatal_signal_line(sig: &proc::FatalSignal) -> String {
+    let mut line = signal_name(sig);
+    if let Some(addr) = sig.fault_addr {
+        line.push_str(&format!(", fault address {addr:#x}"));
+    }
+    line
+}
+
+/// The signal and its code alone — `SIGSEGV (SEGV_MAPERR)` — for the
+/// lines that follow it with their own attribution, where the fault
+/// address would only repeat what the attribution says.
+pub fn signal_name(sig: &proc::FatalSignal) -> String {
     let mut line = sig.name.to_string();
     match (sig.code_name, sig.code) {
         (Some(code), _) => line.push_str(&format!(" ({code})")),
         (None, 0) => {}
         (None, code) => line.push_str(&format!(" (code {code})")),
-    }
-    if let Some(addr) = sig.fault_addr {
-        line.push_str(&format!(", fault address {addr:#x}"));
     }
     line
 }
