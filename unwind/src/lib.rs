@@ -17,9 +17,10 @@ use gimli::{
     BaseAddresses, CfaRule, EhFrame, EhFrameHdr, EndianSlice, EvaluationResult, LittleEndian,
     ParsedEhFrameHdr, RegisterRule, UnwindContext, UnwindSection, Value,
 };
+use goblin::container::Ctx;
 use goblin::elf::Elf;
 use goblin::elf::header::{EI_CLASS, ELFCLASS64};
-use goblin::elf::program_header::PT_LOAD;
+use goblin::elf::program_header::{PT_LOAD, ProgramHeader};
 use proc::{Mappings, Reg, Regs, SymbolBuf, Target, x86_64::*};
 
 use std::collections::BTreeMap;
@@ -549,18 +550,31 @@ struct ObjectInfo<'a> {
 impl<'a> ObjectInfo<'a> {
     pub fn parse(bytes: &'a [u8], range: Range<u64>) -> Result<Self> {
         let map_addr = range.start;
-        let elf = Elf::parse_with_opts(bytes, &goblin::options::ParseOptions::permissive())
-            .context("failed to parse data as ELF")?;
-
-        if elf.header.e_ident[EI_CLASS] != ELFCLASS64 {
+        // Only the header's class and the program headers are read:
+        // PT_LOAD for the load bias, the unwind segment for the CFI.
+        // A full `Elf::parse` would also decode every symbol and
+        // string table — on a production binary, hundreds of
+        // megabytes of strtab UTF-8 validation for tables nothing
+        // here looks at.
+        let header = Elf::parse_header(bytes).context("failed to parse the ELF header")?;
+        if header.e_ident[EI_CLASS] != ELFCLASS64 {
             anyhow::bail!("only ELF64 is supported");
         }
-        if !elf.little_endian {
+        let endianness = header
+            .endianness()
+            .context("failed to read the ELF endianness")?;
+        if !endianness.is_little() {
             anyhow::bail!("only little-endian files are supported");
         }
+        let ctx = Ctx::new(
+            header.container().context("failed to read the ELF class")?,
+            endianness,
+        );
+        let program_headers =
+            ProgramHeader::parse(bytes, header.e_phoff as usize, header.e_phnum as usize, ctx)
+                .context("failed to parse the program headers")?;
 
-        let text_phdr = elf
-            .program_headers
+        let text_phdr = program_headers
             .iter()
             .find(|ph| ph.p_type == PT_LOAD && ph.p_offset == 0)
             .ok_or(anyhow::anyhow!("no PT_LOAD program header"))?;
@@ -572,8 +586,7 @@ impl<'a> ObjectInfo<'a> {
         // vaddr        = Link-time Address
         let load_bias = map_addr.wrapping_sub(vaddr);
 
-        let eh_phdr = elf
-            .program_headers
+        let eh_phdr = program_headers
             .iter()
             .find(|ph| ph.p_type == PT_SUNW_UNWIND || ph.p_type == PT_GNU_EH_FRAME)
             .ok_or(anyhow::anyhow!("no unwind-table program header"))?;
