@@ -87,7 +87,10 @@ pub fn describe(
     }
     let matches = definitions_named(view, impls, name);
     if matches.is_empty() {
-        bail!("the bundle records no type named {name}; try `find-types {name}`");
+        bail!(
+            "the bundle records no type named {name}; try `find-types {name}`{}",
+            split_hint(name)
+        );
     }
     for (i, ty) in matches.iter().enumerate() {
         // With several definitions the name alone no longer says which
@@ -197,7 +200,10 @@ pub fn resolve_type_spec<'a>(
                 .collect();
             displayed.dedup();
             match displayed.as_slice() {
-                [] => bail!("the bundle records no type named {spec}; try `find-types {spec}`"),
+                [] => bail!(
+                    "the bundle records no type named {spec}; try `find-types {spec}`{}",
+                    split_hint(spec)
+                ),
                 [name] => bail!(
                     "{spec} is a display spelling, not a type name; \
                      the recorded type is {name}"
@@ -221,6 +227,21 @@ pub fn resolve_type_spec<'a>(
                 several.len()
             );
         }
+    }
+}
+
+/// The hint appended to a name-lookup miss whose name looks cut off at
+/// a `;`: its square brackets are unbalanced, which no recorded type
+/// name has and every fragment of a split array type does. The session
+/// splits commands at unescaped `;`, so the reader is told the way
+/// through rather than sent to `find-types` with the same fragment.
+fn split_hint(name: &str) -> &'static str {
+    match name.matches('[').count() != name.matches(']').count() {
+        true => {
+            "\n(a `;` in a type name must be escaped as `\\;` — \
+             the session splits commands at unescaped `;`)"
+        }
+        false => "",
     }
 }
 
@@ -894,6 +915,31 @@ mod tests {
                 &mut Vec::new()
             )
             .is_err()
+        );
+    }
+
+    /// A miss whose name has a dangling `[` is the signature of an
+    /// array type cut at its `;` by the command split, and the error
+    /// says the way through; a balanced miss gets no such lecture.
+    #[test]
+    fn test_a_split_array_name_is_told_about_the_escape() {
+        let bundle = bundle();
+        let view = BundleView::new(&bundle);
+        let impls = names::ImplFold::default();
+        let err = |spec: &str| {
+            resolve_type_spec(&view, &impls, spec)
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(
+            err("[usize").contains("escaped as `\\;`"),
+            "{}",
+            err("[usize")
+        );
+        assert!(
+            !err("no::such::Type").contains("escaped"),
+            "{}",
+            err("no::such::Type")
         );
     }
 
