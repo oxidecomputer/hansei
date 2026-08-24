@@ -253,12 +253,14 @@ pub fn find(view: &BundleView<'_>, needle: &str, out: &mut dyn io::Write) -> Res
     Ok(())
 }
 
-/// One name's row. A name with a single definition is its own handle;
-/// one with several names none of them exactly, so the row carries the
-/// ids that do — each pasteable as `type <id>`.
+/// One name's row, carrying the id handle beside it: names hold
+/// characters some commands cannot take whole (an array type's `;`),
+/// and the id — pasteable as `type <id>` — is the handle that always
+/// works. A name with several definitions names none of them exactly,
+/// so that row carries every id.
 fn write_name(out: &mut dyn io::Write, name: &str, definitions: &[BundleTypeId]) -> Result<()> {
     match definitions {
-        [_] => writeln!(out, "{name}")?,
+        [id] => writeln!(out, "{name}  (type {})", id.0)?,
         ids => {
             let ids = ids
                 .iter()
@@ -820,8 +822,10 @@ mod tests {
 
     #[test]
     fn test_find_lists_matches_and_counts() {
+        // Every row carries its id, the handle that survives characters
+        // the session cannot take in a name (an array type's `;`).
         let out = found("Node");
-        assert!(out.contains("Node\n"), "{out}");
+        assert!(out.contains("Node  (type 1)\n"), "{out}");
         assert!(out.ends_with("1 type\n"), "{out}");
 
         // Repeated definitions of one name collapse into one line,
