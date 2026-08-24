@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 mod graph;
 mod output;
 mod print;
+mod registers;
 pub mod repl;
 mod runtimes;
 #[cfg(feature = "snapshot")]
@@ -468,16 +469,28 @@ pub enum Command {
     },
 
     /// Show every thread running a runtime: the task it is polling,
-    /// the worker core it holds, and its stack.
+    /// the worker core it holds, and its stack. The thread that took
+    /// the fatal signal also shows its registers, annotated with what
+    /// each value points into; --registers asks that of every listed
+    /// thread.
     Threads {
         /// Maximum stack frames to print per thread.
         #[arg(long, short, default_value_t = 50)]
         frames: usize,
 
-        /// Show only this thread, selected by the lwp id its heading
-        /// carries. The whole listing is printed when none is named.
+        /// Show each listed thread's registers — frame-0 trap state,
+        /// one line per general-purpose register, annotated with what
+        /// the value points into (a task's allocation, an lwp's
+        /// stack, a symbol, heap). The lwp that took the fatal signal
+        /// shows them without the flag.
+        #[arg(long, short)]
+        registers: bool,
+
+        /// Show only these threads, each selected by the lwp id its
+        /// heading carries. The whole listing is printed when none is
+        /// named.
         #[arg(value_name = "LWP")]
-        lwp: Option<u32>,
+        lwp: Vec<u32>,
 
         #[command(flatten)]
         render: RenderOpts,
@@ -494,7 +507,9 @@ pub enum Command {
     /// await into the polling thread's native stack: the frames below
     /// the task's own poll fn, numbered on from the chain, with panic
     /// plumbing folded and the fatal signal attributed when this
-    /// thread took it. `threads` shows the same stack raw.
+    /// thread took it — then that thread's registers, annotated with
+    /// what each value points into. `threads` shows the same stack
+    /// raw.
     Trace {
         /// What to trace: a decimal task id from `tasks`, or a future
         /// address from `tasks --futures`, in hex with a required
@@ -707,10 +722,11 @@ pub struct Session<'b> {
     core: &'b Path,
     bundle_path: &'b Path,
     workers: Vec<bundle::Worker>,
-    /// How many lwps the target has, whatever they are doing. The
-    /// workers above are the ones holding a tokio `Context`; the
-    /// difference is what the runtime is *not* running.
-    lwps: usize,
+    /// Every lwp the target has, whatever it is doing, with its
+    /// registers and recorded stack range. The workers above are the
+    /// ones holding a tokio `Context`; the difference is what the
+    /// runtime is *not* running.
+    lwps: Vec<proc::LwpInfo>,
     /// Every runtime discovered in the target, of either scheduler
     /// flavor: those a thread's context reaches first, then those
     /// discovery found because a task pointed at them. One on nearly
@@ -817,7 +833,7 @@ impl<'b> Session<'b> {
             core: &args.core,
             bundle_path: &args.bundle,
             workers,
-            lwps: lwps.len(),
+            lwps,
             runtimes,
             excluded,
             local_sets,
@@ -961,9 +977,10 @@ pub fn dispatch(
         }
         Command::Threads {
             frames,
+            registers,
             lwp,
             render,
-        } => threads::exec_threads(session, frames, lwp, render, out)?,
+        } => threads::exec_threads(session, frames, &lwp, registers, render, out)?,
         Command::Trace {
             target,
             verbose,
