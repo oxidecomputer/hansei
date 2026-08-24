@@ -704,14 +704,14 @@ fn print_native_continuation(
 
     // Unwinding reads the CFI of every mapped object; the join pays
     // for it only once it has a thread and an anchor to use it on.
-    let stacks = match unwind::load_frames(session.proc) {
-        Ok(stacks) => stacks,
+    let unwound = match unwind::load_frames(session.proc) {
+        Ok(unwound) => unwound,
         Err(e) => {
             let why = format!("the target's threads cannot be unwound: {e:#}");
             return refuse_join(out, &why, Some(lwp));
         }
     };
-    let Some(backtrace) = stacks.get(&lwp) else {
+    let Some(backtrace) = unwound.stacks.get(&lwp) else {
         let why = format!("lwp {lwp}'s stack was not unwound");
         return refuse_join(out, &why, Some(lwp));
     };
@@ -719,10 +719,18 @@ fn print_native_continuation(
     let frames = native_frames(&ctx.view, &backtrace.frames);
     let chain_ids: Vec<BundleTypeId> = chain.frames.iter().map(|f| f.future.ty.id()).collect();
     let Some(joined) = stackjoin::classify(&frames, &poll, &chain_ids) else {
-        let why = format!(
-            "lwp {lwp}'s stack holds no frame in the task's poll symbol \
-             (a stale claim, or a torn stack)"
-        );
+        // A walk that ended early explains its own miss better than
+        // the generic suspicion can.
+        let why = match &backtrace.truncated {
+            Some(ended) => format!(
+                "lwp {lwp}'s walked stack holds no frame in the task's \
+                 poll symbol (its walk ended: {ended})"
+            ),
+            None => format!(
+                "lwp {lwp}'s stack holds no frame in the task's poll symbol \
+                 (a stale claim, or a torn stack)"
+            ),
+        };
         return refuse_join(out, &why, Some(lwp));
     };
 
@@ -1629,11 +1637,13 @@ nothing deeper is on the native stack
                 pc: 0x7004,
                 regs: proc::Regs::default(),
                 symbol: Some(sym),
+                heuristic: false,
             },
             unwind::Frame {
                 pc: 0x9000,
                 regs: proc::Regs::default(),
                 symbol: None,
+                heuristic: false,
             },
         ];
         let laid = super::native_frames(&view, &frames);

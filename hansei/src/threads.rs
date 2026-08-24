@@ -41,7 +41,7 @@ pub(crate) fn exec_threads(
     // it cannot walk still has runtime state worth printing, so a failure
     // costs the stacks and nothing else.
     let stacks = match unwind::load_frames(session.proc) {
-        Ok(stacks) => stacks,
+        Ok(unwound) => unwound.stacks,
         Err(e) => {
             writeln!(
                 io::stderr(),
