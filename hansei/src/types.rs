@@ -151,17 +151,20 @@ fn definitions_named<'a>(
     matches
 }
 
-/// Resolve a type spec — a bundle type id, or an exact fully-qualified
-/// type name as `find-types` lists it — to the one definition it names,
-/// for a command that must read memory with exactly one layout.
+/// Resolve a type spec — a bundle type id, or a fully-qualified type
+/// name as `find-types` lists it — to the one definition it names, for
+/// a command that must read memory with exactly one layout.
 ///
-/// The display spellings the other lookups also accept are refused
-/// here: a kind-joined `async fn app::work` names a function, not the
-/// environment type its memory holds, and reading an address "as an
-/// async fn" is not a sentence — the refusal names the recorded type
-/// instead, so the reader has the spelling to paste back. A name with
-/// several recorded definitions is likewise refused, with the ids that
-/// pick one, rather than read with a guessed layout.
+/// The name is compared the way the recorded spelling is: formatting
+/// whitespace does not distinguish, so a name pasted with its spaces
+/// squeezed out still resolves. What *is* refused is the display fold
+/// the other lookups also accept: a kind-joined `async fn app::work`
+/// names a function, not the environment type its memory holds, and
+/// reading an address "as an async fn" is not a sentence — the refusal
+/// names the recorded type instead, so the reader has the spelling to
+/// paste back. A name with several recorded definitions is likewise
+/// refused, with the ids that pick one, rather than read with a
+/// guessed layout.
 pub fn resolve_type_spec<'a>(
     view: &BundleView<'a>,
     impls: &names::ImplFold,
@@ -170,11 +173,18 @@ pub fn resolve_type_spec<'a>(
     if let Ok(id) = spec.parse::<u32>() {
         return type_by_id(view, id);
     }
-    let matches: Vec<BundleType<'a>> = view
+    let mut matches: Vec<BundleType<'a>> = view
         .named_types()
         .filter(|(n, _)| *n == spec)
         .map(|(_, ty)| ty)
         .collect();
+    if matches.is_empty() {
+        matches = view
+            .named_types()
+            .filter(|(n, _)| symbols::rust_type_names_equal(n, spec))
+            .map(|(_, ty)| ty)
+            .collect();
+    }
     match matches.as_slice() {
         [] => {
             // The exact lookup missed, so anything this finds it found
@@ -612,6 +622,7 @@ mod tests {
             "nodes",
             "opts",
             "app::work::{async_fn_env#0}",
+            "Pair<(u64, u64)>",
         ] {
             names.insert(name, strings.intern(name));
         }
@@ -741,6 +752,13 @@ mod tests {
             TypeDef::Struct {
                 name: n("app::work::{async_fn_env#0}"),
                 size: 8,
+                members: vec![member("value", 0, 0)],
+            },
+            // 16: a name holding formatting whitespace, for the
+            // lookups that must accept it respelled without any.
+            TypeDef::Struct {
+                name: n("Pair<(u64, u64)>"),
+                size: 16,
                 members: vec![member("value", 0, 0)],
             },
         ];
@@ -945,6 +963,13 @@ mod tests {
             resolve("app::work::{async_fn_env#0}").unwrap().name(),
             "app::work::{async_fn_env#0}"
         );
+        // Formatting whitespace does not distinguish: the recorded
+        // spelling and the same name with its spaces squeezed out
+        // resolve alike — `type` accepts the squeezed form, so the
+        // commands sharing this lookup must too.
+        for spelling in ["Pair<(u64, u64)>", "Pair<(u64,u64)>"] {
+            assert_eq!(resolve(spelling).unwrap().name(), "Pair<(u64, u64)>");
+        }
     }
 
     /// The refusals, each naming its way out: an unknown name suggests

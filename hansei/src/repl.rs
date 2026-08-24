@@ -450,6 +450,27 @@ mod tests {
         assert_eq!(sink.write(b"more").expect("the feed never errors"), 4);
     }
 
+    /// `type`'s name is the rest of the line the way `print`'s is: the
+    /// words are joined back into one name, so a name whose generic
+    /// arguments hold spaces pastes in whole, with the flags still
+    /// parsed out from among them.
+    #[test]
+    fn test_type_takes_the_rest_of_the_line_as_one_name() {
+        let Command::Type {
+            name,
+            recursive,
+            depth,
+        } = Line::try_parse_from(["type", "Vec<(u64,", "u64)>", "-r", "-d", "2"])
+            .expect("type takes a name and its flags")
+            .command
+        else {
+            panic!("type parsed as another command");
+        };
+        assert_eq!(name.join(" "), "Vec<(u64, u64)>");
+        assert!(recursive);
+        assert_eq!(depth, 2);
+    }
+
     /// `print`'s type is the rest of the line: the words are joined
     /// back into one name, so a name whose generic arguments hold
     /// spaces pastes in whole, with the render flags still parsed out
