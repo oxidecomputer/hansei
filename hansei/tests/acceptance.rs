@@ -79,6 +79,7 @@ const PROGRAMS: &[&str] = &[
     "local-set-timer",
     "local-set-io",
     "foreign-runtime",
+    "spin-poll",
 ];
 
 fn workspace_root() -> &'static Path {
@@ -1672,6 +1673,90 @@ fn test_foreign_runtime_acceptance() {
         assert!(
             info.contains("2 runtimes, 1 local set (see `runtimes`)"),
             "{info}"
+        );
+    });
+}
+
+/// A task cored mid-poll — spinning in a synchronous section of its
+/// poll — gets its native continuation joined onto the trace: the
+/// committed chain stops at the yield the fixture long since moved
+/// past, and the section below it names the spin frame the poll is
+/// actually in, numbered on from the chain, with the provenance footer
+/// naming what anchored the join.
+#[test]
+fn test_spin_poll_acceptance() {
+    let bundle = fixtures().bundle("spin-poll");
+    with_core("spin-poll", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 1, "{rows:#?}");
+        let task = task_with_future(&rows, "async fn spin_poll::spinner");
+
+        // The listing corroborates the worker's claim, and names the
+        // lwp the joined section must attribute the poll to.
+        let lwp = task
+            .state
+            .strip_prefix("running (lwp ")
+            .and_then(|state| state.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("the spinner is not running on a worker: {rows:#?}"));
+
+        // Not [`hansei_ok`]: tracing a running task warns that its
+        // state may be torn, and that warning is part of the assertion.
+        let out = hansei(&bundle, core, &format!("trace {}", task.id));
+        assert!(
+            out.status.success(),
+            "hansei trace failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!(
+                "warning: task {} is running on lwp {lwp}; its state may be torn\n",
+                task.id
+            ),
+        );
+        let out = String::from_utf8(out.stdout).expect("hansei output is UTF-8");
+
+        // The join, never the refusal: the section opens on the claimed
+        // lwp.
+        assert!(
+            out.contains(&format!(
+                "mid-poll on lwp {lwp} — the poll is currently at:"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("mid-poll, but"), "{out}");
+
+        // At least one native row, and it is the synchronous frame the
+        // fixture parked its pc in.
+        let grind = out
+            .lines()
+            .find(|line| line.trim_end().ends_with("spin_poll::grind"))
+            .unwrap_or_else(|| panic!("no row names the spin frame:\n{out}"));
+        assert!(
+            grind.starts_with('#') && grind.contains(" native "),
+            "{out}"
+        );
+
+        // One numbering: the native rows continue the chain's, so the
+        // frame rows count 0.. across the seam with no reset or gap.
+        let numbers: Vec<usize> = out
+            .lines()
+            .filter_map(|line| line.strip_prefix('#'))
+            .map(|row| {
+                let number = row.split_whitespace().next().unwrap_or_default();
+                number
+                    .parse()
+                    .unwrap_or_else(|_| panic!("unnumbered frame row #{row}\nin:\n{out}"))
+            })
+            .collect();
+        assert_eq!(numbers, (0..numbers.len()).collect::<Vec<_>>(), "{out}");
+
+        // The provenance footer routes back to the raw stack.
+        assert!(
+            out.contains(&format!(
+                "scheduler frames above it omitted — `threads {lwp}` shows the raw stack)"
+            )),
+            "{out}"
         );
     });
 }
