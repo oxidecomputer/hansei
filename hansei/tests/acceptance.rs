@@ -1758,6 +1758,13 @@ fn test_spin_poll_acceptance() {
             )),
             "{out}"
         );
+
+        // The joined section carries the polling thread's registers:
+        // frame-0 state, annotated from the recorded joins — the
+        // stack pointer lands in this lwp's own recorded stack.
+        assert!(out.contains("registers:"), "{out}");
+        let rsp = regex::Regex::new(r"(?m)^  rsp  0x[0-9a-f]{16}  — this lwp's stack$").unwrap();
+        assert!(rsp.is_match(&out), "{out}");
     });
 }
 
@@ -2372,6 +2379,21 @@ fn test_threads_selects_one_lwp() {
         let one = hansei_ok(&bundle, core, &format!("threads {tid}"));
         assert_eq!(one, format!("{first}\n"), "the lwp selects its block alone");
 
+        // More than one lwp selects each named block, in listing
+        // order.
+        let mut blocks = full.split("\n\n");
+        let (first, second) = (blocks.next().unwrap(), blocks.next().unwrap());
+        let second_tid = second
+            .strip_prefix("lwp ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("the second block heading names its lwp");
+        let two = hansei_ok(&bundle, core, &format!("threads {tid} {second_tid}"));
+        assert_eq!(
+            two,
+            format!("{first}\n\n{second}\n"),
+            "two lwps select their blocks"
+        );
+
         // An lwp no runtime runs on is an error, which fails a
         // scripted session.
         let out = hansei(&bundle, core, "threads 999999");
@@ -2385,6 +2407,27 @@ fn test_threads_selects_one_lwp() {
             stderr.contains("no thread with lwp 999999 is listed"),
             "{stderr}"
         );
+    });
+}
+
+/// Registers print only where they are asked for or earned: a healthy
+/// capture's listing carries none, `--registers` puts an annotated
+/// block in every selected thread's block, and the stack registers
+/// attribute to the thread they were read from.
+#[test]
+fn test_threads_registers_annotate_on_request() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let plain = hansei_ok(&bundle, core, "threads");
+        assert!(!plain.contains("registers:"), "{plain}");
+
+        let out = hansei_ok(&bundle, core, "threads --registers");
+        let blocks = out.split("\n\n").count();
+        assert_eq!(out.matches("  registers:\n").count(), blocks, "{out}");
+        // Each block's rsp is that thread's own — the claim is
+        // first-person in every block, never another lwp's number.
+        let rsp = regex::Regex::new(r"(?m)^    rsp  0x[0-9a-f]{16}  — this lwp's stack$").unwrap();
+        assert_eq!(rsp.find_iter(&out).count(), blocks, "{out}");
     });
 }
 

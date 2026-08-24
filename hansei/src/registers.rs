@@ -1,0 +1,233 @@
+//! The annotated `registers:` block `threads` and `trace` share: one
+//! line per general-purpose register, each annotated with what the
+//! value points into — the claims the pure classifier
+//! ([`hansei_runtime::tokio::registers`]) makes from the session's
+//! recorded joins, spelled here.
+
+use crate::Session;
+use crate::tasks::task_label;
+
+use anyhow::Result;
+use hansei_runtime::tokio::registers::{LwpStack, RegClass, RegClassifier};
+use proc::Target as _;
+
+use std::io;
+
+/// The 17 general-purpose registers, in the order the block prints
+/// them: the trap trio first, then the argument/value registers, then
+/// the numbered ones. Segments, flags and fsbase are noise here;
+/// anyone who needs them has the core.
+fn gprs(regs: &proc::Regs) -> [(&'static str, u64); 17] {
+    [
+        ("rip", regs.rip),
+        ("rsp", regs.rsp),
+        ("rbp", regs.rbp),
+        ("rax", regs.rax),
+        ("rbx", regs.rbx),
+        ("rcx", regs.rcx),
+        ("rdx", regs.rdx),
+        ("rsi", regs.rsi),
+        ("rdi", regs.rdi),
+        ("r8", regs.r8),
+        ("r9", regs.r9),
+        ("r10", regs.r10),
+        ("r11", regs.r11),
+        ("r12", regs.r12),
+        ("r13", regs.r13),
+        ("r14", regs.r14),
+        ("r15", regs.r15),
+    ]
+}
+
+/// Print one lwp's annotated register block, indented for the caller's
+/// section. Frame-0 trap state only: past frame 0 the unwinder
+/// restores only callee-saved registers, and printing the rest would
+/// be confident zeros.
+pub(crate) fn print_lwp_registers(
+    session: &Session<'_>,
+    lwp: u32,
+    indent: &str,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let Some(info) = session.lwps.iter().find(|l| l.tid == lwp) else {
+        // Workers come from the lwp list, so this is a torn core's
+        // path, not an expected one.
+        writeln!(out, "{indent}registers: none recorded for lwp {lwp}")?;
+        return Ok(());
+    };
+    let stacks: Vec<LwpStack> = session
+        .lwps
+        .iter()
+        .map(|l| LwpStack {
+            tid: l.tid,
+            rsp: l.regs.rsp,
+            range: l.stack_range.clone(),
+        })
+        .collect();
+    let classifier = RegClassifier {
+        mappings: &session.ctx.mappings,
+        stacks: &stacks,
+        extents: session.extents(),
+    };
+    let list = &session.tasks;
+    let symbol = |addr: u64| session.proc.lookup_symbol_by_addr(addr);
+    let annotate = |value: u64| {
+        spelled(&classifier.classify(lwp, value, &symbol), &|index| {
+            task_label(list, index)
+        })
+    };
+    print_registers(out, indent, &info.regs, &annotate)
+}
+
+/// Lay the block out: the `registers:` heading, then one line per
+/// register — name, value, and the annotation when there is a claim.
+fn print_registers(
+    out: &mut dyn io::Write,
+    indent: &str,
+    regs: &proc::Regs,
+    annotate: &dyn Fn(u64) -> Option<String>,
+) -> Result<()> {
+    writeln!(out, "{indent}registers:")?;
+    for (name, value) in gprs(regs) {
+        match annotate(value) {
+            Some(claim) => writeln!(out, "{indent}  {name:<3}  {value:#018x}  — {claim}")?,
+            None => writeln!(out, "{indent}  {name:<3}  {value:#018x}")?,
+        }
+    }
+    Ok(())
+}
+
+/// Spell one classification as the annotation the block prints — or
+/// nothing, for a value with no claim to make. `label` names a task by
+/// its index in the session's list, the way every listing does.
+fn spelled(class: &RegClass, label: &dyn Fn(usize) -> String) -> Option<String> {
+    Some(match class {
+        RegClass::Task { index, offset } => match offset {
+            0 => label(*index),
+            offset => format!("{} +{offset:#x}", label(*index)),
+        },
+        RegClass::OwnStack => "this lwp's stack".to_string(),
+        RegClass::LwpStack(tid) => format!("lwp {tid}'s stack"),
+        RegClass::StackRegion => "thread-stack region".to_string(),
+        RegClass::Symbol { name, offset } => {
+            let name = format!("{:#}", rustc_demangle::demangle(name));
+            match offset {
+                0 => name,
+                offset => format!("{name} +{offset:#x}"),
+            }
+        }
+        // The path whole would drown the line; the object's name is
+        // the claim.
+        RegClass::Object(path) => {
+            let base = path.rsplit('/').next().unwrap_or(path);
+            format!("in {base}")
+        }
+        RegClass::Heap => "heap".to_string(),
+        RegClass::Unmapped => "unmapped".to_string(),
+        RegClass::Small => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{print_registers, spelled};
+    use hansei_runtime::tokio::registers::RegClass;
+
+    /// Each claim's spelling, and the one silence: offsets ride along
+    /// only when nonzero, symbols demangle, objects shed their
+    /// directories.
+    #[test]
+    fn test_each_claim_has_one_spelling() {
+        let label = |index: usize| format!("task {}", index + 30);
+        let spell = |class| spelled(&class, &label);
+        assert_eq!(
+            spell(RegClass::Task {
+                index: 5,
+                offset: 0x10
+            })
+            .as_deref(),
+            Some("task 35 +0x10")
+        );
+        assert_eq!(
+            spell(RegClass::Task {
+                index: 5,
+                offset: 0
+            })
+            .as_deref(),
+            Some("task 35")
+        );
+        assert_eq!(
+            spell(RegClass::OwnStack).as_deref(),
+            Some("this lwp's stack")
+        );
+        assert_eq!(
+            spell(RegClass::LwpStack(12)).as_deref(),
+            Some("lwp 12's stack")
+        );
+        assert_eq!(
+            spell(RegClass::StackRegion).as_deref(),
+            Some("thread-stack region")
+        );
+        assert_eq!(
+            spell(RegClass::Symbol {
+                name: "_ZN4core3fut4pollE".to_string(),
+                offset: 0x1c
+            })
+            .as_deref(),
+            Some("core::fut::poll +0x1c")
+        );
+        assert_eq!(
+            spell(RegClass::Object("/usr/lib/libc.so.6".to_string())).as_deref(),
+            Some("in libc.so.6")
+        );
+        assert_eq!(spell(RegClass::Heap).as_deref(), Some("heap"));
+        assert_eq!(spell(RegClass::Unmapped).as_deref(), Some("unmapped"));
+        assert_eq!(spell(RegClass::Small), None);
+    }
+
+    /// The block whole: the heading at the caller's indent, all 17
+    /// registers in their fixed order, the annotation set off by the
+    /// dash only where there is a claim.
+    #[test]
+    fn test_the_block_prints_seventeen_annotated_gprs() {
+        let regs = proc::Regs {
+            rip: 0x40_0000,
+            rsp: 0x9000_0800,
+            rbp: 0x9000_0900,
+            rax: 0,
+            rbx: 0x14,
+            ..proc::Regs::default()
+        };
+        let annotate = |value: u64| match value {
+            0x40_0000 => Some("app_main".to_string()),
+            0x9000_0800 | 0x9000_0900 => Some("this lwp's stack".to_string()),
+            0 => Some("unmapped".to_string()),
+            _ => None,
+        };
+        let mut out = Vec::new();
+        print_registers(&mut out, "  ", &regs, &annotate).expect("the block renders");
+        let out = String::from_utf8(out).expect("rendered output is UTF-8");
+        assert_eq!(
+            out,
+            "  registers:
+    rip  0x0000000000400000  — app_main
+    rsp  0x0000000090000800  — this lwp's stack
+    rbp  0x0000000090000900  — this lwp's stack
+    rax  0x0000000000000000  — unmapped
+    rbx  0x0000000000000014
+    rcx  0x0000000000000000  — unmapped
+    rdx  0x0000000000000000  — unmapped
+    rsi  0x0000000000000000  — unmapped
+    rdi  0x0000000000000000  — unmapped
+    r8   0x0000000000000000  — unmapped
+    r9   0x0000000000000000  — unmapped
+    r10  0x0000000000000000  — unmapped
+    r11  0x0000000000000000  — unmapped
+    r12  0x0000000000000000  — unmapped
+    r13  0x0000000000000000  — unmapped
+    r14  0x0000000000000000  — unmapped
+    r15  0x0000000000000000  — unmapped
+",
+        );
+    }
+}

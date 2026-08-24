@@ -659,7 +659,7 @@ pub(crate) fn exec_census(
     let runtimes = census_runtimes(session, sections.threads)?;
 
     let facts = summary::Facts {
-        lwps: session.lwps,
+        lwps: session.lwps.len(),
         runtime,
         runtimes,
         local_sets: session.local_sets.len(),

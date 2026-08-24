@@ -15,22 +15,25 @@ use std::io::{self, Write};
 /// Every thread the runtime is running on, as the runtime sees it and
 /// as the stack sees it: the task it is polling, the worker core it
 /// holds while it runs, and the frames it is parked in.
-/// `lwp` narrows the listing to that one thread's block, and is `None`
-/// for the whole listing.
+/// `lwps` narrows the listing to the named threads' blocks, and is
+/// empty for the whole listing. The lwp that took the fatal signal
+/// prints its registers unasked — that is exactly when they matter —
+/// and `registers` asks the same of every listed thread.
 pub(crate) fn exec_threads(
     session: &Session<'_>,
     frames: usize,
-    lwp: Option<u32>,
+    lwps: &[u32],
+    registers: bool,
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     // Resolve the selection before any work, so an lwp the listing does
     // not hold says so rather than printing nothing — and without first
     // paying for (or warning about) the unwind below.
-    if let Some(tid) = lwp
-        && !session.workers.iter().any(|w| w.tid == tid)
-    {
-        return Err(no_such_thread(&session.workers, tid));
+    for &tid in lwps {
+        if !session.workers.iter().any(|w| w.tid == tid) {
+            return Err(no_such_thread(&session.workers, tid));
+        }
     }
 
     // Unwinding reads the CFI of every mapped object, so it is done once
@@ -52,7 +55,7 @@ pub(crate) fn exec_threads(
     let selected = session
         .workers
         .iter()
-        .filter(|w| lwp.is_none_or(|tid| w.tid == tid));
+        .filter(|w| lwps.is_empty() || lwps.contains(&w.tid));
     for (i, worker) in selected.enumerate() {
         if i > 0 {
             writeln!(out)?;
@@ -94,6 +97,11 @@ pub(crate) fn exec_threads(
             Err(e) => writeln!(out, "  scheduler context unreadable: {e:#}")?,
         }
 
+        // Frame 0 of the stack below, so it prints just above it.
+        if shows_registers(registers, fatal.as_ref(), worker.tid) {
+            crate::registers::print_lwp_registers(session, worker.tid, "  ", out)?;
+        }
+
         match stacks.get(&worker.tid) {
             Some(backtrace) => {
                 writeln!(out, "  stack:")?;
@@ -132,6 +140,13 @@ fn fatal_tag(fatal: Option<&proc::FatalSignal>, tid: u32) -> String {
         }
         _ => String::new(),
     }
+}
+
+/// Whether a thread's block prints its registers: asked for with
+/// `--registers`, or earned by taking the fatal signal — that is
+/// exactly when they matter, and healthy captures stay unaffected.
+fn shows_registers(registers: bool, fatal: Option<&proc::FatalSignal>, tid: u32) -> bool {
+    registers || fatal.is_some_and(|sig| sig.lwp == Some(tid))
 }
 
 /// What a thread is doing with the task it last entered. tokio restores
@@ -339,6 +354,22 @@ mod tests {
         assert_eq!(fatal_tag(Some(&sig), 8), "");
         assert_eq!(fatal_tag(None, 7), "");
         assert_eq!(fatal_tag(Some(&segv(None)), 7), "");
+    }
+
+    /// The register block is earned by exactly the lwp the fatal
+    /// signal names — not its siblings, not anyone on a healthy
+    /// capture, nobody when the core did not say which lwp took it —
+    /// and `--registers` asks it of every thread regardless.
+    #[test]
+    fn test_registers_print_for_the_faulting_lwp_or_on_request() {
+        use super::shows_registers;
+        let sig = segv(Some(7));
+        assert!(shows_registers(false, Some(&sig), 7));
+        assert!(!shows_registers(false, Some(&sig), 8));
+        assert!(!shows_registers(false, None, 7));
+        assert!(!shows_registers(false, Some(&segv(None)), 7));
+        assert!(shows_registers(true, None, 8));
+        assert!(shows_registers(true, Some(&sig), 8));
     }
 
     /// An lwp the listing does not hold names the ones it does, since
