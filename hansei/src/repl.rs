@@ -127,12 +127,13 @@ fn scripted(session: &Session<'_>) -> Result<()> {
 ///
 /// They run in order and stop at the first failure, so `tasks ; graph`
 /// asks two questions of one target and a failure part-way through does
-/// not go on to ask the rest. The separator binds looser than nothing
-/// else does: a `;` ends the command it follows even inside the shell
-/// text after a `!`, which is the price of not having a quoting
-/// grammar.
+/// not go on to ask the rest. The separator binds looser than anything
+/// else — a `;` ends the command it follows even inside the shell text
+/// after a `!` — with one way out: `\;` is a literal `;`, which is how
+/// an array type (`[usize\; 4]`) crosses the split. That pair is the
+/// whole escape grammar; every other backslash is itself.
 fn execute(session: &Session<'_>, line: &str) -> Result<Flow> {
-    let commands: Vec<&str> = line.split(';').collect();
+    let commands = split_commands(line);
     for command in &commands {
         let flow = match command_frame(commands.len(), command) {
             None => execute_one(session, command)?,
@@ -143,6 +144,32 @@ fn execute(session: &Session<'_>, line: &str) -> Result<Flow> {
         }
     }
     Ok(Flow::Continue)
+}
+
+/// Split a line at every unescaped `;`, unescaping `\;` to a literal
+/// `;` in each piece. Exactly the two-character sequence `\;` is
+/// special; any other backslash passes through untouched, so nothing
+/// else needs escaping and no name grows a second spelling.
+fn split_commands(line: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut current = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some(';') => current.push(';'),
+                Some(other) => {
+                    current.push('\\');
+                    current.push(other);
+                }
+                None => current.push('\\'),
+            },
+            ';' => commands.push(std::mem::take(&mut current)),
+            c => current.push(c),
+        }
+    }
+    commands.push(current);
+    commands
 }
 
 /// How a failure names the command it came from. Which command failed
@@ -355,6 +382,24 @@ mod tests {
     fn test_only_multi_command_lines_frame_their_failures() {
         assert_eq!(command_frame(1, " tasks "), None);
         assert_eq!(command_frame(2, " tasks "), Some("in `tasks`".to_string()));
+    }
+
+    /// The split honors exactly one escape: `\;` is a literal `;` and
+    /// never a separator, an unescaped `;` always is one, and every
+    /// other backslash — mid-name, before another character, ending
+    /// the line — passes through untouched.
+    #[test]
+    fn test_the_split_honors_the_escaped_separator() {
+        assert_eq!(split_commands("tasks ; graph"), ["tasks ", " graph"]);
+        assert_eq!(
+            split_commands(r"print 0x10 [usize\; 4]; graph"),
+            ["print 0x10 [usize; 4]", " graph"]
+        );
+        assert_eq!(split_commands(r"type [u8\; 2]"), ["type [u8; 2]"]);
+        assert_eq!(split_commands(r"a \x b"), [r"a \x b"]);
+        assert_eq!(split_commands(r"a \"), [r"a \"]);
+        assert_eq!(split_commands("tasks"), ["tasks"]);
+        assert_eq!(split_commands("a;;b"), ["a", "", "b"]);
     }
 
     /// A shared sink that remembers what reached it, for standing in

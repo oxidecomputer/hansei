@@ -44,9 +44,10 @@ struct Cli {
     #[command(flatten)]
     session: SessionArgs,
 
-    /// Commands to run instead of reading stdin, `;` between them.
-    /// Repeat the flag to add more; the session exits when they are
-    /// answered, or at the first one that fails.
+    /// Commands to run instead of reading stdin, `;` between them —
+    /// `\;` for a literal `;`, as an array type's name needs. Repeat
+    /// the flag to add more; the session exits when they are answered,
+    /// or at the first one that fails.
     #[arg(long, short, value_name = "COMMANDS")]
     exec: Vec<String>,
 }
