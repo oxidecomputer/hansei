@@ -15,12 +15,24 @@ use std::io::{self, Write};
 /// Every thread the runtime is running on, as the runtime sees it and
 /// as the stack sees it: the task it is polling, the worker core it
 /// holds while it runs, and the frames it is parked in.
+/// `lwp` narrows the listing to that one thread's block, and is `None`
+/// for the whole listing.
 pub(crate) fn exec_threads(
     session: &Session<'_>,
     frames: usize,
+    lwp: Option<u32>,
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
+    // Resolve the selection before any work, so an lwp the listing does
+    // not hold says so rather than printing nothing — and without first
+    // paying for (or warning about) the unwind below.
+    if let Some(tid) = lwp
+        && !session.workers.iter().any(|w| w.tid == tid)
+    {
+        return Err(no_such_thread(&session.workers, tid));
+    }
+
     // Unwinding reads the CFI of every mapped object, so it is done once
     // for the whole target and only when a command asks for it. A target
     // it cannot walk still has runtime state worth printing, so a failure
@@ -37,7 +49,11 @@ pub(crate) fn exec_threads(
     };
 
     let fatal = session.proc.fatal_signal();
-    for (i, worker) in session.workers.iter().enumerate() {
+    let selected = session
+        .workers
+        .iter()
+        .filter(|w| lwp.is_none_or(|tid| w.tid == tid));
+    for (i, worker) in selected.enumerate() {
         if i > 0 {
             writeln!(out)?;
         }
@@ -89,6 +105,17 @@ pub(crate) fn exec_threads(
         }
     }
     Ok(())
+}
+
+/// The error for an lwp no runtime is running on: name the lwps the
+/// listing does hold, since the number asked for came from somewhere
+/// else.
+fn no_such_thread(workers: &[bundle::Worker], tid: u32) -> anyhow::Error {
+    let tids: Vec<u32> = workers.iter().map(|w| w.tid).collect();
+    anyhow::anyhow!(
+        "no thread with lwp {tid} is listed; the target's runtimes run on {} thread(s): {tids:?}",
+        tids.len()
+    )
 }
 
 /// The heading tag for the lwp that took the fatal signal — empty for
@@ -276,7 +303,7 @@ pub(crate) fn render<'r, 'b>(
 
 #[cfg(test)]
 mod tests {
-    use super::{fatal_tag, polling_line};
+    use super::{bundle, fatal_tag, no_such_thread, polling_line};
 
     /// The three spellings of the heading's claim: believed, stale,
     /// and absent — the stale word is reported, but not as a poll in
@@ -312,5 +339,23 @@ mod tests {
         assert_eq!(fatal_tag(Some(&sig), 8), "");
         assert_eq!(fatal_tag(None, 7), "");
         assert_eq!(fatal_tag(Some(&segv(None)), 7), "");
+    }
+
+    /// An lwp the listing does not hold names the ones it does, since
+    /// the number asked for came from somewhere else.
+    #[test]
+    fn test_an_unlisted_lwp_names_the_listed_ones() {
+        let workers: Vec<bundle::Worker> = [3, 5]
+            .into_iter()
+            .map(|tid| bundle::Worker {
+                tid,
+                context_addr: 0,
+                current_task_id: None,
+            })
+            .collect();
+        assert_eq!(
+            no_such_thread(&workers, 9).to_string(),
+            "no thread with lwp 9 is listed; the target's runtimes run on 2 thread(s): [3, 5]"
+        );
     }
 }
