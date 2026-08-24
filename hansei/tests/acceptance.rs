@@ -2270,6 +2270,39 @@ fn test_threads_shows_workers_and_stacks() {
     });
 }
 
+/// `threads` narrows to one thread when its lwp is named: that block
+/// alone is printed, and an lwp the listing does not hold is an error
+/// naming the ones it does.
+#[test]
+fn test_threads_selects_one_lwp() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let full = hansei_ok(&bundle, core, "threads");
+        let first = full.split("\n\n").next().expect("the listing has a block");
+        let tid = first
+            .strip_prefix("lwp ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("the block heading names its lwp");
+
+        let one = hansei_ok(&bundle, core, &format!("threads {tid}"));
+        assert_eq!(one, format!("{first}\n"), "the lwp selects its block alone");
+
+        // An lwp no runtime runs on is an error, which fails a
+        // scripted session.
+        let out = hansei(&bundle, core, "threads 999999");
+        assert!(
+            !out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("no thread with lwp 999999 is listed"),
+            "{stderr}"
+        );
+    });
+}
+
 /// `runtime` selects by listed index and by handle address, and earns
 /// headings only from an ambiguity they resolve: one runtime and one
 /// section print the value alone.

@@ -474,6 +474,11 @@ pub enum Command {
         #[arg(long, short, default_value_t = 50)]
         frames: usize,
 
+        /// Show only this thread, selected by the lwp id its heading
+        /// carries. The whole listing is printed when none is named.
+        #[arg(value_name = "LWP")]
+        lwp: Option<u32>,
+
         #[command(flatten)]
         render: RenderOpts,
     },
@@ -947,7 +952,11 @@ pub fn dispatch(
             session.note_version_ceiling();
             tasks::exec_tasks(session, futures, &task, out)?
         }
-        Command::Threads { frames, render } => threads::exec_threads(session, frames, render, out)?,
+        Command::Threads {
+            frames,
+            lwp,
+            render,
+        } => threads::exec_threads(session, frames, lwp, render, out)?,
         Command::Trace {
             target,
             verbose,
