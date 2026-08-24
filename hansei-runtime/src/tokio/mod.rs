@@ -16,6 +16,7 @@ pub mod census;
 pub mod contract;
 pub mod graph;
 mod model;
+pub mod stackjoin;
 
 use std::fmt;
 use std::mem;
