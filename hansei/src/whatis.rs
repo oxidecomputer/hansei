@@ -18,10 +18,54 @@ pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Wr
         &session.tasks,
         session.extents(),
         session.census(),
+        vtable_at(session.proc, addr).as_ref(),
         &session.impl_fold,
         addr,
         out,
     )
+}
+
+/// What a static vtable holds, populated only when the memory at `addr`
+/// proves to be one.
+pub(crate) struct VtableAt {
+    /// The erased concrete type the vtable dispatches for.
+    concrete: String,
+    /// The drop function's demangled symbol — the join's evidence.
+    drop_symbol: String,
+    size: u64,
+    align: u64,
+}
+
+/// Read the memory at `addr` as a Rust vtable, believed only on the
+/// join that cannot be coincidence: the first slot must resolve to a
+/// `drop_in_place`/`drop_glue` function symbol, whose generic argument
+/// names the erased concrete type — the same join `print` uses to name
+/// a trait object, so it works even where the vtable static itself has
+/// no symbol, as a stripped binary's does not. The size and align
+/// words ride along once that holds; an align that is not a nonzero
+/// power of two says this is not a vtable after all.
+fn vtable_at<T: proc::Target>(proc: &T, addr: u64) -> Option<VtableAt> {
+    let drop_fn = proc.read_u64(addr).ok()?;
+    if drop_fn == 0 {
+        return None;
+    }
+    let size = proc.read_u64(addr + 8).ok()?;
+    let align = proc.read_u64(addr + 16).ok()?;
+    if !align.is_power_of_two() {
+        return None;
+    }
+    let symbol = proc.lookup_symbol_by_addr(drop_fn)?;
+    let stripped = hansei_bundle::strip_llvm_suffix(&symbol.name);
+    let demangled = rustc_demangle::try_demangle(stripped).ok()?;
+    let drop_symbol = format!("{demangled:#}");
+    let concrete =
+        hansei_bundle::symbols::concrete_type_from_vtable_symbol(&drop_symbol)?.to_string();
+    Some(VtableAt {
+        concrete,
+        drop_symbol,
+        size,
+        align,
+    })
 }
 
 /// The `whatis` answer, apart from the session so the offline fixture
@@ -47,6 +91,7 @@ fn report_whatis(
     list: &bundle::TaskList,
     extents: &bundle::TaskExtents,
     census: &census::FutureCensus,
+    vtable: Option<&VtableAt>,
     impls: &names::ImplFold,
     addr: u64,
     out: &mut dyn io::Write,
@@ -96,6 +141,24 @@ fn report_whatis(
         writeln!(out, "    Pinned to: {pinned}")?;
         writeln!(out, "    Found via: {}", set.route)?;
         writeln!(out, "    Tasks: {}", owned(runtimes.len() + index))?;
+    }
+
+    // A vtable is a static, outside every allocation the blocks below
+    // nest through — the coarse answer for the second word of a trait
+    // object, which is the pointer a reader most often has in hand.
+    if let Some(vtable) = vtable {
+        separate(&mut blocks, out)?;
+        writeln!(
+            out,
+            "Vtable {addr:#x}: erases {}",
+            names::fold_type_name(&vtable.concrete, impls)
+        )?;
+        writeln!(out, "    Drop: {}", vtable.drop_symbol)?;
+        writeln!(
+            out,
+            "    Erased size: {} bytes, align {}",
+            vtable.size, vtable.align
+        )?;
     }
 
     if let Some((index, offset)) = extents.locate(addr) {
@@ -270,7 +333,7 @@ pub(crate) fn via_suffix(census: &census::FutureCensus, via: Option<census::Via>
 /// extracted bundle joined against a real captured snapshot.
 #[cfg(test)]
 mod whatis_tests {
-    use super::{report_whatis, separate};
+    use super::{VtableAt, report_whatis, separate, vtable_at};
     use crate::parse_hex_addr;
     use hansei_bundle::BundleView;
     use hansei_runtime::testkit;
@@ -315,12 +378,128 @@ mod whatis_tests {
             &target.list,
             &target.extents,
             &target.census,
+            None,
             &hansei_bundle::names::ImplFold::default(),
             addr,
             &mut out,
         )
         .expect("the report renders");
         String::from_utf8(out).expect("rendered output is UTF-8")
+    }
+
+    /// A vtable block names what the vtable erases, the drop symbol
+    /// that proved it, and the erased layout — and counts as an
+    /// answer, so the miss line stays away.
+    #[test]
+    fn test_a_vtable_reports_what_it_erases() {
+        with_tasks("sleep-join", |target| {
+            let vtable = VtableAt {
+                concrete: "app::Thing<u64>".to_string(),
+                drop_symbol: "core::ptr::drop_glue::<app::Thing<u64>>".to_string(),
+                size: 48,
+                align: 8,
+            };
+            let mut out = Vec::new();
+            report_whatis(
+                &target.view,
+                &target.runtimes,
+                &target.local_sets,
+                &target.list,
+                &target.extents,
+                &target.census,
+                Some(&vtable),
+                &hansei_bundle::names::ImplFold::default(),
+                0x9000_0000,
+                &mut out,
+            )
+            .expect("the report renders");
+            let out = String::from_utf8(out).expect("rendered output is UTF-8");
+            assert!(
+                out.contains("Vtable 0x90000000: erases app::Thing<u64>"),
+                "{out}"
+            );
+            assert!(
+                out.contains("Drop: core::ptr::drop_glue::<app::Thing<u64>>"),
+                "{out}"
+            );
+            assert!(out.contains("Erased size: 48 bytes, align 8"), "{out}");
+            assert!(!out.contains("no task's allocation"), "{out}");
+        });
+    }
+
+    /// A fake serving three vtable words and one function symbol, for
+    /// driving the probe's joins without a core.
+    struct VtableMem {
+        words: Vec<u8>,
+        symbol: Option<(u64, String)>,
+    }
+
+    impl proc::Target for VtableMem {
+        fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
+            let start = addr
+                .checked_sub(0x1000)
+                .filter(|&s| s + len <= self.words.len() as u64)
+                .ok_or_else(|| proc::Error::unmapped(addr, len))?;
+            Ok(&self.words[start as usize..(start + len) as usize])
+        }
+        fn lookup_symbol_by_addr(&self, addr: u64) -> Option<proc::SymbolBuf> {
+            let (at, name) = self.symbol.as_ref()?;
+            (*at == addr).then(|| proc::SymbolBuf {
+                name: name.clone(),
+                st_name: 0,
+                st_info: 0,
+                st_other: 0,
+                st_shndx: 0,
+                st_value: addr,
+                st_size: 8,
+            })
+        }
+        fn lookup_symbol_by_name(&self, _: &str) -> Option<proc::SymbolBuf> {
+            None
+        }
+        fn symbols(&self) -> proc::Result<Vec<proc::SymbolBuf>> {
+            Ok(Vec::new())
+        }
+        fn mappings(&self) -> proc::Result<proc::Mappings> {
+            Ok(proc::Mappings::from_iter([]))
+        }
+        fn lwps(&self) -> proc::Result<Vec<proc::LwpInfo>> {
+            Ok(Vec::new())
+        }
+        fn tls_var_addr(&self, _: &proc::Regs, _: &proc::SymbolBuf) -> proc::Result<Option<u64>> {
+            Ok(None)
+        }
+    }
+
+    /// The probe believes only the full join: a drop-glue symbol
+    /// behind the first slot and a plausible align word. A slot
+    /// resolving to no symbol, to a symbol that is not drop glue, or
+    /// riding an align that is no power of two proves nothing.
+    #[test]
+    fn test_the_vtable_probe_requires_the_drop_glue_join() {
+        // A genuine v0-mangled drop-glue monomorphization, lifted from
+        // a real symtab, demangling to
+        // `core::ptr::drop_glue::<[reedline::enums::EditCommand; 1]>`.
+        const DROP: &str = "_RINvNtCs4gTh5wWLWvJ_4core3ptr9drop_glueANtNtCs1dINKnBl13J_8reedline5enums11EditCommandj1_EBG_";
+        let mem = |drop_fn: u64, align: u64, symbol: Option<(u64, &str)>| VtableMem {
+            words: [drop_fn, 48, align]
+                .iter()
+                .flat_map(|w| w.to_le_bytes())
+                .collect(),
+            symbol: symbol.map(|(at, name)| (at, name.to_string())),
+        };
+
+        let found = vtable_at(&mem(0x5000, 8, Some((0x5000, DROP))), 0x1000)
+            .expect("the full join is believed");
+        assert_eq!(found.concrete, "[reedline::enums::EditCommand; 1]");
+        assert_eq!((found.size, found.align), (48, 8));
+
+        assert!(vtable_at(&mem(0x5000, 8, None), 0x1000).is_none());
+        assert!(vtable_at(&mem(0x5000, 8, Some((0x5000, "malloc"))), 0x1000).is_none());
+        assert!(vtable_at(&mem(0x5000, 7, Some((0x5000, DROP))), 0x1000).is_none());
+        assert!(vtable_at(&mem(0, 8, Some((0x5000, DROP))), 0x1000).is_none());
+        // Unreadable memory is no vtable either.
+        assert!(vtable_at(&mem(0x5000, 8, Some((0x5000, DROP))), 0x9999).is_none());
     }
 
     /// An address inside a task's allocation — its header, or any
