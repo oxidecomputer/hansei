@@ -51,26 +51,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
         return write!(f, "<truncated>");
     };
     let words = read_vtable_words(*vtable, vtable_address, ctx.proc);
-
-    let mut functions = Vec::new();
-    if let (Some(proc), Some(words)) = (ctx.proc, words.as_deref()) {
-        for (slot, &address) in words.iter().enumerate() {
-            let slot = slot as u32;
-            if slot == *size_slot || slot == *align_slot || address == 0 {
-                continue;
-            }
-            let Some(display) = resolve_function_symbol(Some(proc), address) else {
-                continue;
-            };
-            let concrete = hansei_bundle::symbols::concrete_type_from_vtable_symbol(&display)
-                .map(str::to_owned);
-            functions.push(VtableFunction {
-                slot,
-                display,
-                concrete,
-            });
-        }
-    }
+    let functions = vtable_functions(ctx.proc, words.as_deref(), *size_slot, *align_slot);
 
     let inferred = infer_concrete_type(ty, words.as_deref(), *size_slot, &functions);
     let (concrete, concrete_ty) = match inferred {
@@ -189,6 +170,97 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
 
     write_record_close(f, pretty, ctx.prefix, ctx.depth)?;
     write!(f, "}}")
+}
+
+/// The vtable's resolvable function entries: every word past the size and
+/// align slots that resolves to a function symbol, demangled, with the
+/// concrete type its symbol names where it names one.
+fn vtable_functions<T: Target>(
+    proc: Option<&T>,
+    words: Option<&[u64]>,
+    size_slot: u32,
+    align_slot: u32,
+) -> Vec<VtableFunction> {
+    let mut functions = Vec::new();
+    if let (Some(proc), Some(words)) = (proc, words) {
+        for (slot, &address) in words.iter().enumerate() {
+            let slot = slot as u32;
+            if slot == size_slot || slot == align_slot || address == 0 {
+                continue;
+            }
+            let Some(display) = resolve_function_symbol(Some(proc), address) else {
+                continue;
+            };
+            let concrete = hansei_bundle::symbols::concrete_type_from_vtable_symbol(&display)
+                .map(str::to_owned);
+            functions.push(VtableFunction {
+                slot,
+                display,
+                concrete,
+            });
+        }
+    }
+    functions
+}
+
+/// Resolve a trait-object wide pointer to its concrete pointee: the type the
+/// vtable's function symbols agree on (corroborated against the vtable's size
+/// word) and the address its erased value lives at — the data pointer plus
+/// the `dyn` tail's offset within whatever the pointer targets.
+///
+/// `None` whenever the answer would be a guess: the type carries no
+/// `DynPointer` display program, the pointer or vtable word is missing or
+/// null, the vtable is unreadable, its symbols disagree or resolve to no
+/// bundle type, or the concrete type is zero-sized. This is the same join
+/// [`eval_dyn_pointer`] renders; a reader that wants to *follow* the pointee
+/// rather than display it calls this.
+pub(crate) fn dyn_pointee_cached<'a, T: Target>(
+    value: &Value<'a>,
+    proc: &'a T,
+    cache: &mut crate::value::WalkCache<'a>,
+) -> Option<(BundleType<'a>, u64)> {
+    let node = cache.node(value.ty)?;
+    let DisplayNode::DynPointer {
+        pointer_offset,
+        vtable,
+        vtable_offset,
+        size: size_slot,
+        align: align_slot,
+        tail_offset,
+        ..
+    } = &*node
+    else {
+        return None;
+    };
+
+    let pointer_address = read_u64_at(value.bytes, *pointer_offset)?;
+    let vtable_address = read_u64_at(value.bytes, *vtable_offset)?;
+    if pointer_address == 0 {
+        return None;
+    }
+    // One vtable always erases the same concrete type, so the whole
+    // symbol join — reading the vtable, resolving and demangling its
+    // function symbols, corroborating the size word — memoizes on the
+    // vtable's address, negative answers included.
+    let id = match cache.pointees.get(&vtable_address) {
+        Some(&id) => id,
+        None => {
+            let resolved = (|| {
+                let words = read_vtable_words(*vtable, vtable_address, Some(proc))?;
+                let functions = vtable_functions(Some(proc), Some(&words), *size_slot, *align_slot);
+                let (_, resolved) =
+                    infer_concrete_type(value.ty, Some(&words), *size_slot, &functions)?;
+                resolved.map(|ty| ty.id())
+            })();
+            cache.pointees.insert(vtable_address, resolved);
+            resolved
+        }
+    };
+    let concrete = value.ty.related_type(id?);
+    if concrete.size() == 0 {
+        return None;
+    }
+    Some((concrete, pointer_address.wrapping_add(*tail_offset)))
 }
 
 pub(crate) fn resolve_function_symbol<T: Target>(proc: Option<&T>, address: u64) -> Option<String> {

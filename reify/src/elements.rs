@@ -97,16 +97,26 @@ impl<'a> Elements<'a> {
     /// bytes; and, for a bundle whose detector declined or predates the
     /// formatter, the bare `(data_ptr, length)` fat pointer.
     pub(crate) fn of<T: Target>(info: &Value<'a>, proc: &'a T) -> Result<Elements<'a>> {
+        Self::with_node(info, proc, DisplayNode::resolve(info.ty).as_ref())
+    }
+
+    /// [`Elements::of`] with the display program already resolved — the
+    /// entry for a walk that memoizes resolution per type.
+    pub(crate) fn with_node<T: Target>(
+        info: &Value<'a>,
+        proc: &'a T,
+        node: Option<&DisplayNode<'a>>,
+    ) -> Result<Elements<'a>> {
         let ty = info.ty;
 
         if let Some(DisplayNode::Slice {
             header,
             element,
             element_size,
-        }) = DisplayNode::resolve(ty)
+        }) = node
         {
-            let stride = u64::from(element_size);
-            return Self::read_fat(&header, element, stride, info.bytes, Some(proc))
+            let stride = u64::from(*element_size);
+            return Self::read_fat(header, *element, stride, info.bytes, Some(proc))
                 .map_err(|e| e.into_error(ty.name()));
         }
 
@@ -229,21 +239,37 @@ pub(crate) struct Buffer<'a> {
 
 /// The bytes of a UTF-8 buffer — a `String`, a `&str`, an owned path — read
 /// through the `Str` display program the bundle carries, or through the bare
-/// `(data_ptr, length)` pair where it carries none.
+/// `(data_ptr, length)` pair where it carries none, together with the
+/// buffer's base address.
 ///
 /// This is [`Elements::of`] for a sequence whose elements are bytes and whose
 /// point is the bytes rather than the elements: same header, same validation,
 /// same bound on a length that cannot be trusted, but one bulk read instead
 /// of a typed view per byte.
-pub(crate) fn utf8<'a, T: Target>(info: &Value<'a>, proc: &'a T) -> Result<Buffer<'a>> {
+pub(crate) fn utf8<'a, T: Target>(info: &Value<'a>, proc: &'a T) -> Result<(u64, Buffer<'a>)> {
+    utf8_with_node(info, proc, DisplayNode::resolve(info.ty).as_ref())
+}
+
+/// [`utf8`] with the display program already resolved — the entry for a
+/// walk that memoizes resolution per type.
+pub(crate) fn utf8_with_node<'a, T: Target>(
+    info: &Value<'a>,
+    proc: &'a T,
+    node: Option<&DisplayNode<'a>>,
+) -> Result<(u64, Buffer<'a>)> {
     let ty = info.ty;
 
-    if let Some(DisplayNode::Str { header }) = DisplayNode::resolve(ty) {
-        return utf8_buffer(&header, info.bytes, Some(proc)).map_err(|e| e.into_error(ty.name()));
+    if let Some(DisplayNode::Str { header }) = node {
+        let (base, length) =
+            decode_header(info.bytes, header, 1).map_err(|e| e.into_error(ty.name()))?;
+        let buffer =
+            read_buffer(Some(proc), base, 1, length).map_err(|e| e.into_error(ty.name()))?;
+        return Ok((base, buffer));
     }
 
     let (_, base, length) = bare_fat_pointer(info, proc)?;
-    read_buffer(Some(proc), base, 1, length).map_err(|e| e.into_error(ty.name()))
+    let buffer = read_buffer(Some(proc), base, 1, length).map_err(|e| e.into_error(ty.name()))?;
+    Ok((base, buffer))
 }
 
 /// Decode the bare `(data_ptr, length)` members of `info` — the shared
