@@ -433,9 +433,11 @@ fn refine_offset(ty: BundleType<'_>, offset: u64) -> (String, u64) {
     loop {
         match ty.classify() {
             TypeClass::Struct => {
+                // No zero-size screen needed: a ZST member can never
+                // contain the offset (`offset - m.offset() < 0` holds
+                // for nothing).
                 let member = ty
                     .members()
-                    .filter(|m| m.ty().size() > 0)
                     .find(|m| m.offset() <= offset && offset - m.offset() < m.ty().size());
                 let Some(m) = member else { break };
                 if !chain.is_empty() {
@@ -1015,6 +1017,45 @@ mod whatis_tests {
             assert!(chain.starts_with("weak"), "{chain:?}");
             assert_eq!(rem, 1, "{chain:?}");
         });
+    }
+
+    /// The refinement's array arm, over reify's synthetic bundle: the
+    /// offset picks the element by stride, the remainder rides into
+    /// the element, and a zero-sized element ends the chain rather
+    /// than dividing by nothing.
+    #[test]
+    fn test_refinement_indexes_arrays_by_stride() {
+        let mut b = reify::testhelper::test_bundle();
+        let unit_arr = hansei_bundle::BundleTypeId(b.types.types.len() as u32);
+        b.types.types.push(hansei_bundle::TypeDef::Array {
+            elem: reify::testhelper::UNIT,
+            count: 3,
+        });
+        let v = hansei_bundle::BundleView::new(&b);
+
+        // [u32; 3]: offset 9 is element 2, one byte in.
+        let arr = v.ty(reify::testhelper::ARR).expect("ARR resolves");
+        assert_eq!(super::refine_offset(arr, 0), ("[0]".to_string(), 0));
+        assert_eq!(super::refine_offset(arr, 8), ("[2]".to_string(), 0));
+        assert_eq!(super::refine_offset(arr, 9), ("[2]".to_string(), 1));
+
+        let unit_arr = v.ty(unit_arr).expect("the pushed array resolves");
+        assert_eq!(super::refine_offset(unit_arr, 5), (String::new(), 5));
+    }
+
+    /// A buffer of scalars refines to the bare element index — no
+    /// trailing dot, no invented member — with the in-element offset
+    /// riding along.
+    #[test]
+    fn test_a_scalar_buffer_refines_to_the_bare_index() {
+        use hansei_runtime::tokio::reach::ExtentKind;
+        let b = reify::testhelper::test_bundle();
+        let v = hansei_bundle::BundleView::new(&b);
+        let u32t = v.ty(reify::testhelper::U32).expect("u32 resolves");
+        let (whole, refined) =
+            super::extent_at(ExtentKind::Buffer { stride: 4 }, Some(u32t), "u32", 9, 12);
+        assert_eq!(whole, "in a buffer of 3 × u32");
+        assert_eq!(refined, Some(("[2]".to_string(), 1)));
     }
 
     /// Each extent kind has its own placement spelling: a value names

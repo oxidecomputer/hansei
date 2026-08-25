@@ -357,6 +357,42 @@ mod tests {
         );
     }
 
+    /// The wrap arithmetic at its exact boundaries: a line landing on
+    /// the width stays whole, one column more breaks it, and a
+    /// continuation's own column — the claim's start, plus four, plus
+    /// its arrow and text — decides the next break.
+    #[test]
+    fn test_wrapping_boundaries_are_exact() {
+        use super::wrap_hops;
+        let seg = |parts: &[&str]| -> Vec<String> { parts.iter().map(|s| s.to_string()).collect() };
+
+        // start 10 + 6 + " -> " + 10 lands exactly on width 30: whole.
+        assert_eq!(
+            wrap_hops(&seg(&["aaaaaa", "bbbbbbbbbb"]), 10, 30),
+            vec!["aaaaaa -> bbbbbbbbbb"]
+        );
+        // One more column breaks before the hop.
+        assert_eq!(
+            wrap_hops(&seg(&["aaaaaaa", "bbbbbbbbbb"]), 10, 30),
+            vec!["aaaaaaa", "-> bbbbbbbbbb"]
+        );
+
+        // A 20-column head wraps the second hop to a continuation at
+        // column 14 holding 13 columns of arrow-and-text; the third
+        // hop's arrow and 9 columns land exactly on width 40 and stay,
+        // while 10 columns break to a third line.
+        let head = "a".repeat(20);
+        let mid = "b".repeat(10);
+        assert_eq!(
+            wrap_hops(&seg(&[&head, &mid, &"c".repeat(9)]), 10, 40),
+            vec![head.clone(), format!("-> {mid} -> {}", "c".repeat(9))]
+        );
+        assert_eq!(
+            wrap_hops(&seg(&[&head, &mid, &"c".repeat(10)]), 10, 40),
+            vec![head, format!("-> {mid}"), format!("-> {}", "c".repeat(10))]
+        );
+    }
+
     /// The block whole: the heading at the caller's indent, all 17
     /// registers in their fixed order, the annotation set off by the
     /// dash only where there is a claim.
