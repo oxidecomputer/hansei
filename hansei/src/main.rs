@@ -882,10 +882,7 @@ impl<'b> Session<'b> {
             extents: OnceCell::new(),
             census: OnceCell::new(),
             reach: OnceCell::new(),
-            reach_bounds: reach::ReachBounds {
-                depth: args.reach_depth,
-                ..reach::ReachBounds::default()
-            },
+            reach_bounds: session_reach_bounds(args.reach_depth),
             warm: RefCell::new(None),
             audited: Cell::new(false),
             bounds: census::Bounds {
@@ -937,7 +934,7 @@ impl<'b> Session<'b> {
         let census = self
             .census
             .get_or_init(|| census::census_bounded(&self.ctx, &self.tasks, self.bounds));
-        if self.audit && !self.audited.replace(true) {
+        if first_audit(self.audit, &self.audited) {
             let violations = census.audit(&self.tasks);
             if violations.is_empty() {
                 let _ = writeln!(io::stderr(), "census audit: clean");
@@ -1186,6 +1183,22 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
         session.warm.borrow_mut().take();
         res
     })
+}
+
+/// The reach walk's limits for one session: `--reach-depth` moves the
+/// depth, every other bound stays at its default.
+fn session_reach_bounds(depth: usize) -> reach::ReachBounds {
+    reach::ReachBounds {
+        depth,
+        ..reach::ReachBounds::default()
+    }
+}
+
+/// Whether this `census()` call is the one that runs `--audit`'s
+/// self-check: the first, and only when the flag asked for it — a REPL
+/// asking for the census per command is not audited per line.
+fn first_audit(audit: bool, audited: &Cell<bool>) -> bool {
+    audit && !audited.replace(true)
 }
 
 /// What the launch-time worker hands the session, all three built over
@@ -1450,6 +1463,37 @@ fn version_ceiling_line(meta: &hansei_bundle::Meta, noticed: &Cell<bool>) -> Opt
         return None;
     }
     contract::version_ceiling_notice(meta).map(|notice| format!("warning: {notice}"))
+}
+
+#[cfg(test)]
+mod session_gate_tests {
+    use super::{first_audit, session_reach_bounds};
+    use hansei_runtime::tokio::reach::ReachBounds;
+    use std::cell::Cell;
+
+    /// `--reach-depth` moves exactly the depth: the record and element
+    /// caps stay where the walk's defaults put them.
+    #[test]
+    fn test_reach_depth_moves_only_the_depth() {
+        let bounds = session_reach_bounds(7);
+        let defaults = ReachBounds::default();
+        assert_eq!(bounds.depth, 7);
+        assert_eq!(bounds.max_records, defaults.max_records);
+        assert_eq!(bounds.max_elements, defaults.max_elements);
+    }
+
+    /// The audit runs once, and only when asked: never without the
+    /// flag, on the first census with it, and not again after.
+    #[test]
+    fn test_the_audit_runs_once_when_asked() {
+        let off = Cell::new(false);
+        assert!(!first_audit(false, &off));
+        assert!(!off.get(), "an unasked audit must not consume the gate");
+
+        let on = Cell::new(false);
+        assert!(first_audit(true, &on));
+        assert!(!first_audit(true, &on));
+    }
 }
 
 #[cfg(test)]

@@ -373,4 +373,12 @@ exclude_re = [
     # pair. The `==` spelling is not equivalent and the shared-start
     # locate test kills it.
     "replace < with <= in ReachIndex::locate",
+    # The launch worker and its adoption are transparent by design:
+    # every accessor that would adopt its state falls back to computing
+    # the same state in place when the handoff never happened, so a
+    # worker (or an adoption) replaced with () changes only when the
+    # work runs, never any answer. The state itself — the census, the
+    # extents, the reach index — is what the rest of the suites pin.
+    "replace warm_worker with \\(\\)",
+    "replace Session<'b>::adopt_warm with \\(\\)",
 ]
