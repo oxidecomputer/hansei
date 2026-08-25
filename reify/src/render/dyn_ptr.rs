@@ -20,9 +20,6 @@ struct VtableFunction {
     slot: u32,
     display: String,
     concrete: Option<String>,
-    /// The stripped, still-mangled symbol the display demangled from —
-    /// the key the bundle's symbol-to-type table joins on.
-    symbol: Option<String>,
 }
 
 pub(crate) fn eval_dyn_pointer<'a, T: Target>(
@@ -191,20 +188,15 @@ fn vtable_functions<T: Target>(
             if slot == size_slot || slot == align_slot || address == 0 {
                 continue;
             }
-            let Some(symbol) = crate::target::function_symbol(proc, address) else {
+            let Some(display) = resolve_function_symbol(Some(proc), address) else {
                 continue;
             };
-            let stripped = hansei_bundle::strip_llvm_suffix(&symbol).to_owned();
-            let display = rustc_demangle::try_demangle(&stripped)
-                .map(|symbol| format!("{symbol:#}"))
-                .unwrap_or_else(|_| stripped.clone());
             let concrete = hansei_bundle::symbols::concrete_type_from_vtable_symbol(&display)
                 .map(str::to_owned);
             functions.push(VtableFunction {
                 slot,
                 display,
                 concrete,
-                symbol: Some(stripped),
             });
         }
     }
@@ -349,23 +341,7 @@ fn infer_concrete_type<'a>(
     if concrete.any(|other| other != candidate) {
         return None;
     }
-    // The name join first — it is corroborated by every function symbol
-    // agreeing on the candidate, which the per-symbol table row is not:
-    // the linker can fold identical drop glue across layout-identical
-    // types, leaving one symbol honestly claimable by several. Only a
-    // name the bundle cannot resolve falls back to the symbol table,
-    // which is where the monomorphizations whose demangled spelling
-    // disagrees with DWARF's (fn items, closures) land; the size
-    // corroboration below still gates either answer.
-    let resolved = ty.type_by_name(&candidate).or_else(|| {
-        functions
-            .iter()
-            .filter_map(|function| function.symbol.as_deref())
-            .find_map(|symbol| match ty.glue_ids_for_symbol(symbol) {
-                hansei_bundle::SymbolLookup::Unique(id) => Some(ty.related_type(id)),
-                _ => None,
-            })
-    });
+    let resolved = ty.type_by_name(&candidate);
     let expected = match resolved {
         Some(resolved) => Some(resolved.size()),
         None => ty.size_by_name(&candidate),
@@ -411,100 +387,6 @@ mod tests {
                 "}"
             )
         );
-    }
-
-    #[test]
-    fn test_dyn_pointer_falls_back_to_the_glue_table() {
-        // The symbol names a concrete type the bundle does not carry
-        // under that spelling, so the name join fails; the glue row
-        // maps the symbol itself to the real type.
-        let sym = "<app::Ghost as app::Trait>::run";
-        let mem = FakeMem::new()
-            .at(0x1234, u32s(&[7, 9]))
-            .at(0x3000, u64s(&[0x4000, 8, 8]))
-            .symbol(0x4000, sym);
-
-        let mut b = test_bundle();
-        b.glue_types.by_symbol = [(sym.to_owned(), POINT)].into();
-        b.glue_types.by_normalized_symbol =
-            hansei_bundle::symbols::normalized_value_index(&b.glue_types.by_symbol);
-        b.validate().expect("a consistent glue table validates");
-        let v = BundleView::new(&b);
-        let bytes: Vec<u8> = [0x1234u64, 0x3000]
-            .into_iter()
-            .flat_map(u64::to_le_bytes)
-            .collect();
-        let value = Value::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
-        let (concrete, addr) = value.dyn_pointee(&mem).expect("the glue row resolves");
-        assert_eq!(concrete.id(), POINT);
-        assert_eq!(addr, 0x1234);
-
-        // The size word gates the fallback path exactly as it gates the
-        // name join: a claimed size the vtable disagrees with is a
-        // decline, not a pick.
-        let lying = FakeMem::new()
-            .at(0x1234, u32s(&[7, 9]))
-            .at(0x3000, u64s(&[0x4000, 99, 8]))
-            .symbol(0x4000, sym);
-        assert!(value.dyn_pointee(&lying).is_none());
-    }
-
-    /// A name the bundle resolves never consults the glue table: the
-    /// name join is corroborated by every vtable symbol agreeing, and a
-    /// lying row must not outrank it. The row here points at `u32`,
-    /// whose size the vtable would refuse — resolving to `Point` proves
-    /// the row was never read.
-    #[test]
-    fn test_the_name_join_outranks_a_glue_row() {
-        let sym = "<Point as app::Trait>::run";
-        let mem = FakeMem::new()
-            .at(0x1234, u32s(&[1, 2]))
-            .at(0x3000, u64s(&[0x4000, 8, 8]))
-            .symbol(0x4000, sym);
-
-        let mut b = test_bundle();
-        b.glue_types.by_symbol = [(sym.to_owned(), U32)].into();
-        b.glue_types.by_normalized_symbol =
-            hansei_bundle::symbols::normalized_value_index(&b.glue_types.by_symbol);
-        let v = BundleView::new(&b);
-        let bytes: Vec<u8> = [0x1234u64, 0x3000]
-            .into_iter()
-            .flat_map(u64::to_le_bytes)
-            .collect();
-        let value = Value::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
-        let (concrete, _) = value.dyn_pointee(&mem).expect("the name join resolves");
-        assert_eq!(concrete.id(), POINT);
-    }
-
-    /// The glue row joins across builds: the bundle stores the debug
-    /// build's mangling, the core's vtable carries the target build's —
-    /// different crate disambiguators, one normalized key. A genuine
-    /// v0 drop-glue monomorphization, so the demangled candidate
-    /// (`[reedline::enums::EditCommand; 1]`) also exercises the failed
-    /// name join on the way.
-    #[test]
-    fn test_a_glue_row_joins_across_crate_disambiguators() {
-        const CORE_SYM: &str = "_RINvNtCs4gTh5wWLWvJ_4core3ptr9drop_glueANtNtCs1dINKnBl13J_8reedline5enums11EditCommandj1_EBG_";
-        const DEBUG_SYM: &str = "_RINvNtCs4gTh5wWLWvK_4core3ptr9drop_glueANtNtCs1dINKnBl13J_8reedline5enums11EditCommandj1_EBG_";
-
-        let mem = FakeMem::new()
-            .at(0x1234, u32s(&[7, 9]))
-            .at(0x3000, u64s(&[0x4000, 8, 8]))
-            .symbol(0x4000, CORE_SYM);
-
-        let mut b = test_bundle();
-        b.glue_types.by_symbol = [(DEBUG_SYM.to_owned(), POINT)].into();
-        b.glue_types.by_normalized_symbol =
-            hansei_bundle::symbols::normalized_value_index(&b.glue_types.by_symbol);
-        let v = BundleView::new(&b);
-        let bytes: Vec<u8> = [0x1234u64, 0x3000]
-            .into_iter()
-            .flat_map(u64::to_le_bytes)
-            .collect();
-        let value = Value::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
-        let (concrete, addr) = value.dyn_pointee(&mem).expect("the normalized key joins");
-        assert_eq!(concrete.id(), POINT);
-        assert_eq!(addr, 0x1234);
     }
 
     #[test]

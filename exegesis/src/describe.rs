@@ -627,7 +627,6 @@ mod tests {
             types,
             tasks: Default::default(),
             dyn_futures: Default::default(),
-            glue_types: Default::default(),
             statics: Default::default(),
             walks: Default::default(),
             infra: hansei_bundle::InfraTypes {
