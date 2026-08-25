@@ -14,10 +14,10 @@ mod view;
 pub use io::{Error, FORMAT_VERSION, Result};
 pub use schema::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
-    DisplayNode, DynFutureTable, FamilyCeiling, Field, FieldRender, FutureKind, ImplTable,
-    InfraTypes, MapEntries, MemberDef, MemberRef, Meta, Notation, Provenance, ProvenanceTable,
-    ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole, StaticsTable, Step, Stmt,
-    SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, ValueExpr,
+    DisplayNode, DynFutureTable, FamilyCeiling, Field, FieldRender, FutureKind, GlueTypeTable,
+    ImplTable, InfraTypes, MapEntries, MemberDef, MemberRef, Meta, Notation, Provenance,
+    ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole, StaticsTable, Step,
+    Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, ValueExpr,
     VariantDef, VariantShape, WalkBinding, WalkOutcome, WalkRole, WalksTable, strip_build_prefix,
     strip_llvm_suffix,
 };

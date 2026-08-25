@@ -57,6 +57,7 @@ fn tiny_bundle() -> Bundle {
         types,
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
+        glue_types: GlueTypeTable::default(),
         statics: StaticsTable::default(),
         walks: WalksTable::default(),
         infra: InfraTypes {
@@ -305,6 +306,7 @@ fn random_bundle(seed: u64) -> Bundle {
             entries,
         },
         dyn_futures,
+        glue_types: GlueTypeTable::default(),
         statics,
         walks: WalksTable::default(),
         infra: InfraTypes {
@@ -601,6 +603,7 @@ fn test_validate_accepts_selector_through_deref() {
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
+        glue_types: GlueTypeTable::default(),
         statics: StaticsTable::default(),
         walks: WalksTable::default(),
         infra: InfraTypes {
@@ -705,6 +708,7 @@ fn test_validate_rejects_out_of_range_member() {
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
+        glue_types: GlueTypeTable::default(),
         statics: StaticsTable::default(),
         walks: WalksTable::default(),
         infra: InfraTypes {
@@ -809,6 +813,7 @@ fn test_validate_requires_a_named_member_to_be_unique() {
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
+        glue_types: GlueTypeTable::default(),
         statics: StaticsTable::default(),
         walks: WalksTable::default(),
         infra: InfraTypes {
@@ -935,6 +940,7 @@ fn walk_bundle(broken_b: bool) -> Bundle {
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
+        glue_types: GlueTypeTable::default(),
         statics: StaticsTable::default(),
         walks: WalksTable::default(),
         infra: InfraTypes {
@@ -1447,6 +1453,96 @@ fn test_symbol_lookup_falls_back_to_normalized_name() {
         entries: vec![entry],
     };
     assert!(tasks.lookup(NODEBUG).is_some());
+}
+
+/// The glue table joins like the other symbol tables: exact key for a
+/// same-build pair, the disambiguator-stripped key across builds — the
+/// case that matters, since the target's vtable symbols carry its own
+/// build's crate hashes — and anything short of a unique answer is a
+/// decline the caller must honor.
+#[test]
+fn test_glue_lookup_joins_exact_and_across_builds() {
+    const DEBUG: &str =
+        "_RNvNCNvNtNtCs4y941wpZLOZ_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+    const NODEBUG: &str =
+        "_RNvNCNvNtNtCsbdypcaruIt3_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+
+    let by_symbol = BTreeMap::from([(DEBUG.to_owned(), BundleTypeId(0))]);
+    let table = GlueTypeTable {
+        by_normalized_symbol: crate::symbols::normalized_value_index(&by_symbol),
+        by_symbol,
+    };
+    assert_eq!(
+        table.lookup_id(DEBUG),
+        SymbolLookup::Unique(BundleTypeId(0))
+    );
+    assert_eq!(
+        table.lookup_id(NODEBUG),
+        SymbolLookup::Unique(BundleTypeId(0)),
+        "the cross-build join runs on the normalized key"
+    );
+    assert_eq!(table.lookup_id("malloc"), SymbolLookup::Missing);
+
+    // Two rows collapsing to one normalized key surface as ambiguity,
+    // never as a pick.
+    let by_symbol = BTreeMap::from([
+        (DEBUG.to_owned(), BundleTypeId(0)),
+        (NODEBUG.to_owned(), BundleTypeId(1)),
+    ]);
+    let table = GlueTypeTable {
+        by_normalized_symbol: crate::symbols::normalized_value_index(&by_symbol),
+        by_symbol,
+    };
+    const THIRD: &str =
+        "_RNvNCNvNtNtCsaaaaaaaaaaa_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+    assert_eq!(
+        table.lookup_id(THIRD),
+        SymbolLookup::Ambiguous(vec![BundleTypeId(0), BundleTypeId(1)])
+    );
+}
+
+/// The glue table is validated like the dyn-future table: keys must be
+/// llvm-stripped, ids in range, and the normalized index derivable from
+/// the raw rows — a stored index that disagrees would resolve a symbol
+/// to another symbol's type.
+#[test]
+fn test_validate_rejects_a_broken_glue_table() {
+    const SYM: &str =
+        "_RNvNCNvNtNtCs4y941wpZLOZ_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+
+    let mut b = tiny_bundle();
+    b.glue_types.by_symbol = BTreeMap::from([(SYM.to_owned(), BundleTypeId(0))]);
+    b.glue_types.by_normalized_symbol =
+        crate::symbols::normalized_value_index(&b.glue_types.by_symbol);
+    b.validate().expect("a consistent glue table is sound");
+
+    let mut broken = b.clone();
+    broken.glue_types.by_symbol = BTreeMap::from([(format!("{SYM}.llvm.123"), BundleTypeId(0))]);
+    broken.glue_types.by_normalized_symbol =
+        crate::symbols::normalized_value_index(&broken.glue_types.by_symbol);
+    assert!(
+        corruption(&broken).contains("glue type key"),
+        "{}",
+        corruption(&broken)
+    );
+
+    let mut broken = b.clone();
+    broken.glue_types.by_symbol = BTreeMap::from([(SYM.to_owned(), BundleTypeId(99))]);
+    broken.glue_types.by_normalized_symbol =
+        crate::symbols::normalized_value_index(&broken.glue_types.by_symbol);
+    assert!(
+        corruption(&broken).contains("glue type table"),
+        "{}",
+        corruption(&broken)
+    );
+
+    let mut broken = b.clone();
+    broken.glue_types.by_normalized_symbol = BTreeMap::new();
+    assert!(
+        corruption(&broken).contains("normalized glue type table is inconsistent"),
+        "{}",
+        corruption(&broken)
+    );
 }
 
 /// Two same-named futures from different crate builds normalize to the
