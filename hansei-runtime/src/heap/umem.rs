@@ -1,0 +1,1371 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! What libumem says about an address: the allocation containing it,
+//! and whether that allocation is live.
+//!
+//! libumem is the userland port of the kernel slab allocator, and
+//! postmortem debuggability is one of its design goals: every buffer it
+//! hands out is accounted for in metadata the core carries, which is
+//! what mdb's `::whatis` and `::walk umem` read. This walks the same
+//! metadata to answer the one question no amount of DWARF can — "is
+//! this pointer's target still allocated?" — because the type of a
+//! stale pointer says nothing about whether the bytes under it still
+//! belong to what wrote them.
+//!
+//! The shape of the walk, per cache:
+//!
+//! - `umem_ready` gates everything; `umem_null_cache` anchors a
+//!   circular list of every `umem_cache_t`.
+//! - Each cache anchors a circular list of `umem_slab_t` at its own
+//!   `cache_nullslab`. A slab's buffers tile it exactly: `slab_chunks`
+//!   chunks of `cache_chunksize` bytes from `slab_base`.
+//! - The chunks on the slab's freelist (`slab_head`, chained through
+//!   `bc_next`) are free; the rest are allocated. `slab_refcnt` counts
+//!   the allocated ones independently, so the two must agree — which is
+//!   the cross-check that catches both a misread layout and a core
+//!   caught mid-`malloc`.
+//!
+//! What this deliberately does not cover, and so errs toward [`Live`]
+//! on (never toward wrongly [`Freed`]):
+//!
+//! - **The magazine and per-thread layers.** A buffer freed into a
+//!   per-CPU magazine, a depot magazine, or a `UMF_PTC` cache's
+//!   per-thread cache is free, but the slab layer above still counts it
+//!   allocated. mdb subtracts them; this does not yet, so such a buffer
+//!   reads `Live`.
+//! - **The oversize and memalign vmem arenas.** Allocations too large
+//!   for any cache come from `umem_oversize` and are in no slab at all,
+//!   so nothing here covers them and they answer [`Liveness::Unknown`].
+//!
+//! Every step validates before it believes, and a violation declines —
+//! the slab, the cache, or the whole index, whichever the violation
+//! scopes to. An index that declines part of the target says so in its
+//! [`Stats`], because a walk that quietly covered less than it claims
+//! would turn a missing verdict into a wrong one.
+//!
+//! [`Live`]: Liveness::Live
+//! [`Freed`]: Liveness::Freed
+
+use proc::Target;
+
+use std::ops::Range;
+
+/// The object whose symbols name the allocator's own state. umem is
+/// per-process opt-in — a program links it or preloads it — so a target
+/// without this object mapped has no index to build, which is the
+/// ordinary case and not a failure.
+const LIBUMEM: &str = "libumem.so.1";
+
+/// `umem_ready`'s value once the allocator is fully initialized
+/// (`UMEM_READY` in `umem_impl.h`). Anything else — mid-init, or an
+/// init that failed — means the metadata below is not yet meaningful.
+const UMEM_READY: u32 = 3;
+
+/// `UMF_HASH`: the cache keeps its bufctls outside the buffers, in a
+/// hash table, rather than embedded at `cache_bufctl` inside them.
+/// Which of the two a cache uses is the one layout difference the
+/// freelist walk has to care about.
+const UMF_HASH: u32 = 0x200;
+
+/// How many caches the list may hold before the walk calls it corrupt.
+/// A real target has a few dozen.
+const MAX_CACHES: usize = 4096;
+
+/// How many slabs one cache may hold. A gigabyte of 8-byte allocations
+/// is under 300k slabs, so this bounds a cycle rather than a target.
+const MAX_SLABS_PER_CACHE: usize = 1 << 21;
+
+/// How many chunks one slab may tile into.
+const MAX_CHUNKS_PER_SLAB: u64 = 1 << 20;
+
+/// How many buckets a cache's hash table may have.
+const MAX_HASH_BUCKETS: u64 = 1 << 24;
+
+/// How many decline notes are kept. Enough to say what went wrong
+/// without hoarding one line per slab of a torn core.
+const MAX_NOTES: usize = 32;
+
+/// Where one layout epoch puts the fields the walk reads.
+///
+/// Offsets are pinned from `umem_impl.h` rather than derived, the way
+/// this workspace pins tokio's: the structures are C, so a member's
+/// place is the compiler's arithmetic over the declarations, and the
+/// only honest source is the header of the release being read. Should a
+/// future libumem move one, it gets its own entry here and the walk
+/// picks between them the way it picks between nothing today — by
+/// believing whichever one's invariants hold.
+#[derive(Debug, Clone, Copy)]
+struct Layout {
+    /// What to call this epoch in a decline note.
+    name: &'static str,
+    cache_name: u64,
+    cache_bufsize: u64,
+    cache_flags: u64,
+    cache_next: u64,
+    cache_prev: u64,
+    cache_chunksize: u64,
+    cache_slabsize: u64,
+    cache_bufctl: u64,
+    cache_hash_mask: u64,
+    cache_nullslab: u64,
+    cache_hash_table: u64,
+    slab_cache: u64,
+    slab_base: u64,
+    slab_next: u64,
+    slab_prev: u64,
+    slab_head: u64,
+    slab_refcnt: u64,
+    slab_chunks: u64,
+    slab_size: u64,
+    bufctl_next: u64,
+    bufctl_addr: u64,
+}
+
+/// The layout every illumos libumem has had: `umem_impl.h` has not
+/// moved one of these members since the allocator was written.
+const LP64: Layout = Layout {
+    name: "lp64",
+    cache_name: 88,
+    cache_bufsize: 120,
+    cache_flags: 180,
+    cache_next: 192,
+    cache_prev: 200,
+    cache_chunksize: 256,
+    cache_slabsize: 264,
+    cache_bufctl: 272,
+    cache_hash_mask: 336,
+    cache_nullslab: 352,
+    cache_hash_table: 416,
+    slab_cache: 0,
+    slab_base: 8,
+    slab_next: 16,
+    slab_prev: 24,
+    slab_head: 32,
+    slab_refcnt: 40,
+    slab_chunks: 48,
+    slab_size: 56,
+    bufctl_next: 0,
+    bufctl_addr: 8,
+};
+
+/// Every layout the walk knows, tried in order.
+const LAYOUTS: &[Layout] = &[LP64];
+
+/// What the allocator says about an address.
+///
+/// There is no verdict for "not in the heap": an address no walked slab
+/// covers is [`Unknown`](Liveness::Unknown), because the walk covers
+/// only what it understands — the slab layer of a live umem — and the
+/// oversize arenas, another allocator's memory, a stack and a mapping
+/// that was never heap are all equally outside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Liveness {
+    /// The address is inside an allocated chunk.
+    Live {
+        /// The chunk's exact bounds — what a pointer claiming to own
+        /// this allocation must fit inside.
+        chunk: Range<u64>,
+        /// Index into [`UmemHeap::caches`].
+        cache: usize,
+    },
+    /// The address is inside a chunk on its slab's freelist: freed, and
+    /// not since handed back out.
+    Freed { chunk: Range<u64>, cache: usize },
+    /// No walked chunk covers the address, and nothing is claimed about
+    /// it.
+    Unknown,
+}
+
+/// One cache the walk believed, as its own accounting.
+#[derive(Debug, Clone)]
+pub struct Cache {
+    /// Where the `umem_cache_t` is, for a hand check under mdb.
+    pub addr: u64,
+    pub name: String,
+    /// The object size the cache serves.
+    pub bufsize: u64,
+    /// Bytes from one chunk to the next: `bufsize` rounded up, plus
+    /// whatever debugging features are on.
+    pub chunksize: u64,
+    pub slabsize: u64,
+    pub flags: u32,
+    pub slabs: usize,
+    /// Slabs dropped by a failed invariant, whose chunks are in no
+    /// verdict at all.
+    pub slabs_declined: usize,
+    pub live: u64,
+    pub freed: u64,
+    /// How far into a buffer a raw cache's embedded bufctl sits — the
+    /// one cache property the freelist walk needs and nobody else does.
+    bufctl: u64,
+}
+
+impl Cache {
+    /// Whether bufctls live in a hash table outside the buffers.
+    pub fn hashed(&self) -> bool {
+        self.flags & UMF_HASH != 0
+    }
+}
+
+/// Honesty counters: every place the walk covered less than the target
+/// holds, so an incomplete index can say so rather than read as a
+/// complete one.
+#[derive(Debug, Default, Clone)]
+pub struct Stats {
+    /// Which layout the index was built with.
+    pub layout: &'static str,
+    /// Caches walked and believed.
+    pub caches: usize,
+    /// Caches dropped whole by a failed invariant.
+    pub caches_declined: usize,
+    pub slabs: usize,
+    pub slabs_declined: usize,
+    pub live_chunks: u64,
+    pub freed_chunks: u64,
+    /// Bytes in live chunks, chunk stride rather than requested size.
+    pub live_bytes: u64,
+    /// Slabs dropped because another slab already claimed their
+    /// address range — an overlap is two readings of the same memory,
+    /// so neither is believed.
+    pub overlaps: usize,
+    /// Whether the magazine, depot and per-thread layers were
+    /// subtracted. False here: a buffer parked in one reads `Live`.
+    pub magazines_walked: bool,
+    /// Whether the oversize and memalign vmem arenas were walked.
+    /// False here: allocations from them answer `Unknown`.
+    pub oversize_walked: bool,
+    /// Why the declines above happened, capped at [`MAX_NOTES`].
+    pub notes: Vec<String>,
+}
+
+impl Stats {
+    /// Whether anything was declined — the "this index covers less than
+    /// the target" signal a verdict-consuming answer should carry.
+    pub fn incomplete(&self) -> bool {
+        self.caches_declined > 0 || self.slabs_declined > 0 || self.overlaps > 0
+    }
+}
+
+/// One slab's chunks, as the tiling plus which of them are free.
+///
+/// The index is slabs rather than chunks on purpose: a real target has
+/// millions of chunks and tens of thousands of slabs, and a slab knows
+/// its chunks by arithmetic. A bit per chunk is the whole difference
+/// between the two answers.
+#[derive(Debug)]
+struct Slab {
+    base: u64,
+    chunksize: u64,
+    chunks: u32,
+    cache: u32,
+    /// Bit `i` set means chunk `i` is on the freelist. Empty for a slab
+    /// with nothing free, which is most of a busy target's.
+    free: Vec<u64>,
+}
+
+impl Slab {
+    fn end(&self) -> u64 {
+        self.base + self.chunks as u64 * self.chunksize
+    }
+
+    fn is_free(&self, chunk: u32) -> bool {
+        let word = chunk as usize / 64;
+        self.free
+            .get(word)
+            .is_some_and(|w| w >> (chunk % 64) & 1 == 1)
+    }
+
+    fn freed(&self) -> u64 {
+        self.free.iter().map(|w| w.count_ones() as u64).sum()
+    }
+}
+
+/// libumem's own account of which of the target's allocations are live.
+#[derive(Debug)]
+pub struct UmemHeap {
+    caches: Vec<Cache>,
+    /// Sorted by base and non-overlapping, so an address finds its slab
+    /// by binary search.
+    slabs: Vec<Slab>,
+    stats: Stats,
+}
+
+impl UmemHeap {
+    /// Read the target's umem metadata, or `None` when there is nothing
+    /// to read: no libumem mapped, an allocator not yet initialized, or
+    /// metadata that fails its own invariants.
+    ///
+    /// `None` is silent and ordinary. umem is per-process opt-in, so a
+    /// target without it simply has no allocator corroboration to offer
+    /// and everything reading this must behave exactly as it would have
+    /// without one.
+    pub fn build<T: Target>(target: &T) -> Option<UmemHeap> {
+        LAYOUTS
+            .iter()
+            .find_map(|layout| Walk::new(target, *layout).run())
+    }
+
+    /// What the allocator says about `addr`.
+    pub fn locate(&self, addr: u64) -> Liveness {
+        let Some(slab) = self.slab_at(addr) else {
+            return Liveness::Unknown;
+        };
+        let index = ((addr - slab.base) / slab.chunksize) as u32;
+        let start = slab.base + index as u64 * slab.chunksize;
+        let chunk = start..start + slab.chunksize;
+        let cache = slab.cache as usize;
+        match slab.is_free(index) {
+            true => Liveness::Freed { chunk, cache },
+            false => Liveness::Live { chunk, cache },
+        }
+    }
+
+    fn slab_at(&self, addr: u64) -> Option<&Slab> {
+        let above = self.slabs.partition_point(|s| s.base <= addr);
+        self.slabs
+            .get(above.checked_sub(1)?)
+            .filter(|s| addr < s.end())
+    }
+
+    /// The caches the walk believed, in the order the cache list holds
+    /// them. A [`Liveness`] names one by its index here.
+    pub fn caches(&self) -> &[Cache] {
+        &self.caches
+    }
+
+    pub fn stats(&self) -> &Stats {
+        &self.stats
+    }
+
+    /// Every allocated chunk, in address order: the set mdb's `::walk
+    /// umem` enumerates, which is what an enumeration differential
+    /// against it diffs.
+    pub fn live_chunks(&self) -> impl Iterator<Item = Range<u64>> + '_ {
+        self.chunks(false)
+    }
+
+    /// Every chunk found on a slab's freelist, in address order. This
+    /// is a subset of what mdb calls freed, which also counts the
+    /// magazine layer this walk does not read.
+    pub fn freed_chunks(&self) -> impl Iterator<Item = Range<u64>> + '_ {
+        self.chunks(true)
+    }
+
+    fn chunks(&self, free: bool) -> impl Iterator<Item = Range<u64>> + '_ {
+        self.slabs.iter().flat_map(move |slab| {
+            (0..slab.chunks).filter_map(move |i| {
+                let start = slab.base + i as u64 * slab.chunksize;
+                (slab.is_free(i) == free).then(|| start..start + slab.chunksize)
+            })
+        })
+    }
+
+    /// Self-consistency invariants, checked over the finished index
+    /// rather than during the walk that built it: live chunks never
+    /// overlap, and every cache's counts add up to its slabs'.
+    ///
+    /// Cheap enough to run on every real-core session that asks for a
+    /// verdict, and what turns a walker bug or a torn core into a
+    /// reported violation instead of a confident wrong answer.
+    pub fn violations(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for pair in self.slabs.windows(2) {
+            if pair[0].end() > pair[1].base {
+                out.push(format!(
+                    "slabs at {:#x} and {:#x} overlap",
+                    pair[0].base, pair[1].base
+                ));
+            }
+        }
+        let mut live = vec![0u64; self.caches.len()];
+        let mut freed = vec![0u64; self.caches.len()];
+        for slab in &self.slabs {
+            for i in 0..slab.chunks {
+                match slab.is_free(i) {
+                    true => freed[slab.cache as usize] += 1,
+                    false => live[slab.cache as usize] += 1,
+                }
+            }
+        }
+        for (i, cache) in self.caches.iter().enumerate() {
+            if (cache.live, cache.freed) != (live[i], freed[i]) {
+                out.push(format!(
+                    "{} counted {} live / {} freed, its slabs hold {} / {}",
+                    cache.name, cache.live, cache.freed, live[i], freed[i]
+                ));
+            }
+        }
+        out
+    }
+}
+
+/// One walk of the metadata, under one candidate [`Layout`].
+struct Walk<'t, T> {
+    target: &'t T,
+    layout: Layout,
+    caches: Vec<Cache>,
+    slabs: Vec<Slab>,
+    stats: Stats,
+}
+
+impl<'t, T: Target> Walk<'t, T> {
+    fn new(target: &'t T, layout: Layout) -> Self {
+        Walk {
+            target,
+            layout,
+            caches: Vec::new(),
+            slabs: Vec::new(),
+            stats: Stats {
+                layout: layout.name,
+                ..Stats::default()
+            },
+        }
+    }
+
+    fn run(mut self) -> Option<UmemHeap> {
+        let ready = self.symbol("umem_ready")?;
+        if self.target.read_u32(ready).ok()? != UMEM_READY {
+            return None;
+        }
+        let anchor = self.symbol("umem_null_cache")?;
+        self.walk_caches(anchor)?;
+
+        self.slabs.sort_unstable_by_key(|s| s.base);
+        self.drop_overlaps();
+        Some(UmemHeap {
+            caches: self.caches,
+            slabs: self.slabs,
+            stats: self.stats,
+        })
+    }
+
+    /// The address of one of libumem's own globals. They are private to
+    /// the library, so the lookup names the object that defines them
+    /// rather than the executable.
+    fn symbol(&self, name: &str) -> Option<u64> {
+        self.target
+            .lookup_symbol_by_name(&format!("{LIBUMEM}`{name}"))
+            .map(|s| s.st_value)
+    }
+
+    /// Walk the circular cache list anchored at `umem_null_cache`.
+    ///
+    /// A violation here is the whole index's: the list is how every
+    /// cache is found, so a walk that cannot trust it has no population
+    /// to be partly right about.
+    fn walk_caches(&mut self, anchor: u64) -> Option<()> {
+        let mut addr = self.read(anchor + self.layout.cache_next)?;
+        let mut prev = anchor;
+        let mut seen = 0;
+        while addr != anchor {
+            seen += 1;
+            if seen > MAX_CACHES {
+                return None;
+            }
+            // The list is doubly linked, so each step has a witness:
+            // an entry whose `cache_prev` is not where we came from is
+            // a misread pointer or a corrupt list, and either way the
+            // rest of the walk is guesswork.
+            if self.read(addr + self.layout.cache_prev)? != prev {
+                return None;
+            }
+            self.walk_cache(addr);
+            prev = addr;
+            addr = self.read(addr + self.layout.cache_next)?;
+        }
+        (self.stats.caches > 0).then_some(())
+    }
+
+    /// One cache: its geometry, then its slabs. A cache that fails an
+    /// invariant is dropped whole — its slabs with it — and counted, so
+    /// the rest of the target is still answered for.
+    fn walk_cache(&mut self, addr: u64) {
+        let Some(mut cache) = self.read_cache(addr) else {
+            self.decline_cache(addr, "unreadable or implausible geometry");
+            return;
+        };
+        let index = self.caches.len() as u32;
+        let first = self.slabs.len();
+        if self.walk_slabs(addr, &mut cache, index).is_none() {
+            self.slabs.truncate(first);
+            self.decline_cache(addr, "its slab list did not walk");
+            return;
+        }
+        if cache.hashed() && !self.hash_agrees(addr, &cache, &self.slabs[first..]) {
+            self.slabs.truncate(first);
+            self.decline_cache(addr, "its hash table disagrees with its slabs");
+            return;
+        }
+        self.stats.caches += 1;
+        self.stats.slabs += cache.slabs;
+        self.stats.live_chunks += cache.live;
+        self.stats.freed_chunks += cache.freed;
+        self.stats.live_bytes += cache.live * cache.chunksize;
+        self.caches.push(cache);
+    }
+
+    /// A cache's properties, believed only if they describe a tiling
+    /// that could exist: a buffer fits its chunk, a chunk fits its
+    /// slab, and neither is zero.
+    fn read_cache(&self, addr: u64) -> Option<Cache> {
+        let bufsize = self.read(addr + self.layout.cache_bufsize)?;
+        let chunksize = self.read(addr + self.layout.cache_chunksize)?;
+        let slabsize = self.read(addr + self.layout.cache_slabsize)?;
+        let flags = self.target.read_u32(addr + self.layout.cache_flags).ok()?;
+        if bufsize == 0 || bufsize > chunksize || chunksize > slabsize {
+            return None;
+        }
+        // The embedded bufctl a non-hashed cache's freelist is chained
+        // through has to be inside the buffer it belongs to.
+        let bufctl = self.read(addr + self.layout.cache_bufctl)?;
+        if flags & UMF_HASH == 0 && bufctl >= chunksize {
+            return None;
+        }
+        Some(Cache {
+            addr,
+            name: self.read_name(addr + self.layout.cache_name)?,
+            bufsize,
+            chunksize,
+            slabsize,
+            flags,
+            slabs: 0,
+            slabs_declined: 0,
+            live: 0,
+            freed: 0,
+            bufctl,
+        })
+    }
+
+    /// Walk one cache's circular slab list, anchored at its own
+    /// `cache_nullslab`. `None` means the list itself is unwalkable;
+    /// individual slabs decline on their own without ending the walk.
+    fn walk_slabs(&mut self, cache_addr: u64, cache: &mut Cache, index: u32) -> Option<()> {
+        let anchor = cache_addr + self.layout.cache_nullslab;
+        let mut addr = self.read(anchor + self.layout.slab_next)?;
+        let mut prev = anchor;
+        let mut seen = 0;
+        while addr != anchor {
+            seen += 1;
+            if seen > MAX_SLABS_PER_CACHE {
+                return None;
+            }
+            if self.read(addr + self.layout.slab_prev)? != prev {
+                return None;
+            }
+            match self.read_slab(addr, cache_addr, cache, index) {
+                Some(slab) => {
+                    let freed = slab.freed();
+                    cache.slabs += 1;
+                    cache.live += slab.chunks as u64 - freed;
+                    cache.freed += freed;
+                    self.slabs.push(slab);
+                }
+                None => {
+                    cache.slabs_declined += 1;
+                    self.stats.slabs_declined += 1;
+                    self.note(format!("{}: slab {addr:#x} declined", cache.name));
+                }
+            }
+            prev = addr;
+            addr = self.read(addr + self.layout.slab_next)?;
+        }
+        Some(())
+    }
+
+    /// One slab, and which of its chunks are free.
+    ///
+    /// Two independently-derived numbers have to agree here — the
+    /// slab's own `slab_refcnt` and the length of its freelist — which
+    /// is the strongest check in the walk: a misread layout, a stale
+    /// pointer followed into someone else's memory, and a core caught
+    /// part-way through a `malloc` all show up as a disagreement.
+    fn read_slab(&self, addr: u64, cache_addr: u64, cache: &Cache, index: u32) -> Option<Slab> {
+        let slab = self.target.read_bytes(addr, self.layout.slab_size).ok()?;
+        let at = |off: u64| {
+            let off = off as usize;
+            u64::from_le_bytes(slab[off..off + 8].try_into().unwrap())
+        };
+        // The back-pointer is the anchor: a slab that does not name the
+        // cache we reached it from is not this cache's to account for.
+        if at(self.layout.slab_cache) != cache_addr {
+            return None;
+        }
+        let base = at(self.layout.slab_base);
+        let chunks = at(self.layout.slab_chunks);
+        let refcnt = at(self.layout.slab_refcnt);
+        if chunks == 0 || chunks > MAX_CHUNKS_PER_SLAB || refcnt > chunks {
+            return None;
+        }
+        // The chunks have to tile the slab they claim to be in.
+        let span = chunks.checked_mul(cache.chunksize)?;
+        if span > cache.slabsize || base.checked_add(span).is_none() {
+            return None;
+        }
+
+        let mut free = vec![0u64; (chunks as usize).div_ceil(64)];
+        let mut bufctl = at(self.layout.slab_head);
+        let mut freed = 0;
+        while bufctl != 0 {
+            freed += 1;
+            if freed > chunks {
+                return None;
+            }
+            let buf = match cache.hashed() {
+                true => self.read(bufctl + self.layout.bufctl_addr)?,
+                // A raw cache chains through a bufctl embedded in the
+                // buffer itself, at a distance the cache records.
+                false => bufctl.checked_sub(cache.bufctl)?,
+            };
+            // A free buffer has to be one of this slab's chunks, on a
+            // chunk boundary.
+            let offset = buf.checked_sub(base)?;
+            if offset >= span || offset % cache.chunksize != 0 {
+                return None;
+            }
+            let chunk = offset / cache.chunksize;
+            if free[chunk as usize / 64] >> (chunk % 64) & 1 == 1 {
+                // The same chunk twice is a looped freelist.
+                return None;
+            }
+            free[chunk as usize / 64] |= 1 << (chunk % 64);
+            bufctl = self.read(bufctl + self.layout.bufctl_next)?;
+        }
+        // The cross-check.
+        if freed != chunks - refcnt {
+            return None;
+        }
+        if freed == 0 {
+            free.clear();
+        }
+        Some(Slab {
+            base,
+            chunksize: cache.chunksize,
+            chunks: chunks as u32,
+            cache: index,
+            free,
+        })
+    }
+
+    /// Whether a hashed cache's hash table describes the same allocated
+    /// set its slabs do.
+    ///
+    /// For a `UMF_HASH` cache the allocated buffers are exactly the
+    /// entries of this table, derived from bufctls the slab walk never
+    /// read — so agreeing with the freelist arithmetic is a second,
+    /// independent reading of the same population.
+    fn hash_agrees(&self, cache_addr: u64, cache: &Cache, slabs: &[Slab]) -> bool {
+        let (Some(table), Some(mask)) = (
+            self.read(cache_addr + self.layout.cache_hash_table),
+            self.read(cache_addr + self.layout.cache_hash_mask),
+        ) else {
+            return false;
+        };
+        let buckets = mask + 1;
+        if table == 0 || buckets > MAX_HASH_BUCKETS || !buckets.is_power_of_two() {
+            return false;
+        }
+        let mut entries = 0u64;
+        for bucket in 0..buckets {
+            let Some(mut bufctl) = self.read(table + bucket * 8) else {
+                return false;
+            };
+            while bufctl != 0 {
+                entries += 1;
+                if entries > cache.live {
+                    return false;
+                }
+                let (Some(buf), Some(next)) = (
+                    self.read(bufctl + self.layout.bufctl_addr),
+                    self.read(bufctl + self.layout.bufctl_next),
+                ) else {
+                    return false;
+                };
+                // Every allocated buffer must be a chunk of one of this
+                // cache's own slabs.
+                let found = slabs
+                    .iter()
+                    .any(|s| buf >= s.base && buf < s.end() && (buf - s.base) % s.chunksize == 0);
+                if !found {
+                    return false;
+                }
+                bufctl = next;
+            }
+        }
+        entries == cache.live
+    }
+
+    /// Drop any slab whose chunks overlap one already accepted. Two
+    /// readings of the same memory cannot both be right, and which is
+    /// wrong is exactly what the walk cannot tell.
+    fn drop_overlaps(&mut self) {
+        let mut end = 0;
+        let mut overlaps = 0;
+        self.slabs.retain(|slab| {
+            if slab.base < end {
+                overlaps += 1;
+                return false;
+            }
+            end = slab.end();
+            true
+        });
+        if overlaps > 0 {
+            self.stats.overlaps = overlaps;
+            self.note(format!("{overlaps} overlapping slab(s) dropped"));
+            // The per-cache counts described a population that included
+            // them, so they no longer describe this one.
+            self.recount();
+        }
+    }
+
+    /// Rebuild the per-cache counts from the slabs actually kept.
+    fn recount(&mut self) {
+        for cache in &mut self.caches {
+            cache.slabs = 0;
+            cache.live = 0;
+            cache.freed = 0;
+        }
+        for slab in &self.slabs {
+            let freed: u64 = slab.free.iter().map(|w| w.count_ones() as u64).sum();
+            let cache = &mut self.caches[slab.cache as usize];
+            cache.slabs += 1;
+            cache.live += slab.chunks as u64 - freed;
+            cache.freed += freed;
+        }
+        self.stats.slabs = self.slabs.len();
+        self.stats.live_chunks = self.caches.iter().map(|c| c.live).sum();
+        self.stats.freed_chunks = self.caches.iter().map(|c| c.freed).sum();
+        self.stats.live_bytes = self.caches.iter().map(|c| c.live * c.chunksize).sum();
+    }
+
+    fn decline_cache(&mut self, addr: u64, why: &str) {
+        self.stats.caches_declined += 1;
+        self.note(format!("cache {addr:#x}: {why}"));
+    }
+
+    fn note(&mut self, note: String) {
+        if self.stats.notes.len() < MAX_NOTES {
+            self.stats.notes.push(note);
+        }
+    }
+
+    fn read(&self, addr: u64) -> Option<u64> {
+        self.target.read_u64(addr).ok()
+    }
+
+    /// A `char[32]` cache name, up to its NUL.
+    fn read_name(&self, addr: u64) -> Option<String> {
+        let bytes = self.target.read_bytes(addr, 32).ok()?;
+        let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+        Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
+    }
+}
+
+/// libumem's malloc tag magics (`umem_impl.h`), each recognizable in
+/// the encoded status word and each naming a header size.
+const MALLOC_MAGIC: u32 = 0x3a10c000;
+const MALLOC_SECOND_MAGIC: u32 = 0x16ba7000;
+const MALLOC_OVERSIZE_MAGIC: u32 = 0x06e47000;
+const MEMALIGN_MAGIC: u32 = 0x3e3a1000;
+
+/// Which of libumem's malloc headers precedes a pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagKind {
+    /// An 8-byte header, for an allocation with no alignment demands
+    /// beyond 8.
+    Malloc,
+    /// A 16-byte header, which is what 16-byte alignment costs on LP64.
+    Second,
+    /// A 16-byte header whose size did not fit the 32-bit field.
+    Oversize,
+    /// A `memalign` redirect: the tag marks the aligned pointer, and
+    /// the real allocation starts somewhere before it.
+    Memalign,
+}
+
+/// libumem's own record of what a pointer is: the header its `malloc`
+/// shim writes immediately before every pointer it returns.
+///
+/// This corroborates a pointer without walking anything — the magic has
+/// to be one of four values and the size has to fit the chunk holding
+/// it — which is a cheap second opinion beside [`UmemHeap::locate`],
+/// and the only one available for an allocation from an arena the walk
+/// does not cover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MallocTag {
+    pub kind: TagKind,
+    /// The whole allocation, header included, as the tag records it.
+    pub total: u64,
+    /// Where the allocation starts. A `memalign` redirect does not say.
+    pub base: Option<u64>,
+}
+
+/// Read the malloc header immediately before `ptr`, if one is there.
+///
+/// `None` means the bytes are not a header: `ptr` is not a `malloc`
+/// pointer, or not a pointer at all.
+pub fn malloc_tag<T: Target>(target: &T, ptr: u64) -> Option<MallocTag> {
+    let tag = ptr.checked_sub(8)?;
+    let size = target.read_u32(tag).ok()?;
+    let status = target.read_u32(tag + 4).ok()?;
+    // The status is the magic with the size subtracted out, so that a
+    // free of the wrong size cannot pass for a valid header.
+    let (kind, base, total) = match status.wrapping_add(size) {
+        MALLOC_MAGIC => (TagKind::Malloc, Some(tag), size as u64),
+        MALLOC_SECOND_MAGIC => (TagKind::Second, Some(ptr.checked_sub(16)?), size as u64),
+        MALLOC_OVERSIZE_MAGIC => {
+            let base = ptr.checked_sub(16)?;
+            (TagKind::Oversize, Some(base), target.read_u64(base).ok()?)
+        }
+        MEMALIGN_MAGIC => (TagKind::Memalign, None, size as u64),
+        _ => return None,
+    };
+    Some(MallocTag { kind, total, base })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use proc::{Regs, SymbolBuf};
+
+    use std::collections::BTreeMap;
+
+    /// A target holding one run of bytes, with libumem's globals
+    /// resolving into it — everything the walk reads and nothing else.
+    struct Fake {
+        base: u64,
+        bytes: Vec<u8>,
+        symbols: BTreeMap<String, u64>,
+        /// An address range that reads as unmapped, however much of the
+        /// run it covers: a page the core did not dump.
+        hole: Range<u64>,
+    }
+
+    impl Fake {
+        fn new(base: u64, len: usize) -> Self {
+            Fake {
+                base,
+                bytes: vec![0; len],
+                symbols: BTreeMap::new(),
+                hole: 0..0,
+            }
+        }
+
+        fn put_u64(&mut self, addr: u64, value: u64) {
+            let at = (addr - self.base) as usize;
+            self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn put_u32(&mut self, addr: u64, value: u32) {
+            let at = (addr - self.base) as usize;
+            self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn put_str(&mut self, addr: u64, s: &str) {
+            let at = (addr - self.base) as usize;
+            self.bytes[at..at + s.len()].copy_from_slice(s.as_bytes());
+        }
+
+        fn symbol(&mut self, name: &str, addr: u64) {
+            self.symbols.insert(format!("{LIBUMEM}`{name}"), addr);
+        }
+    }
+
+    impl Target for Fake {
+        fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
+            let end = addr + len;
+            if addr < self.hole.end && end > self.hole.start {
+                return Err(proc::Error::unmapped(addr, len));
+            }
+            let start = addr
+                .checked_sub(self.base)
+                .filter(|&s| s + len <= self.bytes.len() as u64)
+                .ok_or_else(|| proc::Error::unmapped(addr, len))?;
+            Ok(&self.bytes[start as usize..(start + len) as usize])
+        }
+
+        fn lookup_symbol_by_addr(&self, _: u64) -> Option<SymbolBuf> {
+            None
+        }
+
+        fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
+            let &addr = self.symbols.get(name)?;
+            Some(SymbolBuf {
+                name: name.to_string(),
+                st_name: 0,
+                st_info: 0,
+                st_other: 0,
+                st_shndx: 0,
+                st_value: addr,
+                st_size: 8,
+            })
+        }
+
+        fn symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
+            Ok(Vec::new())
+        }
+
+        fn mappings(&self) -> proc::Result<proc::Mappings> {
+            unimplemented!("the umem walk never asks")
+        }
+
+        fn lwps(&self) -> proc::Result<Vec<proc::LwpInfo>> {
+            unimplemented!("the umem walk never asks")
+        }
+
+        fn tls_var_addr(&self, _: &Regs, _: &SymbolBuf) -> proc::Result<Option<u64>> {
+            unimplemented!("the umem walk never asks")
+        }
+    }
+
+    const BASE: u64 = 0x1000_0000;
+    const READY: u64 = BASE;
+    const ANCHOR: u64 = BASE + 0x100;
+    /// Where the caches are laid, one every 0x400 bytes.
+    const CACHES: u64 = BASE + 0x1000;
+    /// Where the slabs are laid, one every 0x100 bytes.
+    const SLABS: u64 = BASE + 0x4000;
+    /// Where hashed caches' external bufctls are laid, 24 bytes each.
+    const BUFCTLS: u64 = BASE + 0x8000;
+    /// Where the buffers themselves are, one slab's worth every 0x1000.
+    const BUFFERS: u64 = BASE + 0x10_0000;
+
+    /// One slab to lay: which chunks are free, in freelist order.
+    struct SlabSpec {
+        base: u64,
+        chunks: u64,
+        free: Vec<u64>,
+    }
+
+    /// A target with `umem_ready` set and an empty cache list, ready
+    /// for caches to be laid into.
+    fn fake() -> Fake {
+        let mut f = Fake::new(BASE, 0x20_0000);
+        f.symbol("umem_ready", READY);
+        f.symbol("umem_null_cache", ANCHOR);
+        f.put_u32(READY, UMEM_READY);
+        f.put_u64(ANCHOR + LP64.cache_next, ANCHOR);
+        f.put_u64(ANCHOR + LP64.cache_prev, ANCHOR);
+        f
+    }
+
+    /// Lay a cache and its slabs, and splice it into the list between
+    /// the anchor and whatever is already there.
+    ///
+    /// Free chunks are chained the way the cache's flags say: through a
+    /// bufctl embedded at `bufsize` into the buffer for a raw cache, or
+    /// through external bufctls for a hashed one — which also get a
+    /// hash table holding every allocated buffer.
+    fn cache(f: &mut Fake, index: u64, name: &str, chunksize: u64, flags: u32, slabs: &[SlabSpec]) {
+        let addr = CACHES + index * 0x400;
+        // Big enough to hold the largest slab laid below, the way a
+        // real cache's is chosen to fit its chunks.
+        let slabsize = slabs
+            .iter()
+            .map(|s| s.chunks * chunksize)
+            .max()
+            .unwrap_or(0x1000)
+            .max(0x1000);
+        f.put_str(addr + LP64.cache_name, name);
+        f.put_u64(addr + LP64.cache_bufsize, chunksize - 8);
+        f.put_u64(addr + LP64.cache_chunksize, chunksize);
+        f.put_u64(addr + LP64.cache_slabsize, slabsize);
+        f.put_u64(addr + LP64.cache_bufctl, chunksize - 8);
+        f.put_u32(addr + LP64.cache_flags, flags);
+
+        // Splice in: anchor -> this -> whatever the anchor named.
+        let next = f.read_u64(ANCHOR + LP64.cache_next).unwrap();
+        f.put_u64(ANCHOR + LP64.cache_next, addr);
+        f.put_u64(addr + LP64.cache_prev, ANCHOR);
+        f.put_u64(addr + LP64.cache_next, next);
+        f.put_u64(next + LP64.cache_prev, addr);
+
+        let nullslab = addr + LP64.cache_nullslab;
+        f.put_u64(nullslab + LP64.slab_cache, addr);
+        f.put_u64(nullslab + LP64.slab_next, nullslab);
+        f.put_u64(nullslab + LP64.slab_prev, nullslab);
+
+        let mut allocated = Vec::new();
+        let mut bufctls = 0;
+        for (i, spec) in slabs.iter().enumerate() {
+            let slab = SLABS + (index * 16 + i as u64) * 0x100;
+            f.put_u64(slab + LP64.slab_cache, addr);
+            f.put_u64(slab + LP64.slab_base, spec.base);
+            f.put_u64(slab + LP64.slab_chunks, spec.chunks);
+            f.put_u64(
+                slab + LP64.slab_refcnt,
+                spec.chunks - spec.free.len() as u64,
+            );
+
+            // The freelist, in the order given.
+            let mut head = 0;
+            for &chunk in spec.free.iter().rev() {
+                let buf = spec.base + chunk * chunksize;
+                let bufctl = match flags & UMF_HASH != 0 {
+                    true => {
+                        let bc = BUFCTLS + bufctls * 24;
+                        bufctls += 1;
+                        f.put_u64(bc + LP64.bufctl_addr, buf);
+                        bc
+                    }
+                    false => buf + chunksize - 8,
+                };
+                f.put_u64(bufctl + LP64.bufctl_next, head);
+                head = bufctl;
+            }
+            f.put_u64(slab + LP64.slab_head, head);
+            allocated.extend(
+                (0..spec.chunks)
+                    .filter(|c| !spec.free.contains(c))
+                    .map(|c| spec.base + c * chunksize),
+            );
+
+            // Append to the slab list.
+            let last = f.read_u64(nullslab + LP64.slab_prev).unwrap();
+            f.put_u64(last + LP64.slab_next, slab);
+            f.put_u64(slab + LP64.slab_prev, last);
+            f.put_u64(slab + LP64.slab_next, nullslab);
+            f.put_u64(nullslab + LP64.slab_prev, slab);
+        }
+
+        if flags & UMF_HASH != 0 {
+            // One bucket holding every allocated buffer's bufctl: the
+            // walk checks membership and count, not the hash function.
+            let table = BUFCTLS + 0x4000;
+            f.put_u64(addr + LP64.cache_hash_table, table);
+            f.put_u64(addr + LP64.cache_hash_mask, 0);
+            let mut head = 0;
+            for (i, buf) in allocated.iter().enumerate() {
+                let bc = BUFCTLS + 0x2000 + i as u64 * 24;
+                f.put_u64(bc + LP64.bufctl_addr, *buf);
+                f.put_u64(bc + LP64.bufctl_next, head);
+                head = bc;
+            }
+            f.put_u64(table, head);
+        }
+    }
+
+    /// The ordinary case: two raw caches, some chunks free.
+    fn two_caches() -> Fake {
+        let mut f = fake();
+        cache(
+            &mut f,
+            0,
+            "umem_alloc_64",
+            64,
+            0,
+            &[
+                SlabSpec {
+                    base: BUFFERS,
+                    chunks: 8,
+                    free: vec![1, 5],
+                },
+                SlabSpec {
+                    base: BUFFERS + 0x1000,
+                    chunks: 8,
+                    free: vec![],
+                },
+            ],
+        );
+        cache(
+            &mut f,
+            1,
+            "umem_alloc_128",
+            128,
+            0,
+            &[SlabSpec {
+                base: BUFFERS + 0x2000,
+                chunks: 4,
+                free: vec![3],
+            }],
+        );
+        f
+    }
+
+    #[test]
+    fn test_a_target_without_libumem_has_no_index() {
+        let mut f = fake();
+        f.symbols.clear();
+        assert!(UmemHeap::build(&f).is_none());
+    }
+
+    #[test]
+    fn test_an_allocator_not_yet_ready_is_not_read() {
+        let mut f = two_caches();
+        f.put_u32(READY, 2);
+        assert!(UmemHeap::build(&f).is_none());
+    }
+
+    #[test]
+    fn test_an_empty_cache_list_is_no_index() {
+        let f = fake();
+        assert!(UmemHeap::build(&f).is_none());
+    }
+
+    #[test]
+    fn test_every_chunk_gets_the_verdict_its_freelist_says() {
+        let heap = UmemHeap::build(&two_caches()).expect("the walk built an index");
+        assert!(heap.violations().is_empty(), "{:?}", heap.violations());
+
+        let stats = heap.stats();
+        assert_eq!((stats.caches, stats.caches_declined), (2, 0));
+        assert_eq!((stats.slabs, stats.slabs_declined), (3, 0));
+        assert_eq!((stats.live_chunks, stats.freed_chunks), (17, 3));
+        assert!(!stats.incomplete());
+
+        // A freed chunk, an allocated one, and an address inside each
+        // rather than at its base.
+        let cache = |name: &str| {
+            heap.caches()
+                .iter()
+                .position(|c| c.name == name)
+                .expect("the cache is in the index")
+        };
+        let alloc_64 = cache("umem_alloc_64");
+        assert_eq!(
+            heap.locate(BUFFERS + 64),
+            Liveness::Freed {
+                chunk: BUFFERS + 64..BUFFERS + 128,
+                cache: alloc_64,
+            }
+        );
+        assert_eq!(
+            heap.locate(BUFFERS + 64 + 63),
+            Liveness::Freed {
+                chunk: BUFFERS + 64..BUFFERS + 128,
+                cache: alloc_64,
+            }
+        );
+        assert_eq!(
+            heap.locate(BUFFERS + 130),
+            Liveness::Live {
+                chunk: BUFFERS + 128..BUFFERS + 192,
+                cache: alloc_64,
+            }
+        );
+        assert_eq!(
+            heap.locate(BUFFERS + 0x2000 + 3 * 128),
+            Liveness::Freed {
+                chunk: BUFFERS + 0x2000 + 384..BUFFERS + 0x2000 + 512,
+                cache: cache("umem_alloc_128"),
+            }
+        );
+
+        // Past the last chunk of a slab is the slab's own metadata and
+        // colouring, which no chunk covers and nothing claims.
+        assert_eq!(heap.locate(BUFFERS + 8 * 64), Liveness::Unknown);
+        assert_eq!(heap.locate(BUFFERS - 1), Liveness::Unknown);
+        assert_eq!(heap.locate(0), Liveness::Unknown);
+
+        // What an enumeration differential diffs: every allocated
+        // chunk, in address order.
+        let live: Vec<u64> = heap.live_chunks().map(|c| c.start).collect();
+        assert_eq!(live.len(), 17);
+        assert!(live.windows(2).all(|w| w[0] < w[1]));
+        assert!(!live.contains(&(BUFFERS + 64)));
+        assert!(live.contains(&(BUFFERS + 128)));
+    }
+
+    #[test]
+    fn test_a_hashed_cache_is_checked_against_its_hash_table() {
+        let mut f = fake();
+        cache(
+            &mut f,
+            0,
+            "umem_alloc_4096",
+            4096,
+            UMF_HASH,
+            &[SlabSpec {
+                base: BUFFERS,
+                chunks: 4,
+                free: vec![2],
+            }],
+        );
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert_eq!(heap.stats().live_chunks, 3);
+        assert!(heap.caches()[0].hashed());
+        assert!(matches!(
+            heap.locate(BUFFERS + 2 * 4096),
+            Liveness::Freed { .. }
+        ));
+        assert!(matches!(heap.locate(BUFFERS), Liveness::Live { .. }));
+
+        // A table naming a buffer that is in no slab of this cache is a
+        // second reading that disagrees with the first, so neither is
+        // believed and the cache is declined whole.
+        let mut f = f;
+        f.put_u64(BUFCTLS + 0x2000 + LP64.bufctl_addr, BUFFERS + 0x9000);
+        let heap = UmemHeap::build(&f);
+        assert!(heap.is_none(), "the only cache should have declined");
+    }
+
+    #[test]
+    fn test_a_slab_whose_freelist_and_refcnt_disagree_is_declined() {
+        let mut f = two_caches();
+        // Two chunks are on the freelist; claim all eight are in use.
+        f.put_u64(SLABS + LP64.slab_refcnt, 8);
+        let heap = UmemHeap::build(&f).expect("the other slabs still walk");
+
+        assert_eq!(heap.stats().slabs_declined, 1);
+        assert!(heap.stats().incomplete());
+        assert!(heap.stats().notes.iter().any(|n| n.contains("declined")));
+        // A declined slab's chunks are in no verdict at all: silence,
+        // not a guess either way.
+        assert_eq!(heap.locate(BUFFERS + 64), Liveness::Unknown);
+        assert_eq!(heap.locate(BUFFERS + 128), Liveness::Unknown);
+        // Its cache keeps the slabs that did walk.
+        let cache = &heap.caches()[heap
+            .caches()
+            .iter()
+            .position(|c| c.name == "umem_alloc_64")
+            .unwrap()];
+        assert_eq!((cache.slabs, cache.slabs_declined), (1, 1));
+        assert!(heap.violations().is_empty(), "{:?}", heap.violations());
+    }
+
+    #[test]
+    fn test_a_slab_that_names_another_cache_is_declined() {
+        let mut f = two_caches();
+        f.put_u64(SLABS + LP64.slab_cache, CACHES + 0x400);
+        let heap = UmemHeap::build(&f).expect("the other slabs still walk");
+        assert_eq!(heap.stats().slabs_declined, 1);
+        assert_eq!(heap.locate(BUFFERS + 128), Liveness::Unknown);
+    }
+
+    #[test]
+    fn test_a_free_buffer_off_its_chunk_boundary_declines_the_slab() {
+        let mut f = two_caches();
+        // Move the first freelist entry's buffer a byte off its chunk.
+        f.put_u64(SLABS + LP64.slab_head, BUFFERS + 64 + 1 + 64 - 8);
+        let heap = UmemHeap::build(&f).expect("the other slabs still walk");
+        assert_eq!(heap.stats().slabs_declined, 1);
+    }
+
+    #[test]
+    fn test_a_looping_freelist_declines_the_slab() {
+        let mut f = two_caches();
+        // Chunk 1's bufctl points back at itself.
+        let bufctl = BUFFERS + 64 + 64 - 8;
+        f.put_u64(bufctl + LP64.bufctl_next, bufctl);
+        let heap = UmemHeap::build(&f).expect("the other slabs still walk");
+        assert_eq!(heap.stats().slabs_declined, 1);
+    }
+
+    #[test]
+    fn test_a_cache_with_impossible_geometry_is_declined() {
+        let mut f = two_caches();
+        // A buffer bigger than the chunk that must hold it.
+        f.put_u64(CACHES + LP64.cache_bufsize, 4096);
+        let heap = UmemHeap::build(&f).expect("the other cache still walks");
+        assert_eq!(heap.stats().caches_declined, 1);
+        assert_eq!(heap.caches().len(), 1);
+        assert_eq!(heap.caches()[0].name, "umem_alloc_128");
+        // Nothing of the declined cache survives into a verdict.
+        assert_eq!(heap.locate(BUFFERS + 128), Liveness::Unknown);
+    }
+
+    #[test]
+    fn test_a_cache_list_that_does_not_link_back_is_refused() {
+        let mut f = two_caches();
+        // The list runs anchor -> alloc_128 -> alloc_64 -> anchor; make
+        // the second entry's back-pointer skip the first.
+        f.put_u64(CACHES + LP64.cache_prev, ANCHOR);
+        assert!(UmemHeap::build(&f).is_none());
+    }
+
+    #[test]
+    fn test_a_cache_list_cycle_is_bounded_and_refused() {
+        let mut f = fake();
+        // A cache whose next is itself, with a consistent back-pointer:
+        // the walk has to bound the list rather than trust it to end.
+        let addr = CACHES;
+        f.put_u64(ANCHOR + LP64.cache_next, addr);
+        f.put_u64(addr + LP64.cache_prev, ANCHOR);
+        f.put_u64(addr + LP64.cache_next, addr);
+        assert!(UmemHeap::build(&f).is_none());
+    }
+
+    #[test]
+    fn test_unreadable_metadata_declines_rather_than_panics() {
+        let mut f = two_caches();
+        f.hole = SLABS..SLABS + 0x100;
+        let heap = UmemHeap::build(&f).expect("the other cache still walks");
+        assert!(heap.stats().incomplete());
+        assert_eq!(heap.locate(BUFFERS + 128), Liveness::Unknown);
+
+        // A hole over the cache list itself takes the whole index.
+        let mut f = two_caches();
+        f.hole = CACHES..CACHES + 0x400;
+        assert!(UmemHeap::build(&f).is_none());
+    }
+
+    #[test]
+    fn test_overlapping_slabs_are_dropped_and_counted() {
+        let mut f = two_caches();
+        // The second slab of umem_alloc_64 now tiles chunks the first
+        // slab already claims, starting one chunk into it.
+        f.put_u64(SLABS + 0x100 + LP64.slab_base, BUFFERS + 64);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert_eq!(heap.stats().overlaps, 1);
+        assert!(heap.stats().incomplete());
+        assert!(heap.violations().is_empty(), "{:?}", heap.violations());
+        // The counts describe what is left, not what was walked.
+        let alloc_64 = heap
+            .caches()
+            .iter()
+            .find(|c| c.name == "umem_alloc_64")
+            .unwrap();
+        assert_eq!((alloc_64.slabs, alloc_64.live, alloc_64.freed), (1, 6, 2));
+    }
+
+    /// The tag libumem's malloc shim writes before every pointer it
+    /// hands out, in each of its four spellings.
+    #[test]
+    fn test_the_malloc_tag_decodes_each_header() {
+        let mut f = Fake::new(BASE, 0x1000);
+        let ptr = BASE + 0x100;
+        for (magic, size, kind, base) in [
+            (MALLOC_MAGIC, 15u32, TagKind::Malloc, Some(ptr - 8)),
+            (MALLOC_SECOND_MAGIC, 144, TagKind::Second, Some(ptr - 16)),
+            (MEMALIGN_MAGIC, 64, TagKind::Memalign, None),
+        ] {
+            f.put_u32(ptr - 8, size);
+            f.put_u32(ptr - 4, magic.wrapping_sub(size));
+            assert_eq!(
+                malloc_tag(&f, ptr),
+                Some(MallocTag {
+                    kind,
+                    total: size as u64,
+                    base,
+                })
+            );
+        }
+
+        // Oversize keeps the real size in the head of its header,
+        // because it is the one that need not fit 32 bits.
+        let size = 5 * 1024 * 1024 * 1024u64;
+        f.put_u64(ptr - 16, size);
+        f.put_u32(ptr - 8, size as u32);
+        f.put_u32(ptr - 4, MALLOC_OVERSIZE_MAGIC.wrapping_sub(size as u32));
+        assert_eq!(
+            malloc_tag(&f, ptr),
+            Some(MallocTag {
+                kind: TagKind::Oversize,
+                total: size,
+                base: Some(ptr - 16),
+            })
+        );
+
+        // The status word is the magic *minus the size*, so a header
+        // whose size was overwritten no longer decodes -- which is the
+        // point of encoding it that way.
+        f.put_u32(ptr - 8, 16);
+        assert_eq!(malloc_tag(&f, ptr), None);
+        f.put_u32(ptr - 4, 0);
+        assert_eq!(malloc_tag(&f, ptr), None);
+        assert_eq!(malloc_tag(&f, 0), None);
+        assert_eq!(malloc_tag(&f, BASE + 0x9000), None);
+    }
+}
