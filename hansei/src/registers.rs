@@ -68,40 +68,139 @@ pub(crate) fn print_lwp_registers(
         mappings: &session.ctx.mappings,
         stacks: &stacks,
         extents: session.extents(),
+        reach: Some(session.reach()),
     };
     let list = &session.tasks;
     let symbol = |addr: u64| session.proc.lookup_symbol_by_addr(addr);
+    let type_name = |ty| match session.ctx.view.ty(ty) {
+        Some(ty) => {
+            hansei_bundle::names::fold_type_name(ty.name(), &session.impl_fold).into_owned()
+        }
+        None => "<type the bundle does not carry>".to_string(),
+    };
     let annotate = |value: u64| {
-        spelled(&classifier.classify(lwp, value, &symbol), &|index| {
-            task_label(list, index)
-        })
+        spelled(
+            &classifier.classify(lwp, value, &symbol),
+            &|index| task_label(list, index),
+            &type_name,
+        )
     };
     print_registers(out, indent, &info.regs, &annotate)
 }
 
+/// One annotation, as the hop segments it may wrap between: a simple
+/// claim is one segment, a reachability path one per hop. Segments are
+/// joined with ` -> ` when laid out, and a line breaks only between
+/// them — never inside a step or a type name, whatever arrows those
+/// happen to contain.
+type Claim = Vec<String>;
+
+/// Where a wrapped annotation line ends: total columns, prefix and
+/// claim together.
+const ANNOTATION_WIDTH: usize = 80;
+
 /// Lay the block out: the `registers:` heading, then one line per
 /// register — name, value, and the annotation when there is a claim.
+/// A claim past [`ANNOTATION_WIDTH`] columns wraps at its hops, each
+/// continuation indented four columns past where the claim starts.
 fn print_registers(
     out: &mut dyn io::Write,
     indent: &str,
     regs: &proc::Regs,
-    annotate: &dyn Fn(u64) -> Option<String>,
+    annotate: &dyn Fn(u64) -> Option<Claim>,
 ) -> Result<()> {
     writeln!(out, "{indent}registers:")?;
     for (name, value) in gprs(regs) {
         match annotate(value) {
-            Some(claim) => writeln!(out, "{indent}  {name:<3}  {value:#018x}  — {claim}")?,
+            Some(claim) => {
+                let prefix = format!("{indent}  {name:<3}  {value:#018x}  — ");
+                let start = prefix.chars().count();
+                let mut lines = wrap_hops(&claim, start, ANNOTATION_WIDTH).into_iter();
+                writeln!(out, "{prefix}{}", lines.next().unwrap_or_default())?;
+                for line in lines {
+                    writeln!(out, "{}{line}", " ".repeat(start + 4))?;
+                }
+            }
             None => writeln!(out, "{indent}  {name:<3}  {value:#018x}")?,
         }
     }
     Ok(())
 }
 
+/// Lay a claim's segments into lines for a first line starting at
+/// column `start`, breaking only between segments: the first rides the
+/// register's own line, each continuation opens with its arrow. A
+/// segment longer than the width stays whole.
+fn wrap_hops(claim: &[String], start: usize, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut col = start;
+    for (i, hop) in claim.iter().enumerate() {
+        let sep = if i == 0 { 0 } else { " -> ".len() };
+        let len = hop.chars().count();
+        if i > 0 && col + sep + len > width {
+            lines.push(std::mem::take(&mut current));
+            current = format!("-> {hop}");
+            col = start + 4 + current.chars().count();
+            continue;
+        }
+        if i > 0 {
+            current.push_str(" -> ");
+        }
+        current.push_str(hop);
+        col += sep + len;
+    }
+    lines.push(current);
+    lines
+}
+
 /// Spell one classification as the annotation the block prints — or
 /// nothing, for a value with no claim to make. `label` names a task by
-/// its index in the session's list, the way every listing does.
-fn spelled(class: &RegClass, label: &dyn Fn(usize) -> String) -> Option<String> {
-    Some(match class {
+/// its index in the session's list, the way every listing does;
+/// `type_name` folds a bundle type id to its display name.
+fn spelled(
+    class: &RegClass,
+    label: &dyn Fn(usize) -> String,
+    type_name: &dyn Fn(hansei_bundle::BundleTypeId) -> String,
+) -> Option<Claim> {
+    Some(vec![match class {
+        RegClass::Reached {
+            owner,
+            via,
+            path,
+            ty,
+            offset,
+            claimants,
+            claimants_clipped,
+        } => {
+            // One segment per hop: the head carries the task and the
+            // path's first step, the landing type is the last — with
+            // the offset and the sharers riding it.
+            let mut head = label(*owner);
+            if !via.is_empty() {
+                head.push_str(&format!(" ({via})"));
+            }
+            head.push_str(" via ");
+            let mut steps = path.iter();
+            head.push_str(steps.next().map(String::as_str).unwrap_or_default());
+            let mut segments = vec![head];
+            segments.extend(steps.cloned());
+            let mut last = type_name(*ty);
+            if *offset != 0 {
+                last.push_str(&format!(" +{offset:#x}"));
+            }
+            if !claimants.is_empty() {
+                let tasks: Vec<String> = claimants.iter().map(|&t| label(t as usize)).collect();
+                let more = if *claimants_clipped {
+                    " (and others)"
+                } else {
+                    ""
+                };
+                last.push_str(&format!(", shared with {}{more}", tasks.join(", ")));
+            }
+            segments.push(last);
+            return Some(segments);
+        }
         RegClass::Task { index, offset } => match offset {
             0 => label(*index),
             offset => format!("{} +{offset:#x}", label(*index)),
@@ -125,7 +224,7 @@ fn spelled(class: &RegClass, label: &dyn Fn(usize) -> String) -> Option<String> 
         RegClass::Heap => "heap".to_string(),
         RegClass::Unmapped => "unmapped".to_string(),
         RegClass::Small => return None,
-    })
+    }])
 }
 
 #[cfg(test)]
@@ -139,7 +238,8 @@ mod tests {
     #[test]
     fn test_each_claim_has_one_spelling() {
         let label = |index: usize| format!("task {}", index + 30);
-        let spell = |class| spelled(&class, &label);
+        let ty = |_| "T".to_string();
+        let spell = |class| spelled(&class, &label, &ty).map(|claim| claim.join(" -> "));
         assert_eq!(
             spell(RegClass::Task {
                 index: 5,
@@ -185,6 +285,78 @@ mod tests {
         assert_eq!(spell(RegClass::Small), None);
     }
 
+    /// The top rung's spelling: the owning task, the root's via in
+    /// parens when there is one, the path with the landing type as the
+    /// final hop, the offset only when nonzero, and the sharing tasks.
+    #[test]
+    fn test_a_reached_claim_spells_the_path() {
+        let label = |index: usize| format!("task {}", index + 30);
+        let ty = |_| "ArcInner<Notify>".to_string();
+        let reached = |via: &str, offset, claimants: Vec<u32>, clipped| RegClass::Reached {
+            owner: 4,
+            via: via.to_string(),
+            path: vec!["#2 conn.inner".to_string(), "handlers[0]".to_string()],
+            ty: hansei_bundle::BundleTypeId(0),
+            offset,
+            claimants,
+            claimants_clipped: clipped,
+        };
+
+        assert_eq!(
+            spelled(&reached("", 0x10, vec![], false), &label, &ty),
+            Some(vec![
+                "task 34 via #2 conn.inner".to_string(),
+                "handlers[0]".to_string(),
+                "ArcInner<Notify> +0x10".to_string(),
+            ])
+        );
+        assert_eq!(
+            spelled(&reached("held #1", 0, vec![5], true), &label, &ty),
+            Some(vec![
+                "task 34 (held #1) via #2 conn.inner".to_string(),
+                "handlers[0]".to_string(),
+                "ArcInner<Notify>, shared with task 35 (and others)".to_string(),
+            ])
+        );
+    }
+
+    /// Wrapping breaks only between segments: a claim within the width
+    /// is one line, a long one continues with its arrow four columns
+    /// past the claim's start, and a segment longer than the width
+    /// stays whole — never split inside, whatever arrows a type name
+    /// happens to contain.
+    #[test]
+    fn test_wrapping_breaks_at_hops() {
+        use super::wrap_hops;
+        let seg = |parts: &[&str]| -> Vec<String> { parts.iter().map(|s| s.to_string()).collect() };
+
+        assert_eq!(
+            wrap_hops(&seg(&["task 3 via #0 n", "T"]), 30, 80),
+            vec!["task 3 via #0 n -> T"]
+        );
+
+        // Start column 60 leaves room for one 12-char hop plus one
+        // 4-char separator and a bit — the second hop must wrap.
+        assert_eq!(
+            wrap_hops(
+                &seg(&["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"]),
+                60,
+                80
+            ),
+            vec!["aaaaaaaaaaaa", "-> bbbbbbbbbbbb", "-> cccccccccccc"]
+        );
+
+        // A single over-wide segment is not split inside itself — the
+        // fn-arrow it contains is part of a name, not a hop.
+        let wide = format!("fn(A) -> {}", "x".repeat(80));
+        assert_eq!(wrap_hops(&seg(&[&wide]), 60, 80), vec![wide.clone()]);
+        // ...and a second segment after it still wraps to its own line.
+        assert_eq!(
+            wrap_hops(&seg(&[&wide, "tail"]), 60, 80),
+            vec![wide, "-> tail".to_string()]
+        );
+    }
+
     /// The block whole: the heading at the caller's indent, all 17
     /// registers in their fixed order, the annotation set off by the
     /// dash only where there is a claim.
@@ -199,9 +371,9 @@ mod tests {
             ..proc::Regs::default()
         };
         let annotate = |value: u64| match value {
-            0x40_0000 => Some("app_main".to_string()),
-            0x9000_0800 | 0x9000_0900 => Some("this lwp's stack".to_string()),
-            0 => Some("unmapped".to_string()),
+            0x40_0000 => Some(vec!["app_main".to_string()]),
+            0x9000_0800 | 0x9000_0900 => Some(vec!["this lwp's stack".to_string()]),
+            0 => Some(vec!["unmapped".to_string()]),
             _ => None,
         };
         let mut out = Vec::new();

@@ -873,13 +873,35 @@ fn push_member(path: &mut String, name: &str) {
     path.push_str(name);
 }
 
+/// Build an index over synthetic memory, for this crate's tests: each
+/// root `(owner task, type, address, local name)` is walked the way a
+/// chain frame's local is. Lives outside the tests module so the
+/// classifier's tests can build the index their top rung reads.
+#[cfg(test)]
+pub(crate) fn index_for_tests(
+    bundle: &hansei_bundle::Bundle,
+    mem: &reify::testhelper::FakeMem,
+    spans: Vec<(u64, u64, usize)>,
+    bounds: ReachBounds,
+    roots: &[(usize, BundleTypeId, u64, &str)],
+) -> ReachIndex {
+    let view = hansei_bundle::BundleView::new(bundle);
+    let extents = TaskExtents { spans };
+    let mut walker = Walker::new(mem, &extents, bounds);
+    for &(owner, ty, addr, local) in roots {
+        let root = walker.begin_root(owner, String::new());
+        let value = Value::read(mem, view.ty(ty).unwrap(), addr).expect("root value reads");
+        let mut path = format!("#0 {local}");
+        walker.walk_value(value, 0, root, None, &mut path);
+    }
+    walker.finish()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ExtentKind, ReachBounds, ReachIndex, Walker};
-    use crate::tokio::bundle::TaskExtents;
+    use super::{ExtentKind, ReachBounds, ReachIndex};
 
-    use hansei_bundle::{Bundle, BundleView, DisplayNode, TypeDef};
-    use reify::Value;
+    use hansei_bundle::{Bundle, DisplayNode, TypeDef};
     use reify::testhelper::{
         ARR, BIG, FAT_PTR, FakeMem, MSG, NODE, NODE_PTR, POINT, PTR, STRING, U32, UNIT, VEC,
         VTABLE_ARRAY, node_bytes, sel, test_bundle, u32s, u64s,
@@ -903,24 +925,7 @@ mod tests {
     }
 
     /// [`walk`], with each root owned by the task index it names.
-    fn walk_owned(
-        bundle: &Bundle,
-        mem: &FakeMem,
-        spans: Vec<(u64, u64, usize)>,
-        bounds: ReachBounds,
-        roots: &[(usize, hansei_bundle::BundleTypeId, u64, &str)],
-    ) -> ReachIndex {
-        let view = BundleView::new(bundle);
-        let extents = TaskExtents { spans };
-        let mut walker = Walker::new(mem, &extents, bounds);
-        for &(owner, ty, addr, local) in roots {
-            let root = walker.begin_root(owner, String::new());
-            let value = Value::read(mem, view.ty(ty).unwrap(), addr).expect("root value reads");
-            let mut path = format!("#0 {local}");
-            walker.walk_value(value, 0, root, None, &mut path);
-        }
-        walker.finish()
-    }
+    use super::index_for_tests as walk_owned;
 
     fn defaults() -> ReachBounds {
         ReachBounds::default()

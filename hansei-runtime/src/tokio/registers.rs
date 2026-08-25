@@ -16,6 +16,8 @@
 //! the answer, and the spelling of each claim, stay with the caller.
 
 use crate::tokio::model::TaskExtents;
+use crate::tokio::reach::ReachIndex;
+use hansei_bundle::BundleTypeId;
 use proc::{Mappings, SymbolBuf};
 
 use std::ops::Range;
@@ -42,6 +44,25 @@ pub struct LwpStack {
 /// specific claim first. Spelling the claim is the caller's business.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum RegClass {
+    /// Inside an allocation the reachability walk recorded: the top
+    /// rung, carrying the recorded path so the caller can spell how a
+    /// task's future graph reaches the value.
+    Reached {
+        /// The recording path's task, an index into the walked list.
+        owner: usize,
+        /// How the walk reached the root chain; empty for the task's
+        /// own chain.
+        via: String,
+        /// The step strings from the root to the record, in walk order.
+        path: Vec<String>,
+        /// The recorded extent's type and the value's offset into it.
+        ty: BundleTypeId,
+        offset: u64,
+        /// Other tasks whose walks also reached the extent, and whether
+        /// that list clipped at its cap.
+        claimants: Vec<u32>,
+        claimants_clipped: bool,
+    },
     /// Inside a task's allocation: the task's index in the list the
     /// extents were built from, and the offset within the allocation.
     Task { index: usize, offset: u64 },
@@ -73,6 +94,9 @@ pub struct RegClassifier<'a> {
     /// Every lwp's recorded stack, in any order.
     pub stacks: &'a [LwpStack],
     pub extents: &'a TaskExtents,
+    /// The reachability index, when the session holds one: the ladder's
+    /// top rung. `None` classifies on the recorded joins alone.
+    pub reach: Option<&'a ReachIndex>,
 }
 
 impl RegClassifier<'_> {
@@ -98,6 +122,23 @@ impl RegClassifier<'_> {
     ) -> RegClass {
         if value != 0 && value < POINTER_FLOOR {
             return RegClass::Small;
+        }
+
+        // The top rung first: a recorded reach path is the most
+        // specific claim there is. It never shadows a task allocation —
+        // the walk leaves those to the extent join below — but it does
+        // outrank a symbol, for a value landing in a static the walk
+        // recorded (a literal's bytes in rodata).
+        if let Some(hit) = self.reach.and_then(|index| index.locate(value)) {
+            return RegClass::Reached {
+                owner: hit.root.owner,
+                via: hit.root.via.clone(),
+                path: hit.path.iter().map(|s| s.to_string()).collect(),
+                ty: hit.record.ty,
+                offset: hit.offset,
+                claimants: hit.record.claimants.clone(),
+                claimants_clipped: hit.record.claimants_clipped,
+            };
         }
 
         if let Some((index, offset)) = self.extents.locate(value) {
@@ -200,6 +241,7 @@ mod tests {
             mappings: &mappings,
             stacks,
             extents: &extents,
+            reach: None,
         }
         .classify(lwp, value, &no_symbol)
     }
@@ -290,6 +332,59 @@ mod tests {
         assert_eq!(classify(&stacks, 7, 0x7000_4000), RegClass::StackRegion);
     }
 
+    /// The top rung: a value inside an extent the reachability walk
+    /// recorded classifies as reached — carrying the owning task, the
+    /// path, the landing type and offset, and the sharing tasks — and
+    /// wins over the mapping-level heap claim. A value the index does
+    /// not cover falls through the rest of the ladder unchanged.
+    #[test]
+    fn test_a_reached_value_reports_its_path() {
+        use crate::tokio::reach::{ReachBounds, index_for_tests};
+        use reify::testhelper::{FakeMem, NODE, node_bytes, test_bundle};
+
+        let b = test_bundle();
+        // Two tasks' locals point at one node; its `next` is null. The
+        // node sits inside the fixture's anonymous mapping, where the
+        // ladder below would otherwise say `heap`.
+        let mem = FakeMem::new()
+            .at(0x1000, node_bytes(1, 0x7000_0800))
+            .at(0x2000, node_bytes(2, 0x7000_0800))
+            .at(0x7000_0800, node_bytes(3, 0));
+        let index = index_for_tests(
+            &b,
+            &mem,
+            vec![],
+            ReachBounds::default(),
+            &[(4, NODE, 0x1000, "n"), (9, NODE, 0x2000, "m")],
+        );
+
+        let (mappings, extents) = fixture();
+        let classifier = RegClassifier {
+            mappings: &mappings,
+            stacks: &[],
+            extents: &extents,
+            reach: Some(&index),
+        };
+        assert_eq!(
+            classifier.classify(1, 0x7000_0804, &no_symbol),
+            RegClass::Reached {
+                owner: 4,
+                via: String::new(),
+                path: vec!["#0 n.next".to_string()],
+                ty: NODE,
+                offset: 4,
+                claimants: vec![9],
+                claimants_clipped: false,
+            }
+        );
+        // Outside every recorded extent the index says nothing and the
+        // mapping-level claim stands.
+        assert_eq!(
+            classifier.classify(1, 0x7000_0400, &no_symbol),
+            RegClass::Heap
+        );
+    }
+
     /// File-backed addresses name the covering symbol with its offset,
     /// or the object when no symbol covers them; anonymous ones are
     /// heap.
@@ -300,6 +395,7 @@ mod tests {
             mappings: &mappings,
             stacks: &[],
             extents: &extents,
+            reach: None,
         };
         let symbol = |addr: u64| {
             (0x40_0100..0x40_0200).contains(&addr).then(|| SymbolBuf {
