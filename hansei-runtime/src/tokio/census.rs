@@ -1080,7 +1080,7 @@ fn scan_plan(value: Value<'_>, futures: &HashSet<BundleTypeId>) -> ScanPlan {
 /// sole inner future (`inner`) is that wrapper's next frame, for the
 /// same reason. Counting any of them here would put one future in two
 /// of the three populations the census calls disjoint.
-fn is_own_local(name: &str, size: u64, inner: Option<&str>) -> bool {
+pub(crate) fn is_own_local(name: &str, size: u64, inner: Option<&str>) -> bool {
     !name.starts_with("__") && size > 0 && inner != Some(name)
 }
 

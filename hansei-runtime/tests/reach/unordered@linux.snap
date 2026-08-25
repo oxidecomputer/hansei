@@ -1,0 +1,33 @@
+---
+source: hansei-runtime/tests/reach.rs
+---
+roots: 15 records: 13
+capped: deep=0 elements=0 records=false
+stats: dedup=75 task_hits=0 degraded=5
+
+value 48B alloc::sync::ArcInner<tokio::sync::notify::Notify>
+    task 0: #0 notify.ptr.pointer
+value 40B tokio::sync::notify::Waiter
+    task 0: #0 notify.ptr.pointer -> data.waiters.__1.data.value.head.__0.pointer
+value 40B tokio::sync::notify::Waiter
+    task 0: #0 notify.ptr.pointer -> data.waiters.__1.data.value.head.__0.pointer -> pointers.inner.value.next.__0.pointer
+value 40B tokio::sync::notify::Waiter
+    task 0: #0 notify.ptr.pointer -> data.waiters.__1.data.value.head.__0.pointer -> pointers.inner.value.next.__0.pointer -> pointers.inner.value.next.__0.pointer
+value 64B alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>>
+    task 0: #0 set.ready_to_run_queue.ptr.pointer
+value 288B futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>
+    task 0: #0 set.ready_to_run_queue.ptr.pointer -> data.head.v.value.__0
+value 304B alloc::sync::ArcInner<futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>>
+    task 0: #0 set.ready_to_run_queue.ptr.pointer -> data.stub.ptr.pointer
+value 288B futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>
+    task 0: #0 set.head_all.v.value.__0
+value 32B tokio::sync::notify::Notify
+    task 0: #0 set.head_all.v.value.__0 -> future.value.__0.__awaitee.notify
+value 288B futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>
+    task 0: #0 set.head_all.v.value.__0 -> next_all.v.value.__0
+value 288B futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>
+    task 0: #0 set.head_all.v.value.__0 -> next_all.v.value.__0 -> next_all.v.value.__0
+value 144B futures_util::stream::futures_unordered::task::Task<unordered::leaf::{async_fn_env#0}>
+    task 0: #0 set.head_all.v.value.__0 -> next_all.v.value.__0 -> next_all.v.value.__0 -> future.value.__0.inner.__0.head_all.v.value.__0
+value 144B futures_util::stream::futures_unordered::task::Task<unordered::leaf::{async_fn_env#0}>
+    task 0: #0 set.head_all.v.value.__0 -> next_all.v.value.__0 -> next_all.v.value.__0 -> future.value.__0.inner.__0.head_all.v.value.__0 -> next_all.v.value.__0

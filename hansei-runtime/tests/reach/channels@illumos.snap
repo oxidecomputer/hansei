@@ -1,0 +1,15 @@
+---
+source: hansei-runtime/tests/reach.rs
+---
+roots: 3 records: 4
+capped: deep=0 elements=0 records=false
+stats: dedup=7 task_hits=4 degraded=3
+
+value 48B alloc::sync::ArcInner<tokio::sync::notify::Notify>
+    task 0: #0 notify.ptr.pointer
+value 32B tokio::sync::notify::Notify
+    task 0: #0 notified.notify
+value 56B alloc::sync::ArcInner<tokio::sync::semaphore::Semaphore>
+    task 1: #0 _sem.ptr.pointer
+value 64B alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>>
+    task 1: #1 inner.__0.ptr.pointer
