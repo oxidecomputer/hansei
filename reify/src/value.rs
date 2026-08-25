@@ -8,50 +8,15 @@
 //! [`proc::Target::read_bytes`]), so a view costs a pointer
 //! and a length and copies nothing.
 
-use crate::debug_type::{DisplayNode, TypeKind, bundle_variant_error};
+use crate::debug_type::{TypeKind, bundle_variant_error};
 use crate::elements::Elements;
 use crate::parse::ParseWithDbgInfo;
 use crate::{Error, Result};
 use proc::Target;
 
-use hansei_bundle::{BundleType, BundleTypeId, VariantError};
+use hansei_bundle::{BundleType, VariantError};
 
-use foldhash::HashMap;
 use std::fmt;
-use std::rc::Rc;
-
-/// Memos for a walk that reads many values through their display
-/// programs — a recorded walk visits millions of values but only
-/// thousands of distinct types and a handful of vtables:
-///
-/// - the *resolved* display node per type, so selector resolution runs
-///   once per type instead of once per value (the parse-path analog of
-///   the renderer's format cache);
-/// - the concrete pointee type per vtable address, so the symbol
-///   resolution and demangling behind the dyn join run once per vtable
-///   instead of once per trait-object value.
-///
-/// Owned by the walk, passed to the `*_with` readers on [`Value`].
-#[derive(Default)]
-pub struct WalkCache<'a> {
-    pub(crate) nodes: HashMap<BundleTypeId, Option<Rc<DisplayNode<'a>>>>,
-    pub(crate) pointees: HashMap<u64, Option<BundleTypeId>>,
-}
-
-impl<'a> WalkCache<'a> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The resolved display node for `ty`, memoized — negative answers
-    /// included.
-    pub(crate) fn node(&mut self, ty: BundleType<'a>) -> Option<Rc<DisplayNode<'a>>> {
-        self.nodes
-            .entry(ty.id())
-            .or_insert_with(|| DisplayNode::resolve(ty).map(Rc::new))
-            .clone()
-    }
-}
 
 #[derive(Copy, Clone)]
 pub struct Value<'a> {
@@ -192,62 +157,6 @@ impl<'a> Value<'a> {
         Elements::of(self, proc)
     }
 
-    /// The UTF-8 buffer behind a string-shaped value — a `String`, a `&str`,
-    /// an owned path — as `(base address, bytes served, length claimed
-    /// beyond them)`. Same header validation as [`Value::elements`], and the
-    /// same refusal to believe a length further than the target corroborates
-    /// it: the claim is `Some` exactly when the buffer came up short.
-    pub fn utf8_buffer<T: Target>(&self, proc: &'a T) -> Result<(u64, &'a [u8], Option<u64>)> {
-        let (base, buffer) = crate::elements::utf8(self, proc)?;
-        Ok((base, buffer.bytes, buffer.claimed))
-    }
-
-    /// A trait-object wide pointer's concrete pointee: the type recovered
-    /// from the vtable's function symbols (corroborated against the vtable's
-    /// size word) and the address the erased value lives at — past the sized
-    /// header when the pointer targets an unsized wrapper such as
-    /// `ArcInner<dyn Trait>`. `None` whenever the answer would be a guess:
-    /// no `DynPointer` display program on the type, a null or unreadable
-    /// pointer or vtable, disagreeing or unresolvable symbols, or a
-    /// zero-sized concrete type.
-    pub fn dyn_pointee<T: Target>(&self, proc: &'a T) -> Option<(BundleType<'a>, u64)> {
-        self.dyn_pointee_with(proc, &mut WalkCache::new())
-    }
-
-    /// [`Value::dyn_pointee`], memoized through `cache`: the node
-    /// resolution per type, and the whole symbol join per vtable address —
-    /// one vtable always erases the same concrete type.
-    pub fn dyn_pointee_with<T: Target>(
-        &self,
-        proc: &'a T,
-        cache: &mut WalkCache<'a>,
-    ) -> Option<(BundleType<'a>, u64)> {
-        crate::render::dyn_pointee_cached(self, proc, cache)
-    }
-
-    /// [`Value::elements`], with the display-program resolution memoized
-    /// through `cache`.
-    pub fn elements_with<T: Target>(
-        &self,
-        proc: &'a T,
-        cache: &mut WalkCache<'a>,
-    ) -> Result<Elements<'a>> {
-        let node = cache.node(self.ty);
-        Elements::with_node(self, proc, node.as_deref())
-    }
-
-    /// [`Value::utf8_buffer`], with the display-program resolution
-    /// memoized through `cache`.
-    pub fn utf8_buffer_with<T: Target>(
-        &self,
-        proc: &'a T,
-        cache: &mut WalkCache<'a>,
-    ) -> Result<(u64, &'a [u8], Option<u64>)> {
-        let node = cache.node(self.ty);
-        let (base, buffer) = crate::elements::utf8_with_node(self, proc, node.as_deref())?;
-        Ok((base, buffer.bytes, buffer.claimed))
-    }
-
     /// The active variant and its payload as declared — no peel. A
     /// caller that classifies values by their own type must see
     /// `Some(JoinSet<_>)` as the `Some` struct carrying a `JoinSet`:
@@ -343,54 +252,8 @@ impl<'a> fmt::Debug for Value<'a> {
 mod tests {
     use crate::Value;
     use crate::testhelper::*;
-    use crate::value::WalkCache;
 
-    use hansei_bundle::{BundleView, TypeDef};
-
-    /// The uncached readers answer exactly as their `_with` spellings do:
-    /// `utf8_buffer` surfaces the buffer's base, the served bytes and the
-    /// shortfall, and `dyn_pointee` resolves a trait object's concrete
-    /// pointee — the plain spellings are the one-shot entries, so they
-    /// must not drift from the memoized ones.
-    #[test]
-    fn test_utf8_buffer_and_dyn_pointee_read_uncached() {
-        let mut b = test_bundle();
-        let TypeDef::Array { count, .. } = &mut b.types.types[VTABLE_ARRAY.0 as usize] else {
-            panic!("vtable is not an array");
-        };
-        *count = 4;
-        b.validate().expect("expanded vtable must validate");
-        let v = BundleView::new(&b);
-        let mem = FakeMem::new()
-            .at(0x2000, b"hello".to_vec())
-            .at(0x1234, u32s(&[1, 2]))
-            .at(0x3000, u64s(&[0, 8, 8, 0x4000]))
-            .symbol(0x4000, "<Point as app::Trait>::run");
-
-        // String { ptr, len, capacity }: base and bytes come back whole,
-        // and a claim past what the target serves is reported, not
-        // silently cut.
-        let whole = u64s(&[0x2000, 5, 8]);
-        let s = Value::new(v.ty(STRING).unwrap(), 0x1000, &whole);
-        assert_eq!(s.utf8_buffer(&mem).unwrap(), (0x2000, &b"hello"[..], None));
-        let short = u64s(&[0x2000, 500, 500]);
-        let s = Value::new(v.ty(STRING).unwrap(), 0x1000, &short);
-        assert_eq!(
-            s.utf8_buffer(&mem).unwrap(),
-            (0x2000, &b"hello"[..], Some(500))
-        );
-
-        // The dyn join: the vtable's method symbol names Point, the size
-        // word corroborates it, and the pointee lands at the data pointer.
-        let fat = u64s(&[0x1234, 0x3000]);
-        let value = Value::new(v.ty(FAT_PTR).unwrap(), 0, &fat);
-        let (concrete, addr) = value.dyn_pointee(&mem).expect("the join resolves");
-        assert_eq!((concrete.name(), addr), ("Point", 0x1234));
-        // And the memoized spelling answers the same through a cache.
-        let mut cache = WalkCache::new();
-        let (concrete, addr) = value.dyn_pointee_with(&mem, &mut cache).unwrap();
-        assert_eq!((concrete.name(), addr), ("Point", 0x1234));
-    }
+    use hansei_bundle::BundleView;
 
     /// `peel` descends through single-member wrappers, and stops at the last
     /// type the buffer covers. A value read short must not take it past the end

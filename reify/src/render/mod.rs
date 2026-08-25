@@ -21,8 +21,6 @@ use proc::Target;
 
 use hansei_bundle::{BundleType, BundleTypeId};
 
-pub(crate) use dyn_ptr::dyn_pointee_cached;
-
 use aggregate::{write_rust_enum, write_struct_fields};
 use node::eval_node;
 use par::WorkerCtx;
