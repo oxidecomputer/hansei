@@ -6,7 +6,7 @@ capped: deep=0 elements=0 records=false
 stats: dedup=7 task_hits=4 degraded=3
 
 value 48B alloc::sync::ArcInner<tokio::sync::notify::Notify>
-    task 0: #0 notify.ptr.pointer
+    task 0: #0 notify.ptr.pointer shared-with: 1
 value 32B tokio::sync::notify::Notify
     task 0: #0 notified.notify
 value 56B alloc::sync::ArcInner<tokio::sync::semaphore::Semaphore>
