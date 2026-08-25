@@ -323,67 +323,12 @@ exclude_re = [
     # more, and the loop ends with the same runs either way. A probe
     # answering more than its max is outside readable_len's contract.
     "replace < with <= in readable_runs",
-    # The reachability walk's edge pruning is an optimization, not
-    # behavior: walking a subtree `has_edges` would have skipped records
-    # nothing (an edge-free type dereferences nothing), so forcing the
-    # pruning guards open — or `has_edges` itself to true — is
-    # equivalent on every output. The pruned *direction* is pinned (a
-    # String member survives the prune, an array of pointers walks), so
-    # only the always-walk spellings are excluded.
-    "replace Walker<'a, 'b, T>::has_edges -> bool with true",
-    "replace match guard self\\.has_edges\\(ty\\) with true in Walker<'a, 'b, T>::compute_route",
-    "replace match guard element\\.size\\(\\) > 0 && self\\.has_edges\\(element\\) with true in Walker<'a, 'b, T>::compute_route",
-    # ZST boundaries in the same pruning: `> 0` to `>= 0` on a size only
-    # admits zero-sized members, elements and payloads, which carry no
-    # bytes and so no edges — walked or skipped, they record nothing.
-    # The one spelling with an observable half — a pointer whose
-    # *target* is zero-sized becoming a followed edge — is pinned by the
-    # unit-pointer test; the boundary spellings are equivalent.
-    "replace > with >= in Walker<'a, 'b, T>::has_edges",
-    "replace > with >= in Walker<'a, 'b, T>::compute_route",
-    "replace && with \\|\\| in Walker<'a, 'b, T>::has_edges",
-    "replace && with \\|\\| in Walker<'a, 'b, T>::compute_route",
-    # Equivalent mutant, the arm-falls-through shape: arrays whose
-    # elements are edge-free answer false through the `_` arm exactly as
-    # the deleted guard spelling would; arrays of pointers are pinned by
-    # the inline-array test.
-    "delete match arm TypeClass::Array\\{element, ..\\} in Walker<'a, 'b, T>::has_edges",
-    # A walked value's own address is decoration, the same equivalence
-    # family as eval_struct's in reify: every recorded extent derives
-    # from a pointer word in the bytes or a decoded buffer base, never
-    # from the address a by-value child was said to sit at. The
-    # computation lives alone in child_at so this excludes nothing else;
-    # the slice bounds and depth sums stay swept and caught.
-    "replace \\+ with [*-] in child_at",
-    # A defensive short-buffer guard: every value the walk builds covers
-    # its type exactly (frame payloads, member slices and buffer
-    # elements are all cut to size before recursing), so no reachable
-    # input distinguishes the comparison's spelling. The regex
-    # necessarily covers the array element-cap gate's `>` spelling too;
-    # that gate's other spellings stay caught by the element-cap case of
-    # the inline-array test, so skipping the one report costs nothing.
-    "replace < with > in Walker<'a, 'b, T>::walk_value",
-    # `max_len` only bounds locate's backward scan: end-plus-start is
-    # still an upper bound on every extent length, so the scan examines
-    # more candidates and answers identically.
-    "replace - with \\+ in Walker<'a, 'b, T>::finish",
-    # Equivalent mutant: the smallest-extent comparison is over
-    # `(length, record index)` tuples whose index halves are distinct,
-    # so two candidates never compare equal and `<`/`<=` agree on every
-    # pair. The `==` spelling is not equivalent and the shared-start
-    # locate test kills it.
-    "replace < with <= in ReachIndex::locate",
     # The launch worker and its adoption are transparent by design:
     # every accessor that would adopt its state falls back to computing
     # the same state in place when the handoff never happened, so a
     # worker (or an adoption) replaced with () changes only when the
-    # work runs, never any answer. The state itself — the census, the
-    # extents, the reach index — is what the rest of the suites pin.
+    # work runs, never any answer. The state itself — the census and the
+    # task extents — is what the rest of the suites pin.
     "replace warm_worker with \\(\\)",
     "replace Session<'b>::adopt_warm with \\(\\)",
-    # The extent length only feeds the Buffer arm's element count, and
-    # the fixtures' reach records are all Value extents — the count
-    # arithmetic itself is pinned by extent_at's unit tests over an
-    # explicit length.
-    "replace - with [+/] in report_reachable",
 ]

@@ -25,9 +25,6 @@ exegesis.workspace = true
 hansei-runtime = { path = ".", features = ["testkit"] }
 insta.workspace = true
 regex.workspace = true
-# The synthetic-bundle helpers reach's unit tests hand-build type graphs
-# with; the feature only augments the reify already in [dependencies].
-reify = { workspace = true, features = ["testhelper"] }
 # The version-ceiling notice tests build `Meta.tokio_version` values;
 # the non-test code only reads the ones bundles carry.
 semver.workspace = true

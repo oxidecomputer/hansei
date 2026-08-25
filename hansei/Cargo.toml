@@ -24,10 +24,6 @@ exegesis = { workspace = true }
 # (outside the `snapshot` feature, which enables this itself).
 hansei-runtime = { workspace = true, features = ["testkit"] }
 insta = { workspace = true }
-# The refinement tests pin offset math against the synthetic type zoo;
-# the feature only adds the testhelper module to the already-depended
-# crate.
-reify = { workspace = true, features = ["testhelper"] }
 regex = { workspace = true }
 # The ceiling-notice tests build `Meta.tokio_version` values; the
 # non-test code only reads the ones bundles carry.

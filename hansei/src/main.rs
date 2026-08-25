@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
-use hansei_runtime::tokio::{bundle, census, contract, reach};
+use hansei_runtime::tokio::{bundle, census, contract};
 use proc::{Proc, Target};
 
 use std::cell::{Cell, OnceCell, RefCell};
@@ -104,16 +104,6 @@ struct SessionArgs {
     /// descent is finding.
     #[arg(long, value_name = "LEVELS", default_value_t = census::Bounds::default().scan_depth)]
     search_depth: usize,
-
-    /// How deep the reachability walk descends from each task's own
-    /// frames, counted per member, element and dereference — the walk
-    /// `whatis` consults for an address nothing else claims.
-    ///
-    /// The default is generous, but a target can out-nest any limit:
-    /// a miss says when the walk was cut short here, which is when
-    /// raising it could still find the address.
-    #[arg(long, value_name = "LEVELS", default_value_t = reach::ReachBounds::default().depth)]
-    reach_depth: usize,
 
     /// Check the census against its own construction rules whenever
     /// one is taken, reporting any violation on stderr. The total
@@ -597,22 +587,6 @@ pub enum Command {
     /// Trailer all name the task, and every address `tasks --futures`
     /// prints — a held future's, a set's, a set child's node — names
     /// what it was printed for.
-    ///
-    /// An address none of that claims is looked up in the reachability
-    /// index: every heap allocation the value walk reaches by following
-    /// pointers out of the futures the census enumerates — through
-    /// `Box`, `Arc`, `Vec` and string buffers, trait objects — each
-    /// recorded with the path that reached it. A hit prints that path,
-    /// from a task's own frame local down to the allocation, and
-    /// refines the offset to the member it lands in. The index starts
-    /// building in the background when the session opens; a query that
-    /// arrives first blocks until it is ready (seconds on a large
-    /// target), and every later one is free.
-    ///
-    /// A miss there is a lower bound, not a verdict: hand-rolled
-    /// containers stop the walk, and when one of its limits cut it
-    /// short the answer says so — that is when `--reach-depth` could
-    /// still find the address.
     Whatis {
         /// The address to look up, written in hex with a required
         /// leading `0x` (e.g. `0x7fffb1c26100`).
@@ -776,15 +750,10 @@ pub struct Session<'b> {
     /// built on first use: a core does not change, so the address→task
     /// answers never do either, and the two walks cover every chain —
     /// worth paying once.
+    /// Normally adopted from the launch-time worker; the `get_or_init`
+    /// fallbacks compute in place if that worker died.
     extents: OnceCell<bundle::TaskExtents>,
     census: OnceCell<census::FutureCensus>,
-    /// The reachability index. Normally adopted from the launch-time
-    /// worker with the two cells above; the `get_or_init` fallbacks
-    /// compute in place if that worker died.
-    reach: OnceCell<reach::ReachIndex>,
-    /// The reach walk's limits, `--reach-depth` having moved the one
-    /// bound a session can set.
-    reach_bounds: reach::ReachBounds,
     /// The launch-time worker's handoff, present until adopted (or
     /// until quit drops it to stop the worker). See [`warm_worker`].
     warm: RefCell<Option<mpsc::Receiver<Warm>>>,
@@ -881,8 +850,6 @@ impl<'b> Session<'b> {
             impl_fold: hansei_bundle::names::ImplFold::for_bundle(bundle),
             extents: OnceCell::new(),
             census: OnceCell::new(),
-            reach: OnceCell::new(),
-            reach_bounds: session_reach_bounds(args.reach_depth),
             warm: RefCell::new(None),
             audited: Cell::new(false),
             bounds: census::Bounds {
@@ -917,7 +884,6 @@ impl<'b> Session<'b> {
             if let Warm::Ready(warmed) = msg {
                 let _ = self.extents.set(warmed.extents);
                 let _ = self.census.set(warmed.census);
-                let _ = self.reach.set(warmed.reach);
                 break;
             }
         }
@@ -944,21 +910,6 @@ impl<'b> Session<'b> {
             }
         }
         census
-    }
-
-    fn reach(&self) -> &reach::ReachIndex {
-        self.adopt_warm();
-        if self.reach.get().is_none() {
-            let index = reach::reach_index(
-                &self.ctx,
-                &self.tasks,
-                self.census(),
-                self.extents(),
-                self.reach_bounds,
-            );
-            let _ = self.reach.set(index);
-        }
-        self.reach.get().expect("the index was just set")
     }
 
     fn analysis(&self) -> &Analysis {
@@ -1164,34 +1115,25 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
     check_program(&proc, args)?;
     let session = Session::attach(&proc, &bundle, args)?;
 
-    // The joint state every deep command reads — task extents, the
-    // census, the reachability index — starts building immediately on
-    // its own thread, so it is warm (or well under way) by the time
-    // the first command that wants it is typed. Commands that need it
-    // block on the handoff; a session that quits first is noticed at
-    // the worker's next probe and the rest of the build is skipped.
+    // The joint state every deep command reads — task extents and the
+    // census — starts building immediately on its own thread, so it is
+    // warm (or well under way) by the time the first command that wants
+    // it is typed. Commands that need it block on the handoff; a
+    // session that quits first is noticed at the worker's next probe
+    // and the rest of the build is skipped.
     std::thread::scope(|scope| {
         let (tx, rx) = mpsc::channel();
         *session.warm.borrow_mut() = Some(rx);
         let tasks = &session.tasks;
-        let (policy, bounds, reach_bounds) = (session.policy, session.bounds, session.reach_bounds);
+        let (policy, bounds) = (session.policy, session.bounds);
         let (proc, bundle) = (&proc, &bundle);
-        scope.spawn(move || warm_worker(proc, bundle, policy, tasks, bounds, reach_bounds, tx));
+        scope.spawn(move || warm_worker(proc, bundle, policy, tasks, bounds, tx));
         let res = repl::run(&session, exec);
         // Quitting drops the unadopted receiver so the worker stops at
         // its next probe instead of finishing a build nobody reads.
         session.warm.borrow_mut().take();
         res
     })
-}
-
-/// The reach walk's limits for one session: `--reach-depth` moves the
-/// depth, every other bound stays at its default.
-fn session_reach_bounds(depth: usize) -> reach::ReachBounds {
-    reach::ReachBounds {
-        depth,
-        ..reach::ReachBounds::default()
-    }
 }
 
 /// Whether this `census()` call is the one that runs `--audit`'s
@@ -1201,13 +1143,12 @@ fn first_audit(audit: bool, audited: &Cell<bool>) -> bool {
     audit && !audited.replace(true)
 }
 
-/// What the launch-time worker hands the session, all three built over
-/// the worker's own [`bundle::Context`] (the session's holds interior
+/// What the launch-time worker hands the session, both built over the
+/// worker's own [`bundle::Context`] (the session's holds interior
 /// caches and stays on its thread) and the session's shared task list.
 struct Warmed {
     extents: bundle::TaskExtents,
     census: census::FutureCensus,
-    reach: reach::ReachIndex,
 }
 
 /// The worker-to-session channel: probes carry nothing and exist so a
@@ -1225,7 +1166,6 @@ fn warm_worker(
     policy: contract::WalkPolicy,
     tasks: &bundle::TaskList,
     bounds: census::Bounds,
-    reach_bounds: reach::ReachBounds,
     tx: mpsc::Sender<Warm>,
 ) {
     // The attach already proved this constructor over the same inputs;
@@ -1239,15 +1179,7 @@ fn warm_worker(
         return;
     }
     let census = census::census_bounded(&ctx, tasks, bounds);
-    if tx.send(Warm::Probe).is_err() {
-        return;
-    }
-    let reach = reach::reach_index(&ctx, tasks, &census, &extents, reach_bounds);
-    let _ = tx.send(Warm::Ready(Box::new(Warmed {
-        extents,
-        census,
-        reach,
-    })));
+    let _ = tx.send(Warm::Ready(Box::new(Warmed { extents, census })));
 }
 
 /// The attach summary: what is being read, and how well the two files
@@ -1467,20 +1399,8 @@ fn version_ceiling_line(meta: &hansei_bundle::Meta, noticed: &Cell<bool>) -> Opt
 
 #[cfg(test)]
 mod session_gate_tests {
-    use super::{first_audit, session_reach_bounds};
-    use hansei_runtime::tokio::reach::ReachBounds;
+    use super::first_audit;
     use std::cell::Cell;
-
-    /// `--reach-depth` moves exactly the depth: the record and element
-    /// caps stay where the walk's defaults put them.
-    #[test]
-    fn test_reach_depth_moves_only_the_depth() {
-        let bounds = session_reach_bounds(7);
-        let defaults = ReachBounds::default();
-        assert_eq!(bounds.depth, 7);
-        assert_eq!(bounds.max_records, defaults.max_records);
-        assert_eq!(bounds.max_elements, defaults.max_elements);
-    }
 
     /// The audit runs once, and only when asked: never without the
     /// flag, on the first census with it, and not again after.
