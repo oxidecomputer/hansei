@@ -8,10 +8,10 @@ use hansei_bundle::Encoding;
 use hansei_bundle::{
     Arm, BitField as BundleBitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION, Field as BundleField,
-    FieldRender as BundleFieldRender, ImplTable, InfraTypes, MapEntries as BundleMapEntries,
-    MemberDef, MemberRef, Meta, Notation, ProvenanceTable, ScalarDecode as BundleScalarDecode,
-    Selector, StaticsTable, Step, Stmt as BundleStmt, StrRef, StringInterner, TaskTable, TypeDef,
-    TypeTable, ValueExpr, VariantDef, VariantShape, WalksTable,
+    FieldRender as BundleFieldRender, GlueTypeTable, ImplTable, InfraTypes,
+    MapEntries as BundleMapEntries, MemberDef, MemberRef, Meta, Notation, ProvenanceTable,
+    ScalarDecode as BundleScalarDecode, Selector, StaticsTable, Step, Stmt as BundleStmt, StrRef,
+    StringInterner, TaskTable, TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape, WalksTable,
 };
 
 use std::collections::BTreeMap;
@@ -2165,6 +2165,7 @@ pub fn test_bundle() -> Bundle {
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
+        glue_types: GlueTypeTable::default(),
         statics: StaticsTable::default(),
         walks: WalksTable::default(),
         infra: InfraTypes {
@@ -2419,6 +2420,7 @@ pub fn node_bundle() -> Bundle {
         },
         tasks: TaskTable::default(),
         dyn_futures: DynFutureTable::default(),
+        glue_types: GlueTypeTable::default(),
         statics: StaticsTable::default(),
         walks: WalksTable::default(),
         infra: InfraTypes {

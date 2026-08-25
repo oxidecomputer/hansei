@@ -26,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 40;
+pub const FORMAT_VERSION: u32 = 41;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -1303,6 +1303,28 @@ impl Bundle {
         {
             return corrupt(
                 "normalized dyn future table is inconsistent with raw symbols".to_owned(),
+            );
+        }
+
+        for (sym, id) in &self.glue_types.by_symbol {
+            if sym != strip_llvm_suffix(sym) {
+                return corrupt(format!("glue type key {sym:?} has .llvm suffix"));
+            }
+            check_ty("glue type table", *id)?;
+        }
+        for (sym, ids) in &self.glue_types.by_normalized_symbol {
+            if ids.is_empty() {
+                return corrupt(format!("normalized glue type key {sym:?} has no entries"));
+            }
+            for id in ids {
+                check_ty("normalized glue type table", *id)?;
+            }
+        }
+        if self.glue_types.by_normalized_symbol
+            != normalized_value_index(&self.glue_types.by_symbol)
+        {
+            return corrupt(
+                "normalized glue type table is inconsistent with raw symbols".to_owned(),
             );
         }
 

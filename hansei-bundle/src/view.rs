@@ -207,6 +207,18 @@ impl<'a> BundleType<'a> {
         sizes.all(|candidate| candidate == size).then_some(size)
     }
 
+    /// Resolve a vtable function symbol against the bundle's glue
+    /// table ([`crate::GlueTypeTable`]): the vtable join's fallback for
+    /// dyn-erased concrete types whose demangled spelling matches no
+    /// DWARF type name. Exact key first, then the normalized form —
+    /// the target's symbols carry its own build's crate
+    /// disambiguators, and only the normalized key joins across
+    /// builds, the task table's precedent. Anything but a unique
+    /// answer is a decline, never a pick.
+    pub fn glue_ids_for_symbol(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
+        self.bundle.glue_types.lookup_id(symbol)
+    }
+
     /// The unique type associated with a fully-qualified name in this
     /// bundle. Conflicting same-named layouts make the lookup ambiguous.
     pub fn type_by_name(&self, name: &str) -> Option<BundleType<'a>> {

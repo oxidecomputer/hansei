@@ -39,6 +39,7 @@ pub struct Bundle {
     pub types: TypeTable,
     pub tasks: TaskTable,
     pub dyn_futures: DynFutureTable,
+    pub glue_types: GlueTypeTable,
     pub statics: StaticsTable,
     pub walks: WalksTable,
     pub infra: InfraTypes,
@@ -1160,6 +1161,36 @@ impl DynFutureTable {
             return None;
         };
         Some(id)
+    }
+}
+
+/// Join table for the vtable join's fallback: `core::ptr::drop_glue::<T>`
+/// linkage names → `T`'s type id, for dyn-erased concrete types whose
+/// demangled spelling can never equal their DWARF name (closures, fn
+/// items, tuples spell differently in the two grammars). Rows exist
+/// *only* for those types: a spelling the name join resolves stores no
+/// row, and a glue symbol claimed by differently-named types — the
+/// linker's identical-code folding — stores none either, because any
+/// one claimant would be a guess. The read side consults this after the
+/// name join fails ([`BundleType::glue_ids_for_symbol`]), never before:
+/// the name join is corroborated by every vtable symbol agreeing, and a
+/// row here is not.
+///
+/// [`BundleType::glue_ids_for_symbol`]: crate::BundleType::glue_ids_for_symbol
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct GlueTypeTable {
+    /// Keys are stored without `.llvm.<hash>` suffixes, like the other
+    /// symbol tables'.
+    pub by_symbol: BTreeMap<String, BundleTypeId>,
+    /// The disambiguator-stripped index the cross-build join runs on:
+    /// the target binary's vtable symbols carry that build's crate
+    /// hashes, not the debug build's.
+    pub by_normalized_symbol: BTreeMap<String, Vec<BundleTypeId>>,
+}
+
+impl GlueTypeTable {
+    pub fn lookup_id(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
+        lookup_symbol_id(&self.by_symbol, &self.by_normalized_symbol, symbol)
     }
 }
 
