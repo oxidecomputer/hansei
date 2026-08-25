@@ -16,6 +16,6 @@ pub use elements::Elements;
 pub use error::Error;
 pub use parse::ParseWithDbgInfo;
 pub use render::{AddrAnnotator, DisplayValue, ElideOverride};
-pub use value::Value;
+pub use value::{Value, WalkCache};
 
 pub type Result<T> = std::result::Result<T, Error>;

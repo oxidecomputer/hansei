@@ -127,7 +127,7 @@ where
 /// target corroborates it, as the sequences above.
 impl<'a> ParseWithDbgInfo<'a> for String {
     fn parse_with_dbg<T: Target>(proc: &'a T, info: &Value<'a>) -> Result<Self> {
-        let text = crate::elements::utf8(info, proc)?;
+        let (_, text) = crate::elements::utf8(info, proc)?;
         if let Some(claimed) = text.claimed {
             return Err(Error::short_sequence(info.ty.name(), claimed, text.count));
         }
