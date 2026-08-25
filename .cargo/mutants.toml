@@ -381,4 +381,9 @@ exclude_re = [
     # extents, the reach index — is what the rest of the suites pin.
     "replace warm_worker with \\(\\)",
     "replace Session<'b>::adopt_warm with \\(\\)",
+    # The extent length only feeds the Buffer arm's element count, and
+    # the fixtures' reach records are all Value extents — the count
+    # arithmetic itself is pinned by extent_at's unit tests over an
+    # explicit length.
+    "replace - with [+/] in report_reachable",
 ]
