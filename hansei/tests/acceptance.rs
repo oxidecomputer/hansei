@@ -1814,10 +1814,15 @@ fn test_whatis_acceptance() {
         );
 
         // An address outside every allocation is a miss, not an error.
+        // A cut walk may qualify the miss on a line below; the first
+        // line is the contract.
         let out = hansei_ok(&bundle, core, "whatis 0x10");
-        assert_eq!(
-            out,
-            "no task's allocation and no future the census found contains 0x10\n"
+        assert!(
+            out.starts_with(
+                "no task's allocation, no future the census found, and nothing \
+                 the reachability walk reached contains 0x10\n"
+            ),
+            "{out}"
         );
 
         // The 0x prefix is mandatory: a bare number is a parse error,

@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
-use hansei_runtime::tokio::{bundle, census, contract};
+use hansei_runtime::tokio::{bundle, census, contract, reach};
 use proc::{Proc, Target};
 
 use std::cell::{Cell, OnceCell};
@@ -103,6 +103,16 @@ struct SessionArgs {
     /// descent is finding.
     #[arg(long, value_name = "LEVELS", default_value_t = census::Bounds::default().scan_depth)]
     search_depth: usize,
+
+    /// How deep the reachability walk descends from each task's own
+    /// frames, counted per member, element and dereference — the walk
+    /// `whatis` consults for an address nothing else claims.
+    ///
+    /// The default is generous, but a target can out-nest any limit:
+    /// a miss says when the walk was cut short here, which is when
+    /// raising it could still find the address.
+    #[arg(long, value_name = "LEVELS", default_value_t = reach::ReachBounds::default().depth)]
+    reach_depth: usize,
 
     /// Check the census against its own construction rules whenever
     /// one is taken, reporting any violation on stderr. The total
@@ -586,6 +596,21 @@ pub enum Command {
     /// Trailer all name the task, and every address `tasks --futures`
     /// prints — a held future's, a set's, a set child's node — names
     /// what it was printed for.
+    ///
+    /// An address none of that claims is looked up in the reachability
+    /// index: every heap allocation the value walk reaches by following
+    /// pointers out of the futures the census enumerates — through
+    /// `Box`, `Arc`, `Vec` and string buffers, trait objects — each
+    /// recorded with the path that reached it. A hit prints that path,
+    /// from a task's own frame local down to the allocation, and
+    /// refines the offset to the member it lands in. The first use
+    /// builds the index (seconds on a large target); it is kept, so
+    /// asking again is free.
+    ///
+    /// A miss there is a lower bound, not a verdict: hand-rolled
+    /// containers stop the walk, and when one of its limits cut it
+    /// short the answer says so — that is when `--reach-depth` could
+    /// still find the address.
     Whatis {
         /// The address to look up, written in hex with a required
         /// leading `0x` (e.g. `0x7fffb1c26100`).
@@ -751,6 +776,14 @@ pub struct Session<'b> {
     /// worth paying once.
     extents: OnceCell<bundle::TaskExtents>,
     census: OnceCell<census::FutureCensus>,
+    /// The reachability index, built on first use like the two above —
+    /// but only an explicit surface (`whatis` today) asks for it: on a
+    /// large target the walk costs seconds where the census costs
+    /// milliseconds, so nothing builds it as a side effect.
+    reach: OnceCell<reach::ReachIndex>,
+    /// The reach walk's limits, `--reach-depth` having moved the one
+    /// bound a session can set.
+    reach_bounds: reach::ReachBounds,
     /// Where the census walk stops, `--search-depth` having moved the
     /// one bound a session can set.
     bounds: census::Bounds,
@@ -841,6 +874,11 @@ impl<'b> Session<'b> {
             impl_fold: hansei_bundle::names::ImplFold::for_bundle(bundle),
             extents: OnceCell::new(),
             census: OnceCell::new(),
+            reach: OnceCell::new(),
+            reach_bounds: reach::ReachBounds {
+                depth: args.reach_depth,
+                ..reach::ReachBounds::default()
+            },
             bounds: census::Bounds {
                 scan_depth: args.search_depth,
                 ..census::Bounds::default()
@@ -879,6 +917,18 @@ impl<'b> Session<'b> {
                 }
             }
             census
+        })
+    }
+
+    fn reach(&self) -> &reach::ReachIndex {
+        self.reach.get_or_init(|| {
+            reach::reach_index(
+                &self.ctx,
+                &self.tasks,
+                self.census(),
+                self.extents(),
+                self.reach_bounds,
+            )
         })
     }
 
