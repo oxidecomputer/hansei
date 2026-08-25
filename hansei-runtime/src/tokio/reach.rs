@@ -28,7 +28,10 @@
 //!   `MaybeUninit`. The node allocations themselves are reached.
 //! - **First path wins.** A shared `Arc` dedups on `(address, type)`; the
 //!   recorded path is the first one the walk took, which is stable because
-//!   roots are walked in task order.
+//!   roots are walked in task order. The later paths are not discarded
+//!   whole: each records its owning task as a co-claimant on the extent
+//!   ([`ReachRecord::claimants`], capped), so a shared allocation — a
+//!   logger, a config `Arc` — never reads as one task's exclusively.
 //!
 //! A miss is therefore a lower bound, the same contract the census states:
 //! "not reached" never means "not owned", and [`ReachIndex::capped`] says
@@ -42,7 +45,7 @@ use hansei_bundle::{BundleType, BundleTypeId, DisplayNode, TypeClass};
 use proc::Target;
 use reify::Value;
 
-use foldhash::{HashMap, HashSet};
+use foldhash::HashMap;
 
 use std::fmt::Write as _;
 
@@ -59,6 +62,12 @@ const MAX_REACH_RECORDS: usize = 1 << 20;
 /// whole extent is recorded regardless; this bounds only the search for
 /// pointers *inside* the elements.
 const MAX_SEQ_ELEMENTS: u64 = 4096;
+
+/// How many co-claiming tasks one record remembers. Enough to say who
+/// shares an ordinary allocation; a target-wide singleton (a logger every
+/// task reaches) clips here and says so rather than hoarding the task
+/// list per record.
+const MAX_CLAIMANTS: usize = 8;
 
 /// Where the walk's hard limits sit, as values rather than the constants:
 /// a caller told the walk stopped can move the limit that stopped it and
@@ -154,6 +163,14 @@ pub struct ReachRecord {
     /// [`ExtentKind::Bytes`].
     pub ty: BundleTypeId,
     pub kind: ExtentKind,
+    /// Tasks other than the recorded path's owner whose walks also
+    /// reached this extent, as indices into the walked `TaskList` — in
+    /// the order the walk met them, without the owner, capped at
+    /// [`MAX_CLAIMANTS`]. A shared allocation names its sharers.
+    pub claimants: Vec<u32>,
+    /// Whether the claimant list clipped at its cap: there are more
+    /// sharing tasks than it names.
+    pub claimants_clipped: bool,
     /// Index into [`ReachIndex`]'s roots.
     root: u32,
     /// The record whose walk found this one; `None` when it was reached
@@ -361,8 +378,11 @@ struct Walker<'a, 'b, T> {
     roots: Vec<ReachRoot>,
     records: Vec<ReachRecord>,
     /// Every dereference target, by `(address, type id)`: permanent, so a
-    /// shared allocation is recorded under its first path only.
-    visited: HashSet<(u64, BundleTypeId)>,
+    /// shared allocation is recorded under its first path only. The value
+    /// is the record the target became — `None` while its own walk is
+    /// still placing it, or when the record cap swallowed it — so a later
+    /// path landing here can claim the extent for its own task.
+    visited: HashMap<(u64, BundleTypeId), Option<u32>>,
     /// [`Route`] per type.
     routes: HashMap<BundleTypeId, Route<'b>>,
     /// Whether a type can transitively reach a dereference, for the
@@ -385,7 +405,7 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
             bounds,
             roots: Vec::new(),
             records: Vec::new(),
-            visited: HashSet::default(),
+            visited: HashMap::default(),
             routes: HashMap::default(),
             edges: HashMap::default(),
             cache: reify::WalkCache::new(),
@@ -615,8 +635,8 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
             self.stats.task_hits += 1;
             return;
         }
-        if !self.visited.insert((addr, target.id())) {
-            self.stats.dedup_hits += 1;
+        let key = (addr, target.id());
+        if !self.first_visit(key, root) {
             return;
         }
         let Ok(bytes) = self.proc.read_bytes(addr, target.size()) else {
@@ -634,9 +654,39 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
         ) else {
             return;
         };
+        self.visited.insert(key, Some(record));
         let pointee = Value::new(target, addr, bytes);
         let mut sub = String::new();
         self.walk_value(pointee, depth + 1, root, Some(record), &mut sub);
+    }
+
+    /// Whether `key` is a first visit. A revisit counts the dedup hit
+    /// and, when the target has a record, claims it for the visiting
+    /// root's task — a shared allocation names every task that reaches
+    /// it, not just the first path's, up to [`MAX_CLAIMANTS`] sharers.
+    fn first_visit(&mut self, key: (u64, BundleTypeId), root: u32) -> bool {
+        match self.visited.get(&key) {
+            None => {
+                self.visited.insert(key, None);
+                true
+            }
+            Some(&record) => {
+                self.stats.dedup_hits += 1;
+                let owner = self.roots[root as usize].owner as u32;
+                if let Some(index) = record {
+                    let record = &mut self.records[index as usize];
+                    let first = self.roots[record.root as usize].owner as u32;
+                    if owner != first && !record.claimants.contains(&owner) {
+                        if record.claimants.len() < MAX_CLAIMANTS {
+                            record.claimants.push(owner);
+                        } else {
+                            record.claimants_clipped = true;
+                        }
+                    }
+                }
+                false
+            }
+        }
     }
 
     /// Record a string-shaped value's byte buffer. Nothing to recurse
@@ -656,14 +706,14 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
             self.stats.task_hits += 1;
             return;
         }
-        if !self.visited.insert((base, value.ty.id())) {
-            self.stats.dedup_hits += 1;
+        let key = (base, value.ty.id());
+        if !self.first_visit(key, root) {
             return;
         }
         if claimed.is_some() {
             self.capped.elements += 1;
         }
-        self.record(
+        let record = self.record(
             base,
             base + bytes.len() as u64,
             value.ty.id(),
@@ -672,6 +722,7 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
             parent,
             path,
         );
+        self.visited.insert(key, record);
     }
 
     /// Record a sequence's buffer and walk its elements for pointers.
@@ -696,8 +747,8 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
             self.stats.task_hits += 1;
             return;
         }
-        if !self.visited.insert((base, element.id())) {
-            self.stats.dedup_hits += 1;
+        let key = (base, element.id());
+        if !self.first_visit(key, root) {
             return;
         }
         let count = elements.len();
@@ -714,6 +765,7 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
         ) else {
             return;
         };
+        self.visited.insert(key, Some(record));
         let walked = count.min(self.bounds.max_elements);
         if walked < count || elements.truncated().is_some() {
             self.capped.elements += 1;
@@ -771,6 +823,8 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
             end,
             ty,
             kind,
+            claimants: Vec::new(),
+            claimants_clipped: false,
             root,
             parent,
             step: step.to_string(),
@@ -832,7 +886,8 @@ mod tests {
     };
 
     /// Walk one root local against `mem` under `bounds`, the way a chain
-    /// frame's local is walked, and return the finished index.
+    /// frame's local is walked, and return the finished index. Every
+    /// root is task 0's; [`walk_owned`] is the claimant tests' variant.
     fn walk(
         bundle: &Bundle,
         mem: &FakeMem,
@@ -840,11 +895,26 @@ mod tests {
         bounds: ReachBounds,
         roots: &[(hansei_bundle::BundleTypeId, u64, &str)],
     ) -> ReachIndex {
+        let owned: Vec<(usize, hansei_bundle::BundleTypeId, u64, &str)> = roots
+            .iter()
+            .map(|&(ty, addr, l)| (0, ty, addr, l))
+            .collect();
+        walk_owned(bundle, mem, spans, bounds, &owned)
+    }
+
+    /// [`walk`], with each root owned by the task index it names.
+    fn walk_owned(
+        bundle: &Bundle,
+        mem: &FakeMem,
+        spans: Vec<(u64, u64, usize)>,
+        bounds: ReachBounds,
+        roots: &[(usize, hansei_bundle::BundleTypeId, u64, &str)],
+    ) -> ReachIndex {
         let view = BundleView::new(bundle);
         let extents = TaskExtents { spans };
         let mut walker = Walker::new(mem, &extents, bounds);
-        for &(ty, addr, local) in roots {
-            let root = walker.begin_root(0, String::new());
+        for &(owner, ty, addr, local) in roots {
+            let root = walker.begin_root(owner, String::new());
             let value = Value::read(mem, view.ty(ty).unwrap(), addr).expect("root value reads");
             let mut path = format!("#0 {local}");
             walker.walk_value(value, 0, root, None, &mut path);
@@ -903,6 +973,63 @@ mod tests {
         assert_eq!(index.stats.dedup_hits, 1);
         let hit = index.locate(0x3000).unwrap();
         assert_eq!(hit.path, ["#0 a.next"]);
+        // Both paths are one task's; sharing with yourself claims nothing.
+        assert_eq!(hit.record.claimants, Vec::<u32>::new());
+        assert!(!hit.record.claimants_clipped);
+    }
+
+    /// A target reached from several tasks' walks names the later tasks
+    /// as claimants — once each, without the first path's owner — so a
+    /// shared allocation never reads as exclusively owned.
+    #[test]
+    fn test_a_shared_target_names_its_co_claiming_tasks() {
+        let b = test_bundle();
+        let mem = FakeMem::new()
+            .at(0x1000, node_bytes(1, 0x4000))
+            .at(0x2000, node_bytes(2, 0x4000))
+            .at(0x3000, node_bytes(3, 0x4000))
+            .at(0x4000, node_bytes(9, 0));
+        let index = walk_owned(
+            &b,
+            &mem,
+            vec![],
+            defaults(),
+            &[
+                (5, NODE, 0x1000, "a"),
+                (7, NODE, 0x2000, "b"),
+                // Task 7 again, through another chain: already named.
+                (7, NODE, 0x3000, "c"),
+            ],
+        );
+
+        let hit = index.locate(0x4000).expect("the shared node is recorded");
+        assert_eq!(hit.root.owner, 5, "first path wins the record");
+        assert_eq!(hit.record.claimants, vec![7]);
+        assert!(!hit.record.claimants_clipped);
+    }
+
+    /// The claimant list clips at its cap and says so, rather than
+    /// growing with every task that shares a target-wide singleton.
+    #[test]
+    fn test_the_claimant_list_clips_at_its_cap() {
+        let b = test_bundle();
+        let mut mem = FakeMem::new().at(0x9000, node_bytes(0, 0));
+        let mut roots = Vec::new();
+        for owner in 0..11u64 {
+            let addr = 0x1000 + owner * 0x100;
+            mem = mem.at(addr, node_bytes(owner as u32, 0x9000));
+            roots.push((owner as usize, NODE, addr, "n"));
+        }
+        let index = walk_owned(&b, &mem, vec![], defaults(), &roots);
+
+        let hit = index.locate(0x9000).expect("the singleton is recorded");
+        assert_eq!(hit.root.owner, 0);
+        assert_eq!(
+            hit.record.claimants,
+            (1..=super::MAX_CLAIMANTS as u32).collect::<Vec<u32>>(),
+            "the first sharers in walk order, without the owner"
+        );
+        assert!(hit.record.claimants_clipped, "task 9 and 10 clipped");
     }
 
     /// A cycle terminates: the back edge lands on a visited target and

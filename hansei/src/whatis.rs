@@ -359,7 +359,29 @@ fn report_reachable(
         };
         writeln!(out, "    Member: `{chain}`{rem}")?;
     }
+    if let Some(shared) = shared_with(list, record) {
+        writeln!(out, "    Shared with: {shared}")?;
+    }
     Ok(())
+}
+
+/// The co-claimant line's text: the other tasks whose walks reached
+/// the record, or nothing when the recorded path's task is the only
+/// one. A clipped list says there are more sharers than it names.
+fn shared_with(list: &bundle::TaskList, record: &reach::ReachRecord) -> Option<String> {
+    if record.claimants.is_empty() {
+        return None;
+    }
+    let tasks: Vec<String> = record
+        .claimants
+        .iter()
+        .map(|&t| task_label(list, t as usize))
+        .collect();
+    let more = match record.claimants_clipped {
+        true => " (and others)",
+        false => "",
+    };
+    Some(format!("{}{more}", tasks.join(", ")))
 }
 
 /// The two lines that place an offset inside a recorded extent: the
@@ -963,6 +985,9 @@ mod whatis_tests {
             );
             // A task-own root has no via to name.
             assert!(!shown.contains("    Via: "), "{shown}");
+            // The fixture's Notify is shared between its two tasks, and
+            // the block says so rather than reading as exclusive.
+            assert!(shown.contains("    Shared with: task "), "{shown}");
 
             // +0x8 is `weak` — inside the ArcInner but before the
             // `data` the narrower Notify record claims for itself.

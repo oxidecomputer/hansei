@@ -65,9 +65,17 @@ fn summarize(bundle: &Bundle, snapshot: &Snapshot) -> String {
             "" => String::new(),
             via => format!(" ({via})"),
         };
+        let shared = match record.claimants.as_slice() {
+            [] => String::new(),
+            tasks => {
+                let tasks: Vec<String> = tasks.iter().map(|t| t.to_string()).collect();
+                let more = if record.claimants_clipped { " +" } else { "" };
+                format!(" shared-with: {}{more}", tasks.join(","))
+            }
+        };
         writeln!(
             out,
-            "{kind} {}B {ty}\n    task {}{via}: {}",
+            "{kind} {}B {ty}\n    task {}{via}: {}{shared}",
             record.end - record.start,
             hit.root.owner,
             hit.path.join(" -> "),
