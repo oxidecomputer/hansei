@@ -189,6 +189,15 @@ pub trait Target: Sync {
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf>;
 
     /// The symtab symbol spelled exactly `name`, if any.
+    ///
+    /// A bare name is the executable's own, which is what every join
+    /// onto a Rust binary wants. A name qualified with an object, in
+    /// mdb's spelling — ``"libumem.so.1`umem_ready"`` — is that
+    /// object's instead, and resolves only where the target carries
+    /// per-object symbols: an illumos core carries one table per
+    /// mapped object, so a library's internals are readable from the
+    /// core alone, while a Linux core carries no symbols at all and
+    /// only the `--program` executable's are on hand.
     fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf>;
 
     /// Every function symbol in the target executable's symtab.

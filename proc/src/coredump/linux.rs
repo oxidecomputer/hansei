@@ -853,8 +853,20 @@ impl Core {
         (address < sym.st_value + sym.st_size).then(|| sym.clone())
     }
 
+    /// The executable's symbol spelled `name`. A Linux core carries no
+    /// symbols of its own and the backing files it names are rarely
+    /// still there, so the `--program` executable is the only table on
+    /// hand: an object-qualified name resolves only when it names that
+    /// executable, and a library's internals are out of reach entirely.
     pub fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
         let exec = self.exec.as_ref()?;
+        let name = match name.split_once('`') {
+            Some((object, name)) => {
+                let file = exec.path.rsplit('/').next()?;
+                (object == exec.path || object == file).then_some(name)?
+            }
+            None => name,
+        };
         let symbols = self.symbols_of(&exec.path)?;
         symbols.find_by_name(name).cloned()
     }
