@@ -760,8 +760,26 @@ impl Core {
     }
 
     pub fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
-        let object = self.symbols.get(&self.exec_base?)?;
-        object.find_by_name(name).cloned()
+        let (base, name) = match name.split_once('`') {
+            Some((object, name)) => (self.object_base(object)?, name),
+            None => (self.exec_base?, name),
+        };
+        self.symbols.get(&base)?.find_by_name(name).cloned()
+    }
+
+    /// Where the mapped object `object` — named by its path, or just
+    /// the file name at the end of it — was loaded, among the objects
+    /// whose symbol table this core carries.
+    ///
+    /// The tables are keyed by load address and the link map named the
+    /// mappings, so the join is through whichever mapping starts where
+    /// a table claims its object did.
+    fn object_base(&self, object: &str) -> Option<u64> {
+        self.symbols.keys().copied().find(|&base| {
+            self.mappings
+                .get(base)
+                .is_some_and(|m| m.path.as_deref() == Some(object) || m.file_name() == Some(object))
+        })
     }
 
     pub fn lookup_symbol_name_by_addr(&self, address: u64) -> Option<String> {
@@ -2389,6 +2407,22 @@ mod tests {
             p.lookup_symbol_name_by_addr(LIB_BASE + 0x105).as_deref(),
             Some("lib_fn")
         );
+
+        // A shared object's own table is reachable by naming it, the
+        // way mdb spells it — by path or by the file name at the end
+        // of one. That is what puts an allocator's internals in reach
+        // of a core with no filesystem behind it.
+        for object in ["/lib/64/libdemo.so.1", "libdemo.so.1"] {
+            let sym = p
+                .lookup_symbol_by_name(&format!("{object}`lib_fn"))
+                .unwrap_or_else(|| panic!("{object}`lib_fn did not resolve"));
+            assert_eq!(sym.st_value, LIB_BASE + 0x100);
+        }
+        // A qualifier naming no mapped object, and a name that object
+        // does not define, are both misses rather than a fall back to
+        // the executable's table.
+        assert!(p.lookup_symbol_by_name("libnothing.so.1`lib_fn").is_none());
+        assert!(p.lookup_symbol_by_name("libdemo.so.1`main").is_none());
 
         // The break is the writable region above the executable that no
         // object's symbols claim.
