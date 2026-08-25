@@ -34,9 +34,8 @@ use self::statics::find_statics;
 use self::sweep::{Sweep, cell_from_dealloc_param, find_stage, sweep_functions};
 use self::vtables::{VtableTypeHint, discover_vtable_types, resolve_vtable_type_hints};
 use crate::bundle::{
-    BinaryIdent, Bundle, BundleTypeId, DynFutureTable, FamilyCeiling, FutureKind, GlueTypeTable,
-    InfraTypes, Meta, Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId,
-    TaskFutureEntry, TaskTable,
+    BinaryIdent, Bundle, BundleTypeId, DynFutureTable, FamilyCeiling, FutureKind, InfraTypes, Meta,
+    Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId, TaskFutureEntry, TaskTable,
 };
 use crate::detect::{Family, FormatExplanation, struct_of};
 use crate::raw_types::{NsId, RawType};
@@ -127,12 +126,6 @@ pub struct ExtractStats {
     /// name rather than a template-parameter DIE reference (release
     /// builds omit the parameter on out-of-line glue definitions).
     pub dyn_glue_by_name: usize,
-    /// Glue-table rows stored: `drop_glue::<T>` symbols whose demangled
-    /// spelling the name join can never resolve (closures, fn items).
-    pub glue_type_rows: usize,
-    /// Glue symbols dropped because differently-named types claim them
-    /// — the linker's identical-code folding, where a row would guess.
-    pub glue_fold_dropped: usize,
     /// Infra types that were not found.
     pub infra_missing: Vec<String>,
     /// Statics that were not found.
@@ -212,8 +205,6 @@ impl fmt::Display for ExtractStats {
         writeln!(f, "  future types:           {}", self.dyn_futures)?;
         writeln!(f, "  poll symbols:           {}", self.dyn_poll_symbols)?;
         writeln!(f, "  drop_glue symbols:      {}", self.dyn_glue_symbols)?;
-        writeln!(f, "  glue-table rows:        {}", self.glue_type_rows)?;
-        writeln!(f, "  glue folds dropped:     {}", self.glue_fold_dropped)?;
         writeln!(f, "  glue matched by name:   {}", self.dyn_glue_by_name)?;
         writeln!(f, "  unresolved self params: {}", self.dyn_unresolved_self)?;
         writeln!(f, "  decl-only self params:  {}", self.dyn_decl_only_self)?;
@@ -624,12 +615,6 @@ fn extract_from_view(
     }
     stats.dyn_futures = fut_polls.len();
 
-    let (glue_rows, glue_fold_dropped) =
-        mismatch_glue_rows(&drop_glues, &|t| fq_name(reader, t), &|sym| {
-            dyn_by_symbol.contains_key(sym)
-        });
-    stats.glue_fold_dropped = glue_fold_dropped;
-
     // Infra types and statics.
     let infra = InfraIds::resolve(view, reader, &mut stats);
 
@@ -777,20 +762,6 @@ fn extract_from_view(
         em.emit(id);
     }
 
-    // Every glue instantiation's type, row or no row: the glue table's
-    // mismatch rows cover only the spellings the name join cannot, and
-    // the name join needs the agreeing types in the bundle too — a
-    // trait object erases any droppable type, not just the futures the
-    // dyn table names.
-    for &t in drop_glues.keys() {
-        em.emit(t);
-    }
-    let glue_by_symbol: BTreeMap<String, BundleTypeId> = glue_rows
-        .iter()
-        .map(|(sym, &t)| (sym.clone(), em.emit(t)))
-        .collect();
-    stats.glue_type_rows = glue_by_symbol.len();
-
     // The local-set types the walk binder's leaf rows root at.
     // `local::Shared` is normally swept in through the local task cells'
     // scheduler parameter; emitting it — and the `CURRENT` thread-local's
@@ -874,7 +845,6 @@ fn extract_from_view(
 
     let task_normalized = normalized_value_index(&by_symbol);
     let dyn_normalized = normalized_value_index(&dyn_table);
-    let glue_normalized = normalized_value_index(&glue_by_symbol);
     let bundle = Bundle {
         meta,
         strings,
@@ -887,10 +857,6 @@ fn extract_from_view(
         dyn_futures: DynFutureTable {
             by_symbol: dyn_table,
             by_normalized_symbol: dyn_normalized,
-        },
-        glue_types: GlueTypeTable {
-            by_symbol: glue_by_symbol,
-            by_normalized_symbol: glue_normalized,
         },
         statics: StaticsTable { entries: statics },
         walks,
@@ -912,73 +878,6 @@ fn strip(symbol: &str) -> &str {
 }
 
 /// The fully-qualified name of a named type, if it has one.
-/// The glue table's rows: `drop_glue::<T>` symbols mapped to `T`, kept
-/// only where the symbol join is both needed and safe. Needed: the
-/// symbol's demangled spelling fails [`rust_type_names_equal`] against
-/// `T`'s DWARF name — the same equivalence the read side's name join
-/// uses, so a row exists exactly when that join cannot resolve the type
-/// (closures, fn items and tuples spell differently in the two name
-/// grammars). Safe: exactly one *name* claims the symbol — claimants
-/// agreeing on a name are one monomorphization whose DIE several CUs
-/// carry, while claimants disagreeing are the linker's identical-code
-/// folding, where resolving to any one of them would be a guess — and
-/// the dyn-future table does not already key it. Returns the rows and
-/// the count of fold-dropped symbols.
-///
-/// [`rust_type_names_equal`]: crate::symbols::rust_type_names_equal
-fn mismatch_glue_rows(
-    drop_glues: &BTreeMap<TypeId, BTreeSet<String>>,
-    name_of: &dyn Fn(TypeId) -> Option<String>,
-    already_keyed: &dyn Fn(&str) -> bool,
-) -> (BTreeMap<String, TypeId>, usize) {
-    let mut claimants: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-    for (&t, symbols) in drop_glues {
-        let Some(name) = name_of(t) else {
-            continue;
-        };
-        let name = crate::symbols::normalized_rust_type_name(&name).into_owned();
-        for sym in symbols {
-            claimants
-                .entry(sym.as_str())
-                .or_default()
-                .insert(name.clone());
-        }
-    }
-
-    let mut rows: BTreeMap<String, TypeId> = BTreeMap::new();
-    let mut fold_dropped: BTreeSet<&str> = BTreeSet::new();
-    for (&t, symbols) in drop_glues {
-        let dwarf_name = name_of(t);
-        for sym in symbols {
-            match claimants.get(sym.as_str()).map(BTreeSet::len) {
-                Some(1) => {}
-                Some(_) => {
-                    fold_dropped.insert(sym.as_str());
-                    continue;
-                }
-                // No claimant recorded: `T` has no name to compare, so
-                // there is no mismatch to speak of.
-                None => continue,
-            }
-            let Ok(demangled) = rustc_demangle::try_demangle(strip(sym)) else {
-                continue;
-            };
-            let demangled = format!("{demangled:#}");
-            let Some(concrete) = crate::symbols::concrete_type_from_vtable_symbol(&demangled)
-            else {
-                continue;
-            };
-            let name_joins = dwarf_name
-                .as_deref()
-                .is_some_and(|name| crate::symbols::rust_type_names_equal(name, concrete));
-            if !name_joins && !already_keyed(sym) {
-                rows.entry(strip(sym).to_owned()).or_insert(t);
-            }
-        }
-    }
-    (rows, fold_dropped.len())
-}
-
 pub(crate) fn fq_name(reader: &DwReader<'_>, id: TypeId) -> Option<String> {
     let raw = reader.canonical_type(id)?;
     let name = raw.name().map(|n| reader.strings.get(n))?;
@@ -1087,111 +986,6 @@ fn classify_future(
         stats.provenance_located += 1;
     }
     Provenance { decl, kind }
-}
-
-#[cfg(test)]
-mod glue_row_tests {
-    use super::{TypeId, mismatch_glue_rows};
-
-    use gimli::{DebugInfoOffset, UnitSectionOffset};
-
-    use std::collections::{BTreeMap, BTreeSet};
-
-    /// A genuine v0 drop-glue monomorphization (lifted from a real
-    /// symtab), demangling to
-    /// `core::ptr::drop_glue::<[reedline::enums::EditCommand; 1]>`.
-    const GLUE: &str = "_RINvNtCs4gTh5wWLWvJ_4core3ptr9drop_glueANtNtCs1dINKnBl13J_8reedline5enums11EditCommandj1_EBG_";
-    /// The DWARF spelling the demangled form agrees with.
-    const AGREES: &str = "[reedline::enums::EditCommand; 1]";
-    /// A DWARF spelling it does not — the closure/fn-item class.
-    const DISAGREES: &str = "[reedline::enums::EditCommand::{closure_env#0}; 1]";
-
-    fn tid(offset: usize) -> TypeId {
-        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
-    }
-
-    fn glues(entries: &[(TypeId, &str)]) -> BTreeMap<TypeId, BTreeSet<String>> {
-        let mut map: BTreeMap<TypeId, BTreeSet<String>> = BTreeMap::new();
-        for &(t, sym) in entries {
-            map.entry(t).or_default().insert(sym.to_owned());
-        }
-        map
-    }
-
-    /// The mismatch filter is the name join's complement: a spelling
-    /// the name join resolves stores no row, a spelling it cannot
-    /// stores one — keyed llvm-stripped, like every symbol table.
-    #[test]
-    fn test_rows_exist_exactly_where_the_name_join_fails() {
-        let suffixed = format!("{GLUE}.llvm.123");
-        let no_row = mismatch_glue_rows(
-            &glues(&[(tid(1), &suffixed)]),
-            &|_| Some(AGREES.to_owned()),
-            &|_| false,
-        );
-        assert_eq!(no_row, (BTreeMap::new(), 0));
-
-        let (rows, folds) = mismatch_glue_rows(
-            &glues(&[(tid(1), &suffixed)]),
-            &|_| Some(DISAGREES.to_owned()),
-            &|_| false,
-        );
-        assert_eq!(rows, BTreeMap::from([(GLUE.to_owned(), tid(1))]));
-        assert_eq!(folds, 0);
-    }
-
-    /// A symbol claimed by differently-named types is the linker's
-    /// identical-code folding — any row would be a guess, so there is
-    /// none and the drop is counted. Claimants agreeing on a name are
-    /// one monomorphization whose DIE several CUs carry, and keep
-    /// their row.
-    #[test]
-    fn test_fold_shared_symbols_store_no_row() {
-        let (rows, folds) = mismatch_glue_rows(
-            &glues(&[(tid(1), GLUE), (tid(2), GLUE)]),
-            &|t| Some(if t == tid(1) { "app::A" } else { "app::B" }.to_owned()),
-            &|_| false,
-        );
-        assert_eq!(rows, BTreeMap::new());
-        assert_eq!(folds, 1);
-
-        let (rows, folds) = mismatch_glue_rows(
-            &glues(&[(tid(1), GLUE), (tid(2), GLUE)]),
-            &|_| Some(DISAGREES.to_owned()),
-            &|_| false,
-        );
-        assert_eq!(rows, BTreeMap::from([(GLUE.to_owned(), tid(1))]));
-        assert_eq!(folds, 0);
-    }
-
-    /// A symbol the dyn-future table already keys needs no copy: the
-    /// existing join owns it.
-    #[test]
-    fn test_already_keyed_symbols_store_no_row() {
-        let (rows, folds) = mismatch_glue_rows(
-            &glues(&[(tid(1), GLUE)]),
-            &|_| Some(DISAGREES.to_owned()),
-            &|sym| sym == GLUE,
-        );
-        assert_eq!(rows, BTreeMap::new());
-        assert_eq!(folds, 0);
-    }
-
-    /// A type with no recoverable name has no spelling to compare, and
-    /// a symbol that is not a v0 drop-glue mangling has no concrete to
-    /// extract: neither stores a row, silently.
-    #[test]
-    fn test_unnameable_claimants_store_no_row() {
-        let (rows, _) = mismatch_glue_rows(&glues(&[(tid(1), GLUE)]), &|_| None, &|_| false);
-        assert_eq!(rows, BTreeMap::new());
-
-        let (rows, _) = mismatch_glue_rows(
-            &glues(&[(tid(1), "malloc")]),
-            &|_| Some(DISAGREES.to_owned()),
-            &|_| false,
-        );
-        assert_eq!(rows, BTreeMap::new());
-    }
 }
 
 #[cfg(test)]

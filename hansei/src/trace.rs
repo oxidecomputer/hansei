@@ -1236,7 +1236,6 @@ mod state_locals_tests {
             },
             tasks: Default::default(),
             dyn_futures: Default::default(),
-            glue_types: Default::default(),
             statics: Default::default(),
             walks: Default::default(),
             infra: InfraTypes {
