@@ -3,13 +3,6 @@ name = "reify"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-# The synthetic-bundle test support module (`src/testhelper.rs`), for
-# downstream crates' tests that need a hand-built type graph and a fake
-# target. Nothing on a session's path uses it; it stays out of
-# production builds behind this feature.
-testhelper = []
-
 [dependencies]
 foldhash.workspace = true
 hansei-bundle = { workspace = true }
