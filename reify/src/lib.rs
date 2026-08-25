@@ -8,8 +8,8 @@ mod render;
 mod target;
 mod value;
 
-#[cfg(test)]
-mod testhelper;
+#[cfg(any(test, feature = "testhelper"))]
+pub mod testhelper;
 
 pub use debug_type::TypeKind;
 pub use elements::Elements;
