@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use hansei_bundle::{Bundle, BundleView};
+use hansei_runtime::heap::umem::UmemHeap;
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
 use hansei_runtime::tokio::{bundle, census, contract};
 use proc::{Proc, Target};
@@ -24,6 +25,7 @@ mod tasks;
 mod threads;
 mod trace;
 pub mod types;
+mod umem;
 mod whatis;
 
 /// The command line names a target; what to ask of it comes from
@@ -256,6 +258,28 @@ pub enum Command {
 
     /// Show the target, the bundle, and how far its symbols resolve.
     Info,
+
+    /// Dump what libumem knows about the target's heap: every cache the
+    /// walk believed, with its slabs and its live and freed chunk
+    /// counts, the self-consistency check over the finished index, and
+    /// a verdict for each address given.
+    ///
+    /// A target whose allocator is not libumem — umem is per-process
+    /// opt-in — has nothing here and says so.
+    #[command(hide = true)]
+    UmemAudit {
+        /// Addresses to locate in the heap, written in hex with a
+        /// required leading `0x`.
+        #[arg(value_parser = parse_hex_addr)]
+        addrs: Vec<u64>,
+
+        /// Print every chunk of one liveness instead, one address per
+        /// line: `live` is the set mdb's `::walk umem` enumerates, for
+        /// a differential against it, and `freed` the chunks this walk
+        /// found on a slab freelist.
+        #[arg(long, value_name = "SET")]
+        dump: Option<umem::Dump>,
+    },
 
     /// Render the memory at an address as a value of a named type: the
     /// inverse of `whatis`, for reading a structure the listings only
@@ -754,6 +778,10 @@ pub struct Session<'b> {
     /// fallbacks compute in place if that worker died.
     extents: OnceCell<bundle::TaskExtents>,
     census: OnceCell<census::FutureCensus>,
+    /// What the target's allocator says is live, where its allocator is
+    /// libumem and says anything at all. `None` inside the cell is a
+    /// target without umem, which is most of them.
+    umem: OnceCell<Option<UmemHeap>>,
     /// The launch-time worker's handoff, present until adopted (or
     /// until quit drops it to stop the worker). See [`warm_worker`].
     warm: RefCell<Option<mpsc::Receiver<Warm>>>,
@@ -850,6 +878,7 @@ impl<'b> Session<'b> {
             impl_fold: hansei_bundle::names::ImplFold::for_bundle(bundle),
             extents: OnceCell::new(),
             census: OnceCell::new(),
+            umem: OnceCell::new(),
             warm: RefCell::new(None),
             audited: Cell::new(false),
             bounds: census::Bounds {
@@ -884,6 +913,7 @@ impl<'b> Session<'b> {
             if let Warm::Ready(warmed) = msg {
                 let _ = self.extents.set(warmed.extents);
                 let _ = self.census.set(warmed.census);
+                let _ = self.umem.set(warmed.umem);
                 break;
             }
         }
@@ -910,6 +940,21 @@ impl<'b> Session<'b> {
             }
         }
         census
+    }
+
+    /// The allocator's own account of what is live, or `None` on a
+    /// target that keeps none.
+    pub fn umem(&self) -> Option<&UmemHeap> {
+        self.adopt_warm();
+        self.umem
+            .get_or_init(|| UmemHeap::build(self.proc))
+            .as_ref()
+    }
+
+    /// The target itself, for the reads that go straight to it rather
+    /// than through a bundle type.
+    pub fn proc(&self) -> &Proc {
+        self.proc
     }
 
     fn analysis(&self) -> &Analysis {
@@ -1047,6 +1092,7 @@ pub fn dispatch(
             depth,
             out,
         )?,
+        Command::UmemAudit { addrs, dump } => umem::exec_umem_audit(session, &addrs, dump, out)?,
         Command::Whatis { addr } => whatis::exec_whatis(session, addr, out)?,
         Command::Quit | Command::Exit => return Ok(Flow::Quit),
     }
@@ -1149,6 +1195,7 @@ fn first_audit(audit: bool, audited: &Cell<bool>) -> bool {
 struct Warmed {
     extents: bundle::TaskExtents,
     census: census::FutureCensus,
+    umem: Option<UmemHeap>,
 }
 
 /// The worker-to-session channel: probes carry nothing and exist so a
@@ -1174,12 +1221,23 @@ fn warm_worker(
     let Ok(ctx) = bundle::Context::with_policy(proc, BundleView::new(bundle), policy) else {
         return;
     };
+    // The allocator index first: it is the cheapest of the three and
+    // the only one that reads nothing the bundle describes, so a target
+    // whose layouts have drifted still gets it.
+    let umem = UmemHeap::build(proc);
+    if tx.send(Warm::Probe).is_err() {
+        return;
+    }
     let extents = ctx.task_extents(tasks);
     if tx.send(Warm::Probe).is_err() {
         return;
     }
     let census = census::census_bounded(&ctx, tasks, bounds);
-    let _ = tx.send(Warm::Ready(Box::new(Warmed { extents, census })));
+    let _ = tx.send(Warm::Ready(Box::new(Warmed {
+        extents,
+        census,
+        umem,
+    })));
 }
 
 /// The attach summary: what is being read, and how well the two files
