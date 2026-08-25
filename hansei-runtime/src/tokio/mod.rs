@@ -16,7 +16,6 @@ pub mod census;
 pub mod contract;
 pub mod graph;
 mod model;
-pub mod reach;
 pub mod registers;
 pub mod stackjoin;
 

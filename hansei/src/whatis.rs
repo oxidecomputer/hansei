@@ -4,11 +4,10 @@ use crate::Session;
 use crate::tasks::{future_name, task_id, task_label};
 
 use anyhow::Result;
+use hansei_bundle::BundleView;
 use hansei_bundle::names;
-use hansei_bundle::{BundleType, BundleView, TypeClass};
-use hansei_runtime::tokio::{bundle, census, reach};
+use hansei_runtime::tokio::{bundle, census};
 
-use std::fmt::Write as _;
 use std::io;
 
 pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Write) -> Result<()> {
@@ -21,7 +20,6 @@ pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Wr
         session.census(),
         vtable_at(session.proc, addr).as_ref(),
         &session.impl_fold,
-        || session.reach(),
         addr,
         out,
     )
@@ -85,13 +83,8 @@ fn vtable_at<T: proc::Target>(proc: &T, addr: u64) -> Option<VtableAt> {
 /// top of it: a runtime handle contains no task's memory and no task's
 /// memory contains it, but it is the coarsest thing an address can be,
 /// and the one a reader is least able to recognize by eye.
-///
-/// The reachability index is the last tier, consulted only when every
-/// block above came up empty — so `reach` is a thunk: the index costs
-/// seconds to build on a large target, and an address the direct joins
-/// already claim never pays for it.
 #[allow(clippy::too_many_arguments)]
-fn report_whatis<'i>(
+fn report_whatis(
     view: &BundleView<'_>,
     runtimes: &[bundle::RuntimeRef<'_>],
     local_sets: &[bundle::LocalSetRef<'_>],
@@ -100,7 +93,6 @@ fn report_whatis<'i>(
     census: &census::FutureCensus,
     vtable: Option<&VtableAt>,
     impls: &names::ImplFold,
-    reach: impl FnOnce() -> &'i reach::ReachIndex,
     addr: u64,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -292,199 +284,13 @@ fn report_whatis<'i>(
         )?;
     }
 
-    if blocks > 0 {
-        return Ok(());
-    }
-
-    // Nothing claims the address directly; ask what can *reach* it.
-    // Built here and not sooner, so every directly-claimed address —
-    // the overwhelmingly common query — never pays for the walk.
-    let index = reach();
-    match index.locate(addr) {
-        Some(hit) => report_reachable(view, list, impls, &hit, out)?,
-        None => {
-            writeln!(
-                out,
-                "no task's allocation, no future the census found, and nothing \
-                 the reachability walk reached contains {addr:#x}"
-            )?;
-            if let Some(cut) = reach_cut_note(index) {
-                writeln!(out, "    ({cut})")?;
-            }
-        }
+    if blocks == 0 {
+        writeln!(
+            out,
+            "no task's allocation and no future the census found contains {addr:#x}"
+        )?;
     }
     Ok(())
-}
-
-/// The reachability block: the task whose future graph reaches the
-/// containing allocation, the pointer path from its own frames down to
-/// it, and where in the allocation the address lands — refined to the
-/// member it falls in by offset math against the recorded type.
-fn report_reachable(
-    view: &BundleView<'_>,
-    list: &bundle::TaskList,
-    impls: &names::ImplFold,
-    hit: &reach::ReachHit<'_>,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    writeln!(
-        out,
-        "Reachable from {}: {}",
-        task_label(list, hit.root.owner),
-        future_name(&list.tasks[hit.root.owner].future, impls)
-    )?;
-    if !hit.root.via.is_empty() {
-        writeln!(out, "    Via: {}", hit.root.via)?;
-    }
-    writeln!(out, "    Path: {}", hit.path.join(" -> "))?;
-
-    let record = hit.record;
-    let ty = view.ty(record.ty);
-    let name = match &ty {
-        Some(ty) => names::fold_type_name(ty.name(), impls).into_owned(),
-        None => "<type the bundle does not carry>".to_string(),
-    };
-    let (whole, refined) = extent_at(
-        record.kind,
-        ty,
-        &name,
-        hit.offset,
-        record.end - record.start,
-    );
-    writeln!(out, "    At: offset {:#x} {whole}", hit.offset)?;
-    if let Some((chain, rem)) = refined {
-        let rem = match rem {
-            0 => String::new(),
-            rem => format!(" +{rem:#x}"),
-        };
-        writeln!(out, "    Member: `{chain}`{rem}")?;
-    }
-    if let Some(shared) = shared_with(list, record) {
-        writeln!(out, "    Shared with: {shared}")?;
-    }
-    Ok(())
-}
-
-/// The co-claimant line's text: the other tasks whose walks reached
-/// the record, or nothing when the recorded path's task is the only
-/// one. A clipped list says there are more sharers than it names.
-fn shared_with(list: &bundle::TaskList, record: &reach::ReachRecord) -> Option<String> {
-    if record.claimants.is_empty() {
-        return None;
-    }
-    let tasks: Vec<String> = record
-        .claimants
-        .iter()
-        .map(|&t| task_label(list, t as usize))
-        .collect();
-    let more = match record.claimants_clipped {
-        true => " (and others)",
-        false => "",
-    };
-    Some(format!("{}{more}", tasks.join(", ")))
-}
-
-/// The two lines that place an offset inside a recorded extent: the
-/// phrase naming the whole (`in {type}`, `in a buffer of N × {type}`,
-/// `in the bytes of a {type}`) and, where the layout gives one, the
-/// member chain the offset refines to with whatever offset is left
-/// past the last named member.
-fn extent_at(
-    kind: reach::ExtentKind,
-    ty: Option<BundleType<'_>>,
-    name: &str,
-    offset: u64,
-    len: u64,
-) -> (String, Option<(String, u64)>) {
-    match kind {
-        reach::ExtentKind::Value => {
-            let refined = ty
-                .map(|ty| refine_offset(ty, offset))
-                .filter(|(chain, _)| !chain.is_empty());
-            (format!("in {name}"), refined)
-        }
-        reach::ExtentKind::Buffer { stride } => {
-            let stride = stride.max(1);
-            let index = offset / stride;
-            let refined = match ty.map(|ty| refine_offset(ty, offset % stride)) {
-                Some((chain, rem)) if !chain.is_empty() => {
-                    Some((format!("[{index}].{chain}"), rem))
-                }
-                _ => Some((format!("[{index}]"), offset % stride)),
-            };
-            (format!("in a buffer of {} × {name}", len / stride), refined)
-        }
-        // The bytes are one homogeneous run; there is no member to
-        // refine to, and the recorded type is the owner, not theirs.
-        reach::ExtentKind::Bytes => (format!("in the bytes of a {name}"), None),
-    }
-}
-
-/// The member chain `offset` lands in, by layout alone: descend structs
-/// through the member spanning the offset and arrays through the
-/// element index, until a type with no by-offset interior (a scalar, a
-/// pointer, an enum whose live variant is a value-time question). The
-/// leftover offset into the last named member rides along; a chain
-/// stopping short is honest, never wrong.
-fn refine_offset(ty: BundleType<'_>, offset: u64) -> (String, u64) {
-    let mut chain = String::new();
-    let mut ty = ty;
-    let mut offset = offset;
-    loop {
-        match ty.classify() {
-            TypeClass::Struct => {
-                // No zero-size screen needed: a ZST member can never
-                // contain the offset (`offset - m.offset() < 0` holds
-                // for nothing).
-                let member = ty
-                    .members()
-                    .find(|m| m.offset() <= offset && offset - m.offset() < m.ty().size());
-                let Some(m) = member else { break };
-                if !chain.is_empty() {
-                    chain.push('.');
-                }
-                chain.push_str(m.name());
-                offset -= m.offset();
-                ty = m.ty();
-            }
-            TypeClass::Array { element, .. } if element.size() > 0 => {
-                let _ = write!(chain, "[{}]", offset / element.size());
-                offset %= element.size();
-                ty = element;
-            }
-            _ => break,
-        }
-    }
-    (chain, offset)
-}
-
-/// Where the reach walk stopped short, for the miss answer: a cut walk
-/// cannot rule an address out, and the depth limit is the one cut a
-/// session can move.
-fn reach_cut_note(index: &reach::ReachIndex) -> Option<String> {
-    let capped = index.capped;
-    let mut cuts = Vec::new();
-    if capped.deep > 0 {
-        cuts.push(format!(
-            "its depth limit in {} place(s) (--reach-depth moves it)",
-            capped.deep
-        ));
-    }
-    if capped.elements > 0 {
-        cuts.push(format!(
-            "its element cap in {} sequence(s)",
-            capped.elements
-        ));
-    }
-    if capped.records {
-        cuts.push(format!("its record cap of {}", index.bounds.max_records));
-    }
-    (!cuts.is_empty()).then(|| {
-        format!(
-            "the reachability walk stopped at {}; what it did not reach it cannot rule out",
-            cuts.join(", ")
-        )
-    })
 }
 
 /// A group's label as a block heading: the listings spell it in
@@ -533,7 +339,6 @@ mod whatis_tests {
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::bundle::{LocalSetRef, RuntimeRef, TaskExtents, TaskList};
     use hansei_runtime::tokio::census::{self, FutureCensus};
-    use hansei_runtime::tokio::reach::{ReachBounds, ReachIndex, reach_index};
 
     /// Everything a report is made from: the whole of what an attach
     /// finds, so a test can point at any of it.
@@ -544,7 +349,6 @@ mod whatis_tests {
         list: TaskList,
         extents: TaskExtents,
         census: FutureCensus,
-        reach: ReachIndex,
     }
 
     fn with_tasks(program: &str, check: impl FnOnce(&Target<'_>)) {
@@ -555,7 +359,6 @@ mod whatis_tests {
         let (runtimes, list) = (e.runtimes, e.list);
         let extents = ctx.task_extents(&list);
         let census = census::census(&ctx, &list);
-        let reach = reach_index(&ctx, &list, &census, &extents, ReachBounds::default());
         check(&Target {
             view: ctx.view,
             runtimes,
@@ -563,7 +366,6 @@ mod whatis_tests {
             list,
             extents,
             census,
-            reach,
         });
     }
 
@@ -578,7 +380,6 @@ mod whatis_tests {
             &target.census,
             None,
             &hansei_bundle::names::ImplFold::default(),
-            || &target.reach,
             addr,
             &mut out,
         )
@@ -608,7 +409,6 @@ mod whatis_tests {
                 &target.census,
                 Some(&vtable),
                 &hansei_bundle::names::ImplFold::default(),
-                || &target.reach,
                 0x9000_0000,
                 &mut out,
             )
@@ -737,12 +537,9 @@ mod whatis_tests {
             );
 
             let miss = report(t, 0x10);
-            assert!(
-                miss.starts_with(
-                    "no task's allocation, no future the census found, and nothing \
-                     the reachability walk reached contains 0x10\n"
-                ),
-                "{miss}"
+            assert_eq!(
+                miss,
+                "no task's allocation and no future the census found contains 0x10\n"
             );
         });
     }
@@ -799,13 +596,11 @@ mod whatis_tests {
                 assert!(shown.contains("(frame 1, `future1`)"), "{shown}");
             }
 
-            // Past its end it is somebody else's memory — unless the
-            // reachability walk recorded whatever sits there, which is
-            // its call to make, not this test's.
+            // Past its end it is somebody else's memory, and this
+            // heap allocation is nobody's as far as hansei can say.
             let past = report(t, future1.addr + size);
             assert!(
-                past.starts_with("no task's allocation, no future")
-                    || past.starts_with("Reachable from"),
+                past.starts_with("no task's allocation and no future"),
                 "{past}"
             );
         });
@@ -898,7 +693,6 @@ mod whatis_tests {
         let (runtimes, list) = (e.runtimes, e.list);
         let extents = ctx.task_extents(&list);
         let mut census = census::census(&ctx, &list);
-        let reach = reach_index(&ctx, &list, &census, &extents, ReachBounds::default());
         let child = |future: Option<&str>| census::SetChild {
             node: 0x2000,
             depth: usize::from(future.is_some()),
@@ -925,7 +719,6 @@ mod whatis_tests {
             list,
             extents,
             census,
-            reach,
         };
         let shown = report(&target, 0xdead_0000);
         assert!(
@@ -948,225 +741,6 @@ mod whatis_tests {
         let via = super::via_suffix(&census, Some(census::Via::Held(0)));
         assert!(via.starts_with(", via "), "{via:?}");
         assert!(via.len() > ", via ".len(), "{via:?}");
-    }
-
-    /// The record the channels fixture reaches through `#0
-    /// notify.ptr.pointer` — the `ArcInner<Notify>` behind the holder
-    /// task's `Arc` — which every fixture set's reach golden pins.
-    fn arc_inner_notify<'t>(t: &'t Target<'_>) -> &'t hansei_runtime::tokio::reach::ReachRecord {
-        t.reach
-            .records()
-            .find(|r| {
-                t.view
-                    .ty(r.ty)
-                    .is_some_and(|ty| ty.name().ends_with("ArcInner<tokio::sync::notify::Notify>"))
-            })
-            .expect("the walk reaches the notify ArcInner")
-    }
-
-    /// An address nothing claims directly is answered by the
-    /// reachability tier: the owning task, the pointer path from its
-    /// frames, the containing type — and, off the allocation's start,
-    /// the member the offset refines to.
-    #[test]
-    fn test_a_reachable_address_reports_its_path() {
-        with_tasks("channels", |t| {
-            let record = arc_inner_notify(t);
-
-            let shown = report(t, record.start);
-            assert!(shown.starts_with("Reachable from task "), "{shown}");
-            assert!(
-                shown.contains("    Path: #0 notify.ptr.pointer\n"),
-                "{shown}"
-            );
-            assert!(
-                shown.contains(
-                    "    At: offset 0x0 in alloc::sync::ArcInner<tokio::sync::notify::Notify>\n"
-                ),
-                "{shown}"
-            );
-            // A task-own root has no via to name.
-            assert!(!shown.contains("    Via: "), "{shown}");
-            // The fixture's Notify is shared between its two tasks, and
-            // the block says so rather than reading as exclusive.
-            assert!(shown.contains("    Shared with: task "), "{shown}");
-
-            // +0x8 is `weak` — inside the ArcInner but before the
-            // `data` the narrower Notify record claims for itself.
-            let inside = report(t, record.start + 0x8);
-            assert!(inside.contains("    At: offset 0x8 in "), "{inside}");
-            assert!(inside.contains("    Member: `weak"), "{inside}");
-        });
-    }
-
-    /// The refinement is offset math against the layout: a member's
-    /// offset descends into it as far as named members go, and
-    /// whatever is left past the last name rides along as bytes.
-    #[test]
-    fn test_refinement_descends_by_offset() {
-        with_tasks("channels", |t| {
-            let record = arc_inner_notify(t);
-            let ty = t.view.ty(record.ty).expect("the record's type resolves");
-
-            let (chain, rem) = super::refine_offset(ty, 0x8);
-            assert!(chain.starts_with("weak"), "{chain:?}");
-            assert_eq!(rem, 0, "{chain:?}");
-
-            // One byte into the word the chain bottoms out at.
-            let (chain, rem) = super::refine_offset(ty, 0x9);
-            assert!(chain.starts_with("weak"), "{chain:?}");
-            assert_eq!(rem, 1, "{chain:?}");
-        });
-    }
-
-    /// The refinement's array arm, over reify's synthetic bundle: the
-    /// offset picks the element by stride, the remainder rides into
-    /// the element, and a zero-sized element ends the chain rather
-    /// than dividing by nothing.
-    #[test]
-    fn test_refinement_indexes_arrays_by_stride() {
-        let mut b = reify::testhelper::test_bundle();
-        let unit_arr = hansei_bundle::BundleTypeId(b.types.types.len() as u32);
-        b.types.types.push(hansei_bundle::TypeDef::Array {
-            elem: reify::testhelper::UNIT,
-            count: 3,
-        });
-        let v = hansei_bundle::BundleView::new(&b);
-
-        // [u32; 3]: offset 9 is element 2, one byte in.
-        let arr = v.ty(reify::testhelper::ARR).expect("ARR resolves");
-        assert_eq!(super::refine_offset(arr, 0), ("[0]".to_string(), 0));
-        assert_eq!(super::refine_offset(arr, 8), ("[2]".to_string(), 0));
-        assert_eq!(super::refine_offset(arr, 9), ("[2]".to_string(), 1));
-
-        let unit_arr = v.ty(unit_arr).expect("the pushed array resolves");
-        assert_eq!(super::refine_offset(unit_arr, 5), (String::new(), 5));
-    }
-
-    /// A buffer of scalars refines to the bare element index — no
-    /// trailing dot, no invented member — with the in-element offset
-    /// riding along.
-    #[test]
-    fn test_a_scalar_buffer_refines_to_the_bare_index() {
-        use hansei_runtime::tokio::reach::ExtentKind;
-        let b = reify::testhelper::test_bundle();
-        let v = hansei_bundle::BundleView::new(&b);
-        let u32t = v.ty(reify::testhelper::U32).expect("u32 resolves");
-        let (whole, refined) =
-            super::extent_at(ExtentKind::Buffer { stride: 4 }, Some(u32t), "u32", 9, 12);
-        assert_eq!(whole, "in a buffer of 3 × u32");
-        assert_eq!(refined, Some(("[2]".to_string(), 1)));
-    }
-
-    /// Each extent kind has its own placement spelling: a value names
-    /// its type, a buffer counts its elements and leads the chain with
-    /// the element index, the bytes of a string name their owner and
-    /// refuse to invent a member.
-    #[test]
-    fn test_extent_kinds_spell_their_placement() {
-        use hansei_runtime::tokio::reach::ExtentKind;
-        with_tasks("channels", |t| {
-            let record = arc_inner_notify(t);
-            let ty = t.view.ty(record.ty);
-            let size = ty.expect("the type resolves").size();
-
-            let (whole, refined) = super::extent_at(ExtentKind::Value, ty, "T", 0x8, size);
-            assert_eq!(whole, "in T");
-            let (chain, _) = refined.expect("a struct offset refines");
-            assert!(chain.starts_with("weak"), "{chain:?}");
-
-            // Three elements of `size` bytes; an offset in the middle
-            // element leads with its index.
-            let stride = size;
-            let (whole, refined) = super::extent_at(
-                ExtentKind::Buffer { stride },
-                ty,
-                "T",
-                stride + 0x8,
-                3 * stride,
-            );
-            assert_eq!(whole, "in a buffer of 3 × T");
-            let (chain, rem) = refined.expect("a buffer offset refines");
-            assert!(chain.starts_with("[1].weak"), "{chain:?}");
-            assert_eq!(rem, 0);
-
-            // A type the bundle does not carry still places the index.
-            let (_, refined) =
-                super::extent_at(ExtentKind::Buffer { stride: 8 }, None, "T", 20, 40);
-            assert_eq!(refined, Some(("[2]".to_string(), 4)));
-
-            let (whole, refined) = super::extent_at(ExtentKind::Bytes, ty, "String", 0x5, 32);
-            assert_eq!(whole, "in the bytes of a String");
-            assert_eq!(refined, None);
-        });
-    }
-
-    /// A miss over a cut walk says where the walk stopped, and only
-    /// the depth limit — the one a session can move — names its knob.
-    #[test]
-    fn test_a_cut_walk_qualifies_its_miss() {
-        let (bundle, snapshot) = testkit::load_any("channels");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let mut e = testkit::enumerate(&ctx, &snapshot);
-        let local_sets = e.discover(&ctx, &[]);
-        let (runtimes, list) = (e.runtimes, e.list);
-        let extents = ctx.task_extents(&list);
-        let census = census::census(&ctx, &list);
-        let shallow = ReachBounds {
-            depth: 1,
-            ..ReachBounds::default()
-        };
-        let reach = reach_index(&ctx, &list, &census, &extents, shallow);
-        assert!(reach.capped.deep > 0, "depth 1 cuts the channels walk");
-        let target = Target {
-            view: ctx.view,
-            runtimes,
-            local_sets,
-            list,
-            extents,
-            census,
-            reach,
-        };
-        let miss = report(&target, 0x10);
-        assert!(
-            miss.contains("the reachability walk stopped at its depth limit in "),
-            "{miss}"
-        );
-        assert!(miss.contains("(--reach-depth moves it)"), "{miss}");
-        assert!(
-            miss.contains("what it did not reach it cannot rule out"),
-            "{miss}"
-        );
-    }
-
-    /// The cut note names each limit that bound the walk and stays
-    /// silent for one nothing cut.
-    #[test]
-    fn test_the_cut_note_names_each_limit() {
-        with_tasks("channels", |t| {
-            assert!(!t.reach.capped.any(), "the fixture walk runs to done");
-            assert_eq!(super::reach_cut_note(&t.reach), None);
-        });
-
-        let (bundle, snapshot) = testkit::load_any("channels");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
-        let extents = ctx.task_extents(&list);
-        let census = census::census(&ctx, &list);
-        let mut index = reach_index(&ctx, &list, &census, &extents, ReachBounds::default());
-        index.capped.deep = 2;
-        index.capped.elements = 3;
-        index.capped.records = true;
-        let note = super::reach_cut_note(&index).expect("three cuts note");
-        assert!(
-            note.contains("its depth limit in 2 place(s) (--reach-depth moves it)"),
-            "{note}"
-        );
-        assert!(note.contains("its element cap in 3 sequence(s)"), "{note}");
-        assert!(
-            note.contains(&format!("its record cap of {}", index.bounds.max_records)),
-            "{note}"
-        );
     }
 
     /// Blocks are separated by one blank line between each other: none
