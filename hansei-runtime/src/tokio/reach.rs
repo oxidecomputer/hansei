@@ -507,7 +507,7 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
                 let Some(bytes) = payload.bytes.get(start..start + m.ty().size() as usize) else {
                     continue;
                 };
-                let local = Value::new(m.ty(), payload.addr + m.offset(), bytes);
+                let local = child_at(payload, m.offset(), m.ty(), bytes);
                 let mut path = format!("#{frame_index} {}", m.name());
                 self.walk_value(local, 0, root, None, &mut path);
             }
@@ -564,7 +564,7 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
                     let Some(bytes) = value.bytes.get(start..start + m.size as usize) else {
                         continue;
                     };
-                    let child = Value::new(m.ty, value.addr + m.offset, bytes);
+                    let child = child_at(&value, m.offset, m.ty, bytes);
                     let len = path.len();
                     push_member(path, m.name);
                     self.walk_value(child, depth + 1, root, parent, path);
@@ -591,7 +591,7 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
                     else {
                         continue;
                     };
-                    let child = Value::new(element, value.addr + index * element.size(), bytes);
+                    let child = child_at(&value, start as u64, element, bytes);
                     let len = path.len();
                     let _ = write!(path, "[{index}]");
                     self.walk_value(child, depth + 1, root, parent, path);
@@ -802,6 +802,15 @@ impl<'a, 'b, T: Target> Walker<'a, 'b, T> {
     }
 }
 
+/// The `ty`-typed by-value child at `offset` within `value` — the one
+/// place a child's address is computed. That address is decoration for
+/// the walk itself: every recorded extent derives from a pointer word in
+/// the bytes or a decoded buffer base, never from where a by-value child
+/// was said to sit.
+fn child_at<'b>(value: &Value<'b>, offset: u64, ty: BundleType<'b>, bytes: &'b [u8]) -> Value<'b> {
+    Value::new(ty, value.addr + offset, bytes)
+}
+
 /// Append one member step: `a` then `.b`, so a path reads `a.b[3].c`.
 fn push_member(path: &mut String, name: &str) {
     if !path.is_empty() {
@@ -818,8 +827,8 @@ mod tests {
     use hansei_bundle::{Bundle, BundleView, DisplayNode, TypeDef};
     use reify::Value;
     use reify::testhelper::{
-        BIG, FAT_PTR, FakeMem, MSG, NODE, NODE_PTR, POINT, PTR, STRING, U32, VEC, VTABLE_ARRAY,
-        node_bytes, sel, test_bundle, u32s, u64s,
+        ARR, BIG, FAT_PTR, FakeMem, MSG, NODE, NODE_PTR, POINT, PTR, STRING, U32, UNIT, VEC,
+        VTABLE_ARRAY, node_bytes, sel, test_bundle, u32s, u64s,
     };
 
     /// Walk one root local against `mem` under `bounds`, the way a chain
@@ -861,6 +870,7 @@ mod tests {
         let index = walk(&b, &mem, vec![], defaults(), &[(NODE, 0x1000, "n")]);
 
         assert_eq!(index.len(), 2);
+        assert!(!index.is_empty());
         let hit = index.locate(0x3004).expect("the second hop is indexed");
         assert_eq!(hit.record.ty, NODE);
         assert_eq!(hit.record.kind, ExtentKind::Value);
@@ -1077,7 +1087,8 @@ mod tests {
     }
 
     /// `locate` answers with the most specific containing extent when two
-    /// pointers alias into one allocation.
+    /// pointers alias into one allocation — by *size*, whatever the
+    /// extents' positions, including two extents sharing their start.
     #[test]
     fn test_locate_prefers_the_smallest_containing_extent() {
         let mut b = test_bundle();
@@ -1087,23 +1098,34 @@ mod tests {
         *target = BIG;
         b.validate().expect("retargeted pointer must validate");
 
+        // The inner Node sits at the far end of BIG, where sorting sizes
+        // as anything but end-minus-start would misorder the two.
         let mem = FakeMem::new()
             .at(0x1000, u64s(&[0x20000]))
-            .at(0x2000, node_bytes(1, 0x20010))
+            .at(0x2000, node_bytes(1, 0x2fff0))
+            .at(0x900, node_bytes(1, 0x20000))
             .at(0x20000, vec![0u8; 0x10004]);
         let index = walk(
             &b,
             &mem,
             vec![],
             defaults(),
-            &[(PTR, 0x1000, "big"), (NODE, 0x2000, "n")],
+            &[
+                (PTR, 0x1000, "big"),
+                (NODE, 0x2000, "n"),
+                (NODE, 0x900, "m"),
+            ],
         );
 
-        // Both extents recorded: BIG at 0x20000..0x30004, and a Node
-        // inside it at 0x20010..0x20020.
-        assert_eq!(index.len(), 2);
-        let inside = index.locate(0x20014).unwrap();
-        assert_eq!(inside.record.ty, NODE);
+        // Three extents: BIG at 0x20000..0x30004, a Node inside its tail
+        // at 0x2fff0..0x30000, and a Node over its first 16 bytes.
+        assert_eq!(index.len(), 3);
+        let tail = index.locate(0x2fff4).unwrap();
+        assert_eq!((tail.record.ty, tail.path[0]), (NODE, "#0 n.next"));
+        // Same start as BIG: still the smaller extent, found even though
+        // the scan examines the bigger one first.
+        let head = index.locate(0x20004).unwrap();
+        assert_eq!((head.record.ty, head.path[0]), (NODE, "#0 m.next"));
         let outside = index.locate(0x21000).unwrap();
         assert_eq!(outside.record.ty, BIG);
         assert_eq!(outside.path, ["#0 big"]);
@@ -1139,6 +1161,343 @@ mod tests {
         let second = index.locate(0x5000).unwrap();
         assert_eq!(second.path, ["#0 v", "[1]"]);
         assert!(index.locate(0x6000).is_none());
+    }
+
+    /// Each dereference costs a level of its own: a pointer-to-pointer
+    /// chain with no member steps between the hops still runs out of
+    /// depth, hop by hop.
+    #[test]
+    fn test_a_dereference_costs_a_depth_level() {
+        let mut b = test_bundle();
+        let TypeDef::Pointer { target, .. } = &mut b.types.types[PTR.0 as usize] else {
+            panic!("PTR is not a pointer");
+        };
+        *target = PTR;
+        b.validate()
+            .expect("self-referential pointer must validate");
+
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[0x2000]))
+            .at(0x2000, u64s(&[0x3000]))
+            .at(0x3000, u64s(&[0x4000]))
+            .at(0x4000, u64s(&[0]));
+        let bounds = ReachBounds {
+            depth: 2,
+            ..defaults()
+        };
+        let index = walk(&b, &mem, vec![], bounds, &[(PTR, 0x1000, "p")]);
+
+        assert_eq!(index.len(), 2);
+        assert!(index.locate(0x2000).is_some());
+        assert!(index.locate(0x3000).is_some());
+        assert!(index.locate(0x4000).is_none(), "cut at the third hop");
+        assert!(index.capped.deep > 0);
+    }
+
+    /// String edges keep the walk's books: a shared buffer dedups under
+    /// its first path, one inside a task allocation is left to the
+    /// extent join, an unservable one degrades, and a claim past what
+    /// the target serves is a counted cut, not a silent short extent.
+    #[test]
+    fn test_string_edges_keep_the_walk_accounting() {
+        let b = test_bundle();
+        let header = |base: u64, len: u64| u64s(&[base, len, len.max(8)]);
+
+        let mem = FakeMem::new()
+            .at(0x1000, header(0x2000, 5))
+            .at(0x1100, header(0x2000, 5))
+            .at(0x2000, b"hello".to_vec());
+        let index = walk(
+            &b,
+            &mem,
+            vec![],
+            defaults(),
+            &[(STRING, 0x1000, "a"), (STRING, 0x1100, "b")],
+        );
+        assert_eq!((index.len(), index.stats.dedup_hits), (1, 1));
+        assert_eq!(index.locate(0x2000).unwrap().path, ["#0 a"]);
+
+        let mem = FakeMem::new()
+            .at(0x1000, header(0x2050, 5))
+            .at(0x2050, b"hello".to_vec());
+        let index = walk(
+            &b,
+            &mem,
+            vec![(0x2000, 0x2100, 0)],
+            defaults(),
+            &[(STRING, 0x1000, "s")],
+        );
+        assert_eq!((index.len(), index.stats.task_hits), (0, 1));
+
+        let mem = FakeMem::new().at(0x1000, header(0xdead_0000, 5));
+        let index = walk(&b, &mem, vec![], defaults(), &[(STRING, 0x1000, "s")]);
+        assert_eq!((index.len(), index.stats.degraded), (0, 1));
+
+        // A header that cannot describe a string — more bytes than the
+        // allocation that holds them — degrades before any read.
+        let mem = FakeMem::new().at(0x1000, u64s(&[0x2000, 9, 8]));
+        let index = walk(&b, &mem, vec![], defaults(), &[(STRING, 0x1000, "s")]);
+        assert_eq!((index.len(), index.stats.degraded), (0, 1));
+
+        let mem = FakeMem::new()
+            .at(0x1000, header(0x2000, 500))
+            .at(0x2000, b"hello".to_vec());
+        let index = walk(&b, &mem, vec![], defaults(), &[(STRING, 0x1000, "s")]);
+        assert_eq!((index.len(), index.capped.elements), (1, 1));
+        assert!(index.capped.any());
+        let hit = index.locate(0x2004).unwrap();
+        assert_eq!((hit.record.start, hit.record.end), (0x2000, 0x2005));
+    }
+
+    /// Sequence edges keep the same books — and an exact, fully-served
+    /// buffer counts as no cut at all, while an empty one records
+    /// nothing however its dangling pointer reads.
+    #[test]
+    fn test_slice_edges_keep_the_walk_accounting() {
+        let b = test_bundle();
+
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[0x2000, 3, 4]))
+            .at(0x1100, u64s(&[0x2000, 3, 4]))
+            .at(0x2000, u32s(&[7, 8, 9]));
+        let index = walk(
+            &b,
+            &mem,
+            vec![],
+            defaults(),
+            &[(VEC, 0x1000, "a"), (VEC, 0x1100, "b")],
+        );
+        assert_eq!((index.len(), index.stats.dedup_hits), (1, 1));
+        assert!(!index.capped.any(), "an exact buffer is not a cut");
+
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[0x2050, 3, 4]))
+            .at(0x2050, u32s(&[7, 8, 9]));
+        let index = walk(
+            &b,
+            &mem,
+            vec![(0x2000, 0x2100, 0)],
+            defaults(),
+            &[(VEC, 0x1000, "v")],
+        );
+        assert_eq!((index.len(), index.stats.task_hits), (0, 1));
+
+        // A length past the capacity is an impossible header, refused
+        // before it sizes a read.
+        let mem = FakeMem::new().at(0x1000, u64s(&[0x2000, 5, 3]));
+        let index = walk(&b, &mem, vec![], defaults(), &[(VEC, 0x1000, "v")]);
+        assert_eq!((index.len(), index.stats.degraded), (0, 1));
+
+        // A claim past what the target serves: the served extent stands,
+        // the shortfall is a counted cut.
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[0x2000, 1000, 1000]))
+            .at(0x2000, u32s(&[7, 8]));
+        let index = walk(&b, &mem, vec![], defaults(), &[(VEC, 0x1000, "v")]);
+        assert_eq!((index.len(), index.capped.elements), (1, 1));
+        let hit = index.locate(0x2004).unwrap();
+        assert_eq!((hit.record.start, hit.record.end), (0x2000, 0x2008));
+
+        // Empty, with a pointer nothing should read through.
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[0xdead_0000, 0, 0]))
+            .panic_on_unmapped();
+        let index = walk(&b, &mem, vec![], defaults(), &[(VEC, 0x1000, "v")]);
+        assert!(index.is_empty());
+    }
+
+    /// An inline array of pointers walks each element at its own stride
+    /// and depth: both pointees record under their element steps, and a
+    /// depth budget spent at the elements cuts before any pointee.
+    #[test]
+    fn test_an_inline_array_of_pointers_walks_each_element() {
+        let mut b = test_bundle();
+        // A struct holding the array, so the member prune must also
+        // recognize an array of pointers as edge-bearing.
+        let holder_name = reify::testhelper::strref(&b, "Wrap");
+        let member_name = reify::testhelper::strref(&b, "inner");
+        b.types.types[ARR.0 as usize] = TypeDef::Array {
+            elem: NODE_PTR,
+            count: 2,
+        };
+        let holder = hansei_bundle::BundleTypeId(b.types.types.len() as u32);
+        b.types.types.push(TypeDef::Struct {
+            name: holder_name,
+            size: 16,
+            members: vec![hansei_bundle::MemberDef {
+                name: member_name,
+                ty: ARR,
+                offset: 0,
+            }],
+        });
+        b.validate().expect("pointer-array bundle must validate");
+
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[0x4000, 0x5000]))
+            .at(0x4000, node_bytes(4, 0))
+            .at(0x5000, node_bytes(5, 0));
+        let index = walk(&b, &mem, vec![], defaults(), &[(holder, 0x1000, "h")]);
+
+        assert_eq!(index.len(), 2);
+        assert!(!index.capped.any(), "a fully-walked array is not a cut");
+        let first = index.locate(0x4000).unwrap();
+        assert_eq!((first.record.ty, first.path[0]), (NODE, "#0 h.inner[0]"));
+        let second = index.locate(0x5000).unwrap();
+        assert_eq!(second.path, ["#0 h.inner[1]"]);
+
+        // Depth spent at the elements: nothing recorded, and said so.
+        let bounds = ReachBounds {
+            depth: 1,
+            ..defaults()
+        };
+        let index = walk(&b, &mem, vec![], bounds, &[(ARR, 0x1000, "arr")]);
+        assert!(index.is_empty());
+        assert!(index.capped.deep > 0);
+
+        // The element bound cuts the inline descent too, and counts it.
+        let bounds = ReachBounds {
+            max_elements: 1,
+            ..defaults()
+        };
+        let index = walk(&b, &mem, vec![], bounds, &[(ARR, 0x1000, "arr")]);
+        assert_eq!((index.len(), index.capped.elements), (1, 1));
+        assert!(index.locate(0x5000).is_none());
+    }
+
+    /// The member prune must see through a display format: a `String`
+    /// member holds an edge even though nothing structural about it says
+    /// so, so a struct holding one still records its buffer.
+    #[test]
+    fn test_the_prune_keeps_a_string_member() {
+        let mut b = test_bundle();
+        let holder_name = reify::testhelper::strref(&b, "Wrap");
+        let member_name = reify::testhelper::strref(&b, "inner");
+        let holder = hansei_bundle::BundleTypeId(b.types.types.len() as u32);
+        b.types.types.push(TypeDef::Struct {
+            name: holder_name,
+            size: 24,
+            members: vec![hansei_bundle::MemberDef {
+                name: member_name,
+                ty: STRING,
+                offset: 0,
+            }],
+        });
+        b.validate().expect("string-holder bundle must validate");
+
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[0x2000, 5, 8]))
+            .at(0x2000, b"hello".to_vec());
+        let index = walk(&b, &mem, vec![], defaults(), &[(holder, 0x1000, "h")]);
+
+        assert_eq!(index.len(), 1);
+        let hit = index.locate(0x2002).unwrap();
+        assert_eq!(hit.record.kind, ExtentKind::Bytes);
+        assert_eq!(hit.path, ["#0 h.inner"]);
+    }
+
+    /// A pointer to a zero-sized target is no edge: there is nothing at
+    /// the other end to record, and following it would claim an empty
+    /// extent at whatever address the word holds.
+    #[test]
+    fn test_a_zero_sized_pointee_is_not_followed() {
+        let mut b = test_bundle();
+        let TypeDef::Pointer { target, .. } = &mut b.types.types[PTR.0 as usize] else {
+            panic!("PTR is not a pointer");
+        };
+        *target = UNIT;
+        b.validate().expect("unit-pointer bundle must validate");
+
+        let mem = FakeMem::new().at(0x1000, u64s(&[0x2000]));
+        let index = walk(&b, &mem, vec![], defaults(), &[(PTR, 0x1000, "p")]);
+        assert!(index.is_empty());
+        // Not followed at all — not even as a degraded read attempt.
+        assert_eq!(index.stats.degraded, 0);
+    }
+
+    /// Slice elements cost a depth level each, like any other descent: a
+    /// budget spent at the buffer's elements records the buffer and
+    /// nothing behind its pointers.
+    #[test]
+    fn test_a_slice_element_costs_a_depth_level() {
+        let b = slice_of_node_pointers();
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[0x2000, 1, 1]))
+            .at(0x2000, u64s(&[0x4000]))
+            .at(0x4000, node_bytes(4, 0));
+        let bounds = ReachBounds {
+            depth: 1,
+            ..defaults()
+        };
+        let index = walk(&b, &mem, vec![], bounds, &[(VEC, 0x1000, "v")]);
+
+        assert_eq!(index.len(), 1, "the buffer only");
+        assert!(index.locate(0x4000).is_none());
+        assert!(index.capped.deep > 0);
+    }
+
+    /// The edge prune must believe a type's display program over its
+    /// structure: a string-shaped type whose members are plain words
+    /// still carries an edge — the buffer its program reads — so a
+    /// struct holding one keeps the member and records the buffer.
+    #[test]
+    fn test_the_prune_believes_the_display_program() {
+        let mut b = test_bundle();
+        let name = reify::testhelper::strref(&b, "Wrap");
+        let len_name = reify::testhelper::strref(&b, "length");
+        let ptr_name = reify::testhelper::strref(&b, "data_ptr");
+        let inner_name = reify::testhelper::strref(&b, "inner");
+
+        // CompactStr { length: u64 @0, base: *Unit @8 } — the pointer
+        // member's target is zero-sized, so nothing structural about the
+        // type carries an edge; only the Str program knows @8 is a
+        // byte buffer.
+        let compact = hansei_bundle::BundleTypeId(b.types.types.len() as u32);
+        b.types.types.push(TypeDef::Struct {
+            name,
+            size: 16,
+            members: vec![
+                hansei_bundle::MemberDef {
+                    name: len_name,
+                    ty: reify::testhelper::U64,
+                    offset: 0,
+                },
+                hansei_bundle::MemberDef {
+                    name: ptr_name,
+                    ty: reify::testhelper::UNIT_PTR,
+                    offset: 8,
+                },
+            ],
+        });
+        let holder = hansei_bundle::BundleTypeId(b.types.types.len() as u32);
+        b.types.types.push(TypeDef::Struct {
+            name,
+            size: 16,
+            members: vec![hansei_bundle::MemberDef {
+                name: inner_name,
+                ty: compact,
+                offset: 0,
+            }],
+        });
+        b.types.debug_formats.insert(
+            compact,
+            DisplayNode::Str {
+                pointer: sel(&[1]),
+                length: sel(&[0]),
+                capacity: None,
+            },
+        );
+        b.validate().expect("compact-string bundle must validate");
+
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[5, 0x2000]))
+            .at(0x2000, b"hello".to_vec());
+        let index = walk(&b, &mem, vec![], defaults(), &[(holder, 0x1000, "h")]);
+
+        assert_eq!(index.len(), 1);
+        let hit = index.locate(0x2003).unwrap();
+        assert_eq!(hit.record.kind, ExtentKind::Bytes);
+        assert_eq!((hit.record.start, hit.record.end), (0x2000, 0x2005));
+        assert_eq!(hit.path, ["#0 h.inner"]);
     }
 
     /// Bytes for a [`MSG`] value: the tag byte and the 8-byte payload

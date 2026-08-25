@@ -343,8 +343,54 @@ impl<'a> fmt::Debug for Value<'a> {
 mod tests {
     use crate::Value;
     use crate::testhelper::*;
+    use crate::value::WalkCache;
 
-    use hansei_bundle::BundleView;
+    use hansei_bundle::{BundleView, TypeDef};
+
+    /// The uncached readers answer exactly as their `_with` spellings do:
+    /// `utf8_buffer` surfaces the buffer's base, the served bytes and the
+    /// shortfall, and `dyn_pointee` resolves a trait object's concrete
+    /// pointee — the plain spellings are the one-shot entries, so they
+    /// must not drift from the memoized ones.
+    #[test]
+    fn test_utf8_buffer_and_dyn_pointee_read_uncached() {
+        let mut b = test_bundle();
+        let TypeDef::Array { count, .. } = &mut b.types.types[VTABLE_ARRAY.0 as usize] else {
+            panic!("vtable is not an array");
+        };
+        *count = 4;
+        b.validate().expect("expanded vtable must validate");
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new()
+            .at(0x2000, b"hello".to_vec())
+            .at(0x1234, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0, 8, 8, 0x4000]))
+            .symbol(0x4000, "<Point as app::Trait>::run");
+
+        // String { ptr, len, capacity }: base and bytes come back whole,
+        // and a claim past what the target serves is reported, not
+        // silently cut.
+        let whole = u64s(&[0x2000, 5, 8]);
+        let s = Value::new(v.ty(STRING).unwrap(), 0x1000, &whole);
+        assert_eq!(s.utf8_buffer(&mem).unwrap(), (0x2000, &b"hello"[..], None));
+        let short = u64s(&[0x2000, 500, 500]);
+        let s = Value::new(v.ty(STRING).unwrap(), 0x1000, &short);
+        assert_eq!(
+            s.utf8_buffer(&mem).unwrap(),
+            (0x2000, &b"hello"[..], Some(500))
+        );
+
+        // The dyn join: the vtable's method symbol names Point, the size
+        // word corroborates it, and the pointee lands at the data pointer.
+        let fat = u64s(&[0x1234, 0x3000]);
+        let value = Value::new(v.ty(FAT_PTR).unwrap(), 0, &fat);
+        let (concrete, addr) = value.dyn_pointee(&mem).expect("the join resolves");
+        assert_eq!((concrete.name(), addr), ("Point", 0x1234));
+        // And the memoized spelling answers the same through a cache.
+        let mut cache = WalkCache::new();
+        let (concrete, addr) = value.dyn_pointee_with(&mem, &mut cache).unwrap();
+        assert_eq!((concrete.name(), addr), ("Point", 0x1234));
+    }
 
     /// `peel` descends through single-member wrappers, and stops at the last
     /// type the buffer covers. A value read short must not take it past the end
