@@ -76,6 +76,12 @@ const LWPSTATUS_PR_CURSIG: usize = 12;
 const LWPSTATUS_PR_INFO: usize = 16;
 const SI_CODE: usize = 4;
 const SI_ADDR: usize = 16;
+/// The `stack_t` the thread registered with `sigaltstack`, recorded in
+/// the note itself rather than pointed at the way `pr_ustack` is. This
+/// is what tells an alternate signal stack from any other anonymous
+/// mapping — `pmap` labels those `[ altstack tid=N ]`, and without this
+/// they are indistinguishable from the heap.
+const LWPSTATUS_PR_ALTSTACK: usize = 336;
 const LWPSTATUS_PR_TSTAMP: usize = 464;
 /// Points at the `stack_t` in the thread's own memory that describes
 /// the stack it was given. Reading it is how the whole stack is found:
@@ -124,6 +130,13 @@ fn signal_name(signo: i32) -> Option<&'static str> {
         .or_else(|| RT_SIGNAL_NAMES.get(index - SIGNAL_NAMES.len()))
         .copied()
 }
+
+/// `pstatus_t`: the process-wide extents its head records. The `brk`
+/// region is the one mapping `pmap` calls `[ heap ]`; every other
+/// anonymous mapping is something else wearing the same lack of a
+/// name, so this is what lets the two be told apart.
+const PSTATUS_PR_BRKBASE: usize = 48;
+const PSTATUS_PR_BRKSIZE: usize = 56;
 
 /// `psinfo_t`: the command line is what names the executable, since an
 /// illumos core has no equivalent of Linux's `NT_FILE`.
@@ -296,6 +309,10 @@ pub struct Core {
     symbols: BTreeMap<u64, Symbols>,
     /// The object the executable was loaded at, if its table is here.
     exec_base: Option<u64>,
+    /// The `brk` extent as the core's `pstatus_t` recorded it — the one
+    /// region `pmap` calls `[ heap ]`. `None` for a core whose pstatus
+    /// is absent or predates the field, which falls back to a guess.
+    brk: Option<Range<u64>>,
 }
 
 impl std::fmt::Debug for Core {
@@ -341,6 +358,7 @@ impl Core {
         let mut auxv = BTreeMap::new();
         let mut exec = None;
         let mut fatal = None;
+        let mut brk: Option<Range<u64>> = None;
         for note in elf.iter_note_headers(&core).into_iter().flatten() {
             let note = note.map_err(|_| Error::bad_core("malformed note"))?;
             let desc = note.desc;
@@ -360,8 +378,23 @@ impl Core {
                 // multi-lwp crash the kernel stops the *siblings* with
                 // SIGKILL, which their own lwpstatus notes record, so a
                 // cursig scan finds a SIGKILL before the fault.
-                NT_PSTATUS if desc.len() >= LWPSTATUS_LEN && fatal.is_none() => {
-                    fatal = decode_fatal_signal(&desc[desc.len() - LWPSTATUS_LEN..]);
+                NT_PSTATUS if desc.len() >= LWPSTATUS_LEN => {
+                    if fatal.is_none() {
+                        fatal = decode_fatal_signal(&desc[desc.len() - LWPSTATUS_LEN..]);
+                    }
+                    // The head of the same note, which is where the
+                    // process-wide extents live.
+                    if desc.len() >= PSTATUS_PR_BRKSIZE + 8 {
+                        let at = PSTATUS_PR_BRKBASE;
+                        let base = u64::from_le_bytes(desc[at..at + 8].try_into().unwrap());
+                        let at = PSTATUS_PR_BRKSIZE;
+                        let size = u64::from_le_bytes(desc[at..at + 8].try_into().unwrap());
+                        if let Some(end) = base.checked_add(size)
+                            && base != 0
+                        {
+                            brk = Some(base..end);
+                        }
+                    }
                 }
                 NT_LWPNAME if desc.len() >= LWPNAME_LEN => {
                     let (tid, name) = parse_lwpname(desc);
@@ -406,13 +439,14 @@ impl Core {
             fatal,
             symbols,
             exec_base: None,
+            brk,
         };
         core_file.fill_stack_ranges();
 
         // The link map lives in the target's memory, so it can only be
         // walked once the segments are readable.
         let objects = core_file.link_map_objects(&auxv);
-        core_file.mappings = build_mappings(&core_file.segments, &objects);
+        core_file.mappings = build_mappings(&core_file.segments, &objects, core_file.brk.as_ref());
         core_file.exec_base = core_file.find_exec_base(&objects);
         Ok(core_file)
     }
@@ -697,17 +731,26 @@ impl Core {
             .or_else(|| self.lwps.first());
         Status {
             active_lwp: active.map(|l| l.tid).unwrap_or(0),
-            // A core records no break; the heap is the writable
-            // anonymous region above the executable.
+            // What the core recorded, where it recorded it: an illumos
+            // `pstatus_t` carries the break outright, which is the one
+            // reading that cannot be wrong. The scan below is the
+            // fallback for a core whose pstatus is missing or older
+            // than the field — the writable anonymous region above the
+            // executable, which is where the break usually starts but
+            // is a guess, not a record.
             brk_range: self
-                .segments
-                .iter()
-                .find(|s| {
-                    Some(s.vaddr) > self.exec_base
-                        && s.flags & PF_W != 0
-                        && !self.symbols.contains_key(&s.vaddr)
+                .brk
+                .clone()
+                .or_else(|| {
+                    self.segments
+                        .iter()
+                        .find(|s| {
+                            Some(s.vaddr) > self.exec_base
+                                && s.flags & PF_W != 0
+                                && !self.symbols.contains_key(&s.vaddr)
+                        })
+                        .map(Segment::range)
                 })
-                .map(Segment::range)
                 .unwrap_or(0..0),
             stack_range: active.map(|l| l.stack_range.clone()).unwrap_or(0..0),
         }
@@ -808,7 +851,11 @@ impl Core {
 /// The object's extent is rounded to a page before the comparison,
 /// because the kernel maps whole pages and every object's last region
 /// therefore ends a little past what its program headers claim.
-fn build_mappings(segments: &[Segment], objects: &[(Range<u64>, String)]) -> Mappings {
+fn build_mappings(
+    segments: &[Segment],
+    objects: &[(Range<u64>, String)],
+    brk: Option<&Range<u64>>,
+) -> Mappings {
     // The base page, which is what the tail of a mapping is rounded to
     // whatever page size backs the rest of it.
     const PAGE: u64 = 0x1000;
@@ -826,6 +873,18 @@ fn build_mappings(segments: &[Segment], objects: &[(Range<u64>, String)]) -> Map
                 let mut flags = seg.flags & (PF_R | PF_W | PF_X);
                 if path.is_none() {
                     flags |= 0x40; // MA_ANON
+                    // The break, and only the break, is the heap.
+                    // Overlap rather than containment is the test: the
+                    // brk *pointer* starts partway into the page the
+                    // executable's bss ends in, so the mapping backing
+                    // the heap begins below `pr_brkbase` — and asking
+                    // whether the mapping starts inside the break
+                    // misses the one mapping that is the heap. It can
+                    // also be split across several segments by which
+                    // pages the dump took.
+                    if brk.is_some_and(|b| seg.vaddr < b.end && end > b.start) {
+                        flags |= 0x10; // MA_BREAK
+                    }
                 }
                 LoadedObjectWithPath {
                     path,
@@ -1073,11 +1132,31 @@ fn parse_lwpstatus(desc: &[u8]) -> LwpInfo {
         tv_nsec: i64::from_le_bytes(desc[at + 8..at + 16].try_into().unwrap()),
     };
 
+    // The `stack_t` is present whether or not the thread registered
+    // one; an unregistered alternate stack reads as a null base, which
+    // is the empty range rather than a mapping at zero.
+    let at = LWPSTATUS_PR_ALTSTACK;
+    let ss_sp = u64::from_le_bytes(
+        desc[at + STACK_SS_SP as usize..at + STACK_SS_SP as usize + 8]
+            .try_into()
+            .unwrap(),
+    );
+    let ss_size = u64::from_le_bytes(
+        desc[at + STACK_SS_SIZE as usize..at + STACK_SS_SIZE as usize + 8]
+            .try_into()
+            .unwrap(),
+    );
+    let altstack = match ss_sp.checked_add(ss_size) {
+        Some(end) if ss_sp != 0 && ss_size != 0 => ss_sp..end,
+        _ => 0..0,
+    };
+
     LwpInfo {
         tid,
         regs: Regs::from_gregset(&regs),
         // Filled in from the mappings once they are known.
         stack_range: 0..0,
+        altstack,
         tstamp,
     }
 }
@@ -1227,6 +1306,15 @@ mod tests {
         /// faulting lwp's own note, plus an `NT_PSTATUS` whose
         /// representative lwp — the tail `lwpstatus_t` — is that lwp
         /// taking `cursig`, details in the embedded `pr_info`.
+        /// An `NT_PSTATUS` carrying only the break extent — what the
+        /// kernel records and `pmap` reads to say `[ heap ]`.
+        fn brk(self, base: u64, size: u64) -> Self {
+            let mut desc = vec![0u8; PSTATUS_TEST_LEN];
+            desc[PSTATUS_PR_BRKBASE..PSTATUS_PR_BRKBASE + 8].copy_from_slice(&base.to_le_bytes());
+            desc[PSTATUS_PR_BRKSIZE..PSTATUS_PR_BRKSIZE + 8].copy_from_slice(&size.to_le_bytes());
+            self.note(NT_PSTATUS, desc)
+        }
+
         fn crashed(self, tid: u32, regs: Regs, cursig: i16, code: i32, addr: u64) -> Self {
             let lwp = lwpstatus_taking(tid, &regs, cursig, code, addr);
             let mut desc = vec![0u8; PSTATUS_TEST_LEN];
@@ -2519,6 +2607,58 @@ mod tests {
         }
         assert_eq!(maps.get(EXEC_BASE).unwrap().region(), "text");
         assert_eq!(maps.get(EXEC_BASE + PAGE).unwrap().region(), "data");
+    }
+
+    /// The break is marked as the heap even though its mapping starts
+    /// *below* what the kernel calls the break.
+    ///
+    /// `brk` is a pointer into the page the executable's bss ends in,
+    /// so the mapping backing the heap begins at that page's base —
+    /// under `pr_brkbase` by however far into the page bss ran. Asking
+    /// whether a mapping *starts inside* the break therefore misses the
+    /// one mapping that is the heap, which is the whole point of
+    /// reading the field. Overlap is the test.
+    ///
+    /// And it is only the break: the other anonymous mappings a process
+    /// has stay anonymous, because calling them heap is the false claim
+    /// this replaced.
+    #[test]
+    fn test_the_break_is_the_heap_though_its_mapping_starts_below_it() {
+        const EXEC_BASE: u64 = 0x40_0000;
+        // The break begins partway into the page bss ends in, exactly
+        // as a real one does.
+        const HEAP_MAPPING: u64 = EXEC_BASE + PAGE;
+        const BRK_BASE: u64 = HEAP_MAPPING + 0x40;
+        const BRK_SIZE: u64 = 16 * PAGE;
+        const ELSEWHERE: u64 = 0x9000_0000;
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(EXEC_BASE + 0x100, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .undumped(HEAP_MAPPING, BRK_SIZE, PF_R | PF_W)
+            // An anonymous mapping that is not the break.
+            .undumped(ELSEWHERE, PAGE, PF_R | PF_W)
+            .brk(BRK_BASE, BRK_SIZE)
+            .proc();
+
+        // The mapping must start below the break or this tests nothing;
+        // checked at compile time, since both are constants.
+        const _: () = assert!(HEAP_MAPPING < BRK_BASE);
+
+        let maps = p.mappings().unwrap();
+        let heap = maps.get(HEAP_MAPPING).unwrap();
+        assert!(heap.is_heap(), "{heap:?}");
+        // Deep inside it, too — a heap is many pages and every one of
+        // them is the heap.
+        assert!(maps.get(BRK_BASE + 8 * PAGE).unwrap().is_heap());
+
+        let other = maps.get(ELSEWHERE).unwrap();
+        assert!(other.flags.is_anon(), "{other:?}");
+        assert!(!other.is_heap(), "{other:?}");
+
+        // And the recorded break is what `Status` reports, rather than
+        // the guess a core without the field falls back to.
+        assert_eq!(p.status().brk_range, BRK_BASE..BRK_BASE + BRK_SIZE);
     }
 
     /// A PIE's program headers hold link-time offsets; the bias worked

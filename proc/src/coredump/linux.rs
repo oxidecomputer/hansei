@@ -965,6 +965,10 @@ fn parse_prstatus(desc: &[u8]) -> Result<LwpInfo> {
         regs: Regs::from_user_regs(&regs),
         // Filled in from the mappings once they are known.
         stack_range: 0..0,
+        // A Linux core carries no `sigaltstack` record, so an alternate
+        // signal stack is not distinguishable from any other anonymous
+        // mapping here. Empty says that, rather than claiming one.
+        altstack: 0..0,
         // A Linux core records no time at which a thread stopped; every
         // thread stopped when the process died.
         tstamp: Timespec {

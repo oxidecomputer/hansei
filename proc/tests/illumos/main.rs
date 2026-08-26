@@ -319,6 +319,11 @@ fn test_the_portable_reader_agrees_with_libproc() {
     for (a, b) in got.iter().zip(&want) {
         assert_eq!(a.regs, b.regs, "tid {} registers", a.tid);
         assert_eq!(a.stack_range, b.stack_range, "tid {} stack", a.tid);
+        // The alternate signal stack too: the portable reader decodes
+        // it out of the note by a pinned offset and libproc reads the
+        // same struct through its own bindings, so a wrong offset here
+        // is a disagreement rather than a plausible-looking range.
+        assert_eq!(a.altstack, b.altstack, "tid {} altstack", a.tid);
         assert_eq!(a.tstamp, b.tstamp, "tid {} timestamp", a.tid);
     }
     assert_eq!(portable.exec_name().unwrap(), libproc.exec_name().unwrap());

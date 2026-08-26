@@ -63,6 +63,7 @@ pub(crate) fn print_lwp_registers(
             tid: l.tid,
             rsp: l.regs.rsp,
             range: l.stack_range.clone(),
+            altstack: l.altstack.clone(),
         })
         .collect();
     let classifier = RegClassifier {
@@ -148,7 +149,14 @@ fn spelled(class: &RegClass, label: &dyn Fn(usize) -> String) -> Option<String> 
             let base = path.rsplit('/').next().unwrap_or(path);
             format!("in {base} {region}")
         }
+        // `pmap`'s vocabulary, and for its reason: exactly one
+        // anonymous mapping is the break, and the rest — an
+        // allocator's mmap-backed arenas, a threading library's own
+        // tables, guard pages — are only anonymous. Naming them all
+        // heap would assert something false about all but one.
+        RegClass::AltStack(tid) => format!("lwp {tid}'s alternate signal stack"),
         RegClass::Heap => "heap".to_string(),
+        RegClass::Anon => "anonymous memory".to_string(),
         RegClass::Unmapped => "unmapped".to_string(),
         RegClass::Null => "null".to_string(),
         RegClass::Small => return None,
@@ -212,6 +220,14 @@ mod tests {
             Some("in libc.so.6 data")
         );
         assert_eq!(spell(RegClass::Heap).as_deref(), Some("heap"));
+        // The three anonymous claims are spelled apart, because they
+        // are three different facts: the break, a thread's alternate
+        // signal stack, and memory that is merely anonymous.
+        assert_eq!(spell(RegClass::Anon).as_deref(), Some("anonymous memory"));
+        assert_eq!(
+            spell(RegClass::AltStack(12)).as_deref(),
+            Some("lwp 12's alternate signal stack")
+        );
         assert_eq!(spell(RegClass::Unmapped).as_deref(), Some("unmapped"));
         assert_eq!(spell(RegClass::Null).as_deref(), Some("null"));
         assert_eq!(spell(RegClass::Small), None);

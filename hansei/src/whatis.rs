@@ -22,11 +22,40 @@ pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Wr
         session
             .umem()
             .and_then(|heap| heap.allocation(session.proc(), addr)),
+        region_of(session, addr),
         vtable_at(session.proc, addr).as_ref(),
         &session.impl_fold,
         addr,
         out,
     )
+}
+
+/// How the mapping holding `addr` is spelled, or `None` where nothing
+/// maps it.
+///
+/// The register annotations classify a value against the task extents
+/// and the stacks as well; this asks only what kind of memory it is,
+/// because everything more specific is a block of its own above.
+fn region_of(session: &Session<'_>, addr: u64) -> Option<String> {
+    let mapping = session.ctx.mappings.get(addr)?;
+    Some(match &mapping.path {
+        Some(path) => {
+            let base = path.rsplit('/').next().unwrap_or(path);
+            format!("{base} {}", mapping.region())
+        }
+        None if mapping.is_heap() => "the heap".to_string(),
+        None => match session
+            .lwps
+            .iter()
+            .find(|l| !l.altstack.is_empty() && l.altstack.contains(&addr))
+        {
+            Some(lwp) => format!("lwp {}'s alternate signal stack", lwp.tid),
+            None => match session.lwps.iter().find(|l| l.stack_range.contains(&addr)) {
+                Some(lwp) => format!("lwp {}'s stack", lwp.tid),
+                None => "anonymous memory".to_string(),
+            },
+        },
+    })
 }
 
 /// What a static vtable holds, populated only when the memory at `addr`
@@ -101,6 +130,9 @@ fn report_whatis(
     extents: &bundle::TaskExtents,
     census: &census::FutureCensus,
     alloc: Option<Allocation>,
+    // What kind of mapping holds the address, spelled — the answer
+    // of last resort, for an address nothing else claims.
+    region: Option<String>,
     vtable: Option<&VtableAt>,
     impls: &names::ImplFold,
     addr: u64,
@@ -343,6 +375,15 @@ fn report_whatis(
             out,
             "no task's allocation and no future the census found contains {addr:#x}"
         )?;
+        // Nothing above interpreted the address, so the coarsest fact
+        // there is — which mapping holds it — is the whole answer
+        // rather than a footnote to one. This is the vocabulary
+        // `pmap` answers in, and for the same reason: naming every
+        // anonymous mapping "heap" would be a false claim about all
+        // but one of them.
+        if let Some(region) = region {
+            writeln!(out, "It is in {region}.")?;
+        }
     }
     Ok(())
 }
@@ -432,7 +473,7 @@ mod whatis_tests {
     }
 
     fn report(target: &Target<'_>, addr: u64) -> String {
-        reported(target, None, None, addr)
+        reported(target, None, None, None, addr)
     }
 
     /// The report over everything an attach can hand it, including the
@@ -442,6 +483,7 @@ mod whatis_tests {
     fn reported(
         target: &Target<'_>,
         alloc: Option<Allocation>,
+        region: Option<&str>,
         vtable: Option<&VtableAt>,
         addr: u64,
     ) -> String {
@@ -454,6 +496,7 @@ mod whatis_tests {
             &target.extents,
             &target.census,
             alloc,
+            region.map(str::to_owned),
             vtable,
             &hansei_bundle::names::ImplFold::default(),
             addr,
@@ -475,7 +518,7 @@ mod whatis_tests {
                 size: 48,
                 align: 8,
             };
-            let out = reported(target, None, Some(&vtable), 0x9000_0000);
+            let out = reported(target, None, None, Some(&vtable), 0x9000_0000);
             assert!(
                 out.contains("Vtable 0x90000000: erases app::Thing<u64>"),
                 "{out}"
@@ -577,7 +620,7 @@ mod whatis_tests {
             // The pointer the program was given: three facts minus the
             // offset, whose absence is what says the address is the
             // allocation rather than somewhere inside it.
-            let shown = reported(t, alloc(true, Size::Requested(300), 0), None, task);
+            let shown = reported(t, alloc(true, Size::Requested(300), 0), None, None, task);
             assert!(
                 shown.starts_with("Status: live\nSize:   300 bytes\n\n"),
                 "{shown}"
@@ -593,7 +636,7 @@ mod whatis_tests {
             // own size is all there is left to report, and the offset
             // counts from where the block starts — which is what the
             // line says, because the two starts are a header apart.
-            let shown = reported(t, alloc(false, Size::Block(64), 16), None, task);
+            let shown = reported(t, alloc(false, Size::Block(64), 16), None, None, task);
             assert!(
                 shown.starts_with("Status: freed\nSize:   64 byte block\nOffset: +16 in block\n"),
                 "{shown}"
@@ -603,7 +646,7 @@ mod whatis_tests {
             // so an address nothing in the report claims still reports
             // the miss. An offset into a known allocation counts from
             // the pointer the program was given, and names it.
-            let shown = reported(t, alloc(true, Size::Requested(1), 1), None, 0x10);
+            let shown = reported(t, alloc(true, Size::Requested(1), 1), None, None, 0x10);
             assert_eq!(
                 shown,
                 "Status: live\nSize:   1 byte\nOffset: +1 in allocation\n\n\
@@ -616,6 +659,31 @@ mod whatis_tests {
             let shown = report(t, task);
             assert!(!shown.contains("Status:"), "{shown}");
             assert!(!shown.contains("Size:"), "{shown}");
+        });
+    }
+
+    /// The region is the answer of last resort: it speaks only when
+    /// nothing above interpreted the address, because everything above
+    /// is a more specific claim about the same bytes. An address a
+    /// task owns is told what owns it, not which mapping it is in.
+    #[test]
+    fn test_the_region_answers_only_where_nothing_else_did() {
+        with_tasks("sleep-join", |t| {
+            let task = t.list.tasks[0].addr.0;
+            let claimed = reported(t, None, Some("the heap"), None, task);
+            assert!(!claimed.contains("It is in"), "{claimed}");
+
+            // Nothing claims this one, so the mapping is what there is
+            // to say — and it is said in pmap's vocabulary rather than
+            // called "heap" for being anonymous.
+            let loose = reported(t, None, Some("anonymous memory"), None, 0x9999_0000);
+            assert!(loose.contains("It is in anonymous memory."), "{loose}");
+
+            // And an address in no mapping at all keeps the bare miss:
+            // silence beats inventing a region for it.
+            let nowhere = reported(t, None, None, None, 0x9999_0000);
+            assert!(nowhere.contains("no task's allocation"), "{nowhere}");
+            assert!(!nowhere.contains("It is in"), "{nowhere}");
         });
     }
 
