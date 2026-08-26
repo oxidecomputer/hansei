@@ -877,7 +877,7 @@ impl<'t, T: Target> Walk<'t, T> {
 
 /// libumem's malloc tag magics (`umem_impl.h`), each recognizable in
 /// the encoded status word and each naming a header size.
-const MALLOC_MAGIC: u32 = 0x3a10c000;
+pub(crate) const MALLOC_MAGIC: u32 = 0x3a10c000;
 const MALLOC_SECOND_MAGIC: u32 = 0x16ba7000;
 const MALLOC_OVERSIZE_MAGIC: u32 = 0x06e47000;
 const MEMALIGN_MAGIC: u32 = 0x3e3a1000;
@@ -987,7 +987,7 @@ fn header<T: Target>(target: &T, base: u64, block: u64) -> Option<(u64, u64)> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use proc::{Regs, SymbolBuf};
@@ -996,7 +996,7 @@ mod tests {
 
     /// A target holding one run of bytes, with libumem's globals
     /// resolving into it — everything the walk reads and nothing else.
-    struct Fake {
+    pub(crate) struct Fake {
         base: u64,
         bytes: Vec<u8>,
         symbols: BTreeMap<String, u64>,
@@ -1006,7 +1006,7 @@ mod tests {
     }
 
     impl Fake {
-        fn new(base: u64, len: usize) -> Self {
+        pub(crate) fn new(base: u64, len: usize) -> Self {
             Fake {
                 base,
                 bytes: vec![0; len],
@@ -1015,12 +1015,12 @@ mod tests {
             }
         }
 
-        fn put_u64(&mut self, addr: u64, value: u64) {
+        pub(crate) fn put_u64(&mut self, addr: u64, value: u64) {
             let at = (addr - self.base) as usize;
             self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
         }
 
-        fn put_u32(&mut self, addr: u64, value: u32) {
+        pub(crate) fn put_u32(&mut self, addr: u64, value: u32) {
             let at = (addr - self.base) as usize;
             self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
         }
@@ -1092,22 +1092,22 @@ mod tests {
     /// Where hashed caches' external bufctls are laid, 24 bytes each.
     const BUFCTLS: u64 = BASE + 0x8000;
     /// Where the buffers themselves are, one slab's worth every 0x1000.
-    const BUFFERS: u64 = BASE + 0x10_0000;
+    pub(crate) const BUFFERS: u64 = BASE + 0x10_0000;
 
     /// A hashed cache's `cache_hash_mask`: four buckets, so a walk
     /// that reads the wrong number of them comes up short.
     const HASH_MASK: u64 = 3;
 
     /// One slab to lay: which chunks are free, in freelist order.
-    struct SlabSpec {
-        base: u64,
-        chunks: u64,
-        free: Vec<u64>,
+    pub(crate) struct SlabSpec {
+        pub(crate) base: u64,
+        pub(crate) chunks: u64,
+        pub(crate) free: Vec<u64>,
     }
 
     /// A target with `umem_ready` set and an empty cache list, ready
     /// for caches to be laid into.
-    fn fake() -> Fake {
+    pub(crate) fn fake() -> Fake {
         let mut f = Fake::new(BASE, 0x20_0000);
         f.symbol("umem_ready", READY);
         f.symbol("umem_null_cache", ANCHOR);
@@ -1124,7 +1124,14 @@ mod tests {
     /// bufctl embedded at `bufsize` into the buffer for a raw cache, or
     /// through external bufctls for a hashed one — which also get a
     /// hash table holding every allocated buffer.
-    fn cache(f: &mut Fake, index: u64, name: &str, chunksize: u64, flags: u32, slabs: &[SlabSpec]) {
+    pub(crate) fn cache(
+        f: &mut Fake,
+        index: u64,
+        name: &str,
+        chunksize: u64,
+        flags: u32,
+        slabs: &[SlabSpec],
+    ) {
         let addr = CACHES + index * 0x400;
         // Big enough to hold the largest slab laid below, the way a
         // real cache's is chosen to fit its chunks -- and exactly the
@@ -1916,7 +1923,7 @@ mod tests {
     /// Write the tag libumem's malloc shim would have written before
     /// the pointer it handed out at `ptr`, recording `total` bytes —
     /// the whole allocation, its tags included.
-    fn tag(f: &mut Fake, ptr: u64, magic: u32, total: u64) {
+    pub(crate) fn tag(f: &mut Fake, ptr: u64, magic: u32, total: u64) {
         f.put_u32(ptr - 8, total as u32);
         f.put_u32(ptr - 4, magic.wrapping_sub(total as u32));
     }
