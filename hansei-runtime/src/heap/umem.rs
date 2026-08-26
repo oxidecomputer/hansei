@@ -785,11 +785,17 @@ pub enum TagKind {
     /// beyond 8.
     Malloc,
     /// A 16-byte header, which is what 16-byte alignment costs on LP64.
+    /// The first of the two words is left as it was found, so only the
+    /// second is a tag.
     Second,
-    /// A 16-byte header whose size did not fit the 32-bit field.
+    /// Two tags, the second carrying the high word of a size that did
+    /// not fit the 32-bit field — over 4 GiB, which is the only thing
+    /// that puts an allocation here.
     Oversize,
-    /// A `memalign` redirect: the tag marks the aligned pointer, and
-    /// the real allocation starts somewhere before it.
+    /// Two tags of its own, written by `memalign` rather than `malloc`.
+    /// The alignment is paid for inside the arena's own segment rather
+    /// than by moving the pointer away from its tags, so the pointer's
+    /// allocation still begins immediately before them.
     Memalign,
 }
 
@@ -804,10 +810,14 @@ pub enum TagKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MallocTag {
     pub kind: TagKind,
-    /// The whole allocation, header included, as the tag records it.
+    /// The whole allocation, tags included, as the tag records it —
+    /// what was handed to the allocator beneath the shim rather than
+    /// what the caller asked for.
     pub total: u64,
-    /// Where the allocation starts. A `memalign` redirect does not say.
-    pub base: Option<u64>,
+    /// Where the allocation starts, which is where its first tag does:
+    /// every spelling puts its tags immediately before the pointer it
+    /// hands out, so this is 8 or 16 bytes below it.
+    pub base: u64,
 }
 
 /// Read the malloc header immediately before `ptr`, if one is there.
@@ -815,19 +825,35 @@ pub struct MallocTag {
 /// `None` means the bytes are not a header: `ptr` is not a `malloc`
 /// pointer, or not a pointer at all.
 pub fn malloc_tag<T: Target>(target: &T, ptr: u64) -> Option<MallocTag> {
-    let tag = ptr.checked_sub(8)?;
-    let size = target.read_u32(tag).ok()?;
-    let status = target.read_u32(tag + 4).ok()?;
+    let low = ptr.checked_sub(8)?;
+    let size = target.read_u32(low).ok()?;
+    let status = target.read_u32(low + 4).ok()?;
+    // A size the 32-bit field cannot hold rides in a second tag ahead
+    // of the first, and which magic that tag carries is what tells the
+    // two spellings that use one apart: `malloc` marks its high word
+    // with the ordinary magic, `memalign` repeats its own.
+    let wide = |magic: u32| {
+        let base = ptr.checked_sub(16)?;
+        let high = target.read_u32(base).ok()?;
+        let status = target.read_u32(base + 4).ok()?;
+        (status.wrapping_add(high) == magic).then_some((base, (high as u64) << 32 | size as u64))
+    };
     // The status is the magic with the size subtracted out, so that a
     // free of the wrong size cannot pass for a valid header.
     let (kind, base, total) = match status.wrapping_add(size) {
-        MALLOC_MAGIC => (TagKind::Malloc, Some(tag), size as u64),
-        MALLOC_SECOND_MAGIC => (TagKind::Second, Some(ptr.checked_sub(16)?), size as u64),
+        MALLOC_MAGIC => (TagKind::Malloc, low, size as u64),
+        // The word ahead of this one is whatever the buffer held
+        // before: `malloc` steps over it rather than writing it, so
+        // only the allocation's start follows from it being there.
+        MALLOC_SECOND_MAGIC => (TagKind::Second, ptr.checked_sub(16)?, size as u64),
         MALLOC_OVERSIZE_MAGIC => {
-            let base = ptr.checked_sub(16)?;
-            (TagKind::Oversize, Some(base), target.read_u64(base).ok()?)
+            let (base, total) = wide(MALLOC_MAGIC)?;
+            (TagKind::Oversize, base, total)
         }
-        MEMALIGN_MAGIC => (TagKind::Memalign, None, size as u64),
+        MEMALIGN_MAGIC => {
+            let (base, total) = wide(MEMALIGN_MAGIC)?;
+            (TagKind::Memalign, base, total)
+        }
         _ => return None,
     };
     Some(MallocTag { kind, total, base })
@@ -1714,47 +1740,68 @@ mod tests {
         assert_eq!(heap.stats().live_bytes, 6 * 64 + 3 * 128);
     }
 
+    /// Write the tag libumem's malloc shim would have written before
+    /// the pointer it handed out at `ptr`, recording `total` bytes —
+    /// the whole allocation, its tags included.
+    fn tag(f: &mut Fake, ptr: u64, magic: u32, total: u64) {
+        f.put_u32(ptr - 8, total as u32);
+        f.put_u32(ptr - 4, magic.wrapping_sub(total as u32));
+    }
+
+    /// Write the second tag the two wide spellings carry ahead of the
+    /// first, holding the high word of a size the field could not.
+    fn high_tag(f: &mut Fake, ptr: u64, magic: u32, total: u64) {
+        let high = (total >> 32) as u32;
+        f.put_u32(ptr - 16, high);
+        f.put_u32(ptr - 12, magic.wrapping_sub(high));
+    }
+
     /// The tag libumem's malloc shim writes before every pointer it
-    /// hands out, in each of its four spellings.
+    /// hands out, in each of its four spellings — and the base each
+    /// one implies, which every spelling puts 8 or 16 bytes below the
+    /// pointer rather than anywhere the tag has to name.
     #[test]
     fn test_the_malloc_tag_decodes_each_header() {
         let mut f = Fake::new(BASE, 0x1000);
         let ptr = BASE + 0x100;
-        for (magic, size, kind, base) in [
-            (MALLOC_MAGIC, 15u32, TagKind::Malloc, Some(ptr - 8)),
-            (MALLOC_SECOND_MAGIC, 144, TagKind::Second, Some(ptr - 16)),
-            (MEMALIGN_MAGIC, 64, TagKind::Memalign, None),
+        // The one-tag spellings: a size that fits the field, and no
+        // word ahead of it that has to say anything.
+        for (magic, total, kind, base) in [
+            (MALLOC_MAGIC, 15, TagKind::Malloc, ptr - 8),
+            (MALLOC_SECOND_MAGIC, 144, TagKind::Second, ptr - 16),
         ] {
-            f.put_u32(ptr - 8, size);
-            f.put_u32(ptr - 4, magic.wrapping_sub(size));
+            tag(&mut f, ptr, magic, total);
+            assert_eq!(malloc_tag(&f, ptr), Some(MallocTag { kind, total, base }));
+        }
+
+        // The two-tag spellings: the size spans both words, and the
+        // magic on the high one is what says which spelling wrote it.
+        let huge = 5 * 1024 * 1024 * 1024u64 + 16;
+        for (magic, high, total, kind) in [
+            (MALLOC_OVERSIZE_MAGIC, MALLOC_MAGIC, huge, TagKind::Oversize),
+            (MEMALIGN_MAGIC, MEMALIGN_MAGIC, 1168, TagKind::Memalign),
+        ] {
+            tag(&mut f, ptr, magic, total);
+            high_tag(&mut f, ptr, high, total);
             assert_eq!(
                 malloc_tag(&f, ptr),
                 Some(MallocTag {
                     kind,
-                    total: size as u64,
-                    base,
+                    total,
+                    base: ptr - 16,
                 })
             );
+            // A high word that does not corroborate the low one is no
+            // header: the two are written together or not at all, so
+            // one of them alone is bytes that happen to look like one.
+            high_tag(&mut f, ptr, magic.wrapping_add(1), total);
+            assert_eq!(malloc_tag(&f, ptr), None);
         }
-
-        // Oversize keeps the real size in the head of its header,
-        // because it is the one that need not fit 32 bits.
-        let size = 5 * 1024 * 1024 * 1024u64;
-        f.put_u64(ptr - 16, size);
-        f.put_u32(ptr - 8, size as u32);
-        f.put_u32(ptr - 4, MALLOC_OVERSIZE_MAGIC.wrapping_sub(size as u32));
-        assert_eq!(
-            malloc_tag(&f, ptr),
-            Some(MallocTag {
-                kind: TagKind::Oversize,
-                total: size,
-                base: Some(ptr - 16),
-            })
-        );
 
         // The status word is the magic *minus the size*, so a header
         // whose size was overwritten no longer decodes -- which is the
         // point of encoding it that way.
+        tag(&mut f, ptr, MALLOC_MAGIC, 15);
         f.put_u32(ptr - 8, 16);
         assert_eq!(malloc_tag(&f, ptr), None);
         f.put_u32(ptr - 4, 0);
