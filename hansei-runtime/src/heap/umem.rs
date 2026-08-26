@@ -1194,23 +1194,26 @@ mod tests {
         assert_eq!(heap.locate(0), Liveness::Unknown);
 
         // What an enumeration differential diffs: every chunk of one
-        // liveness, in address order, spelled exactly -- an address
-        // off by one chunk is the whole failure a differential exists
+        // liveness, in address order, spelled exactly -- bounds and
+        // all. A chunk off by one, or one whose end does not follow
+        // from its start, is the whole failure a differential exists
         // to catch, so nothing here is asserted by count alone.
-        let starts = |it: &mut dyn Iterator<Item = Range<u64>>| -> Vec<u64> {
-            it.map(|c| c.start).collect()
-        };
-        let freed = starts(&mut heap.freed_chunks());
+        let chunk = |start: u64, size: u64| start..start + size;
+        let freed: Vec<Range<u64>> = heap.freed_chunks().collect();
         assert_eq!(
             freed,
-            [BUFFERS + 64, BUFFERS + 5 * 64, BUFFERS + 0x2000 + 3 * 128]
+            [
+                chunk(BUFFERS + 64, 64),
+                chunk(BUFFERS + 5 * 64, 64),
+                chunk(BUFFERS + 0x2000 + 3 * 128, 128),
+            ]
         );
-        let live = starts(&mut heap.live_chunks());
-        let want: Vec<u64> = (0..8)
+        let live: Vec<Range<u64>> = heap.live_chunks().collect();
+        let want: Vec<Range<u64>> = (0..8)
             .filter(|i| ![1, 5].contains(i))
-            .map(|i| BUFFERS + i * 64)
-            .chain((0..8).map(|i| BUFFERS + 0x1000 + i * 64))
-            .chain((0..3).map(|i| BUFFERS + 0x2000 + i * 128))
+            .map(|i| chunk(BUFFERS + i * 64, 64))
+            .chain((0..8).map(|i| chunk(BUFFERS + 0x1000 + i * 64, 64)))
+            .chain((0..3).map(|i| chunk(BUFFERS + 0x2000 + i * 128, 128)))
             .collect();
         assert_eq!(live, want);
     }
