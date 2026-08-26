@@ -8,6 +8,7 @@ use crate::Session;
 use crate::tasks::task_label;
 
 use anyhow::Result;
+use hansei_runtime::heap::umem::Liveness;
 use hansei_runtime::tokio::registers::{LwpStack, RegClass, RegClassifier};
 use proc::Target as _;
 
@@ -71,10 +72,16 @@ pub(crate) fn print_lwp_registers(
     };
     let list = &session.tasks;
     let symbol = |addr: u64| session.proc.lookup_symbol_by_addr(addr);
+    let heap = session.umem();
     let annotate = |value: u64| {
-        spelled(&classifier.classify(lwp, value, &symbol), &|index| {
+        let claim = spelled(&classifier.classify(lwp, value, &symbol), &|index| {
             task_label(list, index)
-        })
+        });
+        let freed = matches!(
+            heap.map(|heap| heap.locate(value)),
+            Some(Liveness::Freed { .. })
+        );
+        marked(claim, freed)
     };
     print_registers(out, indent, &info.regs, &annotate)
 }
@@ -95,6 +102,22 @@ fn print_registers(
         }
     }
     Ok(())
+}
+
+/// Add the one word an allocator verdict is worth here: a register
+/// pointing into memory the allocator has taken back is holding a
+/// pointer to nothing, whatever the classifier made of where it points.
+///
+/// Only `freed` is marked. Live is the ordinary case — most of a
+/// register file that holds pointers at all points into live
+/// allocations — and a word on every one of seventeen lines per thread
+/// would bury the one line worth reading. The mark is an alarm, not a
+/// status.
+fn marked(claim: Option<String>, freed: bool) -> Option<String> {
+    match (claim, freed) {
+        (Some(claim), true) => Some(format!("{claim} (freed)")),
+        (claim, _) => claim,
+    }
 }
 
 /// Spell one classification as the annotation the block prints — or
@@ -130,7 +153,7 @@ fn spelled(class: &RegClass, label: &dyn Fn(usize) -> String) -> Option<String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{print_registers, spelled};
+    use super::{marked, print_registers, spelled};
     use hansei_runtime::tokio::registers::RegClass;
 
     /// Each claim's spelling, and the one silence: offsets ride along
@@ -183,6 +206,19 @@ mod tests {
         assert_eq!(spell(RegClass::Heap).as_deref(), Some("heap"));
         assert_eq!(spell(RegClass::Unmapped).as_deref(), Some("unmapped"));
         assert_eq!(spell(RegClass::Small), None);
+    }
+
+    /// The freed mark rides on the claim rather than replacing it, and
+    /// nothing else changes: a live value is spelled exactly as it was
+    /// before the allocator had anything to say, and a value with no
+    /// claim to make stays silent whether or not it is freed.
+    #[test]
+    fn test_only_a_freed_value_is_marked() {
+        let claim = || Some("heap".to_string());
+        assert_eq!(marked(claim(), true).as_deref(), Some("heap (freed)"));
+        assert_eq!(marked(claim(), false).as_deref(), Some("heap"));
+        assert_eq!(marked(None, true), None);
+        assert_eq!(marked(None, false), None);
     }
 
     /// The block whole: the heading at the caller's indent, all 17
