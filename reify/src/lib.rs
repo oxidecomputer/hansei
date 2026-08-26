@@ -3,6 +3,7 @@
 mod debug_type;
 mod elements;
 mod error;
+pub mod heap;
 mod parse;
 mod render;
 mod target;
@@ -14,6 +15,7 @@ mod testhelper;
 pub use debug_type::TypeKind;
 pub use elements::Elements;
 pub use error::Error;
+pub use heap::{Gate, Heap, Liveness};
 pub use parse::ParseWithDbgInfo;
 pub use render::{AddrAnnotator, DisplayValue, ElideOverride};
 pub use value::Value;

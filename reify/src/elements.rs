@@ -7,6 +7,7 @@
 //! pointer, which is the bundle's business and not reify's.
 
 use crate::debug_type::{DisplayNode, FatHeader, TypeKind};
+use crate::heap::{Gate, Heap, Liveness};
 use crate::render::scalar::{read_u64_at, read_unsigned_at};
 use crate::value::Value;
 use crate::{Error, Result};
@@ -21,6 +22,44 @@ use hansei_bundle::BundleType;
 /// count with — any claim at all costs nothing to read and everything to
 /// iterate. This is the one place a count is bounded by fiat.
 const MAX_ZST_ELEMENTS: u64 = 64 * 1024 * 1024;
+
+/// The allocator's say in one buffer read.
+///
+/// A length word is read out of the target like any other, so a length
+/// out of dead bytes claims whatever its bits say — and the target
+/// happily serves the pages under the claim, because they are mapped
+/// and belong to somebody. The allocation the buffer starts in is the
+/// bound that catches it: a sequence cannot run past the end of its own
+/// allocation and still be that sequence.
+///
+/// `owning` says whether the pointer being read from is one that owns
+/// its whole allocation — a `Vec`'s or a `String`'s, which a capacity in
+/// the header marks — as against a borrow legitimately pointing into
+/// the middle of one. Only the first is expected to sit at an
+/// allocation's base, and only for the first is a mismatch worth
+/// counting.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct HeapGate<'h> {
+    heap: Option<&'h dyn Heap>,
+    owning: bool,
+}
+
+impl<'h> HeapGate<'h> {
+    /// The gate for reading the buffer `header` describes, which owns
+    /// its allocation exactly when it carries a capacity.
+    pub(crate) fn for_header(heap: Option<&'h dyn Heap>, header: &FatHeader) -> Self {
+        HeapGate {
+            heap,
+            owning: header.capacity.is_some(),
+        }
+    }
+
+    /// The gate for a read nothing corroborates: the parse path, and
+    /// every render against a target whose allocator keeps no metadata.
+    pub(crate) fn none() -> Self {
+        HeapGate::default()
+    }
+}
 
 /// The elements of one sequence-shaped value, read and addressed.
 ///
@@ -38,6 +77,9 @@ pub struct Elements<'a> {
     count: u64,
     /// What the value's length said, when the target could not serve it.
     claimed: Option<u64>,
+    /// Whether the shortfall is the allocator's verdict rather than the
+    /// target's: the claim ran past the allocation holding the buffer.
+    clipped: bool,
     bytes: &'a [u8],
 }
 
@@ -65,6 +107,14 @@ impl<'a> Elements<'a> {
     /// a parse fails, a display says how much it is showing.
     pub fn truncated(&self) -> Option<u64> {
         self.claimed
+    }
+
+    /// Whether [`truncated`](Elements::truncated) reports a claim cut to
+    /// the allocation holding the buffer rather than one the target
+    /// could not serve. The elements past the cut are not missing: they
+    /// were never this sequence's.
+    pub fn clipped(&self) -> bool {
+        self.clipped
     }
 
     /// The element at `index`, handed over as the sequence's own element
@@ -106,8 +156,15 @@ impl<'a> Elements<'a> {
         }) = DisplayNode::resolve(ty)
         {
             let stride = u64::from(element_size);
-            return Self::read_fat(&header, element, stride, info.bytes, Some(proc))
-                .map_err(|e| e.into_error(ty.name()));
+            return Self::read_fat(
+                &header,
+                element,
+                stride,
+                info.bytes,
+                Some(proc),
+                HeapGate::none(),
+            )
+            .map_err(|e| e.into_error(ty.name()));
         }
 
         if let Some((element, count)) = ty.array_info() {
@@ -117,6 +174,7 @@ impl<'a> Elements<'a> {
                 stride: element.size(),
                 count,
                 claimed: None,
+                clipped: false,
                 bytes: info.bytes,
             });
         }
@@ -130,8 +188,8 @@ impl<'a> Elements<'a> {
             ));
         };
         let stride = element.size();
-        let buffer =
-            read_buffer(Some(proc), base, stride, count).map_err(|e| e.into_error(ty.name()))?;
+        let buffer = read_buffer(Some(proc), base, stride, count, HeapGate::none())
+            .map_err(|e| e.into_error(ty.name()))?;
         Ok(Self::over(buffer, element, base, stride))
     }
 
@@ -145,9 +203,10 @@ impl<'a> Elements<'a> {
         stride: u64,
         bytes: &[u8],
         proc: Option<&'a T>,
+        gate: HeapGate<'_>,
     ) -> std::result::Result<Elements<'a>, SeqError> {
         let (base, count) = decode_header(bytes, header, stride)?;
-        let buffer = read_buffer(proc, base, stride, count)?;
+        let buffer = read_buffer(proc, base, stride, count, gate)?;
         Ok(Self::over(buffer, element, base, stride))
     }
 
@@ -157,6 +216,7 @@ impl<'a> Elements<'a> {
             bytes,
             count,
             claimed,
+            clipped,
         } = buffer;
         Elements {
             element,
@@ -164,6 +224,7 @@ impl<'a> Elements<'a> {
             stride,
             count,
             claimed,
+            clipped,
             bytes,
         }
     }
@@ -177,6 +238,9 @@ pub(crate) enum SeqError {
     Invalid(&'static str),
     /// The target refused the buffer read outright.
     Unreadable(Error),
+    /// The allocator says the buffer has been freed. Its bytes are
+    /// whatever the last owner left, and none of them is this value.
+    Freed,
     /// A read was needed and no target is attached.
     NoTarget,
 }
@@ -187,6 +251,7 @@ impl SeqError {
         match self {
             SeqError::Invalid(why) => Error::invalid_sequence(ty, why),
             SeqError::Unreadable(e) => e,
+            SeqError::Freed => Error::invalid_sequence(ty, "its buffer has been freed"),
             // The parse path always attaches a target, so a read that found
             // none never actually reaches this.
             SeqError::NoTarget => Error::invalid_sequence(ty, "no target to read through"),
@@ -225,6 +290,9 @@ pub(crate) struct Buffer<'a> {
     pub(crate) bytes: &'a [u8],
     pub(crate) count: u64,
     pub(crate) claimed: Option<u64>,
+    /// Whether the shortfall is the allocation's bound rather than the
+    /// target's; see [`Elements::clipped`].
+    pub(crate) clipped: bool,
 }
 
 /// The bytes of a UTF-8 buffer — a `String`, a `&str`, an owned path — read
@@ -239,11 +307,12 @@ pub(crate) fn utf8<'a, T: Target>(info: &Value<'a>, proc: &'a T) -> Result<Buffe
     let ty = info.ty;
 
     if let Some(DisplayNode::Str { header }) = DisplayNode::resolve(ty) {
-        return utf8_buffer(&header, info.bytes, Some(proc)).map_err(|e| e.into_error(ty.name()));
+        return utf8_buffer(&header, info.bytes, Some(proc), HeapGate::none())
+            .map_err(|e| e.into_error(ty.name()));
     }
 
     let (_, base, length) = bare_fat_pointer(info, proc)?;
-    read_buffer(Some(proc), base, 1, length).map_err(|e| e.into_error(ty.name()))
+    read_buffer(Some(proc), base, 1, length, HeapGate::none()).map_err(|e| e.into_error(ty.name()))
 }
 
 /// Decode the bare `(data_ptr, length)` members of `info` — the shared
@@ -268,9 +337,10 @@ pub(crate) fn utf8_buffer<'a, T: Target>(
     header: &FatHeader,
     bytes: &[u8],
     proc: Option<&'a T>,
+    gate: HeapGate<'_>,
 ) -> std::result::Result<Buffer<'a>, SeqError> {
     let (base, length) = decode_header(bytes, header, 1)?;
-    read_buffer(proc, base, 1, length)
+    read_buffer(proc, base, 1, length, gate)
 }
 
 /// Read `count` units of `stride` bytes from `base`, believing the count only
@@ -280,15 +350,17 @@ fn read_buffer<'a, T: Target>(
     base: u64,
     stride: u64,
     count: u64,
+    gate: HeapGate<'_>,
 ) -> std::result::Result<Buffer<'a>, SeqError> {
-    let empty = |count, claimed| Buffer {
+    let empty = |count, claimed, clipped| Buffer {
         bytes: &[][..],
         count,
         claimed,
+        clipped,
     };
 
     if count == 0 {
-        return Ok(empty(0, None));
+        return Ok(empty(0, None, false));
     }
     if base == 0 {
         return Err(SeqError::Invalid("the data pointer is null"));
@@ -298,8 +370,8 @@ fn read_buffer<'a, T: Target>(
         // many of it there are — which also means nothing corroborates the
         // count, so it alone gets a ceiling rather than a read's refusal.
         return Ok(match count > MAX_ZST_ELEMENTS {
-            true => empty(MAX_ZST_ELEMENTS, Some(count)),
-            false => empty(count, None),
+            true => empty(MAX_ZST_ELEMENTS, Some(count), false),
+            false => empty(count, None, false),
         });
     }
 
@@ -310,6 +382,8 @@ fn read_buffer<'a, T: Target>(
         .ok_or(SeqError::Invalid("the buffer wraps the address space"))?;
     let proc = proc.ok_or(SeqError::NoTarget)?;
 
+    let (want, clipped) = bound_to_allocation(gate, base, want)?;
+
     // What the target says it can serve: a length out of corrupt memory
     // otherwise sizes an allocation before the read that would have refused
     // it. Round down, so a partial trailing unit is not passed off as a
@@ -317,7 +391,7 @@ fn read_buffer<'a, T: Target>(
     let servable = proc.readable_len(base, want);
     let served = servable - servable % stride;
     if served == 0 {
-        return Ok(empty(0, Some(count)));
+        return Ok(empty(0, Some(count), clipped));
     }
     let bytes = crate::target::read_bytes(proc, base, served).map_err(SeqError::Unreadable)?;
     let got = served / stride;
@@ -325,7 +399,42 @@ fn read_buffer<'a, T: Target>(
         bytes,
         count: got,
         claimed: (got < count).then_some(count),
+        clipped,
     })
+}
+
+/// Cut `want` bytes at `base` down to what the allocation holding `base`
+/// actually has room for, and say whether anything was cut.
+///
+/// This runs *before* the read, so it also caps what a length out of dead
+/// bytes can make the reader ask for — until now that was
+/// [`Target::readable_len`]'s job alone, and a mapped page is readable
+/// whoever it belongs to.
+fn bound_to_allocation(
+    gate: HeapGate<'_>,
+    base: u64,
+    want: u64,
+) -> std::result::Result<(u64, bool), SeqError> {
+    let Some(heap) = gate.heap else {
+        return Ok((want, false));
+    };
+    // Whether the buffer starts where its allocation does is evidence
+    // about the pointer, not yet grounds to refuse it: an owning pointer
+    // that sits mid-allocation is one that was never this value's.
+    if gate.owning && heap.owns(base) == Some(false) {
+        heap.note(Gate::BaseMismatch);
+    }
+    match heap.locate(base) {
+        Liveness::Freed => {
+            heap.note(Gate::Freed);
+            Err(SeqError::Freed)
+        }
+        Liveness::Live { block } if block.end - base < want => {
+            heap.note(Gate::Clipped);
+            Ok((block.end - base, true))
+        }
+        _ => Ok((want, false)),
+    }
 }
 
 #[cfg(test)]
@@ -370,13 +479,24 @@ mod tests {
     #[test]
     fn test_a_zst_count_is_believed_only_to_the_ceiling() {
         let mem = FakeMem::new();
-        let Ok(at) = super::read_buffer(Some(&mem), 0x1000, 0, super::MAX_ZST_ELEMENTS) else {
+        let Ok(at) = super::read_buffer(
+            Some(&mem),
+            0x1000,
+            0,
+            super::MAX_ZST_ELEMENTS,
+            super::HeapGate::none(),
+        ) else {
             panic!("a count at the ceiling is served");
         };
         assert_eq!((at.count, at.claimed), (super::MAX_ZST_ELEMENTS, None));
 
-        let Ok(past) = super::read_buffer(Some(&mem), 0x1000, 0, super::MAX_ZST_ELEMENTS + 1)
-        else {
+        let Ok(past) = super::read_buffer(
+            Some(&mem),
+            0x1000,
+            0,
+            super::MAX_ZST_ELEMENTS + 1,
+            super::HeapGate::none(),
+        ) else {
             panic!("a count past the ceiling is capped, not refused");
         };
         assert_eq!(

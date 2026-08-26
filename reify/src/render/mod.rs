@@ -16,6 +16,7 @@ pub(crate) mod par;
 pub(crate) mod scalar;
 
 use crate::debug_type::{DisplayNode, TypeClass};
+use crate::heap::{Gate, Heap, Liveness};
 use crate::value::Value;
 use proc::Target;
 
@@ -64,6 +65,7 @@ pub struct DisplayValue<'r, 'a, T> {
     ugly: bool,
     elide: Option<&'r ElideOverride>,
     annotate: Option<&'r AddrAnnotator<'r>>,
+    heap: Option<&'r dyn Heap>,
     prefix: &'r str,
     visited: RefCell<HashSet<(u64, &'a str)>>,
     formats: FormatCache<'a>,
@@ -97,6 +99,16 @@ impl<'r, 'a, T> DisplayValue<'r, 'a, T> {
         self
     }
 
+    /// Corroborate every read this render makes against the target's own
+    /// allocator: a pointer into freed memory is left unexpanded, and a
+    /// sequence is believed no further than the allocation holding its
+    /// buffer. Without one the render believes the bytes, which is what
+    /// a target whose allocator keeps no readable metadata gets.
+    pub fn heap(mut self, heap: &'r dyn Heap) -> Self {
+        self.heap = Some(heap);
+        self
+    }
+
     /// Open every pretty-mode line after the first with `prefix`, ahead
     /// of the renderer's own indentation — so a caller embedding the
     /// value under a heading gets final-form lines instead of scanning
@@ -119,6 +131,7 @@ impl<'a, T: Target> fmt::Display for DisplayValue<'_, 'a, T> {
             ugly: self.ugly,
             elide: self.elide,
             annotate: self.annotate,
+            heap: self.heap,
             prefix: self.prefix,
             formats: &self.formats,
             // A collection only fans out when its entries read through a
@@ -144,6 +157,7 @@ impl<'a> Value<'a> {
             ugly: false,
             elide: None,
             annotate: None,
+            heap: None,
             prefix: "",
             visited: RefCell::new(HashSet::default()),
             formats: FormatCache::default(),
@@ -164,6 +178,7 @@ impl<'a> Value<'a> {
             ugly: false,
             elide: None,
             annotate: None,
+            heap: None,
             prefix: "",
             visited: RefCell::new(HashSet::default()),
             formats: FormatCache::default(),
@@ -207,6 +222,9 @@ pub(crate) struct RenderCtx<'buf, 'a, T> {
     /// Labels for pointer addresses; see
     /// [`DisplayValue::annotate_addrs`].
     annotate: Option<&'buf AddrAnnotator<'buf>>,
+    /// The target's own allocator, where it keeps metadata this session
+    /// could read; see [`DisplayValue::heap`]. `None` believes the bytes.
+    pub(crate) heap: Option<&'buf dyn Heap>,
     /// Text opening every pretty-mode line after the first, written by
     /// [`write_indent`] ahead of the depth indentation; see
     /// [`DisplayValue::line_prefix`]. Empty for a bare display.
@@ -328,8 +346,26 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
             ugly: self.ugly,
             elide: self.elide,
             annotate: self.annotate,
+            heap: self.heap,
             prefix: self.prefix,
         }
+    }
+
+    /// Whether the allocator says `addr` names memory it has taken back.
+    ///
+    /// The verdict is the allocator's alone: `false` covers both "the
+    /// block is still handed out" and "there is no allocator to ask",
+    /// because a render with nothing to corroborate against must read
+    /// exactly what it always read.
+    pub(crate) fn freed(&self, addr: u64) -> bool {
+        let Some(heap) = self.heap else {
+            return false;
+        };
+        let freed = matches!(heap.locate(addr), Liveness::Freed);
+        if freed {
+            heap.note(Gate::Freed);
+        }
+        freed
     }
 
     /// The type's resolved display program. Resolving reduces the bundle's
@@ -362,6 +398,23 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
             hex_integers,
             ..self
         }
+    }
+}
+
+impl<'a, T: Target> RenderCtx<'_, 'a, T> {
+    /// Read `size` bytes at `addr`, refusing outright the memory the
+    /// allocator says has been freed. Every read the renderer makes
+    /// through a pointer goes through here, so a stale pointer is
+    /// declined once, in one place, whichever formatter followed it.
+    ///
+    /// `Err` carries the degradation marker to print in the value's
+    /// place, the way the reads it replaces already did.
+    pub(crate) fn read(&self, addr: u64, size: u64) -> Result<&'a [u8], &'static str> {
+        let proc = self.proc.ok_or("<target unavailable>")?;
+        if self.freed(addr) {
+            return Err("<freed>");
+        }
+        proc.read_bytes(addr, size).map_err(|_| "<unreadable>")
     }
 }
 
@@ -475,7 +528,7 @@ pub(crate) fn write_display_value<'a, T: Target>(
             if target.size() == 0 {
                 return write_addr_or_label(f, addr, ctx.annotate);
             }
-            let (Some(proc), Some(visited)) = (ctx.proc, ctx.visited) else {
+            let (Some(_), Some(visited)) = (ctx.proc, ctx.visited) else {
                 return write_addr_or_label(f, addr, ctx.annotate);
             };
             let key = (addr, target.name());
@@ -483,7 +536,7 @@ pub(crate) fn write_display_value<'a, T: Target>(
                 write_annotated_addr(f, addr, ctx.annotate)?;
                 return f.write_str(" -> <cycle>");
             }
-            let result = match proc.read_bytes(addr, target.size()) {
+            let result = match ctx.read(addr, target.size()) {
                 Ok(pointee_bytes) => {
                     let pointee = Value {
                         ty: target,
@@ -494,8 +547,9 @@ pub(crate) fn write_display_value<'a, T: Target>(
                         .and_then(|()| f.write_str(" -> "))
                         .and_then(|()| write_display_value(f, &pointee, ctx.deeper(), pretty))
                 }
-                Err(_) => write_annotated_addr(f, addr, ctx.annotate)
-                    .and_then(|()| f.write_str(" -> <unreadable>")),
+                Err(marker) => write_annotated_addr(f, addr, ctx.annotate)
+                    .and_then(|()| f.write_str(" -> "))
+                    .and_then(|()| f.write_str(marker)),
             };
             visited.borrow_mut().remove(&key);
             result
@@ -1384,5 +1438,151 @@ mod tests {
         assert!(elide("async fn tokio::sync::mutex::Mutex::lock<()>", impls()).forces(raw));
         assert!(elide(raw, impls()).forces(raw));
         assert!(!elide("tokio::sync::mutex::Mutex::lock<()>", Default::default()).forces(raw));
+    }
+
+    /// A pointer into memory the allocator has taken back is not
+    /// followed: the address still prints, and what would have been the
+    /// value behind it is the mark instead — the way an unreadable
+    /// target is already marked. Without the allocator to ask, the same
+    /// bytes render as the value they claim to be, which is the whole
+    /// reason the gate exists.
+    #[test]
+    fn test_a_pointer_into_freed_memory_is_not_expanded() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x300, node_bytes(9, 0));
+        let ptr = v.ty(NODE_PTR).unwrap();
+        let head = 0x300u64.to_le_bytes();
+        let shown = |heap: &FakeHeap| {
+            format!(
+                "{}",
+                Value::new(ptr, 0, &head)
+                    .display_from_target(&mem, 16)
+                    .heap(heap)
+            )
+        };
+
+        let freed = FakeHeap::new().freed(0x300, 32);
+        assert_eq!(shown(&freed), "0x300 -> <freed>");
+        assert_eq!(freed.counts(), (1, 0, 0));
+
+        // The same read against a live block, and against an address the
+        // allocator accounts for at all, is the ordinary one.
+        let live = FakeHeap::new().live(0x300, 32);
+        assert_eq!(shown(&live), "0x300 -> Node { value: 9, next: null }");
+        assert_eq!(live.counts(), (0, 0, 0));
+
+        assert_eq!(
+            format!(
+                "{}",
+                Value::new(ptr, 0, &head).display_from_target(&mem, 16)
+            ),
+            "0x300 -> Node { value: 9, next: null }"
+        );
+    }
+
+    /// A sequence is believed no further than the allocation its buffer
+    /// starts in: the elements that fit render, and the length the value
+    /// claimed is reported rather than served. The pages past the
+    /// allocation are readable — they belong to somebody — which is
+    /// exactly what nothing but the allocator could have caught.
+    #[test]
+    fn test_a_sequence_is_cut_to_its_allocation() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x2000, u32s(&[5, 8, 13, 21, 34]));
+        // A `Vec<u32>` claiming five elements out of a 12-byte block.
+        let header = u64s(&[0x2000, 5, 5]);
+        let vec = Value::new(v.ty(VEC).unwrap(), 0x1000, &header);
+        let heap = FakeHeap::new().live(0x2000, 12);
+        assert_eq!(
+            format!("{}", vec.display_from_target(&mem, 8).heap(&heap)),
+            "[5, 8, 13, <2 more past its allocation>]"
+        );
+        assert_eq!(heap.counts(), (0, 1, 0));
+
+        // The same claim with the allocation big enough is served whole.
+        let roomy = FakeHeap::new().live(0x2000, 20);
+        assert_eq!(
+            format!("{}", vec.display_from_target(&mem, 8).heap(&roomy)),
+            "[5, 8, 13, 21, 34]"
+        );
+        assert_eq!(roomy.counts(), (0, 0, 0));
+
+        // The same bound on a string, which is the shape the fiction
+        // actually took: a length out of dead bytes claiming gigabytes
+        // of somebody else's address space.
+        let text = FakeMem::new().at(0x4000, b"hello, world".to_vec());
+        let header = u64s(&[0x4000, 12, 12]);
+        let value = Value::new(v.ty(STRING).unwrap(), 0x1000, &header);
+        let heap = FakeHeap::new().live(0x4000, 5);
+        assert_eq!(
+            format!("{}", value.display_from_target(&text, 8).heap(&heap)),
+            "\"hello\" <7 more bytes past its allocation>"
+        );
+        assert_eq!(heap.counts(), (0, 1, 0));
+    }
+
+    /// A sequence whose buffer has been freed renders no elements at
+    /// all: a length and a pointer out of dead bytes describe nothing,
+    /// and a partial read of them would be fiction with a count on it.
+    #[test]
+    fn test_a_freed_sequence_buffer_serves_nothing() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new()
+            .at(0x2000, u32s(&[5, 8, 13]))
+            .at(0x3000, b"hello".to_vec());
+        let heap = FakeHeap::new().freed(0x2000, 12).freed(0x3000, 8);
+
+        let vec_header = u64s(&[0x2000, 3, 3]);
+        let vec = Value::new(v.ty(VEC).unwrap(), 0x1000, &vec_header);
+        assert_eq!(
+            format!("{}", vec.display_from_target(&mem, 8).heap(&heap)),
+            "<freed slice buffer>"
+        );
+
+        let text_header = u64s(&[0x3000, 5, 8]);
+        let text = Value::new(v.ty(STRING).unwrap(), 0x1000, &text_header);
+        assert_eq!(
+            format!("{}", text.display_from_target(&mem, 8).heap(&heap)),
+            "<freed string data>"
+        );
+        assert_eq!(heap.counts(), (2, 0, 0));
+    }
+
+    /// A buffer that owns its whole allocation is expected to start at
+    /// one. A mismatch is counted and nothing else: it is evidence about
+    /// a pointer, and the value still renders. A borrowed slice, which
+    /// legitimately points into the middle of somebody else's
+    /// allocation, is not held to it at all.
+    #[test]
+    fn test_an_owning_buffer_off_its_base_is_counted_only() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x2000, u32s(&[5, 8, 13]));
+        // The block starts below the buffer, as it would with a malloc
+        // header — but the pointer is further in still, so it owns
+        // nothing.
+        let heap = FakeHeap::new().live_at(0x1f00, 0x200, 0x1f10);
+
+        let vec_header = u64s(&[0x2000, 3, 3]);
+        let vec = Value::new(v.ty(VEC).unwrap(), 0x1000, &vec_header);
+        assert_eq!(
+            format!("{}", vec.display_from_target(&mem, 8).heap(&heap)),
+            "[5, 8, 13]"
+        );
+        assert_eq!(heap.counts(), (0, 0, 1));
+
+        // A `&[T]` carries no capacity, so it is not an owning pointer
+        // and the same address is no evidence of anything.
+        let borrowed = FakeHeap::new().live_at(0x1f00, 0x200, 0x1f10);
+        let slice_header = u64s(&[0x2000, 3]);
+        let slice = Value::new(v.ty(SLICE).unwrap(), 0x1000, &slice_header);
+        assert_eq!(
+            format!("{}", slice.display_from_target(&mem, 8).heap(&borrowed)),
+            "[5, 8, 13]"
+        );
+        assert_eq!(borrowed.counts(), (0, 0, 0));
     }
 }

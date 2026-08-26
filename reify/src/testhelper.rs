@@ -16,6 +16,7 @@ use hansei_bundle::{
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU8;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A stand-in for a target's memory.
 ///
@@ -173,6 +174,102 @@ impl proc::Target for FakeMem {
         _sym: &proc::SymbolBuf,
     ) -> proc::Result<Option<u64>> {
         Ok(None)
+    }
+}
+
+/// A stand-in for a target's allocator.
+///
+/// Describe the blocks that should exist and what the allocator thinks
+/// of each, then hand it to a render: the gates read exactly what a real
+/// [`UmemHeap`](hansei_runtime) reading of a core would have told them,
+/// and the tally says which fired. An address in no described block is
+/// [`Unknown`](crate::Liveness::Unknown), which is what most of a target
+/// is.
+#[derive(Default)]
+pub struct FakeHeap {
+    blocks: Vec<Block>,
+    freed: AtomicU64,
+    clipped: AtomicU64,
+    base_mismatch: AtomicU64,
+}
+
+struct Block {
+    range: std::ops::Range<u64>,
+    /// The address the program was handed for this block — its base,
+    /// unless a malloc header sits ahead of it.
+    user: u64,
+    live: bool,
+}
+
+impl FakeHeap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A live block of `len` bytes at `addr`, handed out at its base.
+    pub fn live(self, addr: u64, len: u64) -> Self {
+        self.block(addr, len, addr, true)
+    }
+
+    /// A live block whose pointer is `user` rather than its base — a
+    /// malloc header ahead of the allocation, or (when `user` is
+    /// further in still) an address that owns nothing.
+    pub fn live_at(self, addr: u64, len: u64, user: u64) -> Self {
+        self.block(addr, len, user, true)
+    }
+
+    /// A block the allocator has taken back.
+    pub fn freed(self, addr: u64, len: u64) -> Self {
+        self.block(addr, len, addr, false)
+    }
+
+    fn block(mut self, addr: u64, len: u64, user: u64, live: bool) -> Self {
+        self.blocks.push(Block {
+            range: addr..addr + len,
+            user,
+            live,
+        });
+        self
+    }
+
+    /// How often each gate fired, in declaration order: freed targets
+    /// refused, sequences cut, owning buffers off base.
+    pub fn counts(&self) -> (u64, u64, u64) {
+        let load = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        (
+            load(&self.freed),
+            load(&self.clipped),
+            load(&self.base_mismatch),
+        )
+    }
+
+    fn at(&self, addr: u64) -> Option<&Block> {
+        self.blocks.iter().find(|b| b.range.contains(&addr))
+    }
+}
+
+impl crate::Heap for FakeHeap {
+    fn locate(&self, addr: u64) -> crate::Liveness {
+        match self.at(addr) {
+            None => crate::Liveness::Unknown,
+            Some(block) if block.live => crate::Liveness::Live {
+                block: block.range.clone(),
+            },
+            Some(_) => crate::Liveness::Freed,
+        }
+    }
+
+    fn owns(&self, addr: u64) -> Option<bool> {
+        Some(self.at(addr)?.user == addr)
+    }
+
+    fn note(&self, gate: crate::Gate) {
+        let counter = match gate {
+            crate::Gate::Freed => &self.freed,
+            crate::Gate::Clipped => &self.clipped,
+            crate::Gate::BaseMismatch => &self.base_mismatch,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 }
 
