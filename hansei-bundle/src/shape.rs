@@ -122,6 +122,7 @@ impl DisplayNode {
                 pointer,
                 length,
                 capacity,
+                ..
             } => buffer(
                 ["a string pointer", "a string length", "a string capacity"],
                 pointer,

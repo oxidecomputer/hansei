@@ -394,6 +394,7 @@ mod tests {
                 pointer: sel(&[0, 0]),
                 length: sel(&[0, 1]),
                 capacity: Some(sel(&[0, 2])),
+                nul_terminated: false,
             },
         );
         let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {

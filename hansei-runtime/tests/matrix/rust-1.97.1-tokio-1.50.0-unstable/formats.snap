@@ -5,6 +5,7 @@ family: v1_49 (tokio 1.50.0)
 
 &[u32] :: Node Slice { pointer=data_ptr, length=length, element=u32 }
 &[u8] :: Node Slice { pointer=data_ptr, length=length, element=u8 }
+&core::ffi::c_str::CStr :: Node Str { pointer=data_ptr, length=length, nul_terminated }
 &str :: Node Str { pointer=data_ptr, length=length }
 *const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_offset=16 }
 *const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_offset=16 }
@@ -23,6 +24,7 @@ alloc::boxed::Box<[u64], alloc::alloc::Global> :: Node Slice { pointer=data_ptr,
 alloc::boxed::Box<[u8], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=u8 }
 alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global> :: Node Map { length=length, key=u64, value=u32, entries=BTree { root=root, root_node=__0, height=height, node=node.pointer, leaf=alloc::collections::btree::node::LeafNode<u64, u32>, leaf_len=len, leaf_keys=keys, leaf_values=vals, internal=alloc::collections::btree::node::InternalNode<u64, u32>, internal_data=data, internal_edges=edges, edge=value.value.__0.pointer } }
 alloc::collections::vec_deque::index::WrappedIndex :: Node Alias { __0, follow }
+alloc::ffi::c_str::CString :: Node Str { pointer=inner.data_ptr, length=inner.length, nul_terminated }
 alloc::string::String :: Node Str { pointer=vec.buf.inner.ptr.pointer.pointer, length=vec.len, capacity=vec.buf.inner.cap.__0 }
 alloc::vec::Vec<alloc::boxed::Box<tokio::runtime::scheduler::multi_thread::worker::Core, alloc::alloc::Global>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=<pointer> }
 alloc::vec::Vec<alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo, alloc::alloc::Global>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo, alloc::alloc::Global> }

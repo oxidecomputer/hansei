@@ -116,6 +116,7 @@ pub(super) fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Di
         pointer: emitter.walk(id, &reach![Named("data_ptr")])?.0,
         length: emitter.walk(id, &reach![Named("length")])?.0,
         capacity: None,
+        nul_terminated: false,
     })
 }
 

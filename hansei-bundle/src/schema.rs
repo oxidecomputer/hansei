@@ -462,12 +462,20 @@ pub enum DisplayNode {
     /// reify reads `length` bytes from the target through the pointer.
     /// `capacity`, when present, reaches an owned buffer's capacity word (a
     /// borrowed `&str` omits it) and is validated to be at least the length. A
-    /// null data pointer, an unreadable buffer, or non-UTF-8 bytes render an
-    /// explicit marker in place of the string.
+    /// null data pointer or an unreadable buffer renders an explicit marker in
+    /// place of the string; non-UTF-8 bytes render lossily, each invalid byte
+    /// as a `\xNN` escape among the valid runs.
+    ///
+    /// `nul_terminated` says the length counts a trailing NUL that is not part
+    /// of the string — a `CString`/`&CStr`, whose recorded length always
+    /// includes its terminator. reify renders one byte fewer, and flags a
+    /// buffer whose last byte turns out not to be NUL rather than trusting the
+    /// layout blindly.
     Str {
         pointer: Selector,
         length: Selector,
         capacity: Option<Selector>,
+        nul_terminated: bool,
     },
     /// Follow a `(data, len)` fat pointer to a contiguous buffer and render its
     /// first `length` `element`s as `[elem, elem, …]`.

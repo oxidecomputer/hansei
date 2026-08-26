@@ -277,16 +277,22 @@ pub fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) ->
             pointer,
             length,
             capacity,
+            nul_terminated,
         } => {
             let capacity = match capacity {
                 Some(capacity) => format!(", capacity={}", field(bundle, root, capacity)),
                 None => String::new(),
             };
+            let nul = match nul_terminated {
+                true => ", nul_terminated",
+                false => "",
+            };
             format!(
-                "Str {{ pointer={}, length={}{} }}",
+                "Str {{ pointer={}, length={}{}{} }}",
                 field(bundle, root, pointer),
                 field(bundle, root, length),
                 capacity,
+                nul,
             )
         }
         DisplayNode::Slice {

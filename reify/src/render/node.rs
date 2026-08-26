@@ -75,9 +75,18 @@ pub(crate) fn eval_node<'a, T: Target>(
             ctx,
             pretty,
         ),
-        DisplayNode::Str { header } => {
-            write_utf8_string(f, bytes, header, ctx.proc, ctx.heap, ctx.max_str_len)
-        }
+        DisplayNode::Str {
+            header,
+            nul_terminated,
+        } => write_utf8_string(
+            f,
+            bytes,
+            header,
+            *nul_terminated,
+            ctx.proc,
+            ctx.heap,
+            ctx.max_str_len,
+        ),
         DisplayNode::Slice {
             header,
             element,

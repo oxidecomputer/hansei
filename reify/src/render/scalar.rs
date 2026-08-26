@@ -4,7 +4,7 @@
 //! byte-slicing primitives the other render modules read words with.
 
 use crate::debug_type::{BitField, FatHeader, FieldRender, ScalarDecode};
-use crate::elements::{HeapGate, SeqError, Shortfall, utf8_buffer};
+use crate::elements::{HeapGate, SeqError, Shortfall, decode_header, utf8_buffer};
 use proc::Target;
 
 use hansei_bundle::Notation;
@@ -104,15 +104,23 @@ pub(crate) fn write_symbol<T: Target>(
 /// validation, and one refusal to believe a length further than the target
 /// corroborates it. A shortfall renders the bytes that are there and says
 /// how many are missing; nothing served at all degrades whole.
+///
+/// `nul_terminated` says the length counts a trailing NUL that is not part of
+/// the string: the terminator is left out of the rendering, and — when the
+/// whole string was served — read back and checked, so a value whose last
+/// byte is not NUL is flagged rather than trusted to be the C string its
+/// type claims.
 pub(crate) fn write_utf8_string<T: Target>(
     f: &mut fmt::Formatter<'_>,
     bytes: &[u8],
     header: &FatHeader,
+    nul_terminated: bool,
     proc: Option<&T>,
     heap: Option<&dyn crate::heap::Heap>,
     cap: Option<u64>,
 ) -> fmt::Result {
-    let text = match utf8_buffer(header, bytes, proc, HeapGate::for_header(heap, header), cap) {
+    let gate = HeapGate::for_header(heap, header);
+    let text = match utf8_buffer(header, nul_terminated, bytes, proc, gate, cap) {
         Ok(text) => text,
         Err(SeqError::Invalid(why)) => return write!(f, "<invalid string: {why}>"),
         Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable string data>"),
@@ -172,6 +180,22 @@ pub(crate) fn write_utf8_string<T: Target>(
             Shortfall::PastAllocation => write!(f, " <{more} more bytes past its allocation>")?,
             Shortfall::PastCap => write!(f, " <{more} more bytes not shown>")?,
             Shortfall::Unreadable => write!(f, " <{more} more bytes unreadable>")?,
+        }
+    } else if nul_terminated {
+        // The whole string was served, so the terminator is the next byte.
+        // Read it back rather than trusting the layout: a last byte that is
+        // not NUL says this is not the C string its type claims — stale
+        // memory, or a length out of dead bytes. The header decoded once
+        // already to produce `text`, so it cannot fail here.
+        if let (Some(proc), Ok((base, _))) = (proc, decode_header(bytes, header, 1)) {
+            let terminator = base
+                .checked_add(text.count)
+                .and_then(|at| crate::target::read_bytes(proc, at, 1).ok());
+            match terminator {
+                Some([0]) => {}
+                Some(_) => write!(f, " <no NUL terminator>")?,
+                None => write!(f, " <NUL terminator unreadable>")?,
+            }
         }
     }
     Ok(())
@@ -528,6 +552,42 @@ mod tests {
         assert_eq!(show(0x4000, 2), r#""\xff\x80""#);
         // A bare `'` stays bare, as it does on the valid path.
         assert_eq!(show(0x5000, 5), r#""it's\xff""#);
+    }
+
+    /// A NUL-terminated string (`CString`/`&CStr`) counts its terminator in
+    /// the recorded length: the render trims it, keeps the lossy per-byte
+    /// escaping for content no one promised was UTF-8, and reads the trimmed
+    /// byte back — a last byte that is not NUL says the value is not the C
+    /// string its type claims, and is flagged rather than trusted. A length
+    /// of zero cannot hold the terminator it promises, and is refused whole.
+    #[test]
+    fn test_c_string_trims_and_verifies_its_terminator() {
+        let mem = FakeMem::new()
+            .at(0x3000, b"hello\0".to_vec())
+            .at(0x4000, vec![b'h', b'i', 0xff, 0])
+            .at(0x5000, vec![0])
+            .at(0x6000, b"oops!".to_vec())
+            .at(0x7000, b"edge".to_vec());
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let show = |addr: u64, len: u64| {
+            let bytes: Vec<u8> = [addr, len].into_iter().flat_map(u64::to_le_bytes).collect();
+            let value = Value::new(v.ty(C_STRING).unwrap(), 0, &bytes);
+            format!("{}", value.display_from_target(&mem, 8))
+        };
+        assert_eq!(show(0x3000, 6), "\"hello\"");
+        assert_eq!(show(0x4000, 4), r#""hi\xff""#);
+        // The empty C string is its terminator alone.
+        assert_eq!(show(0x5000, 1), "\"\"");
+        // Content where the terminator should sit.
+        assert_eq!(show(0x6000, 5), "\"oops\" <no NUL terminator>");
+        // The mapping ends where the terminator should sit.
+        assert_eq!(show(0x7000, 5), "\"edge\" <NUL terminator unreadable>");
+        assert_eq!(
+            show(0x3000, 0),
+            "<invalid string: the length cannot hold the terminator>"
+        );
     }
 
     /// A code pointer the target cannot name keeps its address and says so.
