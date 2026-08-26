@@ -22,7 +22,9 @@ use std::ops::Range;
 
 /// Values below one page are read as plain integers: a flag word, a
 /// count, an enum discriminant. Nothing maps there, and annotating
-/// every small constant `unmapped` would bury the claims that matter.
+/// every small constant would bury the claims that matter. Zero is the
+/// exception, and is classified above this: it is the one value down
+/// here that a register holds *as a pointer*.
 const POINTER_FLOOR: u64 = 0x1000;
 
 /// One lwp's recorded stack, as the core states it: the stack range
@@ -62,8 +64,11 @@ pub enum RegClass {
     Object { path: String, region: &'static str },
     /// A mapped anonymous address nothing above claimed.
     Heap,
-    /// A pointer-sized value (or null) mapped nowhere.
+    /// A pointer-sized value mapped nowhere.
     Unmapped,
+    /// Zero — the one value below the pointer floor worth a word,
+    /// because it is the one that is a pointer, saying so.
+    Null,
     /// A small non-pointer integer: no claim to make.
     Small,
 }
@@ -98,7 +103,10 @@ impl RegClassifier<'_> {
         value: u64,
         symbol: &dyn Fn(u64) -> Option<SymbolBuf>,
     ) -> RegClass {
-        if value != 0 && value < POINTER_FLOOR {
+        if value == 0 {
+            return RegClass::Null;
+        }
+        if value < POINTER_FLOOR {
             return RegClass::Small;
         }
 
@@ -210,13 +218,14 @@ mod tests {
     }
 
     /// Rung 5's floor and its edges: a small non-pointer integer makes
-    /// no claim, while null and a pointer-sized value mapped nowhere
-    /// are both called unmapped.
+    /// no claim, a pointer-sized value mapped nowhere is unmapped, and
+    /// null is neither — it is below the floor but it is a pointer,
+    /// and the only one down there.
     #[test]
     fn test_small_integers_make_no_claim() {
         assert_eq!(classify(&[], 1, 0x14), RegClass::Small);
         assert_eq!(classify(&[], 1, 0xfff), RegClass::Small);
-        assert_eq!(classify(&[], 1, 0), RegClass::Unmapped);
+        assert_eq!(classify(&[], 1, 0), RegClass::Null);
         assert_eq!(classify(&[], 1, 0xdead_0000), RegClass::Unmapped);
     }
 
