@@ -1398,24 +1398,77 @@ mod tests {
         }
     }
 
-    /// Every geometry a cache cannot have, and the one boundary case
-    /// it can: a buffer exactly its chunk and a chunk exactly its
-    /// slab, which is what a real cache above a page looks like.
+    /// Every geometry a slab cannot have.
+    ///
+    /// Each case is staged on the fixture's second slab, which has
+    /// nothing on its freelist, and moves the refcnt along with the
+    /// chunk count where one implies the other — so exactly the guard
+    /// named is the one with anything to say. A case that several
+    /// guards would catch says nothing about any of them.
     #[test]
     fn test_impossible_slab_geometry_is_declined() {
-        let cases: [(&str, u64, u64); 5] = [
-            ("no chunks", LP64.slab_chunks, 0),
-            ("more chunks than the slab holds", LP64.slab_chunks, 1024),
-            ("more allocated than there are chunks", LP64.slab_refcnt, 9),
-            ("a base that overflows", LP64.slab_base, u64::MAX - 8),
-            ("chunks past the end of the slab", LP64.slab_chunks, 65),
+        // The second slab of umem_alloc_64: eight chunks, all in use.
+        const SLAB: u64 = SLABS + 0x100;
+        let cases: [(&str, &[(u64, u64)]); 5] = [
+            (
+                "no chunks at all",
+                &[(LP64.slab_chunks, 0), (LP64.slab_refcnt, 0)],
+            ),
+            (
+                "more allocated than there are chunks",
+                &[(LP64.slab_refcnt, 9)],
+            ),
+            (
+                "chunks past the end of the slab",
+                &[(LP64.slab_chunks, 65), (LP64.slab_refcnt, 65)],
+            ),
+            ("a base that overflows", &[(LP64.slab_base, u64::MAX - 8)]),
+            (
+                "more chunks than any slab may hold",
+                &[
+                    (LP64.slab_chunks, MAX_CHUNKS_PER_SLAB + 1),
+                    (LP64.slab_refcnt, MAX_CHUNKS_PER_SLAB + 1),
+                ],
+            ),
         ];
-        for (why, field, value) in cases {
+        for (why, writes) in cases {
             let mut f = two_caches();
-            f.put_u64(SLABS + field, value);
+            // The last case is about the walk's own bound rather than
+            // the cache's, so its slab is given room the cache would
+            // otherwise deny it.
+            if why.contains("any slab") {
+                f.put_u64(CACHES + LP64.cache_slabsize, 1 << 27);
+            }
+            for &(field, value) in writes {
+                f.put_u64(SLAB + field, value);
+            }
             let heap = UmemHeap::build(&f).expect("the other slabs still walk");
             assert_eq!(heap.stats().slabs_declined, 1, "{why}");
         }
+
+        // And the boundary itself: a slab of exactly as many chunks as
+        // the bound allows is walked, not declined. It gets a fixture
+        // of its own, since a slab this size covers every address the
+        // others would have used.
+        let mut f = fake();
+        cache(
+            &mut f,
+            0,
+            "umem_alloc_64",
+            64,
+            0,
+            &[SlabSpec {
+                base: BUFFERS,
+                chunks: 1,
+                free: vec![],
+            }],
+        );
+        f.put_u64(CACHES + LP64.cache_slabsize, 1 << 27);
+        f.put_u64(SLABS + LP64.slab_chunks, MAX_CHUNKS_PER_SLAB);
+        f.put_u64(SLABS + LP64.slab_refcnt, MAX_CHUNKS_PER_SLAB);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert_eq!(heap.stats().slabs_declined, 0);
+        assert_eq!(heap.stats().live_chunks, MAX_CHUNKS_PER_SLAB);
     }
 
     #[test]
