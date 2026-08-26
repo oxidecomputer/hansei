@@ -82,8 +82,11 @@ pub enum RegClass {
     Anon,
     /// A pointer-sized value mapped nowhere.
     Unmapped,
-    /// Zero — the one value below the pointer floor worth a word,
-    /// because it is the one that is a pointer, saying so.
+    /// Zero. Kept apart from [`Small`](RegClass::Small) because it is
+    /// the one value below the pointer floor that *is* a pointer, and
+    /// a caller may want to say so — though the register block does
+    /// not: a null reads as null on sight, and a word saying it on
+    /// half the lines of every thread buries the ones worth reading.
     Null,
     /// A small non-pointer integer: no claim to make.
     Small,
