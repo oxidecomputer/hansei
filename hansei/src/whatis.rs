@@ -6,6 +6,7 @@ use crate::tasks::{future_name, task_id, task_label};
 use anyhow::Result;
 use hansei_bundle::BundleView;
 use hansei_bundle::names;
+use hansei_runtime::heap::umem::{Allocation, Size};
 use hansei_runtime::tokio::{bundle, census};
 
 use std::io;
@@ -18,6 +19,9 @@ pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Wr
         &session.tasks,
         session.extents(),
         session.census(),
+        session
+            .umem()
+            .and_then(|heap| heap.allocation(session.proc(), addr)),
         vtable_at(session.proc, addr).as_ref(),
         &session.impl_fold,
         addr,
@@ -83,6 +87,11 @@ fn vtable_at<T: proc::Target>(proc: &T, addr: u64) -> Option<VtableAt> {
 /// top of it: a runtime handle contains no task's memory and no task's
 /// memory contains it, but it is the coarsest thing an address can be,
 /// and the one a reader is least able to recognize by eye.
+///
+/// Ahead of all of it is what the target's own allocator says the
+/// memory is, where it keeps an account worth reading: every block
+/// below interprets those bytes, and whether they are still the ones
+/// somebody wrote decides how much any of it is worth.
 #[allow(clippy::too_many_arguments)]
 fn report_whatis(
     view: &BundleView<'_>,
@@ -91,6 +100,7 @@ fn report_whatis(
     list: &bundle::TaskList,
     extents: &bundle::TaskExtents,
     census: &census::FutureCensus,
+    alloc: Option<Allocation>,
     vtable: Option<&VtableAt>,
     impls: &names::ImplFold,
     addr: u64,
@@ -98,6 +108,39 @@ fn report_whatis(
 ) -> Result<()> {
     let mut blocks = 0;
     let owned = |group: usize| list.tasks.iter().filter(|t| t.group == group).count();
+
+    // The allocation, in the terms the allocation has rather than the
+    // allocator's: which cache a block came from is a fact about
+    // libumem, and a line naming one is a line that trains people to
+    // skip the block. `umem-audit` is where that belongs.
+    if let Some(alloc) = alloc {
+        separate(&mut blocks, out)?;
+        writeln!(
+            out,
+            "Status: {}",
+            match alloc.live {
+                true => "live",
+                false => "freed",
+            }
+        )?;
+        match alloc.size {
+            Size::Requested(size) => writeln!(out, "Size:   {}", bytes(size))?,
+            // Not the caller's number: it is what the block holds,
+            // which is all a scrubbed header leaves to measure.
+            Size::Block(size) => writeln!(out, "Size:   {size} byte allocation block")?,
+        }
+        // Zero is the pointer the program was given, so the line would
+        // be saying nothing; its presence is what marks an address as
+        // an interior one.
+        if alloc.offset > 0 {
+            writeln!(out, "Offset: {} into it", bytes(alloc.offset))?;
+        }
+    }
+
+    // Every block below interprets the address, which the one above
+    // does not: a live allocation nothing in the report claims is
+    // still a miss, and says so.
+    let uninterpreted = blocks;
 
     for (index, rt) in runtimes.iter().enumerate() {
         let Some(offset) = within(rt.handle.addr, rt.handle.ty.size(), addr) else {
@@ -284,13 +327,22 @@ fn report_whatis(
         )?;
     }
 
-    if blocks == 0 {
+    if blocks == uninterpreted {
+        separate(&mut blocks, out)?;
         writeln!(
             out,
             "no task's allocation and no future the census found contains {addr:#x}"
         )?;
     }
     Ok(())
+}
+
+/// A byte count with its unit, singular where that is what one is.
+fn bytes(count: u64) -> String {
+    match count {
+        1 => "1 byte".to_string(),
+        count => format!("{count} bytes"),
+    }
 }
 
 /// A group's label as a block heading: the listings spell it in
@@ -333,7 +385,7 @@ pub(crate) fn via_suffix(census: &census::FutureCensus, via: Option<census::Via>
 /// extracted bundle joined against a real captured snapshot.
 #[cfg(test)]
 mod whatis_tests {
-    use super::{VtableAt, report_whatis, separate, vtable_at};
+    use super::{Allocation, Size, VtableAt, report_whatis, separate, vtable_at};
     use crate::parse_hex_addr;
     use hansei_bundle::BundleView;
     use hansei_runtime::testkit;
@@ -370,6 +422,19 @@ mod whatis_tests {
     }
 
     fn report(target: &Target<'_>, addr: u64) -> String {
+        reported(target, None, None, addr)
+    }
+
+    /// The report over everything an attach can hand it, including the
+    /// two probes a fixture cannot supply: the checked-in snapshots
+    /// were captured under a plain malloc and hold no vtable this test
+    /// knows the address of, so both are staged rather than found.
+    fn reported(
+        target: &Target<'_>,
+        alloc: Option<Allocation>,
+        vtable: Option<&VtableAt>,
+        addr: u64,
+    ) -> String {
         let mut out = Vec::new();
         report_whatis(
             &target.view,
@@ -378,7 +443,8 @@ mod whatis_tests {
             &target.list,
             &target.extents,
             &target.census,
-            None,
+            alloc,
+            vtable,
             &hansei_bundle::names::ImplFold::default(),
             addr,
             &mut out,
@@ -399,21 +465,7 @@ mod whatis_tests {
                 size: 48,
                 align: 8,
             };
-            let mut out = Vec::new();
-            report_whatis(
-                &target.view,
-                &target.runtimes,
-                &target.local_sets,
-                &target.list,
-                &target.extents,
-                &target.census,
-                Some(&vtable),
-                &hansei_bundle::names::ImplFold::default(),
-                0x9000_0000,
-                &mut out,
-            )
-            .expect("the report renders");
-            let out = String::from_utf8(out).expect("rendered output is UTF-8");
+            let out = reported(target, None, Some(&vtable), 0x9000_0000);
             assert!(
                 out.contains("Vtable 0x90000000: erases app::Thing<u64>"),
                 "{out}"
@@ -500,6 +552,61 @@ mod whatis_tests {
         assert!(vtable_at(&mem(0, 8, Some((0x5000, DROP))), 0x1000).is_none());
         // Unreadable memory is no vtable either.
         assert!(vtable_at(&mem(0x5000, 8, Some((0x5000, DROP))), 0x9999).is_none());
+    }
+
+    /// What the allocator says leads the report, in the allocation's
+    /// own terms: whether the block is still handed out, how big it is,
+    /// and — only where the address is not the pointer the program was
+    /// given — how far into it the address sits.
+    #[test]
+    fn test_the_allocation_leads_with_status_size_and_offset() {
+        with_tasks("sleep-join", |t| {
+            let alloc = |live, size, offset| Some(Allocation { live, size, offset });
+            let task = t.list.tasks[0].addr.0;
+
+            // The pointer the program was given: three facts minus the
+            // offset, whose absence is what says the address is the
+            // allocation rather than somewhere inside it.
+            let shown = reported(t, alloc(true, Size::Requested(300), 0), None, task);
+            assert!(
+                shown.starts_with("Status: live\nSize:   300 bytes\n\n"),
+                "{shown}"
+            );
+            assert!(!shown.contains("Offset:"), "{shown}");
+            // And the report goes on to say what the memory holds.
+            assert!(
+                shown.contains("    At: offset 0x0 in the task's allocation"),
+                "{shown}"
+            );
+
+            // A freed block: `free` scrubbed the header, so the block's
+            // own size is all there is left to report, and the offset
+            // counts from where the block starts.
+            let shown = reported(t, alloc(false, Size::Block(64), 16), None, task);
+            assert!(
+                shown.starts_with(
+                    "Status: freed\nSize:   64 byte allocation block\nOffset: 16 bytes into it\n"
+                ),
+                "{shown}"
+            );
+
+            // The block is about the memory, not about what claims it,
+            // so an address nothing in the report claims still reports
+            // the miss.
+            let shown = reported(t, alloc(true, Size::Requested(1), 1), None, 0x10);
+            assert_eq!(
+                shown,
+                "Status: live\nSize:   1 byte\nOffset: 1 byte into it\n\n\
+                 no task's allocation and no future the census found contains 0x10\n"
+            );
+
+            // A target whose allocator keeps no account hansei can read
+            // — every fixture snapshot, captured under a plain malloc —
+            // says nothing rather than "unknown".
+            let shown = report(t, task);
+            assert!(!shown.contains("Status:"), "{shown}");
+            assert!(!shown.contains("Size:"), "{shown}");
+        });
     }
 
     /// An address inside a task's allocation — its header, or any
