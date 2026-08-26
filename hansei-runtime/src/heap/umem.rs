@@ -162,19 +162,21 @@ const LAYOUTS: &[Layout] = &[LP64];
 /// that was never heap are all equally outside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Liveness {
-    /// The address is inside an allocated chunk.
+    /// The address is inside an allocated buffer.
     Live {
-        /// The chunk's exact bounds — what a pointer claiming to own
-        /// this allocation must fit inside.
-        chunk: Range<u64>,
+        /// The buffer's exact bounds — what a pointer claiming to own
+        /// this allocation must fit inside. Not the chunk's: a cache
+        /// whose buffer is shorter than its stride keeps the slack
+        /// past the buffer's end for itself.
+        buffer: Range<u64>,
         /// Index into [`UmemHeap::caches`].
         cache: usize,
     },
-    /// The address is inside a chunk on its slab's freelist: freed, and
-    /// not since handed back out.
-    Freed { chunk: Range<u64>, cache: usize },
-    /// No walked chunk covers the address, and nothing is claimed about
-    /// it.
+    /// The address is inside a buffer on its slab's freelist: freed,
+    /// and not since handed back out.
+    Freed { buffer: Range<u64>, cache: usize },
+    /// No walked buffer covers the address, and nothing is claimed
+    /// about it.
     Unknown,
 }
 
@@ -314,11 +316,20 @@ impl UmemHeap {
         };
         let index = ((addr - slab.base) / slab.chunksize) as u32;
         let start = slab.base + index as u64 * slab.chunksize;
-        let chunk = start..start + slab.chunksize;
         let cache = slab.cache as usize;
+        // A chunk is the stride from one buffer to the next, and a
+        // cache whose buffer is shorter than that pads the difference —
+        // where a raw cache parks the bufctl of a free buffer, among
+        // other things. That slack is the allocator's own memory, so an
+        // address in it is in no allocation, the way one between two
+        // slabs is.
+        let buffer = start..start + self.caches[cache].bufsize;
+        if !buffer.contains(&addr) {
+            return Liveness::Unknown;
+        }
         match slab.is_free(index) {
-            true => Liveness::Freed { chunk, cache },
-            false => Liveness::Live { chunk, cache },
+            true => Liveness::Freed { buffer, cache },
+            false => Liveness::Live { buffer, cache },
         }
     }
 
@@ -339,25 +350,26 @@ impl UmemHeap {
         &self.stats
     }
 
-    /// Every allocated chunk, in address order: the set mdb's `::walk
+    /// Every allocated buffer, in address order: the set mdb's `::walk
     /// umem` enumerates, which is what an enumeration differential
     /// against it diffs.
-    pub fn live_chunks(&self) -> impl Iterator<Item = Range<u64>> + '_ {
-        self.chunks(false)
+    pub fn live_buffers(&self) -> impl Iterator<Item = Range<u64>> + '_ {
+        self.buffers(false)
     }
 
-    /// Every chunk found on a slab's freelist, in address order. This
+    /// Every buffer found on a slab's freelist, in address order. This
     /// is a subset of what mdb calls freed, which also counts the
     /// magazine layer this walk does not read.
-    pub fn freed_chunks(&self) -> impl Iterator<Item = Range<u64>> + '_ {
-        self.chunks(true)
+    pub fn freed_buffers(&self) -> impl Iterator<Item = Range<u64>> + '_ {
+        self.buffers(true)
     }
 
-    fn chunks(&self, free: bool) -> impl Iterator<Item = Range<u64>> + '_ {
+    fn buffers(&self, free: bool) -> impl Iterator<Item = Range<u64>> + '_ {
         self.slabs.iter().flat_map(move |slab| {
+            let bufsize = self.caches[slab.cache as usize].bufsize;
             (0..slab.chunks).filter_map(move |i| {
                 let start = slab.base + i as u64 * slab.chunksize;
-                (slab.is_free(i) == free).then(|| start..start + slab.chunksize)
+                (slab.is_free(i) == free).then(|| start..start + bufsize)
             })
         })
     }
@@ -1187,28 +1199,28 @@ mod tests {
         assert_eq!(
             heap.locate(BUFFERS + 64),
             Liveness::Freed {
-                chunk: BUFFERS + 64..BUFFERS + 128,
+                buffer: BUFFERS + 64..BUFFERS + 128,
                 cache: alloc_64,
             }
         );
         assert_eq!(
             heap.locate(BUFFERS + 64 + 63),
             Liveness::Freed {
-                chunk: BUFFERS + 64..BUFFERS + 128,
+                buffer: BUFFERS + 64..BUFFERS + 128,
                 cache: alloc_64,
             }
         );
         assert_eq!(
             heap.locate(BUFFERS + 130),
             Liveness::Live {
-                chunk: BUFFERS + 128..BUFFERS + 192,
+                buffer: BUFFERS + 128..BUFFERS + 192,
                 cache: alloc_64,
             }
         );
         assert_eq!(
             heap.locate(BUFFERS + 0x2000 + 3 * 128),
             Liveness::Freed {
-                chunk: BUFFERS + 0x2000 + 384..BUFFERS + 0x2000 + 512,
+                buffer: BUFFERS + 0x2000 + 384..BUFFERS + 0x2000 + 512,
                 cache: cache("umem_alloc_128"),
             }
         );
@@ -1225,7 +1237,7 @@ mod tests {
         // from its start, is the whole failure a differential exists
         // to catch, so nothing here is asserted by count alone.
         let chunk = |start: u64, size: u64| start..start + size;
-        let freed: Vec<Range<u64>> = heap.freed_chunks().collect();
+        let freed: Vec<Range<u64>> = heap.freed_buffers().collect();
         assert_eq!(
             freed,
             [
@@ -1234,7 +1246,7 @@ mod tests {
                 chunk(BUFFERS + 0x2000 + 3 * 128, 128),
             ]
         );
-        let live: Vec<Range<u64>> = heap.live_chunks().collect();
+        let live: Vec<Range<u64>> = heap.live_buffers().collect();
         let want: Vec<Range<u64>> = (0..8)
             .filter(|i| ![1, 5].contains(i))
             .map(|i| chunk(BUFFERS + i * 64, 64))
@@ -1242,6 +1254,52 @@ mod tests {
             .chain((0..3).map(|i| chunk(BUFFERS + 0x2000 + i * 128, 128)))
             .collect();
         assert_eq!(live, want);
+    }
+
+    /// A cache whose buffer is shorter than its stride: the slack past
+    /// each buffer's end is the allocator's own — a raw cache keeps the
+    /// bufctl of a free buffer there — so no allocation covers it, and
+    /// an address in it is as much a miss as one between two slabs.
+    /// umem's own caches are all this shape (`umem_bufctl_cache` serves
+    /// 24 bytes on a 32-byte stride), which is where an answer of "in a
+    /// chunk" rather than "in a buffer" would first be wrong.
+    #[test]
+    fn test_the_slack_past_a_buffers_end_is_no_allocation() {
+        let mut f = two_caches();
+        let cache = CACHES;
+        f.put_u64(cache + LP64.cache_bufsize, 48);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        let alloc_64 = heap
+            .caches()
+            .iter()
+            .position(|c| c.addr == cache)
+            .expect("the cache is in the index");
+
+        assert_eq!(
+            heap.locate(BUFFERS + 47),
+            Liveness::Live {
+                buffer: BUFFERS..BUFFERS + 48,
+                cache: alloc_64,
+            }
+        );
+        assert_eq!(heap.locate(BUFFERS + 48), Liveness::Unknown);
+        assert_eq!(heap.locate(BUFFERS + 63), Liveness::Unknown);
+        // The next chunk along starts a buffer of its own, which the
+        // slack before it is no part of.
+        assert_eq!(
+            heap.locate(BUFFERS + 64),
+            Liveness::Freed {
+                buffer: BUFFERS + 64..BUFFERS + 112,
+                cache: alloc_64,
+            }
+        );
+
+        // What an enumeration yields is the buffer too, so a
+        // differential against another reader compares like with like.
+        assert_eq!(heap.live_buffers().next(), Some(BUFFERS..BUFFERS + 48));
+        // The accounting still counts chunks and the stride they cost:
+        // the slack is footprint the cache paid for, whoever owns it.
+        assert_eq!(heap.stats().live_bytes, 14 * 64 + 3 * 128);
     }
 
     #[test]
