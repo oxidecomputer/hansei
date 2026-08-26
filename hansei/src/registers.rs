@@ -139,11 +139,14 @@ fn spelled(class: &RegClass, label: &dyn Fn(usize) -> String) -> Option<String> 
                 offset => format!("{name} +{offset:#x}"),
             }
         }
-        // The path whole would drown the line; the object's name is
-        // the claim.
-        RegClass::Object(path) => {
+        // The path whole would drown the line; the object's name and
+        // the region within it are the claim. The region is what is
+        // left to say where no symbol covers the address: text is a
+        // return address or a constant beside the code, data a static
+        // nothing named.
+        RegClass::Object { path, region } => {
             let base = path.rsplit('/').next().unwrap_or(path);
-            format!("in {base}")
+            format!("in {base} {region}")
         }
         RegClass::Heap => "heap".to_string(),
         RegClass::Unmapped => "unmapped".to_string(),
@@ -200,8 +203,12 @@ mod tests {
             Some("core::fut::poll +0x1c")
         );
         assert_eq!(
-            spell(RegClass::Object("/usr/lib/libc.so.6".to_string())).as_deref(),
-            Some("in libc.so.6")
+            spell(RegClass::Object {
+                path: "/usr/lib/libc.so.6".to_string(),
+                region: "data",
+            })
+            .as_deref(),
+            Some("in libc.so.6 data")
         );
         assert_eq!(spell(RegClass::Heap).as_deref(), Some("heap"));
         assert_eq!(spell(RegClass::Unmapped).as_deref(), Some("unmapped"));

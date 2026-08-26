@@ -736,6 +736,26 @@ pub struct LoadedObjectWithPath {
 }
 
 impl LoadedObjectWithPath {
+    /// Which of an object's regions this is, by what the kernel is
+    /// enforcing on it: executable is text, writable is data, and
+    /// neither is read-only data.
+    ///
+    /// These are the region's terms rather than a section's, and the
+    /// difference is not pedantry. A link editor puts `.rodata` in the
+    /// executable region on most layouts and `.bss` in the writable
+    /// one, so `text` here covers both code and the constants beside
+    /// it, and `data` covers the zero-filled tail as well as the
+    /// initialized front. A finer name would be a guess: a core carries
+    /// no section headers for the objects it maps, only the symbol
+    /// tables written into it.
+    pub fn region(&self) -> &'static str {
+        match (self.flags.is_exec(), self.flags.is_write()) {
+            (true, _) => "text",
+            (false, true) => "data",
+            (false, false) => "rodata",
+        }
+    }
+
     pub fn is_text(&self) -> bool {
         self.flags.is_read() && self.flags.is_exec()
     }
