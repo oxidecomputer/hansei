@@ -1578,6 +1578,27 @@ mod tests {
         assert_eq!(heap.caches()[0].name, "umem_alloc_128");
     }
 
+    /// A torn core can fail an invariant on every slab it has, and a
+    /// note per slab would bury the answer in its own diagnostics. The
+    /// cap holds; what it drops is counted all the same, which is why
+    /// the counters and not the notes are what a consumer reads.
+    #[test]
+    fn test_the_decline_notes_are_capped() {
+        let f = fake();
+        let mut walk = Walk::new(&f, LP64);
+        for i in 0..MAX_NOTES * 2 {
+            walk.note(format!("note {i}"));
+        }
+        assert_eq!(walk.stats.notes.len(), MAX_NOTES);
+        // The first are kept, not the last: what went wrong first is
+        // what explains the rest.
+        assert_eq!(walk.stats.notes[0], "note 0");
+        assert_eq!(
+            walk.stats.notes[MAX_NOTES - 1],
+            format!("note {}", MAX_NOTES - 1)
+        );
+    }
+
     /// The self-check earns its keep only if it can fail, and the walk
     /// is built not to produce either failure -- so both are staged
     /// here by hand, over an index the walk would never hand back.
@@ -1668,13 +1689,17 @@ mod tests {
         assert_eq!(heap.stats().overlaps, 1);
         assert!(heap.stats().incomplete());
         assert!(heap.violations().is_empty(), "{:?}", heap.violations());
-        // The counts describe what is left, not what was walked.
+        // The counts describe what is left, not what was walked --
+        // the byte total with them, since it is derived from the
+        // counts a second time rather than carried along with them.
         let alloc_64 = heap
             .caches()
             .iter()
             .find(|c| c.name == "umem_alloc_64")
             .unwrap();
         assert_eq!((alloc_64.slabs, alloc_64.live, alloc_64.freed), (1, 6, 2));
+        assert_eq!(heap.stats().live_chunks, 6 + 3);
+        assert_eq!(heap.stats().live_bytes, 6 * 64 + 3 * 128);
     }
 
     /// The tag libumem's malloc shim writes before every pointer it
