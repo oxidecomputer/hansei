@@ -75,7 +75,7 @@ pub(crate) fn print_lwp_registers(
     let symbol = |addr: u64| session.proc.lookup_symbol_by_addr(addr);
     let heap = session.umem();
     let annotate = |value: u64| {
-        let claim = spelled(&classifier.classify(lwp, value, &symbol), &|index| {
+        let claim = spelled(&classifier.classify(lwp, value, &symbol), lwp, &|index| {
             task_label(list, index)
         });
         let freed = matches!(
@@ -123,16 +123,25 @@ fn marked(claim: Option<String>, freed: bool) -> Option<String> {
 
 /// Spell one classification as the annotation the block prints — or
 /// nothing, for a value with no claim to make. `label` names a task by
-/// its index in the session's list, the way every listing does.
-fn spelled(class: &RegClass, label: &dyn Fn(usize) -> String) -> Option<String> {
+/// its index in the session's list, the way every listing does, and
+/// `lwp` is the thread whose registers these are, which is what lets a
+/// stack say whose it is.
+///
+/// Every mapping-kind claim is spelled the way `pmap` spells it,
+/// brackets and all. That is not decoration: someone reading a core has
+/// `pmap` open in the next window, and a descriptor they can match by
+/// eye is worth more than prose that says the same thing differently.
+fn spelled(class: &RegClass, lwp: u32, label: &dyn Fn(usize) -> String) -> Option<String> {
     Some(match class {
         RegClass::Task { index, offset } => match offset {
             0 => label(*index),
             offset => format!("{} +{offset:#x}", label(*index)),
         },
-        RegClass::OwnStack => "this lwp's stack".to_string(),
-        RegClass::LwpStack(tid) => format!("lwp {tid}'s stack"),
-        RegClass::StackRegion => "thread-stack region".to_string(),
+        RegClass::OwnStack => format!("[ stack tid={lwp} ]"),
+        RegClass::LwpStack(tid) => format!("[ stack tid={tid} ]"),
+        // `pmap`'s bare `[ stack ]`: a stack mapping it cannot pin to
+        // one thread, which is the same thing this class means.
+        RegClass::StackRegion => "[ stack ]".to_string(),
         RegClass::Symbol { name, offset } => {
             let name = format!("{:#}", rustc_demangle::demangle(name));
             match offset {
@@ -149,14 +158,13 @@ fn spelled(class: &RegClass, label: &dyn Fn(usize) -> String) -> Option<String> 
             let base = path.rsplit('/').next().unwrap_or(path);
             format!("in {base} {region}")
         }
-        // `pmap`'s vocabulary, and for its reason: exactly one
-        // anonymous mapping is the break, and the rest — an
-        // allocator's mmap-backed arenas, a threading library's own
+        // Exactly one anonymous mapping is the break, and the rest —
+        // an allocator's mmap-backed arenas, a threading library's own
         // tables, guard pages — are only anonymous. Naming them all
         // heap would assert something false about all but one.
-        RegClass::AltStack(tid) => format!("lwp {tid}'s alternate signal stack"),
-        RegClass::Heap => "heap".to_string(),
-        RegClass::Anon => "anonymous memory".to_string(),
+        RegClass::AltStack(tid) => format!("[ altstack tid={tid} ]"),
+        RegClass::Heap => "[ heap ]".to_string(),
+        RegClass::Anon => "[ anon ]".to_string(),
         RegClass::Unmapped => "unmapped".to_string(),
         RegClass::Null => "null".to_string(),
         RegClass::Small => return None,
@@ -174,7 +182,9 @@ mod tests {
     #[test]
     fn test_each_claim_has_one_spelling() {
         let label = |index: usize| format!("task {}", index + 30);
-        let spell = |class| spelled(&class, &label);
+        // 2 is the lwp whose registers are being read, which is
+        // what an `OwnStack` claim names itself with.
+        let spell = |class| spelled(&class, 2, &label);
         assert_eq!(
             spell(RegClass::Task {
                 index: 5,
@@ -191,18 +201,18 @@ mod tests {
             .as_deref(),
             Some("task 35")
         );
+        // A stack names whose it is, and the lwp being read names
+        // its own — so the two are told apart by the tid rather than
+        // by a different sentence.
         assert_eq!(
             spell(RegClass::OwnStack).as_deref(),
-            Some("this lwp's stack")
+            Some("[ stack tid=2 ]")
         );
         assert_eq!(
             spell(RegClass::LwpStack(12)).as_deref(),
-            Some("lwp 12's stack")
+            Some("[ stack tid=12 ]")
         );
-        assert_eq!(
-            spell(RegClass::StackRegion).as_deref(),
-            Some("thread-stack region")
-        );
+        assert_eq!(spell(RegClass::StackRegion).as_deref(), Some("[ stack ]"));
         assert_eq!(
             spell(RegClass::Symbol {
                 name: "_ZN4core3fut4pollE".to_string(),
@@ -219,14 +229,16 @@ mod tests {
             .as_deref(),
             Some("in libc.so.6 data")
         );
-        assert_eq!(spell(RegClass::Heap).as_deref(), Some("heap"));
-        // The three anonymous claims are spelled apart, because they
-        // are three different facts: the break, a thread's alternate
-        // signal stack, and memory that is merely anonymous.
-        assert_eq!(spell(RegClass::Anon).as_deref(), Some("anonymous memory"));
+        // Every mapping-kind claim is spelled exactly as `pmap`
+        // spells it, so a reader can match the two by eye. The three
+        // anonymous ones stay apart because they are three different
+        // facts: the break, a thread's alternate signal stack, and
+        // memory that is merely anonymous.
+        assert_eq!(spell(RegClass::Heap).as_deref(), Some("[ heap ]"));
+        assert_eq!(spell(RegClass::Anon).as_deref(), Some("[ anon ]"));
         assert_eq!(
             spell(RegClass::AltStack(12)).as_deref(),
-            Some("lwp 12's alternate signal stack")
+            Some("[ altstack tid=12 ]")
         );
         assert_eq!(spell(RegClass::Unmapped).as_deref(), Some("unmapped"));
         assert_eq!(spell(RegClass::Null).as_deref(), Some("null"));
