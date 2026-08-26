@@ -798,14 +798,30 @@ impl Core {
 /// The `PT_LOAD` regions, each named by whichever loaded object covers
 /// it. A region no object covers — a stack, the heap, an anonymous
 /// mapping — has no name to give, and says so.
+///
+/// *Covers* is the whole region, not its first byte. An executable's
+/// `.bss` ends wherever it ends, while the mapping backing it stops at
+/// a page boundary, so the brk heap that starts there begins inside the
+/// executable's own extent — and naming a region by its first byte
+/// hands the whole heap, gigabytes of it, the executable's name. That
+/// is how a pointer into the heap comes to read as one into the binary.
+/// The object's extent is rounded to a page before the comparison,
+/// because the kernel maps whole pages and every object's last region
+/// therefore ends a little past what its program headers claim.
 fn build_mappings(segments: &[Segment], objects: &[(Range<u64>, String)]) -> Mappings {
+    // The base page, which is what the tail of a mapping is rounded to
+    // whatever page size backs the rest of it.
+    const PAGE: u64 = 0x1000;
+    let mapped = |end: u64| end.next_multiple_of(PAGE);
+
     Mappings {
         inner: segments
             .iter()
             .map(|seg| {
+                let end = seg.vaddr.saturating_add(seg.memsz);
                 let path = objects
                     .iter()
-                    .find(|(range, _)| range.contains(&seg.vaddr))
+                    .find(|(range, _)| range.contains(&seg.vaddr) && mapped(range.end) >= end)
                     .map(|(_, name)| name.clone());
                 let mut flags = seg.flags & (PF_R | PF_W | PF_X);
                 if path.is_none() {
@@ -2427,6 +2443,82 @@ mod tests {
         // The break is the writable region above the executable that no
         // object's symbols claim.
         assert_eq!(p.status().brk_range, LDATA..LDATA + PAGE);
+    }
+
+    /// The heap begins where the executable's `.bss` ends, which is
+    /// inside the executable's own extent rather than after it: the
+    /// mapping backing bss stops at a page boundary and the rest of bss
+    /// is the first of the brk. So the region that starts there is the
+    /// heap, however far into the executable's span it starts, and
+    /// naming it after the executable would hand every heap pointer in
+    /// the target the binary's name.
+    ///
+    /// The executable's own regions keep theirs, page rounding and all:
+    /// a region ends on a page boundary and an object's span ends
+    /// wherever its last byte is, so the two are compared a page apart.
+    #[test]
+    fn test_the_heap_is_not_named_for_the_bss_it_starts_in() {
+        const EXEC_BASE: u64 = 0x40_0000;
+        // Program headers claim a page of text and a writable span
+        // whose bss runs a little past the second page's end.
+        const SPAN: u64 = 2 * PAGE + 0x40;
+        const HEAP: u64 = EXEC_BASE + 2 * PAGE;
+
+        let mut exec = image(
+            EXEC_BASE,
+            ET_EXEC,
+            &[
+                (
+                    PT_PHDR,
+                    EXEC_BASE + SIZEOF_EHDR as u64,
+                    4 * SIZEOF_PHDR as u64,
+                ),
+                (PT_LOAD, EXEC_BASE, PAGE),
+                (PT_LOAD, EXEC_BASE + PAGE, PAGE + 0x40),
+                (PT_DYNAMIC, EXEC_BASE + 0x200, 2 * SIZEOF_DYN as u64),
+            ],
+        );
+        exec.put_u64(0x200, DT_DEBUG);
+        exec.put_u64(0x208, LDATA);
+        exec.put_u64(0x210, DT_NULL);
+        let ldata = link_map(&[(EXEC_BASE, "/opt/prog")], None);
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(EXEC_BASE + 0x100, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .dumped(EXEC_BASE, PF_R | PF_X, exec.bytes)
+            // The writable mapping, ending on the page boundary the
+            // bss spills past.
+            .undumped(EXEC_BASE + PAGE, PAGE, PF_R | PF_W)
+            // The brk, starting there and running well past the span.
+            .undumped(HEAP, 16 * PAGE, PF_R | PF_W)
+            .dumped(LDATA, PF_R | PF_W, ldata.bytes)
+            .auxv(AT_PHDR, EXEC_BASE + SIZEOF_EHDR as u64)
+            .auxv(AT_PHENT, SIZEOF_PHDR as u64)
+            .auxv(AT_PHNUM, 4)
+            .psargs("/opt/prog")
+            .proc();
+
+        let maps = p.mappings().unwrap();
+        assert!(
+            (EXEC_BASE..EXEC_BASE + SPAN).contains(&HEAP),
+            "the heap must start inside the executable's span for this to be a test"
+        );
+        let heap = maps.get(HEAP).unwrap();
+        assert_eq!(heap.path, None, "{heap:?}");
+        assert!(heap.flags.is_anon(), "{heap:?}");
+        // And nothing the executable does map lost its name to the
+        // same comparison.
+        for addr in [EXEC_BASE, EXEC_BASE + PAGE] {
+            assert_eq!(
+                maps.get(addr).unwrap().path.as_deref(),
+                Some("/opt/prog"),
+                "{:?}",
+                maps.get(addr)
+            );
+        }
+        assert_eq!(maps.get(EXEC_BASE).unwrap().region(), "text");
+        assert_eq!(maps.get(EXEC_BASE + PAGE).unwrap().region(), "data");
     }
 
     /// A PIE's program headers hold link-time offsets; the bias worked
