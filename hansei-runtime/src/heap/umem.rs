@@ -180,6 +180,47 @@ pub enum Liveness {
     Unknown,
 }
 
+/// What the allocator knows about one address as an *allocation*:
+/// whether its block is still handed out, how big the allocation in it
+/// is, and how far into it the address falls.
+///
+/// This is the slab walk's reading joined to the malloc shim's: the
+/// walk finds the block, and the header libumem wrote at that block's
+/// base says what the program asked for and where the pointer it was
+/// given starts. Either half can be missing — freeing scrubs the
+/// header, and an oversize allocation is in no walked slab — so each
+/// field says which reading it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Allocation {
+    /// Whether the allocator still considers the block handed out.
+    ///
+    /// The two verdicts are not equally strong. `false` is corroborated
+    /// twice — the block is on its slab's freelist *and* its malloc
+    /// header has been scrubbed — while `true` says only that the
+    /// allocator has not taken the block back, which a buffer parked in
+    /// a magazine also satisfies until that layer is walked.
+    pub live: bool,
+    /// How big the allocation is, and whose number that is.
+    pub size: Size,
+    /// How far past the pointer the program was given the address sits
+    /// — or past the block's base, where no header survives to say
+    /// where that pointer was. Zero means the address *is* the
+    /// allocation rather than a pointer into one.
+    pub offset: u64,
+}
+
+/// How big an allocation is, by whichever reading was available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Size {
+    /// What the program asked for, from the malloc header: exact, and
+    /// the caller's own number rather than the allocator's arithmetic.
+    Requested(u64),
+    /// The block's own size, for an allocation whose header is gone.
+    /// Freeing scrubs it, so a freed allocation is always measured this
+    /// way, and the block is all there is left to measure.
+    Block(u64),
+}
+
 /// One cache the walk believed, as its own accounting.
 #[derive(Debug, Clone)]
 pub struct Cache {
@@ -331,6 +372,57 @@ impl UmemHeap {
             true => Liveness::Freed { buffer, cache },
             false => Liveness::Live { buffer, cache },
         }
+    }
+
+    /// What the allocator says about the *allocation* at `addr`, which
+    /// is what a consumer answering a human wants: the block's own
+    /// account of itself rather than which cache it came from.
+    ///
+    /// `None` means nothing is known — no walked slab covers the
+    /// address and no malloc header precedes it — which is a silence to
+    /// pass on rather than an answer of "unknown".
+    pub fn allocation<T: Target>(&self, target: &T, addr: u64) -> Option<Allocation> {
+        let (live, block) = match self.locate(addr) {
+            Liveness::Live { buffer, .. } => (true, buffer),
+            Liveness::Freed { buffer, .. } => (false, buffer),
+            // In no walked slab: the oversize and memalign arenas are
+            // outside this walk, and the header the shim wrote is then
+            // the only account of the allocation there is. It speaks
+            // for the pointer it precedes and for no other address, so
+            // this answers for such an allocation's own pointer and
+            // stays silent about an address inside one.
+            Liveness::Unknown => {
+                let tag = malloc_tag(target, addr)?;
+                let header = addr - tag.base;
+                return Some(Allocation {
+                    // A header that still decodes has not been through
+                    // `free`, which overwrites the word it decodes
+                    // from.
+                    live: true,
+                    size: Size::Requested(tag.total.checked_sub(header)?),
+                    offset: 0,
+                });
+            }
+        };
+        let size = block.end - block.start;
+        Some(
+            match header(target, block.start, size).filter(|&(ptr, _)| addr >= ptr) {
+                Some((ptr, requested)) => Allocation {
+                    live,
+                    size: Size::Requested(requested),
+                    offset: addr - ptr,
+                },
+                // No header to read, or an address inside one: a header
+                // is libumem's own memory rather than the program's, so
+                // an address in it has no pointer to be an offset from
+                // and is measured against the block like any other.
+                None => Allocation {
+                    live,
+                    size: Size::Block(size),
+                    offset: addr - block.start,
+                },
+            },
+        )
     }
 
     fn slab_at(&self, addr: u64) -> Option<&Slab> {
@@ -869,6 +961,29 @@ pub fn malloc_tag<T: Target>(target: &T, ptr: u64) -> Option<MallocTag> {
         _ => return None,
     };
     Some(MallocTag { kind, total, base })
+}
+
+/// The pointer libumem handed out of the block based at `base`, and
+/// the size the program asked for, read from the malloc header at that
+/// base rather than from before some address inside the block. That is
+/// what turns the tag from a check on a pointer into an answer about
+/// any address the block contains.
+///
+/// The shim's headers are 8 or 16 bytes and each records the whole
+/// allocation, header included, so the one this block carries is the
+/// one whose own base is this block's — which tells the two spellings
+/// apart without knowing in advance which the allocation used. A header
+/// claiming more than the block holds is not this block's either.
+///
+/// `None` means no header is there: `free` scrubs the word one decodes
+/// from, and an allocation that never went through the shim never had
+/// one.
+fn header<T: Target>(target: &T, base: u64, block: u64) -> Option<(u64, u64)> {
+    [8, 16].into_iter().find_map(|header| {
+        let tag = malloc_tag(target, base + header)?;
+        let requested = tag.total.checked_sub(header)?;
+        (tag.base == base && tag.total <= block).then_some((base + header, requested))
+    })
 }
 
 #[cfg(test)]
@@ -1812,6 +1927,151 @@ mod tests {
         let high = (total >> 32) as u32;
         f.put_u32(ptr - 16, high);
         f.put_u32(ptr - 12, magic.wrapping_sub(high));
+    }
+
+    /// An allocation is the block the walk found joined to the header
+    /// its base carries: the header says what the program asked for and
+    /// where the pointer it was given starts, so an address inside the
+    /// block is an offset from *that* pointer rather than from the
+    /// block. Where no header survives — which is every freed block,
+    /// `free` having scrubbed it — the block itself is the answer.
+    #[test]
+    fn test_an_allocation_joins_the_block_to_its_header() {
+        let mut f = two_caches();
+        // Two live chunks of the 64-byte cache, one carrying each of
+        // the header spellings, both for a 40-byte request.
+        tag(&mut f, BUFFERS + 8, MALLOC_MAGIC, 48);
+        tag(&mut f, BUFFERS + 128 + 16, MALLOC_SECOND_MAGIC, 56);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        let at = |addr| heap.allocation(&f, addr);
+        let live = |size, offset| {
+            Some(Allocation {
+                live: true,
+                size,
+                offset,
+            })
+        };
+
+        // The pointer the program was given is the allocation itself,
+        // and an address past it is that far into it -- not into the
+        // block, which starts 8 bytes lower.
+        assert_eq!(at(BUFFERS + 8), live(Size::Requested(40), 0));
+        assert_eq!(at(BUFFERS + 8 + 24), live(Size::Requested(40), 24));
+        // The 16-byte spelling is found the same way, so the offset is
+        // taken from 16 bytes into the block rather than from 8.
+        assert_eq!(at(BUFFERS + 128 + 16), live(Size::Requested(40), 0));
+        assert_eq!(at(BUFFERS + 128 + 24), live(Size::Requested(40), 8));
+
+        // An address inside the header is in libumem's own memory,
+        // which is no offset into the program's allocation at all.
+        assert_eq!(at(BUFFERS + 4), live(Size::Block(64), 4));
+
+        // A live block whose header was never written, and the freed
+        // chunks, whose headers `free` scrubbed: the block is all
+        // there is to measure, and the offset counts from its base.
+        assert_eq!(at(BUFFERS + 192), live(Size::Block(64), 0));
+        assert_eq!(
+            at(BUFFERS + 64),
+            Some(Allocation {
+                live: false,
+                size: Size::Block(64),
+                offset: 0,
+            })
+        );
+        assert_eq!(
+            at(BUFFERS + 64 + 16),
+            Some(Allocation {
+                live: false,
+                size: Size::Block(64),
+                offset: 16,
+            })
+        );
+    }
+
+    /// A header is believed only where it is this block's own: one
+    /// recording a different base, one claiming more than the block
+    /// holds, and a `memalign` redirect that names no base at all are
+    /// each declined on their own, leaving the block to answer.
+    #[test]
+    fn test_a_header_that_is_not_the_blocks_own_is_declined() {
+        // One question of every staging: the address a believed
+        // 8-byte header makes the allocation itself, which a declined
+        // one leaves 8 bytes into the block.
+        let block = Some(Allocation {
+            live: true,
+            size: Size::Block(64),
+            offset: 8,
+        });
+        let staged = |write: &dyn Fn(&mut Fake)| {
+            let mut f = two_caches();
+            write(&mut f);
+            let heap = UmemHeap::build(&f).expect("the walk built an index");
+            heap.allocation(&f, BUFFERS + 8)
+        };
+
+        // Staged where it is the only thing wrong: the same header,
+        // believed when it names this block and declined when it does
+        // not.
+        assert_eq!(
+            staged(&|f| tag(f, BUFFERS + 8, MALLOC_MAGIC, 48)),
+            Some(Allocation {
+                live: true,
+                size: Size::Requested(40),
+                offset: 0,
+            })
+        );
+        // 16 bytes in, the 8-byte spelling records the block as
+        // starting 8 bytes late -- the discrimination that keeps one
+        // spelling from passing for the other.
+        assert_eq!(staged(&|f| tag(f, BUFFERS + 16, MALLOC_MAGIC, 48)), block);
+        // A 64-byte block cannot hold a 200-byte allocation.
+        assert_eq!(staged(&|f| tag(f, BUFFERS + 8, MALLOC_MAGIC, 200)), block);
+    }
+
+    /// An allocation from an arena the walk does not cover — oversize,
+    /// memalign — is in no slab, and its header is then the only
+    /// account of it there is. It answers for the pointer it precedes
+    /// and for nothing else: no header, no answer, rather than a
+    /// confident "unknown".
+    #[test]
+    fn test_an_allocation_outside_every_slab_answers_from_its_header() {
+        const OUTSIDE: u64 = BASE + 0xE000;
+        let mut f = two_caches();
+        assert_eq!(
+            UmemHeap::build(&f)
+                .expect("the walk built an index")
+                .locate(OUTSIDE),
+            Liveness::Unknown,
+            "the address the header must answer for alone is in a slab"
+        );
+
+        tag(&mut f, OUTSIDE, MALLOC_SECOND_MAGIC, 100);
+        // An oversize allocation, whose size needs a second tag to
+        // hold it -- being over 4 GiB is the only way to be here.
+        let huge = 5 * 1024 * 1024 * 1024u64 + 16;
+        tag(&mut f, OUTSIDE + 0x400, MALLOC_OVERSIZE_MAGIC, huge);
+        high_tag(&mut f, OUTSIDE + 0x400, MALLOC_MAGIC, huge);
+        // A `memalign` allocation, which is the whole of what this
+        // arena is for and every one of tokio's task cells.
+        tag(&mut f, OUTSIDE + 0x800, MEMALIGN_MAGIC, 1168);
+        high_tag(&mut f, OUTSIDE + 0x800, MEMALIGN_MAGIC, 1168);
+
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        let at = |addr| heap.allocation(&f, addr);
+        let live = |size| {
+            Some(Allocation {
+                live: true,
+                size: Size::Requested(size),
+                offset: 0,
+            })
+        };
+        assert_eq!(at(OUTSIDE), live(100 - 16));
+        assert_eq!(at(OUTSIDE + 0x400), live(huge - 16));
+        assert_eq!(at(OUTSIDE + 0x800), live(1168 - 16));
+        // The tags speak for the pointer they precede; an address
+        // inside the allocation has nothing in front of it to read.
+        assert_eq!(at(OUTSIDE + 8), None);
+        assert_eq!(at(OUTSIDE + 0xc00), None);
     }
 
     /// The tag libumem's malloc shim writes before every pointer it
