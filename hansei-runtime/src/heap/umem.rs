@@ -1257,8 +1257,10 @@ mod tests {
         // So does a table the walk reads only part of: half the
         // buckets is half the entries, and the count no longer adds
         // up. A mask that is not one less than a power of two is not a
-        // mask at all, and goes the same way.
-        for mask in [HASH_MASK / 2, HASH_MASK - 1] {
+        // mask at all and is refused on its own account -- including
+        // the one that names *more* buckets than the table has, where
+        // the empty tail leaves the count adding up perfectly well.
+        for mask in [HASH_MASK / 2, HASH_MASK - 1, HASH_MASK + 1] {
             let mut f = hashed();
             f.put_u64(CACHES + LP64.cache_hash_mask, mask);
             assert!(UmemHeap::build(&f).is_none(), "mask {mask}");
