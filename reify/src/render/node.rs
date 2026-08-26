@@ -75,7 +75,7 @@ pub(crate) fn eval_node<'a, T: Target>(
             ctx,
             pretty,
         ),
-        DisplayNode::Str { header } => write_utf8_string(f, bytes, header, ctx.proc),
+        DisplayNode::Str { header } => write_utf8_string(f, bytes, header, ctx.proc, ctx.heap),
         DisplayNode::Slice {
             header,
             element,
@@ -149,15 +149,16 @@ pub(crate) fn eval_node<'a, T: Target>(
             };
             // Both accessors must be present to follow the pointer into the
             // process; without them the target cannot be read.
-            let (Some(proc), Some(_visited)) = (ctx.proc, ctx.visited) else {
+            let (Some(_proc), Some(_visited)) = (ctx.proc, ctx.visited) else {
                 return write!(f, "{name} {{ <target unavailable> }}");
             };
             if pointer == 0 {
                 return write!(f, "{name} {{ <null> }}");
             }
             let addr = pointer.wrapping_add(*via_offset);
-            let Ok(target_bytes) = proc.read_bytes(addr, target.size()) else {
-                return write!(f, "{name} {{ <unreadable> }}");
+            let target_bytes = match ctx.read(addr, target.size()) {
+                Ok(bytes) => bytes,
+                Err(marker) => return write!(f, "{name} {{ {marker} }}"),
             };
             // Render the target against its own bytes, titled with this type's
             // name. `then` is a `Struct` for the receiver, but any node works.
@@ -247,12 +248,8 @@ fn check_place_guards<'a, T: Target>(
                 byte_range(bytes, guard.at, u64::from(guard.size)).ok_or("<truncated>")?,
             ),
             Some(base) => {
-                let proc = ctx.proc.ok_or("<target unavailable>")?;
                 let at = base.checked_add(guard.at).ok_or("<invalid address>")?;
-                let word = proc
-                    .read_bytes(at, u64::from(guard.size))
-                    .map_err(|_| "<unreadable>")?;
-                u128_from_le(word)
+                u128_from_le(ctx.read(at, u64::from(guard.size))?)
             }
         };
         if !guard.expect.selects(raw) {
@@ -279,7 +276,6 @@ fn read_place_bytes<'a, T: Target>(
         let slice = byte_range(bytes, place.root_offset, size).ok_or("<truncated>")?;
         return Ok((addr.wrapping_add(place.root_offset), slice));
     }
-    let proc = ctx.proc.ok_or("<target unavailable>")?;
     let mut pointer = read_u64_at(bytes, place.root_offset).ok_or("<truncated>")?;
     let (last, intermediate) = place.hops.split_last().expect("hops is non-empty");
     let mut segment = 1;
@@ -289,7 +285,7 @@ fn read_place_bytes<'a, T: Target>(
         }
         check_place_guards(place, segment, Some(pointer), bytes, ctx)?;
         let addr = pointer.checked_add(*hop).ok_or("<invalid address>")?;
-        let word = proc.read_bytes(addr, 8).map_err(|_| "<unreadable>")?;
+        let word = ctx.read(addr, 8)?;
         pointer = read_u64_at(word, 0).ok_or("<unreadable>")?;
         segment += 1;
     }
@@ -301,7 +297,7 @@ fn read_place_bytes<'a, T: Target>(
     let read = if size == 0 {
         &[][..]
     } else {
-        proc.read_bytes(target, size).map_err(|_| "<unreadable>")?
+        ctx.read(target, size)?
     };
     Ok((target, read))
 }
@@ -352,10 +348,7 @@ fn eval_expr<'a, T: Target>(
             size,
         } => {
             let target = eval_expr(addr_expr, vars, bytes, addr, ctx)?;
-            let proc = ctx.proc.ok_or("<target unavailable>")?;
-            let word = proc
-                .read_bytes(target, u64::from(*size))
-                .map_err(|_| "<unreadable>")?;
+            let word = ctx.read(target, u64::from(*size))?;
             read_unsigned_at(word, 0, u64::from(*size)).ok_or("<unreadable>")?
         }
         ValueExpr::Add(a, b) => eval_expr(a, vars, bytes, addr, ctx)?
@@ -500,13 +493,12 @@ fn eval_stmts<'a, T: Target>(
             }
             Stmt::Emit { at } => {
                 let target = eval_or_stop!(at);
-                let Some(proc) = ctx.proc else {
-                    write_seq_marker(f, "<target unavailable>", *any)?;
-                    return Ok(Flow::Stop);
-                };
-                let Ok(element_bytes) = proc.read_bytes(target, element.size()) else {
-                    write_seq_marker(f, "<unreadable>", *any)?;
-                    return Ok(Flow::Stop);
+                let element_bytes = match ctx.read(target, element.size()) {
+                    Ok(bytes) => bytes,
+                    Err(marker) => {
+                        write_seq_marker(f, marker, *any)?;
+                        return Ok(Flow::Stop);
+                    }
                 };
                 write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, !*any)?;
                 *any = true;
@@ -958,6 +950,43 @@ mod tests {
             shown,
             "tokio::sync::mpsc::bounded::Receiver<u32> { <null> }"
         );
+    }
+
+    /// A formatter navigating into an allocation the target's allocator
+    /// has taken back reports that instead of decoding what the last
+    /// owner left there. The gate sits on the reads themselves, so it
+    /// catches a whole channel whose state is freed and a single queue
+    /// block freed under a live one alike — which is the shape the
+    /// fiction takes: a live structure holding a pointer to a slot
+    /// somebody else has since had back.
+    #[test]
+    fn test_a_formatter_declines_to_decode_freed_memory() {
+        let mem = FakeMem::new()
+            .at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0))
+            .at(0x2010, u64s(&[3, 1, 0x1000, 6, 16]));
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = 0x2000u64.to_le_bytes();
+        let value = Value::new(v.ty(RECEIVER).unwrap(), 0, &bytes);
+
+        // The channel's own allocation is gone: nothing under it is a
+        // channel, so nothing under it is read.
+        let gone = FakeHeap::new().freed(0x2000, 0x100);
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8).heap(&gone)),
+            "tokio::sync::mpsc::bounded::Receiver<u32> { <freed> }"
+        );
+        assert_eq!(gone.counts().0, 1);
+
+        // The channel is live and the block its head names is not: the
+        // channel still renders, and the queue walk stops at the block
+        // rather than emitting whatever is in it.
+        let stale = FakeHeap::new().live(0x2000, 0x100).freed(0x1000, 0x100);
+        let shown = format!("{}", value.display_from_target(&mem, 8).heap(&stale));
+        assert!(shown.contains("capacity: 16"), "{shown}");
+        assert!(shown.contains("queued: [<freed>]"), "{shown}");
+        assert!(stale.counts().0 > 0);
     }
 
     #[test]

@@ -323,6 +323,11 @@ exclude_re = [
     # more, and the loop ends with the same runs either way. A probe
     # answering more than its max is outside readable_len's contract.
     "replace < with <= in readable_runs",
+    # Equivalent mutant: the body of HeapGate::none *is*
+    # `HeapGate::default()`, so the replacement is the function. It is
+    # spelled as its own constructor to say "no allocator to ask" at
+    # the call sites, which is a different claim from "the default".
+    "replace HeapGate<'h>::none",
     # The launch worker and its adoption are transparent by design:
     # every accessor that would adopt its state falls back to computing
     # the same state in place when the handoff never happened, so a

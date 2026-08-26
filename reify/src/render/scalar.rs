@@ -4,7 +4,7 @@
 //! byte-slicing primitives the other render modules read words with.
 
 use crate::debug_type::{BitField, FatHeader, FieldRender, ScalarDecode};
-use crate::elements::{SeqError, utf8_buffer};
+use crate::elements::{HeapGate, SeqError, utf8_buffer};
 use proc::Target;
 
 use hansei_bundle::Notation;
@@ -109,15 +109,20 @@ pub(crate) fn write_utf8_string<T: Target>(
     bytes: &[u8],
     header: &FatHeader,
     proc: Option<&T>,
+    heap: Option<&dyn crate::heap::Heap>,
 ) -> fmt::Result {
-    let text = match utf8_buffer(header, bytes, proc) {
+    let text = match utf8_buffer(header, bytes, proc, HeapGate::for_header(heap, header)) {
         Ok(text) => text,
         Err(SeqError::Invalid(why)) => return write!(f, "<invalid string: {why}>"),
         Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable string data>"),
+        Err(SeqError::Freed) => return write!(f, "<freed string data>"),
         Err(SeqError::NoTarget) => return write!(f, "<target unavailable>"),
     };
     if text.count == 0 && text.claimed.is_some() {
-        return write!(f, "<unreadable string data>");
+        return match text.clipped {
+            true => write!(f, "<string data overruns its allocation>"),
+            false => write!(f, "<unreadable string data>"),
+        };
     }
     match std::str::from_utf8(text.bytes) {
         Ok(text) => write!(f, "{text:?}")?,
@@ -155,7 +160,16 @@ pub(crate) fn write_utf8_string<T: Target>(
         }
     }
     if let Some(claimed) = text.claimed {
-        write!(f, " <{} more bytes unreadable>", claimed - text.count)?;
+        // See `eval_slice`: a clipped claim names bytes outside the
+        // allocation, not bytes the target would not serve.
+        match text.clipped {
+            true => write!(
+                f,
+                " <{} more bytes past its allocation>",
+                claimed - text.count
+            )?,
+            false => write!(f, " <{} more bytes unreadable>", claimed - text.count)?,
+        }
     }
     Ok(())
 }

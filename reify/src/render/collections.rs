@@ -2,7 +2,7 @@
 //! associative collections with their storage-specific entry walks.
 
 use crate::debug_type::{DisplayNode, FatHeader, MapEntries};
-use crate::elements::{Elements, SeqError};
+use crate::elements::{Elements, HeapGate, SeqError};
 use crate::value::Value;
 
 use hansei_bundle::BundleType;
@@ -40,18 +40,21 @@ pub(crate) fn eval_slice<'a, T: Target>(
     pretty: bool,
 ) -> fmt::Result {
     let stride = u64::from(element_size);
-    let elements = match Elements::read_fat(header, *element, stride, bytes, ctx.proc) {
+    let gate = HeapGate::for_header(ctx.heap, header);
+    let elements = match Elements::read_fat(header, *element, stride, bytes, ctx.proc, gate) {
         Ok(elements) => elements,
         Err(SeqError::Invalid(why)) => return write!(f, "<invalid slice: {why}>"),
         Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable slice buffer>"),
+        Err(SeqError::Freed) => return write!(f, "<freed slice buffer>"),
         Err(SeqError::NoTarget) => return write!(f, "<target unavailable>"),
     };
     if elements.is_empty() {
         // Nothing served of a non-empty claim: the whole buffer is out of
         // reach, which is a degradation, not an empty sequence.
-        return match elements.truncated() {
-            Some(_) => write!(f, "<unreadable slice buffer>"),
-            None => write!(f, "[]"),
+        return match (elements.truncated(), elements.clipped()) {
+            (Some(_), true) => write!(f, "<slice buffer overruns its allocation>"),
+            (Some(_), false) => write!(f, "<unreadable slice buffer>"),
+            (None, _) => write!(f, "[]"),
         };
     }
 
@@ -99,7 +102,13 @@ pub(crate) fn eval_slice<'a, T: Target>(
     }
     if let Some(claimed) = elements.truncated() {
         write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, false)?;
-        write!(f, "<{} more unreadable>", claimed - len)?;
+        // A clipped claim is not a short read: those elements are outside
+        // the allocation the buffer starts in, so they were never this
+        // sequence's however readable the pages under them happen to be.
+        match elements.clipped() {
+            true => write!(f, "<{} more past its allocation>", claimed - len)?,
+            false => write!(f, "<{} more unreadable>", claimed - len)?,
+        }
     }
     write_seq_close(f, pretty, ctx.prefix, ctx.depth, true)?;
     write!(f, "]")
@@ -175,7 +184,7 @@ pub(crate) fn eval_map<'a, T: Target>(
     let mut emitted = 0u64;
     let walk = walk_map_entries(
         bytes,
-        ctx.proc,
+        ctx,
         key,
         value,
         entries,
@@ -265,7 +274,7 @@ fn eval_map_parallel<'a, T: Target>(
     let mut collected: Vec<(u64, u64)> = Vec::new();
     let walk = walk_map_entries(
         bytes,
-        ctx.proc,
+        ctx,
         key,
         value,
         entries,
@@ -325,14 +334,12 @@ fn write_map_entry<'a, T: Target>(
     ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
-    let Some(proc) = ctx.proc else {
-        return write!(f, "<target unavailable>");
-    };
-    let (Ok(key_bytes), Ok(value_bytes)) = (
-        proc.read_bytes(key_addr, key.size()),
-        proc.read_bytes(value_addr, value.size()),
-    ) else {
-        return write!(f, "<unreadable>");
+    let (key_bytes, value_bytes) = match (
+        ctx.read(key_addr, key.size()),
+        ctx.read(value_addr, value.size()),
+    ) {
+        (Ok(key_bytes), Ok(value_bytes)) => (key_bytes, value_bytes),
+        (Err(marker), _) | (_, Err(marker)) => return f.write_str(marker),
     };
     let key = Value {
         ty: key,
@@ -355,7 +362,7 @@ fn write_map_entry<'a, T: Target>(
 
 fn walk_map_entries<'a, T: Target>(
     bytes: &[u8],
-    proc: Option<&'a T>,
+    ctx: RenderCtx<'_, 'a, T>,
     key: BundleType<'a>,
     value: BundleType<'a>,
     entries: &MapEntries<'a>,
@@ -393,7 +400,6 @@ fn walk_map_entries<'a, T: Target>(
         .ok_or(MapWalkError::Marker("<truncated height>"))?;
     let root_address = read_u64_at(root_node_bytes, *node_offset)
         .ok_or(MapWalkError::Marker("<truncated node pointer>"))?;
-    let proc = proc.ok_or(MapWalkError::Marker("<target unavailable>"))?;
 
     let layout = BTreeNodeLayout {
         key,
@@ -410,7 +416,7 @@ fn walk_map_entries<'a, T: Target>(
         edge_pointer_offset: *edge_pointer_offset,
     };
     walk_btree_node(
-        proc,
+        ctx,
         layout,
         root_address,
         height,
@@ -420,7 +426,7 @@ fn walk_map_entries<'a, T: Target>(
 }
 
 fn walk_btree_node<'a, T: Target>(
-    proc: &'a T,
+    ctx: RenderCtx<'_, 'a, T>,
     layout: BTreeNodeLayout<'a>,
     address: u64,
     height: u64,
@@ -443,9 +449,15 @@ fn walk_btree_node<'a, T: Target>(
         } else {
             layout.internal
         };
-        let bytes = proc
-            .read_bytes(address, node_type.size())
-            .map_err(|_| MapWalkError::Invalid("unreadable node"))?;
+        // A node the allocator has taken back is not a node: the walk
+        // stops at it rather than reading whatever the last owner left
+        // in the slot and emitting it as entries.
+        let bytes = ctx
+            .read(address, node_type.size())
+            .map_err(|marker| match marker {
+                "<freed>" => MapWalkError::Marker("<freed node>"),
+                _ => MapWalkError::Invalid("unreadable node"),
+            })?;
         let len = read_unsigned_at(bytes, layout.leaf_len_offset, layout.leaf_len.size())
             .ok_or(MapWalkError::Invalid("truncated node length"))?;
         if len > layout.key_slots {
@@ -455,7 +467,7 @@ fn walk_btree_node<'a, T: Target>(
         for index in 0..len {
             if height > 0 {
                 let child = btree_edge_address(bytes, layout, index)?;
-                walk_btree_node(proc, layout, child, height - 1, visited, emit)?;
+                walk_btree_node(ctx, layout, child, height - 1, visited, emit)?;
             }
             let key_start = layout
                 .keys_offset
@@ -487,7 +499,7 @@ fn walk_btree_node<'a, T: Target>(
         }
         if height > 0 {
             let child = btree_edge_address(bytes, layout, len)?;
-            walk_btree_node(proc, layout, child, height - 1, visited, emit)?;
+            walk_btree_node(ctx, layout, child, height - 1, visited, emit)?;
         }
         Ok(())
     })();
@@ -540,9 +552,9 @@ pub(crate) fn eval_list<'a, T: Target>(
     if head == 0 {
         return write!(f, "[]");
     }
-    let Some(proc) = ctx.proc else {
+    if ctx.proc.is_none() {
         return write!(f, "<target unavailable>");
-    };
+    }
     write!(f, "[")?;
 
     let mut cur = head;
@@ -554,9 +566,12 @@ pub(crate) fn eval_list<'a, T: Target>(
         if !seen.insert(cur) {
             break;
         }
-        let Ok(node_bytes) = proc.read_bytes(cur, u64::from(node_size)) else {
-            write!(f, "{}<unreadable>", if any { ", " } else { "" })?;
-            break;
+        let node_bytes = match ctx.read(cur, u64::from(node_size)) {
+            Ok(bytes) => bytes,
+            Err(marker) => {
+                write!(f, "{}{marker}", if any { ", " } else { "" })?;
+                break;
+            }
         };
         write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, !any)?;
         any = true;
@@ -797,6 +812,37 @@ mod tests {
         let value = Value::new(ty, 0x5000, &bytes);
         let shown = format!("{}", value.display_from_target(&self_cycle, 8));
         assert!(shown.contains("<invalid: node cycle>"), "{shown}");
+    }
+
+    /// A tree node the allocator has taken back is not walked. The bytes
+    /// in the slot decode as entries perfectly well — a freed node keeps
+    /// whatever the last owner left — so nothing but the allocator can
+    /// tell that they are not this map's, and the walk stops at the node
+    /// rather than emitting them.
+    #[test]
+    fn test_a_freed_btree_node_stops_the_walk() {
+        let mem = FakeMem::new().at(0x1000, btree_leaf(&[(1, 10)]));
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ty = v.ty(BTREE_MAP).unwrap();
+        let mut bytes = [0u8; 24];
+        bytes[..8].copy_from_slice(&0x1000u64.to_le_bytes());
+        bytes[16..].copy_from_slice(&1u64.to_le_bytes());
+        let value = Value::new(ty, 0x5000, &bytes);
+
+        // Live, and the entry is read as usual.
+        let live = FakeHeap::new().live(0x1000, 0x400);
+        let shown = format!("{}", value.display_from_target(&mem, 8).heap(&live));
+        assert!(shown.contains("1: 10"), "{shown}");
+        assert_eq!(live.counts(), (0, 0, 0));
+
+        // Freed, and the same bytes are refused.
+        let freed = FakeHeap::new().freed(0x1000, 0x400);
+        let shown = format!("{}", value.display_from_target(&mem, 8).heap(&freed));
+        assert!(shown.contains("<freed node>"), "{shown}");
+        assert!(!shown.contains("1: 10"), "{shown}");
+        assert_eq!(freed.counts(), (1, 0, 0));
     }
 
     /// The length-mismatch markers join the entry list with the same

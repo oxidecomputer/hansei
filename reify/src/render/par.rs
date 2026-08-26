@@ -10,6 +10,7 @@
 //! cache); [`WorkerCtx`] is the context slice that crosses the thread
 //! boundary.
 
+use crate::heap::Heap;
 use crate::render::{AddrAnnotator, ElideOverride};
 
 use super::{FormatCache, RenderCtx};
@@ -45,6 +46,7 @@ pub(crate) struct WorkerCtx<'buf, 'a, T> {
     pub(super) ugly: bool,
     pub(super) elide: Option<&'buf ElideOverride>,
     pub(super) annotate: Option<&'buf AddrAnnotator<'buf>>,
+    pub(super) heap: Option<&'buf dyn Heap>,
     pub(super) prefix: &'buf str,
 }
 
@@ -81,6 +83,7 @@ impl<'buf, 'a, T> WorkerCtx<'buf, 'a, T> {
             ugly: self.ugly,
             elide: self.elide,
             annotate: self.annotate,
+            heap: self.heap,
             prefix: self.prefix,
         }
     }

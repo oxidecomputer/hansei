@@ -93,7 +93,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
     // A zero-sized concrete type (e.g. slog's `()` list terminator) has no
     // pointee worth following — the `concrete type:` line below already names
     // it. Showing `-> ()` would only add noise.
-    if let (Some(concrete_ty), Some(proc), Some(visited)) = (
+    if let (Some(concrete_ty), Some(_), Some(visited)) = (
         concrete_ty.filter(|ty| ty.size() > 0),
         ctx.proc,
         ctx.visited,
@@ -102,7 +102,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
         if !visited.borrow_mut().insert(key) {
             write!(f, " -> <cycle>")?;
         } else {
-            match proc.read_bytes(pointee_address, concrete_ty.size()) {
+            match ctx.read(pointee_address, concrete_ty.size()) {
                 Ok(pointee_bytes) => {
                     let pointee = Value {
                         ty: concrete_ty,
@@ -112,7 +112,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
                     write!(f, " -> ")?;
                     write_display_value(f, &pointee, ctx.deeper(), pretty)?;
                 }
-                Err(_) => write!(f, " -> <unreadable>")?,
+                Err(marker) => write!(f, " -> {marker}")?,
             }
             visited.borrow_mut().remove(&key);
         }
