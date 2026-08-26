@@ -2519,7 +2519,7 @@ mod trace_render_tests {
     }
 
     /// The live state is the frame's one default detail: the other
-    /// suspend point (line 33 and what it would await) is type
+    /// suspend point (line 38 and what it would await) is type
     /// information and stays out until `--verbose` asks for it.
     #[test]
     fn test_the_live_state_is_the_frames_one_detail() {
@@ -2531,7 +2531,7 @@ mod trace_render_tests {
             ),
             "
 #0  async fn      simple_await::work
-      awaiting at src/bin/simple-await.rs:35 (Suspend1, 10 locals)
+      awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)
 #1  future        tokio::sync::oneshot::Receiver<u32>
 "
         );
@@ -2659,15 +2659,15 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
         let rendered = trace("simple-await", "simple_await::work::{async_fn_env#0}", true);
         assert!(
             rendered.contains(
-                "      awaiting at src/bin/simple-await.rs:35 (Suspend1, 10 locals)\
+                "      awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)\
                  \n      locals:\n        count: 3\n"
             ),
             "{rendered}"
         );
         assert!(
             rendered.contains(
-                "      other suspend points:\n        Suspend0 — src/bin/simple-await.rs:33 \
-                 (11 locals) → async fn simple_await::ready_value\n"
+                "      other suspend points:\n        Suspend0 — src/bin/simple-await.rs:38 \
+                 (13 locals) → async fn simple_await::ready_value\n"
             ),
             "{rendered}"
         );
@@ -2725,7 +2725,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
         assert!(
             styled.contains(
                 "      \x1b[2mother suspend points:\x1b[0m\n        \
-                 \x1b[2mSuspend0 — src/bin/simple-await.rs:33 (11 locals) \
+                 \x1b[2mSuspend0 — src/bin/simple-await.rs:38 (13 locals) \
                  → async fn simple_await::ready_value\x1b[0m\n"
             ),
             "{styled}"

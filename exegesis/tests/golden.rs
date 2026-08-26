@@ -523,6 +523,24 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              { pointer=vec.buf.inner.ptr.pointer.pointer@+8, length=vec.len@+16, \
              capacity=vec.buf.inner.cap.__0@+0 }",
         );
+        // The C strings are `Str` with `nul_terminated`: the length counts
+        // the trailing NUL, which the render trims and verifies. A `&CStr`
+        // is a fat pointer like `&str`; a `CString` keeps the box's words
+        // behind its `inner` member.
+        assert_format(
+            program,
+            bundle,
+            "&core::ffi::c_str::CStr",
+            "&core::ffi::c_str::CStr :: Node Str \
+             { pointer=data_ptr@+0, length=length@+8, nul_terminated }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "alloc::ffi::c_str::CString",
+            "alloc::ffi::c_str::CString :: Node Str \
+             { pointer=inner.data_ptr@+0, length=inner.length@+8, nul_terminated }",
+        );
         assert_format(
             program,
             bundle,

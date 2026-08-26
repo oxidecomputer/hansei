@@ -3,7 +3,7 @@ source: hansei-runtime/tests/two_binary.rs
 description: "the fixture programs (and lockfile) these snapshots were captured from. A digest that moved means the goldens in this file describe a program no longer in the tree: recapture with test-programs/capture-snapshots.sh, then re-bless the goldens here and in value_render.rs."
 ---
 lock Cargo.lock b50b0dd397651d06208402a6ab2272c7
-simple-await bb88f2efe376cc9d264a385830de32c2
+simple-await b28f1f1a243b0e874dbfa8423ccf304a
 nested-await 64f01b5e9f4b450d53bb1bbe9dc4daca
 dyn-future 8998187a6c48a5f323957eee76df32de
 futurelock 05b319923c7195e36f749ce8b73d19b2

@@ -85,8 +85,12 @@ pub enum DisplayNode<'a> {
         node_size: u32,
     },
     /// Follow the `(data, len)` string slice `header` and render its bytes as
-    /// a quoted, escaped UTF-8 string.
-    Str { header: FatHeader },
+    /// a quoted, escaped UTF-8 string. `nul_terminated` mirrors the bundle
+    /// node: the length counts a trailing NUL that is not part of the string.
+    Str {
+        header: FatHeader,
+        nul_terminated: bool,
+    },
     /// Follow the `(data, len)` fat pointer `header` to a contiguous buffer
     /// and render its first `length` `element`s as `[e, e, …]`. `element_size`
     /// is the stride between successive elements.
@@ -774,8 +778,10 @@ impl<'a> DisplayNode<'a> {
                     pointer,
                     length,
                     capacity,
+                    nul_terminated,
                 } => Some(DisplayNode::Str {
                     header: resolve_fat_header(scope, pointer, length, capacity)?,
+                    nul_terminated: *nul_terminated,
                 }),
                 BundleNode::Slice {
                     pointer,

@@ -590,6 +590,9 @@ fixture_ids! {
     // crossing the step must pick the live variant's candidate rather than
     // resolve one offset.
     FLAVOR_A, FLAVOR_B, FLAVOR,
+    // A CString: STR's shape, but the length counts a trailing NUL that is
+    // not part of the string.
+    C_STRING,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -660,6 +663,7 @@ pub fn test_bundle() -> Bundle {
         (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
     let slicen = s("&[u32]");
     let byte_slicen = s("&[u8]");
+    let c_stringn = s("alloc::ffi::c_str::CString");
     let (strn, stringn, data_ptrn, length2n) = (
         s("&str"),
         s("alloc::string::String"),
@@ -1793,6 +1797,16 @@ pub fn test_bundle() -> Bundle {
             },
         },
     );
+    // A CString flattened to its fat-pointer words (the Box<[u8]> behind
+    // `inner` is collapsed — reify only needs the resolved offsets).
+    types.add(
+        C_STRING,
+        TypeDef::Struct {
+            name: c_stringn,
+            size: 16,
+            members: vec![m(data_ptrn, U8_PTR, 0), m(length2n, U64, 8)],
+        },
+    );
     let types = types.finish();
 
     // Field labels for the node-based `BoundedSemaphore` formatter (deduped
@@ -2033,6 +2047,7 @@ pub fn test_bundle() -> Bundle {
                         pointer: sel(&[0]),
                         length: sel(&[1]),
                         capacity: None,
+                        nul_terminated: false,
                     },
                 ),
                 (
@@ -2041,6 +2056,16 @@ pub fn test_bundle() -> Bundle {
                         pointer: sel(&[0]),
                         length: sel(&[1]),
                         capacity: Some(sel(&[2])),
+                        nul_terminated: false,
+                    },
+                ),
+                (
+                    C_STRING,
+                    BundleNode::Str {
+                        pointer: sel(&[0]),
+                        length: sel(&[1]),
+                        capacity: None,
+                        nul_terminated: true,
                     },
                 ),
                 (

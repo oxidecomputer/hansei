@@ -289,7 +289,7 @@ impl SeqError {
 /// count the value claims. `stride` is the element width; a zero-sized
 /// element allocates nothing, so its capacity bounds nothing (`Vec<()>`
 /// reports `usize::MAX`).
-fn decode_header(
+pub(crate) fn decode_header(
     bytes: &[u8],
     header: &FatHeader,
     stride: u64,
@@ -330,12 +330,23 @@ pub(crate) struct Buffer<'a> {
 pub(crate) fn utf8<'a, T: Target>(info: &Value<'a>, proc: &'a T) -> Result<Buffer<'a>> {
     let ty = info.ty;
 
-    if let Some(DisplayNode::Str { header }) = DisplayNode::resolve(ty) {
+    if let Some(DisplayNode::Str {
+        header,
+        nul_terminated,
+    }) = DisplayNode::resolve(ty)
+    {
         // No cap on the parse path: a caller collecting a `String` is
         // reading a datum, not showing one, and a quietly shortened
         // one would be wrong rather than merely abbreviated.
-        return utf8_buffer(&header, info.bytes, Some(proc), HeapGate::none(), None)
-            .map_err(|e| e.into_error(ty.name()));
+        return utf8_buffer(
+            &header,
+            nul_terminated,
+            info.bytes,
+            Some(proc),
+            HeapGate::none(),
+            None,
+        )
+        .map_err(|e| e.into_error(ty.name()));
     }
 
     let (_, base, length) = bare_fat_pointer(info, proc)?;
@@ -361,14 +372,25 @@ fn bare_fat_pointer<'a, T: Target>(info: &Value<'a>, proc: &'a T) -> Result<(Val
 /// Resolve a `Str` display program's header against `bytes` and read the
 /// buffer it describes — [`Elements::read_fat`] for the string renderer and
 /// parser, sharing the same header validation and length corroboration.
+///
+/// `nul_terminated` says the length counts a trailing NUL that is not part of
+/// the string (a `CString`/`&CStr`), so one byte fewer is read; a length of
+/// zero cannot hold the terminator it promises, and nothing about such a
+/// value can be believed.
 pub(crate) fn utf8_buffer<'a, T: Target>(
     header: &FatHeader,
+    nul_terminated: bool,
     bytes: &[u8],
     proc: Option<&'a T>,
     gate: HeapGate<'_>,
     cap: Option<u64>,
 ) -> std::result::Result<Buffer<'a>, SeqError> {
     let (base, length) = decode_header(bytes, header, 1)?;
+    let length = match (nul_terminated, length.checked_sub(1)) {
+        (false, _) => length,
+        (true, Some(content)) => content,
+        (true, None) => return Err(SeqError::Invalid("the length cannot hold the terminator")),
+    };
     // The cap bounds the *read*, not the write: a length out of dead
     // bytes otherwise reaches the target for every mapped page it
     // claims, and the escaped rendering of what comes back is several

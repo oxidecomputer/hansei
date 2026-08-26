@@ -28,10 +28,10 @@ pub mod walk;
 
 use self::crates::{hex_bytes_node, raw_mutex_node, utf8_path_buf_node, utf8_path_node, uuid_node};
 use self::std::{
-    atomic_node, btree_map_node, dyn_pointer_node, function_pointer_node, instant_alias_node,
-    ip_address_node, non_null_node, nonzero_inner_node, nonzero_node, raw_waker_node,
-    raw_waker_vtable_node, scalar_newtype_node, slice_node, str_node, string_node, unique_node,
-    unsafe_cell_node, usize_no_high_bit_node, vec_node, waker_node,
+    atomic_node, btree_map_node, cstr_node, cstring_node, dyn_pointer_node, function_pointer_node,
+    instant_alias_node, ip_address_node, non_null_node, nonzero_inner_node, nonzero_node,
+    raw_waker_node, raw_waker_vtable_node, scalar_newtype_node, slice_node, str_node, string_node,
+    unique_node, unsafe_cell_node, usize_no_high_bit_node, vec_node, waker_node,
 };
 use self::tokio::{
     batch_semaphore_node, bounded_semaphore_node, cache_padded_node, loom_atomic_node,
@@ -358,11 +358,13 @@ impl<T: Copy> Row<T> {
 /// neither this table nor [`BY_PREFIX`] falls through to [`STRUCTURAL`].
 static BY_NAME: &[(&str, Row<Detector>)] = &[
     ("&camino::Utf8Path", All(utf8_path_node)),
+    ("&core::ffi::c_str::CStr", All(cstr_node)),
     ("&str", All(str_node)),
     (
         "alloc::collections::btree::map::BTreeMap",
         All(btree_map_node),
     ),
+    ("alloc::ffi::c_str::CString", All(cstring_node)),
     ("alloc::string::String", All(string_node)),
     ("alloc::vec::Vec", All(vec_node)),
     ("allocator_api2::stable::vec::Vec", All(vec_node)),

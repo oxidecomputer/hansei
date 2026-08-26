@@ -396,6 +396,42 @@ pub(super) fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
         pointer: emitter.walk(id, &reach![Named("data_ptr")])?.0,
         length: emitter.walk(id, &reach![Named("length")])?.0,
         capacity: None,
+        nul_terminated: false,
+    })
+}
+
+/// A `&core::ffi::c_str::CStr` is a `{ data_ptr, length }` fat pointer like
+/// `&str`, but over bytes that need not be UTF-8 (they render lossily) and
+/// with a length that counts the trailing NUL. The data pointer is typed
+/// `*CStr` — the DST itself — so there is no byte pointee to screen for; the
+/// name key is the screen.
+pub(super) fn cstr_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    Some(DisplayNode::Str {
+        pointer: emitter.walk(id, &reach![Named("data_ptr")])?.0,
+        length: emitter.walk(id, &reach![Named("length")])?.0,
+        capacity: None,
+        nul_terminated: true,
+    })
+}
+
+/// An owned `CString` keeps its bytes — NUL terminator included — in a
+/// `Box<[u8]>` behind its `inner` member, so its data pointer and length are
+/// the box's own fat-pointer words anchored there. Like `&CStr` it renders
+/// as a NUL-trimmed, lossily-escaped string; a box carries no capacity.
+pub(super) fn cstring_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let bytes = emitter.landed(id, &reach![Named("inner"), Named("data_ptr"), Deref])?;
+    if !is_unsigned_integer(emitter.reader, bytes, 1) {
+        return None;
+    }
+    Some(DisplayNode::Str {
+        pointer: emitter
+            .walk(id, &reach![Named("inner"), Named("data_ptr")])?
+            .0,
+        length: emitter
+            .walk(id, &reach![Named("inner"), Named("length")])?
+            .0,
+        capacity: None,
+        nul_terminated: true,
     })
 }
 
@@ -447,6 +483,7 @@ pub(super) fn buffer_node(
         pointer: under(emitter, shape.pointer)?,
         length: under(emitter, shape.length)?,
         capacity: Some(under(emitter, shape.capacity)?),
+        nul_terminated: false,
     })
 }
 

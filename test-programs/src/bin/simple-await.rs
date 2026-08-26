@@ -6,6 +6,7 @@
 //! means the state is stable — no timing involved.
 
 use std::collections::BTreeMap;
+use std::ffi::{CStr, CString};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use tokio::sync::oneshot;
 
@@ -30,6 +31,10 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
     let ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
     let borrowed = "borrowed\ntext";
     let owned = String::from("owned\ttext");
+    // C strings need not be UTF-8 (the 0xFF byte exercises the lossy
+    // rendering), and their recorded length counts the NUL terminator.
+    let c_owned = CString::new(b"c\xFFtext".to_vec()).unwrap();
+    let c_borrowed: &CStr = c"cstr";
     let first = ready_value().await;
     ready.send(()).expect("main waits for readiness");
     let second = park.await.unwrap_or(0);
@@ -44,6 +49,8 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
         + u32::from(ipv6.octets()[15])
         + borrowed.len() as u32
         + owned.len() as u32
+        + c_owned.as_bytes().len() as u32
+        + c_borrowed.to_bytes().len() as u32
 }
 
 // Keep the map live across `park.await` so its private layout remains part of
