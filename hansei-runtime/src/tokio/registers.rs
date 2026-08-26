@@ -56,8 +56,10 @@ pub enum RegClass {
     /// A file-backed address a symbol covers: the mangled name, and
     /// the offset within the symbol.
     Symbol { name: String, offset: u64 },
-    /// A file-backed address no symbol covers: the object's path.
-    Object(String),
+    /// A file-backed address no symbol covers: the object's path, and
+    /// which of its regions the address is in — which is most of what
+    /// is left to say once no symbol will say more.
+    Object { path: String, region: &'static str },
     /// A mapped anonymous address nothing above claimed.
     Heap,
     /// A pointer-sized value (or null) mapped nowhere.
@@ -138,7 +140,10 @@ impl RegClassifier<'_> {
                     offset: value - sym.st_value,
                     name: sym.name,
                 },
-                None => RegClass::Object(path.clone()),
+                None => RegClass::Object {
+                    path: path.clone(),
+                    region: mapping.region(),
+                },
             },
             None => RegClass::Heap,
         }
@@ -319,9 +324,22 @@ mod tests {
                 offset: 0x40
             }
         );
+        // No symbol covers it, so what is left to say is the object and
+        // the region of it the address is in — read-only here, where
+        // the executable's own mapping would say text.
         assert_eq!(
             classifier.classify(1, 0x50_0040, &symbol),
-            RegClass::Object("/lib/libc.so".to_string())
+            RegClass::Object {
+                path: "/lib/libc.so".to_string(),
+                region: "rodata",
+            }
+        );
+        assert_eq!(
+            classifier.classify(1, 0x40_0040, &no_symbol),
+            RegClass::Object {
+                path: "/bin/app".to_string(),
+                region: "text",
+            }
         );
     }
 }
