@@ -38,12 +38,12 @@ pub fn exec_umem_audit(
     };
 
     if let Some(dump) = dump {
-        let chunks: Box<dyn Iterator<Item = _>> = match dump {
-            Dump::Live => Box::new(heap.live_chunks()),
-            Dump::Freed => Box::new(heap.freed_chunks()),
+        let buffers: Box<dyn Iterator<Item = _>> = match dump {
+            Dump::Live => Box::new(heap.live_buffers()),
+            Dump::Freed => Box::new(heap.freed_buffers()),
         };
-        for chunk in chunks {
-            writeln!(out, "{:#x}", chunk.start)?;
+        for buffer in buffers {
+            writeln!(out, "{:#x}", buffer.start)?;
         }
         return Ok(());
     }
@@ -146,23 +146,23 @@ pub fn exec_umem_audit(
 }
 
 fn locate_line(heap: &UmemHeap, addr: u64, out: &mut dyn io::Write) -> Result<()> {
-    let (verdict, chunk, cache) = match heap.locate(addr) {
-        Liveness::Live { chunk, cache } => ("live", chunk, cache),
-        Liveness::Freed { chunk, cache } => ("freed", chunk, cache),
+    let (verdict, buffer, cache) = match heap.locate(addr) {
+        Liveness::Live { buffer, cache } => ("live", buffer, cache),
+        Liveness::Freed { buffer, cache } => ("freed", buffer, cache),
         Liveness::Unknown => {
-            writeln!(out, "no walked chunk covers it")?;
+            writeln!(out, "no walked buffer covers it")?;
             return Ok(());
         }
     };
     writeln!(
         out,
-        "{verdict}, in {} chunk {:#x}..{:#x}{}",
+        "{verdict}, in {} buffer {:#x}..{:#x}{}",
         heap.caches()[cache].name,
-        chunk.start,
-        chunk.end,
-        match addr == chunk.start {
+        buffer.start,
+        buffer.end,
+        match addr == buffer.start {
             true => String::new(),
-            false => format!(" (+{})", addr - chunk.start),
+            false => format!(" (+{})", addr - buffer.start),
         }
     )?;
     Ok(())
