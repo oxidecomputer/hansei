@@ -166,8 +166,11 @@ fn spelled(class: &RegClass, lwp: u32, label: &dyn Fn(usize) -> String) -> Optio
         RegClass::Heap => "[ heap ]".to_string(),
         RegClass::Anon => "[ anon ]".to_string(),
         RegClass::Unmapped => "unmapped".to_string(),
-        RegClass::Null => "null".to_string(),
-        RegClass::Small => return None,
+        // A zero register is legible as zero; annotating it says
+        // nothing the value has not already said, and on a thread
+        // where most registers are zero the annotations that matter
+        // are the ones lost in that column.
+        RegClass::Null | RegClass::Small => return None,
     })
 }
 
@@ -241,7 +244,9 @@ mod tests {
             Some("[ altstack tid=12 ]")
         );
         assert_eq!(spell(RegClass::Unmapped).as_deref(), Some("unmapped"));
-        assert_eq!(spell(RegClass::Null).as_deref(), Some("null"));
+        // Zero and a small integer both make no claim worth printing;
+        // the classifier still tells them apart, the block does not.
+        assert_eq!(spell(RegClass::Null), None);
         assert_eq!(spell(RegClass::Small), None);
     }
 
@@ -273,8 +278,7 @@ mod tests {
         };
         let annotate = |value: u64| match value {
             0x40_0000 => Some("app_main".to_string()),
-            0x9000_0800 | 0x9000_0900 => Some("this lwp's stack".to_string()),
-            0 => Some("null".to_string()),
+            0x9000_0800 | 0x9000_0900 => Some("[ stack tid=2 ]".to_string()),
             _ => None,
         };
         let mut out = Vec::new();
@@ -284,22 +288,22 @@ mod tests {
             out,
             "  registers:
     rip  0x0000000000400000  — app_main
-    rsp  0x0000000090000800  — this lwp's stack
-    rbp  0x0000000090000900  — this lwp's stack
-    rax  0x0000000000000000  — null
+    rsp  0x0000000090000800  — [ stack tid=2 ]
+    rbp  0x0000000090000900  — [ stack tid=2 ]
+    rax  0x0000000000000000
     rbx  0x0000000000000014
-    rcx  0x0000000000000000  — null
-    rdx  0x0000000000000000  — null
-    rsi  0x0000000000000000  — null
-    rdi  0x0000000000000000  — null
-    r8   0x0000000000000000  — null
-    r9   0x0000000000000000  — null
-    r10  0x0000000000000000  — null
-    r11  0x0000000000000000  — null
-    r12  0x0000000000000000  — null
-    r13  0x0000000000000000  — null
-    r14  0x0000000000000000  — null
-    r15  0x0000000000000000  — null
+    rcx  0x0000000000000000
+    rdx  0x0000000000000000
+    rsi  0x0000000000000000
+    rdi  0x0000000000000000
+    r8   0x0000000000000000
+    r9   0x0000000000000000
+    r10  0x0000000000000000
+    r11  0x0000000000000000
+    r12  0x0000000000000000
+    r13  0x0000000000000000
+    r14  0x0000000000000000
+    r15  0x0000000000000000
 ",
         );
     }
