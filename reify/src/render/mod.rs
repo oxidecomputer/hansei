@@ -44,6 +44,31 @@ pub(crate) type FormatCache<'a> = RefCell<HashMap<BundleTypeId, Option<Rc<Displa
 #[cfg(test)]
 const DEFAULT_DEPTH: usize = 8;
 
+/// How much of a string a render shows before saying how much is left.
+///
+/// A length is read out of the target like any other word, so a corrupt
+/// one claims whatever its bits say — and the target serves every
+/// mapped page under the claim, which the escaped rendering then
+/// multiplies by four. That is how a single fabricated `String` came to
+/// ask for 1.4 GB of output. This is the ceiling on how much any one
+/// string can cost to print, whether it is corrupt or merely enormous;
+/// [`DisplayValue::max_str_len`] moves it.
+pub const DEFAULT_MAX_STR_LEN: u64 = 128 * 1024;
+
+/// How many elements of a sequence a render shows before saying how
+/// many are left.
+///
+/// The sibling of [`DEFAULT_MAX_STR_LEN`] for everything wider than a
+/// byte, and counted in elements rather than bytes because that is what
+/// costs a line apiece. The two are separate budgets because they bound
+/// different things, and they are wildly different sizes for the same
+/// reason: a byte buffer is text, printed dozens to a line and read as
+/// a whole, while a wide element is a value with a line of its own and
+/// an indent in front of it. A hundred and twenty-eight of those is
+/// already more than anyone reads; past it a listing is scrolled, not
+/// examined. [`DisplayValue::max_array_len`] moves it.
+pub const DEFAULT_MAX_ARRAY_LEN: u64 = 128;
+
 /// A caller-supplied label for addresses the renderer prints. A followed
 /// pointer keeps its address and gains the label — `0x… (label) -> …` —
 /// while a pointer shown only as its bare word (a zero-sized pointee, an
@@ -66,6 +91,8 @@ pub struct DisplayValue<'r, 'a, T> {
     elide: Option<&'r ElideOverride>,
     annotate: Option<&'r AddrAnnotator<'r>>,
     heap: Option<&'r dyn Heap>,
+    max_str_len: Option<u64>,
+    max_array_len: Option<u64>,
     prefix: &'r str,
     visited: RefCell<HashSet<(u64, &'a str)>>,
     formats: FormatCache<'a>,
@@ -109,6 +136,24 @@ impl<'r, 'a, T> DisplayValue<'r, 'a, T> {
         self
     }
 
+    /// How much of a string to show, in bytes; `None` shows all of it.
+    /// Defaults to [`DEFAULT_MAX_STR_LEN`] — see there for why a
+    /// ceiling exists at all. What is left is reported rather than
+    /// dropped, the way every other shortfall is.
+    pub fn max_str_len(mut self, max: Option<u64>) -> Self {
+        self.max_str_len = max;
+        self
+    }
+
+    /// How many elements of a sequence to show; `None` shows all of
+    /// them. Defaults to [`DEFAULT_MAX_ARRAY_LEN`]. Byte sequences are
+    /// bounded by [`max_str_len`](DisplayValue::max_str_len) instead,
+    /// since they are strings in all but type.
+    pub fn max_array_len(mut self, max: Option<u64>) -> Self {
+        self.max_array_len = max;
+        self
+    }
+
     /// Open every pretty-mode line after the first with `prefix`, ahead
     /// of the renderer's own indentation — so a caller embedding the
     /// value under a heading gets final-form lines instead of scanning
@@ -132,6 +177,8 @@ impl<'a, T: Target> fmt::Display for DisplayValue<'_, 'a, T> {
             elide: self.elide,
             annotate: self.annotate,
             heap: self.heap,
+            max_str_len: self.max_str_len,
+            max_array_len: self.max_array_len,
             prefix: self.prefix,
             formats: &self.formats,
             // A collection only fans out when its entries read through a
@@ -158,6 +205,8 @@ impl<'a> Value<'a> {
             elide: None,
             annotate: None,
             heap: None,
+            max_str_len: Some(DEFAULT_MAX_STR_LEN),
+            max_array_len: Some(DEFAULT_MAX_ARRAY_LEN),
             prefix: "",
             visited: RefCell::new(HashSet::default()),
             formats: FormatCache::default(),
@@ -179,6 +228,8 @@ impl<'a> Value<'a> {
             elide: None,
             annotate: None,
             heap: None,
+            max_str_len: Some(DEFAULT_MAX_STR_LEN),
+            max_array_len: Some(DEFAULT_MAX_ARRAY_LEN),
             prefix: "",
             visited: RefCell::new(HashSet::default()),
             formats: FormatCache::default(),
@@ -225,6 +276,11 @@ pub(crate) struct RenderCtx<'buf, 'a, T> {
     /// The target's own allocator, where it keeps metadata this session
     /// could read; see [`DisplayValue::heap`]. `None` believes the bytes.
     pub(crate) heap: Option<&'buf dyn Heap>,
+    /// How much of a string to show; see [`DisplayValue::max_str_len`].
+    pub(crate) max_str_len: Option<u64>,
+    /// How many elements of a sequence to show; see
+    /// [`DisplayValue::max_array_len`].
+    pub(crate) max_array_len: Option<u64>,
     /// Text opening every pretty-mode line after the first, written by
     /// [`write_indent`] ahead of the depth indentation; see
     /// [`DisplayValue::line_prefix`]. Empty for a bare display.
@@ -347,6 +403,8 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
             elide: self.elide,
             annotate: self.annotate,
             heap: self.heap,
+            max_str_len: self.max_str_len,
+            max_array_len: self.max_array_len,
             prefix: self.prefix,
         }
     }
@@ -586,7 +644,18 @@ pub(crate) fn write_display_value<'a, T: Target>(
 
         TypeClass::Array { element, count } => {
             let elem_size = element.size() as usize;
-            let count = count as usize;
+            // An inline array's count is the type's, not the target's,
+            // so it cannot be fabricated the way a fat pointer's length
+            // can — but a declared `[u64; 1_000_000]` still costs a
+            // million lines to print, and the budget is about what a
+            // render costs rather than about whether to believe it.
+            // Byte arrays spend the string budget, as byte slices do.
+            let declared = count;
+            let cap = match elem_size {
+                1 => ctx.max_str_len,
+                _ => ctx.max_array_len,
+            };
+            let count = cap.map_or(declared, |cap| declared.min(cap)) as usize;
             let hex_elements = matches!(
                 element.classify(),
                 TypeClass::Integer {
@@ -619,6 +688,10 @@ pub(crate) fn write_display_value<'a, T: Target>(
                 if pretty {
                     write!(f, ",")?;
                 }
+            }
+            if (count as u64) < declared {
+                write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, false)?;
+                write!(f, "<{} more not shown>", declared - count as u64)?;
             }
             write_seq_close(f, pretty, ctx.prefix, ctx.depth, count > 0)?;
             write!(f, "]")
@@ -1549,6 +1622,71 @@ mod tests {
             "<freed string data>"
         );
         assert_eq!(heap.counts(), (2, 0, 0));
+    }
+
+    /// A string is shown only as far as the cap, and says how much it
+    /// is not showing.
+    ///
+    /// This is the bound that keeps a corrupt length from costing
+    /// gigabytes to print: the cap is on the *read*, so the target is
+    /// never asked for the pages the header claims, and the escaped
+    /// rendering of them is never built. Nothing is wrong with the
+    /// bytes past it, so the shortfall does not say there is.
+    #[test]
+    fn test_a_string_is_shown_only_to_the_cap() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x2000, b"hello, world".to_vec());
+        let header = u64s(&[0x2000, 12, 12]);
+        let value = Value::new(v.ty(STRING).unwrap(), 0x1000, &header);
+        let shown = |cap| format!("{}", value.display_from_target(&mem, 8).max_str_len(cap));
+
+        assert_eq!(shown(Some(5)), "\"hello\" <7 more bytes not shown>");
+        // At and above the length the cap is invisible: a string that
+        // fits says nothing about a bound it never reached.
+        assert_eq!(shown(Some(12)), "\"hello, world\"");
+        assert_eq!(shown(Some(u64::MAX)), "\"hello, world\"");
+        assert_eq!(shown(None), "\"hello, world\"");
+        // A cap of zero asks for nothing and says so, rather than
+        // reading as an empty string or a failed read.
+        assert_eq!(shown(Some(0)), "\"\" <12 bytes not shown>");
+    }
+
+    /// The cap is the renderer's own choice, so it must not be confused
+    /// with the target refusing bytes or the allocator disowning them —
+    /// each shortfall says which it was.
+    #[test]
+    fn test_the_three_shortfalls_are_spelled_apart() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let header = u64s(&[0x2000, 12, 12]);
+        let value = Value::new(v.ty(STRING).unwrap(), 0x1000, &header);
+
+        // Only five bytes are there to serve, and the cap is not
+        // reached: the target is what came up short.
+        let short = FakeMem::new().at(0x2000, b"hello".to_vec());
+        assert_eq!(
+            format!("{}", value.display_from_target(&short, 8)),
+            "\"hello\" <7 more bytes unreadable>"
+        );
+
+        // All twelve are readable, but the allocation holding them
+        // ends after five.
+        let mem = FakeMem::new().at(0x2000, b"hello, world".to_vec());
+        let heap = FakeHeap::new().live(0x2000, 5);
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8).heap(&heap)),
+            "\"hello\" <7 more bytes past its allocation>"
+        );
+
+        // And the cap, which is none of the above.
+        assert_eq!(
+            format!(
+                "{}",
+                value.display_from_target(&mem, 8).max_str_len(Some(5))
+            ),
+            "\"hello\" <7 more bytes not shown>"
+        );
     }
 
     /// A buffer that owns its whole allocation is expected to start at

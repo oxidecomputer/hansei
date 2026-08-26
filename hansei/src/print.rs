@@ -29,7 +29,10 @@ pub(crate) fn exec_print(
             ty.name()
         )
     })?;
-    let mut disp = value.display_from_target(ctx.proc, render.depth);
+    let mut disp = value
+        .display_from_target(ctx.proc, render.depth)
+        .max_str_len(Some(render.max_str_len))
+        .max_array_len(Some(render.max_array_len));
     let heap = session.heap_view();
     if let Some(view) = &heap {
         disp = disp.heap(view);

@@ -2,7 +2,7 @@
 //! associative collections with their storage-specific entry walks.
 
 use crate::debug_type::{DisplayNode, FatHeader, MapEntries};
-use crate::elements::{Elements, HeapGate, SeqError};
+use crate::elements::{Elements, HeapGate, SeqError, Shortfall};
 use crate::value::Value;
 
 use hansei_bundle::BundleType;
@@ -41,7 +41,15 @@ pub(crate) fn eval_slice<'a, T: Target>(
 ) -> fmt::Result {
     let stride = u64::from(element_size);
     let gate = HeapGate::for_header(ctx.heap, header);
-    let elements = match Elements::read_fat(header, *element, stride, bytes, ctx.proc, gate) {
+    // A one-byte element makes this a string in all but type — a
+    // `CString`'s buffer, a `Vec<u8>` — so it is spent from the string
+    // budget, in bytes. Anything wider is a value with a line of its
+    // own and comes out of the element budget.
+    let cap = match stride {
+        1 => ctx.max_str_len,
+        _ => ctx.max_array_len,
+    };
+    let elements = match Elements::read_fat(header, *element, stride, bytes, ctx.proc, gate, cap) {
         Ok(elements) => elements,
         Err(SeqError::Invalid(why)) => return write!(f, "<invalid slice: {why}>"),
         Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable slice buffer>"),
@@ -51,9 +59,11 @@ pub(crate) fn eval_slice<'a, T: Target>(
     if elements.is_empty() {
         // Nothing served of a non-empty claim: the whole buffer is out of
         // reach, which is a degradation, not an empty sequence.
-        return match (elements.truncated(), elements.clipped()) {
-            (Some(_), true) => write!(f, "<slice buffer overruns its allocation>"),
-            (Some(_), false) => write!(f, "<unreadable slice buffer>"),
+        return match (elements.truncated(), elements.shortfall()) {
+            (Some(_), Shortfall::PastAllocation) => {
+                write!(f, "<slice buffer overruns its allocation>")
+            }
+            (Some(_), _) => write!(f, "<unreadable slice buffer>"),
             (None, _) => write!(f, "[]"),
         };
     }
@@ -105,9 +115,10 @@ pub(crate) fn eval_slice<'a, T: Target>(
         // A clipped claim is not a short read: those elements are outside
         // the allocation the buffer starts in, so they were never this
         // sequence's however readable the pages under them happen to be.
-        match elements.clipped() {
-            true => write!(f, "<{} more past its allocation>", claimed - len)?,
-            false => write!(f, "<{} more unreadable>", claimed - len)?,
+        match elements.shortfall() {
+            Shortfall::PastAllocation => write!(f, "<{} more past its allocation>", claimed - len)?,
+            Shortfall::PastCap => write!(f, "<{} more not shown>", claimed - len)?,
+            Shortfall::Unreadable => write!(f, "<{} more unreadable>", claimed - len)?,
         }
     }
     write_seq_close(f, pretty, ctx.prefix, ctx.depth, true)?;
@@ -819,6 +830,76 @@ mod tests {
     /// whatever the last owner left — so nothing but the allocator can
     /// tell that they are not this map's, and the walk stops at the node
     /// rather than emitting them.
+    /// A byte sequence is capped the way a string is: it is a string
+    /// in all but type — a `CString`'s buffer, a `Vec<u8>` — and a
+    /// fabricated length costs the same to print either way. Wider
+    /// elements are left alone, so an ordinary `Vec<u32>` is never
+    /// abbreviated by a byte budget.
+    #[test]
+    fn test_a_byte_sequence_is_capped_but_a_wider_one_is_not() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new()
+            .at(0x2000, vec![7u8; 16])
+            .at(0x3000, u32s(&[5, 8, 13, 21]));
+
+        // A `&[u8]` of sixteen, shown three deep.
+        let bytes_header = u64s(&[0x2000, 16]);
+        let shown = format!(
+            "{}",
+            Value::new(v.ty(BYTE_SLICE).unwrap(), 0x1000, &bytes_header)
+                .display_from_target(&mem, 8)
+                .max_str_len(Some(3))
+        );
+        assert_eq!(shown, "[7, 7, 7, <13 more not shown>]");
+
+        // The same cap over four-byte elements changes nothing: the
+        // budget is bytes, and cutting a `Vec<u32>` at three of them
+        // would abbreviate a value nobody asked to have abbreviated.
+        let wide_header = u64s(&[0x3000, 4]);
+        let wide = |cap_str, cap_arr| {
+            format!(
+                "{}",
+                Value::new(v.ty(SLICE).unwrap(), 0x1000, &wide_header)
+                    .display_from_target(&mem, 8)
+                    .max_str_len(cap_str)
+                    .max_array_len(cap_arr)
+            )
+        };
+        assert_eq!(wide(Some(3), None), "[5, 8, 13, 21]");
+        // It answers to its own budget, which is counted in elements
+        // rather than bytes — a wide element is a value with a line of
+        // its own, not a character.
+        assert_eq!(wide(None, Some(2)), "[5, 8, <2 more not shown>]");
+        assert_eq!(wide(None, Some(4)), "[5, 8, 13, 21]");
+    }
+
+    /// An inline array answers to the element budget too. Its count is
+    /// the type's rather than the target's, so it cannot be fabricated
+    /// — but a declared million-element array still costs a million
+    /// lines, and the budget is about what a render costs.
+    #[test]
+    fn test_an_inline_array_answers_to_the_element_budget() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new();
+        // The fixture declares `[u32; 3]`.
+        let bytes = u32s(&[1, 2, 3]);
+        let arr = || Value::new(v.ty(ARR).unwrap(), 0x1000, &bytes);
+
+        assert_eq!(
+            format!(
+                "{}",
+                arr().display_from_target(&mem, 8).max_array_len(Some(2))
+            ),
+            "[0x00000001, 0x00000002, <1 more not shown>]"
+        );
+        assert_eq!(
+            format!("{}", arr().display_from_target(&mem, 8).max_array_len(None)),
+            "[0x00000001, 0x00000002, 0x00000003]"
+        );
+    }
+
     #[test]
     fn test_a_freed_btree_node_stops_the_walk() {
         let mem = FakeMem::new().at(0x1000, btree_leaf(&[(1, 10)]));
@@ -926,8 +1007,11 @@ mod tests {
         let bytes = u64s(&[0x2000, N as u64, N as u64]);
         let value = Value::new(v.ty(VEC).unwrap(), 0, &bytes);
         let inline: Vec<String> = (0..N).map(|i| i.to_string()).collect();
+        // The display budget is lifted: what this pins is that the
+        // chunks stitch back in order, which takes more elements than
+        // anyone would want printed by default.
         assert_eq!(
-            format!("{}", value.display_from_target(&mem, 8)),
+            format!("{}", value.display_from_target(&mem, 8).max_array_len(None)),
             format!("[{}]", inline.join(", "))
         );
     }

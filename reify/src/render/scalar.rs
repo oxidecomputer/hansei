@@ -4,7 +4,7 @@
 //! byte-slicing primitives the other render modules read words with.
 
 use crate::debug_type::{BitField, FatHeader, FieldRender, ScalarDecode};
-use crate::elements::{HeapGate, SeqError, utf8_buffer};
+use crate::elements::{HeapGate, SeqError, Shortfall, utf8_buffer};
 use proc::Target;
 
 use hansei_bundle::Notation;
@@ -110,8 +110,9 @@ pub(crate) fn write_utf8_string<T: Target>(
     header: &FatHeader,
     proc: Option<&T>,
     heap: Option<&dyn crate::heap::Heap>,
+    cap: Option<u64>,
 ) -> fmt::Result {
-    let text = match utf8_buffer(header, bytes, proc, HeapGate::for_header(heap, header)) {
+    let text = match utf8_buffer(header, bytes, proc, HeapGate::for_header(heap, header), cap) {
         Ok(text) => text,
         Err(SeqError::Invalid(why)) => return write!(f, "<invalid string: {why}>"),
         Err(SeqError::Unreadable(_)) => return write!(f, "<unreadable string data>"),
@@ -119,9 +120,13 @@ pub(crate) fn write_utf8_string<T: Target>(
         Err(SeqError::NoTarget) => return write!(f, "<target unavailable>"),
     };
     if text.count == 0 && text.claimed.is_some() {
-        return match text.clipped {
-            true => write!(f, "<string data overruns its allocation>"),
-            false => write!(f, "<unreadable string data>"),
+        let claimed = text.claimed.unwrap_or_default();
+        return match text.shortfall {
+            Shortfall::PastAllocation => write!(f, "<string data overruns its allocation>"),
+            // A cap of zero asked for nothing and got it: the caller's
+            // instruction carried out, not a failure to read.
+            Shortfall::PastCap => write!(f, "\"\" <{claimed} bytes not shown>"),
+            Shortfall::Unreadable => write!(f, "<unreadable string data>"),
         };
     }
     match std::str::from_utf8(text.bytes) {
@@ -160,15 +165,13 @@ pub(crate) fn write_utf8_string<T: Target>(
         }
     }
     if let Some(claimed) = text.claimed {
-        // See `eval_slice`: a clipped claim names bytes outside the
-        // allocation, not bytes the target would not serve.
-        match text.clipped {
-            true => write!(
-                f,
-                " <{} more bytes past its allocation>",
-                claimed - text.count
-            )?,
-            false => write!(f, " <{} more bytes unreadable>", claimed - text.count)?,
+        let more = claimed - text.count;
+        // Three different facts about the same shortfall; see
+        // `Shortfall`. Only the last of them says nothing is wrong.
+        match text.shortfall {
+            Shortfall::PastAllocation => write!(f, " <{more} more bytes past its allocation>")?,
+            Shortfall::PastCap => write!(f, " <{more} more bytes not shown>")?,
+            Shortfall::Unreadable => write!(f, " <{more} more bytes unreadable>")?,
         }
     }
     Ok(())

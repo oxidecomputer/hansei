@@ -318,7 +318,10 @@ pub(crate) fn render<'r, 'b>(
     opts: RenderOpts,
     heap: Option<&'r dyn reify::Heap>,
 ) -> reify::DisplayValue<'r, 'b, Proc> {
-    let mut display = value.display_from_target(session.ctx.proc, opts.depth);
+    let mut display = value
+        .display_from_target(session.ctx.proc, opts.depth)
+        .max_str_len(Some(opts.max_str_len))
+        .max_array_len(Some(opts.max_array_len));
     if let Some(heap) = heap {
         display = display.heap(heap);
     }
