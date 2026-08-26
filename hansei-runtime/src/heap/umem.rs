@@ -1221,7 +1221,14 @@ mod tests {
     #[test]
     fn test_a_hashed_cache_is_checked_against_its_hash_table() {
         // Eight chunks over four buckets, so a table read short by a
-        // bucket is a table that has lost entries.
+        // bucket is a table that has lost entries. The slab is
+        // *coloured* -- its buffers start a little way into it, as a
+        // real slab's do -- so that every offset the walk computes has
+        // to be taken from the slab's own base rather than from
+        // anything that happens to be chunk-aligned.
+        const COLOUR: u64 = 16;
+        const SLAB_BASE: u64 = BUFFERS + COLOUR;
+        const CHUNKS: u64 = 8;
         let hashed = || {
             let mut f = fake();
             cache(
@@ -1231,31 +1238,36 @@ mod tests {
                 4096,
                 UMF_HASH,
                 &[SlabSpec {
-                    base: BUFFERS,
-                    chunks: 8,
+                    base: SLAB_BASE,
+                    chunks: CHUNKS,
                     free: vec![2],
                 }],
             );
             f
         };
-        let mut f = hashed();
-        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        let heap = UmemHeap::build(&hashed()).expect("the walk built an index");
         assert_eq!(heap.stats().live_chunks, 7);
         assert!(heap.caches()[0].hashed());
         assert!(matches!(
-            heap.locate(BUFFERS + 2 * 4096),
+            heap.locate(SLAB_BASE + 2 * 4096),
             Liveness::Freed { .. }
         ));
-        assert!(matches!(heap.locate(BUFFERS), Liveness::Live { .. }));
+        assert!(matches!(heap.locate(SLAB_BASE), Liveness::Live { .. }));
 
         // A table naming a buffer that is in no slab of this cache is a
         // second reading that disagrees with the first, so neither is
-        // believed and the cache is declined whole.
-        f.put_u64(BUFCTLS + 0x2000 + LP64.bufctl_addr, BUFFERS + 0x9000);
-        assert!(
-            UmemHeap::build(&f).is_none(),
-            "the only cache should have declined"
-        );
+        // believed and the cache is declined whole. The address one
+        // past the last chunk is the one worth naming: it is where the
+        // slab stops, it is chunk-aligned from the base, and only the
+        // bound itself excludes it.
+        for buf in [BUFFERS + 0x9000, SLAB_BASE + CHUNKS * 4096] {
+            let mut f = hashed();
+            f.put_u64(BUFCTLS + 0x2000 + LP64.bufctl_addr, buf);
+            assert!(
+                UmemHeap::build(&f).is_none(),
+                "the only cache should have declined for {buf:#x}"
+            );
+        }
 
         // So does a table the walk reads only part of: half the
         // buckets is half the entries, and the count no longer adds
