@@ -285,10 +285,12 @@ pub(crate) fn exec_runtime(
                 writeln!(out, "{heading}:")?;
             }
             let value = rt.handle.member(member)?;
+            let heap = session.heap_view();
+            let heap = heap.as_ref().map(|view| view as &dyn reify::Heap);
             writeln!(
                 out,
                 "{:#}",
-                render(session, &value, opts).elide_override(&no_elide)
+                render(session, &value, opts, heap).elide_override(&no_elide)
             )?;
             printed = true;
         }

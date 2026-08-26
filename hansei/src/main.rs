@@ -2,6 +2,7 @@ use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand};
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::heap::umem::UmemHeap;
+use hansei_runtime::heap::view::{GateCounts, HeapView};
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
 use hansei_runtime::tokio::{bundle, census, contract};
 use proc::{Proc, Target};
@@ -683,6 +684,11 @@ struct TraceOpts<'a> {
     render: RenderOpts,
     elide: &'a reify::ElideOverride,
     theme: output::Theme,
+    /// The allocator to corroborate every printed value against, where
+    /// the target keeps one; see [`Session::heap_view`]. Carried here
+    /// because the render happens deep inside the chain walk, which
+    /// takes the walk context rather than the session.
+    heap: Option<&'a dyn reify::Heap>,
 }
 
 /// Parse a target address: hex digits behind a required `0x`. The
@@ -782,6 +788,10 @@ pub struct Session<'b> {
     /// libumem and says anything at all. `None` inside the cell is a
     /// target without umem, which is most of them.
     umem: OnceCell<Option<UmemHeap>>,
+    /// How often each render gate has refused something the bytes alone
+    /// would have allowed, over the whole session. A gate that fires
+    /// prints nothing, so this is the only account of what it did.
+    gates: GateCounts,
     /// The launch-time worker's handoff, present until adopted (or
     /// until quit drops it to stop the worker). See [`warm_worker`].
     warm: RefCell<Option<mpsc::Receiver<Warm>>>,
@@ -879,6 +889,7 @@ impl<'b> Session<'b> {
             extents: OnceCell::new(),
             census: OnceCell::new(),
             umem: OnceCell::new(),
+            gates: GateCounts::default(),
             warm: RefCell::new(None),
             audited: Cell::new(false),
             bounds: census::Bounds {
@@ -942,13 +953,32 @@ impl<'b> Session<'b> {
         census
     }
 
-    /// The allocator's own account of what is live, or `None` on a
-    /// target that keeps none.
-    pub fn umem(&self) -> Option<&UmemHeap> {
+    /// The allocator's own account of what is live, joined to the
+    /// target and the gate tally — the form a render takes it in, and
+    /// the one accessor every consumer goes through, so there is a
+    /// single place a target without umem answers `None`.
+    ///
+    /// Handed out by value: a render holds the borrow only as long as
+    /// it is being written, while the tally it counts into is the
+    /// session's and outlives every one of them.
+    pub fn heap_view(&self) -> Option<HeapView<'_, Proc>> {
         self.adopt_warm();
-        self.umem
+        let umem = self
+            .umem
             .get_or_init(|| UmemHeap::build(self.proc))
-            .as_ref()
+            .as_ref()?;
+        Some(HeapView::new(umem, self.proc, &self.gates))
+    }
+
+    /// The index alone, for the answers that are about the allocator
+    /// rather than about a value: `whatis`, `umem-audit`.
+    pub fn umem(&self) -> Option<&UmemHeap> {
+        self.heap_view().map(|view| view.heap())
+    }
+
+    /// What the render gates have refused this session.
+    pub fn gates(&self) -> &GateCounts {
+        &self.gates
     }
 
     /// The target itself, for the reads that go straight to it rather
@@ -1072,11 +1102,13 @@ pub fn dispatch(
                     .collect::<Result<_>>()?,
                 impls: session.impl_fold.clone(),
             };
+            let heap = session.heap_view();
             let opts = TraceOpts {
                 verbose,
                 render,
                 elide: &elide,
                 theme,
+                heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
             };
             trace::exec_trace(session, target, &opts, out)?
         }

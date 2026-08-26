@@ -2883,6 +2883,28 @@ fn test_the_allocator_index_answers_for_what_it_can_read() {
         let out = hansei_ok(&bundle, core, &format!("whatis {chunk}"));
         assert!(out.starts_with("Status: live\nSize:   "), "{out}");
         assert!(!out.contains("umem"), "{out}");
+
+        // The render gates are attached to what a value-printing
+        // command actually prints, and their tally is where a gate that
+        // fired says so. A healthy fixture gives them nothing to refuse,
+        // which is the assertion: the corroboration is on, and it
+        // changes nothing about a target whose pointers are all good.
+        let rows = list_tasks(&bundle, core);
+        let task = task_with_future(&rows, "async fn simple_await::work");
+        let out = hansei_ok(&bundle, core, &format!("trace {} -v ; umem-audit", task.id));
+        // Every container the task holds still renders whole: no read
+        // was refused and no extent cut anywhere in the chain, which is
+        // what the tally then says in numbers.
+        assert!(out.contains(r#"owned: "owned\ttext""#), "{out}");
+        assert!(!out.contains("past its allocation"), "{out}");
+        assert!(!out.contains("<freed"), "{out}");
+        assert!(
+            out.contains(
+                "gates: 0 pointer(s) into freed memory, 0 sequence(s) cut to \
+                 their allocation"
+            ),
+            "{out}"
+        );
     });
 }
 
