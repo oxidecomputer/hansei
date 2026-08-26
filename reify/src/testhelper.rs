@@ -570,6 +570,10 @@ fixture_ids! {
     // A 32-byte digest: any length is hex, so it shares no length with the
     // notations that fix one.
     HASH_BYTES, HASH,
+    // A `&[u8]`: the same shape as SLICE but one byte per element, which
+    // is what the display cap is spent in. Its own type rather than a
+    // wider SLICE, so neither test can change the other's stride.
+    BYTE_SLICE,
     // The waker a parked sync waiter registered: `Option<Waker>` niched on
     // the RawWaker's vtable word, whose `Waker` payload carries the alias
     // format the real emission attaches (the bare `data` pointer).
@@ -655,6 +659,7 @@ pub fn test_bundle() -> Bundle {
     let (vecn, ptrn, vec_lenn, capacityn) =
         (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
     let slicen = s("&[u32]");
+    let byte_slicen = s("&[u8]");
     let (strn, stringn, data_ptrn, length2n) = (
         s("&str"),
         s("alloc::string::String"),
@@ -1629,6 +1634,17 @@ pub fn test_bundle() -> Bundle {
             members: vec![m(uuid_bytesn, HASH_BYTES, 0)],
         },
     );
+    // &[u8] — SLICE's shape at a one-byte stride, which is the unit the
+    // display cap is spent in. Its own type rather than a narrowed
+    // SLICE, so neither test can change the other's stride.
+    types.add(
+        BYTE_SLICE,
+        TypeDef::Struct {
+            name: byte_slicen,
+            size: 16,
+            members: vec![m(data_ptrn, U8_PTR, 0), m(length2n, U64, 8)],
+        },
+    );
     // The waker a parked waiter registered, shaped the way std lays it out:
     // `Option<Waker>` niched on the RawWaker's vtable word (0 = None), the
     // Waker a single-member wrapper of RawWaker { vtable @0, data @8 }, and
@@ -2000,6 +2016,15 @@ pub fn test_bundle() -> Bundle {
                         length: sel(&[1]),
                         capacity: None,
                         element: U32,
+                    },
+                ),
+                (
+                    BYTE_SLICE,
+                    BundleNode::Slice {
+                        pointer: sel(&[0]),
+                        length: sel(&[1]),
+                        capacity: None,
+                        element: U8,
                     },
                 ),
                 (

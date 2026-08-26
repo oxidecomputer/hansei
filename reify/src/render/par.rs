@@ -47,6 +47,8 @@ pub(crate) struct WorkerCtx<'buf, 'a, T> {
     pub(super) elide: Option<&'buf ElideOverride>,
     pub(super) annotate: Option<&'buf AddrAnnotator<'buf>>,
     pub(super) heap: Option<&'buf dyn Heap>,
+    pub(super) max_str_len: Option<u64>,
+    pub(super) max_array_len: Option<u64>,
     pub(super) prefix: &'buf str,
 }
 
@@ -84,6 +86,8 @@ impl<'buf, 'a, T> WorkerCtx<'buf, 'a, T> {
             elide: self.elide,
             annotate: self.annotate,
             heap: self.heap,
+            max_str_len: self.max_str_len,
+            max_array_len: self.max_array_len,
             prefix: self.prefix,
         }
     }

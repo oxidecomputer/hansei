@@ -23,6 +23,27 @@ use hansei_bundle::BundleType;
 /// iterate. This is the one place a count is bounded by fiat.
 const MAX_ZST_ELEMENTS: u64 = 64 * 1024 * 1024;
 
+/// Why a sequence rendered shorter than it said it was.
+///
+/// Only meaningful beside a claimed length; the three are different
+/// facts about the same shortfall and a reader should not have to guess
+/// which one happened. [`Unreadable`](Shortfall::Unreadable) is the
+/// target's answer, [`PastAllocation`](Shortfall::PastAllocation) the
+/// allocator's, and [`PastCap`](Shortfall::PastCap) this renderer's own
+/// choice — the only one of the three that says nothing is wrong.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum Shortfall {
+    /// The target could not serve the rest.
+    #[default]
+    Unreadable,
+    /// The rest lies outside the allocation the buffer starts in, so it
+    /// was never this sequence's however readable it is.
+    PastAllocation,
+    /// The rest was never asked for: the value is longer than the
+    /// display cap. The bytes are presumably fine.
+    PastCap,
+}
+
 /// The allocator's say in one buffer read.
 ///
 /// A length word is read out of the target like any other, so a length
@@ -77,9 +98,9 @@ pub struct Elements<'a> {
     count: u64,
     /// What the value's length said, when the target could not serve it.
     claimed: Option<u64>,
-    /// Whether the shortfall is the allocator's verdict rather than the
-    /// target's: the claim ran past the allocation holding the buffer.
-    clipped: bool,
+    /// Why the claim was not met, where it was not; see
+    /// [`Elements::shortfall`].
+    shortfall: Shortfall,
     bytes: &'a [u8],
 }
 
@@ -109,12 +130,10 @@ impl<'a> Elements<'a> {
         self.claimed
     }
 
-    /// Whether [`truncated`](Elements::truncated) reports a claim cut to
-    /// the allocation holding the buffer rather than one the target
-    /// could not serve. The elements past the cut are not missing: they
-    /// were never this sequence's.
-    pub fn clipped(&self) -> bool {
-        self.clipped
+    /// Why [`truncated`](Elements::truncated) reports a shortfall, for
+    /// a caller spelling one. Meaningless without a claim.
+    pub(crate) fn shortfall(&self) -> Shortfall {
+        self.shortfall
     }
 
     /// The element at `index`, handed over as the sequence's own element
@@ -156,6 +175,7 @@ impl<'a> Elements<'a> {
         }) = DisplayNode::resolve(ty)
         {
             let stride = u64::from(element_size);
+            // No cap on the parse path; see `utf8` below.
             return Self::read_fat(
                 &header,
                 element,
@@ -163,6 +183,7 @@ impl<'a> Elements<'a> {
                 info.bytes,
                 Some(proc),
                 HeapGate::none(),
+                None,
             )
             .map_err(|e| e.into_error(ty.name()));
         }
@@ -174,7 +195,7 @@ impl<'a> Elements<'a> {
                 stride: element.size(),
                 count,
                 claimed: None,
-                clipped: false,
+                shortfall: Shortfall::default(),
                 bytes: info.bytes,
             });
         }
@@ -188,7 +209,7 @@ impl<'a> Elements<'a> {
             ));
         };
         let stride = element.size();
-        let buffer = read_buffer(Some(proc), base, stride, count, HeapGate::none())
+        let buffer = read_buffer(Some(proc), base, stride, count, HeapGate::none(), None)
             .map_err(|e| e.into_error(ty.name()))?;
         Ok(Self::over(buffer, element, base, stride))
     }
@@ -204,9 +225,13 @@ impl<'a> Elements<'a> {
         bytes: &[u8],
         proc: Option<&'a T>,
         gate: HeapGate<'_>,
+        cap: Option<u64>,
     ) -> std::result::Result<Elements<'a>, SeqError> {
         let (base, count) = decode_header(bytes, header, stride)?;
-        let buffer = read_buffer(proc, base, stride, count, gate)?;
+        // `cap` is already the right budget for this stride: only the
+        // caller knows whether a one-byte element makes this a string
+        // in all but type.
+        let buffer = read_buffer(proc, base, stride, count, gate, cap)?;
         Ok(Self::over(buffer, element, base, stride))
     }
 
@@ -216,7 +241,7 @@ impl<'a> Elements<'a> {
             bytes,
             count,
             claimed,
-            clipped,
+            shortfall,
         } = buffer;
         Elements {
             element,
@@ -224,7 +249,7 @@ impl<'a> Elements<'a> {
             stride,
             count,
             claimed,
-            clipped,
+            shortfall,
             bytes,
         }
     }
@@ -290,9 +315,8 @@ pub(crate) struct Buffer<'a> {
     pub(crate) bytes: &'a [u8],
     pub(crate) count: u64,
     pub(crate) claimed: Option<u64>,
-    /// Whether the shortfall is the allocation's bound rather than the
-    /// target's; see [`Elements::clipped`].
-    pub(crate) clipped: bool,
+    /// Why the claim was not met; see [`Elements::shortfall`].
+    pub(crate) shortfall: Shortfall,
 }
 
 /// The bytes of a UTF-8 buffer — a `String`, a `&str`, an owned path — read
@@ -307,12 +331,16 @@ pub(crate) fn utf8<'a, T: Target>(info: &Value<'a>, proc: &'a T) -> Result<Buffe
     let ty = info.ty;
 
     if let Some(DisplayNode::Str { header }) = DisplayNode::resolve(ty) {
-        return utf8_buffer(&header, info.bytes, Some(proc), HeapGate::none())
+        // No cap on the parse path: a caller collecting a `String` is
+        // reading a datum, not showing one, and a quietly shortened
+        // one would be wrong rather than merely abbreviated.
+        return utf8_buffer(&header, info.bytes, Some(proc), HeapGate::none(), None)
             .map_err(|e| e.into_error(ty.name()));
     }
 
     let (_, base, length) = bare_fat_pointer(info, proc)?;
-    read_buffer(Some(proc), base, 1, length, HeapGate::none()).map_err(|e| e.into_error(ty.name()))
+    read_buffer(Some(proc), base, 1, length, HeapGate::none(), None)
+        .map_err(|e| e.into_error(ty.name()))
 }
 
 /// Decode the bare `(data_ptr, length)` members of `info` — the shared
@@ -338,9 +366,15 @@ pub(crate) fn utf8_buffer<'a, T: Target>(
     bytes: &[u8],
     proc: Option<&'a T>,
     gate: HeapGate<'_>,
+    cap: Option<u64>,
 ) -> std::result::Result<Buffer<'a>, SeqError> {
     let (base, length) = decode_header(bytes, header, 1)?;
-    read_buffer(proc, base, 1, length, gate)
+    // The cap bounds the *read*, not the write: a length out of dead
+    // bytes otherwise reaches the target for every mapped page it
+    // claims, and the escaped rendering of what comes back is several
+    // times the size again. Bounding it here is what keeps a corrupt
+    // header from costing gigabytes to print.
+    read_buffer(proc, base, 1, length, gate, cap)
 }
 
 /// Read `count` units of `stride` bytes from `base`, believing the count only
@@ -351,16 +385,17 @@ fn read_buffer<'a, T: Target>(
     stride: u64,
     count: u64,
     gate: HeapGate<'_>,
+    cap: Option<u64>,
 ) -> std::result::Result<Buffer<'a>, SeqError> {
-    let empty = |count, claimed, clipped| Buffer {
+    let empty = |count, claimed, shortfall| Buffer {
         bytes: &[][..],
         count,
         claimed,
-        clipped,
+        shortfall,
     };
 
     if count == 0 {
-        return Ok(empty(0, None, false));
+        return Ok(empty(0, None, Shortfall::default()));
     }
     if base == 0 {
         return Err(SeqError::Invalid("the data pointer is null"));
@@ -370,11 +405,14 @@ fn read_buffer<'a, T: Target>(
         // many of it there are — which also means nothing corroborates the
         // count, so it alone gets a ceiling rather than a read's refusal.
         return Ok(match count > MAX_ZST_ELEMENTS {
-            true => empty(MAX_ZST_ELEMENTS, Some(count), false),
-            false => empty(count, None, false),
+            true => empty(MAX_ZST_ELEMENTS, Some(count), Shortfall::default()),
+            false => empty(count, None, Shortfall::default()),
         });
     }
 
+    // Judged before it is cut down: a header that cannot describe any
+    // sequence says so whatever the display budget is, and clipping
+    // first would hide an impossible length behind a short read.
     let want = count
         .checked_mul(stride)
         .ok_or(SeqError::Invalid("the buffer size overflows"))?;
@@ -382,7 +420,21 @@ fn read_buffer<'a, T: Target>(
         .ok_or(SeqError::Invalid("the buffer wraps the address space"))?;
     let proc = proc.ok_or(SeqError::NoTarget)?;
 
-    let (want, clipped) = bound_to_allocation(gate, base, want)?;
+    // Now the budget, in elements — which for a one-byte element is the
+    // same number of bytes.
+    let (want, capped) = match cap {
+        Some(cap) if cap < count => (cap * stride, true),
+        _ => (want, false),
+    };
+    let (want, allocation) = bound_to_allocation(gate, base, want)?;
+    // The allocator's verdict outranks the budget: one says these bytes
+    // were never the value's, the other only that they were not asked
+    // for.
+    let shortfall = match (allocation, capped) {
+        (Shortfall::PastAllocation, _) => Shortfall::PastAllocation,
+        (_, true) => Shortfall::PastCap,
+        _ => Shortfall::default(),
+    };
 
     // What the target says it can serve: a length out of corrupt memory
     // otherwise sizes an allocation before the read that would have refused
@@ -390,8 +442,17 @@ fn read_buffer<'a, T: Target>(
     // whole one.
     let servable = proc.readable_len(base, want);
     let served = servable - servable % stride;
+    // Coming up short of what was *asked for* outranks both of the
+    // reasons above: they explain the part deliberately not asked for,
+    // and a reader told "not shown" would take the rest to be fine.
+    // Asking for nothing and getting nothing is not coming up short.
+    let short_read = served < want;
     if served == 0 {
-        return Ok(empty(0, Some(count), clipped));
+        let why = match want {
+            0 => shortfall,
+            _ => Shortfall::Unreadable,
+        };
+        return Ok(empty(0, Some(count), why));
     }
     let bytes = crate::target::read_bytes(proc, base, served).map_err(SeqError::Unreadable)?;
     let got = served / stride;
@@ -399,7 +460,10 @@ fn read_buffer<'a, T: Target>(
         bytes,
         count: got,
         claimed: (got < count).then_some(count),
-        clipped,
+        shortfall: match short_read {
+            true => Shortfall::Unreadable,
+            false => shortfall,
+        },
     })
 }
 
@@ -414,9 +478,9 @@ fn bound_to_allocation(
     gate: HeapGate<'_>,
     base: u64,
     want: u64,
-) -> std::result::Result<(u64, bool), SeqError> {
+) -> std::result::Result<(u64, Shortfall), SeqError> {
     let Some(heap) = gate.heap else {
-        return Ok((want, false));
+        return Ok((want, Shortfall::default()));
     };
     // Whether the buffer starts where its allocation does is evidence
     // about the pointer, not yet grounds to refuse it: an owning pointer
@@ -431,9 +495,9 @@ fn bound_to_allocation(
         }
         Liveness::Live { block } if block.end - base < want => {
             heap.note(Gate::Clipped);
-            Ok((block.end - base, true))
+            Ok((block.end - base, Shortfall::PastAllocation))
         }
-        _ => Ok((want, false)),
+        _ => Ok((want, Shortfall::default())),
     }
 }
 
@@ -485,6 +549,7 @@ mod tests {
             0,
             super::MAX_ZST_ELEMENTS,
             super::HeapGate::none(),
+            None,
         ) else {
             panic!("a count at the ceiling is served");
         };
@@ -496,6 +561,7 @@ mod tests {
             0,
             super::MAX_ZST_ELEMENTS + 1,
             super::HeapGate::none(),
+            None,
         ) else {
             panic!("a count past the ceiling is capped, not refused");
         };
