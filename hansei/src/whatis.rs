@@ -123,17 +123,27 @@ fn report_whatis(
                 false => "freed",
             }
         )?;
+        // The two sizes are different claims, so they are worded as
+        // two: bare is what the program asked for, and `block` is the
+        // block it sits in — the allocator's own number, rounded to a
+        // size class and carrying the header — which is all a scrubbed
+        // header leaves to measure.
         match alloc.size {
             Size::Requested(size) => writeln!(out, "Size:   {}", bytes(size))?,
-            // Not the caller's number: it is what the block holds,
-            // which is all a scrubbed header leaves to measure.
-            Size::Block(size) => writeln!(out, "Size:   {size} byte allocation block")?,
+            Size::Block(size) => writeln!(out, "Size:   {size} byte block")?,
         }
         // Zero is the pointer the program was given, so the line would
         // be saying nothing; its presence is what marks an address as
-        // an interior one.
+        // an interior one. What it counts from is whichever of the two
+        // the size line just named, and it says which: they start 8 or
+        // 16 bytes apart, so an offset naming neither would be
+        // ambiguous by exactly a header.
         if alloc.offset > 0 {
-            writeln!(out, "Offset: {} into it", bytes(alloc.offset))?;
+            let whole = match alloc.size {
+                Size::Requested(_) => "allocation",
+                Size::Block(_) => "block",
+            };
+            writeln!(out, "Offset: +{} in {whole}", alloc.offset)?;
         }
     }
 
@@ -581,22 +591,22 @@ mod whatis_tests {
 
             // A freed block: `free` scrubbed the header, so the block's
             // own size is all there is left to report, and the offset
-            // counts from where the block starts.
+            // counts from where the block starts — which is what the
+            // line says, because the two starts are a header apart.
             let shown = reported(t, alloc(false, Size::Block(64), 16), None, task);
             assert!(
-                shown.starts_with(
-                    "Status: freed\nSize:   64 byte allocation block\nOffset: 16 bytes into it\n"
-                ),
+                shown.starts_with("Status: freed\nSize:   64 byte block\nOffset: +16 in block\n"),
                 "{shown}"
             );
 
             // The block is about the memory, not about what claims it,
             // so an address nothing in the report claims still reports
-            // the miss.
+            // the miss. An offset into a known allocation counts from
+            // the pointer the program was given, and names it.
             let shown = reported(t, alloc(true, Size::Requested(1), 1), None, 0x10);
             assert_eq!(
                 shown,
-                "Status: live\nSize:   1 byte\nOffset: 1 byte into it\n\n\
+                "Status: live\nSize:   1 byte\nOffset: +1 in allocation\n\n\
                  no task's allocation and no future the census found contains 0x10\n"
             );
 
