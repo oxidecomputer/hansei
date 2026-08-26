@@ -666,6 +666,13 @@ impl<'t, T: Target> Walk<'t, T> {
         if table == 0 || buckets > MAX_HASH_BUCKETS || !buckets.is_power_of_two() {
             return false;
         }
+        // The cache's slabs by address, so each entry finds its own by
+        // bisection. Scanning them instead is quadratic in a cache
+        // whose chunk fills a slab — a real target has tens of
+        // thousands of those, one buffer each.
+        let mut spans: Vec<(u64, u64)> = slabs.iter().map(|s| (s.base, s.end())).collect();
+        spans.sort_unstable();
+
         let mut entries = 0u64;
         for bucket in 0..buckets {
             let Some(mut bufctl) = self.read(table + bucket * 8) else {
@@ -684,9 +691,11 @@ impl<'t, T: Target> Walk<'t, T> {
                 };
                 // Every allocated buffer must be a chunk of one of this
                 // cache's own slabs.
-                let found = slabs
-                    .iter()
-                    .any(|s| buf >= s.base && buf < s.end() && (buf - s.base) % s.chunksize == 0);
+                let above = spans.partition_point(|&(base, _)| base <= buf);
+                let found = above.checked_sub(1).is_some_and(|i| {
+                    let (base, end) = spans[i];
+                    buf < end && (buf - base) % cache.chunksize == 0
+                });
                 if !found {
                     return false;
                 }
