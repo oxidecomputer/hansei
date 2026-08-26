@@ -136,13 +136,8 @@ pub fn exec_umem_audit(
         match malloc_tag(session.proc(), addr) {
             Some(tag) => writeln!(
                 out,
-                "  tag: {:?}, {} byte allocation{}",
-                tag.kind,
-                tag.total,
-                match tag.base {
-                    Some(base) => format!(" based at {base:#x}"),
-                    None => String::new(),
-                }
+                "  tag: {:?}, {} byte allocation based at {:#x}",
+                tag.kind, tag.total, tag.base
             )?,
             None => writeln!(out, "  tag: no malloc header precedes it")?,
         }
