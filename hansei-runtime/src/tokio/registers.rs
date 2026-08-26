@@ -38,6 +38,11 @@ pub struct LwpStack {
     pub tid: u32,
     pub rsp: u64,
     pub range: Range<u64>,
+    /// The alternate signal stack this lwp registered, where the
+    /// target records one. Its own mapping, and anonymous like the
+    /// heap — telling the two apart is the whole reason it is here.
+    /// Empty where nothing said.
+    pub altstack: Range<u64>,
 }
 
 /// What one register value points into — the annotation ladder, most
@@ -62,8 +67,19 @@ pub enum RegClass {
     /// which of its regions the address is in — which is most of what
     /// is left to say once no symbol will say more.
     Object { path: String, region: &'static str },
-    /// A mapped anonymous address nothing above claimed.
+    /// Inside the alternate signal stack of the lwp whose registers
+    /// these are, or of another lwp — the tid names which.
+    AltStack(u32),
+    /// Inside the `brk` heap: the one region an allocator grows, and
+    /// the only one `pmap` calls `[ heap ]`.
     Heap,
+    /// A mapped anonymous address nothing above claimed — `pmap`'s
+    /// `[ anon ]`. A process has hundreds: an allocator's mmap-backed
+    /// arenas, guard pages, the tables a threading library maps for
+    /// itself. Saying "heap" of these would be asserting something
+    /// false about all of them, and a target that cannot tell the
+    /// break from the rest reports every anonymous mapping this way.
+    Anon,
     /// A pointer-sized value mapped nowhere.
     Unmapped,
     /// Zero — the one value below the pointer floor worth a word,
@@ -142,6 +158,17 @@ impl RegClassifier<'_> {
         if self.stacks.iter().any(|s| mapping.range().contains(&s.rsp)) {
             return RegClass::StackRegion;
         }
+        // An alternate signal stack is anonymous like everything below
+        // it, so it has to be claimed before the fallbacks or it reads
+        // as ordinary heap. A thread only stands on one while handling
+        // a signal, which is exactly when saying so matters.
+        if let Some(stack) = self
+            .stacks
+            .iter()
+            .find(|s| !s.altstack.is_empty() && s.altstack.contains(&value))
+        {
+            return RegClass::AltStack(stack.tid);
+        }
         match &mapping.path {
             Some(path) => match symbol(value) {
                 Some(sym) => RegClass::Symbol {
@@ -153,7 +180,10 @@ impl RegClassifier<'_> {
                     region: mapping.region(),
                 },
             },
-            None => RegClass::Heap,
+            // Anonymous, and the break is the only anonymous mapping
+            // with a name worth giving.
+            None if mapping.is_heap() => RegClass::Heap,
+            None => RegClass::Anon,
         }
     }
 
@@ -176,6 +206,18 @@ mod tests {
     const WRITE: u32 = 0x02;
     const EXEC: u32 = 0x01;
     const ANON: u32 = 0x40;
+    const BREAK: u32 = 0x10;
+
+    /// One lwp's stack with no alternate signal stack — what most
+    /// tests want, and what a target that records none reports.
+    fn stack(tid: u32, rsp: u64, range: std::ops::Range<u64>) -> LwpStack {
+        LwpStack {
+            tid,
+            rsp,
+            range,
+            altstack: 0..0,
+        }
+    }
 
     fn mapping(vaddr: u64, size: u64, flags: u32, path: Option<&str>) -> LoadedObjectWithPath {
         LoadedObjectWithPath {
@@ -186,14 +228,18 @@ mod tests {
         }
     }
 
-    /// The zoo every test classifies against: text and an anonymous
-    /// arena holding one task's extent, plus whatever stacks a test
-    /// lays on. No symbol resolves unless a test says so.
+    /// The zoo every test classifies against: text, an anonymous
+    /// arena holding one task's extent, and the break — which is a
+    /// separate mapping from the arena on purpose, because telling
+    /// those two apart is the thing being tested. Plus whatever
+    /// stacks a test lays on. No symbol resolves unless a test says
+    /// so.
     fn fixture() -> (Mappings, TaskExtents) {
         let mappings: Mappings = [
             mapping(0x40_0000, 0x1000, READ | EXEC, Some("/bin/app")),
             mapping(0x50_0000, 0x1000, READ, Some("/lib/libc.so")),
             mapping(0x7000_0000, 0x1_0000, READ | WRITE | ANON, None),
+            mapping(0x8000_0000, 0x1_0000, READ | WRITE | ANON | BREAK, None),
         ]
         .into_iter()
         .collect();
@@ -230,7 +276,8 @@ mod tests {
     }
 
     /// A task allocation claims its addresses even though it sits in a
-    /// mapped anonymous region; the rest of that region is heap.
+    /// mapped anonymous region; the rest of that region is anonymous
+    /// memory, which is not the heap.
     #[test]
     fn test_a_task_allocation_wins_over_its_mapping() {
         assert_eq!(
@@ -240,7 +287,7 @@ mod tests {
                 offset: 0x10
             }
         );
-        assert_eq!(classify(&[], 1, 0x7000_0800), RegClass::Heap);
+        assert_eq!(classify(&[], 1, 0x7000_0800), RegClass::Anon);
     }
 
     /// A value inside exactly one recorded stack range attributes to
@@ -248,16 +295,8 @@ mod tests {
     #[test]
     fn test_stack_ranges_attribute_by_lwp() {
         let stacks = [
-            LwpStack {
-                tid: 7,
-                rsp: 0x9000_0800,
-                range: 0x9000_0000..0x9001_0000,
-            },
-            LwpStack {
-                tid: 8,
-                rsp: 0x9002_0800,
-                range: 0x9002_0000..0x9003_0000,
-            },
+            stack(7, 0x9000_0800, 0x9000_0000..0x9001_0000),
+            stack(8, 0x9002_0800, 0x9002_0000..0x9003_0000),
         ];
         assert_eq!(classify(&stacks, 7, 0x9000_0900), RegClass::OwnStack);
         assert_eq!(classify(&stacks, 7, 0x9002_0900), RegClass::LwpStack(8));
@@ -271,16 +310,8 @@ mod tests {
     fn test_a_merged_vma_attributes_by_rsp_anchor() {
         let merged = 0x9000_0000..0x9400_0000;
         let stacks = [
-            LwpStack {
-                tid: 7,
-                rsp: 0x93f0_0000,
-                range: merged.clone(),
-            },
-            LwpStack {
-                tid: 8,
-                rsp: 0x9070_0000,
-                range: merged.clone(),
-            },
+            stack(7, 0x93f0_0000, merged.clone()),
+            stack(8, 0x9070_0000, merged.clone()),
         ];
         // At and above the higher anchor: the higher thread's.
         assert_eq!(classify(&stacks, 7, 0x93f0_0000), RegClass::OwnStack);
@@ -296,17 +327,12 @@ mod tests {
     /// illumos `stack_t` shape — is a thread-stack region, not heap.
     #[test]
     fn test_a_stack_mapping_outside_every_range_is_noncommittal() {
-        let stacks = [LwpStack {
-            tid: 7,
-            rsp: 0x7000_8800,
-            range: 0x7000_8000..0x7000_9000,
-        }];
+        let stacks = [stack(7, 0x7000_8800, 0x7000_8000..0x7000_9000)];
         assert_eq!(classify(&stacks, 7, 0x7000_4000), RegClass::StackRegion);
     }
 
     /// File-backed addresses name the covering symbol with its offset,
-    /// or the object when no symbol covers them; anonymous ones are
-    /// heap.
+    /// or the object when no symbol covers them.
     #[test]
     fn test_file_backed_addresses_name_the_symbol_or_object() {
         let (mappings, extents) = fixture();
@@ -350,5 +376,42 @@ mod tests {
                 region: "text",
             }
         );
+    }
+
+    /// The break is the heap and every other anonymous mapping is not.
+    ///
+    /// A process maps hundreds of anonymous regions and exactly one of
+    /// them is the break, so the flag is what decides it — calling
+    /// them all heap would be a false claim about all but one. A
+    /// target that cannot set the flag (a Linux core, which records no
+    /// break) therefore reports anon everywhere, which is the weaker
+    /// answer rather than a wrong one.
+    #[test]
+    fn test_only_the_break_is_the_heap() {
+        assert_eq!(classify(&[], 1, 0x8000_0800), RegClass::Heap);
+        assert_eq!(classify(&[], 1, 0x7000_0800), RegClass::Anon);
+    }
+
+    /// An alternate signal stack is claimed as one rather than read as
+    /// the anonymous mapping it otherwise looks exactly like — by its
+    /// own lwp's number or another's, the way a thread stack is. The
+    /// mapping under it is ordinary anonymous memory, so a target that
+    /// records no alternate stack still classifies everything else the
+    /// same.
+    #[test]
+    fn test_an_alternate_signal_stack_is_not_anonymous_memory() {
+        let mut with_alt = stack(7, 0x9000_0800, 0x9000_0000..0x9001_0000);
+        with_alt.altstack = 0x7000_4000..0x7000_6000;
+        let stacks = [with_alt, stack(8, 0x9002_0800, 0x9002_0000..0x9003_0000)];
+
+        assert_eq!(classify(&stacks, 7, 0x7000_5000), RegClass::AltStack(7));
+        assert_eq!(classify(&stacks, 8, 0x7000_5000), RegClass::AltStack(7));
+        // Just outside it, the same mapping is anonymous again.
+        assert_eq!(classify(&stacks, 7, 0x7000_6000), RegClass::Anon);
+        // And an empty altstack claims nothing at all, however many
+        // lwps report one — the empty range must not swallow an
+        // address the way `0..0` containing nothing already says.
+        let none = [stack(7, 0x9000_0800, 0x9000_0000..0x9001_0000)];
+        assert_eq!(classify(&none, 7, 0x7000_5000), RegClass::Anon);
     }
 }

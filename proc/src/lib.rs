@@ -627,6 +627,20 @@ pub struct LwpInfo {
     pub regs: Regs,
     /// The address range of the LWP's stack.
     pub stack_range: Range<u64>,
+    /// The alternate signal stack this LWP registered, where it
+    /// registered one. Its own mapping, distinct from `stack_range` —
+    /// a signal handler running on it is on neither the thread's
+    /// stack nor the heap, which is the whole reason to record it.
+    /// Empty for an LWP with no alternate stack, and on a target whose
+    /// core does not say (a Linux one).
+    ///
+    /// Adding this to a snapshot is a breaking change and takes a
+    /// [`snapshot::FORMAT_VERSION`](crate::snapshot::FORMAT_VERSION)
+    /// bump with it: postcard is not self-describing, so a reader
+    /// decodes fields by position and a capture written without this
+    /// one runs off the end rather than defaulting it. `serde(default)`
+    /// buys nothing here.
+    pub altstack: Range<u64>,
     /// The timestamp the LWP was stopped.
     pub tstamp: Timespec,
 }
@@ -764,6 +778,15 @@ impl LoadedObjectWithPath {
         self.flags.is_read() && self.flags.is_write() && !self.flags.is_anon()
     }
 
+    /// Whether this is *the* heap — the `brk` region, the one thing
+    /// `pmap` labels `[ heap ]`.
+    ///
+    /// Anonymous is not enough: a process maps hundreds of anonymous
+    /// regions (thread stacks, alternate signal stacks, an allocator's
+    /// own arenas) and exactly one of them is the break. A reader that
+    /// calls them all "heap" is asserting something false about all but
+    /// one, so the break flag is required and a target that cannot set
+    /// it reports [`is_anon`](MapFlags::is_anon) instead.
     pub fn is_heap(&self) -> bool {
         self.flags.is_read()
             && self.flags.is_write()

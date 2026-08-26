@@ -184,10 +184,24 @@ impl Core {
                         tv_nsec: status.pr_tstamp.tv_nsec,
                     };
 
+                    // The alternate signal stack the thread registered,
+                    // straight out of the same `lwpstatus_t` the
+                    // portable reader decodes by hand — so the two
+                    // readings of it are compared like every other
+                    // field here. A thread that registered none reports
+                    // a null base, which is the empty range.
+                    let alt = status.pr_altstack;
+                    let alt_start = alt.ss_sp as u64;
+                    let altstack = match (alt_start, alt.ss_size as u64) {
+                        (0, _) | (_, 0) => 0..0,
+                        (start, size) => start..start + size,
+                    };
+
                     cb_data.data.push(LwpInfo {
                         tid: status.pr_lwpid as u32,
                         regs,
                         stack_range: stack_start..stack_end,
+                        altstack,
                         tstamp,
                     });
                 }

@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"prosnap\0";
 
 /// Bumped freely on schema change; there is no cross-version
 /// compatibility requirement (same-tool-reads-it rule).
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
