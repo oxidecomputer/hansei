@@ -2031,6 +2031,28 @@ mod tests {
         assert!(p.lookup_symbol_by_name("no_such_symbol_anywhere").is_none());
         assert!(p.lookup_symbol_by_addr(0x9000).is_none());
         assert!(!p.symbols().unwrap().is_empty());
+
+        // An object-qualified name resolves only against the one table
+        // a Linux core puts within reach — the executable's, by path or
+        // by the file name at the end of it. Anything else, including a
+        // library this process really does have mapped, is a miss
+        // rather than the executable's symbol under another name.
+        let name = p.symbols().unwrap()[0].name.clone();
+        let file = exe.file_name().unwrap().to_str().unwrap();
+        for object in [exe.to_str().unwrap(), file] {
+            assert!(
+                p.lookup_symbol_by_name(&format!("{object}`{name}"))
+                    .is_some(),
+                "{object}`{name} did not resolve"
+            );
+        }
+        for object in ["libc.so.6", "/some/other/path", ""] {
+            assert!(
+                p.lookup_symbol_by_name(&format!("{object}`{name}"))
+                    .is_none(),
+                "{object}`{name} resolved to the executable's symbol"
+            );
+        }
     }
 
     /// A thread-local's `st_value` is an offset into a TLS block, so

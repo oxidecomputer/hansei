@@ -2829,6 +2829,23 @@ fn nested_under(out: &str, member: &str, ty: &str) {
     panic!("nothing is nested under a `{member}` member of {ty}:\n{out}");
 }
 
+/// The allocator index is optional and its absence is silent. These
+/// targets run on the system malloc rather than libumem, so there is
+/// nothing for the umem walk to read — and the session has to attach,
+/// build, and answer exactly as it would with one, saying that it has
+/// no verdicts rather than failing or guessing.
+#[test]
+fn test_a_target_without_umem_says_so_and_carries_on() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let out = hansei_ok(&bundle, core, "umem-audit 0x1000");
+        assert!(out.contains("no umem metadata in this target"), "{out}");
+        // The command that follows it is answered all the same.
+        let out = hansei_ok(&bundle, core, "umem-audit ; tasks");
+        assert!(out.contains("\n1 task\n"), "{out}");
+    });
+}
+
 /// `--exec` asks from the command line what a pipeline would ask on
 /// stdin, and the session exits with its answer.
 #[test]
