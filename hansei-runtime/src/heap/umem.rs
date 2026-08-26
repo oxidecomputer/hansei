@@ -932,6 +932,10 @@ mod tests {
     /// Where the buffers themselves are, one slab's worth every 0x1000.
     const BUFFERS: u64 = BASE + 0x10_0000;
 
+    /// A hashed cache's `cache_hash_mask`: four buckets, so a walk
+    /// that reads the wrong number of them comes up short.
+    const HASH_MASK: u64 = 3;
+
     /// One slab to lay: which chunks are free, in freelist order.
     struct SlabSpec {
         base: u64,
@@ -961,18 +965,30 @@ mod tests {
     fn cache(f: &mut Fake, index: u64, name: &str, chunksize: u64, flags: u32, slabs: &[SlabSpec]) {
         let addr = CACHES + index * 0x400;
         // Big enough to hold the largest slab laid below, the way a
-        // real cache's is chosen to fit its chunks.
+        // real cache's is chosen to fit its chunks -- and exactly the
+        // size of one chunk where a chunk is bigger than a page, which
+        // is what every large cache on a real target looks like.
         let slabsize = slabs
             .iter()
             .map(|s| s.chunks * chunksize)
             .max()
             .unwrap_or(0x1000)
-            .max(0x1000);
+            .max(0x1000)
+            .max(chunksize);
         f.put_str(addr + LP64.cache_name, name);
-        f.put_u64(addr + LP64.cache_bufsize, chunksize - 8);
+        // Buffer and chunk are the same size unless a debugging
+        // feature widened the chunk; the small caches of a real target
+        // are all this way.
+        f.put_u64(addr + LP64.cache_bufsize, chunksize);
         f.put_u64(addr + LP64.cache_chunksize, chunksize);
         f.put_u64(addr + LP64.cache_slabsize, slabsize);
-        f.put_u64(addr + LP64.cache_bufctl, chunksize - 8);
+        // A hashed cache's bufctls are outside its buffers, so the
+        // distance is meaningless there and libumem leaves it zero.
+        let bufctl = match flags & UMF_HASH != 0 {
+            true => 0,
+            false => chunksize - 8,
+        };
+        f.put_u64(addr + LP64.cache_bufctl, bufctl);
         f.put_u32(addr + LP64.cache_flags, flags);
 
         // Splice in: anchor -> this -> whatever the anchor named.
@@ -1031,19 +1047,25 @@ mod tests {
         }
 
         if flags & UMF_HASH != 0 {
-            // One bucket holding every allocated buffer's bufctl: the
-            // walk checks membership and count, not the hash function.
+            // Every allocated buffer's bufctl, spread over four
+            // buckets: the walk checks membership and count rather
+            // than the hash function, but a table it reads only part
+            // of must not add up.
             let table = BUFCTLS + 0x4000;
+            let mask = HASH_MASK;
             f.put_u64(addr + LP64.cache_hash_table, table);
-            f.put_u64(addr + LP64.cache_hash_mask, 0);
-            let mut head = 0;
+            f.put_u64(addr + LP64.cache_hash_mask, mask);
+            let mut heads = vec![0u64; (mask + 1) as usize];
             for (i, buf) in allocated.iter().enumerate() {
                 let bc = BUFCTLS + 0x2000 + i as u64 * 24;
+                let bucket = (i as u64 & mask) as usize;
                 f.put_u64(bc + LP64.bufctl_addr, *buf);
-                f.put_u64(bc + LP64.bufctl_next, head);
-                head = bc;
+                f.put_u64(bc + LP64.bufctl_next, heads[bucket]);
+                heads[bucket] = bc;
             }
-            f.put_u64(table, head);
+            for (bucket, head) in heads.into_iter().enumerate() {
+                f.put_u64(table + bucket as u64 * 8, head);
+            }
         }
     }
 
@@ -1113,6 +1135,9 @@ mod tests {
         assert_eq!((stats.caches, stats.caches_declined), (2, 0));
         assert_eq!((stats.slabs, stats.slabs_declined), (3, 0));
         assert_eq!((stats.live_chunks, stats.freed_chunks), (17, 3));
+        // Chunk stride, per cache, over the live chunks: 14 of 64 and
+        // 3 of 128.
+        assert_eq!(stats.live_bytes, 14 * 64 + 3 * 128);
         assert!(!stats.incomplete());
 
         // A freed chunk, an allocated one, and an address inside each
@@ -1159,32 +1184,51 @@ mod tests {
         assert_eq!(heap.locate(BUFFERS - 1), Liveness::Unknown);
         assert_eq!(heap.locate(0), Liveness::Unknown);
 
-        // What an enumeration differential diffs: every allocated
-        // chunk, in address order.
-        let live: Vec<u64> = heap.live_chunks().map(|c| c.start).collect();
-        assert_eq!(live.len(), 17);
-        assert!(live.windows(2).all(|w| w[0] < w[1]));
-        assert!(!live.contains(&(BUFFERS + 64)));
-        assert!(live.contains(&(BUFFERS + 128)));
+        // What an enumeration differential diffs: every chunk of one
+        // liveness, in address order, spelled exactly -- an address
+        // off by one chunk is the whole failure a differential exists
+        // to catch, so nothing here is asserted by count alone.
+        let starts = |it: &mut dyn Iterator<Item = Range<u64>>| -> Vec<u64> {
+            it.map(|c| c.start).collect()
+        };
+        let freed = starts(&mut heap.freed_chunks());
+        assert_eq!(
+            freed,
+            [BUFFERS + 64, BUFFERS + 5 * 64, BUFFERS + 0x2000 + 3 * 128]
+        );
+        let live = starts(&mut heap.live_chunks());
+        let want: Vec<u64> = (0..8)
+            .filter(|i| ![1, 5].contains(i))
+            .map(|i| BUFFERS + i * 64)
+            .chain((0..8).map(|i| BUFFERS + 0x1000 + i * 64))
+            .chain((0..3).map(|i| BUFFERS + 0x2000 + i * 128))
+            .collect();
+        assert_eq!(live, want);
     }
 
     #[test]
     fn test_a_hashed_cache_is_checked_against_its_hash_table() {
-        let mut f = fake();
-        cache(
-            &mut f,
-            0,
-            "umem_alloc_4096",
-            4096,
-            UMF_HASH,
-            &[SlabSpec {
-                base: BUFFERS,
-                chunks: 4,
-                free: vec![2],
-            }],
-        );
+        // Eight chunks over four buckets, so a table read short by a
+        // bucket is a table that has lost entries.
+        let hashed = || {
+            let mut f = fake();
+            cache(
+                &mut f,
+                0,
+                "umem_alloc_4096",
+                4096,
+                UMF_HASH,
+                &[SlabSpec {
+                    base: BUFFERS,
+                    chunks: 8,
+                    free: vec![2],
+                }],
+            );
+            f
+        };
+        let mut f = hashed();
         let heap = UmemHeap::build(&f).expect("the walk built an index");
-        assert_eq!(heap.stats().live_chunks, 3);
+        assert_eq!(heap.stats().live_chunks, 7);
         assert!(heap.caches()[0].hashed());
         assert!(matches!(
             heap.locate(BUFFERS + 2 * 4096),
@@ -1195,10 +1239,21 @@ mod tests {
         // A table naming a buffer that is in no slab of this cache is a
         // second reading that disagrees with the first, so neither is
         // believed and the cache is declined whole.
-        let mut f = f;
         f.put_u64(BUFCTLS + 0x2000 + LP64.bufctl_addr, BUFFERS + 0x9000);
-        let heap = UmemHeap::build(&f);
-        assert!(heap.is_none(), "the only cache should have declined");
+        assert!(
+            UmemHeap::build(&f).is_none(),
+            "the only cache should have declined"
+        );
+
+        // So does a table the walk reads only part of: half the
+        // buckets is half the entries, and the count no longer adds
+        // up. A mask that is not one less than a power of two is not a
+        // mask at all, and goes the same way.
+        for mask in [HASH_MASK / 2, HASH_MASK - 1] {
+            let mut f = hashed();
+            f.put_u64(CACHES + LP64.cache_hash_mask, mask);
+            assert!(UmemHeap::build(&f).is_none(), "mask {mask}");
+        }
     }
 
     #[test]
@@ -1253,6 +1308,145 @@ mod tests {
         assert_eq!(heap.stats().slabs_declined, 1);
     }
 
+    /// A freelist that names one chunk twice and is *the right length
+    /// anyway*: the refcnt cross-check is satisfied and every entry is
+    /// on a chunk boundary, so only noticing the repeat declines it. A
+    /// walk that missed it would hand back a free set with a chunk
+    /// missing from it and no sign anything went wrong.
+    ///
+    /// It takes a hashed cache to build: a raw cache's bufctl address
+    /// *is* its buffer's, so no two entries can name one chunk.
+    #[test]
+    fn test_a_freelist_that_repeats_a_chunk_is_declined() {
+        let mut f = two_caches();
+        cache(
+            &mut f,
+            2,
+            "umem_alloc_4096",
+            4096,
+            UMF_HASH,
+            &[SlabSpec {
+                base: BUFFERS + 0x4000,
+                chunks: 8,
+                free: vec![1, 2, 3],
+            }],
+        );
+        // The freelist is laid tail first, so its last entry is the
+        // first bufctl; point that at chunk 2's buffer as well.
+        f.put_u64(BUFCTLS + LP64.bufctl_addr, BUFFERS + 0x4000 + 2 * 4096);
+
+        let heap = UmemHeap::build(&f).expect("the raw caches still walk");
+        let stats = heap.stats();
+        assert_eq!(stats.slabs_declined, 1);
+        // With no slab left, the cache's hash table describes a
+        // population its slabs do not, so it goes too.
+        assert_eq!(stats.caches_declined, 1);
+        assert!(heap.caches().iter().all(|c| c.name != "umem_alloc_4096"));
+    }
+
+    /// The freelist bounds every walk reads from it: an entry outside
+    /// the slab's own chunks, and one so far out that believing it
+    /// would index past the bitmap.
+    #[test]
+    fn test_a_free_buffer_outside_the_slab_declines_it() {
+        for buf in [BUFFERS + 8 * 64, BUFFERS + 0x8000] {
+            let mut f = two_caches();
+            f.put_u64(SLABS + LP64.slab_head, buf + 64 - 8);
+            let heap = UmemHeap::build(&f).expect("the other slabs still walk");
+            assert_eq!(heap.stats().slabs_declined, 1, "buffer at {buf:#x}");
+        }
+    }
+
+    /// A slab with nothing allocated in it -- a fresh one, or one
+    /// about to be destroyed. Every chunk is free and the walk must
+    /// say so rather than treating a full freelist as a corrupt one.
+    #[test]
+    fn test_a_wholly_free_slab_is_all_freed_chunks() {
+        let mut f = fake();
+        cache(
+            &mut f,
+            0,
+            "umem_alloc_64",
+            64,
+            0,
+            &[SlabSpec {
+                base: BUFFERS,
+                chunks: 4,
+                free: vec![0, 1, 2, 3],
+            }],
+        );
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert_eq!(
+            (heap.stats().live_chunks, heap.stats().freed_chunks),
+            (0, 4)
+        );
+        assert_eq!(heap.stats().live_bytes, 0);
+        for i in 0..4 {
+            assert!(matches!(
+                heap.locate(BUFFERS + i * 64),
+                Liveness::Freed { .. }
+            ));
+        }
+    }
+
+    /// Every geometry a cache cannot have, and the one boundary case
+    /// it can: a buffer exactly its chunk and a chunk exactly its
+    /// slab, which is what a real cache above a page looks like.
+    #[test]
+    fn test_impossible_slab_geometry_is_declined() {
+        let cases: [(&str, u64, u64); 5] = [
+            ("no chunks", LP64.slab_chunks, 0),
+            ("more chunks than the slab holds", LP64.slab_chunks, 1024),
+            ("more allocated than there are chunks", LP64.slab_refcnt, 9),
+            ("a base that overflows", LP64.slab_base, u64::MAX - 8),
+            ("chunks past the end of the slab", LP64.slab_chunks, 65),
+        ];
+        for (why, field, value) in cases {
+            let mut f = two_caches();
+            f.put_u64(SLABS + field, value);
+            let heap = UmemHeap::build(&f).expect("the other slabs still walk");
+            assert_eq!(heap.stats().slabs_declined, 1, "{why}");
+        }
+    }
+
+    #[test]
+    fn test_a_cache_that_serves_nothing_is_declined() {
+        let mut f = two_caches();
+        f.put_u64(CACHES + LP64.cache_bufsize, 0);
+        let heap = UmemHeap::build(&f).expect("the other cache still walks");
+        assert_eq!(heap.stats().caches_declined, 1);
+    }
+
+    /// A raw cache whose embedded bufctl would sit outside the buffer
+    /// it belongs to describes a layout that cannot exist. A hashed
+    /// cache keeps its bufctls elsewhere, so the same value there is
+    /// ordinary -- libumem leaves it zero -- and must not decline.
+    #[test]
+    fn test_the_bufctl_distance_is_checked_only_where_it_is_used() {
+        let mut f = two_caches();
+        f.put_u64(CACHES + LP64.cache_bufctl, 64);
+        let heap = UmemHeap::build(&f).expect("the other cache still walks");
+        assert_eq!(heap.stats().caches_declined, 1);
+
+        let mut f = fake();
+        cache(
+            &mut f,
+            0,
+            "umem_alloc_4096",
+            4096,
+            UMF_HASH,
+            &[SlabSpec {
+                base: BUFFERS,
+                chunks: 2,
+                free: vec![1],
+            }],
+        );
+        f.put_u64(CACHES + LP64.cache_bufctl, 1 << 20);
+        let heap = UmemHeap::build(&f).expect("a hashed cache does not use it");
+        assert_eq!(heap.stats().caches_declined, 0);
+        assert_eq!(heap.stats().live_chunks, 1);
+    }
+
     #[test]
     fn test_a_cache_with_impossible_geometry_is_declined() {
         let mut f = two_caches();
@@ -1285,6 +1479,102 @@ mod tests {
         f.put_u64(addr + LP64.cache_prev, ANCHOR);
         f.put_u64(addr + LP64.cache_next, addr);
         assert!(UmemHeap::build(&f).is_none());
+    }
+
+    /// A cache list that closes on itself *behind* the anchor: every
+    /// back-pointer inverts its forward one, so nothing local is wrong
+    /// and only counting the walk ends it.
+    #[test]
+    fn test_a_cache_list_that_never_reaches_the_anchor_is_bounded() {
+        let mut f = two_caches();
+        let (first, second) = (CACHES + 0x400, CACHES);
+        // anchor -> first -> second -> first -> second -> ...
+        f.put_u64(second + LP64.cache_next, first);
+        f.put_u64(first + LP64.cache_prev, second);
+        assert!(UmemHeap::build(&f).is_none());
+    }
+
+    /// The same for a cache's slab list. Nothing here says how long a
+    /// real one is, so the walk carries its own bound; a list that
+    /// closes behind the nullslab is the only thing that reaches it.
+    #[test]
+    fn test_a_slab_list_that_never_reaches_the_anchor_is_bounded() {
+        let mut f = two_caches();
+        let (first, second) = (SLABS, SLABS + 0x100);
+        f.put_u64(second + LP64.slab_next, first);
+        f.put_u64(first + LP64.slab_prev, second);
+        let heap = UmemHeap::build(&f).expect("the other cache still walks");
+        // The cache the runaway list belongs to is declined whole; the
+        // one after it is untouched.
+        assert_eq!(heap.stats().caches_declined, 1);
+        assert_eq!(heap.caches().len(), 1);
+        assert_eq!(heap.caches()[0].name, "umem_alloc_128");
+    }
+
+    /// The self-check earns its keep only if it can fail, and the walk
+    /// is built not to produce either failure -- so both are staged
+    /// here by hand, over an index the walk would never hand back.
+    #[test]
+    fn test_the_self_check_catches_what_the_walk_should_never_produce() {
+        let slab = |base: u64, chunks: u32, free: Vec<u64>| Slab {
+            base,
+            chunksize: 64,
+            chunks,
+            cache: 0,
+            free,
+        };
+        let cache = Cache {
+            addr: CACHES,
+            name: "umem_alloc_64".to_string(),
+            bufsize: 64,
+            chunksize: 64,
+            slabsize: 0x1000,
+            flags: 0,
+            slabs: 2,
+            slabs_declined: 0,
+            live: 8,
+            freed: 0,
+            bufctl: 56,
+        };
+        let sound = UmemHeap {
+            caches: vec![cache.clone()],
+            slabs: vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 0x1000, 4, vec![])],
+            stats: Stats::default(),
+        };
+        assert!(sound.violations().is_empty());
+
+        // Two slabs claiming the same memory: neither reading can be
+        // trusted, and which is wrong is what nothing here can tell.
+        let overlapping = UmemHeap {
+            slabs: vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 128, 4, vec![])],
+            ..UmemHeap {
+                caches: vec![cache.clone()],
+                slabs: Vec::new(),
+                stats: Stats::default(),
+            }
+        };
+        let found = overlapping.violations();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("overlap"), "{found:?}");
+
+        // Slabs that touch exactly are not an overlap: a chunk ends
+        // where the next begins.
+        let abutting = UmemHeap {
+            caches: vec![cache.clone()],
+            slabs: vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 256, 4, vec![])],
+            stats: Stats::default(),
+        };
+        assert!(abutting.violations().is_empty());
+
+        // A cache whose totals do not add up to its own slabs'.
+        let miscounted = UmemHeap {
+            caches: vec![Cache { live: 7, ..cache }],
+            slabs: vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 0x1000, 4, vec![])],
+            stats: Stats::default(),
+        };
+        let found = miscounted.violations();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("umem_alloc_64"), "{found:?}");
     }
 
     #[test]
