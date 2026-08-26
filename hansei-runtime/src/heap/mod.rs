@@ -12,3 +12,4 @@
 //! walk believed it pointed at.
 
 pub mod umem;
+pub mod view;
