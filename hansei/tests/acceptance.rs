@@ -1761,9 +1761,10 @@ fn test_spin_poll_acceptance() {
 
         // The joined section carries the polling thread's registers:
         // frame-0 state, annotated from the recorded joins — the
-        // stack pointer lands in this lwp's own recorded stack.
+        // stack pointer lands in a recorded thread stack, named the
+        // way `pmap` names one.
         assert!(out.contains("registers:"), "{out}");
-        let rsp = regex::Regex::new(r"(?m)^  rsp  0x[0-9a-f]{16}  — this lwp's stack$").unwrap();
+        let rsp = regex::Regex::new(r"(?m)^  rsp  0x[0-9a-f]{16}  — \[ stack tid=\d+ \]$").unwrap();
         assert!(rsp.is_match(&out), "{out}");
     });
 }
@@ -2424,10 +2425,23 @@ fn test_threads_registers_annotate_on_request() {
         let out = hansei_ok(&bundle, core, "threads --registers");
         let blocks = out.split("\n\n").count();
         assert_eq!(out.matches("  registers:\n").count(), blocks, "{out}");
-        // Each block's rsp is that thread's own — the claim is
-        // first-person in every block, never another lwp's number.
-        let rsp = regex::Regex::new(r"(?m)^    rsp  0x[0-9a-f]{16}  — this lwp's stack$").unwrap();
-        assert_eq!(rsp.find_iter(&out).count(), blocks, "{out}");
+        // Each block's rsp is that thread's own. The claim names a
+        // thread rather than being first-person, so what says it is
+        // the block's own lwp: the tid on the rsp line must be the
+        // one in the heading above it, in every block.
+        let heading = regex::Regex::new(r"(?m)^lwp (\d+)\b").unwrap();
+        let rsp =
+            regex::Regex::new(r"(?m)^    rsp  0x[0-9a-f]{16}  — \[ stack tid=(\d+) \]$").unwrap();
+        let headings: Vec<&str> = heading
+            .captures_iter(&out)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        let claimed: Vec<&str> = rsp
+            .captures_iter(&out)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        assert_eq!(headings.len(), blocks, "{out}");
+        assert_eq!(claimed, headings, "{out}");
     });
 }
 

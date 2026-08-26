@@ -33,6 +33,13 @@ pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Wr
 /// How the mapping holding `addr` is spelled, or `None` where nothing
 /// maps it.
 ///
+/// The anonymous kinds are spelled exactly as `pmap` spells them —
+/// `[ anon ]`, `[ heap ]`, `[ stack tid=N ]`, `[ altstack tid=N ]` —
+/// so the answer can be matched by eye against the mapping table
+/// someone debugging a core already has open. A file-backed mapping
+/// gets its object and region instead, which is the more useful thing
+/// to say and what the register annotations say of the same address.
+///
 /// The register annotations classify a value against the task extents
 /// and the stacks as well; this asks only what kind of memory it is,
 /// because everything more specific is a block of its own above.
@@ -43,16 +50,16 @@ fn region_of(session: &Session<'_>, addr: u64) -> Option<String> {
             let base = path.rsplit('/').next().unwrap_or(path);
             format!("{base} {}", mapping.region())
         }
-        None if mapping.is_heap() => "the heap".to_string(),
+        None if mapping.is_heap() => "[ heap ]".to_string(),
         None => match session
             .lwps
             .iter()
             .find(|l| !l.altstack.is_empty() && l.altstack.contains(&addr))
         {
-            Some(lwp) => format!("lwp {}'s alternate signal stack", lwp.tid),
+            Some(lwp) => format!("[ altstack tid={} ]", lwp.tid),
             None => match session.lwps.iter().find(|l| l.stack_range.contains(&addr)) {
-                Some(lwp) => format!("lwp {}'s stack", lwp.tid),
-                None => "anonymous memory".to_string(),
+                Some(lwp) => format!("[ stack tid={} ]", lwp.tid),
+                None => "[ anon ]".to_string(),
             },
         },
     })
@@ -670,14 +677,14 @@ mod whatis_tests {
     fn test_the_region_answers_only_where_nothing_else_did() {
         with_tasks("sleep-join", |t| {
             let task = t.list.tasks[0].addr.0;
-            let claimed = reported(t, None, Some("the heap"), None, task);
+            let claimed = reported(t, None, Some("[ heap ]"), None, task);
             assert!(!claimed.contains("It is in"), "{claimed}");
 
             // Nothing claims this one, so the mapping is what there is
-            // to say — and it is said in pmap's vocabulary rather than
-            // called "heap" for being anonymous.
-            let loose = reported(t, None, Some("anonymous memory"), None, 0x9999_0000);
-            assert!(loose.contains("It is in anonymous memory."), "{loose}");
+            // to say — in pmap's own descriptor, so the two readings
+            // of the same core can be matched by eye.
+            let loose = reported(t, None, Some("[ anon ]"), None, 0x9999_0000);
+            assert!(loose.contains("It is in [ anon ]."), "{loose}");
 
             // And an address in no mapping at all keeps the bare miss:
             // silence beats inventing a region for it.
