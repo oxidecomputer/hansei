@@ -150,6 +150,7 @@ fn spelled(class: &RegClass, label: &dyn Fn(usize) -> String) -> Option<String> 
         }
         RegClass::Heap => "heap".to_string(),
         RegClass::Unmapped => "unmapped".to_string(),
+        RegClass::Null => "null".to_string(),
         RegClass::Small => return None,
     })
 }
@@ -212,6 +213,7 @@ mod tests {
         );
         assert_eq!(spell(RegClass::Heap).as_deref(), Some("heap"));
         assert_eq!(spell(RegClass::Unmapped).as_deref(), Some("unmapped"));
+        assert_eq!(spell(RegClass::Null).as_deref(), Some("null"));
         assert_eq!(spell(RegClass::Small), None);
     }
 
@@ -244,7 +246,7 @@ mod tests {
         let annotate = |value: u64| match value {
             0x40_0000 => Some("app_main".to_string()),
             0x9000_0800 | 0x9000_0900 => Some("this lwp's stack".to_string()),
-            0 => Some("unmapped".to_string()),
+            0 => Some("null".to_string()),
             _ => None,
         };
         let mut out = Vec::new();
@@ -256,20 +258,20 @@ mod tests {
     rip  0x0000000000400000  — app_main
     rsp  0x0000000090000800  — this lwp's stack
     rbp  0x0000000090000900  — this lwp's stack
-    rax  0x0000000000000000  — unmapped
+    rax  0x0000000000000000  — null
     rbx  0x0000000000000014
-    rcx  0x0000000000000000  — unmapped
-    rdx  0x0000000000000000  — unmapped
-    rsi  0x0000000000000000  — unmapped
-    rdi  0x0000000000000000  — unmapped
-    r8   0x0000000000000000  — unmapped
-    r9   0x0000000000000000  — unmapped
-    r10  0x0000000000000000  — unmapped
-    r11  0x0000000000000000  — unmapped
-    r12  0x0000000000000000  — unmapped
-    r13  0x0000000000000000  — unmapped
-    r14  0x0000000000000000  — unmapped
-    r15  0x0000000000000000  — unmapped
+    rcx  0x0000000000000000  — null
+    rdx  0x0000000000000000  — null
+    rsi  0x0000000000000000  — null
+    rdi  0x0000000000000000  — null
+    r8   0x0000000000000000  — null
+    r9   0x0000000000000000  — null
+    r10  0x0000000000000000  — null
+    r11  0x0000000000000000  — null
+    r12  0x0000000000000000  — null
+    r13  0x0000000000000000  — null
+    r14  0x0000000000000000  — null
+    r15  0x0000000000000000  — null
 ",
         );
     }
