@@ -195,11 +195,16 @@ fn print_rendered(
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
+    let heap = session.heap_view();
+    let heap = heap.as_ref().map(|view| view as &dyn reify::Heap);
     print_variable(
         out,
         "  ",
         name,
-        &format_args!("{:#}", render(session, value, opts).line_prefix("    ")),
+        &format_args!(
+            "{:#}",
+            render(session, value, opts, heap).line_prefix("    ")
+        ),
     )
 }
 
@@ -311,8 +316,12 @@ pub(crate) fn render<'r, 'b>(
     session: &'r Session<'b>,
     value: &'r Value<'b>,
     opts: RenderOpts,
+    heap: Option<&'r dyn reify::Heap>,
 ) -> reify::DisplayValue<'r, 'b, Proc> {
-    let display = value.display_from_target(session.ctx.proc, opts.depth);
+    let mut display = value.display_from_target(session.ctx.proc, opts.depth);
+    if let Some(heap) = heap {
+        display = display.heap(heap);
+    }
     if opts.ugly { display.ugly() } else { display }
 }
 

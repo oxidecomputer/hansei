@@ -91,6 +91,9 @@ fn exec_trace_task(
                 "The task has finished; its output has not been consumed:"
             )?;
             let mut value = result.display_from_target(ctx.proc, opts.render.depth);
+            if let Some(heap) = opts.heap {
+                value = value.heap(heap);
+            }
             if opts.render.ugly {
                 value = value.ugly();
             }
@@ -551,6 +554,9 @@ fn print_frame_verbose<'b, T: proc::Target>(
                         .display_from_target(ctx.proc, opts.render.depth)
                         .elide_override(opts.elide)
                         .line_prefix(&value_prefix);
+                    if let Some(heap) = opts.heap {
+                        disp = disp.heap(heap);
+                    }
                     if let Some(annotate) = annotate {
                         disp = disp.annotate_addrs(annotate);
                     }
@@ -1389,6 +1395,7 @@ mod native_section_tests {
             },
             elide: &elide,
             theme: output::Theme::plain(),
+            heap: None,
         };
         print_native_section(frames, &joined, lwp, start, fatal, mapped, &opts, &mut out)
             .expect("the section renders");
@@ -2027,6 +2034,7 @@ mod future_trace_tests {
                 },
                 elide: &elide,
                 theme: output::Theme::plain(),
+                heap: None,
             };
             print_await_chain(
                 ctx,
@@ -2430,6 +2438,7 @@ mod trace_render_tests {
             },
             elide: &elide,
             theme,
+            heap: None,
         };
         print_await_chain(
             &ctx,
@@ -2609,6 +2618,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
             },
             elide: &elide,
             theme: output::Theme::plain(),
+            heap: None,
         };
         print_await_chain(
             &ctx,

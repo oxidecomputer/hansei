@@ -126,6 +126,21 @@ pub fn exec_umem_audit(
         }
     }
 
+    // What the corroboration has actually refused so far. A gate that
+    // fires prints nothing where it fired — that is the point — so this
+    // is the only account of it, and the numbers are what decide
+    // whether the base-match count is worth promoting to a decline.
+    let gates = session.gates();
+    writeln!(out)?;
+    writeln!(
+        out,
+        "gates: {} pointer(s) into freed memory, {} sequence(s) cut to their \
+         allocation, {} owning buffer(s) off base (counted only)",
+        gates.freed(),
+        gates.clipped(),
+        gates.base_mismatch()
+    )?;
+
     for &addr in addrs {
         writeln!(out)?;
         write!(out, "{addr:#x}: ")?;

@@ -30,6 +30,10 @@ pub(crate) fn exec_print(
         )
     })?;
     let mut disp = value.display_from_target(ctx.proc, render.depth);
+    let heap = session.heap_view();
+    if let Some(view) = &heap {
+        disp = disp.heap(view);
+    }
     if render.ugly {
         disp = disp.ugly();
     }
