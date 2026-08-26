@@ -2843,10 +2843,14 @@ fn test_the_allocator_index_answers_for_what_it_can_read() {
     with_core("simple-await", |core| {
         let out = hansei_ok(&bundle, core, "umem-audit");
         if out.contains("no umem metadata in this target") {
-            // Nothing to corroborate with, and the session carries on.
+            // Nothing to corroborate with, and the session carries on
+            // — `whatis` included, which says nothing about an
+            // allocation rather than saying it does not know.
             let out = hansei_ok(&bundle, core, "umem-audit 0x1000 ; tasks");
             assert!(out.contains("no umem metadata in this target"), "{out}");
             assert!(out.contains("\n1 task\n"), "{out}");
+            let out = hansei_ok(&bundle, core, "whatis 0x1000");
+            assert!(!out.contains("Status:"), "{out}");
             return;
         }
 
@@ -2871,6 +2875,14 @@ fn test_the_allocator_index_answers_for_what_it_can_read() {
         let chunk = dump.lines().next().expect("a live chunk").to_string();
         let out = hansei_ok(&bundle, core, &format!("umem-audit {chunk}"));
         assert!(out.contains(&format!("{chunk}: live, in umem_")), "{out}");
+
+        // And what `whatis` makes of the same address: the verdict in
+        // the allocation's own terms, with no allocator vocabulary in
+        // it at all -- which is the whole point of the block, and what
+        // would go wrong first if a verdict were wrong.
+        let out = hansei_ok(&bundle, core, &format!("whatis {chunk}"));
+        assert!(out.starts_with("Status: live\nSize:   "), "{out}");
+        assert!(!out.contains("umem"), "{out}");
     });
 }
 
