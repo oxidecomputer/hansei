@@ -336,4 +336,12 @@ exclude_re = [
     # task extents — is what the rest of the suites pin.
     "replace warm_worker with \\(\\)",
     "replace Session<'b>::adopt_warm with \\(\\)",
+    # A throughput knob and a thread name, the same shape as
+    # default_parallelism above: skipping the global pool build entirely
+    # leaves rayon to install its own on first use, so every fan-out
+    # still runs and every answer is the same. What the call decides —
+    # how many workers a session is polite enough to take, and what
+    # `pstack` calls them — no test can observe, and the session cap is
+    # a judgment about rack sleds that no host here has.
+    "replace build_pool with \\(\\)",
 ]
