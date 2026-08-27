@@ -2980,11 +2980,61 @@ fn test_a_stale_pointer_is_not_expanded_into_what_the_bytes_say() {
         // per-CPU magazine, most likely, since a free reaches a slab's
         // freelist only when that magazine fills.
         assert!(out.contains("-> <freed>"), "{out}");
+        // One refusal, not two, though the frame holds two stale
+        // pointers: the boxed future's is a wide pointer, which the
+        // renderer prints as its vtable's own account of itself —
+        // concrete type, size, drop glue, all of it read from rodata
+        // — rather than by expanding the value at the far end. There
+        // is nothing there for a gate to refuse. What follows that
+        // pointer is the census, below.
         assert!(
             out.contains("gates: 1 pointer(s) into freed memory"),
             "{out}"
         );
         assert!(out.contains("self-check: clean"), "{out}");
+    });
+}
+
+/// The census's half of the same claim, on the same target.
+///
+/// `stale-local` also parks holding the wide pointer of a boxed future
+/// whose block it has handed back. That pointer is one the census's
+/// discovery *follows* — unlike the plain one above, which only the
+/// renderer reads — so without corroboration the future behind it is
+/// listed as one in flight, in a listing that then reads as complete.
+/// Where there is an allocator to ask it must be refused and the run
+/// must say so; on glibc there is nothing to ask, and it is listed like
+/// any other held future.
+#[test]
+fn test_a_stale_future_is_not_counted_as_one_in_flight() {
+    let bundle = fixtures().bundle("stale-local");
+    with_core("stale-local", |core| {
+        let rows = list_tasks(&bundle, core);
+        let task = task_with_future(&rows, "async fn stale_local::holder");
+        let out = hansei(&bundle, core, "tasks --futures");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stderr}\n{stdout}");
+
+        if hansei_ok(&bundle, core, "umem-audit").contains("no umem metadata in this target") {
+            assert_eq!(task.futures, "1", "{rows:?}");
+            assert!(stdout.contains("Held futures: 1"), "{stdout}");
+            assert!(stderr.is_empty(), "{stderr}");
+            return;
+        }
+        // The count in the plain listing and the block under
+        // `--futures` are the same census, so both have to say none —
+        // a refusal that removed the row and left the count would be
+        // worse than not refusing at all.
+        assert_eq!(task.futures, "0", "{rows:?}");
+        assert!(stdout.contains("Held futures: 0"), "{stdout}");
+        assert!(
+            stderr.contains(
+                "the allocator has taken back the memory 1 find(s) lay in; \
+                 they and anything they held are not listed"
+            ),
+            "{stderr}"
+        );
     });
 }
 
