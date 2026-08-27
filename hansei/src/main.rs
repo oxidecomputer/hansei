@@ -991,9 +991,9 @@ impl<'b> Session<'b> {
 
     fn census(&self) -> &census::FutureCensus {
         self.adopt_warm();
-        let census = self
-            .census
-            .get_or_init(|| census::census_bounded(&self.ctx, &self.tasks, self.bounds));
+        let census = self.census.get_or_init(|| {
+            census::census_bounded(&self.ctx, &self.tasks, self.bounds, self.umem())
+        });
         if first_audit(self.audit, &self.audited) {
             let violations = census.audit(&self.tasks);
             if violations.is_empty() {
@@ -1334,9 +1334,10 @@ fn warm_worker(
     let Ok(ctx) = bundle::Context::with_policy(proc, BundleView::new(bundle), policy) else {
         return;
     };
-    // The allocator index first: it is the cheapest of the three and
-    // the only one that reads nothing the bundle describes, so a target
-    // whose layouts have drifted still gets it.
+    // The allocator index first: it is the cheapest of the three, the
+    // only one that reads nothing the bundle describes — so a target
+    // whose layouts have drifted still gets it — and what the census
+    // below corroborates its finds against.
     let umem = UmemHeap::build(proc);
     if tx.send(Warm::Probe).is_err() {
         return;
@@ -1345,7 +1346,7 @@ fn warm_worker(
     if tx.send(Warm::Probe).is_err() {
         return;
     }
-    let census = census::census_bounded(&ctx, tasks, bounds);
+    let census = census::census_bounded(&ctx, tasks, bounds, umem.as_ref());
     let _ = tx.send(Warm::Ready(Box::new(Warmed {
         extents,
         census,

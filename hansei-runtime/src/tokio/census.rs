@@ -40,6 +40,7 @@ use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind
 // (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
 // reached by the same scan, since it holds its `JoinSet` by value.
 use super::contract::{FUTURES_UNORDERED, JOIN_SET, is_dyn_future_pointee};
+use crate::heap::umem::{Liveness, UmemHeap};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use foldhash::{HashMap, HashSet};
@@ -76,6 +77,15 @@ pub struct FutureCensus {
     /// Where a hard limit stopped the walk short of where it would
     /// otherwise have gone.
     pub capped: Capped,
+    /// How many finds the allocator's account of the heap refused; see
+    /// [`Walker::taken_back`].
+    ///
+    /// A refusal drops the find *and* everything the walk would have
+    /// reached through it, so the number is places the listing is
+    /// short rather than rows removed from it — which is why it is
+    /// counted at all: a dropped find otherwise leaves a listing that
+    /// covered less looking exactly like a complete one.
+    pub refused: usize,
     /// Which of the scan's paths produced the finds; see [`Stats`].
     pub stats: Stats,
 }
@@ -649,12 +659,17 @@ enum Find<'b> {
 struct Walker<'a, 'b, T> {
     ctx: &'a Context<'b, T>,
     list: &'a TaskList,
+    /// The allocator's own account of what is still handed out, where
+    /// the target has one to read; `None` everywhere else, which is
+    /// every target whose malloc is not libumem.
+    heap: Option<&'a UmemHeap>,
     sets: Vec<FutureSet>,
     join_sets: Vec<JoinSet>,
     held: Vec<HeldFuture>,
     spans: Vec<(u64, u64, usize, usize)>,
     errors: Vec<anyhow::Error>,
     capped: Capped,
+    refused: usize,
     stats: Stats,
     /// Where this walk's hard limits sit; [`Bounds::default`] outside
     /// the tests.
@@ -675,13 +690,14 @@ struct Walker<'a, 'b, T> {
     plans: HashMap<BundleTypeId, ScanPlan>,
 }
 
-/// Walk every enumerated task's await chain and take the census.
+/// Walk every enumerated task's await chain and take the census, with
+/// no allocator to corroborate what it finds.
 ///
 /// A task whose stage or chain does not decode contributes nothing —
 /// those failures already surface wherever the task itself is asked
 /// about — while a *found* set or future whose walk fails is reported.
 pub fn census<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> FutureCensus {
-    census_bounded(ctx, list, Bounds::default())
+    census_bounded(ctx, list, Bounds::default(), None)
 }
 
 /// Where the walk's two hard limits sit, as values rather than as the
@@ -707,21 +723,32 @@ impl Default for Bounds {
     }
 }
 
-/// [`census`], with the bounds as an argument.
+/// [`census`], with the bounds and the allocator index as arguments.
+///
+/// `heap` is what the target's own malloc says is still handed out,
+/// where there is one to ask. The walk consults it wherever it is
+/// about to believe a pointer — the referent a boxed find lies at, a
+/// set's next node — and refuses what the allocator has taken back,
+/// because those bytes belong to whoever holds the block now and
+/// decode into a future that is not there. `None` is the ordinary
+/// case, and the walk is then exactly the walk it was.
 pub fn census_bounded<T: Target>(
     ctx: &Context<'_, T>,
     list: &TaskList,
     bounds: Bounds,
+    heap: Option<&UmemHeap>,
 ) -> FutureCensus {
     let mut walker = Walker {
         ctx,
         list,
+        heap,
         sets: Vec::new(),
         join_sets: Vec::new(),
         held: Vec::new(),
         spans: Vec::new(),
         errors: Vec::new(),
         capped: Capped::default(),
+        refused: 0,
         stats: Stats::default(),
         bounds,
         visited: HashSet::default(),
@@ -745,6 +772,7 @@ pub fn census_bounded<T: Target>(
         spans: walker.spans,
         errors: walker.errors,
         capped: walker.capped,
+        refused: walker.refused,
         stats: walker.stats,
     }
 }
@@ -774,6 +802,23 @@ fn span_overlap_errors(spans: &[(u64, u64, usize, usize)]) -> Vec<anyhow::Error>
 }
 
 impl<'b, T: Target> Walker<'_, 'b, T> {
+    /// Whether the allocator has taken back the memory at `addr`, and
+    /// so whether anything decoded from it is a reading of somebody
+    /// else's bytes.
+    ///
+    /// Only `Freed` refuses. `Live` is the ordinary answer and
+    /// `Unknown` claims nothing at all — a future on a stack, a target
+    /// whose malloc is not libumem, a block in a layer this walk does
+    /// not cover — and a silence must never be read as a verdict. Nor
+    /// is `Live` a clean bill of health: a block freed and handed
+    /// straight back out to somebody else is live, and the stale
+    /// pointer at it is as wrong as the refused one. This corroborates
+    /// where it can and is quiet where it cannot.
+    fn taken_back(&self, addr: u64) -> bool {
+        self.heap
+            .is_some_and(|heap| matches!(heap.locate(addr), Liveness::Freed { .. }))
+    }
+
     /// Scan every frame of `chain` for sets and held futures, recursing
     /// through what it finds. `via` says how the census reached this
     /// chain when it is not a task's own.
@@ -831,6 +876,17 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         let value = match &find {
             Find::Set(value) | Find::JoinSet(value) | Find::Future(value) => value,
         };
+        // Asked before the find is recorded rather than after the
+        // listing is built, because the walk goes on *through* what it
+        // records: a stale pointer produces the row and then every
+        // find under it, and a filter over the finished listing would
+        // drop the parent and keep the subtree. Refusing here stops
+        // both. Counted per place rather than per address, since two
+        // frames pointing at one dead block are two rows missing.
+        if self.taken_back(value.addr) {
+            self.refused += 1;
+            return;
+        }
         if !self.visited.insert((value.addr, value.ty.id())) {
             self.stats.dedup_hits += 1;
             return;
@@ -855,9 +911,20 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 // pointers to one future have two of those. A find
                 // held by value keys the same place twice, which is
                 // why only a differing root is looked up.
-                if (addr, ty) != place && !self.visited.insert((addr, ty)) {
-                    self.stats.dedup_hits += 1;
-                    return;
+                if (addr, ty) != place {
+                    // The frame held a pointer and the chain followed
+                    // it, so this address is the frame's claim rather
+                    // than a place the scan was already standing in —
+                    // which makes it the one thing here the allocator
+                    // can contradict.
+                    if self.taken_back(addr) {
+                        self.refused += 1;
+                        return;
+                    }
+                    if !self.visited.insert((addr, ty)) {
+                        self.stats.dedup_hits += 1;
+                        return;
+                    }
                 }
                 let summary = self.summarize(&chain);
                 let index = self.held.len();
@@ -1271,6 +1338,16 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 ctx.mappings.contains_addr(cur),
                 "set node pointer {cur:#x} is unmapped"
             );
+            // The same refusal a held find gets, one layer out: the
+            // list's own link is what claimed this node, and a node
+            // the allocator has taken back is a child that is not
+            // there. The walk stops rather than skipping it, because
+            // the link to the next node is read out of these very
+            // bytes.
+            ensure!(
+                !self.taken_back(cur),
+                "set node pointer {cur:#x} is in memory the allocator has taken back"
+            );
             ensure!(visited.insert(cur), "set node cycle at {cur:#x}");
             ensure!(
                 children.len() < MAX_CHILDREN,
@@ -1390,6 +1467,11 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     ctx.mappings.contains_addr(addr),
                     "join set entry pointer {addr:#x} is unmapped"
                 );
+                ensure!(
+                    !self.taken_back(addr),
+                    "join set entry pointer {addr:#x} is in memory the allocator \
+                     has taken back"
+                );
                 ensure!(visited.insert(addr), "join set entry cycle at {addr:#x}");
                 ensure!(
                     tasks.len() < MAX_CHILDREN,
@@ -1457,6 +1539,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
 mod tests {
     use super::*;
 
+    use crate::heap::umem::tests::freeing;
     use crate::testkit;
 
     use hansei_bundle::{Bundle, BundleMember, BundleType, BundleView, DiscrValue, TypeDef};
@@ -2014,15 +2097,253 @@ mod tests {
     /// future of its own, the fixture's only nesting that arrives
     /// through a held future rather than through a set.
     fn unordered_census(bounds: Bounds) -> FutureCensus {
+        let census = unordered_census_with(bounds, None);
+        assert!(census.errors.is_empty(), "{:?}", census.errors);
+        census
+    }
+
+    /// [`unordered_census`], with an allocator index to corroborate
+    /// against — and without the clean-errors assertion, since a
+    /// refused node *is* an error on the census: the list it was in
+    /// runs short and the error is what says so.
+    fn unordered_census_with(bounds: Bounds, heap: Option<&UmemHeap>) -> FutureCensus {
         let (bundle, snapshot) = testkit::load_any("unordered");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let census = census_bounded(&ctx, &list, bounds);
-        assert!(census.errors.is_empty(), "{:?}", census.errors);
-        // A healthy capture passes both audit classes, bounded or not.
+        let census = census_bounded(&ctx, &list, bounds, heap);
+        // A healthy capture passes both audit classes, bounded or not
+        // — and a refusal must not change that. It removes rows, and
+        // every invariant is over the rows that are there.
         let violations = census.audit(&list);
         assert!(violations.is_empty(), "{violations:#?}");
         census
+    }
+
+    /// Every held find as its identity alone — the local it was found
+    /// in and where it lies — which is what a refusal must leave
+    /// untouched, and enough to say which row it did touch.
+    fn held_rows(census: &FutureCensus) -> Vec<(&str, u64)> {
+        census
+            .held
+            .iter()
+            .map(|h| (h.local.as_str(), h.addr))
+            .collect()
+    }
+
+    /// The same for the sets: each by its own address and the nodes it
+    /// listed.
+    fn set_rows(census: &FutureCensus) -> Vec<(u64, Vec<u64>)> {
+        census
+            .sets
+            .iter()
+            .map(|s| (s.addr, s.children.iter().map(|c| c.node).collect()))
+            .collect()
+    }
+
+    /// The held find `local` names, of the ungated census.
+    fn held_at<'a>(census: &'a FutureCensus, local: &str) -> &'a HeldFuture {
+        census
+            .held
+            .iter()
+            .find(|h| h.local == local)
+            .unwrap_or_else(|| panic!("the fixture holds a future in `{local}`"))
+    }
+
+    /// A find the allocator has taken back is not listed, and neither
+    /// is anything the walk would have reached through it.
+    ///
+    /// That is the difference between corroborating *inside* the walk
+    /// and filtering the finished listing: the walk goes on through
+    /// what it records, so a filter would drop the row and keep the
+    /// subtree hanging under a parent that is no longer there. The
+    /// fixture's `nested_hold` is the shape that shows it — a held
+    /// future whose own frames hold `inner` — and one refusal is
+    /// counted for it, not two, because the second was never reached.
+    #[test]
+    fn test_a_find_in_freed_memory_takes_its_subtree_with_it() {
+        let full = unordered_census(Bounds::default());
+        let stale = held_at(&full, "nested_hold").addr;
+        assert_eq!(
+            held_at(&full, "inner").via,
+            Some(Via::Held(
+                full.held
+                    .iter()
+                    .position(|h| h.local == "nested_hold")
+                    .expect("it is listed")
+            )),
+            "the fixture must reach `inner` through `nested_hold` for this to say anything"
+        );
+
+        let heap = freeing(stale..stale + 1);
+        let census = unordered_census_with(Bounds::default(), Some(&heap));
+
+        let held = held_rows(&census);
+        assert!(
+            !held
+                .iter()
+                .any(|&(local, _)| local == "nested_hold" || local == "inner"),
+            "{held:#?}"
+        );
+        // Everything the refusal was not about is where it was.
+        let kept: Vec<(&str, u64)> = held_rows(&full)
+            .into_iter()
+            .filter(|&(local, _)| local != "nested_hold" && local != "inner")
+            .collect();
+        assert_eq!(held, kept);
+        assert_eq!(set_rows(&census), set_rows(&full));
+        assert_eq!(census.refused, 1);
+        assert!(census.errors.is_empty(), "{:?}", census.errors);
+    }
+
+    /// What a refusal weighs behind a pointer is the referent, not the
+    /// slot the pointer was found in.
+    ///
+    /// A boxed find is recorded at the heap allocation its wide
+    /// pointer named, and that address is the frame's *claim* — the
+    /// one thing about the find the allocator can contradict. The slot
+    /// itself is in the frame, which is live whatever the pointer in
+    /// it says.
+    #[test]
+    fn test_a_boxed_find_is_weighed_where_the_pointer_lands() {
+        let full = unordered_census(Bounds::default());
+        let boxed = held_at(&full, "boxed");
+        let (slot, referent) = (boxed.slot, boxed.addr);
+        assert_ne!(slot, referent, "`boxed` must be a find behind a pointer");
+
+        let heap = freeing(referent..referent + 1);
+        let census = unordered_census_with(Bounds::default(), Some(&heap));
+        assert!(
+            !census.held.iter().any(|h| h.local == "boxed"),
+            "{:#?}",
+            census.held
+        );
+        assert_eq!(census.refused, 1);
+
+        // The slot is where the scan was already standing rather than
+        // an address it followed a pointer to, and an index that
+        // freed it refuses the find just the same — through the gate
+        // ahead of the chain rather than the one behind it.
+        let heap = freeing(slot..slot + 1);
+        let census = unordered_census_with(Bounds::default(), Some(&heap));
+        assert!(
+            !census.held.iter().any(|h| h.local == "boxed"),
+            "{:#?}",
+            census.held
+        );
+        assert_eq!(census.refused, 1);
+    }
+
+    /// An index that has taken back nothing the census reads changes
+    /// nothing about the census — which is the whole of what a healthy
+    /// target must see, and what the fixtures and every real target
+    /// walked so far actually do see.
+    #[test]
+    fn test_an_index_with_nothing_to_refuse_changes_nothing() {
+        let full = unordered_census(Bounds::default());
+        // Free memory the walk never reads: past every address the
+        // ungated census recorded.
+        let past = full.held.iter().map(|h| h.addr).max().expect("finds") + 0x10_0000;
+        let heap = freeing(past..past + 0x1000);
+        let census = unordered_census_with(Bounds::default(), Some(&heap));
+
+        assert_eq!(held_rows(&census), held_rows(&full));
+        assert_eq!(set_rows(&census), set_rows(&full));
+        assert_eq!(census.refused, 0);
+        assert_eq!(census.capped, full.capped);
+        assert_eq!(census.stats, full.stats);
+        assert!(census.errors.is_empty(), "{:?}", census.errors);
+    }
+
+    /// A set's node list stops at a node the allocator has taken back,
+    /// and the error says so.
+    ///
+    /// It stops rather than skipping the node: the link to the next
+    /// one is read out of the very bytes the refusal is about. The
+    /// children found before it are real and are kept, which is what
+    /// the walk already does for an unmapped node.
+    #[test]
+    fn test_a_set_stops_at_a_node_the_allocator_took_back() {
+        let full = unordered_census(Bounds::default());
+        let set = full
+            .sets
+            .iter()
+            .find(|s| s.children.len() > 1)
+            .expect("the fixture drives a set of several children");
+        let (owner, first, stale) = (set.addr, set.children[0].node, set.children[1].node);
+
+        let heap = freeing(stale..stale + 1);
+        let census = unordered_census_with(Bounds::default(), Some(&heap));
+
+        let gated = census
+            .sets
+            .iter()
+            .find(|s| s.addr == owner)
+            .expect("the set itself is still listed");
+        assert_eq!(
+            gated.children.iter().map(|c| c.node).collect::<Vec<_>>(),
+            [first]
+        );
+        // A refused node is a short list rather than a dropped find,
+        // so it is the error that reports it, the way every other
+        // short list here is reported.
+        assert_eq!(census.refused, 0);
+        let reports: Vec<String> = census.errors.iter().map(|e| format!("{e:#}")).collect();
+        assert!(
+            reports.iter().any(|r| r.contains(&format!("{stale:#x}"))
+                && r.contains("taken back")
+                && r.contains("lists only 1 of its children")),
+            "{reports:#?}"
+        );
+    }
+
+    /// A join set's entry list stops the same way, at an entry the
+    /// allocator has taken back — and for the same reason: the link
+    /// to the next entry is in the refused bytes. The set keeps the
+    /// length it reads for itself, so the listing shows both numbers
+    /// and the error says why they differ.
+    #[test]
+    fn test_a_join_set_stops_at_an_entry_the_allocator_took_back() {
+        let (bundle, snapshot) = testkit::load_any("joinset");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+
+        let full = census(&ctx, &list);
+        assert!(full.errors.is_empty(), "{:?}", full.errors);
+        let set = full
+            .join_sets
+            .iter()
+            .find(|s| !s.children.is_empty())
+            .expect("the fixture drives a join set with tasks in it");
+        let (owner, stale, length) = (set.addr, set.children[0].entry, set.length);
+
+        let heap = freeing(stale..stale + 1);
+        let census = census_bounded(&ctx, &list, Bounds::default(), Some(&heap));
+        let gated = census
+            .join_sets
+            .iter()
+            .find(|s| s.addr == owner)
+            .expect("the join set itself is still listed");
+        assert!(
+            !gated.children.iter().any(|c| c.entry == stale),
+            "{gated:#?}"
+        );
+        assert_eq!(
+            gated.length, length,
+            "the set's own count is read either way"
+        );
+        assert_eq!(census.refused, 0);
+        let reports: Vec<String> = census.errors.iter().map(|e| format!("{e:#}")).collect();
+        assert!(
+            reports
+                .iter()
+                .any(|r| r.contains(&format!("{stale:#x}")) && r.contains("taken back")),
+            "{reports:#?}"
+        );
+        // A list the walk cut short is still a sound census: the
+        // length it disagrees with is excused by the error that names
+        // the set.
+        let violations = census.audit(&list);
+        assert!(violations.is_empty(), "{violations:#?}");
     }
 
     /// The nesting bound at `hops`, the depth bound where it lies.
@@ -2157,12 +2478,14 @@ mod tests {
         Walker {
             ctx,
             list,
+            heap: None,
             sets: Vec::new(),
             join_sets: Vec::new(),
             held: Vec::new(),
             spans: Vec::new(),
             errors: Vec::new(),
             capped: Capped::default(),
+            refused: 0,
             stats: Stats::default(),
             bounds: nesting(0),
             visited: HashSet::default(),
@@ -2290,6 +2613,7 @@ mod tests {
             spans: Vec::new(),
             errors: Vec::new(),
             capped: Capped::default(),
+            refused: 0,
             stats: Stats::default(),
         }
     }
