@@ -62,7 +62,8 @@ static GLOBAL: MiMalloc = MiMalloc;
                   hansei --core core.app --debug-info app.debug\n  \
                   hansei --core core.app --tokio-info app.tinfo -e 'tasks; graph'\n  \
                   echo 'trace 42 -v' | hansei --core core.app --tokio-info app.tinfo\n  \
-                  hansei tokio-info extract app.debug -o app.tinfo\n\n\
+                  hansei tokio-info extract app.debug -o app.tinfo\n  \
+                  hansei tokio-info extract app --debug-info app.dbg -o app.tinfo\n\n\
                   Type `help` for the commands a session accepts.",
     subcommand_negates_reqs = true,
     args_conflicts_with_subcommands = true
@@ -941,6 +942,22 @@ impl<'b> Session<'b> {
         for line in ctx.contract_report().degraded(policy) {
             writeln!(io::stderr(), "warning: degraded: {line}")?;
         }
+        // A bundle whose vtable scan had nothing to read (extracted
+        // from a companion alone) still attaches — every symbol-keyed
+        // table is whole — but realized trait objects were never
+        // discovered, so anything rendered through a dyn pointer may
+        // come up short. Say so once, at attach, rather than letting
+        // it read as the target's own poverty.
+        if matches!(
+            bundle.meta.vtable_data,
+            hansei_bundle::VtableDataSource::None
+        ) {
+            writeln!(
+                io::stderr(),
+                "warning: this tokio info's vtable scan had no program \
+                 contents to read; dyn trait-object coverage is incomplete"
+            )?;
+        }
         check_fingerprint(&ctx, args.force)?;
 
         let lwps = proc.lwps().context("failed to read lwps")?;
@@ -1317,13 +1334,13 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
             .with_context(|| format!("failed to attach to {}", args.core.display()));
         (proc, bundle.join().expect("bundle loader panicked"))
     });
-    let (proc, (bundle, warnings)) = (proc?, bundle?);
+    let (proc, (bundle, warnings, binary_extracted_from)) = (proc?, bundle?);
     // Held back until here rather than printed by the worker, whose
     // stderr the attach's own warnings are interleaved with.
     for warning in &warnings {
         writeln!(io::stderr(), "{warning}")?;
     }
-    check_binary(&proc, args)?;
+    check_binary(&proc, args, binary_extracted_from)?;
     let session = Session::attach(&proc, &bundle, args)?;
 
     // The joint state every deep command reads — task extents and the
@@ -1349,18 +1366,23 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
 
 /// The types this session reads: the file `--tokio-info` names, or
 /// tokio info extracted on the spot from what `--debug-info` names.
+/// The returned flag says extraction consumed `--binary` — split debug
+/// info needs the sibling binary it was split from — so the flag is
+/// not surplus even on a core that carries its own symbols.
 ///
 /// Extraction's warnings come back rather than being printed, because
 /// this runs beside the attach and its stderr is not this thread's to
 /// write to.
-fn bundle_for(args: &SessionArgs) -> Result<(Bundle, Vec<String>)> {
+fn bundle_for(args: &SessionArgs) -> Result<(Bundle, Vec<String>, bool)> {
     match args.bundle_source() {
         BundleSource::File(path) => {
             let bundle = Bundle::load(path)
                 .with_context(|| format!("failed to load tokio info {}", path.display()))?;
-            Ok((bundle, Vec::new()))
+            Ok((bundle, Vec::new(), false))
         }
-        BundleSource::Extracted(path) => bundle_cmd::extract_for_session(path),
+        BundleSource::Extracted(path) => {
+            bundle_cmd::extract_for_session(path, args.binary.as_deref())
+        }
     }
 }
 
@@ -1490,9 +1512,15 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
 /// id is the check that catches the substitution — and what tells that
 /// mistake from a split-debug companion, which does share the
 /// deployed binary's addresses.
-fn check_binary(proc: &Proc, args: &SessionArgs) -> Result<()> {
+fn check_binary(proc: &Proc, args: &SessionArgs, binary_extracted_from: bool) -> Result<()> {
     if !proc.needs_binary() {
-        if let Some(path) = &args.binary {
+        // Surplus only when nothing used it: extraction from split
+        // debug info consumed `--binary` as the sibling the DWARF was
+        // split from, and warning then would tell the operator to drop
+        // a flag the next run refuses to start without.
+        if let Some(path) = &args.binary
+            && !binary_extracted_from
+        {
             writeln!(
                 io::stderr(),
                 "warning: ignoring --binary {}; this core carries its own \
@@ -1835,7 +1863,9 @@ mod cli_tests {
             "hansei",
             "tokio-info",
             "extract",
-            "app.debug",
+            "app",
+            "--debug-info",
+            "app.dbg",
             "-o",
             "app.tinfo",
             "--stats",
@@ -1849,6 +1879,7 @@ mod cli_tests {
             cmd:
                 BundleCmd::Extract {
                     binary,
+                    debug_info,
                     output,
                     stats,
                     include_types,
@@ -1860,7 +1891,11 @@ mod cli_tests {
         else {
             panic!("expected `tokio-info extract`");
         };
-        assert_eq!(binary.to_str(), Some("app.debug"));
+        assert_eq!(binary.to_str(), Some("app"));
+        assert_eq!(
+            debug_info.as_deref().and_then(|p| p.to_str()),
+            Some("app.dbg")
+        );
         assert_eq!(output.to_str(), Some("app.tinfo"));
         assert!(stats);
         assert_eq!(include_types, ["core::net::IpAddr"]);

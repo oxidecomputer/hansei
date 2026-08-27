@@ -72,8 +72,21 @@ pub struct Meta {
     /// to tell "instrumentation absent because the target has none"
     /// from "instrumentation path broken".
     pub tokio_unstable: Option<bool>,
-    /// Identity of the debug binary the bundle was extracted from.
-    pub debug_binary: BinaryIdent,
+    /// Identity of the binary the bundle describes — the deployed
+    /// binary beside split debug info, the one input otherwise.
+    pub binary: BinaryIdent,
+    /// Identity of the separate debug-info file the DWARF was read
+    /// from, when extraction was given one. `None` when one file
+    /// played every role.
+    pub debug_info: Option<DebugSourceIdent>,
+    /// Where the vtable scan read data-section bytes from. [`None`]
+    /// means the pass ran with nothing to scan — a companion alone,
+    /// which the library entry point permits for tests — so the
+    /// bundle's dyn trait-object coverage is incomplete and the read
+    /// side should say so.
+    ///
+    /// [`None`]: VtableDataSource::None
+    pub vtable_data: VtableDataSource,
     /// Command line of the extraction, for provenance.
     pub extract_args: String,
     /// Mangled task poll symbols sampled (or all) for target match-rate
@@ -97,15 +110,40 @@ pub struct FamilyCeiling {
     pub minor: u64,
 }
 
-/// Identity of the ELF the bundle was produced from.
+/// Identity of the binary the bundle describes.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct BinaryIdent {
-    /// Path basename of the debug binary.
+    /// Path basename of the binary.
     pub basename: String,
-    /// GNU build-id note contents, if present.
+    /// GNU build-id note (or Mach-O UUID) contents, if present. An
+    /// illumos binary carries neither, which is why the hash below is
+    /// recorded even though a core offers nothing to check it against.
     pub build_id: Option<Vec<u8>>,
-    /// BLAKE3 hash of the whole ELF file.
+    /// BLAKE3 hash of the whole file.
     pub blake3: [u8; 32],
+}
+
+/// Identity of a separate debug-info file — a companion, a dSYM, a
+/// dwp, or a full debug binary handed in beside the one that ran. Its
+/// pairing with the binary was verified at extraction; the hash is the
+/// record of *which* file passed that check.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct DebugSourceIdent {
+    /// Path basename of the debug-info file.
+    pub basename: String,
+    /// BLAKE3 hash of the whole file.
+    pub blake3: [u8; 32],
+}
+
+/// Where the vtable scan read data-section bytes from.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub enum VtableDataSource {
+    /// No input carried data-section contents, so realized trait
+    /// objects were not discovered.
+    #[default]
+    None,
+    /// Path basename of the file whose data sections were scanned.
+    File(String),
 }
 
 /// The layout graph: an index-based arena of type definitions.

@@ -62,6 +62,7 @@ fn scratch() -> tempfile::TempDir {
 /// The kind-breakdown rows of a `stats` listing: four spaces, a type
 /// kind, its count, and nothing else on the line — which is what tells
 /// them from the `normalized … keys` rows at the same indent.
+#[cfg(not(target_os = "macos"))]
 fn kind_counts(text: &str) -> Vec<(&str, usize)> {
     text.lines()
         .filter_map(|line| {
@@ -90,7 +91,8 @@ fn test_stats_reports_a_bundle() {
         "format version:",
         "rustc:",
         "tokio:",
-        "debug binary:",
+        "binary:",
+        "vtable data:",
         "fingerprint:",
         "types:",
         "struct",
@@ -181,7 +183,7 @@ fn test_extract_failures_name_their_cause() {
     let out = hansei(&["extract", "/no/such/binary", "-o", "/dev/null"]);
     assert!(!out.status.success());
     assert!(
-        stderr(&out).contains("failed to read the debug binary"),
+        stderr(&out).contains("failed to read an extraction input"),
         "{}",
         stderr(&out)
     );
@@ -192,26 +194,30 @@ fn test_extract_failures_name_their_cause() {
     let out = hansei(&["extract", path.to_str().unwrap(), "-o", "/dev/null"]);
     assert!(!out.status.success());
     assert!(
-        stderr(&out).contains("failed to parse the debug binary"),
+        stderr(&out).contains("failed to parse an extraction input"),
         "{}",
         stderr(&out)
     );
 
-    // A real debug binary with no tokio in it: refused, with the flag
-    // that overrides the refusal named in the message.
+    // This test binary is refused, saying why: on ELF hosts it is a
+    // real debug binary with no tokio in it, and the message names the
+    // flag that overrides that refusal; on macOS its DWARF sits in the
+    // object files, so what it lacks is debug info altogether.
     let exe = std::env::current_exe().unwrap();
     let out = hansei(&["extract", exe.to_str().unwrap(), "-o", "/dev/null"]);
     assert!(!out.status.success());
-    assert!(
-        stderr(&out).contains("--allow-missing-infra"),
-        "{}",
-        stderr(&out)
-    );
+    let want = match cfg!(target_os = "macos") {
+        true => "no debug info",
+        false => "--allow-missing-infra",
+    };
+    assert!(stderr(&out).contains(want), "{}", stderr(&out));
 }
 
 /// `--allow-missing-infra` extracts a tokio-less binary anyway: the
 /// placeholder bundle round-trips through `stats` and through `dump`'s
-/// in-depth validation.
+/// in-depth validation. Not on macOS, where this test binary carries
+/// no DWARF at all and is refused before the flag matters.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn test_allow_missing_infra_extracts_a_placeholder_bundle() {
     let dir = scratch();

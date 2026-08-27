@@ -23,19 +23,22 @@
 mod emitter;
 mod passes;
 mod paths;
+mod sources;
 mod statics;
 mod sweep;
 mod vtables;
 
 pub(crate) use emitter::Emitter;
+pub use sources::DebugFlavor;
 
 use self::paths::{OwnedLoc, display_path, rustc_below_floor, rustc_version_of, tokio_version_of};
 use self::statics::find_statics;
 use self::sweep::{Sweep, cell_from_dealloc_param, find_stage, sweep_functions};
 use self::vtables::{VtableTypeHint, discover_vtable_types, resolve_vtable_type_hints};
 use crate::bundle::{
-    BinaryIdent, Bundle, BundleTypeId, DynFutureTable, FamilyCeiling, FutureKind, InfraTypes, Meta,
-    Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId, TaskFutureEntry, TaskTable,
+    BinaryIdent, Bundle, BundleTypeId, DebugSourceIdent, DynFutureTable, FamilyCeiling, FutureKind,
+    InfraTypes, Meta, Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId,
+    TaskFutureEntry, TaskTable, VtableDataSource,
 };
 use crate::detect::{Family, FormatExplanation, struct_of};
 use crate::raw_types::{NsId, RawType};
@@ -274,12 +277,35 @@ impl fmt::Display for ExtractStats {
 /// Why an extraction failed.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("failed to read the debug binary")]
+    #[error("failed to read an extraction input")]
     Io(#[from] std::io::Error),
-    #[error("failed to parse the debug binary")]
+    #[error("failed to parse an extraction input")]
     Object(#[from] object::read::Error),
     #[error("failed to read DWARF")]
     Dwarf(#[from] crate::Error),
+    #[error(
+        "{path} is {flavor}, which holds no program contents; extraction \
+         also needs the binary it was split from — pass that binary, with \
+         {path} as --debug-info"
+    )]
+    SplitAlone { path: String, flavor: DebugFlavor },
+    #[error("no debug info in {path}: it carries no DWARF")]
+    NoDebugInfo { path: String },
+    #[error(
+        "{path} is a DWARF package (dwp), which is not yet supported; \
+         when it is, the sibling binary carrying its skeleton sections \
+         will still be required alongside it"
+    )]
+    DwpUnsupported { path: String },
+    #[error(
+        "{debug_info} was not split from {binary}: {reason}. A separate \
+         debug build is not a sibling — extract from it alone."
+    )]
+    SiblingMismatch {
+        binary: String,
+        debug_info: String,
+        reason: String,
+    },
     #[error(
         "no tokio task instantiations found — is this a tokio debug binary? \
          (--allow-missing-infra to extract anyway)"
@@ -367,56 +393,172 @@ pub fn dwarf_summary(path: &Path) -> Result<DwarfSummary> {
     })
 }
 
-/// Extract a bundle from a debug binary (or any DWARF-bearing object).
-pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, ExtractStats)> {
-    let f = std::fs::File::open(path)?;
-    let obj_bytes = std::sync::Arc::new(unsafe { memmap2::Mmap::map(&f) }?);
+/// One extraction input, mapped: the `Arc` is what lets a hashing
+/// thread hold the bytes independently of the parse's borrows.
+struct Input {
+    basename: String,
+    display: String,
+    bytes: std::sync::Arc<memmap2::Mmap>,
+}
 
-    // Hash the whole ELF for the bundle's binary identity on a background
-    // thread. BLAKE3 over a multi-gigabyte binary is pure overhead on the
-    // critical path, but it overlaps entirely with the DWARF parse below.
-    // The thread keeps its own `Arc` handle to the mapping, so it is
-    // independent of the parse's borrows of the same bytes.
-    let blake3_handle = {
-        let obj_bytes = std::sync::Arc::clone(&obj_bytes);
-        std::thread::spawn(move || blake3::hash(&obj_bytes[..]))
+impl Input {
+    fn open(path: &Path) -> Result<Input> {
+        let f = std::fs::File::open(path)?;
+        let bytes = std::sync::Arc::new(unsafe { memmap2::Mmap::map(&f) }?);
+        Ok(Input {
+            basename: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            display: path.display().to_string(),
+            bytes,
+        })
+    }
+
+    /// Hash the whole file for the bundle's identity on a background
+    /// thread. BLAKE3 over a multi-gigabyte binary is pure overhead on
+    /// the critical path, but it overlaps entirely with the DWARF parse.
+    fn hash(&self) -> std::thread::JoinHandle<blake3::Hash> {
+        let bytes = std::sync::Arc::clone(&self.bytes);
+        std::thread::spawn(move || blake3::hash(&bytes[..]))
+    }
+}
+
+/// What extraction reads: the binary, and optionally a separate
+/// debug-info file its DWARF comes from.
+pub struct DebugSources<'a> {
+    /// The binary that ran (and will run): program contents, identity,
+    /// and symbols come from here.
+    pub binary: &'a Path,
+    /// Separate debug info — a companion file, a dSYM, a dwp, or a
+    /// full debug binary split after this pair's shared link. Supplies
+    /// the DWARF (and more symbols) when given.
+    pub debug_info: Option<&'a Path>,
+}
+
+/// Extract a bundle under the full input contract: flavors detected by
+/// content, split debug info refused without its sibling binary, and
+/// the pair verified to be two halves of one link. This is the entry
+/// point behind every user-facing extraction; [`extract_file`] is the
+/// permissive single-file form.
+pub fn extract_sources(
+    sources: &DebugSources<'_>,
+    opts: &ExtractOptions,
+) -> Result<(Bundle, ExtractStats)> {
+    let binary = Input::open(sources.binary)?;
+    let binary_obj = object::File::parse(&binary.bytes[..])?;
+    let flavor = sources::classify(&binary_obj);
+
+    // Whatever else was passed, the binary role must be filled by a
+    // file with program contents in it.
+    if flavor.is_split() {
+        return Err(Error::SplitAlone {
+            path: binary.display.clone(),
+            flavor,
+        });
+    }
+
+    let Some(debug_path) = sources.debug_info else {
+        return match flavor {
+            DebugFlavor::Full => extract_parsed(&binary, &binary_obj, None, opts),
+            DebugFlavor::NoDebugInfo => Err(Error::NoDebugInfo {
+                path: binary.display.clone(),
+            }),
+            DebugFlavor::Companion | DebugFlavor::Dwp => unreachable!("refused above"),
+        };
     };
 
-    let obj = object::File::parse(&obj_bytes[..])?;
-    let (sections, endian) = load_dwarf_sections(&obj)?;
+    let debug = Input::open(debug_path)?;
+    let debug_obj = object::File::parse(&debug.bytes[..])?;
+    match sources::classify(&debug_obj) {
+        DebugFlavor::Dwp => Err(Error::DwpUnsupported {
+            path: debug.display.clone(),
+        }),
+        DebugFlavor::NoDebugInfo => Err(Error::NoDebugInfo {
+            path: debug.display.clone(),
+        }),
+        DebugFlavor::Full | DebugFlavor::Companion => {
+            if let Some(reason) = sources::sibling_mismatch(&binary_obj, &debug_obj) {
+                return Err(Error::SiblingMismatch {
+                    binary: binary.display.clone(),
+                    debug_info: debug.display.clone(),
+                    reason,
+                });
+            }
+            extract_parsed(&binary, &binary_obj, Some((&debug, &debug_obj)), opts)
+        }
+    }
+}
+
+/// Classify a file by content, the way [`extract_sources`] will see it.
+/// This is what lets a caller decide up front whether a `--debug-info`
+/// file needs its sibling binary passed alongside.
+pub fn classify_file(path: &Path) -> Result<DebugFlavor> {
+    let input = Input::open(path)?;
+    let obj = object::File::parse(&input.bytes[..])?;
+    Ok(sources::classify(&obj))
+}
+
+/// Extract a bundle from one DWARF-bearing object, with none of the
+/// input contract enforced: a companion alone extracts (with nothing
+/// for the vtable scan to read, which the bundle records), and a
+/// DWARF-less binary extracts to an empty bundle. The tests' entry
+/// point; user-facing callers go through [`extract_sources`].
+pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, ExtractStats)> {
+    let input = Input::open(path)?;
+    let obj = object::File::parse(&input.bytes[..])?;
+    extract_parsed(&input, &obj, None, opts)
+}
+
+/// The pipeline behind both entry points: DWARF from the debug-info
+/// file when given (else the binary), symbols from every input, data
+/// sections and identity from the binary.
+fn extract_parsed(
+    binary: &Input,
+    binary_obj: &object::File<'_>,
+    debug: Option<(&Input, &object::File<'_>)>,
+    opts: &ExtractOptions,
+) -> Result<(Bundle, ExtractStats)> {
+    let binary_hash = binary.hash();
+    let debug_hash = debug.map(|(input, _)| input.hash());
+
+    let dwarf_obj = debug.map(|(_, obj)| obj).unwrap_or(binary_obj);
+    let (sections, endian) = load_dwarf_sections(dwarf_obj)?;
     let borrow_section =
         |section| gimli::EndianSlice::new(std::borrow::Cow::as_ref(section), endian);
     let dwarf = sections.borrow(borrow_section);
 
-    // Gathering the symbol tables and the vtable-type hints depends only on
-    // `obj`, not on the DWARF, so run it on a helper thread that overlaps the
-    // (parallel) parse. Serially it is ~0.4s of scanning `.symtab`/`.dynsym`
-    // after the read has already finished; overlapped, it is free.
+    // The vtable scan wants file bytes for the data sections, which a
+    // companion (or dSYM) does not have — its program sections claim
+    // memory no file range backs. Never read those as empty data
+    // silently: scan only a file with contents, and record in the
+    // bundle which file that was, or that there was none.
+    let vtable_source = match sources::classify(binary_obj) {
+        DebugFlavor::Companion => VtableDataSource::None,
+        _ => VtableDataSource::File(binary.basename.clone()),
+    };
+
+    // Gathering the symbol tables and the vtable-type hints depends only
+    // on the parsed objects, not on the DWARF, so run it on a helper
+    // thread that overlaps the (parallel) parse. Serially it is ~0.4s of
+    // scanning `.symtab`/`.dynsym` after the read has already finished;
+    // overlapped, it is free.
     let (reader, symbols, vtable_types) = std::thread::scope(|scope| {
         let aux = scope.spawn(|| {
             // The named statics are recovered from the symbol table alone
             // (see `find_statics`), and a symbol can live in either table —
             // illumos release builds keep `WAKER_VTABLE` only in
-            // `.symtab`/`.dynsym` — so gather both.
-            // Mach-O's linker prefixes every global symbol with an
-            // underscore, so its tables spell a Rust v0 name `__RNv…`
-            // where the DWARF linkage name — and the symbol table of any
-            // target the bundle is later resolved against — has `_RNv…`.
-            // Undo it here, at the one place symbols enter, so every
-            // lookup downstream compares like with like. Left alone, a
-            // bundle extracted on macOS carries an empty fingerprint and
-            // statics under names no target answers to.
-            let underscore_prefixed = obj.format() == object::BinaryFormat::MachO;
-            let symbols: Vec<&str> = obj
-                .symbols()
-                .chain(obj.dynamic_symbols())
-                .filter_map(|s| s.name().ok())
-                .map(|name| match underscore_prefixed {
-                    true => name.strip_prefix('_').unwrap_or(name),
-                    false => name,
-                })
-                .collect();
-            let vtable_types = discover_vtable_types(&obj);
+            // `.symtab`/`.dynsym` — so gather both, from both files,
+            // deduplicated: a split pair carries two copies of one table.
+            let mut merged: BTreeSet<&str> = object_symbols(binary_obj).collect();
+            if let Some((_, debug_obj)) = debug {
+                merged.extend(object_symbols(debug_obj));
+            }
+            let symbols: Vec<&str> = merged.into_iter().collect();
+            let vtable_types = match vtable_source {
+                VtableDataSource::None => Vec::new(),
+                VtableDataSource::File(_) => discover_vtable_types(binary_obj),
+            };
             (symbols, vtable_types)
         });
         let reader = DwReader::read_types(&dwarf, Default::default())?;
@@ -426,19 +568,47 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
 
     let view = reader.view();
 
-    let ident = BinaryIdent {
-        basename: path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        build_id: obj.build_id().ok().flatten().map(|b| b.to_vec()),
-        blake3: blake3_handle
+    let join_hash = |handle: std::thread::JoinHandle<blake3::Hash>| -> [u8; 32] {
+        handle
             .join()
             .expect("BLAKE3 hashing thread panicked")
-            .into(),
+            .into()
+    };
+    let ident = Identity {
+        binary: BinaryIdent {
+            basename: binary.basename.clone(),
+            build_id: sources::file_id(binary_obj),
+            blake3: join_hash(binary_hash),
+        },
+        debug_info: debug.map(|(input, _)| DebugSourceIdent {
+            basename: input.basename.clone(),
+            blake3: join_hash(debug_hash.expect("hash handle exists with the input")),
+        }),
+        vtable_data: vtable_source,
     };
 
     extract_from_view(&view, &symbols, ident, opts, &vtable_types)
+}
+
+/// Every symbol-table name in an object, spelled the way DWARF linkage
+/// names — and any target the bundle is later resolved against — spell
+/// it. Mach-O's linker prefixes every global symbol with an underscore
+/// (`__RNv…` for a Rust v0 name `_RNv…`); undo it here, at the one
+/// place symbols enter per file format, so every lookup downstream
+/// compares like with like. Left alone, a bundle extracted on macOS
+/// carries an empty fingerprint and statics under names no target
+/// answers to.
+fn object_symbols<'data: 'file, 'file>(
+    obj: &'file object::File<'data>,
+) -> impl Iterator<Item = &'data str> + 'file {
+    let underscore_prefixed = obj.format() == object::BinaryFormat::MachO;
+    obj.symbols()
+        .chain(obj.dynamic_symbols())
+        .filter_map(|s| s.name().ok())
+        .map(move |name| match underscore_prefixed {
+            true => name.strip_prefix('_').unwrap_or(name),
+            false => name,
+        })
 }
 
 /// One infra type's slot: the DWARF path it is found under, and the type
@@ -509,10 +679,18 @@ impl InfraIds {
     }
 }
 
+/// What extraction records about its inputs: per-input identity, and
+/// where the vtable scan read from.
+struct Identity {
+    binary: BinaryIdent,
+    debug_info: Option<DebugSourceIdent>,
+    vtable_data: VtableDataSource,
+}
+
 fn extract_from_view(
     view: &DwView<'_>,
     symbols: &[&str],
-    ident: BinaryIdent,
+    ident: Identity,
     opts: &ExtractOptions,
     vtable_types: &[VtableTypeHint],
 ) -> Result<(Bundle, ExtractStats)> {
@@ -861,7 +1039,9 @@ fn extract_from_view(
         rustc_version,
         tokio_version,
         tokio_unstable,
-        debug_binary: ident,
+        binary: ident.binary,
+        debug_info: ident.debug_info,
+        vtable_data: ident.vtable_data,
         extract_args: opts.extract_args.clone(),
         symbol_fingerprint: fingerprint.into_iter().collect(),
         newest_family: Some(FamilyCeiling {
@@ -1430,10 +1610,14 @@ mod tests {
             allow_missing_infra,
             ..Default::default()
         };
-        let ident = BinaryIdent {
-            basename: "synthetic".to_owned(),
-            build_id: None,
-            blake3: [0; 32],
+        let ident = Identity {
+            binary: BinaryIdent {
+                basename: "synthetic".to_owned(),
+                build_id: None,
+                blake3: [0; 32],
+            },
+            debug_info: None,
+            vtable_data: VtableDataSource::None,
         };
         extract_from_view(&view, &[], ident, &opts, &[])
     }

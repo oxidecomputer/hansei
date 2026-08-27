@@ -8,8 +8,11 @@
 
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
-use exegesis::extract::{ExtractOptions, ExtractStats, RUSTC_FLOOR, dwarf_summary, extract_file};
-use hansei_bundle::{Bundle, BundleTypeId, MemberRef, StaticRole, Step, TypeDef};
+use exegesis::extract::{
+    DebugSources, ExtractOptions, ExtractStats, RUSTC_FLOOR, classify_file, dwarf_summary,
+    extract_sources,
+};
+use hansei_bundle::{Bundle, BundleTypeId, MemberRef, StaticRole, Step, TypeDef, VtableDataSource};
 
 use std::path::{Path, PathBuf};
 
@@ -17,8 +20,14 @@ use std::path::{Path, PathBuf};
 pub enum BundleCmd {
     /// Extract tokio runtime debug info from a debug binary's DWARF.
     Extract {
-        /// Debug binary (or any DWARF-bearing object).
+        /// The binary — with its DWARF embedded, or the sibling the
+        /// split debug info named by --debug-info was split from.
         binary: PathBuf,
+        /// Split debug info for the binary (a companion file, a dSYM,
+        /// a dwp): the DWARF is read from here, the program contents
+        /// and identity from the binary.
+        #[arg(short, long, value_name = "PATH")]
+        debug_info: Option<PathBuf>,
         /// Output path (`.tinfo` by convention).
         #[arg(short, long)]
         output: PathBuf,
@@ -63,6 +72,7 @@ pub fn exec(cmd: BundleCmd) -> Result<()> {
     match cmd {
         BundleCmd::Extract {
             binary,
+            debug_info,
             output,
             stats,
             include_types,
@@ -71,6 +81,7 @@ pub fn exec(cmd: BundleCmd) -> Result<()> {
             explain_walk,
         } => extract(
             &binary,
+            debug_info.as_deref(),
             &output,
             stats,
             include_types,
@@ -96,13 +107,49 @@ fn load(path: &Path) -> Result<Bundle> {
 /// shape an extraction are `tokio-info extract`'s alone, and the argv a
 /// bundle records is provenance for a file this one never becomes.
 ///
+/// `--debug-info` takes any flavor; when it is split debug info, the
+/// session's `--binary` is the sibling it was split from and extraction
+/// consumes it — the returned flag says so, because the caller's
+/// surplus-`--binary` warning must stay quiet then. A self-sufficient
+/// `--debug-info` is extracted alone, exactly as the same file would be
+/// as a positional: a separate debug build is one file playing every
+/// role, never a sibling.
+///
 /// The warnings come back as text for the caller to print when it
 /// suits; nothing here writes to stderr, because this runs on the
 /// thread overlapping the attach.
-pub fn extract_for_session(binary: &Path) -> Result<(Bundle, Vec<String>)> {
-    let (bundle, stats) = extract_file(binary, &ExtractOptions::default())
-        .with_context(|| format!("failed to extract from {}", binary.display()))?;
-    Ok((bundle, warnings(&stats)))
+pub fn extract_for_session(
+    debug_info: &Path,
+    binary: Option<&Path>,
+) -> Result<(Bundle, Vec<String>, bool)> {
+    let flavor = classify_file(debug_info)
+        .with_context(|| format!("failed to read {}", debug_info.display()))?;
+    // A dwp is recognized so the refusal can say what it is, but its
+    // machinery does not exist yet — say that rather than sending the
+    // caller hunting for a --binary that would not help.
+    anyhow::ensure!(
+        flavor != exegesis::extract::DebugFlavor::Dwp,
+        "{} is a DWARF package (dwp), which is not yet supported",
+        debug_info.display()
+    );
+    let sources = match (flavor.is_split(), binary) {
+        (false, _) => DebugSources {
+            binary: debug_info,
+            debug_info: None,
+        },
+        (true, Some(binary)) => DebugSources {
+            binary,
+            debug_info: Some(debug_info),
+        },
+        (true, None) => anyhow::bail!(
+            "{} is {flavor}, which holds no program contents; also pass \
+             --binary naming the binary it was split from",
+            debug_info.display()
+        ),
+    };
+    let (bundle, stats) = extract_sources(&sources, &ExtractOptions::default())
+        .with_context(|| format!("failed to extract from {}", debug_info.display()))?;
+    Ok((bundle, warnings(&stats), flavor.is_split()))
 }
 
 /// What extraction leaves uncertain about the bundle it produced: the
@@ -128,8 +175,10 @@ fn warnings(stats: &ExtractStats) -> Vec<String> {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract(
     binary: &Path,
+    debug_info: Option<&Path>,
     output: &Path,
     print_stats: bool,
     include_types: Vec<String>,
@@ -146,8 +195,15 @@ fn extract(
         explain_format,
         explain_walk,
     };
-    let (bundle, stats) = extract_file(binary, &opts)
-        .with_context(|| format!("failed to extract from {}", binary.display()))?;
+    let sources = DebugSources { binary, debug_info };
+    let (bundle, stats) = extract_sources(&sources, &opts).with_context(|| match debug_info {
+        Some(d) => format!(
+            "failed to extract from {} with debug info {}",
+            binary.display(),
+            d.display()
+        ),
+        None => format!("failed to extract from {}", binary.display()),
+    })?;
     for warning in warnings(&stats) {
         eprintln!("{warning}");
     }
@@ -213,7 +269,14 @@ fn stats(path: &Path) -> Result<()> {
         Some(false) => println!("  tokio_unstable:  no"),
         None => println!("  tokio_unstable:  (unknown)"),
     }
-    println!("  debug binary:    {}", m.debug_binary.basename);
+    println!("  binary:          {}", m.binary.basename);
+    if let Some(d) = &m.debug_info {
+        println!("  debug info:      {}", d.basename);
+    }
+    match &m.vtable_data {
+        VtableDataSource::File(file) => println!("  vtable data:     {file}"),
+        VtableDataSource::None => println!("  vtable data:     none (dyn coverage incomplete)"),
+    }
     println!("  extract args:    {}", m.extract_args);
     println!("  fingerprint:     {} symbols", m.symbol_fingerprint.len());
 
@@ -478,11 +541,13 @@ fn dump_dwarf(path: &Path) -> Result<()> {
 mod tests {
     use super::{BundleCmd, ExtractStats, RUSTC_FLOOR, exec, warnings};
 
+    #[cfg(not(target_os = "macos"))]
     use hansei_bundle::Bundle;
 
     fn extract_cmd(binary: std::path::PathBuf, output: std::path::PathBuf) -> BundleCmd {
         BundleCmd::Extract {
             binary,
+            debug_info: None,
             output,
             stats: false,
             include_types: Vec::new(),
@@ -529,6 +594,7 @@ mod tests {
     /// tokio in it — which is what `--allow-missing-infra` is for — so
     /// the case needs neither a fixture nor a target, and what the
     /// bundle *says* is exegesis's own suites' business.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn test_extract_writes_a_loadable_bundle() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -536,6 +602,24 @@ mod tests {
         let binary = std::env::current_exe().expect("this test binary's path");
         exec(extract_cmd(binary, output.clone())).expect("extraction should succeed");
         Bundle::load(&output).expect("the bundle it wrote should load");
+    }
+
+    /// A macOS test binary carries no DWARF of its own — the compiler
+    /// leaves it in the object files — so this is the natural subject
+    /// for the no-debug-info refusal: the verb names the file and says
+    /// what it lacks instead of writing an empty bundle.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_extract_refuses_a_binary_without_debug_info() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output = dir.path().join("self.tinfo");
+        let binary = std::env::current_exe().expect("this test binary's path");
+        let err = exec(extract_cmd(binary.clone(), output.clone()))
+            .expect_err("a DWARF-less binary alone is refused");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("no debug info"), "{msg}");
+        assert!(msg.contains(&binary.display().to_string()), "{msg}");
+        assert!(!output.exists(), "nothing should have been written");
     }
 
     /// A subject nothing can be read out of fails, naming the file,

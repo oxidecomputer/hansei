@@ -17,7 +17,7 @@
 
 use exegesis::bundle::{Bundle, DisplayNode, MemberRef, Step, TypeDef, WalkOutcome, WalkRole};
 use exegesis::describe::describe_debug_format;
-use exegesis::extract::{ExtractOptions, ExtractStats, extract_file};
+use exegesis::extract::{DebugSources, ExtractOptions, ExtractStats, extract_sources};
 use exegesis::summary::{portable_summary, walk_entry_line};
 
 use std::collections::BTreeMap;
@@ -34,12 +34,35 @@ fn test_programs_dir() -> PathBuf {
 /// The file `extract` should read for a fixture: the binary itself on
 /// ELF platforms, the dSYM DWARF on macOS.
 fn dwarf_path(program: &str) -> PathBuf {
-    let bin = test_programs_dir().join("fixtures/bin").join(program);
-    let dsym = bin
+    let bin = fixture_binary(program);
+    let dsym = fixture_dsym(program);
+    if dsym.exists() { dsym } else { bin }
+}
+
+fn fixture_binary(program: &str) -> PathBuf {
+    test_programs_dir().join("fixtures/bin").join(program)
+}
+
+fn fixture_dsym(program: &str) -> PathBuf {
+    fixture_binary(program)
         .with_extension("dSYM")
         .join("Contents/Resources/DWARF")
-        .join(program);
-    if dsym.exists() { dsym } else { bin }
+        .join(program)
+}
+
+/// Extract a fixture the way an operator would: the binary as the
+/// input, and — where the platform split the DWARF out into a dSYM —
+/// that companion as the debug-info file. Every macOS run therefore
+/// exercises the two-file path under the full input contract; ELF
+/// fixtures carry their DWARF embedded and take the one-file form.
+fn extract_fixture(program: &str, opts: &ExtractOptions) -> (Bundle, ExtractStats) {
+    let bin = fixture_binary(program);
+    let dsym = fixture_dsym(program);
+    let sources = DebugSources {
+        binary: &bin,
+        debug_info: dsym.exists().then_some(dsym.as_path()),
+    };
+    extract_sources(&sources, opts).unwrap_or_else(|e| panic!("extract failed for {program}: {e}"))
 }
 
 /// Put the fixture in the state its sources describe. Returns `false`
@@ -966,8 +989,7 @@ fn run_golden(program: &str) {
         extract_args: format!("golden-test {program}"),
         ..Default::default()
     };
-    let (bundle, stats) = extract_file(&dwarf_path(program), &opts)
-        .unwrap_or_else(|e| panic!("extract failed for {program}: {e}"));
+    let (bundle, stats) = extract_fixture(program, &opts);
 
     // The bundle must survive its own validation and a save/load round
     // trip (save validates; load re-validates).
@@ -979,6 +1001,21 @@ fn run_golden(program: &str) {
     assert_eq!(
         reloaded, bundle,
         "{program}: save/load round trip changed the bundle"
+    );
+
+    // What the bundle says it was made from: the vtable scan read the
+    // binary — beside a recorded dSYM on macOS, where the pair form
+    // supplied the DWARF, and alone on ELF hosts.
+    match &bundle.meta.vtable_data {
+        exegesis::bundle::VtableDataSource::File(file) => assert_eq!(file, program),
+        exegesis::bundle::VtableDataSource::None => {
+            panic!("{program}: the vtable scan should have had the binary to read")
+        }
+    }
+    assert_eq!(
+        bundle.meta.debug_info.is_some(),
+        fixture_dsym(program).exists(),
+        "{program}: a pair extraction records its debug source, a single-file one does not"
     );
 
     assert_clean(program, &bundle, &stats);
@@ -1081,8 +1118,7 @@ fn test_extraction_is_reproducible() {
         ..Default::default()
     };
     let extract = || {
-        let (bundle, _) = extract_file(&dwarf_path(program), &opts)
-            .unwrap_or_else(|e| panic!("extract failed for {program}: {e}"));
+        let (bundle, _) = extract_fixture(program, &opts);
         let mut bytes = Vec::new();
         bundle.write_to(&mut bytes).expect("bundle failed to write");
         (bundle, bytes)
@@ -1105,6 +1141,132 @@ fn test_extraction_is_reproducible() {
     );
 }
 
+/// The library's single-file form still reads a dSYM alone — the
+/// tests' own door, refused at every user-facing entry — and the
+/// bundle records that the vtable scan had nothing to read, which is
+/// what the read side's incomplete-dyn-coverage warning keys on.
+#[cfg(target_os = "macos")]
+#[test]
+fn test_a_companion_alone_records_no_vtable_source() {
+    let program = "select-combinator";
+    if !ensure_fixture(program) {
+        return;
+    }
+    let (bundle, _) =
+        exegesis::extract::extract_file(&fixture_dsym(program), &ExtractOptions::default())
+            .expect("companion-alone library extraction");
+    assert!(matches!(
+        bundle.meta.vtable_data,
+        exegesis::bundle::VtableDataSource::None
+    ));
+    assert!(bundle.meta.debug_info.is_none());
+}
+
+/// A fixture split after the fact — `objcopy --only-keep-debug` for the
+/// companion, `--strip-debug` on the sibling — extracts to the same
+/// bundle the unsplit binary does, identity fields aside (they name
+/// the inputs and are supposed to differ). Bundle equality is the
+/// strong check: every table, format, and walk came out the same
+/// whichever way the DWARF arrived. macOS gets the equivalent coverage
+/// from every golden running against the binary + dSYM pair.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn test_a_split_pair_extracts_the_same_bundle() {
+    let program = "select-combinator";
+    if !ensure_fixture(program) {
+        return;
+    }
+    // GNU spelling on Linux, the g-prefixed binutils elsewhere.
+    let Some(objcopy) = ["objcopy", "gobjcopy"].iter().find(|cmd| {
+        Command::new(cmd)
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+    }) else {
+        eprintln!("SKIP: neither objcopy nor gobjcopy is on this host");
+        return;
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The sibling keeps the fixture's basename so the recorded vtable
+    // data source — a basename — matches the unsplit extraction's.
+    let bin = dir.path().join(program);
+    std::fs::copy(fixture_binary(program), &bin).expect("copy fixture");
+    let dbg = dir.path().join(format!("{program}.dbg"));
+    let objcopy_ok = |cmd: &mut Command| {
+        let status = cmd.status().expect("failed to run objcopy");
+        assert!(status.success(), "{cmd:?} failed");
+    };
+    objcopy_ok(
+        Command::new(objcopy)
+            .arg("--only-keep-debug")
+            .arg(&bin)
+            .arg(&dbg),
+    );
+    objcopy_ok(Command::new(objcopy).arg("--strip-debug").arg(&bin));
+
+    let opts = ExtractOptions::default();
+    let (unsplit, _) = extract_sources(
+        &DebugSources {
+            binary: &fixture_binary(program),
+            debug_info: None,
+        },
+        &opts,
+    )
+    .expect("unsplit extraction");
+    let (mut split, _) = extract_sources(
+        &DebugSources {
+            binary: &bin,
+            debug_info: Some(&dbg),
+        },
+        &opts,
+    )
+    .expect("pair extraction");
+
+    assert_eq!(split.meta.binary.basename, program);
+    let debug_info = split
+        .meta
+        .debug_info
+        .take()
+        .expect("pair records its debug source");
+    assert_eq!(debug_info.basename, format!("{program}.dbg"));
+    split.meta.binary = unsplit.meta.binary.clone();
+    assert_eq!(split, unsplit, "{program}: split pair changed the bundle");
+
+    // The companion alone is refused, saying what it is and what is
+    // missing rather than extracting a bundle with no program behind it.
+    let err = extract_sources(
+        &DebugSources {
+            binary: &dbg,
+            debug_info: None,
+        },
+        &opts,
+    )
+    .expect_err("a companion alone is refused");
+    let msg = err.to_string();
+    assert!(msg.contains("split debug info"), "{msg}");
+    assert!(msg.contains("binary it was split from"), "{msg}");
+
+    // A sibling from a different link is refused as a mismatched pair:
+    // by build id where the platform stamps one, by the allocated
+    // sections having moved where it does not.
+    let other = "simple-await";
+    if ensure_fixture(other) {
+        let err = extract_sources(
+            &DebugSources {
+                binary: &fixture_binary(other),
+                debug_info: Some(&dbg),
+            },
+            &opts,
+        )
+        .expect_err("a sibling from another link is refused");
+        assert!(
+            matches!(err, exegesis::extract::Error::SiblingMismatch { .. }),
+            "{err}"
+        );
+    }
+}
+
 /// The `--explain-format` / `--explain-walk` traces: the one diagnostic
 /// for a silently-declining detector, collected only on request, so no
 /// other test ever turns the trace sink on.
@@ -1121,8 +1283,7 @@ fn test_explain_traces_report_the_verdict() {
         explain_walk: Some("Header.".into()),
         ..Default::default()
     };
-    let (bundle, stats) = extract_file(&dwarf_path(program), &opts)
-        .unwrap_or_else(|e| panic!("extract failed for {program}: {e}"));
+    let (bundle, stats) = extract_fixture(program, &opts);
 
     // A type a formatter claims: the navigators left a trace, and the
     // render ends with the program the bundle actually ships rather
@@ -1171,8 +1332,7 @@ fn test_explain_traces_report_the_verdict() {
         explain_format: Some("::work::{async_fn_env".into()),
         ..Default::default()
     };
-    let (bundle, stats) = extract_file(&dwarf_path(program), &opts)
-        .unwrap_or_else(|e| panic!("extract failed for {program}: {e}"));
+    let (bundle, stats) = extract_fixture(program, &opts);
     let expl = stats
         .format_explanations
         .iter()
@@ -1203,8 +1363,7 @@ fn test_include_types_resolve_or_are_reported_missing() {
         ],
         ..Default::default()
     };
-    let (bundle, stats) = extract_file(&dwarf_path(program), &opts)
-        .unwrap_or_else(|e| panic!("extract failed for {program}: {e}"));
+    let (bundle, stats) = extract_fixture(program, &opts);
 
     assert!(stats.include_roots >= 1, "String did not resolve as a root");
     assert_eq!(stats.include_missing, ["no_such_crate::NoSuchType"]);
