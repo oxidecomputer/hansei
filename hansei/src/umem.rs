@@ -56,45 +56,50 @@ pub fn exec_umem_audit(
     )?;
     writeln!(
         out,
-        "live: {} chunk(s), {} bytes; freed: {} chunk(s)",
-        stats.live_chunks, stats.live_bytes, stats.freed_chunks
+        "live: {} chunk(s), {} bytes; freed: {} chunk(s), {} parked",
+        stats.live_chunks, stats.live_bytes, stats.freed_chunks, stats.parked_chunks
     )?;
     // What is missing errs toward Live, so it belongs in the header
     // rather than in a footnote: a verdict from this index is only ever
     // as complete as this line says.
-    writeln!(
-        out,
-        "not walked: {}{}",
-        match stats.magazines_walked {
-            true => "",
-            false =>
-                "magazine, depot and per-thread layers (their buffers \
-                     read live)",
-        },
-        match stats.oversize_walked {
-            true => "",
-            false =>
-                "; the oversize and memalign arenas (their allocations \
-                      read unknown)",
-        }
-    )?;
+    let missing: Vec<&str> = [
+        (
+            stats.magazines_walked,
+            "the per-CPU magazines and the depot",
+        ),
+        (stats.ptc_walked, "the threads' own caches"),
+        (stats.oversize_walked, "the oversize and memalign arenas"),
+    ]
+    .iter()
+    .filter(|(walked, _)| !walked)
+    .map(|&(_, layer)| layer)
+    .collect();
+    if !missing.is_empty() {
+        writeln!(out, "not walked: {}", missing.join("; "))?;
+    }
 
     writeln!(out)?;
     writeln!(
         out,
-        "{:<24} {:>9} {:>10} {:>8} {:>10} {:>9} {:>8}",
-        "CACHE", "BUFSIZE", "CHUNKSIZE", "SLABS", "LIVE", "FREED", "DECLINED"
+        "{:<24} {:>9} {:>10} {:>8} {:>10} {:>9} {:>8} {:>8}",
+        "CACHE", "BUFSIZE", "CHUNKSIZE", "SLABS", "LIVE", "FREED", "PARKED", "DECLINED"
     )?;
     for cache in heap.caches() {
         writeln!(
             out,
-            "{:<24} {:>9} {:>10} {:>8} {:>10} {:>9} {:>8}",
+            "{:<24} {:>9} {:>10} {:>8} {:>10} {:>9} {:>8} {:>8}",
             cache.name,
             cache.bufsize,
             cache.chunksize,
             cache.slabs,
             cache.live,
             cache.freed,
+            match cache.parked_walked {
+                true => cache.parked.to_string(),
+                // Not zero: the layer declined, so what it holds is
+                // unknown rather than nothing.
+                false => "-".to_string(),
+            },
             cache.slabs_declined
         )?;
     }
@@ -103,9 +108,19 @@ pub fn exec_umem_audit(
         writeln!(out)?;
         writeln!(
             out,
-            "declined: {} cache(s), {} slab(s), {} overlapping slab(s)",
-            stats.caches_declined, stats.slabs_declined, stats.overlaps
+            "declined: {} cache(s), {} slab(s), {} overlapping slab(s), \
+             {} cache(s)' parked buffers",
+            stats.caches_declined,
+            stats.slabs_declined,
+            stats.overlaps,
+            stats.caches_parked_declined
         )?;
+    }
+    // Every note, whether or not something was declined: a layer that
+    // did not walk at all declines nothing and is exactly what someone
+    // reading this needs told.
+    if !stats.notes.is_empty() {
+        writeln!(out)?;
         for note in &stats.notes {
             writeln!(out, "  {note}")?;
         }
